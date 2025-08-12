@@ -17,7 +17,7 @@ const puppeteer = require("puppeteer");
 
 const pdfParse = require("pdf-parse");
 const OpenAI = require("openai");
-
+const { logToFile, logError } = require("../../logger");
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
@@ -684,7 +684,7 @@ exports.generateDocFile = async (req, res) => {
                     let companyLogoPath = null;
                     if (fileSummaryResults[0].company_logo !== null) {
                       var pathname = "upload/docs/doc_" + responses.user_id;
-                      var fullPath = `https://blueprintcatalyst.com/api/${pathname}/${fileSummaryResults[0].company_logo}`;
+                      var fullPath = `http://localhost:5000/api/${pathname}/${fileSummaryResults[0].company_logo}`;
 
                       if (fullPath) {
                         // if (fs.existsSync(fullPath)) {
@@ -1553,7 +1553,7 @@ exports.generateProcessAI = async (req, res) => {
   }
 };
 async function sendApprovalEmail({ email, companyName, uniqcode }) {
-  const approvalLink = `https://blueprintcatalyst.com/approvalpage/${uniqcode}`;
+  const approvalLink = `http://localhost:5000/approvalpage/${uniqcode}`;
 
   const transporter = nodemailer.createTransport({
     service: "gmail",
@@ -1726,8 +1726,8 @@ exports.getcompanyData = async (req, res) => {
         ...doc,
         downloadUrl:
           doc.company_logo && doc.company_logo.trim() !== ""
-            ? `https://blueprintcatalyst.com/api/${pathname}/${doc.company_logo}`
-            : "https://blueprintcatalyst.com/api/upload/docs/download.png",
+            ? `http://localhost:5000/api/${pathname}/${doc.company_logo}`
+            : "http://localhost:5000/api/upload/docs/download.png",
       }));
 
       return res.status(200).json({
@@ -1831,7 +1831,9 @@ const safe = (value) => {
   return value;
 };
 
-exports.Addinvenstorreport = async (req, res) => {
+exports.addinvenstorreport = async (req, res) => {
+  logToFile("===== API START: addinvenstorreport =====");
+
   try {
     const {
       user_id,
@@ -1843,20 +1845,23 @@ exports.Addinvenstorreport = async (req, res) => {
       futureOutlook,
     } = req.body;
 
+    logToFile("Step 1: Validating input...");
     if (!user_id) {
+      logError("Missing user_id");
       return res.status(400).json({
         success: false,
         message: "user_id is required.",
       });
     }
 
-    // 1. Get latest version
+    logToFile("Step 2: Getting latest version from DB...");
     const versionQuery = `SELECT MAX(version) AS max_version FROM investor_updates WHERE user_id = ? And type =?`;
     db.query(
       versionQuery,
       [user_id, "Investor updates"],
       async (err, versionResults) => {
         if (err) {
+          logError("DB version query error: " + err.message);
           return res.status(500).json({
             success: false,
             message: err,
@@ -1865,9 +1870,13 @@ exports.Addinvenstorreport = async (req, res) => {
 
         const latestVersion = Number(versionResults[0]?.max_version || 0);
         const newVersion = latestVersion + 1;
+        logToFile(
+          `Latest version: ${latestVersion}, New version: ${newVersion}`
+        );
 
         let previousData = null;
         if (latestVersion > 0) {
+          logToFile("Step 3: Fetching previous data...");
           const prevQuery = `
           SELECT financial_performance, operational_updates, market_competitive,
                  customer_product, fundraising_financial, future_outlook
@@ -1880,7 +1889,7 @@ exports.Addinvenstorreport = async (req, res) => {
           previousData = prevResults[0] || null;
         }
 
-        // 2. Prepare prompt for OpenAI
+        logToFile("Step 4: Preparing OpenAI prompt...");
         const comparisonPrompt = previousData
           ? `
 You are an AI assistant helping write investor updates. Compare the previous update with the latest update and summarize the differences clearly.
@@ -1914,16 +1923,18 @@ Fundraising & Financial Strategy: ${fundraisingFinancial}
 Future Outlook & Strategy: ${futureOutlook}
 `;
 
+        logToFile("Step 5: Calling OpenAI API...");
         const chatResponse = await openai.chat.completions.create({
           model: "gpt-4-turbo",
           messages: [{ role: "user", content: comparisonPrompt }],
           temperature: 0.7,
         });
+        logToFile("OpenAI API response received.");
 
         const executive_summary =
           chatResponse.choices[0].message.content.trim();
 
-        // 3. Get company name
+        logToFile("Step 6: Fetching company name...");
         const [companyResult] = await db
           .promise()
           .query("SELECT company_name FROM company WHERE id = ? LIMIT 1", [
@@ -1935,7 +1946,7 @@ Future Outlook & Strategy: ${futureOutlook}
         const formattedDate = formatCustomDate(new Date());
         const pdfFileName = `${companyName}_investor_update_v${newVersion}_${formattedDate}.pdf`;
 
-        // 4. Generate PDF with Puppeteer
+        logToFile("Step 7: Generating PDF with Puppeteer...");
         const folderPath = path.join(
           __dirname,
           "..",
@@ -1968,13 +1979,17 @@ Future Outlook & Strategy: ${futureOutlook}
         </html>
       `;
 
-        const browser = await puppeteer.launch({ headless: true });
+        const browser = await puppeteer.launch({
+          headless: true,
+          args: ["--no-sandbox", "--disable-setuid-sandbox"],
+        });
         const page = await browser.newPage();
         await page.setContent(htmlContent, { waitUntil: "networkidle0" });
         await page.pdf({ path: pdfFilePath, format: "A4" });
         await browser.close();
+        logToFile("PDF generated: " + pdfFileName);
 
-        // 5. Insert into DB
+        logToFile("Step 8: Inserting into DB...");
         const insertQuery = `
         INSERT INTO investor_updates (
           type,user_id, version, update_date,
@@ -2004,6 +2019,7 @@ Future Outlook & Strategy: ${futureOutlook}
 
         db.query(insertQuery, values, (err, result) => {
           if (err) {
+            logError("Insert failed: " + err.message);
             return res.status(500).json({
               success: false,
               message: "Insert failed.",
@@ -2011,6 +2027,7 @@ Future Outlook & Strategy: ${futureOutlook}
             });
           }
 
+          logToFile("===== API END SUCCESS =====");
           return res.status(200).json({
             success: true,
             message: `Investor report version ${newVersion} created and saved as PDF.`,
@@ -2021,7 +2038,7 @@ Future Outlook & Strategy: ${futureOutlook}
       }
     );
   } catch (error) {
-    console.error("Error:", error);
+    logError("Unexpected error: " + error.message);
     return res.status(500).json({
       success: false,
       message: "Something went wrong.",
@@ -2060,7 +2077,7 @@ exports.getinvestorReports = (req, res) => {
     var pathname = "upload/docs/doc_" + user_id;
     const updatedResults = results.map((doc) => ({
       ...doc,
-      downloadUrl: `https://blueprintcatalyst.com/api/${pathname}/investor_report/${doc.document_name}`,
+      downloadUrl: `http://localhost:5000/api/${pathname}/investor_report/${doc.document_name}`,
     }));
     console.log(updatedResults);
     res.status(200).json({
@@ -2092,7 +2109,7 @@ ORDER BY investor_updates.id DESC;
     var pathname = "upload/docs/doc_" + user_id;
     const updatedResults = results.map((doc) => ({
       ...doc,
-      downloadUrl: `https://blueprintcatalyst.com/api/${pathname}/investor_report/${doc.document_name}`,
+      downloadUrl: `http://localhost:5000/api/${pathname}/investor_report/${doc.document_name}`,
     }));
     res.status(200).json({
       results: updatedResults,
