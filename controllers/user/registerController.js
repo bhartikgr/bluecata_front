@@ -1912,7 +1912,7 @@ exports.sendAlluserReminderZoomLink = async (req, res) => {
         console.log(meeting.zoom_meeting_id);
         if (diffMinutes <= 10) {
           const zoomLink =
-            "https://blueprintcatalyst.com/api/zoommeeting?token=" +
+            "http://localhost:5000/api/zoommeeting?token=" +
             meeting.unique_code;
 
           const replacements = {
@@ -2444,7 +2444,7 @@ const sendsharedCode = ({
 The company **${sharedBy}** has shared a referral code with you: ${discount_code}
 
 Register using the link below to activate your discount:
-http://localhost:3000/register?ref=${discount_code}
+https://blueprintcatalyst.com/register?ref=${discount_code}
 
 With this code, you'll get benefits on:
 - ${readableModules}
@@ -2463,7 +2463,7 @@ BluePrint Catalyst Team`;
 ${sharedBy} has invited you to join BluePrint Catalyst and shared a discount code with you: ${discount_code}
 
 Register using the link below to activate your discount:  
-http://localhost:3000/register?ref=${discount_code}
+https://blueprintcatalyst.com/register?ref=${discount_code}
 
 This gives you access to benefits across:
 - ${readableModules}
@@ -2483,7 +2483,7 @@ ${sharedBy} has shared a discount code with you: ${discount_code}
 Please log in to your BluePrint Catalyst account and apply this code to enjoy discounts on:
 - ${readableModules}
 
-Log in here: http://localhost:3000/login
+Log in here: https://blueprintcatalyst.com/login
 
 Happy scaling!  
 BluePrint Catalyst Team`;
@@ -2496,7 +2496,7 @@ BluePrint Catalyst Team`;
 Here is your discount code: ${discount_code}
 
 Register or log in using the link below to redeem it:  
-http://localhost:3000/register?ref=${discount_code}
+https://blueprintcatalyst.com/register?ref=${discount_code}
 
 Best,  
 BluePrint Catalyst Team`;

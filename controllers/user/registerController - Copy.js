@@ -1799,7 +1799,7 @@ exports.sendAlluserReminderZoomLink = async (req, res) => {
         console.log(meeting.zoom_meeting_id);
         if (diffMinutes <= 10) {
           const zoomLink =
-            "https://blueprintcatalyst.com/api/zoommeeting?token=" +
+            "http://localhost:5000/api/zoommeeting?token=" +
             meeting.unique_code;
 
           const replacements = {

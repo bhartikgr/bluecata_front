@@ -139,7 +139,7 @@ ORDER BY iu.id DESC;
       let downloadUrl = null;
 
       if (doc.document_name) {
-        downloadUrl = `https://blueprintcatalyst.com/api/${pathname}/investor_report/${doc.document_name}`;
+        downloadUrl = `http://localhost:5000/api/${pathname}/investor_report/${doc.document_name}`;
       }
 
       return {
@@ -239,8 +239,8 @@ exports.SendreportToinvestor = async (req, res) => {
 
           const url =
             results.length > 0
-              ? `http://localhost:3000/investor/login`
-              : `http://localhost:3000/investor/information/token=${token}`;
+              ? `https://blueprintcatalyst.com/investor/login`
+              : `https://blueprintcatalyst.com/investor/information/token=${token}`;
 
           const mailOptions = {
             from: '"BluePrint Catalyst" <scale@blueprintcatalyst.com>',
@@ -320,7 +320,7 @@ ORDER BY iu.id DESC;
       let downloadUrl = null;
 
       if (doc.document_name) {
-        downloadUrl = `https://blueprintcatalyst.com/api/${pathname}/investor_report/${doc.document_name}`;
+        downloadUrl = `http://localhost:5000/api/${pathname}/investor_report/${doc.document_name}`;
       }
 
       return {
@@ -634,7 +634,7 @@ exports.getreportForInvestor = (req, res) => {
       var pathname = "upload/docs/doc_" + user_id;
       const updatedResults = results.map((doc) => ({
         ...doc,
-        downloadUrl: `https://blueprintcatalyst.com/api/${pathname}/investor_report/${doc.document_name}`,
+        downloadUrl: `http://localhost:5000/api/${pathname}/investor_report/${doc.document_name}`,
       }));
 
       res.status(200).json({
