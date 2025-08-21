@@ -50,12 +50,14 @@ exports.getnotifications = async (req, res) => {
       return res.status(400).json({ message: "User ID is required" });
     }
 
-    const limit = 30;
-
+    let limit = 30;
     let dateCondition = "";
     if (filter === "default") {
-      dateCondition = `AND g.date >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
+      limit = 4;
+      // dateCondition = `AND g.date >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
+      dateCondition = `AND g.date >= DATE_SUB(NOW(), INTERVAL 1 MONTH)`;
     } else if (filter === "month") {
+      limit = 30;
       dateCondition = `AND g.date >= DATE_SUB(NOW(), INTERVAL 1 MONTH)`;
     }
     const query = `
@@ -83,8 +85,6 @@ exports.getnotifications = async (req, res) => {
       ORDER BY g.id DESC
       LIMIT ?;
     `;
-    console.log(query, "lll");
-    console.log(user_id, limit);
     db.query(query, [user_id, limit], (err, results) => {
       if (err) {
         return res
@@ -275,7 +275,7 @@ exports.getnotificationsdashboard = async (req, res) => {
     if (!user_ids) {
       return res.status(400).json({ message: "User IDs are required" });
     }
-    dateCondition = `AND g.date >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
+    dateCondition = `AND g.date >= DATE_SUB(NOW(), INTERVAL 1 MONTH)`;
     // Prepare SQL query to fetch galleries for multiple user IDs
 
     const query = `
