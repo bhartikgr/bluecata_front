@@ -80,7 +80,7 @@ exports.getnotifications = async (req, res) => {
       JOIN users sender ON g.user_id = sender.id
       LEFT JOIN users recipient ON g.to_id = recipient.id
       LEFT JOIN friendRequest_accept fr ON g.post_id = fr.id
-      WHERE g.user_id = ? AND g.link_href NOT LIKE '/receivedchatmessage/%' 
+      WHERE g.user_id = ?
         ${dateCondition}
       ORDER BY g.id DESC
       LIMIT ?;
@@ -136,7 +136,7 @@ exports.getnotificationstotal = async (req, res) => {
       JOIN users sender ON g.user_id = sender.id
       LEFT JOIN users recipient ON g.to_id = recipient.id
       LEFT JOIN friendRequest_accept fr ON g.post_id = fr.id
-      WHERE g.user_id = ? AND g.link_href NOT LIKE '/receivedchatmessage/%' ${dateCondition}
+      WHERE g.user_id = ?  ${dateCondition}
       ORDER BY g.id DESC
      
     `;
@@ -198,7 +198,7 @@ exports.getnotificationsall = async (req, res) => {
       FROM notification g
       JOIN users sender ON g.user_id = sender.id
       LEFT JOIN users recipient ON g.to_id = recipient.id
-      WHERE g.user_id = ? AND g.link_href NOT LIKE '/receivedchatmessage/%' ${dateCondition}
+      WHERE g.user_id = ?  ${dateCondition}
       ORDER BY g.id DESC
     `;
 
@@ -298,7 +298,7 @@ exports.getnotificationsdashboard = async (req, res) => {
       JOIN users sender ON g.user_id = sender.id
       LEFT JOIN users recipient ON g.to_id = recipient.id
       LEFT JOIN friendRequest_accept fr ON g.post_id = fr.id
-      WHERE g.user_id = ${user_id} AND g.link_href NOT LIKE '/receivedchatmessage/%' ${dateCondition}
+      WHERE g.user_id = ${user_id}  ${dateCondition}
       ORDER BY g.id DESC
       LIMIT 4;
     `;
