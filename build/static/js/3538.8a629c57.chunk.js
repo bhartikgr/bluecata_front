@@ -1,2 +1,0 @@
-"use strict";(self.webpackChunkamourette=self.webpackChunkamourette||[]).push([[3538],{3538:(t,a,e)=>{e.d(a,{Kak:()=>u});var r=e(3441);function u(t){return(0,r.k5)({tag:"svg",attr:{viewBox:"0 0 20 20",fill:"currentColor","aria-hidden":"true"},child:[{tag:"path",attr:{d:"M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z"},child:[]}]})(t)}}}]);
-//# sourceMappingURL=3538.8a629c57.chunk.js.map
