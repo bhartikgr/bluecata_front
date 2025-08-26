@@ -1803,3 +1803,75 @@ exports.proposalDataEdit = async (req, res) => {
     });
   });
 };
+
+// controller/sponsorController.js
+
+exports.updateSponsorSetup = (req, res) => {
+  const { userLogin, radius, demographics } = req.body;
+
+  // Basic validation
+  if (!userLogin.id) {
+    return res.status(400).json({
+      status: "0",
+      message: "Missing sponsor id",
+    });
+  }
+
+  // Convert demographics to JSON if it's an array
+  const demographicsJson = Array.isArray(demographics)
+    ? JSON.stringify(demographics)
+    : demographics || null;
+
+  const updateSql = `
+    UPDATE register 
+    SET radius = ?, demographics = ?
+    WHERE id = ?
+  `;
+
+  db.query(
+    updateSql,
+    [radius || null, demographicsJson, userLogin.id],
+    (err, result) => {
+      if (err) {
+        console.error("Update error:", err);
+        return res.status(500).json({
+          status: "0",
+          message: "Update failed",
+          error: err.message,
+        });
+      }
+
+      if (result.affectedRows === 0) {
+        return res.status(404).json({
+          status: "0",
+          message: "No sponsor found with the given id",
+        });
+      }
+
+      res.status(200).json({
+        status: "1",
+        message: "Sponsor setup updated successfully",
+      });
+    }
+  );
+};
+
+exports.getuser = async (req, res) => {
+  var id = req.body.id;
+
+  const query = `SELECT * FROM register WHERE id =?`;
+
+  db.query(query, [id], (err, row) => {
+    if (err) {
+      return res.status(500).json({
+        message: "Database query error",
+        error: err,
+      });
+    }
+
+    res.status(200).json({
+      message: ``,
+      results: row,
+    });
+  });
+};
