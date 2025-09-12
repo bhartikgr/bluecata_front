@@ -1494,7 +1494,7 @@ function sendEmailAccountActivated(to, fullName) {
                 Your account has been successfully activated. You can now log in using your credentials.
               </p>
               <div style="text-align: center; margin: 20px 0;">
-                <a href="http://localhost:3000/login" style="background:#ff3c3e; color:#fff; text-decoration:none; font-size:14px; padding:10px 30px; border-radius:10px;">Login Now</a>
+                <a href="https://blueprintcatalyst.com/login" style="background:#ff3c3e; color:#fff; text-decoration:none; font-size:14px; padding:10px 30px; border-radius:10px;">Login Now</a>
               </div>
               <p style="margin: 30px 0 10px 0; font-size: 14px; text-align: center; color: #555;">
                 Capavate Powered by <b>Blueprint Catalyst Ltd</b>
@@ -1524,7 +1524,7 @@ function sendEmailResendActivateLink(to, fullName, activationCode) {
   const subject = "Activate your Capavate account";
 
   // Your frontend URL where users click to activate
-  const activationUrl = `http://localhost:3000/activate-account?code=${activationCode}&email=${encodeURIComponent(
+  const activationUrl = `https://blueprintcatalyst.com/activate-account?code=${activationCode}&email=${encodeURIComponent(
     to
   )}`;
 
@@ -1580,7 +1580,7 @@ function sendEmailActivateAccount(to, fullName, activationCode) {
   const subject = "Activate your Capavate account";
 
   // Your frontend URL where users click to activate
-  const activationUrl = `http://localhost:3000/activate-account?code=${activationCode}&email=${encodeURIComponent(
+  const activationUrl = `https://blueprintcatalyst.com/activate-account?code=${activationCode}&email=${encodeURIComponent(
     to
   )}`;
 
@@ -3394,7 +3394,7 @@ exports.companyaddWithSignatory = (req, res) => {
                       }
 
                       insertedCount++;
-                      const inviteLink = `http://localhost:3000/signatory/accept/${uniqueCode}`;
+                      const inviteLink = `https://blueprintcatalyst.com/signatory/accept/${uniqueCode}`;
                       sendEmailToSignatory(
                         s.signatory_email,
                         `${s.first_name} ${s.last_name}`,
@@ -3456,7 +3456,7 @@ function sendEmailToUser(to, fullName, companyName) {
               You can now manage your company and track your company's progress through your dashboard.
             </p>
             <p style="font-size:14px; color:#111; margin-bottom:15px;">
-              <a href="http://localhost:3000/dashboard" style=" background: #ff3c3e;
+              <a href="https://blueprintcatalyst.com/dashboard" style=" background: #ff3c3e;
                     color: #fff; padding:10px 20px; text-decoration:none; border-radius:5px; font-weight:bold;">Go to Dashboard</a>
             </p>
             <p style="font-size:14px; color:#111; margin-bottom:0;">Regards,<br/>Blueprint Catalyst Ltd Team</p>

@@ -186,7 +186,7 @@ exports.addSignatory = (req, res) => {
                       });
                     }
 
-                    const inviteLink = `http://localhost:3000/signatory/accept/${uniqueCode}`;
+                    const inviteLink = `https://blueprintcatalyst.com/signatory/accept/${uniqueCode}`;
                     sendEmailToSignatory(
                       data.email,
                       `${data.first_name} ${data.last_name}`,
