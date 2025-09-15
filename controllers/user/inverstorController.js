@@ -173,7 +173,7 @@ exports.Addnewinvenstor = (req, res) => {
                       email,
                       first_name,
                       companyName,
-                      "http://localhost:5000/investor/login",
+                      "https://blueprintcatalyst.com/investor/login",
                       true // already registered
                     );
 
@@ -226,7 +226,7 @@ exports.Addnewinvenstor = (req, res) => {
                     email,
                     first_name,
                     companyName,
-                    `http://localhost:5000/investor/information/${token}`,
+                    `https://blueprintcatalyst.com/investor/information/${token}`,
                     false // not registered
                   );
 
@@ -271,7 +271,7 @@ const sendInvestorInviteEmail = (
       <table style="width:100%; border-collapse: collapse;">
         <tr>
           <td style="background:#efefef; padding:10px; text-align:center;">
-            <img src="http://localhost:5000/api/upload/images/logo.png" alt="logo" style="width:130px;" />
+            <img src="https://blueprintcatalyst.com/api/upload/images/logo.png" alt="logo" style="width:130px;" />
           </td>
         </tr>
         <tr>
@@ -496,11 +496,12 @@ exports.SendreportToinvestor = async (req, res) => {
       ({ report, email, unique_code, is_register }) => {
         if (req.body.records[0].type === "Due Diligence Document") {
           var url =
-            "http://localhost:5000/investor/company/duediligence-reportlist/" +
+            "https://blueprintcatalyst.com/investor/company/duediligence-reportlist/" +
             user_id;
         } else {
           var url =
-            "http://localhost:5000/investor/company/reportlist/" + user_id;
+            "https://blueprintcatalyst.com/investor/company/reportlist/" +
+            user_id;
         }
 
         const mailOptions = {
@@ -674,7 +675,7 @@ exports.getInvestorReportUpdate = (req, res) => {
     var pathname = "upload/docs/doc_" + user_id;
     const updatedResults = results.map((doc) => ({
       ...doc,
-      downloadUrl: `http://localhost:5000/api/${pathname}/investor_report/${doc.document_name}`,
+      downloadUrl: `https://blueprintcatalyst.com/api/${pathname}/investor_report/${doc.document_name}`,
     }));
     res.status(200).json({
       message: "",
@@ -718,7 +719,7 @@ exports.getInvestorReportDuediligence = (req, res) => {
     var pathname = "upload/docs/doc_" + user_id;
     const updatedResults = results.map((doc) => ({
       ...doc,
-      downloadUrl: `http://localhost:5000/api/${pathname}/investor_report/${doc.document_name}`,
+      downloadUrl: `https://blueprintcatalyst.com/api/${pathname}/investor_report/${doc.document_name}`,
     }));
     res.status(200).json({
       message: "",
@@ -748,7 +749,7 @@ exports.getinvestorReportsLock = (req, res) => {
     var pathname = "upload/docs/doc_" + user_id;
     const updatedResults = results.map((doc) => ({
       ...doc,
-      downloadUrl: `http://localhost:5000/api/${pathname}/investor_report/${doc.document_name}`,
+      downloadUrl: `https://blueprintcatalyst.com/api/${pathname}/investor_report/${doc.document_name}`,
     }));
 
     res.status(200).json({
@@ -777,7 +778,7 @@ exports.getDuediligenceDataroomLock = (req, res) => {
     var pathname = "upload/docs/doc_" + user_id;
     const updatedResults = results.map((doc) => ({
       ...doc,
-      downloadUrl: `http://localhost:5000/api/${pathname}/investor_report/${doc.document_name}`,
+      downloadUrl: `https://blueprintcatalyst.com/api/${pathname}/investor_report/${doc.document_name}`,
     }));
 
     res.status(200).json({
@@ -832,7 +833,7 @@ exports.getInvestorReportslist = async (req, res) => {
         var pathname = "upload/docs/doc_" + user_id;
         const updatedResults = results.map((doc) => ({
           ...doc,
-          downloadUrl: `http://localhost:5000/api/${pathname}/investor_report/${doc.document_name}`,
+          downloadUrl: `https://blueprintcatalyst.com/api/${pathname}/investor_report/${doc.document_name}`,
         }));
 
         res.status(200).json({
@@ -1128,7 +1129,7 @@ exports.InvestorAuthorizeConfimataion = (req, res) => {
                                 <tr>
                       <td>
                         <div style="padding:0 20px 20px 20px;">
-                          <a href="http://localhost:5000/investor/company/capital-round-list/${
+                          <a href="https://blueprintcatalyst.com/investor/company/capital-round-list/${
                             dataa.user_id
                           }" 
                             style="background:#ff3c3e;color:#fff;text-decoration:none;font-size:14px;padding:10px 30px;border-radius:10px;display:inline-block;">

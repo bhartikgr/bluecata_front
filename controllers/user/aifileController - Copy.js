@@ -1632,7 +1632,7 @@ exports.getinvestorReports = (req, res) => {
     var pathname = "upload/docs/doc_" + user_id;
     const updatedResults = results.map((doc) => ({
       ...doc,
-      downloadUrl: `http://localhost:5000/${pathname}/investor_report/${doc.document_name}`,
+      downloadUrl: `https://blueprintcatalyst.com/${pathname}/investor_report/${doc.document_name}`,
     }));
     console.log(updatedResults);
     res.status(200).json({

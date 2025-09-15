@@ -186,7 +186,7 @@ exports.addSignatory = (req, res) => {
                       });
                     }
 
-                    const inviteLink = `http://localhost:5000/signatory/accept/${uniqueCode}`;
+                    const inviteLink = `https://blueprintcatalyst.com/signatory/accept/${uniqueCode}`;
                     sendEmailToSignatory(
                       data.email,
                       `${data.first_name} ${data.last_name}`,
@@ -240,7 +240,7 @@ function sendEmailToSignatory(to, fullName, inviteLink, company_name) {
       <table style="width:100%; border-collapse: collapse;">
         <tr>
           <td style="background:#efefef; padding:10px; text-align:center;">
-            <img src="http://localhost:5000/api/upload/images/logo.png" alt="logo" style="width:130px;" />
+            <img src="https://blueprintcatalyst.com/api/upload/images/logo.png" alt="logo" style="width:130px;" />
           </td>
         </tr>
         <tr>

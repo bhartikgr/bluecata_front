@@ -251,7 +251,7 @@ exports.SendRecordRoundToinvestor = async (req, res) => {
         // Determine URL based on registration
         const isRegistered = is_register === "Yes";
         const url =
-          "http://localhost:5000/investor/company/capital-round-list/" +
+          "https://blueprintcatalyst.com/investor/company/capital-round-list/" +
           user_id;
 
         // Send email using your template
@@ -276,7 +276,7 @@ exports.SendRecordRoundToinvestor = async (req, res) => {
             <table style="width:600px;margin:0 auto;border-collapse:collapse;font-family:Verdana,Geneva,sans-serif;">
               <tr>
                 <td style="background:#efefef;padding:10px 0;text-align:center;">
-                  <img src="http://localhost:5000/api/upload/images/logo.png" alt="logo" style="width:130px;" />
+                  <img src="https://blueprintcatalyst.com/api/upload/images/logo.png" alt="logo" style="width:130px;" />
                 </td>
               </tr>
               <tr>
@@ -606,7 +606,7 @@ exports.investorrecordAuthorize = (req, res) => {
       const investorName = `${investorRows[0].first_name} ${investorRows[0].last_name}`;
 
       // Compose message
-      const reportUrl = "http://localhost:5000/crm/investorreport";
+      const reportUrl = "https://blueprintcatalyst.com/crm/investorreport";
 
       const message = `
 <!DOCTYPE html>
