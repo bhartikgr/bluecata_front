@@ -265,6 +265,13 @@ exports.proposalData = async (req, res) => {
     status,
     images,
     video_links,
+    location,
+    spnotes,
+    numfamily,
+    highlight,
+    deadline,
+    ticketsOnSale,
+    ticketPrice,
     created_by,
     created_by_id,
   } = data;
@@ -292,10 +299,17 @@ exports.proposalData = async (req, res) => {
       status,
       images,
       video_links,
+      location,
+      spnotes,
+      numfamily,
+      highlight,
+      deadline,
+      ticketsOnSale,
+      ticketPrice,
       created_date,
       created_by,
       created_by_id
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
   const values = [
@@ -318,6 +332,13 @@ exports.proposalData = async (req, res) => {
     status,
     JSON.stringify(images),
     JSON.stringify(video_links),
+      location,
+    spnotes,
+    numfamily,
+    highlight,
+    deadline,
+    ticketsOnSale,
+    ticketPrice,
     created_at,
     created_by,
     created_by_id,
@@ -985,7 +1006,7 @@ exports.uploadimageVideo = (req, res) => {
       return res.status(400).json({ error: "No file uploaded" });
     }
 
-    const fileUrl = `https://communitysponsoradmin.com/backend/uploads/proposals/${req.file.filename}`;
+    const fileUrl = `https://communitysponsoradmin.com/backend//uploads/proposals/${req.file.filename}`;
     res.status(200).json({ file_url: fileUrl });
   });
 };
@@ -1690,6 +1711,13 @@ exports.proposalDataEdit = async (req, res) => {
     status,
     images,
     video_links,
+    location,
+    spnotes,
+    numfamily,
+    highlight,
+    deadline,
+    ticketsOnSale,
+    ticketPrice,
     created_by,
     created_by_id,
   } = data;
@@ -1718,6 +1746,13 @@ exports.proposalDataEdit = async (req, res) => {
     status = ?,
     images = ?,
     video_links = ?,
+    location = ?,
+    spnotes = ?,
+    numfamily = ?,
+    highlight = ?,
+    deadline = ?,
+    ticketsOnSale = ?,
+    ticketPrice = ?,
     created_date = ?,
     created_by = ?,
     created_by_id = ?
@@ -1791,6 +1826,13 @@ exports.proposalDataEdit = async (req, res) => {
     status,
     imagesToStore,
     videoLinksToStore,
+    location,
+    spnotes,
+    numfamily,
+    highlight,
+    deadline,
+    ticketsOnSale,
+    ticketPrice,
     created_at,
     created_by,
     created_by_id,

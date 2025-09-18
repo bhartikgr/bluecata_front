@@ -468,6 +468,7 @@ exports.createstripe = async (req, res) => {
 
       // 4. Send onboarding link back
       res.json({ accountLink: accountLink.url });
+      
     });
 
   } catch (error) {
