@@ -75,4 +75,6 @@ router.post(
 );
 router.post("/checkSubscriptionPlan", registerController.checkSubscriptionPlan);
 router.post("/companyProfileUpdate", registerController.companyProfileUpdate);
+router.post("/checkUserLogin", registerController.checkUserLogin);
+router.post("/checkSignatoryLogin", registerController.checkSignatoryLogin);
 module.exports = router;

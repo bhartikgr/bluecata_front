@@ -3870,3 +3870,42 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     );
   });
 };
+
+exports.checkUserLogin = (req, res) => {
+  const user_id = req.body.user_id;
+
+  // Step 1: Fetch ALL meetings
+  const allMeetingsQuery = "SELECT * from users where id = ?";
+  db.query(allMeetingsQuery, [user_id], (err, allMeetings) => {
+    if (err) {
+      console.error("All meeting fetch error", err);
+      return res
+        .status(500)
+        .json({ error: "DB error while fetching meetings" });
+    }
+
+    return res.status(200).json({
+      status: "success",
+      results: allMeetings,
+    });
+  });
+};
+exports.checkSignatoryLogin = (req, res) => {
+  const company_id = req.body.company_id;
+
+  // Step 1: Fetch ALL meetings
+  const allMeetingsQuery = "SELECT * from company_signatories where id = ?";
+  db.query(allMeetingsQuery, [company_id], (err, allMeetings) => {
+    if (err) {
+      console.error("All meeting fetch error", err);
+      return res
+        .status(500)
+        .json({ error: "DB error while fetching meetings" });
+    }
+
+    return res.status(200).json({
+      status: "success",
+      results: allMeetings,
+    });
+  });
+};
