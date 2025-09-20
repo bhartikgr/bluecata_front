@@ -1496,7 +1496,7 @@ function sendEmailAccountActivated(to, fullName) {
                 Your account has been successfully activated. You can now log in using your credentials.
               </p>
               <div style="text-align: center; margin: 20px 0;">
-                <a href="https://blueprintcatalyst.com/login" style="background:#ff3c3e; color:#fff; text-decoration:none; font-size:14px; padding:10px 30px; border-radius:10px;">Login Now</a>
+                <a href="https://blueprintcatalyst.com/user/login" style="background:#ff3c3e; color:#fff; text-decoration:none; font-size:14px; padding:10px 30px; border-radius:10px;">Login Now</a>
               </div>
               <p style="margin: 30px 0 10px 0; font-size: 14px; text-align: center; color: #555;">
                 Capavate Powered by <b>Blueprint Catalyst Ltd</b>
