@@ -40,5 +40,6 @@ router.post(
   "/getCompanyOptionPoolLastestValuation",
   dashboardController.getCompanyOptionPoolLastestValuation
 );
+router.post("/getCompanyName", dashboardController.getCompanyName);
 
 module.exports = router;

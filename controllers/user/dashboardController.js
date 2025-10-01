@@ -1002,3 +1002,32 @@ exports.getCompanyOptionPoolLastestValuation = (req, res) => {
     }
   );
 };
+
+exports.getCompanyName = async (req, res) => {
+  try {
+    const company_id = req.body.company_id;
+
+    db.query(
+      "SELECT * from company where id = ?",
+      [company_id],
+      async (err, row) => {
+        if (err) {
+          return res
+            .status(500)
+            .json({ message: "Database query error", error: err });
+        }
+
+        return res.status(200).json({
+          message: "",
+          results: row,
+        });
+      }
+    );
+    // Hash the password
+  } catch (error) {
+    res.status(500).json({
+      message: "Internal server error",
+      error: error.message,
+    });
+  }
+};

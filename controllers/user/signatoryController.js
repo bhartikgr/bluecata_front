@@ -478,131 +478,108 @@ exports.signatoryAccessLastLogin = (req, res) => {
   const email = detail.email;
   const signatoryId = detail.id;
 
-  // Step 1: Check if this email has CIO role AND approved signature
-  const checkCIOAndApprovedQuery = `
-    SELECT cs.signature_role, aut.id as signature_id, aut.signature, aut.type
-    FROM company_signatories cs
-    LEFT JOIN authorized_signature aut ON aut.company_signatories_id = cs.id AND aut.approve = 'Yes'
-    WHERE cs.signatory_email = ? AND cs.signature_role = ?
+  // Step 1: Get the CIO record for this email
+  const getCIOQuery = `
+  SELECT cs.*
+  FROM company_signatories cs
+  WHERE cs.signatory_email = ? AND cs.signature_role = ? And cs.company_id = ?
+  LIMIT 1
+`;
+
+  db.query(getCIOQuery, [email, cioRole, companyId], (err, results) => {
+    if (err) return res.status(500).json({ message: "DB error", error: err });
+
+    if (results.length === 0) {
+      // Not a CIO or no record
+      return recordLastLogin(signatoryId, ip_address, companyId, false, null);
+    }
+
+    const approvedCIO = results[0];
+    const signt = `${approvedCIO.first_name} ${approvedCIO.last_name}`;
+
+    // Step 2: Check if already exists for this company
+    const checkExistingQuery = `
+    SELECT id 
+    FROM authorized_signature 
+    WHERE company_signatories_id = ? AND company_id = ?
     LIMIT 1
   `;
 
-  db.query(checkCIOAndApprovedQuery, [email, cioRole], (err, result) => {
-    if (err) {
-      console.error("Error checking CIO and approved signature:", err);
-      return res.status(500).json({ message: "Database error", error: err });
-    }
+    db.query(
+      checkExistingQuery,
+      [approvedCIO.id, companyId],
+      (err, existingResult) => {
+        if (err)
+          return res.status(500).json({ message: "DB error", error: err });
 
-    // Step 2: If email is CIO AND has approved signature
-    if (result.length > 0 && result[0].signature_id) {
-      const approvedSignatureData = result[0];
-
-      // Step 3: Check if this companyId already has this signature record
-      const checkExistingQuery = `
-        SELECT id 
-        FROM authorized_signature 
-        WHERE company_id = ? AND user_id = ?
-        LIMIT 1
-      `;
-
-      db.query(
-        checkExistingQuery,
-        [companyId, signatoryId],
-        (err, existingResult) => {
-          if (err) {
-            console.error("Error checking existing signature:", err);
-            return res
-              .status(500)
-              .json({ message: "Database error", error: err });
-          }
-
-          // Step 4: If no record exists for this companyId, insert it
-          if (existingResult.length === 0) {
-            const insertSignatureQuery = `
-            INSERT INTO authorized_signature 
-            (company_signatories_id,user_id, company_id, created_by_id, type, signature, approve, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, 'Yes', NOW())
-          `;
-
-            db.query(
-              insertSignatureQuery,
-              [
-                approvedSignatureData.signature_id,
-                signatoryId,
-                companyId,
-                signatoryId,
-                approvedSignatureData.type,
-                approvedSignatureData.signature,
-              ],
-              (err, insertResult) => {
-                if (err) {
-                  console.error("Error inserting authorized signature:", err);
-                  return res.status(500).json({
-                    message: "Failed to create signature record",
-                    error: err,
-                  });
-                }
-
-                console.log(
-                  `Auto-created approved signature for CIO: ${email}, Company: ${companyId}`
-                );
-
-                // Record last login with signature created info
-                recordLastLogin(
-                  signatoryId,
-                  ip_address,
-                  companyId,
-                  res,
-                  true,
-                  insertResult.insertId
-                );
-              }
-            );
-          } else {
-            // Record already exists for this companyId, just record login
-            recordLastLogin(
+        if (existingResult.length === 0) {
+          // Insert only once
+          const insertQuery = `
+  INSERT INTO authorized_signature 
+  (company_signatories_id, user_id, company_id, created_by_id, type, signature, approve, created_at)
+  VALUES (?, ?, ?, ?, ?, ?, 'Yes', NOW())
+  ON DUPLICATE KEY UPDATE approve = 'Yes'
+`;
+          db.query(
+            insertQuery,
+            [
+              approvedCIO.id,
               signatoryId,
-              ip_address,
               companyId,
-              res,
-              false,
-              null
-            );
-          }
+              signatoryId,
+              "manual",
+              signt,
+            ],
+            (err, insertResult) => {
+              if (err)
+                return res
+                  .status(500)
+                  .json({ message: "Insert failed", error: err });
+
+              // Record login
+              return recordLastLogin(
+                signatoryId,
+                ip_address,
+                companyId,
+                true,
+                insertResult.insertId
+              );
+            }
+          );
+        } else {
+          // Already exists, no insert
+          return recordLastLogin(
+            signatoryId,
+            ip_address,
+            companyId,
+            false,
+            null
+          );
         }
-      );
-    } else {
-      // Either not a CIO OR no approved signature exists, just record login
-      recordLastLogin(signatoryId, ip_address, companyId, res, false, null);
-    }
+      }
+    );
   });
 
-  // Helper function to record last login
+  // Helper function
   function recordLastLogin(
     signatoryId,
     ip_address,
     companyId,
-    res,
     signatureCreated,
     signatureId
   ) {
     const query = `
-      INSERT INTO access_logs_sigantory_last_login (signatory_id, ip_address, created_at)
-      VALUES (?, ?, NOW())
-      ON DUPLICATE KEY UPDATE
-        ip_address = VALUES(ip_address),
-        created_at = NOW()
-    `;
+    INSERT INTO access_logs_sigantory_last_login (signatory_id, ip_address, created_at)
+    VALUES (?, ?, NOW())
+    ON DUPLICATE KEY UPDATE
+      ip_address = VALUES(ip_address),
+      created_at = NOW()
+  `;
 
     db.query(query, [signatoryId, ip_address], (err, result) => {
-      if (err) {
-        return res.status(500).json({ message: "Database error", error: err });
-      }
+      if (err) return res.status(500).json({ message: "DB error", error: err });
 
-      const response = {
-        message: "Last login recorded successfully",
-        result,
-      };
+      const response = { message: "Last login recorded successfully", result };
 
       if (signatureCreated) {
         response.signatureCreated = true;
