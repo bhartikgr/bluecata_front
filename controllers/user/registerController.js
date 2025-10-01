@@ -3983,12 +3983,17 @@ exports.authorizedSignature = (req, res) => {
       });
     }
 
-    const { company_id, user_id, ip_address, method, manual, signature_pad } =
-      req.body;
+    const {
+      email,
+      company_id,
+      signatory_id,
+      ip_address,
+      method,
+      manual,
+      signature_pad,
+    } = req.body;
 
     let signatureValue = "";
-
-    console.log("req.file:", req.file);
 
     if (method === "upload" && req.file) {
       signatureValue = req.file.filename; // ✅ filename is now available
@@ -4005,7 +4010,7 @@ exports.authorizedSignature = (req, res) => {
 
     const checkQuery =
       "SELECT * FROM authorized_signature WHERE company_id = ? AND created_by_id = ?";
-    db.query(checkQuery, [company_id, user_id], (err, rows) => {
+    db.query(checkQuery, [company_id, signatory_id], (err, rows) => {
       if (err) {
         console.error("DB select error:", err);
         return res
@@ -4019,7 +4024,7 @@ exports.authorizedSignature = (req, res) => {
           "UPDATE authorized_signature SET type = ?, signature = ? WHERE company_id = ? AND created_by_id = ?";
         db.query(
           updateQuery,
-          [method, signatureValue, company_id, user_id],
+          [method, signatureValue, company_id, signatory_id],
           (err2) => {
             if (err2) {
               console.error("DB update error:", err2);
@@ -4037,75 +4042,142 @@ exports.authorizedSignature = (req, res) => {
         );
       } else {
         // Insert
-        const companyQuery = "SELECT user_id FROM company WHERE id = ?";
-        db.query(companyQuery, [company_id], (errCompany, companyResults) => {
-          if (errCompany) {
-            console.error("Error fetching company:", errCompany);
-          }
+        // Get company_signatories id first
+        const getSignatoryQuery = `
+  SELECT id 
+  FROM company_signatories 
+  WHERE signatory_email = ? AND company_id = ?
+  LIMIT 1
+`;
 
-          let companyName = "";
-          if (companyResults.length > 0) {
-            var companyOwned_id = companyResults[0].user_id;
-            const insertQuery =
-              "INSERT INTO authorized_signature (company_id,user_id, created_by_id, type, signature) VALUES (?, ?, ?, ?, ?)";
+        db.query(
+          getSignatoryQuery,
+          [email, company_id],
+          (errSignatory, signatoryResults) => {
+            if (errSignatory) {
+              console.error("Error fetching signatory:", errSignatory);
+              return res.status(500).json({
+                status: "error",
+                message: "Error fetching signatory data",
+                error: errSignatory,
+              });
+            }
+
+            if (signatoryResults.length === 0) {
+              return res.status(404).json({
+                status: "error",
+                message: "Signatory not found for this company",
+              });
+            }
+
+            const company_signatories_id = signatoryResults[0].id;
+
+            // Now get company user_id
+            const companyQuery = "SELECT user_id FROM company WHERE id = ?";
             db.query(
-              insertQuery,
-              [company_id, companyOwned_id, user_id, method, signatureValue],
-              (err3) => {
-                if (err3) {
-                  console.error("DB insert error:", err3);
+              companyQuery,
+              [company_id],
+              (errCompany, companyResults) => {
+                if (errCompany) {
+                  console.error("Error fetching company:", errCompany);
                   return res.status(500).json({
                     status: "error",
-                    message: "DB insert failed",
-                    error: err3,
+                    message: "Error fetching company data",
+                    error: errCompany,
                   });
                 }
-                var auditDetails = "Signature submitted";
 
-                // 1️⃣ Log into audit_logs
-                const auditQuery =
-                  "INSERT INTO audit_logs (user_id, company_id, module, action, entity_id, entity_type, details, ip_address, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())";
+                if (companyResults.length === 0) {
+                  return res.status(404).json({
+                    status: "error",
+                    message: "Company not found",
+                  });
+                }
 
-                const auditValues = [
-                  user_id,
-                  company_id,
-                  "Authorized Signature",
-                  "Create",
-                  null,
-                  "authorized_signature",
-                  JSON.stringify(req.body),
-                  ip_address,
-                ];
+                const companyOwned_id = companyResults[0].user_id;
 
-                db.query(auditQuery, auditValues, (errAudit) => {
-                  if (errAudit) console.error("Audit log error:", errAudit);
-                  else console.log("Audit log saved successfully");
-                });
+                // Insert into authorized_signature with company_signatories_id
+                const insertQuery = `
+      INSERT INTO authorized_signature 
+      (company_id, user_id, created_by_id, company_signatories_id, type, signature) 
+      VALUES (?, ?, ?, ?, ?, ?)
+    `;
 
-                // 2️⃣ Notify company owner
-                const userquery =
-                  "SELECT * from company_signatories where id = ?";
-                db.query(userquery, [user_id], (err, results) => {
-                  if (err) {
-                    console.error("Error fetching signatory data:", err);
+                db.query(
+                  insertQuery,
+                  [
+                    company_id,
+                    companyOwned_id,
+                    signatory_id,
+                    company_signatories_id,
+                    method,
+                    signatureValue,
+                  ],
+                  (err3) => {
+                    if (err3) {
+                      console.error("DB insert error:", err3);
+                      return res.status(500).json({
+                        status: "error",
+                        message: "DB insert failed",
+                        error: err3,
+                      });
+                    }
+
+                    const auditDetails = "Signature submitted";
+
+                    // 1️⃣ Log into audit_logs
+                    const auditQuery = `
+          INSERT INTO audit_logs 
+          (user_id, company_id, module, action, entity_id, entity_type, details, ip_address, created_at) 
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
+        `;
+
+                    const auditValues = [
+                      signatory_id,
+                      company_id,
+                      "Authorized Signature",
+                      "Create",
+                      null,
+                      "authorized_signature",
+                      JSON.stringify(req.body),
+                      ip_address,
+                    ];
+
+                    db.query(auditQuery, auditValues, (errAudit) => {
+                      if (errAudit) console.error("Audit log error:", errAudit);
+                      else console.log("Audit log saved successfully");
+                    });
+
+                    // 2️⃣ Notify company owner
+                    const userquery =
+                      "SELECT * FROM company_signatories WHERE id = ?";
+                    db.query(
+                      userquery,
+                      [company_signatories_id],
+                      (err, results) => {
+                        if (err) {
+                          console.error("Error fetching signatory data:", err);
+                        }
+                        if (results.length > 0) {
+                          const userData = results[0];
+                          const userFullName =
+                            userData.first_name + " " + userData.last_name;
+                          notifyCompanyOwner(company_id, userFullName);
+                        }
+                      }
+                    );
+
+                    // 3️⃣ Return response
+                    return res.status(200).json({
+                      status: "success",
+                      message: "Signature saved successfully",
+                    });
                   }
-                  if (results.length > 0) {
-                    const userData = results[0];
-                    const userFullName =
-                      userData.first_name + " " + userData.last_name;
-                    notifyCompanyOwner(company_id, userFullName);
-                  }
-                });
-
-                // 3️⃣ Return response
-                return res.status(200).json({
-                  status: "success",
-                  message: "Signature saved successfully",
-                });
+                );
               }
             );
           }
-        });
+        );
       }
     });
   });
