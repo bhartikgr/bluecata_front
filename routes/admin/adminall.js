@@ -26,5 +26,6 @@ router.post(
 );
 
 router.post("/getSharereportGrouped", adminallController.getSharereportGrouped);
+router.post("/getcompanySignatory", adminallController.getcompanySignatory);
 
 module.exports = router;

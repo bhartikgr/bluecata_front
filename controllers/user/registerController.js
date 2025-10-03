@@ -3301,6 +3301,7 @@ function generateRandomColor() {
 exports.companyaddWithSignatory = (req, res) => {
   const {
     user_id,
+    company_email,
     country_code,
     state_code,
     company_name,
@@ -3328,133 +3329,157 @@ exports.companyaddWithSignatory = (req, res) => {
 
       // Fetch existing company colors
       db.query(
-        "SELECT company_color_code FROM company",
-        (colorErr, colorResults) => {
+        "SELECT * FROM company where company_email  = ?",
+        [company_email],
+        (colorErr, checkemail) => {
           if (colorErr) {
             return res.status(500).json({
               message: "Error fetching existing colors",
               error: colorErr,
             });
           }
+          if (checkemail.length > 0) {
+            return res.status(200).json({
+              message: "This company email already exists",
+              status: "2",
+            });
+          } else {
+            db.query(
+              "SELECT company_color_code FROM company",
+              (colorErr, colorResults) => {
+                if (colorErr) {
+                  return res.status(500).json({
+                    message: "Error fetching existing colors",
+                    error: colorErr,
+                  });
+                }
 
-          const usedColors = colorResults.map((c) => c.company_color_code);
+                const usedColors = colorResults.map(
+                  (c) => c.company_color_code
+                );
 
-          // Generate a unique random color
-          let assignedColor;
-          let attempts = 0;
-          do {
-            assignedColor = generateRandomColor();
-            attempts++;
-            if (attempts > 50) break; // fallback in case all colors clash
-          } while (usedColors.includes(assignedColor));
+                // Generate a unique random color
+                let assignedColor;
+                let attempts = 0;
+                do {
+                  assignedColor = generateRandomColor();
+                  attempts++;
+                  if (attempts > 50) break; // fallback in case all colors clash
+                } while (usedColors.includes(assignedColor));
 
-          // Insert company with dynamic color
-          var date = new Date();
-          const companyInsertQuery = `
+                // Insert company with dynamic color
+                var date = new Date();
+                const companyInsertQuery = `
         INSERT INTO company
         (state_code,country_code,company_name, user_id, company_color_code, company_industory, phone, company_website, employee_number, year_registration, formally_legally, company_street_address, company_country, company_state, company_city, company_postal_code, descriptionStep4, problemStep4, solutionStep4,created_at)
         VALUES (?,?,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,?)
       `;
 
-          db.query(
-            companyInsertQuery,
-            [
-              state_code,
-              country_code,
-              company_name,
-              user_id,
-              assignedColor,
-              rest.company_industory || null,
-              rest.phone || null,
-              rest.company_website || null,
-              rest.employee_number || null,
-              rest.year_registration || null,
-              rest.formally_legally || null,
-              rest.company_street_address || null,
-              rest.company_country || null,
-              rest.company_state || null,
-              rest.city_step2 || null,
-              rest.company_postal_code || null,
-              rest.descriptionStep4 || null,
-              rest.problemStep4 || null,
-              rest.solutionStep4 || null,
-              date,
-            ],
-            (err, companyResult) => {
-              if (err) {
-                return res
-                  .status(500)
-                  .json({ message: "Company insert error", error: err });
-              }
+                db.query(
+                  companyInsertQuery,
+                  [
+                    state_code,
+                    country_code,
+                    company_name,
+                    user_id,
+                    assignedColor,
+                    rest.company_industory || null,
+                    rest.phone || null,
+                    rest.company_website || null,
+                    rest.employee_number || null,
+                    rest.year_registration || null,
+                    rest.formally_legally || null,
+                    rest.company_street_address || null,
+                    rest.company_country || null,
+                    rest.company_state || null,
+                    rest.city_step2 || null,
+                    rest.company_postal_code || null,
+                    rest.descriptionStep4 || null,
+                    rest.problemStep4 || null,
+                    rest.solutionStep4 || null,
+                    date,
+                  ],
+                  (err, companyResult) => {
+                    if (err) {
+                      return res
+                        .status(500)
+                        .json({ message: "Company insert error", error: err });
+                    }
 
-              const companyId = companyResult.insertId;
+                    const companyId = companyResult.insertId;
 
-              // Send email to company creator
-              sendEmailToUser(userEmail, userName, company_name);
+                    // Send email to company creator
+                    sendEmailToUser(userEmail, userName, company_name);
 
-              // Insert signatories (same as before)
-              if (signatories && signatories.length) {
-                let insertedCount = 0;
-                const signatoryInsertQuery = `
+                    // Insert signatories (same as before)
+                    if (signatories && signatories.length) {
+                      let insertedCount = 0;
+                      const signatoryInsertQuery = `
               INSERT INTO company_signatories
               (company_id, unique_code, user_id, first_name, last_name, signatory_email, linked_in, signatory_phone, signature_role, access_status, invited_by, invited_at)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `;
 
-                signatories.forEach((s) => {
-                  const uniqueCode = generateUniqueCode();
-                  db.query(
-                    signatoryInsertQuery,
-                    [
-                      companyId,
-                      uniqueCode,
-                      user_id,
-                      s.first_name || null,
-                      s.last_name || null,
-                      s.signatory_email || null,
-                      s.linked_in || null,
-                      s.phone || null,
-                      s.signature_role || null,
-                      "pending",
-                      user_id,
-                      new Date(),
-                    ],
-                    (signErr) => {
-                      if (signErr) {
-                        return res.status(500).json({
-                          message: "Signatory insert error",
-                          error: signErr,
-                        });
-                      }
+                      signatories.forEach((s) => {
+                        const uniqueCode = generateUniqueCode();
+                        db.query(
+                          signatoryInsertQuery,
+                          [
+                            companyId,
+                            uniqueCode,
+                            user_id,
+                            s.first_name || null,
+                            s.last_name || null,
+                            s.signatory_email || null,
+                            s.linked_in || null,
+                            s.phone || null,
+                            s.signature_role || null,
+                            "pending",
+                            user_id,
+                            new Date(),
+                          ],
+                          (signErr) => {
+                            if (signErr) {
+                              return res.status(500).json({
+                                message: "Signatory insert error",
+                                error: signErr,
+                              });
+                            }
 
-                      insertedCount++;
-                      const inviteLink = `https://blueprintcatalyst.com/signatory/accept/${uniqueCode}`;
-                      sendEmailToSignatory(
-                        s.signatory_email,
-                        `${s.first_name} ${s.last_name}`,
-                        inviteLink,
-                        company_name
-                      );
+                            insertedCount++;
+                            const inviteLink = `https://blueprintcatalyst.com/signatory/accept/${uniqueCode}`;
+                            sendEmailToSignatory(
+                              s.signatory_email,
+                              `${s.first_name} ${s.last_name}`,
+                              inviteLink,
+                              company_name
+                            );
 
-                      if (insertedCount === signatories.length) {
-                        return res.status(200).json({
-                          message: "Company and signatories added successfully",
-                          companyId,
-                          company_color_code: assignedColor,
-                        });
-                      }
+                            if (insertedCount === signatories.length) {
+                              return res.status(200).json({
+                                message:
+                                  "Company and signatories added successfully",
+                                companyId,
+                                status: "1",
+                                company_color_code: assignedColor,
+                              });
+                            }
+                          }
+                        );
+                      });
+                    } else {
+                      return res.status(200).json({
+                        message: "Company added successfully (no signatories)",
+                        status: "1",
+                        companyId,
+                        company_color_code: assignedColor,
+                      });
                     }
-                  );
-                });
-              } else {
-                return res.status(200).json({
-                  message: "Company added successfully (no signatories)",
-                  companyId,
-                  company_color_code: assignedColor,
-                });
+                  }
+                );
               }
-            }
-          );
+            );
+          }
         }
       );
     }

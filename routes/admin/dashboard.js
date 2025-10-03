@@ -15,5 +15,9 @@ router.post(
   "/getTotalactivemeeting",
   dashboardController.getTotalactivemeeting
 );
+router.post(
+  "/getTotalUsersCompanies",
+  dashboardController.getTotalUsersCompanies
+);
 
 module.exports = router;

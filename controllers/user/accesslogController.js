@@ -75,3 +75,32 @@ exports.deleteLogs = (req, res) => {
     res.status(200).json({ message: "Log deleted successfully" });
   });
 };
+
+exports.getCompanyDiscountCoupon = (req, res) => {
+  const company_id = req.body.company_id;
+
+  const query = `
+    SELECT 
+      sdc.*, 
+      dc.code, 
+      dc.type, 
+      dc.usage_limit, 
+      dc.exp_date, 
+      dc.status,
+      dc.percentage,
+      sdc.created_at
+    FROM shared_discount_code sdc
+    JOIN discount_code dc ON dc.code = sdc.discount_code
+    WHERE sdc.company_id = ?
+  `;
+
+  db.query(query, [company_id], (err, results) => {
+    if (err) {
+      return res
+        .status(500)
+        .json({ message: "Database query error", error: err });
+    }
+
+    res.status(200).json({ results });
+  });
+};

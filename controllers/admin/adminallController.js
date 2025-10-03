@@ -5,27 +5,68 @@ const nodemailer = require("nodemailer");
 
 require("dotenv").config();
 
-exports.totalDocs = (req, res) => {
-  const id = req.body.user_id; // ID to be deleted
+exports.totalDocs = async (req, res) => {
+  const companyId = req.body.company_id;
 
-  if (!id) {
-    return res.status(400).json({ message: "No user id provided." });
+  if (!companyId) {
+    return res.status(400).json({ message: "No company_id provided." });
   }
 
-  // MySQL query to delete the video
-  const query = "SELECT *  FROM dataroomdocuments WHERE user_id = ?";
+  try {
+    // 1️⃣ Total docs
+    const [docsResult] = await db
+      .promise()
+      .query(
+        "SELECT COUNT(*) AS total_docs FROM dataroomdocuments WHERE company_id = ?",
+        [companyId]
+      );
 
-  db.query(query, [id], (error, results) => {
-    if (error) {
-      console.error("Error deleting video:", error);
-      return res.status(500).json({ message: "Error deleting video." });
-    }
+    // 2️⃣ Total signatories
+    const [signatoryResult] = await db
+      .promise()
+      .query(
+        "SELECT COUNT(*) AS total_signatory FROM company_signatories WHERE company_id = ?",
+        [companyId]
+      );
 
-    return res
-      .status(200)
-      .json({ message: "Video deleted successfully.", results: results });
-  });
+    // 3️⃣ Total investors
+    const [investorResult] = await db
+      .promise()
+      .query(
+        "SELECT COUNT(*) AS total_investor FROM investor_information WHERE company_id = ?",
+        [companyId]
+      );
+
+    // 4️⃣ Total shared reports from sharereport
+    const [shareReportResult] = await db
+      .promise()
+      .query("SELECT COUNT(*) AS total FROM sharereport WHERE company_id = ?", [
+        companyId,
+      ]);
+
+    // 5️⃣ Total shared reports from sharerecordround
+    const [shareRecordResult] = await db
+      .promise()
+      .query(
+        "SELECT COUNT(*) AS total FROM sharerecordround WHERE company_id = ?",
+        [companyId]
+      );
+
+    const totalSharedReports =
+      shareReportResult[0].total + shareRecordResult[0].total;
+
+    return res.status(200).json({
+      total_docs: docsResult[0].total_docs,
+      total_signatory: signatoryResult[0].total_signatory,
+      total_investor: investorResult[0].total_investor,
+      total_shared_reports: totalSharedReports,
+    });
+  } catch (error) {
+    console.error("Error fetching totals:", error);
+    return res.status(500).json({ message: "Internal server error.", error });
+  }
 };
+
 exports.checkUsersData = (req, res) => {
   const id = req.body.user_id; // ID to be deleted
 
@@ -361,6 +402,24 @@ exports.getallInvestorReportViewed = (req, res) => {
     res.status(200).json({
       message: "All investor reports fetched successfully",
       results,
+    });
+  });
+};
+exports.getcompanySignatory = (req, res) => {
+  const { company_id } = req.body;
+  const query = `SELECT * from company_signatories where company_id = ?`;
+
+  db.query(query, [company_id], (err, results) => {
+    if (err) {
+      return res.status(500).json({
+        message: "Database query error",
+        error: err,
+      });
+    }
+
+    res.status(200).json({
+      message: "All investor reports fetched successfully",
+      results: results,
     });
   });
 };

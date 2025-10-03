@@ -314,7 +314,7 @@ exports.getallUserList = (req, res) => {
 exports.getallcompnay = (req, res) => {
   // MySQL query to delete the video
   const query =
-    "SELECT company.*, referralusage.discount_code FROM company LEFT JOIN referralusage ON referralusage.used_by_company_id = company.id ORDER BY company.id DESC;";
+    "SELECT company.*, referralusage.discount_code, COUNT(company_signatories.id) AS total_signatories FROM company LEFT JOIN referralusage ON referralusage.used_by_company_id = company.id LEFT JOIN company_signatories ON company_signatories.company_id = company.id GROUP BY company.id, referralusage.discount_code ORDER BY company.id DESC;";
 
   db.query(query, (error, results) => {
     if (error) {
@@ -834,26 +834,28 @@ exports.deletecompany = (req, res) => {
       }
 
       const deleteQueries = [
-        "DELETE FROM dataroomai_response WHERE user_id = ?",
-        "DELETE FROM dataroomai_summary WHERE user_id = ?",
-        "DELETE FROM dataroomai_summary_files WHERE user_id = ?",
-        "DELETE FROM dataroomai_summary_subcategory WHERE user_id = ?",
-        "DELETE FROM dataroomdocuments WHERE user_id = ?",
-        "DELETE FROM dataroom_generatedocument WHERE user_id = ?",
-        "DELETE FROM investor_information WHERE user_id = ?",
-        "DELETE FROM investor_updates WHERE user_id = ?",
-        "DELETE FROM dataroomai_executive_summary WHERE user_id = ?",
-        "DELETE FROM sharereport WHERE user_id = ?",
+        "DELETE FROM dataroomai_response WHERE company_id = ?",
+        "DELETE FROM dataroomai_summary WHERE company_id = ?",
+        // "DELETE FROM dataroomai_summary_files WHERE company_id = ?",
+        "DELETE FROM dataroomai_summary_subcategory WHERE company_id = ?",
+        "DELETE FROM dataroomdocuments WHERE company_id = ?",
+        "DELETE FROM dataroom_generatedocument WHERE company_id = ?",
+        "DELETE FROM investor_information WHERE company_id = ?",
+        "DELETE FROM investor_updates WHERE company_id = ?",
+        // "DELETE FROM dataroomai_executive_summary WHERE company_id = ?",
+        "DELETE FROM sharereport WHERE company_id = ?",
         "DELETE FROM referralusage WHERE used_by_company_id = ?",
-        "DELETE FROM  zoommeeting_register WHERE user_id = ?",
-        "DELETE FROM   subscription_lockfile WHERE user_id = ?",
-        "DELETE FROM   shared_discount_code WHERE shared_id = ?",
-        "DELETE FROM   upcomingmoduleemail WHERE user_id = ?",
-        "DELETE FROM   used_referral_code WHERE user_id = ?",
-        "DELETE FROM   userdocuments WHERE user_id = ?",
-        "DELETE FROM    userinvestorreporting_subscription WHERE user_id = ?",
-        "DELETE FROM    uservideolimit WHERE user_id = ?",
-
+        // "DELETE FROM used_referral_code WHERE used_by_company_id = ?",
+        // "DELETE FROM userdocuments WHERE used_by_company_id = ?",
+        // "DELETE FROM userinvestorreporting_subscription WHERE used_by_company_id = ?",
+        "DELETE FROM company_signatories WHERE company_id = ?", // company.id is the main key
+        "DELETE FROM access_logs_company_round WHERE company_id = ?", // company.id is the main key
+        "DELETE FROM access_logs_investor WHERE company_id = ?", // company.id is the main key
+        "DELETE FROM company_investor WHERE company_id = ?",
+        "DELETE FROM investor_information WHERE company_id = ?",
+        "DELETE FROM authorized_signature WHERE company_id = ?",
+        "DELETE FROM roundrecord WHERE company_id = ?",
+        "DELETE FROM sharerecordround WHERE company_id = ?",
         "DELETE FROM company WHERE id = ?", // company.id is the main key
       ];
 
@@ -1318,7 +1320,8 @@ const sendsharedCode = ({
   allowedModules = [],
 }) => {
   const moduleNameMap = {
-    Dataroom_Plus_Investor_Report: "Dataroom Plus Investor Report",
+    Dataroom_Plus_Investor_Report:
+      "Dataroom Management Plus Investor Report Plus Cap Table Management",
     Academy: "Academy Modules",
     Dataroom: "Data Room",
     Due_Diligence: "Due Diligence Services",
@@ -1327,80 +1330,140 @@ const sendsharedCode = ({
 
   const readableModules = allowedModules
     .map((key) => moduleNameMap[key] || key)
-    .join("\n- ");
+    .join("<br/>- ");
 
   let subject = "";
-  let body = "";
+  let htmlBody = "";
 
   switch (context) {
     case "admin_to_registered":
       subject = "Your Referral Code from BluePrint Catalyst";
-      body = `Hello,
-
-You have received a discount code: ${discount_code}
-
-You can share this code with other companies to help them register and receive exclusive benefits on:
-- ${readableModules}
-
-✅ Feel free to post this code on your website, company portal, or forward it directly to others.
-
-Start referring now and grow together!
-
-Best regards,  
-BluePrint Catalyst Team`;
+      htmlBody = `
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>${subject}</title>
+      </head>
+      <body>
+        <div style="width:600px; margin:0 auto; border:1px solid #e5e7eb; border-radius:10px; overflow:hidden; font-family:Verdana, Geneva, sans-serif;">
+          <table style="width:100%; border-collapse: collapse;">
+            <tr>
+              <td style="background:#efefef; padding:10px; text-align:center;">
+                <img src="https://blueprintcatalyst.com/api/upload/images/logo.png" alt="logo" style="width:130px;" />
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:20px;">
+                <h2 style="font-size:16px; color:#111;">Hello,</h2>
+                <p style="font-size:14px; color:#111; margin-bottom:10px;">
+                  You have received a discount code: <b>${discount_code}</b>
+                </p>
+                <p style="font-size:14px; color:#111; margin-bottom:10px;">
+                  You can share this code with other companies to help them register and receive exclusive benefits on:
+                </p>
+                <p style="font-size:14px; color:#111; margin-bottom:10px;">
+                  - ${readableModules}
+                </p>
+                <p style="font-size:14px; color:#111; margin-bottom:10px;">
+                  ✅ Feel free to post this code on your website, company portal, or forward it directly to others.
+                </p>
+                <p style="font-size:14px; color:#111; margin-bottom:0;">
+                  Best regards,<br/>BluePrint Catalyst Team
+                </p>
+              </td>
+            </tr>
+          </table>
+          <div style="text-align:center; font-size:12px; color:#999; padding:10px 0;">
+            Capavate. Powered by Blueprint Catalyst Limited
+          </div>
+        </div>
+      </body>
+      </html>`;
       break;
 
     case "registered_to_new":
       subject = `${sharedBy} Has Invited You to BluePrint Catalyst`;
-      body = `Hello,
-
-${sharedBy} has invited you to join BluePrint Catalyst and shared a discount code with you: ${discount_code}
-
-Register using the link below to activate your discount:  
-https://blueprintcatalyst.com/register?ref=${discount_code}
-
-This gives you access to benefits across:
-- ${readableModules}
-
-Welcome aboard!
-
-Best,  
-BluePrint Catalyst Team`;
+      htmlBody = `
+      <!DOCTYPE html>
+      <html lang="en">
+      <head><meta charset="UTF-8" /></head>
+      <body>
+        <div style="width:600px;margin:0 auto;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;font-family:Verdana,Geneva,sans-serif;">
+          <table style="width:100%;">
+            <tr><td style="background:#efefef;padding:10px;text-align:center;">
+              <img src="https://blueprintcatalyst.com/api/upload/images/logo.png" style="width:130px;" />
+            </td></tr>
+            <tr><td style="padding:20px;">
+              <h2>Hello,</h2>
+              <p>${sharedBy} has invited you to join BluePrint Catalyst and shared a discount code with you: <b>${discount_code}</b></p>
+              <p>Register using the link below to activate your discount:</p>
+              <p><a href="https://blueprintcatalyst.com/register?ref=${discount_code}" style="color:#1e3a8a;">https://blueprintcatalyst.com/register?ref=${discount_code}</a></p>
+              <p>This gives you access to benefits across:<br/>- ${readableModules}</p>
+              <p>Welcome aboard!<br/>Best,<br/>BluePrint Catalyst Team</p>
+            </td></tr>
+          </table>
+        </div>
+      </body>
+      </html>`;
       break;
 
     case "registered_to_existing":
       subject = `You've Received a Discount Code via ${sharedBy}`;
-      body = `Hello,
-
-${sharedBy} has shared a discount code with you: ${discount_code}
-
-Please log in to your BluePrint Catalyst account and apply this code to enjoy discounts on:
-- ${readableModules}
-
-Log in here: https://blueprintcatalyst.com/login
-
-Happy scaling!  
-BluePrint Catalyst Team`;
+      htmlBody = `
+      <!DOCTYPE html>
+      <html lang="en">
+      <head><meta charset="UTF-8" /></head>
+      <body>
+        <div style="width:600px;margin:0 auto;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;font-family:Verdana,Geneva,sans-serif;">
+          <table style="width:100%;">
+            <tr><td style="background:#efefef;padding:10px;text-align:center;">
+              <img src="https://blueprintcatalyst.com/api/upload/images/logo.png" style="width:130px;" />
+            </td></tr>
+            <tr><td style="padding:20px;">
+              <h2>Hello,</h2>
+              <p>${sharedBy} has shared a discount code with you: <b>${discount_code}</b></p>
+              <p>Please log in to your BluePrint Catalyst account and apply this code to enjoy discounts on:<br/>- ${readableModules}</p>
+              <p><a href="https://blueprintcatalyst.com/signatory/login" style="color:#1e3a8a;">https://blueprintcatalyst.com/signatory/login</a></p>
+              <p>Happy scaling!<br/>BluePrint Catalyst Team</p>
+            </td></tr>
+          </table>
+        </div>
+      </body>
+      </html>`;
       break;
 
     default:
       subject = "BluePrint Catalyst Discount Code";
-      body = `Hello,
-
-Here is your discount code: ${discount_code}
-
-Register or log in using the link below to redeem it:  
-https://blueprintcatalyst.com/register?ref=${discount_code}
-
-Best,  
-BluePrint Catalyst Team`;
+      htmlBody = `
+      <!DOCTYPE html>
+      <html lang="en">
+      <head><meta charset="UTF-8" /></head>
+      <body>
+        <div style="width:600px;margin:0 auto;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;font-family:Verdana,Geneva,sans-serif;">
+          <table style="width:100%;">
+            <tr><td style="background:#efefef;padding:10px;text-align:center;">
+              <img src="https://blueprintcatalyst.com/api/upload/images/logo.png" style="width:130px;" />
+            </td></tr>
+            <tr><td style="padding:20px;">
+              <h2>Hello,</h2>
+              <p>Here is your discount code: <b>${discount_code}</b></p>
+              <p>Register or log in using the link below to redeem it:</p>
+              <p><a href="https://blueprintcatalyst.com/register?ref=${discount_code}" style="color:#1e3a8a;">https://blueprintcatalyst.com/register?ref=${discount_code}</a></p>
+              <p>Best,<br/>BluePrint Catalyst Team</p>
+            </td></tr>
+          </table>
+        </div>
+      </body>
+      </html>`;
   }
 
   const mailOptions = {
     from: '"BluePrint Catalyst" <scale@blueprintcatalyst.com>',
     to,
     subject,
-    text: body,
+    html: htmlBody, // ✅ send HTML instead of plain text
   };
 
   transporter.sendMail(mailOptions, (error, info) => {
@@ -1414,7 +1477,7 @@ BluePrint Catalyst Team`;
 
 exports.shareCodeCompany = async (req, res) => {
   try {
-    const { shared_by, emails, discount_code } = req.body;
+    const { shared_by, emails, discount_code, RowId } = req.body;
 
     if (
       !shared_by ||
@@ -1428,7 +1491,7 @@ exports.shareCodeCompany = async (req, res) => {
         .json({ message: "Missing or invalid required fields." });
     }
 
-    const normalizedEmails = emails.map((e) => e.trim().toLowerCase());
+    const normalizedEmails = emails.map((e) => e.email.trim().toLowerCase());
     const uniqueEmails = new Set(normalizedEmails);
     if (uniqueEmails.size !== normalizedEmails.length) {
       return res
@@ -1455,34 +1518,42 @@ exports.shareCodeCompany = async (req, res) => {
       });
     }
 
-    // ✅ Insert all fresh emails
+    // ✅ Fetch company_id for registered emails
+    const [companyRows] = await db
+      .promise()
+      .query(
+        `SELECT id, company_email FROM company WHERE company_email IN (${placeholders})`,
+        [...normalizedEmails]
+      );
+
+    // Map email => company_id
+    const emailToIdMap = {};
+    companyRows.forEach((row) => {
+      emailToIdMap[row.company_email.toLowerCase()] = row.id;
+    });
+
+    // ✅ Prepare insert values with company_id
     const currentDate = new Date();
     const valuesToInsert = normalizedEmails.map((email) => [
       shared_by,
+      emailToIdMap[email] || null, // use company_id if exists, else null
       discount_code,
       email,
+      RowId,
       currentDate,
     ]);
 
     await db
       .promise()
       .query(
-        `INSERT INTO shared_discount_code (shared_by, discount_code, email, created_at) VALUES ?`,
+        `INSERT INTO shared_discount_code (shared_by, company_id, discount_code, email,shared_id, created_at) VALUES ?`,
         [valuesToInsert]
       );
 
-    // ✅ Fetch which emails are registered in `company` table
-    const [registeredCompanies] = await db
-      .promise()
-      .query(`SELECT email FROM company WHERE email IN (${placeholders})`, [
-        ...normalizedEmails,
-      ]);
+    // ✅ Fetch which emails are registered
+    const registeredSet = new Set(Object.keys(emailToIdMap));
 
-    const registeredSet = new Set(
-      registeredCompanies.map((row) => row.email.toLowerCase())
-    );
-
-    // ✅ Fetch `type` for this discount_code
+    // ✅ Fetch allowedModules for this discount_code
     const [[codeInfo]] = await db
       .promise()
       .query(`SELECT type FROM discount_code WHERE code = ? LIMIT 1`, [
@@ -1499,20 +1570,20 @@ exports.shareCodeCompany = async (req, res) => {
       allowedModules = codeInfo.type.split(",").map((x) => x.trim());
     }
 
-    // ✅ Send emails based on registration status
-    normalizedEmails.forEach((email) => {
-      const isRegistered = registeredSet.has(email);
+    // ✅ Send emails
+    normalizedEmails.forEach((company_email) => {
+      const isRegistered = registeredSet.has(company_email);
       const context = isRegistered
         ? "registered_to_existing"
         : "registered_to_new";
 
       sendsharedCode({
-        to: email,
+        to: company_email,
         isRegistered,
         discount_code,
         sharedBy: "Admin",
         context,
-        allowedModules, // ✅ New addition
+        allowedModules,
       });
     });
 
@@ -1548,11 +1619,26 @@ exports.getallcompanises = (req, res) => {
   });
 };
 exports.getallreferredCode = (req, res) => {
-  var code = req.body.code;
-  const query = `SELECT shared_discount_code.*, discount_code.percentage FROM shared_discount_code LEFT JOIN discount_code ON discount_code.code = shared_discount_code.discount_code where discount_code.code = ? ORDER BY shared_discount_code.id DESC`;
+  const code = req.body.code;
+
+  const query = `
+    SELECT 
+      sdc.*, 
+      dc.percentage,
+      COUNT(urc.company_id) AS used_count
+    FROM shared_discount_code sdc
+    LEFT JOIN discount_code dc ON dc.code = sdc.discount_code
+    LEFT JOIN used_referral_code urc 
+      ON urc.company_id = sdc.company_id 
+      AND urc.discount_code = sdc.discount_code
+    WHERE dc.code = ?
+    GROUP BY sdc.id
+    ORDER BY sdc.id DESC
+  `;
+
   db.query(query, [code], (error, results) => {
     if (error) {
-      console.error("Error fetching payment data:", error);
+      console.error("Error fetching referred code data:", error);
       return res.status(500).json({ message: "Error fetching data." });
     }
 
@@ -1562,6 +1648,7 @@ exports.getallreferredCode = (req, res) => {
     });
   });
 };
+
 exports.getreferredCode = (req, res) => {
   var code = req.body.code;
   const query = `SELECT shared_discount_code.*, discount_code.percentage, company.company_name FROM shared_discount_code LEFT JOIN discount_code ON discount_code.code = shared_discount_code.discount_code LEFT JOIN company ON company.id = shared_discount_code.shared_id WHERE discount_code.code = ? AND shared_discount_code.shared_by = ? ORDER BY shared_discount_code.id DESC`;
@@ -2424,6 +2511,213 @@ exports.deleteSessionmeet = (req, res) => {
           .json({ message: "Session deleted successfully." });
       } else {
         return res.status(404).json({ message: "Session not found." });
+      }
+    });
+  });
+};
+
+exports.getallusers = (req, res) => {
+  const query = `
+    SELECT 
+      u.*, 
+      COUNT(c.id) AS total_company
+    FROM users u
+    LEFT JOIN company c ON c.user_id = u.id
+    GROUP BY u.id
+    ORDER BY u.id DESC
+  `;
+
+  db.query(query, (err, results) => {
+    if (err) {
+      return res.status(500).json({
+        message: "Database query error",
+        error: err,
+      });
+    }
+
+    res.status(200).json({
+      results: results, // Each user now has a total_company field
+    });
+  });
+};
+
+exports.deleteUsers = (req, res) => {
+  const userId = req.body.id;
+
+  db.getConnection((err, connection) => {
+    if (err) {
+      console.error("Connection error:", err);
+      return res.status(500).json({ message: "Database connection error." });
+    }
+
+    connection.beginTransaction(async (err) => {
+      if (err) {
+        connection.release();
+        return res.status(500).json({ message: "Transaction start failed." });
+      }
+
+      try {
+        // 1️⃣ Get all company IDs for this user
+        const [companies] = await connection
+          .promise()
+          .query("SELECT id FROM company WHERE user_id = ?", [userId]);
+
+        const companyIds = companies.map((c) => c.id);
+
+        // 2️⃣ Delete from company_investor for all these company IDs
+        if (companyIds.length > 0) {
+          const placeholders = companyIds.map(() => "?").join(",");
+          await connection
+            .promise()
+            .query(
+              `DELETE FROM company_investor WHERE company_id IN (${placeholders})`,
+              companyIds
+            );
+
+          await connection
+            .promise()
+            .query(
+              `DELETE FROM company_legal_information WHERE company_id IN (${placeholders})`,
+              companyIds
+            );
+          await connection
+            .promise()
+            .query(
+              `DELETE FROM  company_shares_investment WHERE company_id IN (${placeholders})`,
+              companyIds
+            );
+          await connection
+            .promise()
+            .query(
+              `DELETE FROM  company_signatories WHERE company_id IN (${placeholders})`,
+              companyIds
+            );
+          await connection
+            .promise()
+            .query(
+              `DELETE FROM  dataroomai_executive_summary WHERE company_id IN (${placeholders})`,
+              companyIds
+            );
+          await connection
+            .promise()
+            .query(
+              `DELETE FROM  dataroomai_response WHERE company_id IN (${placeholders})`,
+              companyIds
+            );
+          await connection
+            .promise()
+            .query(
+              `DELETE FROM  dataroomai_summary WHERE company_id IN (${placeholders})`,
+              companyIds
+            );
+          await connection
+            .promise()
+            .query(
+              `DELETE FROM   dataroomdocuments WHERE company_id IN (${placeholders})`,
+              companyIds
+            );
+          await connection
+            .promise()
+            .query(
+              `DELETE FROM  dataroom_generatedocument WHERE company_id IN (${placeholders})`,
+              companyIds
+            );
+          await connection
+            .promise()
+            .query(
+              `DELETE FROM  investorrequest_company WHERE company_id IN (${placeholders})`,
+              companyIds
+            );
+          await connection
+            .promise()
+            .query(
+              `DELETE FROM   investor_updates WHERE company_id IN (${placeholders})`,
+              companyIds
+            );
+          await connection
+            .promise()
+            .query(
+              `DELETE FROM   roundrecord WHERE company_id IN (${placeholders})`,
+              companyIds
+            );
+          await connection
+            .promise()
+            .query(
+              `DELETE FROM   shared_discount_code WHERE company_id IN (${placeholders})`,
+              companyIds
+            );
+          await connection
+            .promise()
+            .query(
+              `DELETE FROM   sharerecordround WHERE company_id IN (${placeholders})`,
+              companyIds
+            );
+          await connection
+            .promise()
+            .query(
+              `DELETE FROM sharereport WHERE company_id IN (${placeholders})`,
+              companyIds
+            );
+          await connection
+            .promise()
+            .query(
+              `DELETE FROM subscription_statuslockfile WHERE company_id IN (${placeholders})`,
+              companyIds
+            );
+          await connection
+            .promise()
+            .query(
+              `DELETE FROM  used_referral_code WHERE company_id IN (${placeholders})`,
+              companyIds
+            );
+          await connection
+            .promise()
+            .query(
+              `DELETE FROM  used_referral_code WHERE company_id IN (${placeholders})`,
+              companyIds
+            );
+        }
+
+        // 3️⃣ Delete from company table
+        await connection
+          .promise()
+          .query("DELETE FROM company WHERE user_id = ?", [userId]);
+
+        // 4️⃣ Delete from users table
+        await connection
+          .promise()
+          .query("DELETE FROM users WHERE id = ?", [userId]);
+
+        // 5️⃣ Commit transaction
+        await connection.promise().commit();
+
+        // 6️⃣ Delete folders for each company
+        companyIds.forEach((companyId) => {
+          const filePath = path.join(
+            __dirname,
+            "..",
+            "..",
+            "upload",
+            "docs",
+            `doc_${companyId}`
+          );
+          fs.rm(filePath, { recursive: true, force: true }, (err) => {
+            if (err) {
+              console.warn("Folder deletion failed or not found:", filePath);
+            } else {
+              console.log("Deleted folder:", filePath);
+            }
+          });
+        });
+
+        connection.release();
+        res.status(200).json({ message: "Deleted successfully." });
+      } catch (error) {
+        // Rollback on any error
+        await connection.promise().rollback();
+        connection.release();
+        console.error("Deletion error:", error);
+        res.status(500).json({ message: "Deletion failed.", error });
       }
     });
   });

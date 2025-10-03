@@ -1440,18 +1440,24 @@ exports.generateProcessAI = async (req, res) => {
         status: "2",
       });
     }
-    //return;
-    // Group documents by category_id (section)
+
+    // Group documents by category_id and track subcategory_id
     const catGroups = {};
+    const subcategoryMap = {}; // category_id -> subcategory_id
     for (const doc of docs) {
       const catId = doc.category_id;
       if (!catGroups[catId]) catGroups[catId] = [];
       catGroups[catId].push(doc);
+
+      // Store first subcategory_id per category
+      if (!subcategoryMap[catId])
+        subcategoryMap[catId] = doc.subcategory_id || null;
     }
+
     const docIds = Object.values(catGroups)
       .flat()
       .map((doc) => doc.id);
-    // return;
+
     if (docIds.length > 0) {
       const placeholders = docIds.map(() => "?").join(", ");
 
@@ -1459,16 +1465,12 @@ exports.generateProcessAI = async (req, res) => {
 
       try {
         const [result] = await db.promise().query(sql, docIds);
-        //console.log("Update result:", result);
-      } catch (err) {
-        //console.error("Update failed:", err);
-      }
+      } catch (err) {}
     }
 
     const summaries = [];
     const sectionSummaries = [];
 
-    // Iterate per section (category_id)
     for (const [category_id, groupDocs] of Object.entries(catGroups)) {
       const fileTexts = [];
 
@@ -1506,7 +1508,6 @@ exports.generateProcessAI = async (req, res) => {
           } else if (
             [".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".gif"].includes(ext)
           ) {
-            // ✅ OCR for image files
             const {
               data: { text: ocrText },
             } = await Tesseract.recognize(filePath, "eng+hin");
@@ -1540,7 +1541,6 @@ exports.generateProcessAI = async (req, res) => {
       let finalSummaries = [];
 
       try {
-        // Use non-greedy match to avoid over-capturing if applicable
         const summaryMatch = match?.[0]?.match(/\[\s*[\s\S]*?\s*\]/);
 
         if (summaryMatch) {
@@ -1562,8 +1562,8 @@ exports.generateProcessAI = async (req, res) => {
 
       const [summaryResult] = await db.promise().query(
         `INSERT INTO dataroomai_summary 
-         (created_by_id,created_by_role,uniqcode, usersubscriptiondataroomone_time_id, company_id, summary, category_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+         (created_by_id, created_by_role, uniqcode, usersubscriptiondataroomone_time_id, company_id, summary, category_id, subcategory_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           reqdata.created_by_id,
           reqdata.created_by_role,
@@ -1572,15 +1572,15 @@ exports.generateProcessAI = async (req, res) => {
           company_id,
           fileSummary,
           category_id,
+          subcategoryMap[category_id], // ✅ subcategory_id added
           createdAt,
         ]
       );
 
       const summaryId = summaryResult.insertId;
       summaries.push({ category_id, summary: fileSummary });
-      sectionSummaries.push(fileSummary); // for executive summary
+      sectionSummaries.push(fileSummary);
 
-      // Generate 3 due diligence questions
       const qPrompt = `You are a due diligence analyst. Based on the following summary:\n\n"${fileSummary}"\n\nGenerate 3 important due diligence questions. Return them as a JSON array of strings.`;
 
       const qResponse = await openai.chat.completions.create({
@@ -1595,7 +1595,6 @@ exports.generateProcessAI = async (req, res) => {
       let questions = [];
 
       try {
-        // Non-greedy match to safely extract first JSON-like array
         const qMatch =
           qResponse.choices[0].message.content.match(/\[\s*[\s\S]*?\s*\]/);
 
@@ -1629,7 +1628,6 @@ exports.generateProcessAI = async (req, res) => {
       }
     }
 
-    // ✅ Executive Summary
     const execPrompt = `You are a due diligence expert. Below are summaries from different sections:\n\n${sectionSummaries.join(
       "\n\n"
     )}\n\nGenerate a concise executive summary (max 1000 characters) that captures the key insights.`;
@@ -1648,7 +1646,6 @@ exports.generateProcessAI = async (req, res) => {
 
     const executiveSummary = execResponse.choices[0].message.content;
 
-    // Optional: Save executive summary (if table exists)
     await db
       .promise()
       .query(
@@ -1664,7 +1661,6 @@ exports.generateProcessAI = async (req, res) => {
         ]
       );
 
-    // Update status
     db.query(
       "UPDATE usersubscriptiondataroomone_time SET unique_code = ?, status = ? WHERE id = ?",
       [uniqcode, "Active", payid],
@@ -1691,10 +1687,8 @@ exports.generateProcessAI = async (req, res) => {
       let companyName = companyResult[0].company_name;
 
       if (reqdata.created_by_role === "signatory") {
-        // Signatory case
         userEmail = companyResult[0].signatory_email;
       } else {
-        // Owner case – get email from users table
         const [userResult] = await db
           .promise()
           .query(`SELECT email FROM users WHERE id = ?`, [
@@ -1732,9 +1726,6 @@ exports.generateProcessAI = async (req, res) => {
       [company_id],
       (deleteErr) => {
         if (deleteErr) {
-          //console.error("Failed to delete lock file status", deleteErr);
-        } else {
-          //console.log("Old lock file status deleted successfully.");
         }
       }
     );
@@ -1750,6 +1741,7 @@ exports.generateProcessAI = async (req, res) => {
     return res.status(500).json({ message: "Internal server error", error });
   }
 };
+
 async function sendApprovalEmail({ email, companyName, uniqcode }) {
   const subject = `Due Diligence Summary Ready for Approval - Capavate`;
   const approvalLink = `https://blueprintcatalyst.com/approvalpage/${uniqcode}`;
@@ -2676,7 +2668,7 @@ exports.checkapprovedorNot = async (req, res) => {
   }
 };
 exports.checkreferCode = async (req, res) => {
-  const { code, type, email } = req.body;
+  const { code, type, company_id } = req.body;
   try {
     const query = `
       SELECT dc.*
@@ -2686,11 +2678,11 @@ LEFT JOIN shared_discount_code sdc
 WHERE dc.code = ?
   AND dc.exp_date >= CURRENT_DATE
   AND JSON_CONTAINS(dc.type, JSON_ARRAY(?))
-  AND sdc.email = ?;
+  AND sdc.company_id = ?;
 
     `;
 
-    db.query(query, [code, type, email], (err, rows) => {
+    db.query(query, [code, type, company_id], (err, rows) => {
       if (err) {
         return res.status(500).json({ message: "DB query failed", error: err });
       }

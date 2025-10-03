@@ -39,8 +39,23 @@ exports.getTotalUsersDashboard = (req, res) => {
     }
   );
 };
+
 exports.getTotalCompany = (req, res) => {
   db.query("SELECT * FROM company", async (err, results) => {
+    if (err) {
+      return res.status(500).json({
+        message: "Database query error",
+        error: err,
+      });
+    }
+
+    res.status(200).json({
+      results: results, // <-- include the results here
+    });
+  });
+};
+exports.getTotalUsersCompanies = (req, res) => {
+  db.query("SELECT * FROM users", async (err, results) => {
     if (err) {
       return res.status(500).json({
         message: "Database query error",

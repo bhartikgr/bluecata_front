@@ -82,4 +82,6 @@ router.post("/sharedSessionLink", moduleController.sharedSessionLink);
 router.post("/deleteSessionLink", moduleController.deleteSessionLink);
 router.post("/deleteSessionmeet", moduleController.deleteSessionmeet);
 router.post("/getallreferredUsage", moduleController.getallreferredUsage);
+router.post("/getallusers", moduleController.getallusers);
+router.post("/deleteUsers", moduleController.deleteUsers);
 module.exports = router;
