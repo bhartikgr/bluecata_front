@@ -406,3 +406,25 @@ function sendReminderZoom(to, companyName, message, subject) {
   });
 }
 //Cron Job Zoom Meeting
+//Cron Job for Discount
+function updateExpiredDiscountCodes() {
+  const query = `
+    UPDATE discount_code 
+    SET status = 'Inactive'
+    WHERE exp_date < NOW() AND status != 'Inactive'
+  `;
+
+  db.query(query, (error, results) => {
+    if (error) {
+      console.error("Error updating expired discount codes:", error);
+    } else {
+      console.log(`✅ Expired discount codes updated: ${results.affectedRows}`);
+    }
+  });
+}
+
+// Schedule cron job: runs every day at midnight
+cron.schedule("0 0 * * *", () => {
+  console.log("⏳ Running cron job to check expired discount codes...");
+  updateExpiredDiscountCodes();
+});
