@@ -29,7 +29,7 @@ const stripe = new Stripe(
 const upload = require("../../middlewares/uploadMiddleware");
 
 require("dotenv").config();
-
+const JWT_SECRET = process.env.JWT_SECRET;
 //All Investor Quatarly Email Send
 exports.investorQuatarlyEmailSend = (req, res) => {
   // Get today's date minus 3 months
@@ -1009,7 +1009,6 @@ exports.investorlogin = async (req, res) => {
   const { email, password } = req.body;
 
   try {
-    // Check if user already exists
     db.query(
       "SELECT * FROM investor_information WHERE email = ?",
       [email],
@@ -1022,25 +1021,30 @@ exports.investorlogin = async (req, res) => {
 
         if (rows.length > 0) {
           const user = rows[0];
-
-          // Check if password matches
           const isPasswordValid = await bcrypt.compare(password, user.password);
 
           if (!isPasswordValid) {
             return res
               .status(200)
               .json({ status: "2", message: "Invalid email or password" });
-          } else {
-            res.status(200).json({
-              message: "Login successfully",
-              status: "1",
-              id: user.id,
-              email: user.email,
-              first_name: user.first_name,
-              last_name: user.last_name,
-              access_token: user.access_token,
-            });
           }
+
+          // ✅ Generate JWT token with 1 hour expiry
+          const token = jwt.sign(
+            { id: user.id, email: user.email, role: "investor" },
+            JWT_SECRET,
+            { expiresIn: "1h" }
+          );
+
+          res.status(200).json({
+            message: "Login successfully",
+            status: "1",
+            id: user.id,
+            email: user.email,
+            first_name: user.first_name,
+            last_name: user.last_name,
+            access_token: token,
+          });
         } else {
           res
             .status(200)
@@ -1049,10 +1053,7 @@ exports.investorlogin = async (req, res) => {
       }
     );
   } catch (err) {
-    res.status(500).json({
-      message: "Server error",
-      error: err.message,
-    });
+    res.status(500).json({ message: "Server error", error: err.message });
   }
 };
 exports.getreportForInvestorCompany = async (req, res) => {

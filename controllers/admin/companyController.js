@@ -18,7 +18,19 @@ const transporter = nodemailer.createTransport({
 exports.getUserallcompnay = (req, res) => {
   const user_id = req.body.user_id;
   db.query(
-    "SELECT u.id AS user_id, u.first_name, u.last_name, c.id AS company_id, c.company_name, c.company_email, c.employee_number, c.phone, COUNT(cs.id) AS total_signatory FROM users u LEFT JOIN company c ON c.user_id = u.id LEFT JOIN company_signatories cs ON cs.company_id = c.id WHERE u.id = ? GROUP BY u.id, c.id ORDER BY u.id DESC",
+    `SELECT 
+       u.id AS user_id, 
+       u.first_name, 
+       u.last_name, 
+       c.id AS company_id, 
+       c.*,         -- all other columns from company
+       COUNT(cs.id) AS total_signatory
+     FROM users u
+     LEFT JOIN company c ON c.user_id = u.id
+     LEFT JOIN company_signatories cs ON cs.company_id = c.id
+     WHERE u.id = ?
+     GROUP BY c.id
+     ORDER BY u.id DESC`,
     [user_id],
     async (err, results) => {
       if (err) {
@@ -31,7 +43,7 @@ exports.getUserallcompnay = (req, res) => {
       res.status(200).json({
         message: "Fetched successfully",
         status: "1",
-        results: results, // <-- include the results here
+        results: results,
       });
     }
   );
