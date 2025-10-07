@@ -203,3 +203,199 @@ exports.getcompanyInvestor = (req, res) => {
     });
   });
 };
+exports.getInvestorInfo = (req, res) => {
+  const investor_id = req.body.investor_id;
+
+  const query = `
+    SELECT 
+      investor_information.* 
+    FROM investor_information
+    WHERE investor_information.id = ?
+  `;
+
+  db.query(query, [investor_id], (err, results) => {
+    if (err) {
+      return res.status(500).json({
+        message: "Database query error",
+        error: err,
+      });
+    }
+
+    res.status(200).json({
+      message: "Fetched successfully",
+      status: "1",
+      results: results[0], // array of investors for this company
+    });
+  });
+};
+exports.getcompnayInvestorReporting = (req, res) => {
+  const company_id = req.body.company_id;
+
+  const query = `
+    SELECT 
+      investor_updates.* 
+    FROM investor_updates
+    WHERE investor_updates.company_id = ? order by investor_updates.id desc
+  `;
+
+  db.query(query, [company_id], (err, results) => {
+    if (err) {
+      return res.status(500).json({
+        message: "Database query error",
+        error: err,
+      });
+    }
+
+    res.status(200).json({
+      results: results, // array of investors for this company
+    });
+  });
+};
+exports.getCompanyReport = (req, res) => {
+  const id = req.body.ReportId;
+
+  // Query 1: Get report details with total shares count
+  const reportQuery = `
+    SELECT 
+      iu.*,
+      COUNT(sr.id) AS total_shares 
+    FROM investor_updates AS iu 
+    LEFT JOIN sharereport AS sr ON sr.investor_updates_id = iu.id 
+    WHERE iu.id = ? 
+    GROUP BY iu.id;
+  `;
+
+  // Query 2: Get all investors who have access to this report with their names
+  const investorsQuery = `
+    SELECT 
+      sr.id,
+      sr.investor_email,
+      sr.investor_id,
+      sr.sent_date,
+      sr.expired_at,
+      sr.date_view,
+      sr.access_status,
+      sr.unique_code,
+      sr.investor_ip,
+      ii.first_name,
+      ii.last_name,
+      ii.type_of_investor
+    FROM sharereport AS sr
+    LEFT JOIN investor_information AS ii ON sr.investor_id = ii.id
+    WHERE sr.investor_updates_id = ?
+    ORDER BY sr.sent_date DESC;
+  `;
+
+  // Execute both queries
+  db.query(reportQuery, [id], (err, reportResults) => {
+    if (err) {
+      return res.status(500).json({
+        message: "Database query error",
+        error: err,
+      });
+    }
+
+    // Get shared investors list
+    db.query(investorsQuery, [id], (err, investorsResults) => {
+      if (err) {
+        return res.status(500).json({
+          message: "Database query error",
+          error: err,
+        });
+      }
+
+      // Add download URL to report results
+      const reportData = reportResults[0];
+      if (reportData && reportData.document_name) {
+        const company_id = reportData.company_id;
+        const pathname = `upload/docs/doc_${company_id}`;
+        reportData.downloadUrl = `https://blueprintcatalyst.com/api/${pathname}/investor_report/${reportData.document_name}`;
+      }
+
+      res.status(200).json({
+        results: reportData, // report details with downloadUrl
+        sharedInvestors: investorsResults, // list of investors with access
+      });
+    });
+  });
+};
+
+exports.getCompnayRecordRound = (req, res) => {
+  const company_id = req.body.company_id;
+
+  const query = `
+    SELECT 
+      	roundrecord.* 
+    FROM 	roundrecord
+    WHERE 	roundrecord.company_id = ? order by 	roundrecord.id desc
+  `;
+
+  db.query(query, [company_id], (err, results) => {
+    if (err) {
+      return res.status(500).json({
+        message: "Database query error",
+        error: err,
+      });
+    }
+
+    res.status(200).json({
+      results: results, // array of investors for this company
+    });
+  });
+};
+exports.getCompanyRecordRoundDetails = (req, res) => {
+  const ReportId = req.body.ReportId;
+
+  const query = `
+    SELECT 
+      roundrecord.*,
+      CASE 
+        WHEN COUNT(sharerecordround.id) > 0 THEN 'Yes' 
+        ELSE 'No' 
+      END as is_shared,
+      COUNT(sharerecordround.id) as total_investors_shared,
+      GROUP_CONCAT(
+        JSON_OBJECT(
+          'investor_id', sharerecordround.investor_id,
+          'first_name', investor_information.first_name,
+          'last_name', investor_information.last_name,
+          'email', investor_information.email,
+          'sent_date', sharerecordround.sent_date,
+          'expired_at', sharerecordround.expired_at,
+          'access_status', sharerecordround.access_status,
+          'signature_status', sharerecordround.signature_status
+        )
+      ) as shared_investors_details
+    FROM roundrecord
+    LEFT JOIN sharerecordround 
+      ON sharerecordround.roundrecord_id = roundrecord.id
+    LEFT JOIN investor_information
+      ON investor_information.id = sharerecordround.investor_id
+    WHERE roundrecord.id = ?
+    GROUP BY roundrecord.id
+  `;
+
+  db.query(query, [ReportId], (err, results) => {
+    if (err) {
+      return res.status(500).json({
+        message: "Database query error",
+        error: err,
+      });
+    }
+
+    // Parse the shared_investors_details if it exists
+    if (results[0] && results[0].shared_investors_details) {
+      try {
+        results[0].shared_investors_details = JSON.parse(
+          `[${results[0].shared_investors_details}]`
+        );
+      } catch (parseErr) {
+        results[0].shared_investors_details = [];
+      }
+    }
+
+    res.status(200).json({
+      results: results[0],
+    });
+  });
+};

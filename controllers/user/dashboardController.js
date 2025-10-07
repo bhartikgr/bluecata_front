@@ -5,10 +5,13 @@ const jwt = require("jsonwebtoken");
 const { format } = require("date-fns");
 const fs = require("fs");
 const path = require("path");
-
+const bcrypt = require("bcryptjs");
+const multer = require("multer");
+const crypto = require("crypto");
 const pdfParse = require("pdf-parse");
 
 require("dotenv").config();
+const JWT_SECRET = process.env.JWT_SECRET;
 //Email Detail
 const transporter = nodemailer.createTransport({
   service: "gmail",
@@ -56,6 +59,179 @@ exports.getCompanyTotalShares = (req, res) => {
     });
   });
 };
+exports.getBasicVsFullyDilutedOwnership = (req, res) => {
+  const { company_id } = req.body;
+
+  if (!company_id) {
+    return res.status(400).json({ error: "company_id is required" });
+  }
+
+  const query = `
+    SELECT 
+      r.id AS round_id,
+      r.issuedshares,
+      r.shareClassType,
+      r.shareclassother,
+      r.instrumentType,
+      r.instrument_type_data,
+      r.created_at,
+      irc.shares AS investor_shares,
+      irc.investment_amount
+    FROM roundrecord r
+    LEFT JOIN investorrequest_company irc 
+      ON r.id = irc.roundrecord_id AND irc.request_confirm = 'Yes'
+    WHERE r.company_id = ? 
+      AND r.roundStatus = 'ACTIVE'
+    ORDER BY r.created_at ASC, r.id ASC
+  `;
+
+  db.query(query, [company_id], (err, rows) => {
+    if (err) {
+      console.error(err);
+      return res
+        .status(500)
+        .json({ error: "Database query error", details: err });
+    }
+
+    if (!rows.length) {
+      return res.status(200).json({
+        labels: ["Basic Ownership", "Fully Diluted"],
+        datasets: [
+          { label: "Founders", data: [100, 100], backgroundColor: "#081828" },
+        ],
+      });
+    }
+
+    // Group by rounds
+    const roundsMap = {};
+    rows.forEach((row) => {
+      if (!roundsMap[row.round_id]) {
+        let instrumentData = {};
+        try {
+          if (row.instrument_type_data)
+            instrumentData = JSON.parse(row.instrument_type_data);
+        } catch (e) {
+          instrumentData = {};
+        }
+
+        roundsMap[row.round_id] = {
+          issuedShares: parseFloat(row.issuedshares || 0),
+          instrumentType: row.instrumentType || "Common Stock",
+          instrumentData: instrumentData,
+          investors: [],
+          created_at: row.created_at,
+        };
+      }
+
+      if (row.investor_shares) {
+        const label =
+          row.shareClassType !== "OTHER"
+            ? row.shareClassType
+            : row.shareclassother || "Other";
+
+        roundsMap[row.round_id].investors.push({
+          label,
+          shares: parseFloat(row.investor_shares || 0),
+          investmentAmount: parseFloat(row.investment_amount || 0),
+        });
+      }
+    });
+
+    const rounds = Object.values(roundsMap).sort(
+      (a, b) => new Date(a.created_at) - new Date(b.created_at)
+    );
+
+    // Calculate basic and fully diluted shares
+    const basicShares = {};
+    const fullyDilutedShares = {};
+    let basicTotalShares = 0;
+    let fullyDilutedTotalShares = 0;
+
+    rounds.forEach((round) => {
+      const roundIssued = round.issuedShares;
+      basicTotalShares += roundIssued;
+      fullyDilutedTotalShares += roundIssued;
+
+      let totalInvestorShares = 0;
+
+      // Investors by shareClassType / shareclassother
+      round.investors.forEach((inv) => {
+        totalInvestorShares += inv.shares;
+
+        basicShares[inv.label] = (basicShares[inv.label] || 0) + inv.shares;
+        fullyDilutedShares[inv.label] =
+          (fullyDilutedShares[inv.label] || 0) + inv.shares;
+      });
+
+      // Founder shares
+      const founderShares = roundIssued - totalInvestorShares;
+      basicShares["Founders"] = (basicShares["Founders"] || 0) + founderShares;
+      fullyDilutedShares["Founders"] =
+        (fullyDilutedShares["Founders"] || 0) + founderShares;
+
+      // Include warrants/options dynamically
+      const warrants = parseFloat(round.instrumentData.warrantShares || 0);
+      if (warrants > 0) {
+        fullyDilutedShares["Option Pool"] =
+          (fullyDilutedShares["Option Pool"] || 0) + warrants;
+        fullyDilutedTotalShares += warrants;
+      }
+    });
+
+    // Build datasets
+    const stakeholders = new Set([
+      ...Object.keys(basicShares),
+      ...Object.keys(fullyDilutedShares),
+    ]);
+    const datasets = [];
+    const colorPalette = [
+      "#1e40af",
+      "#dc2626",
+      "#059669",
+      "#7c3aed",
+      "#ea580c",
+      "#f59e0b",
+      "#10b981",
+      "#6366f1",
+      "#ec4899",
+      "#8b5cf6",
+      "#081828",
+    ];
+    let colorIndex = 0;
+
+    stakeholders.forEach((name) => {
+      const basicPercent =
+        basicTotalShares > 0
+          ? (((basicShares[name] || 0) / basicTotalShares) * 100).toFixed(2)
+          : 0;
+      const fullyPercent =
+        fullyDilutedTotalShares > 0
+          ? (
+              ((fullyDilutedShares[name] || 0) / fullyDilutedTotalShares) *
+              100
+            ).toFixed(2)
+          : 0;
+
+      datasets.push({
+        label: name,
+        data: [parseFloat(basicPercent), parseFloat(fullyPercent)],
+        backgroundColor: colorPalette[colorIndex % colorPalette.length],
+        borderColor: colorPalette[colorIndex % colorPalette.length],
+        borderWidth: 1,
+      });
+      colorIndex++;
+    });
+
+    return res.status(200).json({
+      labels: ["Basic Ownership", "Fully Diluted"],
+      datasets,
+      metadata: {
+        basicTotalShares: Math.round(basicTotalShares),
+        fullyDilutedTotalShares: Math.round(fullyDilutedTotalShares),
+      },
+    });
+  });
+};
 
 exports.getCompanystokes = (req, res) => {
   const { company_id } = req.body;
@@ -66,7 +242,6 @@ exports.getCompanystokes = (req, res) => {
       .json({ success: false, message: "company_id is required" });
   }
 
-  // 1️⃣ Get all rounds for this company
   const roundsQuery = `
     SELECT id AS round_id, nameOfRound, issuedshares, roundsize
     FROM roundrecord
@@ -84,11 +259,10 @@ exports.getCompanystokes = (req, res) => {
       return res.status(200).json({ success: true, results: [] });
     }
 
-    // 2️⃣ Get all investor allocations for these rounds
     const roundIds = rounds.map((r) => r.round_id);
     const placeholders = roundIds.map(() => "?").join(",");
     const investorQuery = `
-      SELECT irc.investor_id, irc.shares AS issued_shares, irc.roundrecord_id
+      SELECT irc.investor_id, irc.shares AS issued_shares, irc.investment_amount, irc.roundrecord_id
       FROM investorrequest_company irc
       WHERE irc.roundrecord_id IN (${placeholders})
         AND irc.request_confirm = 'Yes'
@@ -102,39 +276,84 @@ exports.getCompanystokes = (req, res) => {
           .json({ success: false, message: "Server Error" });
       }
 
-      // 3️⃣ Prepare response per round
       const response = rounds.map((round) => {
-        const totalRoundShares = parseInt(round.issuedshares || 0);
+        const totalRoundShares = parseFloat(round.issuedshares || 0);
+        const roundSize = parseFloat(round.roundsize || 0);
 
         const investorsInRound = investorData.filter(
           (inv) => inv.roundrecord_id === round.round_id
         );
 
-        const investors = investorsInRound.map((inv) => {
-          const issued = parseInt(inv.issued_shares || 0);
-          const stakePercent =
-            totalRoundShares > 0 ? (issued / totalRoundShares) * 100 : 0;
+        const pricePerShare =
+          totalRoundShares > 0 ? roundSize / totalRoundShares : 0;
 
-          const roundSize = parseFloat(round.roundsize || 0);
-          // Avoid divide by zero
+        const investors = investorsInRound.map((inv) => {
+          let issuedShares = parseFloat(inv.issued_shares || 0);
+
+          // Agar issued_shares 0 hai to investment_amount se calculate karo
+          if (
+            issuedShares === 0 &&
+            inv.investment_amount > 0 &&
+            pricePerShare > 0
+          ) {
+            issuedShares = inv.investment_amount / pricePerShare;
+          }
+
+          const stakePercent =
+            totalRoundShares +
+              investorsInRound.reduce(
+                (sum, i) =>
+                  sum +
+                  (parseFloat(i.issued_shares || 0) === 0 &&
+                  i.investment_amount > 0
+                    ? i.investment_amount / pricePerShare
+                    : parseFloat(i.issued_shares || 0)),
+                0
+              ) >
+            0
+              ? (issuedShares /
+                  (totalRoundShares +
+                    investorsInRound.reduce(
+                      (sum, i) =>
+                        sum +
+                        (parseFloat(i.issued_shares || 0) === 0 &&
+                        i.investment_amount > 0
+                          ? i.investment_amount / pricePerShare
+                          : parseFloat(i.issued_shares || 0)),
+                      0
+                    ))) *
+                100
+              : 0;
+
           const postMoneyValuation =
             stakePercent > 0 ? (roundSize * 100) / stakePercent : 0;
           const preMoneyValuation = postMoneyValuation - roundSize;
 
           return {
             investor_id: inv.investor_id,
-            issued_shares: issued,
+            issued_shares: parseFloat(issuedShares.toFixed(2)),
             stake_percent: parseFloat(stakePercent.toFixed(2)),
             post_money_valuation: parseFloat(postMoneyValuation.toFixed(2)),
             pre_money_valuation: parseFloat(preMoneyValuation.toFixed(2)),
           };
         });
 
+        // Founder shares = total issued - sum of investor shares
+        const totalInvestorShares = investors.reduce(
+          (sum, i) => sum + i.issued_shares,
+          0
+        );
+        const founderShares = totalRoundShares - totalInvestorShares;
+        const founderPercent =
+          totalRoundShares > 0 ? (founderShares / totalRoundShares) * 100 : 0;
+
         return {
           round_id: round.round_id,
           round_name: round.nameOfRound,
           total_issued_shares: totalRoundShares,
-          round_size: parseFloat(round.roundsize || 0),
+          round_size: roundSize,
+          founder_shares: parseFloat(founderShares.toFixed(2)),
+          founder_percent: parseFloat(founderPercent.toFixed(2)),
           investors,
         };
       });
@@ -392,10 +611,15 @@ exports.getDilutionForecast = (req, res) => {
       r.id AS round_id,
       r.nameOfRound,
       r.shareClassType,
+      r.shareclassother,
       r.issuedshares,
+      r.roundsize,
+      r.instrumentType,
+      r.instrument_type_data,
       r.created_at,
       irc.investor_id,
       irc.shares AS investor_shares,
+      irc.investment_amount,
       ii.first_name,
       ii.last_name
     FROM roundrecord r
@@ -411,90 +635,295 @@ exports.getDilutionForecast = (req, res) => {
   db.query(query, [company_id], (err, rows) => {
     if (err) {
       console.error(err);
-      return res
-        .status(500)
-        .json({ error: "Database query error", details: err });
+      return res.status(500).json({
+        error: "Database query error",
+        details: err,
+      });
     }
 
     if (!rows.length) {
-      return res.status(200).json({ message: "No active rounds found" });
+      return res.status(200).json({
+        labels: [],
+        datasets: [],
+        message: "No active rounds found",
+      });
     }
 
-    // Map rounds
+    // Group data by rounds
     const roundsMap = {};
     rows.forEach((row) => {
       if (!roundsMap[row.round_id]) {
+        const shareClassName =
+          row.shareClassType !== "OTHER"
+            ? row.shareClassType
+            : row.shareclassother || "Common";
+
+        // Parse instrument data
+        let instrumentData = {};
+        try {
+          if (row.instrument_type_data) {
+            instrumentData = JSON.parse(row.instrument_type_data);
+          }
+        } catch (e) {
+          console.error("Failed to parse instrument_type_data:", e);
+          instrumentData = {};
+        }
+
         roundsMap[row.round_id] = {
-          name: row.nameOfRound || `Round ${row.round_id}`,
+          id: row.round_id,
+          name: shareClassName, // <-- Use shareClassType / shareclassother
           issuedShares: parseFloat(row.issuedshares || 0),
-          shareClass: row.shareClassType || "Common",
+          roundSize: parseFloat(row.roundsize || 0),
+          instrumentType: row.instrumentType || "Common Stock",
+          instrumentData: instrumentData,
           investors: [],
+          created_at: row.created_at,
         };
       }
+
       if (row.investor_id && row.investor_shares) {
         roundsMap[row.round_id].investors.push({
           id: row.investor_id,
-          name: `${row.first_name} ${row.last_name}`,
+          name:
+            `${row.first_name || ""} ${row.last_name || ""}`.trim() ||
+            `Investor ${row.investor_id}`,
           shares: parseFloat(row.investor_shares || 0),
+          investmentAmount: parseFloat(row.investment_amount || 0),
         });
       }
     });
 
+    const rounds = Object.values(roundsMap).sort(
+      (a, b) => new Date(a.created_at) - new Date(b.created_at)
+    );
+
+    // Cumulative dilution calculation
     const labels = [];
-    const founderData = [];
-    const investorDatasetsMap = {};
     const colorPalette = [
       "#1e40af",
       "#dc2626",
       "#059669",
       "#7c3aed",
       "#ea580c",
+      "#f59e0b",
+      "#10b981",
+      "#6366f1",
+      "#ec4899",
+      "#8b5cf6",
     ];
 
-    Object.values(roundsMap).forEach((round, roundIndex) => {
+    let cumulativeTotalShares = 0;
+    const stakeholderShares = {}; // name -> shares
+    const founderData = [];
+    const investorDatasetsMap = {};
+    let colorIndex = 0;
+
+    const pendingConversions = { safes: [], convertibleNotes: [] };
+    const allStakeholders = new Set();
+    allStakeholders.add("Founders");
+
+    rounds.forEach((round, roundIndex) => {
       labels.push(round.name);
 
-      const totalInvestorShares = round.investors.reduce(
-        (sum, inv) => sum + inv.shares,
-        0
-      );
-      const founderShares = round.issuedShares - totalInvestorShares;
+      let additionalSharesFromConversions = 0;
+      let totalInvestorSharesThisRound = 0;
 
-      // Founder %
-      const totalShares = round.issuedShares;
-      founderData.push(((founderShares / totalShares) * 100).toFixed(2));
+      // Price per share calculation
+      let pricePerShare = 0;
+      if (round.roundSize > 0 && round.issuedShares > 0) {
+        pricePerShare = round.roundSize / round.issuedShares;
+      } else if (
+        round.instrumentData.common_stock_valuation &&
+        cumulativeTotalShares > 0
+      ) {
+        pricePerShare =
+          parseFloat(round.instrumentData.common_stock_valuation) /
+          cumulativeTotalShares;
+      } else if (
+        round.instrumentData.preferred_valuation &&
+        cumulativeTotalShares > 0
+      ) {
+        pricePerShare =
+          parseFloat(round.instrumentData.preferred_valuation) /
+          cumulativeTotalShares;
+      }
 
-      // Investor %
-      round.investors.forEach((inv, idx) => {
-        const perc = ((inv.shares / totalShares) * 100).toFixed(2);
-        if (!investorDatasetsMap[inv.name]) {
-          investorDatasetsMap[inv.name] = {
-            label: inv.name,
-            data: new Array(labels.length - 1).fill(0), // fill previous rounds with 0
-            backgroundColor: colorPalette[idx % colorPalette.length],
+      // Handle instrument types
+      switch (round.instrumentType) {
+        case "Safe":
+          round.investors.forEach((inv) => {
+            pendingConversions.safes.push({
+              investorName: round.name, // <-- Use shareClassType as name
+              amount: inv.investmentAmount,
+              valuationCap: parseFloat(round.instrumentData.valuationCap || 0),
+              discountRate: parseFloat(round.instrumentData.discountRate || 0),
+              safeType: round.instrumentData.safeType || "POST_MONEY",
+              roundId: round.id,
+            });
+          });
+          break;
+
+        case "Convertible Note":
+          round.investors.forEach((inv) => {
+            const principal = inv.investmentAmount;
+            const interestRate =
+              parseFloat(round.instrumentData.interestRate_note || 0) / 100;
+            const totalAmount = principal + principal * interestRate;
+            pendingConversions.convertibleNotes.push({
+              investorName: round.name,
+              principalPlusInterest: totalAmount,
+              discountRate: parseFloat(
+                round.instrumentData.discountRate_note || 0
+              ),
+              valuationCap: parseFloat(
+                round.instrumentData.valuationCap_note || 0
+              ),
+              roundId: round.id,
+            });
+          });
+          break;
+
+        case "Common Stock":
+        case "Preferred Equity":
+        default:
+          // Convert pending SAFEs
+          if (pendingConversions.safes.length > 0 && pricePerShare > 0) {
+            pendingConversions.safes.forEach((safe) => {
+              let conversionPrice = pricePerShare;
+              if (safe.valuationCap > 0 && cumulativeTotalShares > 0) {
+                conversionPrice = Math.min(
+                  conversionPrice,
+                  safe.valuationCap / cumulativeTotalShares
+                );
+              }
+              if (safe.discountRate > 0) {
+                conversionPrice = Math.min(
+                  conversionPrice,
+                  pricePerShare * (1 - safe.discountRate / 100)
+                );
+              }
+              if (conversionPrice > 0) {
+                const sharesIssued = safe.amount / conversionPrice;
+                additionalSharesFromConversions += sharesIssued;
+                stakeholderShares[safe.investorName] =
+                  (stakeholderShares[safe.investorName] || 0) + sharesIssued;
+                allStakeholders.add(safe.investorName);
+              }
+            });
+            pendingConversions.safes = [];
+          }
+
+          // Convert pending Notes
+          if (
+            pendingConversions.convertibleNotes.length > 0 &&
+            pricePerShare > 0
+          ) {
+            pendingConversions.convertibleNotes.forEach((note) => {
+              let conversionPrice = pricePerShare;
+              if (note.valuationCap > 0 && cumulativeTotalShares > 0) {
+                conversionPrice = Math.min(
+                  conversionPrice,
+                  note.valuationCap / cumulativeTotalShares
+                );
+              }
+              if (note.discountRate > 0) {
+                conversionPrice = Math.min(
+                  conversionPrice,
+                  pricePerShare * (1 - note.discountRate / 100)
+                );
+              }
+              if (conversionPrice > 0) {
+                const sharesIssued =
+                  note.principalPlusInterest / conversionPrice;
+                additionalSharesFromConversions += sharesIssued;
+                stakeholderShares[note.investorName] =
+                  (stakeholderShares[note.investorName] || 0) + sharesIssued;
+                allStakeholders.add(note.investorName);
+              }
+            });
+            pendingConversions.convertibleNotes = [];
+          }
+
+          // Add equity investors in this round
+          round.investors.forEach((inv) => {
+            totalInvestorSharesThisRound += inv.shares;
+            stakeholderShares[round.name] =
+              (stakeholderShares[round.name] || 0) + inv.shares;
+            allStakeholders.add(round.name);
+          });
+          break;
+      }
+
+      cumulativeTotalShares +=
+        round.issuedShares + additionalSharesFromConversions;
+
+      const founderSharesThisRound =
+        round.issuedShares - totalInvestorSharesThisRound;
+      stakeholderShares["Founders"] =
+        (stakeholderShares["Founders"] || 0) + founderSharesThisRound;
+
+      // Initialize datasets for investors
+      allStakeholders.forEach((stakeholder) => {
+        if (stakeholder !== "Founders" && !investorDatasetsMap[stakeholder]) {
+          investorDatasetsMap[stakeholder] = {
+            label: stakeholder,
+            data: [],
+            backgroundColor: colorPalette[colorIndex % colorPalette.length],
           };
+          colorIndex++;
+          for (let i = 0; i < roundIndex; i++)
+            investorDatasetsMap[stakeholder].data.push(0);
         }
-        investorDatasetsMap[inv.name].data.push(parseFloat(perc));
       });
 
-      // Fill 0 for missing investors in previous rounds
-      Object.values(investorDatasetsMap).forEach((dataset) => {
-        while (dataset.data.length < labels.length) dataset.data.push(0);
-      });
+      // Calculate percentages
+      if (cumulativeTotalShares > 0) {
+        founderData.push(
+          parseFloat(
+            (
+              (stakeholderShares["Founders"] / cumulativeTotalShares) *
+              100
+            ).toFixed(2)
+          )
+        );
+        Object.keys(investorDatasetsMap).forEach((stakeholder) => {
+          const percent = parseFloat(
+            (
+              (stakeholderShares[stakeholder] / cumulativeTotalShares) *
+              100
+            ).toFixed(2)
+          );
+          investorDatasetsMap[stakeholder].data.push(percent);
+        });
+      } else {
+        founderData.push(0);
+        Object.keys(investorDatasetsMap).forEach((stakeholder) =>
+          investorDatasetsMap[stakeholder].data.push(0)
+        );
+      }
     });
 
     const datasets = [
       {
         label: "Founders",
-        data: founderData.map((v) => parseFloat(v)),
+        data: founderData,
         backgroundColor: "#081828",
+        borderColor: "#081828",
+        borderWidth: 1,
       },
-      ...Object.values(investorDatasetsMap),
+      ...Object.values(investorDatasetsMap).map((ds) => ({
+        ...ds,
+        borderColor: ds.backgroundColor,
+        borderWidth: 1,
+      })),
     ];
 
     return res.status(200).json({
       labels,
       datasets,
+      totalShares: Math.round(cumulativeTotalShares),
+      pendingSafes: pendingConversions.safes.length,
+      pendingNotes: pendingConversions.convertibleNotes.length,
       message: "Dilution forecast generated successfully",
     });
   });
@@ -518,104 +947,197 @@ exports.getShareholder = (req, res) => {
     return res.status(400).json({ error: "company_id is required" });
   }
 
-  // Get the latest active round
+  // Fetch ALL active rounds with their investors (cumulative approach)
   const query = `
-    SELECT r.id AS round_id, r.issuedshares
+    SELECT 
+      r.id AS round_id,
+      r.issuedshares,
+      r.shareClassType,
+      r.shareclassother,
+      r.created_at,
+      irc.investor_id,
+      irc.shares AS investor_shares
     FROM roundrecord r
-    WHERE r.company_id = ? AND r.roundStatus = 'ACTIVE'
-    ORDER BY r.id DESC
-    LIMIT 1
+    LEFT JOIN investorrequest_company irc 
+      ON r.id = irc.roundrecord_id AND irc.request_confirm = 'Yes'
+    WHERE r.company_id = ? 
+      AND r.roundStatus = 'ACTIVE'
+    ORDER BY r.created_at ASC, r.id ASC
   `;
 
-  db.query(query, [company_id], (err, rounds) => {
+  db.query(query, [company_id], (err, rows) => {
     if (err) {
-      return res.status(500).json({ error: "DB query error", details: err });
+      console.error(err);
+      return res.status(500).json({
+        error: "Database query error",
+        details: err,
+      });
     }
 
-    if (!rounds.length) {
+    if (!rows.length) {
       return res.status(200).json({
         shareholders: {
-          labels: ["Company (Founders)"],
+          labels: ["Founders"],
           data: [100],
           colors: ["#081828"],
         },
+        ownershipTable: [
+          {
+            stakeholder: "Founders",
+            shares: 0,
+            percentage: 100.0,
+            securityType: "Common",
+            color: "#081828",
+          },
+        ],
         metadata: {
           totalShares: 0,
-          companyShares: 0,
+          founderShares: 0,
           totalInvestorShares: 0,
         },
       });
     }
 
-    const round = rounds[0];
-    const issuedShares = parseFloat(round.issuedshares || 0);
-    const investorShareMap = {};
-    let totalInvestorShares = 0;
+    let cumulativeTotalShares = 0;
+    const stakeholderDetails = {}; // stakeholder_name -> { shares, securityType }
 
-    // Fetch all investors with their names
-    const investorQuery = `
-      SELECT irc.investor_id, irc.shares, ii.first_name, ii.last_name
-      FROM investorrequest_company irc
-      JOIN investor_information ii
-        ON irc.investor_id = ii.id
-      WHERE irc.roundrecord_id = ? AND irc.request_confirm = 'Yes'
-    `;
+    const roundsMap = {};
+    rows.forEach((row) => {
+      if (!roundsMap[row.round_id]) {
+        const securityType =
+          row.shareClassType !== "OTHER"
+            ? row.shareClassType
+            : row.shareclassother || "Common";
 
-    db.query(investorQuery, [round.round_id], (err2, investors) => {
-      if (err2) {
-        return res
-          .status(500)
-          .json({ error: "Investor query error", details: err2 });
+        roundsMap[row.round_id] = {
+          issuedShares: parseFloat(row.issuedshares || 0),
+          securityType,
+          investors: [],
+        };
       }
 
-      investors.forEach((inv) => {
-        const shares = parseFloat(inv.shares || 0);
-        const investorName = `${inv.first_name} ${inv.last_name}`;
-        if (!investorShareMap[investorName]) investorShareMap[investorName] = 0;
-        investorShareMap[investorName] += shares;
-        totalInvestorShares += shares;
+      if (row.investor_shares) {
+        const investorLabel =
+          row.shareClassType !== "OTHER"
+            ? row.shareClassType
+            : row.shareclassother || "Other";
+
+        roundsMap[row.round_id].investors.push({
+          label: investorLabel,
+          shares: parseFloat(row.investor_shares || 0),
+        });
+      }
+    });
+
+    const rounds = Object.values(roundsMap);
+
+    rounds.forEach((round) => {
+      cumulativeTotalShares += round.issuedShares;
+
+      let totalInvestorSharesThisRound = 0;
+      round.investors.forEach((inv) => {
+        if (!stakeholderDetails[inv.label]) {
+          stakeholderDetails[inv.label] = {
+            shares: 0,
+            securityType: round.securityType,
+          };
+        }
+        stakeholderDetails[inv.label].shares += inv.shares;
+        totalInvestorSharesThisRound += inv.shares;
       });
 
-      const companyShares = issuedShares - totalInvestorShares;
+      const founderSharesThisRound =
+        round.issuedShares - totalInvestorSharesThisRound;
+      if (!stakeholderDetails["Founders"]) {
+        stakeholderDetails["Founders"] = {
+          shares: 0,
+          securityType: "Common",
+        };
+      }
+      stakeholderDetails["Founders"].shares += founderSharesThisRound;
+    });
 
-      // Prepare chart data
-      const shareholderLabels = ["Company (Founders)"];
-      const shareholderData = [companyShares];
-      const shareholderColors = ["#081828"];
-      const colorPalette = [
-        "#1e40af",
-        "#dc2626",
-        "#059669",
-        "#7c3aed",
-        "#ea580c",
-      ];
-      let colorIndex = 0;
+    const totalInvestorShares = Object.entries(stakeholderDetails)
+      .filter(([name]) => name !== "Founders")
+      .reduce((sum, [_, data]) => sum + data.shares, 0);
 
-      Object.entries(investorShareMap).forEach(([investorName, shares]) => {
-        shareholderLabels.push(investorName);
-        shareholderData.push(shares);
-        shareholderColors.push(colorPalette[colorIndex] || "#000000");
-        colorIndex++;
+    const founderShares = stakeholderDetails["Founders"]?.shares || 0;
+
+    const shareholderLabels = [];
+    const shareholderData = [];
+    const shareholderColors = [];
+    const ownershipTable = [];
+
+    const colorPalette = [
+      "#1e40af",
+      "#dc2626",
+      "#059669",
+      "#7c3aed",
+      "#ea580c",
+      "#f59e0b",
+      "#10b981",
+      "#6366f1",
+      "#ec4899",
+      "#8b5cf6",
+    ];
+
+    if (founderShares > 0) {
+      const founderPercent = (
+        (founderShares / cumulativeTotalShares) *
+        100
+      ).toFixed(2);
+      shareholderLabels.push("Founders");
+      shareholderData.push(parseFloat(founderPercent));
+      shareholderColors.push("#081828");
+
+      ownershipTable.push({
+        stakeholder: "Founders",
+        shares: Math.round(founderShares),
+        percentage: parseFloat(founderPercent),
+        securityType: "Common",
+        color: "#081828",
+      });
+    }
+
+    let colorIndex = 0;
+    Object.entries(stakeholderDetails)
+      .filter(([name]) => name !== "Founders")
+      .sort((a, b) => b[1].shares - a[1].shares)
+      .forEach(([name, data]) => {
+        if (data.shares > 0) {
+          const percent = ((data.shares / cumulativeTotalShares) * 100).toFixed(
+            2
+          );
+          const color = colorPalette[colorIndex % colorPalette.length];
+
+          shareholderLabels.push(name);
+          shareholderData.push(parseFloat(percent));
+          shareholderColors.push(color);
+
+          ownershipTable.push({
+            stakeholder: name,
+            shares: Math.round(data.shares),
+            percentage: parseFloat(percent),
+            securityType: data.securityType,
+            color,
+          });
+
+          colorIndex++;
+        }
       });
 
-      // Convert to percentage
-      const totalShares = issuedShares;
-      const shareholderDataPercent = shareholderData.map((s) =>
-        ((s / totalShares) * 100).toFixed(2)
-      );
-
-      return res.status(200).json({
-        shareholders: {
-          labels: shareholderLabels,
-          data: shareholderDataPercent,
-          colors: shareholderColors,
-        },
-        metadata: {
-          totalShares,
-          companyShares,
-          totalInvestorShares,
-        },
-      });
+    return res.status(200).json({
+      shareholders: {
+        labels: shareholderLabels,
+        data: shareholderData,
+        colors: shareholderColors,
+      },
+      ownershipTable,
+      metadata: {
+        totalShares: Math.round(cumulativeTotalShares),
+        founderShares: Math.round(founderShares),
+        totalInvestorShares: Math.round(totalInvestorShares),
+      },
     });
   });
 };
@@ -741,47 +1263,80 @@ exports.getSignatoryActivity = (req, res) => {
     }
   );
 };
-exports.getCompanyAccess = (req, res) => {
-  var company_id = req.body.company_id;
-  var user_id = req.body.user_id;
-  db.query(
-    `SELECT cs.*, c.company_name
-     FROM users cs 
-     JOIN company c ON cs.id = c.user_id 
-     WHERE c.id = ? AND c.user_id = ?`,
-    [company_id, user_id],
-    async (err, results) => {
-      if (err) {
-        return res
-          .status(500)
-          .json({ message: "Database query error", error: err });
-      }
+exports.getCompanyAccess = async (req, res) => {
+  try {
+    const { company_id, user_id } = req.body;
 
-      if (results.length === 0) {
-        return res.status(200).json({
-          message: "Invalid Access",
-          status: "2",
-        });
-      }
-
-      res.status(200).json({
-        message: "Login successful",
-
-        status: "1",
-        user: {
-          id: results[0].id,
-          email: results[0].email,
-          role: "owner",
-          companies: [
-            {
-              id: company_id,
-              name: results[0].company_name,
-            },
-          ],
-        },
+    if (!company_id || !user_id) {
+      return res.status(400).json({
+        message: "Company ID and User ID are required",
+        status: "0",
       });
     }
-  );
+
+    // 🔹 Step 1: Check if user exists
+    const [userResults] = await db
+      .promise()
+      .query("SELECT * FROM users WHERE id = ?", [user_id]);
+
+    if (userResults.length === 0) {
+      return res.status(200).json({
+        message: "Invalid User",
+        status: "2",
+      });
+    }
+
+    const user = userResults[0];
+
+    // 🔹 Step 2: Check if company exists and belongs to this user
+    const [companyResults] = await db
+      .promise()
+      .query(
+        "SELECT id AS company_id, company_name FROM company WHERE id = ? AND user_id = ?",
+        [company_id, user_id]
+      );
+
+    if (companyResults.length === 0) {
+      return res.status(200).json({
+        message: "Invalid Company or No Permission",
+        status: "2",
+      });
+    }
+
+    const company = companyResults[0];
+
+    // 🔹 Step 3: Generate JWT token
+    const token = jwt.sign(
+      { id: user.id, email: user.email, company_id: company.company_id },
+      JWT_SECRET,
+      { expiresIn: "1h" }
+    );
+
+    // 🔹 Step 4: Return response
+    res.status(200).json({
+      message: "Login successful",
+      status: "1",
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        role: "owner",
+        companies: [
+          {
+            id: company.company_id,
+            name: company.company_name,
+          },
+        ],
+      },
+    });
+  } catch (err) {
+    console.error("Error in getCompanyAccess:", err);
+    res.status(500).json({
+      message: "Internal Server Error",
+      status: "0",
+      error: err.message,
+    });
+  }
 };
 exports.getInvestorRequestCompanyInvest = (req, res) => {
   var company_id = req.body.company_id;

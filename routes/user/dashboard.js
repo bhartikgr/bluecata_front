@@ -41,5 +41,8 @@ router.post(
   dashboardController.getCompanyOptionPoolLastestValuation
 );
 router.post("/getCompanyName", dashboardController.getCompanyName);
-
+router.post(
+  "/getBasicVsFullyDilutedOwnership",
+  dashboardController.getBasicVsFullyDilutedOwnership
+);
 module.exports = router;
