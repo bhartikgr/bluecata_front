@@ -2117,6 +2117,8 @@ exports.addinvenstorreport = async (req, res) => {
       marketCompetitive,
       customerProduct,
       fundraisingFinancial,
+      created_by_id,
+      created_by_role,
       futureOutlook,
     } = req.body;
 
@@ -2267,17 +2269,19 @@ Future Outlook & Strategy: ${futureOutlook}
         logToFile("Step 8: Inserting into DB...");
         const insertQuery = `
         INSERT INTO investor_updates (
-          type,company_id, version, update_date,
+          created_by_id,created_by_role,type,company_id, version, update_date,
           financial_performance, operational_updates, market_competitive,
           customer_product, fundraising_financial, future_outlook,
           executive_summary, document_name, is_locked, created_at, updated_at
-        ) VALUES (?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+        ) VALUES (?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
       `;
 
         const safe = (v) =>
           v === undefined || v === null || v === "" ? null : v;
 
         const values = [
+          created_by_id,
+          created_by_role,
           "Investor updates",
           safe(company_id),
           newVersion,
@@ -2301,20 +2305,20 @@ Future Outlook & Strategy: ${futureOutlook}
               error: err.message,
             });
           }
-
+          var insertid = result.insertId;
           logToFile("===== API END SUCCESS =====");
           const logQuery = `
-    INSERT INTO audit_logs (
-      user_id, company_id, module, action, entity_id, entity_type, details, ip_address, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
-  `;
+            INSERT INTO audit_logs (
+              user_id, company_id, module, action, entity_id, entity_type, details, ip_address, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
+          `;
 
           const logValues = [
             req.body.user_id || 0, // Assuming you store user in req.user
             company_id,
             "investorlist", // module
             "CREATE", // action
-            "", // entity_id
+            insertid, // entity_id
             "investor_updates", // entity_type
             JSON.stringify({
               version: newVersion,
@@ -3756,7 +3760,7 @@ exports.companyRole = async (req, res) => {
   const { company_id, role_id } = req.body;
 
   db.query(
-    "SELECT * FROM company_signatories where company_id = ? And user_id = ?",
+    "SELECT * FROM company_signatories where company_id = ? And id = ?",
     [company_id, role_id],
     (err, results) => {
       if (err) {

@@ -461,7 +461,7 @@ exports.joinedCompany = (req, res) => {
 exports.signatoryAccessLastLogin = (req, res) => {
   const { ip_address, detail, companyId } = req.body;
 
-  if (!detail || !detail.id) {
+  if (!detail || !detail.id || !detail.email) {
     return res.status(400).json({ message: "Invalid Signatory data" });
   }
 
@@ -472,30 +472,31 @@ exports.signatoryAccessLastLogin = (req, res) => {
 
   // Step 1: Get the CIO record for this email
   const getCIOQuery = `
-  SELECT cs.*
-  FROM company_signatories cs
-  WHERE cs.signatory_email = ? AND cs.signature_role = ? And cs.company_id = ?
-  LIMIT 1
-`;
+    SELECT cs.*
+    FROM company_signatories cs
+    WHERE cs.signatory_email = ? AND cs.signature_role = ? AND cs.company_id = ?
+    LIMIT 1
+  `;
 
   db.query(getCIOQuery, [email, cioRole, companyId], (err, results) => {
     if (err) return res.status(500).json({ message: "DB error", error: err });
 
     if (results.length === 0) {
       // Not a CIO or no record
-      return recordLastLogin(signatoryId, ip_address, companyId, false, null);
+      return recordLastLogin(email, ip_address, companyId, false, null, null);
     }
 
     const approvedCIO = results[0];
+    console.log(approvedCIO); // ✅ optional logging
     const signt = `${approvedCIO.first_name} ${approvedCIO.last_name}`;
 
     // Step 2: Check if already exists for this company
     const checkExistingQuery = `
-    SELECT id 
-    FROM authorized_signature 
-    WHERE company_signatories_id = ? AND company_id = ?
-    LIMIT 1
-  `;
+      SELECT id 
+      FROM authorized_signature 
+      WHERE company_signatories_id = ? AND company_id = ?
+      LIMIT 1
+    `;
 
     db.query(
       checkExistingQuery,
@@ -507,11 +508,11 @@ exports.signatoryAccessLastLogin = (req, res) => {
         if (existingResult.length === 0) {
           // Insert only once
           const insertQuery = `
-  INSERT INTO authorized_signature 
-  (company_signatories_id, user_id, company_id, created_by_id, type, signature, approve, created_at)
-  VALUES (?, ?, ?, ?, ?, ?, 'Yes', NOW())
-  ON DUPLICATE KEY UPDATE approve = 'Yes'
-`;
+          INSERT INTO authorized_signature 
+          (company_signatories_id, user_id, company_id, created_by_id, type, signature, approve, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, 'Yes', NOW())
+          ON DUPLICATE KEY UPDATE approve = 'Yes'
+        `;
           db.query(
             insertQuery,
             [
@@ -530,48 +531,55 @@ exports.signatoryAccessLastLogin = (req, res) => {
 
               // Record login
               return recordLastLogin(
-                signatoryId,
+                email,
                 ip_address,
                 companyId,
                 true,
-                insertResult.insertId
+                insertResult.insertId,
+                approvedCIO
               );
             }
           );
         } else {
           // Already exists, no insert
           return recordLastLogin(
-            signatoryId,
+            email,
             ip_address,
             companyId,
             false,
-            null
+            null,
+            approvedCIO
           );
         }
       }
     );
   });
 
-  // Helper function
+  // Helper function to record last login
   function recordLastLogin(
-    signatoryId,
+    signatoryEmail,
     ip_address,
     companyId,
     signatureCreated,
-    signatureId
+    signatureId,
+    approvedCIO
   ) {
     const query = `
-    INSERT INTO access_logs_sigantory_last_login (signatory_id, ip_address, created_at)
-    VALUES (?, ?, NOW())
-    ON DUPLICATE KEY UPDATE
-      ip_address = VALUES(ip_address),
-      created_at = NOW()
-  `;
+      INSERT INTO access_logs_sigantory_last_login (signatory_email,company_id, ip_address, created_at)
+      VALUES (?, ?, ?, NOW())
+      ON DUPLICATE KEY UPDATE
+        ip_address = VALUES(ip_address),
+        created_at = NOW()
+    `;
 
-    db.query(query, [signatoryId, ip_address], (err, result) => {
+    db.query(query, [signatoryEmail, companyId, ip_address], (err, result) => {
       if (err) return res.status(500).json({ message: "DB error", error: err });
 
-      const response = { message: "Last login recorded successfully", result };
+      const response = {
+        message: "Last login recorded successfully",
+        result,
+        approvedCIO, // include approvedCIO in response
+      };
 
       if (signatureCreated) {
         response.signatureCreated = true;

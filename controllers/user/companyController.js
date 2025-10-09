@@ -32,23 +32,31 @@ exports.getUserCompany = (req, res) => {
   );
 };
 exports.getUserSignatory = (req, res) => {
-  var user_id = req.body.user_id;
-  db.query(
-    "SELECT company_signatories.*,company.company_name from company_signatories join company on company.id = company_signatories.company_id where company_signatories.user_id = ? order by company_signatories.id desc",
-    [user_id],
-    async (err, results) => {
-      if (err) {
-        return res
-          .status(500)
-          .json({ message: "Database query error", error: err });
-      }
+  const user_id = req.body.user_id;
 
-      res.status(200).json({
-        results: results,
-      });
+  const query = `
+    SELECT cs.id, cs.user_id, cs.first_name, cs.last_name, cs.unique_code, cs.company_id, cs.signatory_email,
+           c.company_name
+    FROM company_signatories cs
+    JOIN company c ON c.id = cs.company_id
+    WHERE cs.user_id = ?
+    GROUP BY cs.signatory_email
+    ORDER BY cs.id DESC
+  `;
+
+  db.query(query, [user_id], (err, results) => {
+    if (err) {
+      return res
+        .status(500)
+        .json({ message: "Database query error", error: err });
     }
-  );
+
+    return res.status(200).json({
+      results: results,
+    });
+  });
 };
+
 exports.userDeleteSignatory = (req, res) => {
   const user_id = req.body.user_id;
   const id = req.body.id;

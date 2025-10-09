@@ -4219,7 +4219,7 @@ exports.getAuthorizedSignature = (req, res) => {
 
   // Step 1: Fetch ALL meetings
   const allMeetingsQuery =
-    "SELECT * from authorized_signature where created_by_id = ? And company_id = ?";
+    "SELECT * from authorized_signature where company_signatories_id = ? And company_id = ?";
   db.query(allMeetingsQuery, [user_id, company_id], (err, row) => {
     if (err) {
       console.error("All meeting fetch error", err);
