@@ -34,24 +34,41 @@ exports.getUserCompany = (req, res) => {
 exports.getUserSignatory = (req, res) => {
   const user_id = req.body.user_id;
 
+  if (!user_id) {
+    return res.status(400).json({ message: "user_id is required" });
+  }
+
   const query = `
-    SELECT cs.id, cs.user_id, cs.first_name, cs.last_name, cs.unique_code, cs.company_id, cs.signatory_email,
-           c.company_name
+    SELECT 
+      cs.id,
+      cs.user_id,
+      cs.first_name,
+      cs.last_name,
+      cs.unique_code,
+      cs.company_id,
+      cs.signatory_email,
+      c.company_name
     FROM company_signatories cs
+    JOIN (
+      SELECT signatory_email, MAX(id) AS max_id
+      FROM company_signatories
+      WHERE user_id = ?
+      GROUP BY signatory_email
+    ) latest ON cs.id = latest.max_id
     JOIN company c ON c.id = cs.company_id
-    WHERE cs.user_id = ?
-    GROUP BY cs.signatory_email
     ORDER BY cs.id DESC
   `;
 
   db.query(query, [user_id], (err, results) => {
     if (err) {
+      console.error("Database error:", err);
       return res
         .status(500)
         .json({ message: "Database query error", error: err });
     }
 
     return res.status(200).json({
+      message: "User signatories fetched successfully",
       results: results,
     });
   });
