@@ -267,22 +267,30 @@ exports.CreateuserSubscriptionDataRoomCheck = async (req, res) => {
   const { amount } = req.body;
 
   try {
+    if (amount <= 0) {
+      // Handle 100% discount / free subscription without Stripe payment
+      // You can directly mark the subscription as active in your database
+      return res.send({
+        clientSecret: null,
+        message: "Free subscription applied, no payment required",
+      });
+    }
+
     const paymentIntent = await stripe.paymentIntents.create({
-      amount: Math.round(amount * 100),
+      amount: Math.round(amount * 100), // in cents
       currency: "eur",
       automatic_payment_methods: { enabled: true },
     });
 
-    if (paymentIntent.client_secret) {
-      res.send({
-        clientSecret: paymentIntent.client_secret,
-      });
-    }
+    res.send({
+      clientSecret: paymentIntent.client_secret,
+    });
   } catch (err) {
     console.error("Stripe Error:", err);
     res.status(500).json({ error: err.message });
   }
 };
+
 exports.CreateuserSubscriptionDataRoom = async (req, res) => {
   const {
     discount,
