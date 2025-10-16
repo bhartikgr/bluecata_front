@@ -1797,7 +1797,6 @@ exports.fetchInvestorData = (req, res) => {
     });
   }
 
-  // Main query to fetch all investment data with investor information
   const fetchQuery = `
     SELECT 
       investorrequest_company.*,
@@ -1807,23 +1806,26 @@ exports.fetchInvestorData = (req, res) => {
       investor_information.phone,
       roundrecord.nameOfRound,
       roundrecord.shareClassType,
+      roundrecord.shareclassother,
       roundrecord.instrumentType,
+      roundrecord.instrument_type_data,
       roundrecord.roundsize,
       roundrecord.issuedshares,
       roundrecord.currency,
       roundrecord.dateroundclosed,
       roundrecord.roundStatus,
       roundrecord.description,
+      roundrecord.created_at AS round_created_at,
       company.company_name
-    FROM investorrequest_company 
-    JOIN roundrecord ON roundrecord.id = investorrequest_company.roundrecord_id 
-    JOIN investor_information ON investor_information.id = investorrequest_company.investor_id 
+    FROM roundrecord
+    LEFT JOIN investorrequest_company ON roundrecord.id = investorrequest_company.roundrecord_id
+    LEFT JOIN investor_information ON investor_information.id = investorrequest_company.investor_id
     LEFT JOIN company ON company.id = investorrequest_company.company_id
-    WHERE investorrequest_company.company_id = ? 
-    ORDER BY investorrequest_company.id DESC
+    WHERE investorrequest_company.company_id = ? AND roundrecord.roundStatus = ?
+    ORDER BY roundrecord.created_at ASC, investorrequest_company.id ASC
   `;
 
-  db.query(fetchQuery, [company_id], (err, results) => {
+  db.query(fetchQuery, [company_id, "ACTIVE"], (err, results) => {
     if (err) {
       console.error("Database query error:", err);
       return res.status(500).json({
@@ -1833,7 +1835,7 @@ exports.fetchInvestorData = (req, res) => {
       });
     }
 
-    if (results.length === 0) {
+    if (!results.length) {
       return res.status(200).json({
         message: "No investment data found for this company",
         results: [],
@@ -1848,71 +1850,215 @@ exports.fetchInvestorData = (req, res) => {
       });
     }
 
-    // Calculate statistics
+    // --- Group rounds & investors ---
+    const roundsMap = {};
+    const pendingConversions = { safes: [], convertibleNotes: [] };
+    const allStakeholders = new Set(["Founders"]);
+
+    results.forEach((row) => {
+      if (!roundsMap[row.roundrecord_id]) {
+        let instrumentData = {};
+        try {
+          if (row.instrument_type_data)
+            instrumentData = JSON.parse(row.instrument_type_data);
+        } catch (e) {}
+
+        const shareClassName =
+          row.shareClassType !== "OTHER"
+            ? row.shareClassType
+            : row.shareclassother || "Common";
+
+        roundsMap[row.roundrecord_id] = {
+          id: row.roundrecord_id,
+          name: row.nameOfRound || shareClassName,
+          issuedShares: parseFloat(row.issuedshares || 0),
+          roundSize: parseFloat(row.roundsize || 0),
+          instrumentType: row.instrumentType || "Common Stock",
+          instrumentData,
+          investors: [],
+          created_at: row.round_created_at,
+        };
+      }
+
+      if (row.investor_id) {
+        const investorName =
+          `${row.first_name || ""} ${row.last_name || ""}`.trim() ||
+          `Investor ${row.investor_id}`;
+
+        roundsMap[row.roundrecord_id].investors.push({
+          id: row.investor_id,
+          name: investorName,
+          shares: parseFloat(row.shares || 0),
+          investmentAmount: parseFloat(row.investment_amount || 0),
+          request_confirm: row.request_confirm,
+          instrumentType: row.instrumentType,
+          instrumentData: row.instrument_type_data
+            ? JSON.parse(row.instrument_type_data)
+            : {},
+        });
+
+        // Track SAFEs / Convertible Notes for conversion
+        if (
+          (row.instrumentType === "Safe" ||
+            row.instrumentType === "Convertible Note") &&
+          row.investment_amount
+        ) {
+          pendingConversions[
+            row.instrumentType === "Safe" ? "safes" : "convertibleNotes"
+          ].push({
+            investorName,
+            amount: parseFloat(row.investment_amount),
+            instrumentData: row.instrument_type_data
+              ? JSON.parse(row.instrument_type_data)
+              : {},
+          });
+        }
+
+        allStakeholders.add(investorName);
+      }
+    });
+
+    const rounds = Object.values(roundsMap).sort(
+      (a, b) => new Date(a.created_at) - new Date(b.created_at)
+    );
+
+    let cumulativeTotalShares = 0;
+    const stakeholderShares = {};
+
+    rounds.forEach((round) => {
+      let additionalSharesFromConversions = 0;
+      let totalInvestorSharesThisRound = 0;
+
+      const pricePerShare =
+        round.roundSize && round.issuedShares
+          ? round.roundSize / round.issuedShares
+          : 0;
+
+      // --- Convert SAFE / Convertible Notes properly ---
+      const convertInstruments = (instruments) => {
+        instruments.forEach((inst) => {
+          let conversionPrice = pricePerShare;
+          const cap = parseFloat(inst.instrumentData.valuationCap || 0);
+          const discount = parseFloat(inst.instrumentData.discountRate || 0);
+
+          if (cap > 0 && cumulativeTotalShares > 0) {
+            conversionPrice = Math.min(
+              conversionPrice,
+              cap / cumulativeTotalShares
+            );
+          }
+          if (discount > 0) {
+            conversionPrice = Math.min(
+              conversionPrice,
+              pricePerShare * (1 - discount / 100)
+            );
+          }
+
+          if (conversionPrice > 0) {
+            const shares = inst.amount / conversionPrice;
+            additionalSharesFromConversions += shares;
+            stakeholderShares[inst.investorName] =
+              (stakeholderShares[inst.investorName] || 0) + shares;
+            allStakeholders.add(inst.investorName);
+          }
+        });
+        instruments.length = 0; // clear after conversion
+      };
+
+      convertInstruments(pendingConversions.safes);
+      convertInstruments(pendingConversions.convertibleNotes);
+
+      // Add direct equity shares
+      round.investors.forEach((inv) => {
+        if (
+          inv.instrumentType !== "Safe" &&
+          inv.instrumentType !== "Convertible Note"
+        ) {
+          stakeholderShares[inv.name] =
+            (stakeholderShares[inv.name] || 0) + inv.shares;
+          totalInvestorSharesThisRound += inv.shares;
+        }
+      });
+
+      // Update cumulative shares after round + conversions
+      cumulativeTotalShares +=
+        round.issuedShares + additionalSharesFromConversions;
+
+      // Founder shares for this round
+      const founderSharesThisRound =
+        round.issuedShares - totalInvestorSharesThisRound;
+      stakeholderShares["Founders"] =
+        (stakeholderShares["Founders"] || 0) + founderSharesThisRound;
+    });
+
+    // --- Build formatted results for API response ---
+    const colorPalette = [
+      "#1e40af",
+      "#dc2626",
+      "#059669",
+      "#7c3aed",
+      "#ea580c",
+      "#f59e0b",
+      "#10b981",
+      "#6366f1",
+      "#ec4899",
+      "#8b5cf6",
+    ];
+    let colorIndex = 0;
+
+    const formattedResults = results.map((inv) => {
+      const key = inv.investor_id
+        ? `${inv.first_name} ${inv.last_name}`.trim()
+        : "Founders";
+      const ownershipPercentage = cumulativeTotalShares
+        ? parseFloat(
+            ((stakeholderShares[key] || 0) / cumulativeTotalShares) * 100
+          ).toFixed(2)
+        : 0;
+
+      return {
+        ...inv,
+        investor_name: key,
+        ownershipPercentage,
+        totalSharesIncludingWarrants: cumulativeTotalShares,
+        sharesAfterConversion: Math.round(stakeholderShares[key] || 0), // Add this to show post-conversion shares
+      };
+    });
+
+    // --- Stats ---
     let stats = {
       totalInvestment: 0,
       activeInvestments: 0,
-      totalShares: 0,
+      totalShares: Math.round(cumulativeTotalShares),
       pendingRequests: 0,
       confirmedInvestments: 0,
       rejectedInvestments: 0,
     };
 
-    // Format results and calculate stats
-    const formattedResults = results.map((investment) => {
-      const amount = parseFloat(investment.investment_amount) || 0;
-      const shares = parseFloat(investment.shares) || 0;
-
-      // Calculate stats
-      if (investment.request_confirm === "Yes") {
+    formattedResults.forEach((inv) => {
+      const amount = parseFloat(inv.investment_amount) || 0;
+      if (inv.request_confirm === "Yes") {
         stats.totalInvestment += amount;
-        stats.totalShares += shares;
         stats.confirmedInvestments += 1;
-
-        // Count as active if round is still active/fundraising
-        if (
-          ["Active", "Fundraising", "Open"].includes(investment.roundStatus)
-        ) {
+        if (["Active", "Fundraising", "Open"].includes(inv.roundStatus))
           stats.activeInvestments += 1;
-        }
-      } else if (investment.request_confirm === "No") {
-        stats.pendingRequests += 1;
-      } else if (investment.request_confirm === "Rejected") {
+      } else if (inv.request_confirm === "No") stats.pendingRequests += 1;
+      else if (inv.request_confirm === "Rejected")
         stats.rejectedInvestments += 1;
-      }
-
-      // Return formatted investment data
-      return {
-        id: investment.id,
-        roundrecord_id: investment.roundrecord_id,
-        investor_id: investment.investor_id,
-        company_id: investment.company_id,
-        company_name: investment.company_name,
-        investor_name:
-          `${investment.first_name} ${investment.last_name}`.trim(),
-        investor_email: investment.email,
-        investor_phone: investment.phone,
-        nameOfRound: investment.nameOfRound,
-        shares: investment.shares,
-        investment_amount: investment.investment_amount,
-        request_confirm: investment.request_confirm,
-        roundsize: investment.roundsize,
-        issuedshares: investment.issuedshares,
-        shareClassType: investment.shareClassType,
-        instrumentType: investment.instrumentType || "Equity",
-        currency: investment.currency || "USD",
-        dateroundclosed: investment.dateroundclosed,
-        roundStatus: investment.roundStatus || "Active",
-        description: investment.description,
-        created_at: investment.created_at,
-      };
     });
 
     return res.status(200).json({
       message: "Investment data fetched successfully",
       results: formattedResults,
-      stats: stats,
+      stats,
       totalRecords: results.length,
+      metadata: {
+        totalShares: Math.round(cumulativeTotalShares),
+        founderShares: Math.round(stakeholderShares["Founders"] || 0),
+        totalInvestorShares: Math.round(
+          cumulativeTotalShares - (stakeholderShares["Founders"] || 0)
+        ),
+      },
     });
   });
 };

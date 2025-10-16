@@ -757,7 +757,6 @@ exports.getDilutionForecast = (req, res) => {
       (a, b) => new Date(a.created_at) - new Date(b.created_at)
     );
 
-    // Setup for calculation
     const labels = [];
     const colorPalette = [
       "#1e40af",
@@ -865,7 +864,7 @@ exports.getDilutionForecast = (req, res) => {
         }
       });
 
-      // Convert SAFEs & Notes **before founder calculation**
+      // Convert all pending instruments **before founder calculation**
       const convertInstruments = (instruments) => {
         instruments.forEach((inst) => {
           let conversionPrice = pricePerShare;
@@ -904,15 +903,17 @@ exports.getDilutionForecast = (req, res) => {
         allStakeholders.add(inv.name);
       });
 
-      // Update cumulative shares
-      cumulativeTotalShares +=
-        round.issuedShares + additionalSharesFromConversions;
-
-      // Founder shares
+      // Founder shares calculation **after conversions**
       const founderSharesThisRound =
-        round.issuedShares - totalInvestorSharesThisRound;
+        round.issuedShares +
+        additionalSharesFromConversions -
+        totalInvestorSharesThisRound;
       stakeholderShares["Founders"] =
         (stakeholderShares["Founders"] || 0) + founderSharesThisRound;
+
+      // Update cumulative total shares
+      cumulativeTotalShares +=
+        round.issuedShares + additionalSharesFromConversions;
 
       // Initialize investor datasets
       allStakeholders.forEach((stakeholder) => {
@@ -950,7 +951,7 @@ exports.getDilutionForecast = (req, res) => {
       }
     });
 
-    // Warrants potential dilution
+    // Potential warrant dilution
     let potentialWarrantDilution = 0;
     if (pendingConversions.warrants.length > 0) {
       const totalWarrantShares = pendingConversions.warrants.reduce(
