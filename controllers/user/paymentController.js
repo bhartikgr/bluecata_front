@@ -98,7 +98,14 @@ exports.auth_code = async (req, res) => {
 // ✅ CORRECTED: Accept token from frontend, don't fetch again
 exports.create_payment_intent = async (req, res) => {
   try {
-    const { amount = 100, currency = "INR", accessToken } = req.body;
+    const {
+      amount = 100,
+      discount = 0,
+      currency,
+      accessToken,
+      originalAmount,
+      code = "",
+    } = req.body;
 
     if (!accessToken) {
       return res.status(400).json({ error: "Access token is required" });
@@ -121,6 +128,9 @@ exports.create_payment_intent = async (req, res) => {
       metadata: {
         environment: "demo",
         created_at: new Date().toISOString(),
+        discount_applied: discount,
+        original_amount: originalAmount,
+        referral_code: code || null,
       },
     };
 
@@ -175,7 +185,7 @@ exports.create_payment_intent = async (req, res) => {
 };
 exports.create_redirect_payment_intent = async (req, res) => {
   try {
-    const { amount = 100, currency = "USD", accessToken } = req.body;
+    const { amount = 100, currency = "EUR", accessToken } = req.body;
 
     if (!accessToken) {
       return res.status(400).json({ error: "Access token is required" });
@@ -243,5 +253,197 @@ exports.create_redirect_payment_intent = async (req, res) => {
       err.response?.data || err.message
     );
     return res.status(500).json({ error: err.response?.data || err.message });
+  }
+};
+
+exports.CompanySubscriptionOneTimeDataRoomPlus = async (req, res) => {
+  const {
+    discount,
+    created_by_id,
+    code,
+    amount,
+    company_id,
+    clientSecret,
+    PayidOnetime,
+    payment_status,
+  } = req.body;
+  var dd = req.body;
+  try {
+    const userInsertQuery = `
+        INSERT INTO usersubscriptiondataroomone_time 
+        (payid,payment_status,start_date, end_date, price, company_id, clientSecret, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `;
+
+    const startDate = new Date();
+
+    // Add 3 months to start date
+    const endDate = new Date(startDate);
+    endDate.setFullYear(endDate.getFullYear() + 1);
+
+    db.query(
+      userInsertQuery,
+      [
+        PayidOnetime,
+        payment_status,
+        startDate,
+        endDate,
+        amount,
+        company_id,
+        clientSecret,
+        startDate,
+      ],
+      async (err, result) => {
+        if (err) {
+          console.error("DB Insert Error:", err);
+          return res.status(500).json({ error: "Database error" + dd });
+        }
+        const insertId = result.insertId;
+
+        // 2️⃣ Log into audit_logs
+        const auditQuery = `
+          INSERT INTO audit_logs 
+          (user_id, company_id, module, action, entity_id, entity_type, details, ip_address, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
+        `;
+
+        const auditValues = [
+          created_by_id, // user_id
+          company_id,
+          "package-subscription", // module
+          "CREATE", // action
+          insertId, // entity_id
+          "Dataroom Management + Investor Reporting", // entity_type
+          JSON.stringify(req.body), // details
+          req.body.ip_address || null, // ip_address
+        ];
+
+        db.query(auditQuery, auditValues, (auditErr) => {
+          if (auditErr) console.error("Audit log insert failed:", auditErr);
+        });
+        if (code !== "") {
+          const query = "SELECT * FROM  discount_code where code = ?";
+          const insertId = result.insertId;
+          db.query(query, [code], (err, row) => {
+            if (err) {
+              return res.status(500).json({
+                message: "Database query error",
+                error: err,
+              });
+            }
+            var referData = row[0];
+            var usecount = row[0].used_count + 1;
+            db.query(
+              "UPDATE discount_code SET used_count = ? WHERE code=?",
+              [usecount, code],
+              (finalErr) => {
+                if (finalErr) {
+                  return res
+                    .status(500)
+                    .json({ message: "Update failed", error: finalErr });
+                }
+                db.query(
+                  `INSERT INTO used_referral_code 
+                                 (discount_code,table_type,table_id,discounts,company_id, discount_code_id, payment_type, created_at) 
+                                 VALUES (?,?, ?, ?, ?, ?, ?, NOW())`,
+                  [
+                    code,
+                    "usersubscriptiondataroomone_time",
+                    insertId,
+                    discount,
+                    company_id,
+                    referData.id,
+                    "Dataroom_Plus_Investor_Report",
+                  ],
+                  (insertErr) => {
+                    if (insertErr)
+                      console.error("Document log insert failed", insertErr);
+                  }
+                );
+              }
+            );
+          });
+        }
+        res.status(200).json({
+          message: "",
+          status: 1,
+        });
+      }
+    );
+  } catch (err) {
+    console.error("Stripe Error:", err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+exports.CreateuserSubscriptionDataRoomPerinstance = async (req, res) => {
+  const {
+    usersubscriptiondataroomone_time_id,
+    amount,
+    company_id,
+    clientSecret,
+    created_by_id,
+    PayidOnetime,
+    payment_status,
+  } = req.body;
+
+  try {
+    const userInsertQuery = `
+        INSERT INTO usersubscriptiondataroom_perinstance 
+        (payment_status,payid,usersubscriptiondataroomone_time_id, price, company_id, clientSecret, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `;
+
+    const startDate = new Date();
+
+    db.query(
+      userInsertQuery,
+      [
+        payment_status,
+        PayidOnetime,
+        usersubscriptiondataroomone_time_id,
+        amount,
+        company_id,
+        clientSecret,
+        startDate,
+      ],
+      async (err, result) => {
+        if (err) {
+          console.error("DB Insert Error:", err);
+          return res.status(500).json({ error: "Database error" });
+        }
+        const insertId = result.insertId;
+
+        // 2️⃣ Log into audit_logs
+        const auditQuery = `
+          INSERT INTO audit_logs
+          (user_id, company_id, module, action, entity_id, entity_type, details, ip_address, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
+        `;
+
+        const auditValues = [
+          created_by_id,
+          company_id,
+          "package-subscription", // module
+          "CREATE", // action
+          insertId, // entity_id
+          "Instance payment", // entity_type
+          JSON.stringify(req.body), // details
+          req.body.ip_address || null,
+        ];
+
+        db.query(auditQuery, auditValues, (auditErr) => {
+          if (auditErr) console.error("Audit log insert failed:", auditErr);
+        });
+
+        res.status(200).json({
+          message: "",
+          status: 1,
+        });
+      }
+    );
+  } catch (err) {
+    console.error("Stripe Error:", err);
+    res.status(500).json({ error: err.message });
   }
 };

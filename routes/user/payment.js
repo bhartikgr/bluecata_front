@@ -16,4 +16,12 @@ router.post(
   "/create_redirect_payment_intent",
   paymentController.create_redirect_payment_intent
 );
+router.post(
+  "/CompanySubscriptionOneTimeDataRoomPlus",
+  paymentController.CompanySubscriptionOneTimeDataRoomPlus
+);
+router.post(
+  "/CreateuserSubscriptionDataRoomPerinstance",
+  paymentController.CreateuserSubscriptionDataRoomPerinstance
+);
 module.exports = router;
