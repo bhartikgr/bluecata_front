@@ -778,29 +778,49 @@ exports.checkInvestor = (req, res) => {
   const { company_id, id, type } = req.body;
 
   const query = `
-    SELECT ii.id AS investor_id,
-       MAX(ii.ip_address) AS ip_address,
-       MAX(ii.city) AS city,
-       MAX(ii.country) AS country,
-       MAX(ci.investorType) AS investorType,
-       MAX(ci.investmentPreference) AS investmentPreference,
-       MAX(ii.name) AS name,  -- repeat for all ii.* columns
-       MAX(c.company_name) AS company_name
-FROM company_investor ci
-JOIN investor_information ii ON ii.id = ci.investor_id
-JOIN sharereport sr ON sr.investor_id = ii.id
-JOIN investor_updates iu ON iu.id = sr.investor_updates_id AND iu.company_id = ci.company_id
-JOIN company c ON c.id = ci.company_id
-WHERE ci.company_id = ?
-  AND iu.is_shared = 'Yes'
-  AND ii.is_register = 'Yes'
-  AND ii.id = ?
-  AND iu.type = ?
-GROUP BY ii.id
-ORDER BY ii.id DESC
-LIMIT 0, 25;
-;
-  `;
+  SELECT ii.id AS investor_id,
+         MAX(ii.unique_code) AS unique_code,
+         MAX(ii.company_id) AS company_id,
+         MAX(ii.created_by_id) AS created_by_id,
+         MAX(ii.created_by_role) AS created_by_role,
+         MAX(ii.first_name) AS first_name,
+         MAX(ii.last_name) AS last_name,
+         MAX(ii.email) AS email,
+         MAX(ii.viewpassword) AS viewpassword,
+         MAX(ii.password) AS password,
+         MAX(ii.phone) AS phone,
+         MAX(ii.city) AS city,
+         MAX(ii.country) AS country,
+         MAX(ii.type_of_investor) AS type_of_investor,
+         MAX(ii.full_address) AS full_address,
+         MAX(ii.country_tax) AS country_tax,
+         MAX(ii.tax_id) AS tax_id,
+         MAX(ii.kyc_document) AS kyc_document,
+         MAX(ii.ip_address) AS ip_address,
+         MAX(ii.is_register) AS is_register,
+         MAX(ii.expired_at) AS expired_at,
+         MAX(ii.created_at) AS created_at,
+         MAX(ii.updated_at) AS updated_at,
+         MAX(ii.accredited_status) AS accredited_status,
+         MAX(ii.linkedIn_profile) AS linkedIn_profile,
+         MAX(ii.industry_expertise) AS industry_expertise,
+         MAX(ci.investorType) AS investorType,
+         MAX(ci.investmentPreference) AS investmentPreference,
+         MAX(c.company_name) AS company_name
+  FROM company_investor ci
+  JOIN investor_information ii ON ii.id = ci.investor_id
+  JOIN sharereport sr ON sr.investor_id = ii.id
+  JOIN investor_updates iu ON iu.id = sr.investor_updates_id AND iu.company_id = ci.company_id
+  JOIN company c ON c.id = ci.company_id
+  WHERE ci.company_id = ?
+    AND iu.is_shared = 'Yes'
+    AND ii.is_register = 'Yes'
+    AND ii.id = ?
+    AND iu.type = ?
+  GROUP BY ii.id
+  ORDER BY ii.id DESC
+  LIMIT 0, 25;
+`;
 
   db.query(query, [company_id, id, type], (err, row) => {
     if (err) {
