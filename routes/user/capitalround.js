@@ -73,5 +73,9 @@ router.post(
   "/getcheckNextRoundForInvestor",
   capitalroundController.getcheckNextRoundForInvestor
 );
+router.post(
+  "/getRoundCapTableSingleRecord",
+  capitalroundController.getRoundCapTableSingleRecord
+);
 
 module.exports = router;
