@@ -849,18 +849,18 @@ exports.getInvestorlistCrmDuediligence = (req, res) => {
 };
 
 exports.getInvestorReportDuediligence = (req, res) => {
-  const { user_id, id } = req.body;
+  const { company_id, id } = req.body;
 
-  const query = `SELECT sharereport.*,investor_updates.created_at as datereport,investor_updates.version,investor_updates.document_name from sharereport join investor_updates on investor_updates.id  = sharereport.investor_updates_id where sharereport.investor_id = ? And sharereport.user_id = ? AND investor_updates.type = 'Due Diligence Document' order by sharereport.id desc`;
+  const query = `SELECT sharereport.*,investor_updates.created_at as datereport,investor_updates.version,investor_updates.document_name from sharereport join investor_updates on investor_updates.id  = sharereport.investor_updates_id where sharereport.investor_id = ? And sharereport.company_id = ? AND investor_updates.type = 'Due Diligence Document' order by sharereport.id desc`;
 
-  db.query(query, [id, user_id], (err, results) => {
+  db.query(query, [id, company_id], (err, results) => {
     if (err) {
       return res.status(500).json({
         message: "Database query error",
         error: err,
       });
     }
-    var pathname = "upload/docs/doc_" + user_id;
+    var pathname = "upload/docs/doc_" + company_id;
     const updatedResults = results.map((doc) => ({
       ...doc,
       downloadUrl: `https://blueprintcatalyst.com/api/${pathname}/investor_report/${doc.document_name}`,
