@@ -778,15 +778,28 @@ exports.checkInvestor = (req, res) => {
   const { company_id, id, type } = req.body;
 
   const query = `
-    SELECT ii.id AS investor_id, ii.ip_address, ii.city, ii.country, ci.investorType, ci.investmentPreference, ii.*, c.company_name
-    FROM company_investor ci
-    JOIN investor_information ii ON ii.id = ci.investor_id
-    JOIN sharereport sr ON sr.investor_id = ii.id
-    JOIN investor_updates iu ON iu.id = sr.investor_updates_id AND iu.company_id = ci.company_id
-    JOIN company c ON c.id = ci.company_id
-    WHERE ci.company_id = ? AND iu.is_shared = 'Yes' AND ii.is_register = 'Yes' AND ii.id = ? And iu.type =?
-    GROUP BY ii.id
-    ORDER BY ii.id DESC;
+    SELECT ii.id AS investor_id,
+       MAX(ii.ip_address) AS ip_address,
+       MAX(ii.city) AS city,
+       MAX(ii.country) AS country,
+       MAX(ci.investorType) AS investorType,
+       MAX(ci.investmentPreference) AS investmentPreference,
+       MAX(ii.name) AS name,  -- repeat for all ii.* columns
+       MAX(c.company_name) AS company_name
+FROM company_investor ci
+JOIN investor_information ii ON ii.id = ci.investor_id
+JOIN sharereport sr ON sr.investor_id = ii.id
+JOIN investor_updates iu ON iu.id = sr.investor_updates_id AND iu.company_id = ci.company_id
+JOIN company c ON c.id = ci.company_id
+WHERE ci.company_id = ?
+  AND iu.is_shared = 'Yes'
+  AND ii.is_register = 'Yes'
+  AND ii.id = ?
+  AND iu.type = ?
+GROUP BY ii.id
+ORDER BY ii.id DESC
+LIMIT 0, 25;
+;
   `;
 
   db.query(query, [company_id, id, type], (err, row) => {
