@@ -2156,24 +2156,29 @@ function calculateInvestmentRoundCapTable(round, investors, roundZero) {
 // Add this to your capitalround API
 // capitalRoundController.js
 exports.checkExistingRounds = (req, res) => {
-  const { company_id } = req.body;
+  const { company_id, id } = req.body;
 
   // Count all rounds including Round 0 to determine if company has any rounds
-  const sql =
-    "SELECT COUNT(*) as roundCount FROM roundrecord WHERE company_id = ?";
+  const sql = "SELECT * FROM roundrecord WHERE company_id = ?";
 
   db.query(sql, [company_id], (err, results) => {
     if (err) {
       return res.status(500).json({ message: "Database error", error: err });
     }
+    var roundCounts = false;
+    if (results.length > 0) {
+      const roundCount = results[0].round_type;
 
-    const roundCount = results[0].roundCount;
-    if (roundCount.round_type === "Round 0") {
-      var roundCounts = "1";
-    } else {
-      var roundCounts = "0";
+      if (id) {
+        if (roundCount === "Round 0") {
+          var roundCounts = false;
+        }
+      } else {
+        if (roundCount === "Round 0") {
+          var roundCounts = true;
+        }
+      }
     }
-
     res.status(200).json({
       roundCount: roundCounts,
     });
