@@ -80,6 +80,7 @@ exports.CreateOrUpdateCapitalRound = (req, res) => {
       return res.status(500).json({ message: "File upload error", error: err });
     }
 
+    // Parse JSON fields and handle empty values
     const {
       ip_address,
       id,
@@ -106,19 +107,50 @@ exports.CreateOrUpdateCapitalRound = (req, res) => {
       generalnotes,
       dateroundclosed,
       company_id,
+      round_type,
+      founder_data,
+      total_founder_shares,
+      founder_count,
+      ClientIP,
     } = req.body;
+    console.log(req.body);
+    // Use ClientIP if ip_address is empty
+    const clientIp = ip_address || ClientIP;
 
-    // Extract uploaded files
-    const newTermsheetFiles = req.files["termsheetFile"]
-      ? req.files["termsheetFile"].map((f) => f.filename)
-      : null;
+    // Extract uploaded files - Handle no files case
+    const newTermsheetFiles =
+      req.files && req.files["termsheetFile"]
+        ? req.files["termsheetFile"].map((f) => f.filename)
+        : [];
 
-    const newSubscriptionDocs = req.files["subscriptiondocument"]
-      ? req.files["subscriptiondocument"].map((f) => f.filename)
-      : null;
+    const newSubscriptionDocs =
+      req.files && req.files["subscriptiondocument"]
+        ? req.files["subscriptiondocument"].map((f) => f.filename)
+        : [];
+
+    // Parse JSON fields - Handle parsing safely
+    let parsedInstrumentData = {};
+    try {
+      parsedInstrumentData = instrument_type_data
+        ? JSON.parse(instrument_type_data)
+        : {};
+    } catch (e) {
+      console.error("Error parsing instrument_type_data:", e);
+      parsedInstrumentData = {};
+    }
 
     // ---------------- UPDATE CASE ----------------
     if (id && id !== "undefined" && id !== null && id !== "") {
+      let processedDateRoundClosed = dateroundclosed;
+      if (Array.isArray(dateroundclosed)) {
+        // Take the first non-empty value from the array
+        processedDateRoundClosed =
+          dateroundclosed.find(
+            (date) => date && date.trim() !== "" && date !== "null"
+          ) || null;
+      } else if (dateroundclosed === "null" || dateroundclosed === "") {
+        processedDateRoundClosed = null;
+      }
       db.query(
         "SELECT termsheetFile, subscriptiondocument FROM roundrecord WHERE id = ?",
         [id],
@@ -138,16 +170,17 @@ exports.CreateOrUpdateCapitalRound = (req, res) => {
             dateroundclosed = ?, nameOfRound = ?, shareClassType = ?, shareclassother = ?, description = ?, 
             instrumentType = ?, customInstrument = ?, roundsize = ?, currency = ?, issuedshares = ?, rights = ?, 
             liquidationpreferences = ?, liquidation = ?, liquidationOther = ?, convertible = ?, convertibleType = ?, 
-            voting = ?, generalnotes = ?, updated_by_id = ? ,updated_by_role = ?`;
+            voting = ?, generalnotes = ?, updated_by_id = ?, updated_by_role = ?, round_type = ?, founder_data = ?, 
+            total_founder_shares = ?, founder_count = ?`;
 
           const values = [
             company_id,
-            roundStatus,
-            JSON.stringify(instrument_type_data),
+            roundStatus || "",
+            JSON.stringify(parsedInstrumentData),
             created_by_id,
             created_by_role,
-            dateroundclosed,
-            nameOfRound,
+            processedDateRoundClosed, // FIX: Use processed date instead of raw
+            nameOfRound || "",
             shareClassType || "",
             shareclassother || "",
             description || "",
@@ -166,31 +199,46 @@ exports.CreateOrUpdateCapitalRound = (req, res) => {
             generalnotes || "",
             created_by_id,
             created_by_role,
+            round_type || "Investment",
+            founder_data || null,
+            total_founder_shares || null,
+            founder_count || null,
           ];
 
-          // Overwrite termsheet file if uploaded
-          if (newTermsheetFiles !== null) {
-            sql += `, termsheetFile = ?`;
-            values.push(JSON.stringify(newTermsheetFiles));
+          // Handle file updates
+          let finalTermsheetFiles = newTermsheetFiles;
+          let finalSubscriptionDocs = newSubscriptionDocs;
+
+          // If no new files but existing files, keep existing
+          if (newTermsheetFiles.length === 0 && existingTermsheetFiles) {
+            try {
+              finalTermsheetFiles = JSON.parse(existingTermsheetFiles);
+            } catch (e) {
+              finalTermsheetFiles = [];
+            }
           }
 
-          // Append subscription documents if uploaded
-          if (newSubscriptionDocs !== null) {
-            sql += `, subscriptiondocument = ?`;
-            const allSubscriptionDocs = [
-              ...(existingSubscriptionDocs
-                ? JSON.parse(existingSubscriptionDocs)
-                : []),
-              ...newSubscriptionDocs,
-            ];
-            values.push(JSON.stringify(allSubscriptionDocs));
+          if (newSubscriptionDocs.length === 0 && existingSubscriptionDocs) {
+            try {
+              finalSubscriptionDocs = JSON.parse(existingSubscriptionDocs);
+            } catch (e) {
+              finalSubscriptionDocs = [];
+            }
           }
+
+          sql += `, termsheetFile = ?, subscriptiondocument = ?`;
+          values.push(JSON.stringify(finalTermsheetFiles));
+          values.push(JSON.stringify(finalSubscriptionDocs));
 
           sql += " WHERE id = ?";
           values.push(id);
 
+          console.log("Update SQL:", sql);
+          console.log("Update values:", values);
+
           db.query(sql, values, (err) => {
             if (err) {
+              console.error("Update error:", err);
               return res.status(500).json({ message: "DB update error", err });
             }
 
@@ -202,7 +250,7 @@ exports.CreateOrUpdateCapitalRound = (req, res) => {
               targetTable: "roundrecord",
               targetId: id,
               description: `Updated round record: ${nameOfRound}`,
-              ip: req.body.ClientIP,
+              ip: clientIp,
             });
 
             res
@@ -213,25 +261,42 @@ exports.CreateOrUpdateCapitalRound = (req, res) => {
       );
     } else {
       // ---------------- INSERT CASE ----------------
-      const sql = `INSERT INTO roundrecord
-        (company_id,roundStatus,instrument_type_data,created_by_id,created_by_role,dateroundclosed,nameOfRound,
-        shareClassType,shareclassother,description,instrumentType,customInstrument,roundsize,currency,issuedshares,
-        rights,liquidationpreferences,liquidation,liquidationOther,convertible,convertibleType,voting,
-        termsheetFile,subscriptiondocument,generalnotes,created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`;
+      // CORRECTED: Counted columns properly - your table has exactly these 34 columns (not 35)
+      const sql = `INSERT INTO roundrecord (company_id,created_by_id,created_by_role,updated_by_id,updated_by_role,round_type, nameOfRound, shareClassType, shareclassother,description,instrumentType,instrument_type_data,customInstrument,roundsize,currency,issuedshares, rights, liquidationpreferences,liquidation,liquidationOther,convertible, convertibleType, voting, termsheetFile, subscriptiondocument, 
+   generalnotes, dateroundclosed, roundStatus, is_shared, is_locked, 
+   created_at, founder_data, total_founder_shares, founder_count)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+      // Parse numeric values
+      const parsedFounderCount = founder_count ? parseInt(founder_count) : null;
+      const parsedTotalFounderShares = total_founder_shares
+        ? parseInt(total_founder_shares)
+        : null;
+
+      // FIX: Handle dateroundclosed array issue
+      let processedDateRoundClosed = dateroundclosed;
+      if (Array.isArray(dateroundclosed)) {
+        // Take the first non-empty value from the array
+        processedDateRoundClosed =
+          dateroundclosed.find((date) => date && date.trim() !== "") || null;
+      }
 
       const values = [
+        // Basic required fields (in exact order of your table structure)
         company_id,
-        roundStatus,
-        JSON.stringify(instrument_type_data),
         created_by_id,
         created_by_role,
-        dateroundclosed,
-        nameOfRound,
+        0, // updated_by_id (NOT NULL, default 0)
+        null, // updated_by_role (NULL)
+
+        // Round info
+        round_type || "Investment",
+        nameOfRound || "",
         shareClassType || "",
         shareclassother || "",
         description || "",
         instrumentType || "",
+        JSON.stringify(parsedInstrumentData),
         customInstrument || "",
         roundsize || "",
         currency || "",
@@ -243,15 +308,37 @@ exports.CreateOrUpdateCapitalRound = (req, res) => {
         convertible || "",
         convertibleType || "",
         voting || "",
-        JSON.stringify(newTermsheetFiles || []),
-        JSON.stringify(newSubscriptionDocs || []),
+
+        // File fields
+        JSON.stringify(newTermsheetFiles),
+        JSON.stringify(newSubscriptionDocs),
+
+        // Additional fields - FIXED: Use processedDateRoundClosed instead of raw array
         generalnotes || "",
+        processedDateRoundClosed, // FIX: This was causing the array issue
+        roundStatus || "",
+        "No", // is_shared (NOT NULL, default 'No')
+        "No", // is_locked (NOT NULL, default 'No')
+
+        // Timestamp
         new Date(),
+
+        // Round 0 specific fields
+        founder_data || null,
+        parsedTotalFounderShares,
+        parsedFounderCount,
       ];
+
+      // Debug: Log the exact placeholder count
+      const placeholderCount = (sql.match(/\?/g) || []).length;
 
       db.query(sql, values, (err, result) => {
         if (err) {
-          return res.status(500).json({ message: "DB insert error", err });
+          console.error("Database insert error:", err);
+          console.error("Error details:", err.sqlMessage);
+          return res
+            .status(500)
+            .json({ message: "DB insert error: " + err.sqlMessage, err });
         }
 
         insertAccessLog({
@@ -262,7 +349,7 @@ exports.CreateOrUpdateCapitalRound = (req, res) => {
           targetTable: "roundrecord",
           targetId: result.insertId,
           description: `Created round record: ${nameOfRound}`,
-          ip: ip_address,
+          ip: clientIp,
         });
 
         insertAuditLog({
@@ -272,8 +359,15 @@ exports.CreateOrUpdateCapitalRound = (req, res) => {
           action: "CREATE",
           entityId: result.insertId,
           entityType: "roundrecord",
-          details: { nameOfRound, roundsize, currency },
-          ip: req.body.ClientIP,
+          details: {
+            nameOfRound,
+            roundsize,
+            currency,
+            round_type: round_type || "Investment",
+            total_founder_shares: parsedTotalFounderShares,
+            founder_count: parsedFounderCount,
+          },
+          ip: clientIp,
         });
 
         res.status(200).json({
@@ -1268,7 +1362,6 @@ exports.getEditrecordlist = async (req, res) => {
     SELECT * from roundrecord where company_id = ? And id = ?
   `;
 
-  // Assuming company_id = user, company_id = investor_id (check DB schema!)
   db.query(query, [company_id, id], (err, row) => {
     if (err) {
       return res.status(500).json({
@@ -1277,10 +1370,116 @@ exports.getEditrecordlist = async (req, res) => {
       });
     }
 
-    res.status(200).json({
-      message: "",
-      results: row,
-    });
+    if (row.length > 0) {
+      // Parse JSON fields properly
+      const processedRow = row.map((record) => {
+        const processedRecord = { ...record };
+
+        // Parse instrument_type_data
+        if (record.instrument_type_data) {
+          try {
+            let rawData = record.instrument_type_data;
+            // Remove extra escaping if present
+            if (
+              typeof rawData === "string" &&
+              rawData.startsWith('"') &&
+              rawData.endsWith('"')
+            ) {
+              rawData = rawData.slice(1, -1).replace(/\\"/g, '"');
+            }
+            processedRecord.instrument_type_data = JSON.parse(rawData);
+          } catch (err) {
+            console.error("Error parsing instrument_type_data:", err);
+            processedRecord.instrument_type_data = {};
+          }
+        } else {
+          processedRecord.instrument_type_data = {};
+        }
+
+        // Parse founder_data for Round 0
+        if (record.founder_data) {
+          try {
+            let rawData = record.founder_data;
+            if (
+              typeof rawData === "string" &&
+              rawData.startsWith('"') &&
+              rawData.endsWith('"')
+            ) {
+              rawData = rawData.slice(1, -1).replace(/\\"/g, '"');
+            }
+            processedRecord.founder_data = JSON.parse(rawData);
+          } catch (err) {
+            console.error("Error parsing founder_data:", err);
+            processedRecord.founder_data = null;
+          }
+        }
+
+        // Parse file arrays
+        if (record.termsheetFile) {
+          try {
+            let rawData = record.termsheetFile;
+            if (
+              typeof rawData === "string" &&
+              rawData.startsWith('"') &&
+              rawData.endsWith('"')
+            ) {
+              rawData = rawData.slice(1, -1).replace(/\\"/g, '"');
+            }
+            processedRecord.termsheetFile = JSON.parse(rawData);
+          } catch (err) {
+            console.error("Error parsing termsheetFile:", err);
+            processedRecord.termsheetFile = [];
+          }
+        } else {
+          processedRecord.termsheetFile = [];
+        }
+
+        if (record.subscriptiondocument) {
+          try {
+            let rawData = record.subscriptiondocument;
+            if (
+              typeof rawData === "string" &&
+              rawData.startsWith('"') &&
+              rawData.endsWith('"')
+            ) {
+              rawData = rawData.slice(1, -1).replace(/\\"/g, '"');
+            }
+            processedRecord.subscriptiondocument = JSON.parse(rawData);
+          } catch (err) {
+            console.error("Error parsing subscriptiondocument:", err);
+            processedRecord.subscriptiondocument = [];
+          }
+        } else {
+          processedRecord.subscriptiondocument = [];
+        }
+
+        // Parse liquidation array
+        if (record.liquidation) {
+          try {
+            processedRecord.liquidation = record.liquidation
+              .split(",")
+              .map((v) => v.trim());
+          } catch (err) {
+            console.error("Error parsing liquidation:", err);
+            processedRecord.liquidation = [];
+          }
+        } else {
+          processedRecord.liquidation = [];
+        }
+
+        return processedRecord;
+      });
+
+      res.status(200).json({
+        message: "",
+        results: processedRow,
+      });
+    } else {
+      res.status(404).json({
+        message: "Record not found",
+        results: [],
+      });
+    }
   });
 };
 
@@ -1504,6 +1703,7 @@ exports.getcheckNextRoundForInvestor = (req, res) => {
   });
 };
 // Controller: capitalRoundController.js
+// Controller: capitalRoundController.js
 exports.getRoundCapTableSingleRecord = (req, res) => {
   const { company_id, round_id } = req.body;
 
@@ -1529,7 +1729,18 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
 
       const round = roundData[0];
 
-      // Step 2: Get current investors
+      // Step 2: Check if this is Round 0
+      if (round.round_type === "Round 0") {
+        const capTableData = calculateRoundZeroCapTable(round);
+        return res.status(200).json({
+          success: true,
+          message: "Round 0 cap table data retrieved successfully",
+          round,
+          capTable: capTableData,
+        });
+      }
+
+      // Step 3: For investment rounds, get investors
       db.query(
         `SELECT ir.*, COALESCE(ii.first_name,'') AS first_name, COALESCE(ii.last_name,'') AS last_name, COALESCE(ii.email,'') AS email
          FROM investorrequest_company ir
@@ -1542,11 +1753,11 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
               .status(500)
               .json({ success: false, message: "Database error", error: err });
 
-          // Step 3: Get previous rounds
+          // Step 4: Get Round 0 data for calculations
           db.query(
-            `SELECT * FROM roundrecord WHERE company_id=? AND id<? ORDER BY id ASC`,
-            [company_id, round_id],
-            (err, previousRounds) => {
+            `SELECT * FROM roundrecord WHERE company_id=? AND round_type='Round 0'`,
+            [company_id],
+            (err, roundZeroData) => {
               if (err)
                 return res.status(500).json({
                   success: false,
@@ -1554,38 +1765,27 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
                   error: err,
                 });
 
-              // Step 4: Get previous investors
-              db.query(
-                `SELECT ir.*, COALESCE(ii.first_name,'') AS first_name, COALESCE(ii.last_name,'') AS last_name, COALESCE(ii.email,'') AS email, rr.nameOfRound
-                 FROM investorrequest_company ir
-                 LEFT JOIN investor_information ii ON ir.investor_id = ii.id
-                 LEFT JOIN roundrecord rr ON ir.roundrecord_id = rr.id
-                 WHERE ir.company_id=? AND ir.roundrecord_id<? AND ir.request_confirm='Yes'
-                 ORDER BY ir.roundrecord_id ASC`,
-                [company_id, round_id],
-                (err, allPreviousInvestors) => {
-                  if (err)
-                    return res.status(500).json({
-                      success: false,
-                      message: "Database error",
-                      error: err,
-                    });
+              if (roundZeroData.length === 0) {
+                return res.status(400).json({
+                  success: false,
+                  message:
+                    "Round 0 (Incorporation) data not found. Please create Round 0 first.",
+                });
+              }
 
-                  const capTableData = calculateCapTable(
-                    round,
-                    investors,
-                    previousRounds,
-                    allPreviousInvestors
-                  );
-
-                  return res.status(200).json({
-                    success: true,
-                    message: "Cap table data retrieved successfully",
-                    round,
-                    capTable: capTableData,
-                  });
-                }
+              const roundZero = roundZeroData[0];
+              const capTableData = calculateInvestmentRoundCapTable(
+                round,
+                investors,
+                roundZero
               );
+
+              return res.status(200).json({
+                success: true,
+                message: "Cap table data retrieved successfully",
+                round,
+                capTable: capTableData,
+              });
             }
           );
         }
@@ -1594,217 +1794,388 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
   );
 };
 
-// 🔹 Cap Table Calculation
-function calculateCapTable(
-  round,
-  investors,
-  previousRounds,
-  allPreviousInvestors
-) {
-  let currentShareholders = [];
-  let previousShareholders = [];
+// 🔹 Round 0 Cap Table Calculation (Incorporation)
+// Controller: capitalRoundController.js - Round 0 के लिए सही implementation
+function calculateRoundZeroCapTable(round) {
+  let shareholders = [];
+  let totalShares = 0;
+  let totalValue = 0;
 
-  // Previous investors
-  previousShareholders = allPreviousInvestors.map((inv) => ({
-    name: `${inv.first_name} ${inv.last_name}`.trim() || "Unnamed Investor",
-    email: inv.email || "-",
-    type: "Previous",
-    round: inv.nameOfRound || "-",
-    shares: parseFloat(inv.shares || 0),
-    value: 0,
-  }));
+  // Parse founder data from Round 0
+  try {
+    const founderData = JSON.parse(round.founder_data || "{}");
+    const founders = founderData.founders || [];
+    const pricePerShare = parseFloat(founderData.pricePerShare) || 0.01;
 
-  const instrumentType = (round.instrumentType || "").toLowerCase();
+    shareholders = founders.map((founder, index) => {
+      const shares = parseInt(founder.shares) || 0;
+      const value = shares * pricePerShare;
 
-  // Price per Share logic (default fallback)
-  const totalRoundSize = parseFloat(round.roundsize || 0);
-  const totalIssuedShares = parseFloat(round.issuedshares || 1);
-  const defaultPricePerShare = totalRoundSize / totalIssuedShares;
+      return {
+        name: `Founder ${index + 1}`,
+        email: "-",
+        type: "Founder",
+        round: "Round 0",
+        shares: shares,
+        ownership: 0, // Will calculate after total
+        value: value,
+        round_type: round.round_type,
+        shareType: founder.shareType || "common",
+        votingRights: founder.voting || "voting",
+      };
+    });
 
-  // Current round investors
-  if (!previousRounds || previousRounds.length === 0) {
-    // Round 0 (Incorporation)
-    currentShareholders = investors.map((inv) => ({
-      name: `${inv.first_name} ${inv.last_name}`.trim() || "Unnamed Investor",
-      email: inv.email || "-",
-      type: "New",
-      round: round.nameOfRound || "-",
-      shares: parseFloat(inv.shares || inv.investment_amount || 0),
-      value: parseFloat(inv.investment_amount || 0),
-    }));
-  } else {
-    // Non-zero rounds
-    switch (instrumentType) {
-      case "safe":
-        currentShareholders = processSafeRound(
-          round,
-          investors,
-          previousShareholders
-        );
-        break;
-      case "convertible note":
-        currentShareholders = processConvertibleRound(
-          round,
-          investors,
-          previousShareholders
-        );
-        break;
-      default:
-        currentShareholders = processEquityRound(
-          round,
-          investors,
-          previousShareholders,
-          defaultPricePerShare
-        );
-        break;
-    }
+    // Calculate totals - CLIENT REQUIREMENTS के according
+    totalShares = shareholders.reduce((sum, s) => sum + s.shares, 0);
+    totalValue = shareholders.reduce((sum, s) => sum + s.value, 0);
+
+    // Calculate ownership percentages - CLIENT REQUIREMENTS के according
+    shareholders.forEach((sh) => {
+      sh.ownership = totalShares > 0 ? (sh.shares / totalShares) * 100 : 0;
+    });
+  } catch (error) {
+    console.error("Error parsing Round 0 data:", error);
+    return {
+      error: "Invalid Round 0 data structure",
+    };
   }
-
-  const allShareholders = [...previousShareholders, ...currentShareholders];
-  const totalShares = allShareholders.reduce((sum, s) => sum + s.shares, 0);
-
-  allShareholders.forEach((s) => {
-    s.ownership = totalShares > 0 ? (s.shares / totalShares) * 100 : 0;
-    s.value =
-      s.shares * parseFloat(round.pricePerShare || defaultPricePerShare);
-  });
 
   // Chart Data
   const chartData = {
-    labels: allShareholders.map((s) => s.name),
+    labels: shareholders.map((s) => s.name),
     datasets: [
       {
         label: "Ownership %",
-        data: allShareholders.map((s) => parseFloat(s.ownership.toFixed(2))),
-        backgroundColor: allShareholders.map(
+        data: shareholders.map((s) => parseFloat(s.ownership.toFixed(2))),
+        backgroundColor: shareholders.map(
           (_, idx) => `hsl(${(idx * 60) % 360},70%,50%)`
         ),
       },
     ],
   };
 
-  // Calculations
-  const newSharesTotal = currentShareholders.reduce(
-    (sum, s) => sum + s.shares,
-    0
-  );
-  const previousTotalShares = previousShareholders.reduce(
-    (sum, s) => sum + s.shares,
-    0
-  );
-  const pricePerShare = parseFloat(round.pricePerShare || defaultPricePerShare);
-  const postMoneyValuation =
-    (parseFloat(round.preMoneyValuation) || 0) +
-    (parseFloat(round.roundsize) || 0);
-
   return {
-    roundType: round.nameOfRound || "Unknown Round",
-    shareClass: round.shareClass || "Ordinary",
+    roundType: round.nameOfRound || "Round 0 - Incorporation",
+    round_type: round.round_type,
+    shareClass: round.shareClassType || "Common Shares",
     currency: round.currency || "USD",
     totalShares,
-    totalValue: allShareholders.reduce((sum, s) => sum + s.value, 0),
-    shareholders: allShareholders,
+    totalValue,
+    shareholders,
     chartData,
     calculations: {
-      investmentSize: parseFloat(round.roundsize || 0),
-      preMoneyValuation: parseFloat(round.preMoneyValuation || 0),
-      postMoneyValuation,
-      newShares: newSharesTotal,
-      previousTotalShares,
-      totalFullyDilutedShares: totalShares,
-      investorOwnershipPercent:
-        totalShares > 0 ? (newSharesTotal / totalShares) * 100 : 0,
-      sharePrice: pricePerShare,
-      optionsPoolPercent: parseFloat(round.optionsPoolPercent || 0),
-      liquidationMultiple: parseFloat(round.liquidationMultiple || 1),
+      // CLIENT REQUIREMENTS - Platform Outputs
+      totalSharesIssued: totalShares, // Platform Output 1
+      sharePrice: parseFloat(round.pricePerShare) || 0.01, // From incorporation
+      totalValue: totalValue, // Platform Output 3
+      founderCount: shareholders.length,
+      // Ownership percentages are already in shareholders array - Platform Output 2
     },
+    isRoundZero: true,
   };
 }
 
-// 🔹 SAFE Round
-function processSafeRound(round, investors, previousShareholders) {
-  let data = {};
+// 🔹 Investment Round Cap Table Calculation (Round 1, Seed, etc.)
+function calculateInvestmentRoundCapTable(round, investors, roundZero) {
+  // Parse Round 0 founder data
+  let roundZeroFounders = [];
+  let roundZeroTotalShares = 0;
+
   try {
-    data = JSON.parse(round.instrument_type_data || "{}");
-  } catch (e) {}
-  const valuationCap = parseFloat(data.valuationCap || 0);
-  const discountRate = parseFloat(data.discountRate || 0);
-  const safeType = (data.safeType || "POST_MONEY").toUpperCase();
+    const founderData = JSON.parse(roundZero.founder_data || "{}");
+    roundZeroFounders = founderData.founders || [];
+    roundZeroTotalShares =
+      founderData.totalShares || parseInt(roundZero.issuedshares) || 0;
+  } catch (error) {
+    console.error("Error parsing Round 0 data:", error);
+    roundZeroTotalShares = parseInt(roundZero.issuedshares) || 0;
+  }
 
-  const prevTotalShares = previousShareholders.reduce(
-    (sum, s) => sum + s.shares,
-    0
-  );
+  // Parse investment round parameters
+  const investmentSize = parseFloat(round.roundsize) || 0;
+  const preMoneyValuation = parseFloat(round.preMoneyValuation) || 0;
+  const optionPoolPercent = parseFloat(round.optionPoolPercent) || 0;
+  const liquidationMultiple = parseFloat(round.liquidationMultiple) || 1.0;
 
-  return investors.map((inv) => {
-    const investment = parseFloat(inv.investment_amount || 0);
-    let newShares = 0;
-    if (safeType === "POST_MONEY") {
-      const postVal = valuationCap || 1;
-      newShares = (investment / postVal) * (prevTotalShares + 1);
+  // Validate required inputs for investment rounds
+  if (investmentSize <= 0 || preMoneyValuation <= 0) {
+    return {
+      roundType: round.nameOfRound || "Investment Round",
+      shareClass: round.shareClassType || "Preferred Shares",
+      currency: round.currency || "USD",
+      totalShares: 0,
+      totalValue: 0,
+      shareholders: [],
+      chartData: { labels: [], datasets: [] },
+      calculations: {},
+      round_type: round.round_type,
+      error:
+        "Missing required investment parameters: Investment Size and Pre-Money Valuation",
+    };
+  }
+
+  // ===== CLIENT REQUIREMENTS CALCULATIONS =====
+
+  // 1. Post-Money Valuation
+  const postMoneyValuation = investmentSize + preMoneyValuation;
+
+  // 2. Investor Post-Money Ownership %
+  const investorOwnershipPercent = (investmentSize / postMoneyValuation) * 100;
+
+  // 3. Employee Option Pool Shares (from client formula)
+  const optionPoolShares =
+    optionPoolPercent > 0
+      ? Math.round(
+          (roundZeroTotalShares / (1 - optionPoolPercent / 100)) *
+            (optionPoolPercent / 100)
+        )
+      : 0;
+
+  // 4. Pre-Seed Total Shares (Round 0 + Option Pool)
+  const preSeedTotalShares = roundZeroTotalShares + optionPoolShares;
+
+  // 5. Round 1 Share Price
+  const sharePrice = preMoneyValuation / preSeedTotalShares;
+
+  // 6. New Shares Issued in Round 1
+  const newShares = Math.round(investmentSize / sharePrice);
+
+  // 7. Post-Investment Total Shares
+  const postInvestmentTotalShares = preSeedTotalShares + newShares;
+
+  // Build shareholders array
+  let shareholders = [];
+
+  // 1. Founders from Round 0 (pre-seed)
+  if (roundZeroFounders.length > 0) {
+    roundZeroFounders.forEach((founder, index) => {
+      const shares = parseInt(founder.shares) || 0;
+
+      // Pre-Seed Ownership % (before investment)
+      const preSeedOwnership =
+        preSeedTotalShares > 0 ? (shares / preSeedTotalShares) * 100 : 0;
+
+      // Post-Seed Ownership % (after investment)
+      const postSeedOwnership =
+        postInvestmentTotalShares > 0
+          ? (shares / postInvestmentTotalShares) * 100
+          : 0;
+
+      // Value calculation
+      const value = shares * sharePrice;
+
+      shareholders.push({
+        name: `Founder ${index + 1}`,
+        email: "-",
+        type: "Founder",
+        round: "Round 0",
+        shares: shares,
+        ownership: postSeedOwnership, // Post-investment ownership
+        preInvestmentOwnership: preSeedOwnership, // Pre-investment ownership
+        value: value,
+        shareType: founder.shareType || "common",
+        votingRights: founder.voting || "voting",
+      });
+    });
+  } else {
+    // Fallback if no founder data
+    const preSeedOwnership =
+      preSeedTotalShares > 0
+        ? (roundZeroTotalShares / preSeedTotalShares) * 100
+        : 0;
+    const postSeedOwnership =
+      postInvestmentTotalShares > 0
+        ? (roundZeroTotalShares / postInvestmentTotalShares) * 100
+        : 0;
+
+    shareholders.push({
+      name: "Founders Total",
+      email: "-",
+      type: "Founder",
+      round: "Round 0",
+      shares: roundZeroTotalShares,
+      ownership: postSeedOwnership,
+      preInvestmentOwnership: preSeedOwnership,
+      value: roundZeroTotalShares * sharePrice,
+    });
+  }
+
+  // 2. Option Pool (Employee Pool)
+  if (optionPoolShares > 0) {
+    const optionPoolOwnership =
+      postInvestmentTotalShares > 0
+        ? (optionPoolShares / postInvestmentTotalShares) * 100
+        : 0;
+    const preOptionPoolOwnership =
+      preSeedTotalShares > 0
+        ? (optionPoolShares / preSeedTotalShares) * 100
+        : 0;
+
+    shareholders.push({
+      name: "Employee Option Pool",
+      email: "-",
+      type: "Options Pool",
+      round: "Pre-Seed",
+      shares: optionPoolShares,
+      ownership: optionPoolOwnership,
+      preInvestmentOwnership: preOptionPoolOwnership,
+      value: optionPoolShares * sharePrice,
+    });
+  }
+
+  // 3. New Investors in this round
+  let totalInvestorShares = 0;
+  if (investors.length > 0) {
+    investors.forEach((investor, index) => {
+      // Distribute new shares among investors (pro-rata based on investment amount)
+      const investmentAmount = parseFloat(investor.investment_amount) || 0;
+      const investorShareRatio =
+        investmentSize > 0 ? investmentAmount / investmentSize : 0;
+      const investorShares = Math.round(newShares * investorShareRatio);
+      totalInvestorShares += investorShares;
+
+      const investorOwnership =
+        postInvestmentTotalShares > 0
+          ? (investorShares / postInvestmentTotalShares) * 100
+          : 0;
+
+      shareholders.push({
+        name:
+          `${investor.first_name} ${investor.last_name}`.trim() ||
+          `Investor ${index + 1}`,
+        email: investor.email || "-",
+        type: "Investor",
+        round: round.nameOfRound || "Current Round",
+        shares: investorShares,
+        ownership: investorOwnership,
+        preInvestmentOwnership: 0, // New investors didn't exist before
+        value: investorShares * sharePrice,
+        investmentAmount: investmentAmount,
+      });
+    });
+
+    // Handle any rounding differences in investor shares
+    if (totalInvestorShares !== newShares && investors.length > 0) {
+      const difference = newShares - totalInvestorShares;
+      if (difference !== 0) {
+        const lastInvestorIndex = shareholders.length - 1;
+        shareholders[lastInvestorIndex].shares += difference;
+        shareholders[lastInvestorIndex].ownership =
+          postInvestmentTotalShares > 0
+            ? (shareholders[lastInvestorIndex].shares /
+                postInvestmentTotalShares) *
+              100
+            : 0;
+        shareholders[lastInvestorIndex].value =
+          shareholders[lastInvestorIndex].shares * sharePrice;
+      }
+    }
+  } else {
+    // If no specific investors, create a generic investor entry
+    const investorOwnership =
+      postInvestmentTotalShares > 0
+        ? (newShares / postInvestmentTotalShares) * 100
+        : 0;
+
+    shareholders.push({
+      name: "Round Investors",
+      email: "-",
+      type: "Investor",
+      round: round.nameOfRound || "Current Round",
+      shares: newShares,
+      ownership: investorOwnership,
+      preInvestmentOwnership: 0,
+      value: newShares * sharePrice,
+      investmentAmount: investmentSize,
+    });
+  }
+
+  // Calculate totals
+  const totalShares = shareholders.reduce((sum, s) => sum + s.shares, 0);
+  const totalValue = shareholders.reduce((sum, s) => sum + s.value, 0);
+
+  // Chart Data
+  const chartData = {
+    labels: shareholders.map((s) => s.name),
+    datasets: [
+      {
+        label: "Post-Investment Ownership %",
+        data: shareholders.map((s) => parseFloat(s.ownership.toFixed(2))),
+        backgroundColor: shareholders.map((s, idx) =>
+          s.type === "Founder"
+            ? "hsl(120,70%,50%)"
+            : s.type === "Options Pool"
+            ? "hsl(40,70%,50%)"
+            : s.type === "Investor"
+            ? "hsl(220,70%,50%)"
+            : `hsl(${(idx * 60) % 360},70%,50%)`
+        ),
+      },
+    ],
+  };
+
+  return {
+    roundType: round.nameOfRound || "Investment Round",
+    round_type: round.round_type,
+    shareClass: round.shareClassType || "Preferred Shares",
+    currency: round.currency || "USD",
+    totalShares,
+    totalValue,
+    shareholders,
+    chartData,
+    calculations: {
+      // Platform Inputs
+      investmentSize: investmentSize,
+      preMoneyValuation: preMoneyValuation,
+      optionPoolPercent: optionPoolPercent,
+      liquidationMultiple: liquidationMultiple,
+
+      // Platform Outputs (Client Requirements)
+      postMoneyValuation: postMoneyValuation,
+      investorOwnershipPercent: investorOwnershipPercent,
+      sharePrice: sharePrice,
+      newShares: newShares,
+      postInvestmentTotalShares: postInvestmentTotalShares,
+
+      // Pre-Seed Calculations
+      preSeedTotalShares: preSeedTotalShares,
+      optionPoolShares: optionPoolShares,
+      roundZeroTotalShares: roundZeroTotalShares,
+
+      // Additional metrics
+      investmentPerShare: investmentSize / newShares || 0,
+      fullyDilutedValuation: postMoneyValuation,
+
+      // For display purposes
+      totalFullyDilutedShares: postInvestmentTotalShares,
+    },
+    isRoundZero: false,
+  };
+}
+
+// Add this to your capitalround API
+// capitalRoundController.js
+exports.checkExistingRounds = (req, res) => {
+  const { company_id } = req.body;
+
+  // Count all rounds including Round 0 to determine if company has any rounds
+  const sql =
+    "SELECT COUNT(*) as roundCount FROM roundrecord WHERE company_id = ?";
+
+  db.query(sql, [company_id], (err, results) => {
+    if (err) {
+      return res.status(500).json({ message: "Database error", error: err });
+    }
+
+    const roundCount = results[0].roundCount;
+    if (roundCount.round_type === "Round 0") {
+      var roundCounts = "1";
     } else {
-      newShares = investment / ((valuationCap || 1) / prevTotalShares);
+      var roundCounts = "0";
     }
-    return {
-      name: `${inv.first_name} ${inv.last_name}`.trim() || "Unnamed Investor",
-      email: inv.email || "-",
-      type: "New",
-      round: round.nameOfRound || "-",
-      shares: newShares,
-      value: investment,
-    };
+
+    res.status(200).json({
+      roundCount: roundCounts,
+    });
   });
-}
-
-// 🔹 Convertible Note Round
-function processConvertibleRound(round, investors, previousShareholders) {
-  let data = {};
-  try {
-    data = JSON.parse(round.instrument_type_data || "{}");
-  } catch (e) {}
-  const valuationCap = parseFloat(data.valuationCap || 0);
-  const discountRate = parseFloat(data.discountRate || 0);
-
-  const prevTotalShares = previousShareholders.reduce(
-    (sum, s) => sum + s.shares,
-    0
-  );
-
-  return investors.map((inv) => {
-    const investment = parseFloat(inv.investment_amount || 0);
-    const pricePerShare = (valuationCap || 1) / prevTotalShares;
-    const newShares =
-      (investment / pricePerShare) * ((100 - discountRate) / 100);
-    return {
-      name: `${inv.first_name} ${inv.last_name}`.trim() || "Unnamed Investor",
-      email: inv.email || "-",
-      type: "New",
-      round: round.nameOfRound || "-",
-      shares: newShares,
-      value: investment,
-    };
-  });
-}
-
-// 🔹 Equity Round (Common / Preferred)
-function processEquityRound(
-  round,
-  investors,
-  previousShareholders,
-  pricePerShare
-) {
-  return investors.map((inv) => {
-    let shares = parseFloat(inv.shares || 0);
-    if (shares <= 0 && parseFloat(inv.investment_amount || 0) > 0) {
-      shares = parseFloat(inv.investment_amount) / pricePerShare;
-    }
-    return {
-      name: `${inv.first_name} ${inv.last_name}`.trim() || "Unnamed Investor",
-      email: inv.email || "-",
-      type: "New",
-      round: round.nameOfRound || "-",
-      shares,
-      value: shares * pricePerShare,
-    };
-  });
-}
+};
