@@ -82,6 +82,9 @@ exports.CreateOrUpdateCapitalRound = (req, res) => {
 
     // Parse JSON fields and handle empty values
     const {
+      optionPoolPercent,
+      pre_money,
+      post_money,
       ip_address,
       id,
       roundStatus,
@@ -166,7 +169,7 @@ exports.CreateOrUpdateCapitalRound = (req, res) => {
           const existingSubscriptionDocs = results[0].subscriptiondocument;
 
           let sql = `UPDATE roundrecord SET 
-            company_id = ?, roundStatus = ?, instrument_type_data = ?, created_by_id = ?, created_by_role = ?, 
+            optionPoolPercent =?, pre_money = ?, post_money = ?, company_id = ?, roundStatus = ?, instrument_type_data = ?, created_by_id = ?, created_by_role = ?, 
             dateroundclosed = ?, nameOfRound = ?, shareClassType = ?, shareclassother = ?, description = ?, 
             instrumentType = ?, customInstrument = ?, roundsize = ?, currency = ?, issuedshares = ?, rights = ?, 
             liquidationpreferences = ?, liquidation = ?, liquidationOther = ?, convertible = ?, convertibleType = ?, 
@@ -174,6 +177,9 @@ exports.CreateOrUpdateCapitalRound = (req, res) => {
             total_founder_shares = ?, founder_count = ?`;
 
           const values = [
+            optionPoolPercent,
+            pre_money,
+            post_money,
             company_id,
             roundStatus || "",
             JSON.stringify(parsedInstrumentData),
@@ -262,10 +268,10 @@ exports.CreateOrUpdateCapitalRound = (req, res) => {
     } else {
       // ---------------- INSERT CASE ----------------
       // CORRECTED: Counted columns properly - your table has exactly these 34 columns (not 35)
-      const sql = `INSERT INTO roundrecord (company_id,created_by_id,created_by_role,updated_by_id,updated_by_role,round_type, nameOfRound, shareClassType, shareclassother,description,instrumentType,instrument_type_data,customInstrument,roundsize,currency,issuedshares, rights, liquidationpreferences,liquidation,liquidationOther,convertible, convertibleType, voting, termsheetFile, subscriptiondocument, 
+      const sql = `INSERT INTO roundrecord (optionPoolPercent,pre_money,post_money,company_id,created_by_id,created_by_role,updated_by_id,updated_by_role,round_type, nameOfRound, shareClassType, shareclassother,description,instrumentType,instrument_type_data,customInstrument,roundsize,currency,issuedshares, rights, liquidationpreferences,liquidation,liquidationOther,convertible, convertibleType, voting, termsheetFile, subscriptiondocument, 
    generalnotes, dateroundclosed, roundStatus, is_shared, is_locked, 
    created_at, founder_data, total_founder_shares, founder_count)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
       // Parse numeric values
       const parsedFounderCount = founder_count ? parseInt(founder_count) : null;
@@ -283,6 +289,9 @@ exports.CreateOrUpdateCapitalRound = (req, res) => {
 
       const values = [
         // Basic required fields (in exact order of your table structure)
+        optionPoolPercent,
+        pre_money || null,
+        post_money || null,
         company_id,
         created_by_id,
         created_by_role,
@@ -2056,240 +2065,409 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
   );
 };
 
-// 🔹 Investment Round Cap Table Calculation (Round 1, Seed, etc.)
+// COMPLETE FIXED calculateInvestmentRoundCapTable function
+// Replace your existing function with this one
+
+// ADD THIS DEBUG CODE to your calculateInvestmentRoundCapTable function
+// To find out why founders are not appearing
+
+function safeJSONParseRepeated(raw, maxDepth = 3) {
+  let cur = raw;
+  for (let i = 0; i < maxDepth; i++) {
+    if (cur === null || cur === undefined) return null;
+    if (typeof cur === "object") return cur;
+    if (typeof cur !== "string") return null;
+    cur = cur.trim();
+    if (cur === "") return null;
+    try {
+      const parsed = JSON.parse(cur);
+      // If parsed is a string again (double-encoded), loop and parse again
+      cur = parsed;
+      if (typeof cur === "object") return cur;
+    } catch (e) {
+      // Not JSON parsable as string -> stop
+      return null;
+    }
+  }
+  return null;
+}
+
+function normalizeFounders(founderObj) {
+  // founderObj may be an array or an object containing arrays
+  if (!founderObj) return [];
+  if (Array.isArray(founderObj)) return founderObj;
+  if (typeof founderObj === "object") {
+    if (Array.isArray(founderObj.founders)) return founderObj.founders;
+    if (Array.isArray(founderObj.shareholders)) return founderObj.shareholders;
+  }
+  return [];
+}
+
+function toNumber(v, fallback = 0) {
+  if (v === null || v === undefined) return fallback;
+  if (typeof v === "number") return v;
+  if (typeof v === "string") {
+    const cleaned = v.replace(/[^0-9.\-]/g, "");
+    const n = cleaned === "" ? NaN : Number(cleaned);
+    return Number.isFinite(n) ? n : fallback;
+  }
+  return fallback;
+}
+
 function calculateInvestmentRoundCapTable(round, investors, roundZero) {
-  // Parse Round 0 founder data
+  // Parse Round 0 founder data - robust version
   let roundZeroFounders = [];
   let roundZeroTotalShares = 0;
+  let originalPricePerShare = 0.01;
 
   try {
-    const founderData = JSON.parse(roundZero.founder_data || "{}");
-    roundZeroFounders = founderData.founders || [];
-    roundZeroTotalShares =
-      founderData.totalShares || parseInt(roundZero.issuedshares) || 0;
+    if (roundZero && roundZero.founder_data) {
+      // founder_data can be:
+      // - an object
+      // - a string containing an object
+      // - a string containing an escaped JSON string (double-encoded)
+      const parsed =
+        safeJSONParseRepeated(roundZero.founder_data, 5) ||
+        roundZero.founder_data;
+
+      // If parsed is still a string, try one last JSON.parse guard
+      const founderData =
+        typeof parsed === "string" ? JSON.parse(parsed) || parsed : parsed;
+
+      // Normalize
+      roundZeroFounders = normalizeFounders(founderData);
+
+      // Try to get total shares & price per share from founderData (object)
+      if (founderData && typeof founderData === "object") {
+        roundZeroTotalShares =
+          toNumber(founderData.totalShares, roundZeroTotalShares) ||
+          toNumber(founderData.total_founder_shares, roundZeroTotalShares) ||
+          toNumber(roundZero.issuedshares, 0);
+
+        originalPricePerShare =
+          toNumber(
+            founderData.pricePerShare,
+            founderData.price_per_share || 0.01
+          ) || 0.01;
+      }
+
+      // If founders array items contain numeric strings for shares, ensure they are numbers
+      roundZeroFounders = (roundZeroFounders || []).map((f) => {
+        const shares = toNumber(
+          f.shares || f.shareCount || f.share_count || f.shares_count,
+          0
+        );
+        return Object.assign({}, f, { shares });
+      });
+    } else {
+      roundZeroTotalShares = toNumber(roundZero.issuedshares, 0);
+    }
   } catch (error) {
-    console.error("Error parsing Round 0 data:", error);
-    roundZeroTotalShares = parseInt(roundZero.issuedshares) || 0;
+    roundZeroTotalShares = toNumber(roundZero.issuedshares, 0);
+  }
+
+  // If no founders found but we have shares, create generic founders
+  if (
+    (!roundZeroFounders || roundZeroFounders.length === 0) &&
+    roundZeroTotalShares > 0
+  ) {
+    roundZeroFounders = [
+      {
+        name: "Founder 1",
+        fullName: "Founder 1",
+        shares: roundZeroTotalShares,
+        shareType: "common",
+        voting: "Yes",
+      },
+    ];
   }
 
   // Parse investment round parameters
-  const investmentSize = parseFloat(round.roundsize) || 0;
-  const preMoneyValuation = parseFloat(round.preMoneyValuation) || 0;
-  const optionPoolPercent = parseFloat(round.optionPoolPercent) || 0;
-  const liquidationMultiple = parseFloat(round.liquidationMultiple) || 1.0;
+  const investmentSize = toNumber(round.roundsize, 0);
+  const preMoneyValuation = toNumber(round.pre_money, 0);
+  const optionPoolPercent = toNumber(round.optionPoolPercent, 0);
 
-  // Validate required inputs for investment rounds
+  // Liquidation handling
+  let liquidationMultiple = 1.0;
+  try {
+    if (round.liquidationpreferences) {
+      const liquidationData =
+        safeJSONParseRepeated(round.liquidationpreferences, 3) ||
+        JSON.parse(round.liquidationpreferences || "{}");
+      liquidationMultiple = toNumber(liquidationData.multiple, 1.0) || 1.0;
+    }
+  } catch (e) {
+    console.log("Using default liquidation multiple");
+  }
+
+  // Validate
   if (investmentSize <= 0 || preMoneyValuation <= 0) {
     return {
       roundType: round.nameOfRound || "Investment Round",
-      shareClass: round.shareClassType || "Preferred Shares",
       currency: round.currency || "USD",
-      totalShares: 0,
-      totalValue: 0,
-      shareholders: [],
-      chartData: { labels: [], datasets: [] },
-      calculations: {},
-      round_type: round.round_type,
-      error:
-        "Missing required investment parameters: Investment Size and Pre-Money Valuation",
+      error: "Missing required parameters: investmentSize or preMoneyValuation",
     };
   }
 
-  // ===== CLIENT REQUIREMENTS CALCULATIONS =====
+  if (roundZeroTotalShares <= 0) {
+    return {
+      roundType: round.nameOfRound || "Investment Round",
+      currency: round.currency || "USD",
+      error: "No shares found from Round 0. Please complete Round 0 first.",
+    };
+  }
 
-  // 1. Post-Money Valuation
+  // Calculations
   const postMoneyValuation = investmentSize + preMoneyValuation;
-
-  // 2. Investor Post-Money Ownership %
   const investorOwnershipPercent = (investmentSize / postMoneyValuation) * 100;
 
-  // 3. Employee Option Pool Shares (from client formula)
+  // Calculate option pool shares (create new pool to reach specified post-money % of company)
   const optionPoolShares =
     optionPoolPercent > 0
       ? Math.round(
-          (roundZeroTotalShares / (1 - optionPoolPercent / 100)) *
-            (optionPoolPercent / 100)
+          (roundZeroTotalShares * (optionPoolPercent / 100)) /
+            (1 - optionPoolPercent / 100)
         )
       : 0;
 
-  // 4. Pre-Seed Total Shares (Round 0 + Option Pool)
-  const preSeedTotalShares = roundZeroTotalShares + optionPoolShares;
+  const totalSharesPreSeed = roundZeroTotalShares + optionPoolShares;
+  const totalSharesPostInvestment = Math.round(
+    totalSharesPreSeed / (1 - investorOwnershipPercent / 100)
+  );
+  const newSharesIssued = totalSharesPostInvestment - totalSharesPreSeed;
+  const sharePrice = newSharesIssued > 0 ? investmentSize / newSharesIssued : 0;
 
-  // 5. Round 1 Share Price
-  const sharePrice = preMoneyValuation / preSeedTotalShares;
+  // ===== PRE-SEED CAP TABLE =====
+  let preSeedShareholders = [];
 
-  // 6. New Shares Issued in Round 1
-  const newShares = Math.round(investmentSize / sharePrice);
-
-  // 7. Post-Investment Total Shares
-  const postInvestmentTotalShares = preSeedTotalShares + newShares;
-
-  // Build shareholders array
-  let shareholders = [];
-
-  // 1. Founders from Round 0 (pre-seed)
-  if (roundZeroFounders.length > 0) {
+  // ✅ ADD FOUNDERS to Pre-Seed
+  if (roundZeroFounders && roundZeroFounders.length > 0) {
     roundZeroFounders.forEach((founder, index) => {
-      const shares = parseInt(founder.shares) || 0;
+      const shares = toNumber(founder.shares, 0);
+      if (shares > 0) {
+        const preSeedOwnership =
+          totalSharesPreSeed > 0 ? (shares / totalSharesPreSeed) * 100 : 0;
+        const preSeedValue = (preSeedOwnership / 100) * preMoneyValuation;
 
-      // Pre-Seed Ownership % (before investment)
-      const preSeedOwnership =
-        preSeedTotalShares > 0 ? (shares / preSeedTotalShares) * 100 : 0;
+        preSeedShareholders.push({
+          name: founder.firstName + " " + founder.lastName,
+          fullName: founder.fullName || founder.name || `F ${index + 1}`,
+          firstName:
+            founder.firstName || (founder.name || "").split(" ")[0] || "",
+          lastName:
+            founder.lastName || (founder.name || "").split(" ")[1] || "",
+          email: founder.email || "-",
+          phone: founder.phone || "-",
+          type: "Founder",
+          shares: shares,
+          ownership: preSeedOwnership,
+          value: preSeedValue,
+          shareType: founder.shareType || "common",
+          votingRights:
+            founder.voting === "Yes"
+              ? "voting"
+              : founder.voting === "No"
+              ? "non-voting"
+              : founder.voting || "voting",
+        });
+      }
+    });
+  }
 
-      // Post-Seed Ownership % (after investment)
-      const postSeedOwnership =
-        postInvestmentTotalShares > 0
-          ? (shares / postInvestmentTotalShares) * 100
-          : 0;
+  // Add employee pool to Pre-Seed
+  if (optionPoolShares > 0) {
+    const employeePreSeedOwnership =
+      totalSharesPreSeed > 0
+        ? (optionPoolShares / totalSharesPreSeed) * 100
+        : 0;
+    const employeePreSeedValue =
+      (employeePreSeedOwnership / 100) * preMoneyValuation;
 
-      // Value calculation
-      const value = shares * sharePrice;
+    preSeedShareholders.push({
+      name: "Employee Option Pool",
+      fullName: "Employee Option Pool",
+      type: "Options Pool",
+      shares: optionPoolShares,
+      ownership: employeePreSeedOwnership,
+      value: employeePreSeedValue,
+      votingRights: "non-voting",
+    });
+  }
 
-      shareholders.push({
-        name: `Founder ${index + 1}`,
-        email: "-",
-        type: "Founder",
-        round: "Round 0",
-        shares: shares,
-        ownership: postSeedOwnership, // Post-investment ownership
-        preInvestmentOwnership: preSeedOwnership, // Pre-investment ownership
-        value: value,
-        shareType: founder.shareType || "common",
-        votingRights: founder.voting || "voting",
-      });
+  // ===== POST-SEED CAP TABLE =====
+  let postSeedShareholders = [];
+
+  // ✅ ADD FOUNDERS to Post-Seed
+  if (roundZeroFounders && roundZeroFounders.length > 0) {
+    roundZeroFounders.forEach((founder, index) => {
+      const shares = toNumber(founder.shares, 0);
+      if (shares > 0) {
+        const postSeedOwnership =
+          totalSharesPostInvestment > 0
+            ? (shares / totalSharesPostInvestment) * 100
+            : 0;
+        const postSeedValue = shares * sharePrice;
+
+        postSeedShareholders.push({
+          name: founder.firstName + " " + founder.lastName,
+          fullName: founder.fullName || founder.name || `Founder ${index + 1}`,
+          firstName:
+            founder.firstName || (founder.name || "").split(" ")[0] || "",
+          lastName:
+            founder.lastName || (founder.name || "").split(" ")[1] || "",
+          email: founder.email || "-",
+          phone: founder.phone || "-",
+          type: "Founder",
+          shares: shares,
+          ownership: postSeedOwnership,
+          value: postSeedValue,
+          shareType: founder.shareType || "common",
+          votingRights:
+            founder.voting === "Yes"
+              ? "voting"
+              : founder.voting === "No"
+              ? "non-voting"
+              : founder.voting || "voting",
+          newShares: 0,
+        });
+      }
+    });
+  }
+
+  // Add employee pool to Post-Seed
+  if (optionPoolShares > 0) {
+    const employeePostSeedOwnership =
+      totalSharesPostInvestment > 0
+        ? (optionPoolShares / totalSharesPostInvestment) * 100
+        : 0;
+    const employeePostSeedValue = optionPoolShares * sharePrice;
+
+    postSeedShareholders.push({
+      name: "Employee Option Pool",
+      fullName: "Employee Option Pool",
+      type: "Options Pool",
+      shares: optionPoolShares,
+      ownership: employeePostSeedOwnership,
+      value: employeePostSeedValue,
+      votingRights: "non-voting",
+      newShares: 0,
+    });
+  }
+
+  // Add investors
+  if (!investors || investors.length === 0) {
+    // Generic investor
+    const investorOwnership =
+      totalSharesPostInvestment > 0
+        ? (newSharesIssued / totalSharesPostInvestment) * 100
+        : 0;
+    const investorValue = newSharesIssued * sharePrice;
+
+    postSeedShareholders.push({
+      name: "Seed Investors",
+      fullName: "Seed Investors",
+      type: "Investor",
+      shares: newSharesIssued,
+      ownership: investorOwnership,
+      value: investorValue,
+      investmentAmount: investmentSize,
+      votingRights: "voting",
+      newShares: newSharesIssued,
+      isGeneric: true,
     });
   } else {
-    // Fallback if no founder data
-    const preSeedOwnership =
-      preSeedTotalShares > 0
-        ? (roundZeroTotalShares / preSeedTotalShares) * 100
-        : 0;
-    const postSeedOwnership =
-      postInvestmentTotalShares > 0
-        ? (roundZeroTotalShares / postInvestmentTotalShares) * 100
-        : 0;
+    // Specific investors
+    let remainingShares = newSharesIssued;
+    let allocated = 0;
 
-    shareholders.push({
-      name: "Founders Total",
-      email: "-",
-      type: "Founder",
-      round: "Round 0",
-      shares: roundZeroTotalShares,
-      ownership: postSeedOwnership,
-      preInvestmentOwnership: preSeedOwnership,
-      value: roundZeroTotalShares * sharePrice,
-    });
-  }
-
-  // 2. Option Pool (Employee Pool)
-  if (optionPoolShares > 0) {
-    const optionPoolOwnership =
-      postInvestmentTotalShares > 0
-        ? (optionPoolShares / postInvestmentTotalShares) * 100
-        : 0;
-    const preOptionPoolOwnership =
-      preSeedTotalShares > 0
-        ? (optionPoolShares / preSeedTotalShares) * 100
-        : 0;
-
-    shareholders.push({
-      name: "Employee Option Pool",
-      email: "-",
-      type: "Options Pool",
-      round: "Pre-Seed",
-      shares: optionPoolShares,
-      ownership: optionPoolOwnership,
-      preInvestmentOwnership: preOptionPoolOwnership,
-      value: optionPoolShares * sharePrice,
-    });
-  }
-
-  // 3. New Investors in this round
-  let totalInvestorShares = 0;
-  if (investors.length > 0) {
     investors.forEach((investor, index) => {
-      // Distribute new shares among investors (pro-rata based on investment amount)
-      const investmentAmount = parseFloat(investor.investment_amount) || 0;
-      const investorShareRatio =
-        investmentSize > 0 ? investmentAmount / investmentSize : 0;
-      const investorShares = Math.round(newShares * investorShareRatio);
-      totalInvestorShares += investorShares;
+      const investmentAmount = toNumber(investor.investment_amount, 0);
+      let investorShares = Math.round(
+        (investmentAmount / investmentSize) * newSharesIssued
+      );
+
+      if (index === investors.length - 1) {
+        // Last investor gets remaining shares to avoid rounding issues
+        investorShares = remainingShares;
+      } else {
+        remainingShares -= investorShares;
+      }
+
+      allocated += investorShares;
 
       const investorOwnership =
-        postInvestmentTotalShares > 0
-          ? (investorShares / postInvestmentTotalShares) * 100
+        totalSharesPostInvestment > 0
+          ? (investorShares / totalSharesPostInvestment) * 100
           : 0;
+      const investorValue = investorShares * sharePrice;
 
-      shareholders.push({
-        name:
-          `${investor.first_name} ${investor.last_name}`.trim() ||
+      postSeedShareholders.push({
+        name: founder.firstName + " " + founder.lastName,
+        fullName:
+          `${investor.first_name || ""} ${investor.last_name || ""}`.trim() ||
           `Investor ${index + 1}`,
+        firstName: investor.first_name || "",
+        lastName: investor.last_name || "",
         email: investor.email || "-",
+        phone: "-",
         type: "Investor",
-        round: round.nameOfRound || "Current Round",
         shares: investorShares,
         ownership: investorOwnership,
-        preInvestmentOwnership: 0, // New investors didn't exist before
-        value: investorShares * sharePrice,
+        value: investorValue,
         investmentAmount: investmentAmount,
+        votingRights: "voting",
+        newShares: investorShares,
+        isGeneric: false,
       });
     });
 
-    // Handle any rounding differences in investor shares
-    if (totalInvestorShares !== newShares && investors.length > 0) {
-      const difference = newShares - totalInvestorShares;
-      if (difference !== 0) {
-        const lastInvestorIndex = shareholders.length - 1;
-        shareholders[lastInvestorIndex].shares += difference;
-        shareholders[lastInvestorIndex].ownership =
-          postInvestmentTotalShares > 0
-            ? (shareholders[lastInvestorIndex].shares /
-                postInvestmentTotalShares) *
-              100
-            : 0;
-        shareholders[lastInvestorIndex].value =
-          shareholders[lastInvestorIndex].shares * sharePrice;
+    // If any rounding leftover (should be 0), adjust the generic investor or create one
+    if (allocated !== newSharesIssued) {
+      const diff = newSharesIssued - allocated;
+      if (diff > 0) {
+        postSeedShareholders.push({
+          name: "Rounding Adjustment Investor",
+          fullName: "Rounding Adjustment Investor",
+          type: "Investor",
+          shares: diff,
+          ownership:
+            totalSharesPostInvestment > 0
+              ? (diff / totalSharesPostInvestment) * 100
+              : 0,
+          value: diff * sharePrice,
+          investmentAmount: diff * sharePrice,
+          votingRights: "voting",
+          newShares: diff,
+          isGeneric: true,
+        });
       }
     }
-  } else {
-    // If no specific investors, create a generic investor entry
-    const investorOwnership =
-      postInvestmentTotalShares > 0
-        ? (newShares / postInvestmentTotalShares) * 100
-        : 0;
-
-    shareholders.push({
-      name: "Round Investors",
-      email: "-",
-      type: "Investor",
-      round: round.nameOfRound || "Current Round",
-      shares: newShares,
-      ownership: investorOwnership,
-      preInvestmentOwnership: 0,
-      value: newShares * sharePrice,
-      investmentAmount: investmentSize,
-    });
   }
 
   // Calculate totals
-  const totalShares = shareholders.reduce((sum, s) => sum + s.shares, 0);
-  const totalValue = shareholders.reduce((sum, s) => sum + s.value, 0);
+  const totalPostSeedShares = postSeedShareholders.reduce(
+    (sum, s) => sum + toNumber(s.shares, 0),
+    0
+  );
+  const totalPostSeedValue = postSeedShareholders.reduce(
+    (sum, s) => sum + toNumber(s.value, 0),
+    0
+  );
 
-  // Chart Data
   const chartData = {
-    labels: shareholders.map((s) => s.name),
+    labels: postSeedShareholders.map((s) => s.name),
     datasets: [
       {
         label: "Post-Investment Ownership %",
-        data: shareholders.map((s) => parseFloat(s.ownership.toFixed(2))),
-        backgroundColor: shareholders.map((s, idx) =>
+        data: postSeedShareholders.map((s) =>
+          Number(toNumber(s.ownership, 0).toFixed(2))
+        ),
+        backgroundColor: postSeedShareholders.map((s) =>
           s.type === "Founder"
             ? "hsl(120,70%,50%)"
             : s.type === "Options Pool"
             ? "hsl(40,70%,50%)"
-            : s.type === "Investor"
-            ? "hsl(220,70%,50%)"
-            : `hsl(${(idx * 60) % 360},70%,50%)`
+            : "hsl(220,70%,50%)"
         ),
       },
     ],
@@ -2298,37 +2476,28 @@ function calculateInvestmentRoundCapTable(round, investors, roundZero) {
   return {
     roundType: round.nameOfRound || "Investment Round",
     round_type: round.round_type,
-    shareClass: round.shareClassType || "Preferred Shares",
     currency: round.currency || "USD",
-    totalShares,
-    totalValue,
-    shareholders,
+    totalShares: totalPostSeedShares,
+    totalValue: totalPostSeedValue,
+    shareholders: postSeedShareholders,
+    preSeedShareholders: preSeedShareholders,
     chartData,
     calculations: {
-      // Platform Inputs
-      investmentSize: investmentSize,
-      preMoneyValuation: preMoneyValuation,
-      optionPoolPercent: optionPoolPercent,
-      liquidationMultiple: liquidationMultiple,
-
-      // Platform Outputs (Client Requirements)
-      postMoneyValuation: postMoneyValuation,
-      investorOwnershipPercent: investorOwnershipPercent,
-      sharePrice: sharePrice,
-      newShares: newShares,
-      postInvestmentTotalShares: postInvestmentTotalShares,
-
-      // Pre-Seed Calculations
-      preSeedTotalShares: preSeedTotalShares,
-      optionPoolShares: optionPoolShares,
-      roundZeroTotalShares: roundZeroTotalShares,
-
-      // Additional metrics
-      investmentPerShare: investmentSize / newShares || 0,
-      fullyDilutedValuation: postMoneyValuation,
-
-      // For display purposes
-      totalFullyDilutedShares: postInvestmentTotalShares,
+      investmentSize,
+      preMoneyValuation,
+      optionPoolPercent,
+      liquidationMultiple,
+      postMoneyValuation,
+      investorOwnershipPercent,
+      sharePrice,
+      newShares: newSharesIssued,
+      postInvestmentTotalShares: totalSharesPostInvestment,
+      preSeedTotalShares: totalSharesPreSeed,
+      optionPoolShares,
+      roundZeroTotalShares,
+      originalPricePerShare,
+      originalTotalValue: roundZeroTotalShares * originalPricePerShare,
+      hasGenericInvestors: !investors || investors.length === 0,
     },
     isRoundZero: false,
   };

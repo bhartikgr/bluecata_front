@@ -3778,3 +3778,17 @@ exports.companyRole = async (req, res) => {
     }
   );
 };
+exports.getexistingShares = async (req, res) => {
+  const { company_id } = req.body;
+  db.query(
+    "SELECT * FROM roundrecord where company_id = ? And round_type = ?",
+    [company_id, "Round 0"],
+    (err, results) => {
+      if (err) {
+        return res.status(500).json({ message: "DB query failed", error: err });
+      }
+
+      return res.status(200).json({ message: "", results: results });
+    }
+  );
+};
