@@ -232,7 +232,7 @@ exports.addSignatory = (req, res) => {
                             });
                           }
 
-                          const inviteLink = `https://blueprintcatalyst.com/signatory/accept/${uniqueCode}`;
+                          const inviteLink = `http://localhost:5000/signatory/accept/${uniqueCode}`;
                           sendEmailToSignatory(
                             data.email,
                             `${data.first_name} ${data.last_name}`,
@@ -289,7 +289,7 @@ function sendEmailToSignatory(to, fullName, inviteLink, company_name) {
       <table style="width:100%; border-collapse: collapse;">
         <tr>
           <td style="background:#efefef; padding:10px; text-align:center;">
-            <img src="https://blueprintcatalyst.com/api/upload/images/logo.png" alt="logo" style="width:130px;" />
+            <img src="http://localhost:5000/api/upload/images/logo.png" alt="logo" style="width:130px;" />
           </td>
         </tr>
         <tr>
@@ -431,7 +431,7 @@ exports.SendMailToSignatory = (req, res) => {
 
         if (rowData.access_status === "pending") {
           var uniqueCode = rowData.unique_code;
-          const inviteLink = `https://blueprintcatalyst.com/signatory/accept/${uniqueCode}`;
+          const inviteLink = `http://localhost:5000/signatory/accept/${uniqueCode}`;
 
           try {
             await sendEmailToSignatory(
@@ -483,7 +483,7 @@ function sendEmailToSignatory(to, fullName, inviteLink, company_name) {
       <table style="width:100%; border-collapse: collapse;">
         <tr>
           <td style="background:#efefef; padding:10px; text-align:center;">
-            <img src="https://blueprintcatalyst.com/api/upload/images/logo.png" alt="logo" style="width:130px;" />
+            <img src="http://localhost:5000/api/upload/images/logo.png" alt="logo" style="width:130px;" />
           </td>
         </tr>
         <tr>

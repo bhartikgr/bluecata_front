@@ -309,7 +309,7 @@ exports.getCompanyReport = (req, res) => {
       if (reportData && reportData.document_name) {
         const company_id = reportData.company_id;
         const pathname = `upload/docs/doc_${company_id}`;
-        reportData.downloadUrl = `https://blueprintcatalyst.com/api/${pathname}/investor_report/${reportData.document_name}`;
+        reportData.downloadUrl = `http://localhost:5000/api/${pathname}/investor_report/${reportData.document_name}`;
       }
 
       res.status(200).json({

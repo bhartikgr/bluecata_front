@@ -805,7 +805,7 @@ exports.generateDocFile = async (req, res) => {
                     let companyLogoPath = null;
                     if (fileSummaryResults[0].company_logo !== null) {
                       var pathname = "upload/docs/doc_" + responses.company_id;
-                      var fullPath = `https://blueprintcatalyst.com/api/${pathname}/${fileSummaryResults[0].company_logo}`;
+                      var fullPath = `http://localhost:5000/api/${pathname}/${fileSummaryResults[0].company_logo}`;
 
                       if (fullPath) {
                         // if (fs.existsSync(fullPath)) {
@@ -1752,7 +1752,7 @@ exports.generateProcessAI = async (req, res) => {
 
 async function sendApprovalEmail({ email, companyName, uniqcode }) {
   const subject = `Due Diligence Summary Ready for Approval - Capavate`;
-  const approvalLink = `https://blueprintcatalyst.com/approvalpage/${uniqcode}`;
+  const approvalLink = `http://localhost:5000/approvalpage/${uniqcode}`;
 
   const transporter = nodemailer.createTransport({
     service: "gmail",
@@ -1776,7 +1776,7 @@ async function sendApprovalEmail({ email, companyName, uniqcode }) {
       <table style="width:100%; border-collapse: collapse;">
         <tr>
           <td style="background:#efefef; padding:10px; text-align:center;">
-            <img src="https://blueprintcatalyst.com/api/upload/images/logo.png" alt="logo" style="width:130px;" />
+            <img src="http://localhost:5000/api/upload/images/logo.png" alt="logo" style="width:130px;" />
           </td>
         </tr>
         <tr>
@@ -1966,8 +1966,8 @@ exports.getcompanyData = async (req, res) => {
         ...doc,
         downloadUrl:
           doc.company_logo && doc.company_logo.trim() !== ""
-            ? `https://blueprintcatalyst.com/api/${pathname}/${doc.company_logo}`
-            : "https://blueprintcatalyst.com/api/upload/docs/download.png",
+            ? `http://localhost:5000/api/${pathname}/${doc.company_logo}`
+            : "http://localhost:5000/api/upload/docs/download.png",
       }));
 
       return res.status(200).json({
@@ -2344,7 +2344,7 @@ exports.getinvestorReports = (req, res) => {
     var pathname = "upload/docs/doc_" + company_id;
     const updatedResults = results.map((doc) => ({
       ...doc,
-      downloadUrl: `https://blueprintcatalyst.com/api/${pathname}/investor_report/${doc.document_name}`,
+      downloadUrl: `http://localhost:5000/api/${pathname}/investor_report/${doc.document_name}`,
     }));
 
     res.status(200).json({
@@ -2376,7 +2376,7 @@ ORDER BY investor_updates.id DESC;
     var pathname = "upload/docs/doc_" + user_id;
     const updatedResults = results.map((doc) => ({
       ...doc,
-      downloadUrl: `https://blueprintcatalyst.com/api/${pathname}/investor_report/${doc.document_name}`,
+      downloadUrl: `http://localhost:5000/api/${pathname}/investor_report/${doc.document_name}`,
     }));
     res.status(200).json({
       results: updatedResults,

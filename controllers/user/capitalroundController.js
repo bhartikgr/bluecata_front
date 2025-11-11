@@ -570,7 +570,7 @@ exports.SendRecordRoundToinvestor = async (req, res) => {
         // Determine URL based on registration
         const isRegistered = is_register === "Yes";
         const url =
-          "https://blueprintcatalyst.com/investor/company/capital-round-list/" +
+          "http://localhost:5000/investor/company/capital-round-list/" +
           company_id;
 
         // Send email using your template
@@ -595,7 +595,7 @@ exports.SendRecordRoundToinvestor = async (req, res) => {
             <table style="width:600px;margin:0 auto;border-collapse:collapse;font-family:Verdana,Geneva,sans-serif;">
               <tr>
                 <td style="background:#efefef;padding:10px 0;text-align:center;">
-                  <img src="https://blueprintcatalyst.com/api/upload/images/logo.png" alt="logo" style="width:130px;" />
+                  <img src="http://localhost:5000/api/upload/images/logo.png" alt="logo" style="width:130px;" />
                 </td>
               </tr>
               <tr>
@@ -999,7 +999,7 @@ exports.investorrecordAuthorize = (req, res) => {
       const investorName = `${investorRows[0].first_name} ${investorRows[0].last_name}`;
 
       // Compose message
-      const reportUrl = "https://blueprintcatalyst.com/crm/investorreport";
+      const reportUrl = "http://localhost:5000/crm/investorreport";
 
       const message = `
 <!DOCTYPE html>
@@ -1409,18 +1409,29 @@ exports.getEditrecordlist = async (req, res) => {
         if (record.founder_data) {
           try {
             let rawData = record.founder_data;
-            if (
-              typeof rawData === "string" &&
-              rawData.startsWith('"') &&
-              rawData.endsWith('"')
-            ) {
-              rawData = rawData.slice(1, -1).replace(/\\"/g, '"');
+
+            // Keep parsing until we reach an actual object
+            while (typeof rawData === "string") {
+              // Remove outer quotes if present
+              if (rawData.startsWith('"') && rawData.endsWith('"')) {
+                rawData = rawData.slice(1, -1).replace(/\\"/g, '"');
+              }
+
+              // Try to parse JSON
+              try {
+                rawData = JSON.parse(rawData);
+              } catch (e) {
+                break;
+              }
             }
-            processedRecord.founder_data = JSON.parse(rawData);
+
+            processedRecord.founder_data = rawData;
           } catch (err) {
             console.error("Error parsing founder_data:", err);
-            processedRecord.founder_data = null;
+            processedRecord.founder_data = {};
           }
+        } else {
+          processedRecord.founder_data = {};
         }
 
         // Parse file arrays

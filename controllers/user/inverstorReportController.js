@@ -139,7 +139,7 @@ ORDER BY iu.id DESC;
       let downloadUrl = null;
 
       if (doc.document_name) {
-        downloadUrl = `https://blueprintcatalyst.com/api/${pathname}/investor_report/${doc.document_name}`;
+        downloadUrl = `http://localhost:5000/api/${pathname}/investor_report/${doc.document_name}`;
       }
 
       return {
@@ -239,8 +239,8 @@ exports.SendreportToinvestor = async (req, res) => {
 
           const url =
             results.length > 0
-              ? `https://blueprintcatalyst.com/investor/login`
-              : `https://blueprintcatalyst.com/investor/information/${token}`;
+              ? `http://localhost:5000/investor/login`
+              : `http://localhost:5000/investor/information/${token}`;
 
           const mailOptions = {
             from: '"BluePrint Catalyst" <scale@blueprintcatalyst.com>',
@@ -260,7 +260,7 @@ exports.SendreportToinvestor = async (req, res) => {
                   <tr>
                     <td style="background: #efefef; padding: 10px 0; text-align: center;">
                       <div style="width: 130px; margin: 0 auto;">
-                        <img src="https://blueprintcatalyst.com/api/upload/images/logo.png" alt="Blueprint Catalyst" style="width: 100%;" />
+                        <img src="http://localhost:5000/api/upload/images/logo.png" alt="Blueprint Catalyst" style="width: 100%;" />
                       </div>
                     </td>
                   </tr>
@@ -356,7 +356,7 @@ ORDER BY iu.id DESC;
       let downloadUrl = null;
 
       if (doc.document_name) {
-        downloadUrl = `https://blueprintcatalyst.com/api/${pathname}/investor_report/${doc.document_name}`;
+        downloadUrl = `http://localhost:5000/api/${pathname}/investor_report/${doc.document_name}`;
       }
 
       return {
@@ -659,7 +659,7 @@ function sendEmailInvestorpassword(to, fullName, newPassword) {
           <tr>
             <td style="background: #efefef; padding: 10px 0; text-align: center;">
               <div style="width: 130px; margin: 0 auto;">
-                <img src="https://blueprintcatalyst.com/api/upload/images/logo.png" alt="Capavate" style="width: 100%;" />
+                <img src="http://localhost:5000/api/upload/images/logo.png" alt="Capavate" style="width: 100%;" />
               </div>
             </td>
           </tr>
@@ -685,7 +685,7 @@ function sendEmailInvestorpassword(to, fullName, newPassword) {
                 <tr>
                   <td>
                     <div style="padding: 0 20px 20px 20px; text-align: center;">
-                      <a href="https://blueprintcatalyst.com/investor/login" style="background: #ff3c3e; color: #fff; text-decoration: none; font-size: 14px; padding: 10px 30px; border-radius: 10px;">Login to Your Account</a>
+                      <a href="http://localhost:5000/investor/login" style="background: #ff3c3e; color: #fff; text-decoration: none; font-size: 14px; padding: 10px 30px; border-radius: 10px;">Login to Your Account</a>
                     </div>
                   </td>
                 </tr>
@@ -824,7 +824,7 @@ exports.getreportForInvestor = (req, res) => {
 
       const updatedResults = filteredResults.map((doc) => ({
         ...doc,
-        downloadUrl: `https://blueprintcatalyst.com/api/upload/docs/doc_${doc.user_id}/investor_report/${doc.document_name}`,
+        downloadUrl: `http://localhost:5000/api/upload/docs/doc_${doc.user_id}/investor_report/${doc.document_name}`,
       }));
 
       return res.status(200).json({

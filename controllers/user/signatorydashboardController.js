@@ -199,7 +199,7 @@ exports.getInvestorreportList = (req, res) => {
 
       // ✅ Build file path and append download URL to each record
       const pathname = `upload/docs/doc_${company_id}`;
-      const baseUrl = "https://blueprintcatalyst.com/api";
+      const baseUrl = "http://localhost:5000/api";
 
       const updatedResults = results.map((doc) => ({
         ...doc,
@@ -399,7 +399,7 @@ exports.getCompanyInvestorList = (req, res) => {
           // Generate URLs for each document
           kycDocumentUrl = kycDocuments.map((doc) => {
             const pathname = `upload/docs/doc_${company_id}`;
-            const baseUrl = `https://blueprintcatalyst.com/api/upload/investor/inv_${investor.id}`;
+            const baseUrl = `http://localhost:5000/api/upload/investor/inv_${investor.id}`;
             return `${baseUrl}/${encodeURIComponent(doc)}`;
           });
 

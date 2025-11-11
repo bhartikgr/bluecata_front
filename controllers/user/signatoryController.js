@@ -221,7 +221,7 @@ function sendEmailToUserJoinedCompany(to, name, companyname, signatoryname) {
         <table style="width: 100%; border-collapse: collapse;">
           <tr>
             <td style="background: #efefef; padding: 10px 0; text-align: center;">
-              <img src="https://blueprintcatalyst.com/api/upload/images/logo.png" alt="logo" style="width: 130px;" />
+              <img src="http://localhost:5000/api/upload/images/logo.png" alt="logo" style="width: 130px;" />
             </td>
           </tr>
           <tr>
