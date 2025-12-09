@@ -2052,6 +2052,7 @@ exports.fetchInvestorData = (req, res) => {
     });
 
     // --- Build formatted results for API response ---
+    // --- Build formatted results for API response ---
     const formattedResults = [];
 
     results.forEach((row) => {
@@ -2083,6 +2084,7 @@ exports.fetchInvestorData = (req, res) => {
           investment_amount: parseFloat(row.investment_amount || 0),
           shares: investorShares,
           issuedshares: row.issuedshares,
+          roundsize: parseFloat(row.roundsize || 0), // यहाँ roundsize add करें
           currency: row.currency || "USD",
           instrumentType: row.instrumentType,
           request_confirm: row.request_confirm,
