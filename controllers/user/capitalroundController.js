@@ -150,6 +150,7 @@ exports.CreateOrUpdateCapitalRound = (req, res) => {
       founder_count,
       ClientIP,
       investorPostMoney,
+      optionPoolPercent_post,
     } = req.body;
 
     const clientIp = ip_address || ClientIP;
@@ -200,7 +201,7 @@ exports.CreateOrUpdateCapitalRound = (req, res) => {
           const existingSubscriptionDocs = results[0].subscriptiondocument;
 
           let sql = `UPDATE roundrecord SET 
-            investorPostMoney=?,optionPoolPercent =?, pre_money = ?, post_money = ?, company_id = ?, roundStatus = ?, instrument_type_data = ?, created_by_id = ?, created_by_role = ?, 
+            optionPoolPercent_post=?,investorPostMoney=?,optionPoolPercent =?, pre_money = ?, post_money = ?, company_id = ?, roundStatus = ?, instrument_type_data = ?, created_by_id = ?, created_by_role = ?, 
             dateroundclosed = ?, nameOfRound = ?, shareClassType = ?, shareclassother = ?, description = ?, 
             instrumentType = ?, customInstrument = ?, roundsize = ?, currency = ?, issuedshares = ?, rights = ?, 
             liquidationpreferences = ?, liquidation = ?, liquidationOther = ?, convertible = ?, convertibleType = ?, 
@@ -208,6 +209,7 @@ exports.CreateOrUpdateCapitalRound = (req, res) => {
             total_founder_shares = ?, founder_count = ?`;
 
           const values = [
+            optionPoolPercent_post,
             investorPostMoney,
             optionPoolPercent,
             pre_money,
@@ -297,32 +299,32 @@ exports.CreateOrUpdateCapitalRound = (req, res) => {
             }
 
             const capitalRoundData = `
-Round Name: ${nameOfRound}
-Type: ${round_type}
-Pre Money: ${pre_money}
-Post Money: ${post_money}
-Round Size: ${roundsize} ${currency}
-Issued Shares: ${issuedshares}
-Rights: ${rights}
-Liquidation Pref: ${liquidationpreferences}
-Convertible: ${convertible} (${convertibleType})
-Voting: ${voting}
-General Notes: ${generalnotes}
-Option Pool: ${optionPoolPercent}
-Investor Post Money: ${investorPostMoney}
-`;
+              Round Name: ${nameOfRound}
+              Type: ${round_type}
+              Pre Money: ${pre_money}
+              Post Money: ${post_money}
+              Round Size: ${roundsize} ${currency}
+              Issued Shares: ${issuedshares}
+              Rights: ${rights}
+              Liquidation Pref: ${liquidationpreferences}
+              Convertible: ${convertible} (${convertibleType})
+              Voting: ${voting}
+              General Notes: ${generalnotes}
+              Option Pool: ${optionPoolPercent}
+              Investor Post Money: ${investorPostMoney}
+              `;
 
             const prompt = `
-You are an investment analyst. Create a 1000-character executive summary from:
+            You are an investment analyst. Create a 1000-character executive summary from:
 
-### Round Details
-${capitalRoundData}
+            ### Round Details
+            ${capitalRoundData}
 
-### Documents
-${allFileText}
+            ### Documents
+            ${allFileText}
 
-Return clean text only.
-`;
+            Return clean text only.
+            `;
 
             let executiveSummary = "";
             try {
@@ -391,9 +393,9 @@ Return clean text only.
 
     // ---------------- INSERT ----------------
     else {
-      const sql = `INSERT INTO roundrecord (investorPostMoney,optionPoolPercent,pre_money,post_money,company_id,created_by_id,created_by_role,updated_by_id,updated_by_role,round_type, nameOfRound, shareClassType, shareclassother,description,instrumentType,instrument_type_data,customInstrument,roundsize,currency,issuedshares, rights, liquidationpreferences,liquidation,liquidationOther,convertible, convertibleType, voting, termsheetFile, subscriptiondocument, 
+      const sql = `INSERT INTO roundrecord (optionPoolPercent_post,investorPostMoney,optionPoolPercent,pre_money,post_money,company_id,created_by_id,created_by_role,updated_by_id,updated_by_role,round_type, nameOfRound, shareClassType, shareclassother,description,instrumentType,instrument_type_data,customInstrument,roundsize,currency,issuedshares, rights, liquidationpreferences,liquidation,liquidationOther,convertible, convertibleType, voting, termsheetFile, subscriptiondocument, 
       generalnotes, dateroundclosed, roundStatus, is_shared, is_locked, created_at, founder_data, total_founder_shares, founder_count)
-      VALUES (?,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+      VALUES (?, ?,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
       let processedDateRoundClosed = dateroundclosed;
       if (Array.isArray(processedDateRoundClosed)) {
@@ -407,6 +409,7 @@ Return clean text only.
         : null;
 
       const values = [
+        optionPoolPercent_post,
         investorPostMoney,
         optionPoolPercent,
         pre_money || null,
@@ -937,6 +940,7 @@ exports.getcheckCapitalMotionlist = (req, res) => {
     SELECT 
       roundrecord.*,
       sharerecordround.signature_status,
+      sharerecordround.termsChecked,
       sharerecordround.signature,
       sharerecordround.investor_id AS sharerecord_investor_id,
       sharerecordround.id AS sharerecordround_id,
@@ -1120,7 +1124,14 @@ exports.subscriptiondownloadInvestor = (req, res) => {
   });
 };
 exports.investorrecordAuthorize = (req, res) => {
-  const { id, signature_authorize, reports, company_id, user_id } = req.body;
+  const {
+    id,
+    signature_authorize,
+    reports,
+    company_id,
+    user_id,
+    termsChecked,
+  } = req.body;
   if (!id || !signature_authorize) {
     return res
       .status(400)
@@ -1129,124 +1140,275 @@ exports.investorrecordAuthorize = (req, res) => {
   var date = new Date();
   const query = `
     UPDATE sharerecordround
-    SET signature_status = 'Yes', signature = ?,activity_date=NOW()
+    SET signature_status = 'Yes', signature = ?,termsChecked =?, activity_date=NOW()
     WHERE id = ? AND signature_status != 'Yes'
   `;
 
-  db.query(query, [signature_authorize, id], async (err, results) => {
-    if (err) {
-      return res.status(500).json({
-        message: "Database query error",
-        error: err,
+  db.query(
+    query,
+    [signature_authorize, termsChecked, id],
+    async (err, results) => {
+      if (err) {
+        return res.status(500).json({
+          message: "Database query error",
+          error: err,
+        });
+      }
+
+      if (results.affectedRows === 0) {
+        return res.status(200).json({
+          message: "Signature was already authorized or not eligible",
+          updated: false,
+        });
+      }
+
+      try {
+        // Fetch company email
+        const [companyRows] = await db
+          .promise()
+          .query("SELECT * FROM company WHERE id = ?", [company_id]);
+
+        if (companyRows.length === 0) throw new Error("Company not found");
+
+        const companyName = companyRows[0].company_name;
+        const companyEmail = companyRows[0].company_email;
+
+        // Fetch investor name
+        const [investorRows] = await db
+          .promise()
+          .query("SELECT * FROM investor_information WHERE id = ?", [user_id]);
+
+        if (investorRows.length === 0) throw new Error("Investor not found");
+
+        const investorName = `${investorRows[0].first_name} ${investorRows[0].last_name}`;
+        const investorEmail = `${investorRows[0].email}`;
+
+        // Compose message
+        const reportUrl = "https://blueprintcatalyst.com/crm/investorreport";
+
+        const message = `
+          <!DOCTYPE html>
+          <html lang="en">
+            <head>
+              <meta charset="UTF-8" />
+              <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+              <title>Investor Signature Notification</title>
+            </head>
+            <body>
+              <div style="width:600px;margin:0 auto;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;">
+                <table style="width:600px;margin:0 auto;border-collapse:collapse;font-family:Verdana,Geneva,sans-serif;">
+                  <tr>
+                    <td style="background:#efefef;padding:10px 0;text-align:center;">
+                      <div style="width:130px;margin:0 auto;">
+                        <img src="logo.png" alt="logo" style="width:100%;" />
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>
+                      <table>
+                        <tr>
+                          <td style="padding:20px;">
+                            <h2 style="margin:0 0 15px 0;font-size:16px;color:#111;">Dear Media</h2>
+                            <h3 style="margin:0 0 15px 0;font-size:16px;color:#111;">
+                              Investor <strong>${investorName}</strong> has authorized the signature for the following report:
+                            </h3>
+                            <p style="margin:0 0 15px 0;font-size:14px;color:#111;"><b>Report Name:</b> ${reports.nameOfRound}</p>
+                            <p style="margin:0 0 15px 0;font-size:14px;color:#111;"><b>Share Class Type:</b> ${reports.shareClassType}</p>
+                            <p style="margin:0 0 15px 0;font-size:14px;color:#111;">You can view the report by clicking the button below:</p>
+                          </td>
+                        </tr>
+                        <tr>
+                          <td>
+                            <div style="padding:0 20px 20px 20px;">
+                              <a href="${reportUrl}" style="background:#ff3c3e;color:#fff;text-decoration:none;font-size:14px;padding:10px 30px;border-radius:10px;display:inline-block;">View Report</a>
+                            </div>
+                          </td>
+                        </tr>
+                      </table>
+                    </td>
+                  </tr>
+                </table>
+              </div>
+
+              <div style="width:600px;margin:20px auto 0 auto;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;">
+                <table style="width:600px;margin:0 auto;border-collapse:collapse;font-family:Verdana,Geneva,sans-serif;">
+                  <tr>
+                    <td style="padding:20px;text-align:center;font-size:0.9em;color:#666;">
+                      Capavate. Powered by BluePrint Catalyst Limited
+                    </td>
+                  </tr>
+                </table>
+              </div>
+            </body>
+          </html>
+          `;
+
+        const subject = `Signature Authorized by Investor - ${reports.nameOfRound}`;
+
+        // Send email
+
+        sendEmailToCorpSignature(companyEmail, companyName, message, subject);
+        sendEmailToInvestor(investorEmail, investorName, companyName, reports);
+      } catch (emailErr) {
+        console.error("Error sending email:", emailErr);
+      }
+
+      res.status(200).json({
+        message: "Signature authorized successfully and email sent",
+        updated: true,
+        results: results,
       });
     }
-
-    if (results.affectedRows === 0) {
-      return res.status(200).json({
-        message: "Signature was already authorized or not eligible",
-        updated: false,
-      });
-    }
-
-    try {
-      // Fetch company email
-      const [companyRows] = await db
-        .promise()
-        .query("SELECT * FROM company WHERE id = ?", [company_id]);
-
-      if (companyRows.length === 0) throw new Error("Company not found");
-
-      const companyName = companyRows[0].company_name;
-      const companyEmail = companyRows[0].email;
-
-      // Fetch investor name
-      const [investorRows] = await db
-        .promise()
-        .query(
-          "SELECT first_name, last_name FROM investor_information WHERE id = ?",
-          [user_id]
-        );
-
-      if (investorRows.length === 0) throw new Error("Investor not found");
-
-      const investorName = `${investorRows[0].first_name} ${investorRows[0].last_name}`;
-
-      // Compose message
-      const reportUrl = "https://blueprintcatalyst.com/crm/investorreport";
-
-      const message = `
-<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Investor Signature Notification</title>
-  </head>
-  <body>
-    <div style="width:600px;margin:0 auto;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;">
-      <table style="width:600px;margin:0 auto;border-collapse:collapse;font-family:Verdana,Geneva,sans-serif;">
-        <tr>
-          <td style="background:#efefef;padding:10px 0;text-align:center;">
-            <div style="width:130px;margin:0 auto;">
-              <img src="logo.png" alt="logo" style="width:100%;" />
-            </div>
-          </td>
-        </tr>
-        <tr>
-          <td>
-            <table>
-              <tr>
-                <td style="padding:20px;">
-                  <h2 style="margin:0 0 15px 0;font-size:16px;color:#111;">Dear Media</h2>
-                  <h3 style="margin:0 0 15px 0;font-size:16px;color:#111;">
-                    Investor <strong>${investorName}</strong> has authorized the signature for the following report:
-                  </h3>
-                  <p style="margin:0 0 15px 0;font-size:14px;color:#111;"><b>Report Name:</b> ${reports.nameOfRound}</p>
-                  <p style="margin:0 0 15px 0;font-size:14px;color:#111;"><b>Share Class Type:</b> ${reports.shareClassType}</p>
-                  <p style="margin:0 0 15px 0;font-size:14px;color:#111;">You can view the report by clicking the button below:</p>
-                </td>
-              </tr>
-              <tr>
-                <td>
-                  <div style="padding:0 20px 20px 20px;">
-                    <a href="${reportUrl}" style="background:#ff3c3e;color:#fff;text-decoration:none;font-size:14px;padding:10px 30px;border-radius:10px;display:inline-block;">View Report</a>
-                  </div>
-                </td>
-              </tr>
-            </table>
-          </td>
-        </tr>
-      </table>
-    </div>
-
-    <div style="width:600px;margin:20px auto 0 auto;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;">
-      <table style="width:600px;margin:0 auto;border-collapse:collapse;font-family:Verdana,Geneva,sans-serif;">
-        <tr>
-          <td style="padding:20px;text-align:center;font-size:0.9em;color:#666;">
-            Capavate. Powered by BluePrint Catalyst Limited
-          </td>
-        </tr>
-      </table>
-    </div>
-  </body>
-</html>
-`;
-
-      const subject = `Signature Authorized by Investor - ${reports.nameOfRound}`;
-
-      // Send email
-      sendEmailToCorpSignature(companyEmail, companyName, message, subject);
-    } catch (emailErr) {
-      console.error("Error sending email:", emailErr);
-    }
-
-    res.status(200).json({
-      message: "Signature authorized successfully and email sent",
-      updated: true,
-      results: results,
-    });
-  });
+  );
 };
+
+// services/emailService.js
+
+// 📧 TO INVESTOR: Signature confirmation with wiring instructions
+function sendEmailToInvestor(
+  to,
+  investorName,
+  companyName,
+  reports,
+  wiringInstructions = null
+) {
+  const subject = `Signature Confirmed - Next Steps for ${reports.nameOfRound}`;
+
+  const message = `
+    <!DOCTYPE html>
+    <html lang="en">
+      <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Signature Confirmation & Next Steps</title>
+      </head>
+      <body>
+        <div style="width:600px;margin:0 auto;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;">
+          <table style="width:600px;margin:0 auto;border-collapse:collapse;font-family:Verdana,Geneva,sans-serif;">
+            <tr>
+              <td style="background:#efefef;padding:10px 0;text-align:center;">
+                <div style="width:130px;margin:0 auto;">
+                  <img src="${
+                    process.env.APP_URL
+                  }/logo.png" alt="logo" style="width:100%;" />
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:30px;">
+                <h2 style="margin:0 0 20px 0;font-size:20px;color:#111;">Dear ${investorName},</h2>
+                
+                <!-- Confirmation Section -->
+                <div style="background:#f0f9ff;padding:20px;border-radius:8px;margin-bottom:20px;">
+                  <h3 style="margin:0 0 15px 0;font-size:18px;color:#111;">
+                    ✅ Your Digital Signature Has Been Confirmed
+                  </h3>
+                  <p style="margin:0 0 10px 0;font-size:14px;color:#111;">
+                    Thank you for authorizing your investment in <strong>${companyName}</strong>.
+                  </p>
+                  <p style="margin:0 0 10px 0;font-size:14px;color:#111;">
+                    <b>Investment Round:</b> ${reports.nameOfRound}
+                  </p>
+                  <p style="margin:0 0 10px 0;font-size:14px;color:#111;">
+                    <b>Signature Date:</b> ${new Date().toLocaleDateString()}
+                  </p>
+                  <p style="margin:0 0 10px 0;font-size:14px;color:#111;">
+                    <b>Reference ID:</b> INV-${Date.now()}
+                  </p>
+                </div>
+
+                <!-- Next Steps -->
+                <div style="margin-bottom:25px;">
+                  <h4 style="margin:0 0 15px 0;font-size:16px;color:#111;">📋 Next Steps:</h4>
+                  <ol style="margin:0;padding-left:20px;font-size:14px;color:#111;">
+                    <li style="margin-bottom:10px;">Complete the fund transfer using the wiring instructions below</li>
+                    <li style="margin-bottom:10px;">The company will confirm receipt of funds</li>
+                    <li>Shares will be formally allocated to you</li>
+                  </ol>
+                </div>
+
+                <!-- Documents -->
+                <div style="margin-bottom:25px;">
+                  <h4 style="margin:0 0 15px 0;font-size:16px;color:#111;">📄 Important Documents:</h4>
+                  <p style="margin:0 0 10px 0;font-size:14px;color:#111;">
+                    Please keep copies of these documents for your records:
+                  </p>
+                  <ul style="margin:0;padding-left:20px;font-size:14px;color:#111;">
+                    <li style="margin-bottom:5px;">Term Sheet</li>
+                    <li style="margin-bottom:5px;">Subscription Agreement</li>
+                    <li>This confirmation email</li>
+                  </ul>
+                </div>
+
+                <!-- Wiring Instructions (if provided) -->
+                ${
+                  wiringInstructions
+                    ? `
+                <div style="background:#fff8e1;padding:20px;border-radius:8px;margin-bottom:20px;border-left:4px solid #f59e0b;">
+                  <h4 style="margin:0 0 15px 0;font-size:16px;color:#111;">🏦 Wiring Instructions:</h4>
+                  <div style="font-size:14px;color:#111;line-height:1.6;">
+                    ${wiringInstructions}
+                  </div>
+                  <p style="margin:15px 0 0 0;font-size:13px;color:#6b7280;">
+                    <i>Note: Funds will be converted based on the exchange rate of the day the investment is completed, according to the Bank of Canada.</i>
+                  </p>
+                </div>
+                `
+                    : ""
+                }
+
+                <!-- Contact Information -->
+                <div style="background:#f9fafb;padding:20px;border-radius:8px;margin-bottom:20px;">
+                  <h4 style="margin:0 0 15px 0;font-size:16px;color:#111;">📞 Need Help?</h4>
+                  <p style="margin:0 0 10px 0;font-size:14px;color:#111;">
+                    If you have any questions, please contact:
+                  </p>
+                  <p style="margin:0;font-size:14px;color:#111;">
+                    <b>${companyName}</b><br/>
+                    Email: <a href="mailto:scale@blueprintcatalyst.com" style="color:#3b82f6;">${
+                      reports.company_email
+                    }</a>
+                  </p>
+                </div>
+
+                <!-- Action Button -->
+                <div style="text-align:center;margin:30px 0;">
+                  <a href="https://blueprintcatalyst.com/investor/dashboard" style="background:#10b981;color:#fff;text-decoration:none;font-size:16px;font-weight:500;padding:12px 40px;border-radius:8px;display:inline-block;">
+                    Go to Your Dashboard
+                  </a>
+                </div>
+              </td>
+            </tr>
+          </table>
+        </div>
+
+        <div style="width:600px;margin:20px auto 0 auto;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;">
+          <table style="width:600px;margin:0 auto;border-collapse:collapse;font-family:Verdana,Geneva,sans-serif;">
+            <tr>
+              <td style="padding:20px;text-align:center;font-size:0.9em;color:#666;">
+                Capavate. Powered by BluePrint Catalyst Limited<br/>
+                <small style="font-size:0.8em;">This is an automated message. Please do not reply to this email.</small>
+              </td>
+            </tr>
+          </table>
+        </div>
+      </body>
+    </html>
+  `;
+
+  const mailOptions = {
+    from: '"Capavate" <scale@blueprintcatalyst.com>',
+    to,
+    subject,
+    html: message,
+  };
+
+  transporter.sendMail(mailOptions, (error, info) => {
+    if (error) console.error("Error sending email:", error);
+    else console.log(`✅ Email sent to ${to}`);
+  });
+}
 
 // Email function
 function sendEmailToCorpSignature(to, companyName, message, subject) {
@@ -2206,8 +2368,9 @@ function handleConvertibleNoteRoundCalculation(
       const valuationCap = toNumber(instrumentData.valuationCap_note, 0);
       const discountRate = toNumber(instrumentData.discountRate_note, 0) / 100;
       const interestRate = toNumber(instrumentData.interestRate_note, 0) / 100;
-      const convertibleTrigger =
-        instrumentData.convertibleTrigger || "QUALIFIED_FINANCING";
+      // const convertibleTrigger =
+      //   instrumentData.convertibleTrigger || "QUALIFIED_FINANCING";
+      const convertibleTrigger = "QUALIFIED_FINANCING";
       const optionPoolPercent = toNumber(round.optionPoolPercent, 0) / 100;
       const preMoneyValuation = toNumber(round.pre_money, 0);
       const postMoneyValuation = toNumber(round.post_money, 0);
@@ -2339,8 +2502,8 @@ function handleConvertibleNoteRoundCalculation(
               (employeePreSeedOwnership / 100) * preMoneyValuation;
 
             preSeedShareholders.push({
-              name: "Employee Option Pool",
-              fullName: "Employee Option Pool",
+              name: "Option Pool",
+              fullName: "Option Pool",
               type: "Options Pool",
               shares: optionPoolShares,
               ownership: employeePreSeedOwnership,
@@ -2404,8 +2567,8 @@ function handleConvertibleNoteRoundCalculation(
               (employeePostSeedOwnership / 100) * postMoneyValuation;
 
             postSeedShareholders.push({
-              name: "Employee Option Pool",
-              fullName: "Employee Option Pool",
+              name: "Option Pool",
+              fullName: "Option Pool",
               type: "Options Pool",
               shares: optionPoolShares,
               ownership: employeePostSeedOwnership,
@@ -2884,8 +3047,8 @@ function calculateInvestmentRoundCapTable(round, investors, roundZero) {
       (employeePreSeedOwnership / 100) * preMoneyValuation;
 
     preSeedShareholders.push({
-      name: "Employee Option Pool",
-      fullName: "Employee Option Pool",
+      name: "Option Pool",
+      fullName: "Option Pool",
       type: "Options Pool",
       shares: optionPoolShares,
       ownership: employeePreSeedOwnership,
@@ -2943,8 +3106,8 @@ function calculateInvestmentRoundCapTable(round, investors, roundZero) {
     const employeePostSeedValue = optionPoolShares * sharePrice;
 
     postSeedShareholders.push({
-      name: "Employee Option Pool",
-      fullName: "Employee Option Pool",
+      name: "Option Pool",
+      fullName: "Option Pool",
       type: "Options Pool",
       shares: optionPoolShares,
       ownership: employeePostSeedOwnership,
@@ -3221,68 +3384,143 @@ function handleSAFERoundCalculation(round, company_id, res) {
           const effectiveInvestment =
             totalSafeInvestment > 0 ? totalSafeInvestment : investmentSize;
 
-          // 🟢 STEP 2: Calculate potential conversion for ALL SAFE investors
-          let totalPotentialShares = 0;
-          let conversionDetails = {};
+          // 🟢 STEP 2: Create PRE-SAFE cap table (current state)
+          let preSAFEShareholders = [];
+          let postSAFEShareholders = []; // For potential conversion
 
-          if (
-            valuationCap > 0 &&
-            totalSharesIncludingPool > 0 &&
-            effectiveInvestment > 0
-          ) {
+          // Add founders to PRE-SAFE
+          if (roundZeroFounders && roundZeroFounders.length > 0) {
+            roundZeroFounders.forEach((founder, index) => {
+              const shares = toNumber(founder.shares, 0);
+              if (shares > 0) {
+                const ownership =
+                  totalSharesIncludingPool > 0
+                    ? (shares / totalSharesIncludingPool) * 100
+                    : 0;
+                const value = (ownership / 100) * valuationCap;
+
+                preSAFEShareholders.push({
+                  name: founder.firstName + " " + founder.lastName,
+                  fullName:
+                    founder.fullName || founder.name || `Founder ${index + 1}`,
+                  email: founder.email || "-",
+                  phone: founder.phone || "-",
+                  type: "Founder",
+                  shares: shares,
+                  ownership: ownership,
+                  value: value,
+                  newShares: 0,
+                });
+
+                // Also add to post-SAFE (same for now)
+                postSAFEShareholders.push({
+                  name: founder.firstName + " " + founder.lastName,
+                  fullName:
+                    founder.fullName || founder.name || `Founder ${index + 1}`,
+                  email: founder.email || "-",
+                  phone: founder.phone || "-",
+                  type: "Founder",
+                  shares: shares,
+                  ownership: ownership,
+                  value: value,
+                  newShares: 0,
+                });
+              }
+            });
+          }
+
+          // Add Employee Option Pool to PRE-SAFE
+          if (optionPoolShares > 0) {
+            const employeeOwnership =
+              totalSharesIncludingPool > 0
+                ? (optionPoolShares / totalSharesIncludingPool) * 100
+                : 0;
+            const employeeValue = (employeeOwnership / 100) * valuationCap;
+
+            preSAFEShareholders.push({
+              name: "Option Pool",
+              fullName: "Option Pool",
+              type: "Options Pool",
+              shares: optionPoolShares,
+              ownership: employeeOwnership,
+              value: employeeValue,
+              newShares: 0,
+            });
+
+            postSAFEShareholders.push({
+              name: "Option Pool",
+              fullName: "Option Pool",
+              type: "Options Pool",
+              shares: optionPoolShares,
+              ownership: employeeOwnership,
+              value: employeeValue,
+              newShares: 0,
+            });
+          }
+
+          // 🟢 STEP 3: Calculate potential conversion for POST-SAFE
+          let conversionDetails = {
+            postMoneyValuation: valuationCap,
+            conversionPrice: 0,
+            potentialShares: 0,
+            postConversionOwnership: 0,
+            foundersPostConversionOwnership: 0,
+            poolPostConversionOwnership: 0,
+          };
+
+          if (valuationCap > 0 && effectiveInvestment > 0) {
             if (safeType === "POST_MONEY") {
-              // CORRECT POST-MONEY SAFE CALCULATION
+              // POST-MONEY SAFE
               const ownershipPercentage = effectiveInvestment / valuationCap;
 
               // Total shares after conversion
               const totalSharesPostConversion = Math.round(
                 totalSharesIncludingPool / (1 - ownershipPercentage)
               );
-              totalPotentialShares =
+              const potentialShares =
                 totalSharesPostConversion - totalSharesIncludingPool;
 
-              // Conversion prices
-              const conversionPriceAtCap =
-                valuationCap / totalSharesPostConversion;
-              const sharesAtValuationCap = Math.round(
-                effectiveInvestment / conversionPriceAtCap
-              );
+              // Conversion price
+              const conversionPrice = valuationCap / totalSharesPostConversion;
 
-              // Apply discount
+              // Apply discount if any
               const conversionPriceWithDiscount =
-                conversionPriceAtCap * (1 - discountRate);
+                conversionPrice * (1 - discountRate);
               const sharesWithDiscount = Math.round(
                 effectiveInvestment / conversionPriceWithDiscount
               );
 
-              // Final conversion (better for investor)
-              totalPotentialShares = Math.max(
-                totalPotentialShares,
+              // Final (better for investor)
+              const finalPotentialShares = Math.max(
+                potentialShares,
                 sharesWithDiscount
               );
+              const finalConversionPrice =
+                discountRate > 0
+                  ? conversionPriceWithDiscount
+                  : conversionPrice;
 
               conversionDetails = {
-                atValuationCap: sharesAtValuationCap,
-                atDiscount: sharesWithDiscount,
-                conversionPriceAtCap: conversionPriceAtCap,
-                conversionPriceWithDiscount: conversionPriceWithDiscount,
-                finalShares: totalPotentialShares,
-                conversionPrice:
-                  discountRate > 0
-                    ? conversionPriceWithDiscount
-                    : conversionPriceAtCap,
-                foundersOwnership:
-                  totalSharesPostConversion > 0
-                    ? (totalSharesIncludingPool / totalSharesPostConversion) *
-                      100
-                    : 0,
+                postMoneyValuation: valuationCap,
+                conversionPrice: finalConversionPrice,
+                potentialShares: finalPotentialShares,
                 postConversionOwnership:
-                  totalSharesPostConversion > 0
-                    ? (totalPotentialShares / totalSharesPostConversion) * 100
-                    : 0,
+                  (finalPotentialShares /
+                    (totalSharesIncludingPool + finalPotentialShares)) *
+                  100,
+                foundersPostConversionOwnership:
+                  (roundZeroTotalShares /
+                    (totalSharesIncludingPool + finalPotentialShares)) *
+                  100,
+                poolPostConversionOwnership:
+                  (optionPoolShares /
+                    (totalSharesIncludingPool + finalPotentialShares)) *
+                  100,
+                totalSharesPostConversion:
+                  totalSharesIncludingPool + finalPotentialShares,
               };
             } else {
-              // PRE-MONEY SAFE (your existing logic)
+              // PRE-MONEY SAFE
               const conversionPriceAtCap =
                 valuationCap / totalSharesIncludingPool;
               const sharesAtValuationCap = Math.round(
@@ -3295,120 +3533,60 @@ function handleSAFERoundCalculation(round, company_id, res) {
                 effectiveInvestment / conversionPriceWithDiscount
               );
 
-              totalPotentialShares = Math.max(
+              const finalPotentialShares = Math.max(
                 sharesAtValuationCap,
                 sharesWithDiscount
               );
+              const finalConversionPrice =
+                discountRate > 0
+                  ? conversionPriceWithDiscount
+                  : conversionPriceAtCap;
 
               conversionDetails = {
-                atValuationCap: sharesAtValuationCap,
-                atDiscount: sharesWithDiscount,
-                conversionPriceAtCap: conversionPriceAtCap,
-                conversionPriceWithDiscount: conversionPriceWithDiscount,
-                finalShares: totalPotentialShares,
-                conversionPrice:
-                  discountRate > 0
-                    ? conversionPriceWithDiscount
-                    : conversionPriceAtCap,
-                foundersOwnership:
-                  totalSharesIncludingPool + totalPotentialShares > 0
-                    ? (totalSharesIncludingPool /
-                        (totalSharesIncludingPool + totalPotentialShares)) *
-                      100
-                    : 0,
+                postMoneyValuation: valuationCap + effectiveInvestment,
+                conversionPrice: finalConversionPrice,
+                potentialShares: finalPotentialShares,
                 postConversionOwnership:
-                  totalSharesIncludingPool + totalPotentialShares > 0
-                    ? (totalPotentialShares /
-                        (totalSharesIncludingPool + totalPotentialShares)) *
-                      100
-                    : 0,
+                  (finalPotentialShares /
+                    (totalSharesIncludingPool + finalPotentialShares)) *
+                  100,
+                foundersPostConversionOwnership:
+                  (roundZeroTotalShares /
+                    (totalSharesIncludingPool + finalPotentialShares)) *
+                  100,
+                poolPostConversionOwnership:
+                  (optionPoolShares /
+                    (totalSharesIncludingPool + finalPotentialShares)) *
+                  100,
+                totalSharesPostConversion:
+                  totalSharesIncludingPool + finalPotentialShares,
               };
             }
           }
 
-          // 🟢 STEP 3: Create shareholders array for SAFE round
-          let shareholders = [];
-
-          // Add founders from Round 0
-          if (roundZeroFounders && roundZeroFounders.length > 0) {
-            roundZeroFounders.forEach((founder, index) => {
-              const shares = toNumber(founder.shares, 0);
-              if (shares > 0) {
-                const ownership =
-                  totalSharesIncludingPool > 0
-                    ? (shares / totalSharesIncludingPool) * 100
-                    : 0;
-                const value = (ownership / 100) * valuationCap;
-
-                shareholders.push({
-                  name: founder.firstName + " " + founder.lastName,
-                  fullName:
-                    founder.fullName || founder.name || `Founder ${index + 1}`,
-                  firstName:
-                    founder.firstName ||
-                    (founder.name || "").split(" ")[0] ||
-                    "",
-                  lastName:
-                    founder.lastName ||
-                    (founder.name || "").split(" ")[1] ||
-                    "",
-                  email: founder.email || "-",
-                  phone: founder.phone || "-",
-                  type: "Founder",
-                  shares: shares,
-                  ownership: ownership,
-                  value: value,
-                  shareType: founder.shareType || "common",
-                  votingRights:
-                    founder.voting === "Yes" ? "voting" : "non-voting",
-                  newShares: 0,
-                });
-              }
-            });
-          }
-
-          // Add Employee Option Pool
-          if (optionPoolShares > 0) {
-            const employeeOwnership =
-              totalSharesIncludingPool > 0
-                ? (optionPoolShares / totalSharesIncludingPool) * 100
-                : 0;
-            const employeeValue = (employeeOwnership / 100) * valuationCap;
-
-            shareholders.push({
-              name: "Employee Option Pool",
-              fullName: "Employee Option Pool",
-              type: "Options Pool",
-              shares: optionPoolShares,
-              ownership: employeeOwnership,
-              value: employeeValue,
-              votingRights: "non-voting",
-              newShares: 0,
-            });
-          }
-
-          // Add SAFE investors
+          // 🟢 STEP 4: Add SAFE investors to POST-SAFE cap table (potential)
           if (investors && investors.length > 0) {
             investors.forEach((investor, index) => {
               const investmentAmount = toNumber(investor.investment_amount, 0);
 
-              // Calculate individual investor's share of total potential shares
+              // Calculate individual investor's potential shares
               const individualPotentialShares =
                 totalSafeInvestment > 0
                   ? Math.round(
                       (investmentAmount / totalSafeInvestment) *
-                        totalPotentialShares
+                        conversionDetails.potentialShares
                     )
                   : 0;
 
               const individualPostConversionOwnership =
-                conversionDetails.postConversionOwnership > 0
+                conversionDetails.totalSharesPostConversion > 0
                   ? (individualPotentialShares /
-                      (totalSharesIncludingPool + totalPotentialShares)) *
+                      conversionDetails.totalSharesPostConversion) *
                     100
                   : 0;
 
-              shareholders.push({
+              // Add to PRE-SAFE (as SAFE investor, no shares yet)
+              preSAFEShareholders.push({
                 name:
                   `${investor.first_name || ""} ${
                     investor.last_name || ""
@@ -3417,55 +3595,96 @@ function handleSAFERoundCalculation(round, company_id, res) {
                   `${investor.first_name || ""} ${
                     investor.last_name || ""
                   }`.trim() || `SAFE Investor ${index + 1}`,
-                firstName: investor.first_name || "",
-                lastName: investor.last_name || "",
                 email: investor.email || "-",
                 phone: "-",
                 type: "SAFE Investor",
-                shares: 0, // No immediate shares in SAFE
+                shares: 0, // No shares in PRE-SAFE
                 ownership: 0,
                 value: 0,
                 investmentAmount: investmentAmount,
-                votingRights: "non-voting",
                 newShares: 0,
                 isSAFE: true,
-                safeDetails: {
-                  valuationCap: valuationCap,
-                  discountRate: discountRate * 100,
-                  safeType: safeType,
-                  potentialShares: individualPotentialShares,
-                  conversionPrice: conversionDetails.conversionPrice,
-                  postConversionOwnership: individualPostConversionOwnership,
-                },
+                note: "Will convert in next priced round",
+              });
+
+              // Add to POST-SAFE (potential conversion)
+              postSAFEShareholders.push({
+                name:
+                  `${investor.first_name || ""} ${
+                    investor.last_name || ""
+                  }`.trim() || `SAFE Investor ${index + 1}`,
+                fullName:
+                  `${investor.first_name || ""} ${
+                    investor.last_name || ""
+                  }`.trim() || `SAFE Investor ${index + 1}`,
+                email: investor.email || "-",
+                phone: "-",
+                type: "Investor",
+                shares: individualPotentialShares, // Potential shares
+                ownership: individualPostConversionOwnership,
+                value:
+                  (individualPostConversionOwnership / 100) *
+                  conversionDetails.postMoneyValuation,
+                investmentAmount: investmentAmount,
+                newShares: individualPotentialShares,
+                isConvertibleNote: true,
+                note: `Converts at ${formatCurrency(
+                  conversionDetails.conversionPrice
+                )} per share`,
               });
             });
           }
 
-          // 🟢 STEP 4: Create proper cap table data for SAFE round
+          // 🟢 STEP 5: Update POST-SAFE ownership percentages after conversion
+          if (conversionDetails.totalSharesPostConversion > 0) {
+            // Update founders in POST-SAFE
+            postSAFEShareholders.forEach((sh) => {
+              if (sh.type === "Founder") {
+                sh.ownership =
+                  (sh.shares / conversionDetails.totalSharesPostConversion) *
+                  100;
+                sh.value =
+                  (sh.ownership / 100) * conversionDetails.postMoneyValuation;
+              } else if (sh.type === "Options Pool") {
+                sh.ownership =
+                  (sh.shares / conversionDetails.totalSharesPostConversion) *
+                  100;
+                sh.value =
+                  (sh.ownership / 100) * conversionDetails.postMoneyValuation;
+              }
+            });
+          }
+
+          // 🟢 STEP 6: Create response with BOTH pre and post SAFE tables
           const capTableData = {
             roundType: round.nameOfRound || "SAFE Round",
             round_type: round.round_type,
             instrumentType: round.instrumentType,
             currency: round.currency || "USD",
-            totalShares: totalSharesIncludingPool,
-            totalValue: valuationCap > 0 ? valuationCap : 0,
-            shareholders: shareholders,
-            chartData: {
-              labels: shareholders.map((s) => s.name),
-              datasets: [
-                {
-                  label: "Current Ownership %",
-                  data: shareholders.map((s) => Number(s.ownership.toFixed(2))),
-                  backgroundColor: shareholders.map((s) =>
-                    s.type === "Founder"
-                      ? "hsl(120,70%,50%)"
-                      : s.type === "Options Pool"
-                      ? "hsl(40,70%,50%)"
-                      : "hsl(220,70%,50%)"
-                  ),
-                },
-              ],
+
+            // PRE-SAFE Cap Table (Current State)
+            preSAFECapTable: {
+              totalShares: totalSharesIncludingPool,
+              totalValue: valuationCap,
+              shareholders: preSAFEShareholders,
+              message: "Current cap table before SAFE conversion",
             },
+
+            // POST-SAFE Cap Table (Potential After Conversion)
+            postSAFECapTable: {
+              totalShares:
+                conversionDetails.totalSharesPostConversion ||
+                totalSharesIncludingPool,
+              totalValue: conversionDetails.postMoneyValuation || valuationCap,
+              shareholders: postSAFEShareholders,
+              message:
+                "Potential cap table after SAFE conversion at next priced round",
+            },
+
+            // Conversion Details
+            conversionDetails: conversionDetails,
+
+            // Calculations Summary
             calculations: {
               investmentSize,
               valuationCap,
@@ -3478,19 +3697,20 @@ function handleSAFERoundCalculation(round, company_id, res) {
               optionPoolPercent: optionPoolPercent * 100,
               optionPoolShares,
               totalSharesIncludingPool,
-              potentialConversion: conversionDetails, // ✅ ADD THIS LINE
-              safeNote:
-                "SAFE investors will receive shares at next priced round conversion",
+              preMoneyValuation:
+                safeType === "PRE_MONEY"
+                  ? valuationCap
+                  : valuationCap - effectiveInvestment,
+              postMoneyValuation: conversionDetails.postMoneyValuation,
+              conversionPrice: conversionDetails.conversionPrice,
+              potentialShares: conversionDetails.potentialShares,
             },
+
             isSAFERound: true,
-            message:
-              investors && investors.length > 0
-                ? `${safeType} SAFE round with ${
-                    investors.length
-                  } investor(s) - ${formatCurrency(
-                    totalSafeInvestment
-                  )} committed`
-                : `${safeType} SAFE round - no investors confirmed yet`,
+            hasPrePostTables: true, // Flag to indicate both tables exist
+            message: `SAFE Round - ${safeType} SAFE with ${
+              investors ? investors.length : 0
+            } investor(s)`,
           };
 
           return res.status(200).json({

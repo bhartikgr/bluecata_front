@@ -3761,6 +3761,7 @@ exports.companyProfileUpdate = (req, res) => {
           req.file.filename
         )
       : null;
+    console.log(req.body);
 
     // ✅ Update company table explicitly
     const companyUpdateQuery = `
@@ -4673,3 +4674,23 @@ function sendContactEmail(to, fullName, phone, message) {
     else console.log("Contact email sent:", info.response);
   });
 }
+
+exports.getcountrySymbolLocal = (req, res) => {
+  var company_id = req.body.company_id;
+  db.query(
+    "SELECT * FROM company where id = ?",
+    [company_id],
+    async (err, row) => {
+      if (err) {
+        return res
+          .status(500)
+          .json({ message: "Database query error", error: err });
+      }
+
+      res.status(200).json({
+        message: "",
+        results: row,
+      });
+    }
+  );
+};
