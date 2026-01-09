@@ -4878,7 +4878,7 @@ function sendContactFormEmail(data) {
 
   const mailOptions = {
     from: '"Capavate Contact Form" <scale@blueprintcatalyst.com>',
-    to: "avinayquicktech@gmail.com",
+    to: "venture@capavate.com",
     replyTo: email, // Allows you to reply directly to the user
     subject,
     html: htmlBody,
