@@ -96,5 +96,8 @@ router.post(
 );
 router.post("/createWarrant", capitalroundController.createWarrant);
 router.post("/warrantDataUpdate", capitalroundController.warrantDataUpdate);
-
+router.post(
+  "/getPreviousRoundForConvertible",
+  capitalroundController.getPreviousRoundForConvertible
+);
 module.exports = router;
