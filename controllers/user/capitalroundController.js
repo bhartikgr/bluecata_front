@@ -3316,10 +3316,11 @@ function calculatePreferredEquityCapTable(
 
   // ========== STEP 14: BUILD RESPONSE ==========
   return {
-    roundType: round.nameOfRound || "Series A - Preferred Equity",
+    roundType: round.nameOfRound || "Preferred Equity",
     round_type: round.round_type,
     instrumentType: round.instrumentType,
     currency: round.currency || "USD",
+    shareClassType: round.shareClassType,
 
     // Pre-Series A Cap Table
     preSeriesACapTable: {
