@@ -433,7 +433,7 @@ function sendEmailLoginpassword(to, fullName, newPassword) {
                 <a
                   href="https://capavate.com/user/login"
                   style="
-                    background: #ff3c3e;
+                    background: #CC0000;
                     color: #fff;
                     text-decoration: none;
                     font-size: 14px;
@@ -1501,7 +1501,7 @@ function sendEmailAccountActivated(to, fullName) {
                 Your account has been successfully activated. You can now log in using your credentials.
               </p>
               <div style="text-align: center; margin: 20px 0;">
-                <a href="https://capavate.com/user/login" style="background:#ff3c3e; color:#fff; text-decoration:none; font-size:14px; padding:10px 30px; border-radius:10px;">Login Now</a>
+                <a href="https://capavate.com/user/login" style="background:#CC0000; color:#fff; text-decoration:none; font-size:14px; padding:10px 30px; border-radius:10px;">Login Now</a>
               </div>
               <p style="margin: 30px 0 10px 0; font-size: 14px; text-align: center; color: #555;">
                 Capavate Powered by <b>Blueprint Catalyst Ltd</b>
@@ -1557,7 +1557,7 @@ function sendEmailResendActivateLink(to, fullName, activationCode) {
               
               <p>Please click the button below:</p>
               <div style="text-align: center; margin: 20px 0;">
-                <a href="${activationUrl}" style="background: #ff3c3e; color: #fff; text-decoration: none; font-size: 14px; padding: 10px 30px; border-radius: 10px;">Activate Account</a>
+                <a href="${activationUrl}" style="background: #CC0000; color: #fff; text-decoration: none; font-size: 14px; padding: 10px 30px; border-radius: 10px;">Activate Account</a>
               </div>
               <p>If you did not request this, please ignore this email.</p>
               <p style="margin-top: 30px; font-size: 14px; text-align: center; color: #555;">
@@ -1613,7 +1613,7 @@ function sendEmailActivateAccount(to, fullName, activationCode) {
               <p>Thank you for registering with <b>Capavate</b>.</p>
               <p>To activate your account, please click the button below:</p>
               <div style="text-align: center; margin: 20px 0;">
-                <a href="${activationUrl}" style="background: #ff3c3e; color: #fff; text-decoration: none; font-size: 14px; padding: 10px 30px; border-radius: 10px;">Activate Account</a>
+                <a href="${activationUrl}" style="background: #CC0000; color: #fff; text-decoration: none; font-size: 14px; padding: 10px 30px; border-radius: 10px;">Activate Account</a>
               </div>
               <p>If you did not request this, please ignore this email.</p>
               <p style="margin-top: 30px; font-size: 14px; text-align: center; color: #555;">
@@ -3547,7 +3547,7 @@ function sendEmailToUser(to, fullName, companyName) {
               You can now manage your company and track your company's progress through your dashboard.
             </p>
             <p style="font-size:14px; color:#111; margin-bottom:15px;">
-              <a href="https://capavate.com/user/dashboard" style=" background: #ff3c3e;
+              <a href="https://capavate.com/user/dashboard" style=" background: #CC0000;
                     color: #fff; padding:10px 20px; text-decoration:none; border-radius:5px; font-weight:bold;">Go to Dashboard</a>
             </p>
             <p style="font-size:14px; color:#111; margin-bottom:0;">Regards,<br/>Capavate Team</p>
@@ -3604,7 +3604,7 @@ function sendEmailToSignatory(to, fullName, inviteLink, company_name) {
               Please click the button below to accept the invitation and complete your profile:
             </p>
             <p style="text-align:center; margin:20px 0;">
-              <a href="${inviteLink}" style=" background: #ff3c3e;
+              <a href="${inviteLink}" style=" background: #CC0000;
                     color: #fff; padding:10px 20px; text-decoration:none; border-radius:5px; font-weight:bold;">
                 Accept Invitation
               </a>
@@ -4447,7 +4447,7 @@ function sendDeclineEmail(to, fullName, companyName, reason) {
                 Please review and submit your signature again if required.
               </p>
               <p style="font-size:14px;color:#111;margin-bottom:15px;">
-                <a href="https://capavate.com/authorized-signature" style="background:#ff3c3e;color:#fff;padding:10px 20px;text-decoration:none;border-radius:5px;font-weight:bold;">Click Here</a>
+                <a href="https://capavate.com/authorized-signature" style="background:#CC0000;color:#fff;padding:10px 20px;text-decoration:none;border-radius:5px;font-weight:bold;">Click Here</a>
               </p>
               <p style="font-size:14px;color:#111;margin-bottom:0;">Regards,<br/>Capavate Team</p>
             </td>
@@ -4565,7 +4565,7 @@ function sendApprovalEmail(to, fullName, companyName) {
               You can now manage your company and perform all actions available on your dashboard.
             </p>
             <p style="font-size:14px; color:#111; margin-bottom:15px;">
-              <a href="https://capavate.com/authorized-signature" style="background:#ff3c3e; color:#fff; padding:10px 20px; text-decoration:none; border-radius:5px; font-weight:bold;">
+              <a href="https://capavate.com/authorized-signature" style="background:#CC0000; color:#fff; padding:10px 20px; text-decoration:none; border-radius:5px; font-weight:bold;">
                 Click Here
               </a>
             </p>

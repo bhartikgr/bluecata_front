@@ -302,7 +302,7 @@ function sendEmailToSignatory(to, fullName, inviteLink, company_name) {
               Please click the button below to accept the invitation and complete your profile:
             </p>
             <p style="text-align:center; margin:20px 0;">
-              <a href="${inviteLink}" style=" background: #ff3c3e;
+              <a href="${inviteLink}" style=" background: #CC0000;
                     color: #fff; padding:10px 20px; text-decoration:none; border-radius:5px; font-weight:bold;">
                 Accept Invitation
               </a>
@@ -496,7 +496,7 @@ function sendEmailToSignatory(to, fullName, inviteLink, company_name) {
               Please click the button below to accept the invitation and complete your profile:
             </p>
             <p style="text-align:center; margin:20px 0;">
-              <a href="${inviteLink}" style=" background: #ff3c3e;
+              <a href="${inviteLink}" style=" background: #CC0000;
                     color: #fff; padding:10px 20px; text-decoration:none; border-radius:5px; font-weight:bold;">
                 Accept Invitation
               </a>

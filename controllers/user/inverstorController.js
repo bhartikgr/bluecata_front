@@ -384,7 +384,7 @@ const sendInvestorInviteEmail = (
               }:
             </p>
             <div style="margin:20px 0;">
-              <a href="${link}" style="display:inline-block; padding:12px 24px; background: #ff3c3e;
+              <a href="${link}" style="display:inline-block; padding:12px 24px; background: #CC0000;
                         color: #fff; text-decoration:none; border-radius:6px;">
                 ${isRegistered ? "View Your Investor Info" : "Register / Login"}
               </a>
@@ -692,7 +692,7 @@ exports.SendreportToinvestor = async (req, res) => {
                             <a href="${url}" style="
                               display:inline-block;
                               padding:10px 30px;
-                              background-color:#ff3c3e;
+                              background-color:#CC0000;
                               color:#fff;
                               text-decoration:none;
                               border-radius:10px;
@@ -1437,7 +1437,7 @@ exports.InvestorAuthorizeConfimataion = (req, res) => {
                           <a href="https://capavate.com/investor/company/capital-round-list/${
                             dataa.user_id
                           }" 
-                            style="background:#ff3c3e;color:#fff;text-decoration:none;font-size:14px;padding:10px 30px;border-radius:10px;display:inline-block;">
+                            style="background:#CC0000;color:#fff;text-decoration:none;font-size:14px;padding:10px 30px;border-radius:10px;display:inline-block;">
                             Review & Sign Report
                           </a>
                         </div>

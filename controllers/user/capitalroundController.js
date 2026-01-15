@@ -814,7 +814,7 @@ exports.SendRecordRoundToinvestor = async (req, res) => {
                         </p>
                         <div style="padding:0 20px 20px 20px;">
                           <a href="${url}" style="
-                            background:#ff3c3e;
+                            background:#CC0000;
                             color:#fff;
                             text-decoration:none;
                             font-size:14px;
@@ -1221,7 +1221,7 @@ exports.investorrecordAuthorize = (req, res) => {
                         <tr>
                           <td>
                             <div style="padding:0 20px 20px 20px;">
-                              <a href="${reportUrl}" style="background:#ff3c3e;color:#fff;text-decoration:none;font-size:14px;padding:10px 30px;border-radius:10px;display:inline-block;">View Report</a>
+                              <a href="${reportUrl}" style="background:#CC0000;color:#fff;text-decoration:none;font-size:14px;padding:10px 30px;border-radius:10px;display:inline-block;">View Report</a>
                             </div>
                           </td>
                         </tr>
@@ -2323,7 +2323,12 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
       }
 
       // Step 4: For SAFE rounds
-      if (instrumentType === "Safe" && round.shareClassType === "Seed") {
+      if (
+        instrumentType === "Safe" &&
+        (round.shareClassType === "Seed" ||
+          round.shareClassType === "Pre-Seed" ||
+          round.shareClassType === "Post-Seed")
+      ) {
         return handleSAFERoundCalculation(round, company_id, res);
       }
       if (
@@ -2336,7 +2341,9 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
       // Step 5: For Convertible Note rounds
       if (
         instrumentType === "Convertible Note" &&
-        round.shareClassType === "Seed"
+        (round.shareClassType === "Seed" ||
+          round.shareClassType === "Pre-Seed" ||
+          round.shareClassType === "Post-Seed")
       ) {
         return handleConvertibleNoteRoundCalculation(
           round,
@@ -2399,7 +2406,7 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
                 (round.optionPoolPercent_post &&
                   round.optionPoolPercent_post > 0);
 
-              if (isSeriesA && round.instrumentType === "Common Stock") {
+              if (round.instrumentType === "Common Stock") {
                 // Get all previous rounds for Series A calculation
                 // In your API function, add this before calculation:
 
@@ -5193,8 +5200,8 @@ function handleSAFESeriesRoundCalculation(round, company_id, res) {
 
       // ✅ Step 1: Get ALL previous rounds to find SAFE round
       db.query(
-        `SELECT * FROM roundrecord WHERE company_id=? ORDER BY id ASC`,
-        [company_id],
+        `SELECT * FROM roundrecord WHERE company_id=? AND instrumentType='Safe' AND id < ? ORDER BY id ASC`,
+        [company_id, round.id],
         (err, allRounds) => {
           if (err)
             return res
@@ -5210,8 +5217,10 @@ function handleSAFESeriesRoundCalculation(round, company_id, res) {
           // ✅ Find SAFE round in all previous rounds
           allRounds.forEach((prevRound) => {
             if (
-              prevRound.instrumentType === "Safe" &&
-              prevRound.shareClassType === "Seed"
+              (prevRound.instrumentType === "Safe" &&
+                prevRound.shareClassType === "Seed") ||
+              prevRound.shareClassType === "Pre-Seed" ||
+              prevRound.shareClassType === "Post-Seed"
             ) {
               try {
                 const safeData =
@@ -5224,12 +5233,6 @@ function handleSAFESeriesRoundCalculation(round, company_id, res) {
                   prevRound.optionPoolPercent,
                   0
                 );
-                console.log("Found SAFE round:", {
-                  seedInvestment,
-                  valuationCap,
-                  discountRate,
-                  existingOptionPoolPercent,
-                });
               } catch (e) {
                 console.log("Error parsing SAFE data:", e);
               }
@@ -5294,12 +5297,6 @@ function handleSAFESeriesRoundCalculation(round, company_id, res) {
               ? preMoneyValuation / totalPreSeriesAShares
               : 0;
 
-          console.log("Share price calculation:", {
-            preMoneyValuation,
-            totalPreSeriesAShares,
-            sharePrice,
-          });
-
           // ✅ STEP 3: SAFE CONVERSION CALCULATIONS - CRITICAL FIX
           let seedDiscountPrice = 0;
           let seedCapPrice = 0;
@@ -5333,16 +5330,6 @@ function handleSAFESeriesRoundCalculation(round, company_id, res) {
               seedOptimalPrice = sharePrice;
             }
 
-            console.log("SAFE conversion prices:", {
-              seedDiscountPrice,
-              seedCapPrice,
-              seedOptimalPrice,
-              sharePrice,
-              discountRate,
-              valuationCap,
-              roundZeroTotalShares,
-            });
-
             if (seedOptimalPrice > 0) {
               seedConversionShares = Math.round(
                 seedInvestment / seedOptimalPrice
@@ -5373,14 +5360,6 @@ function handleSAFESeriesRoundCalculation(round, company_id, res) {
           if (isSeriesA && targetOptionPoolPercent > 0) {
             const totalSharesExcludingOption =
               roundZeroTotalShares + seedConversionShares + seriesAShares;
-
-            console.log("Option pool calculation:", {
-              totalSharesExcludingOption,
-              targetOptionPoolPercent,
-              roundZeroTotalShares,
-              seedConversionShares,
-              seriesAShares,
-            });
 
             if (totalSharesExcludingOption > 0) {
               totalPostShares = Math.round(
@@ -5566,7 +5545,7 @@ function handleSAFESeriesRoundCalculation(round, company_id, res) {
               note = `Existing ${existingOptionPoolPercent}% pool`;
               newSharesText = `+${employeeSharesSeedRound.toLocaleString()} new`;
             } else if (newOptionShares > 0) {
-              note = `Top-up to ${targetOptionPoolPercent}% target`;
+              note = ``;
               newSharesText = `+${newOptionShares.toLocaleString()} new`;
             }
 
@@ -5720,23 +5699,7 @@ function handleSAFESeriesRoundCalculation(round, company_id, res) {
             message: `Series A round calculated successfully`,
           };
 
-          console.log(
-            "Final response data:",
-            JSON.stringify(
-              {
-                preOwnership: preSeriesAShareholders.map((sh) => ({
-                  name: sh.name,
-                  ownership: sh.ownership,
-                })),
-                postOwnership: postSeriesAShareholders.map((sh) => ({
-                  name: sh.name,
-                  ownership: sh.ownership,
-                })),
-              },
-              null,
-              2
-            )
-          );
+          console.log(responseData);
 
           return res.status(200).json({
             success: true,

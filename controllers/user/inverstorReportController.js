@@ -278,7 +278,7 @@ exports.SendreportToinvestor = async (req, res) => {
                               You can view the report by clicking the button below:
                             </p>
                             <div style="text-align: center; margin-bottom: 20px;">
-                              <a href="${url}" style="background: #ff3c3e; color: #ffffff; text-decoration: none; font-size: 14px; padding: 10px 30px; border-radius: 5px; font-weight: bold;">
+                              <a href="${url}" style="background: #CC0000; color: #ffffff; text-decoration: none; font-size: 14px; padding: 10px 30px; border-radius: 5px; font-weight: bold;">
                                 View Report
                               </a>
                             </div>
@@ -697,7 +697,7 @@ function sendEmailInvestorpassword(to, fullName, newPassword, companyname) {
                 <tr>
                   <td>
                     <div style="padding: 0 20px 20px 20px; text-align: center;">
-                      <a href="https://capavate.com/investor/login" style="background: #ff3c3e; color: #fff; text-decoration: none; font-size: 14px; padding: 10px 30px; border-radius: 10px;">Login to Your Account</a>
+                      <a href="https://capavate.com/investor/login" style="background: #CC0000; color: #fff; text-decoration: none; font-size: 14px; padding: 10px 30px; border-radius: 10px;">Login to Your Account</a>
                     </div>
                   </td>
                 </tr>
