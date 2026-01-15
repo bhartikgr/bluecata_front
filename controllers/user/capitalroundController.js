@@ -2406,7 +2406,10 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
                 (round.optionPoolPercent_post &&
                   round.optionPoolPercent_post > 0);
 
-              if (round.instrumentType === "Common Stock") {
+              if (
+                round.instrumentType === "Common Stock" &&
+                round.nameOfRound?.toLowerCase().includes("series")
+              ) {
                 // Get all previous rounds for Series A calculation
                 // In your API function, add this before calculation:
 
