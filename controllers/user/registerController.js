@@ -4917,93 +4917,131 @@ exports.trackVisitor = (req, res) => {
       page_url,
     });
 
-    // ✅ STEP 1: Check if device_id already exists
+    // ✅ FIXED STEP 1: Check if device_id already exists - FIXED SQL QUERY
     const checkSql = `
-      SELECT id, COUNT(*) as total_visits 
+      SELECT 
+        id, 
+        COUNT(*) OVER() as total_visits 
       FROM visitors 
       WHERE device_id = ?
+      LIMIT 1
     `;
 
-    db.query(checkSql, [device_id], (err, results) => {
-      if (err) {
-        console.error("❌ Database check error:", err);
-        return res.status(500).json({
-          success: false,
-          message: "Failed to check visitor data",
-          error: err.message,
-        });
-      }
+    // OR Alternative query (simpler):
+    const checkSql2 = `
+      SELECT 
+        id,
+        (SELECT COUNT(*) FROM visitors WHERE device_id = ?) as total_visits
+      FROM visitors 
+      WHERE device_id = ?
+      LIMIT 1
+    `;
 
-      // ✅ STEP 2: If device_id already exists, REJECT IT (DO NOT INSERT)
-      if (results && results.length > 0 && results[0].total_visits > 0) {
-        console.log("❌ Device already exists, rejecting duplicate:", {
-          device_id_short: device_id
-            ? `${device_id.substring(0, 10)}...`
-            : null,
-          existing_id: results[0].id,
-          total_visits: results[0].total_visits,
-        });
-
-        return res.status(409).json({
-          success: false,
-          message:
-            "This device has already been tracked. No duplicate records allowed.",
-          existingVisitorId: results[0].id,
-          isDuplicate: true,
-          totalVisits: results[0].total_visits,
-          timestamp: new Date().toISOString(),
-        });
-      }
-
-      // ✅ STEP 3: If NEW device (doesn't exist), insert it
-      const insertSql = `
-        INSERT INTO visitors 
-        (country, state, ip_address, device_id, device_type, is_mobile, 
-         user_agent, page_url, referrer, date, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
-      `;
-
-      const values = [
-        country,
-        state,
-        ip_address,
-        device_id,
-        device_type,
-        is_mobile ? 1 : 0,
-        user_agent,
-        page_url,
-        referrer,
-      ];
-
-      db.query(insertSql, values, (err, result) => {
+    // OR Even simpler (two separate queries):
+    db.query(
+      "SELECT id FROM visitors WHERE device_id = ? LIMIT 1",
+      [device_id],
+      (err, results) => {
         if (err) {
-          console.error("❌ Insert error:", err);
+          console.error("❌ Database check error:", err);
           return res.status(500).json({
             success: false,
-            message: "Failed to record visitor data",
+            message: "Failed to check visitor data",
             error: err.message,
           });
         }
 
-        // ✅ Success - ONLY NEW device saved
-        console.log("✅ NEW device recorded (first visit):", {
-          visitorId: result.insertId,
-          device_id_short: device_id
-            ? `${device_id.substring(0, 10)}...`
-            : null,
-        });
+        const deviceExists = results && results.length > 0;
+        const existingId = deviceExists ? results[0].id : null;
 
-        return res.status(201).json({
-          success: true,
-          message: "New visitor recorded successfully",
-          visitorId: result.insertId,
-          isDuplicate: false,
-          isReturningVisitor: false,
-          totalVisits: 1,
-          timestamp: new Date().toISOString(),
-        });
-      });
-    });
+        if (deviceExists) {
+          // ✅ Get total visits count for this device
+          db.query(
+            "SELECT COUNT(*) as total_visits FROM visitors WHERE device_id = ?",
+            [device_id],
+            (countErr, countResults) => {
+              if (countErr) {
+                console.error("❌ Count error:", countErr);
+                return res.status(500).json({
+                  success: false,
+                  message: "Failed to count visitor data",
+                  error: countErr.message,
+                });
+              }
+
+              const totalVisits = countResults[0]?.total_visits || 0;
+
+              console.log("❌ Device already exists, rejecting duplicate:", {
+                device_id_short: device_id
+                  ? `${device_id.substring(0, 10)}...`
+                  : null,
+                existing_id: existingId,
+                total_visits: totalVisits,
+              });
+
+              return res.status(409).json({
+                success: false,
+                message:
+                  "This device has already been tracked. No duplicate records allowed.",
+                existingVisitorId: existingId,
+                isDuplicate: true,
+                totalVisits: totalVisits,
+                timestamp: new Date().toISOString(),
+              });
+            },
+          );
+        } else {
+          // ✅ STEP 3: If NEW device (doesn't exist), insert it
+          const insertSql = `
+          INSERT INTO visitors 
+          (country, state, ip_address, device_id, device_type, is_mobile, 
+           user_agent, page_url, referrer, date, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+        `;
+
+          const values = [
+            country,
+            state,
+            ip_address,
+            device_id,
+            device_type,
+            is_mobile ? 1 : 0,
+            user_agent,
+            page_url,
+            referrer,
+          ];
+
+          db.query(insertSql, values, (err, result) => {
+            if (err) {
+              console.error("❌ Insert error:", err);
+              return res.status(500).json({
+                success: false,
+                message: "Failed to record visitor data",
+                error: err.message,
+              });
+            }
+
+            // ✅ Success - ONLY NEW device saved
+            console.log("✅ NEW device recorded (first visit):", {
+              visitorId: result.insertId,
+              device_id_short: device_id
+                ? `${device_id.substring(0, 10)}...`
+                : null,
+            });
+
+            return res.status(201).json({
+              success: true,
+              message: "New visitor recorded successfully",
+              visitorId: result.insertId,
+              isDuplicate: false,
+              isReturningVisitor: false,
+              totalVisits: 1,
+              timestamp: new Date().toISOString(),
+            });
+          });
+        }
+      },
+    );
   } catch (error) {
     console.error("❌ Visitor tracking error:", error);
     return res.status(500).json({
