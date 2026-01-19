@@ -175,7 +175,7 @@ exports.acceptInvitationSignatory = async (req, res) => {
                     user.user_email,
                     fullName,
                     user.company_name,
-                    signatoryName
+                    signatoryName,
                   );
 
                   // 4️⃣ Send response
@@ -189,12 +189,12 @@ exports.acceptInvitationSignatory = async (req, res) => {
                       company_name: user.company_name,
                     },
                   });
-                }
+                },
               );
-            }
+            },
           );
         }
-      }
+      },
     );
     // Hash the password
   } catch (error) {
@@ -305,7 +305,7 @@ exports.signatorylogin = async (req, res) => {
           role: "signatory",
         },
         JWT_SECRET,
-        { expiresIn: "1h" }
+        { expiresIn: "1h" },
       );
 
       // ✅ Fetch all active companies for this email
@@ -340,9 +340,9 @@ exports.signatorylogin = async (req, res) => {
               companies,
             },
           });
-        }
+        },
       );
-    }
+    },
   );
 };
 
@@ -441,7 +441,7 @@ exports.joinedCompany = (req, res) => {
                 user.user_email,
                 fullName,
                 user.company_name,
-                signatoryName
+                signatoryName,
               );
 
               // 4️⃣ Send response
@@ -452,9 +452,9 @@ exports.joinedCompany = (req, res) => {
                   access_status: "active",
                 },
               });
-            }
+            },
           );
-        }
+        },
       );
     });
   });
@@ -534,9 +534,9 @@ exports.signatoryAccessLastLogin = (req, res) => {
                   companyId,
                   true,
                   insertResult.insertId,
-                  approvedCIO
+                  approvedCIO,
                 );
-              }
+              },
             );
           } else {
             return recordLastLogin(
@@ -545,7 +545,7 @@ exports.signatoryAccessLastLogin = (req, res) => {
               companyId,
               false,
               null,
-              approvedCIO
+              approvedCIO,
             );
           }
         } else {
@@ -556,10 +556,10 @@ exports.signatoryAccessLastLogin = (req, res) => {
             companyId,
             false,
             null,
-            approvedCIO
+            approvedCIO,
           );
         }
-      }
+      },
     );
   });
 
@@ -570,7 +570,7 @@ exports.signatoryAccessLastLogin = (req, res) => {
     companyId,
     signatureCreated,
     signatureId,
-    approvedCIO
+    approvedCIO,
   ) {
     const query = `
       INSERT INTO access_logs_sigantory_last_login (signatory_email,company_id, ip_address, created_at)

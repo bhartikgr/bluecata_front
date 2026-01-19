@@ -23,7 +23,7 @@ exports.totalDocs = async (req, res) => {
         FROM company c
         LEFT JOIN users u ON c.user_id = u.id
         WHERE c.id = ?`,
-      [companyId]
+      [companyId],
     );
 
     // 1️⃣ Total docs
@@ -31,7 +31,7 @@ exports.totalDocs = async (req, res) => {
       .promise()
       .query(
         "SELECT COUNT(*) AS total_docs FROM dataroomdocuments WHERE company_id = ?",
-        [companyId]
+        [companyId],
       );
 
     // 2️⃣ Total signatories
@@ -39,7 +39,7 @@ exports.totalDocs = async (req, res) => {
       .promise()
       .query(
         "SELECT COUNT(*) AS total_signatory FROM company_signatories WHERE company_id = ?",
-        [companyId]
+        [companyId],
       );
 
     // 3️⃣ Total investors
@@ -47,7 +47,7 @@ exports.totalDocs = async (req, res) => {
       .promise()
       .query(
         "SELECT COUNT(*) AS total_investor FROM investor_information WHERE company_id = ?",
-        [companyId]
+        [companyId],
       );
 
     // 4️⃣ Total shared reports from sharereport
@@ -62,7 +62,7 @@ exports.totalDocs = async (req, res) => {
       .promise()
       .query(
         "SELECT COUNT(*) AS total FROM sharerecordround WHERE company_id = ?",
-        [companyId]
+        [companyId],
       );
 
     const totalSharedReports =

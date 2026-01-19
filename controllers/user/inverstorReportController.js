@@ -24,7 +24,7 @@ const openai = new OpenAI({
 
 const Stripe = require("stripe");
 const stripe = new Stripe(
-  "sk_test_51RUJzWAx6rm2q3pyUl86ZMypACukdO7IsZ0AbsWOcJqg9xWGccwcQwbQvfCaxQniDCWzNg7z2p4rZS1u4mmDDyou00DM7rK8eY"
+  "sk_test_51RUJzWAx6rm2q3pyUl86ZMypACukdO7IsZ0AbsWOcJqg9xWGccwcQwbQvfCaxQniDCWzNg7z2p4rZS1u4mmDDyou00DM7rK8eY",
 );
 const upload = require("../../middlewares/uploadMiddleware");
 
@@ -49,7 +49,7 @@ exports.investorQuatarlyEmailSend = (req, res) => {
       // Send email to each investor
       sendEmailForInvestorReminder(
         investor.email,
-        "Reminder: Submit Your Quarterly Investor Update"
+        "Reminder: Submit Your Quarterly Investor Update",
       );
     });
 
@@ -196,7 +196,7 @@ exports.SendreportToinvestor = async (req, res) => {
       const messageText = duplicateReports
         .map(
           (item) =>
-            `Report "${item.document_name}" has already been sent to ${item.email}`
+            `Report "${item.document_name}" has already been sent to ${item.email}`,
         )
         .join("\n");
 
@@ -223,7 +223,7 @@ exports.SendreportToinvestor = async (req, res) => {
             currentDate,
             expiredAt,
             report.type,
-          ]
+          ],
         );
 
         // 📧 Send Email
@@ -424,7 +424,7 @@ function generateStrongPassword(length = 12) {
   for (let i = passwordArray.length; i < length; i++) {
     const randomByte = crypto.randomBytes(1).readUInt8();
     passwordArray.push(
-      allChars[Math.floor((randomByte / 256) * allChars.length)]
+      allChars[Math.floor((randomByte / 256) * allChars.length)],
     );
   }
 
@@ -447,7 +447,7 @@ const storagekyc = multer.diskStorage({
       "..",
       "upload",
       "investor",
-      `inv_${userId}`
+      `inv_${userId}`,
     );
 
     if (!fs.existsSync(userFolder)) {
@@ -552,7 +552,7 @@ exports.investorInformation = async (req, res) => {
           data.email,
           fullName || "Investor",
           password,
-          invdata.company_name
+          invdata.company_name,
         );
 
         return res.status(200).json({
@@ -599,7 +599,7 @@ exports.investorInformation = async (req, res) => {
           data.email,
           fullName || "Investor",
           password,
-          invdata.company_name
+          invdata.company_name,
         );
 
         return res.status(200).json({
@@ -650,7 +650,7 @@ function insertInvestorLog({
     (err) => {
       if (err) console.error("Investor Log Insert Failed:", err);
       else console.log("Investor Log Added ✅");
-    }
+    },
   );
 }
 
@@ -831,7 +831,7 @@ exports.getreportForInvestor = (req, res) => {
 
     if (results.length > 0) {
       const filteredResults = results.filter(
-        (doc) => doc.document_name && doc.document_name.trim() !== ""
+        (doc) => doc.document_name && doc.document_name.trim() !== "",
       );
 
       const updatedResults = filteredResults.map((doc) => ({
@@ -891,7 +891,7 @@ exports.viewReport = async (req, res) => {
             return res.status(200).json({
               message: "Investor report data fetched and updated",
             });
-          }
+          },
         );
       } else {
         return res.status(200).json({
@@ -982,11 +982,11 @@ exports.exportInvestorExcel = async (req, res) => {
 
     res.setHeader(
       "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     );
     res.setHeader(
       "Content-Disposition",
-      "attachment; filename=investor_report.xlsx"
+      "attachment; filename=investor_report.xlsx",
     );
 
     await workbook.xlsx.write(res);
@@ -1045,7 +1045,7 @@ exports.investorlogin = async (req, res) => {
           const token = jwt.sign(
             { id: user.id, email: user.email, role: "investor" },
             JWT_SECRET,
-            { expiresIn: "1h" }
+            { expiresIn: "1h" },
           );
 
           res.status(200).json({
@@ -1062,7 +1062,7 @@ exports.investorlogin = async (req, res) => {
             .status(200)
             .json({ status: "2", message: "Invalid email or password" });
         }
-      }
+      },
     );
   } catch (err) {
     res.status(500).json({ message: "Server error", error: err.message });
@@ -1087,7 +1087,7 @@ exports.getreportForInvestorCompany = async (req, res) => {
           message: "Login successfully",
           results: results,
         });
-      }
+      },
     );
   } catch (err) {
     res.status(500).json({
@@ -1145,7 +1145,7 @@ exports.resetPasswordinvestor = async (req, res) => {
               status: 1,
               message: "Password reset successfully and email sent",
             });
-          }
+          },
         );
       } else {
         return res.status(200).json({
@@ -1254,7 +1254,7 @@ exports.getinvestorData = async (req, res) => {
           message: "Login successfully",
           results: row,
         });
-      }
+      },
     );
   } catch (err) {
     res.status(500).json({
@@ -1296,6 +1296,6 @@ exports.investordataUpdate = async (req, res) => {
           city,
         },
       });
-    }
+    },
   );
 };

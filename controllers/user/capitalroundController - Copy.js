@@ -37,7 +37,7 @@ const storage = multer.diskStorage({
       "upload",
       "docs",
       `doc_${userId}`,
-      filetype
+      filetype,
     );
 
     // Create folder if it doesn't exist
@@ -68,7 +68,7 @@ exports.getallcountrySymbolList = (req, res) => {
         message: "",
         results: results,
       });
-    }
+    },
   );
 };
 // For multiple files: term sheet and subscription documents
@@ -180,7 +180,7 @@ exports.CreateOrUpdateCapitalRound = (req, res) => {
       if (Array.isArray(dateroundclosed)) {
         processedDateRoundClosed =
           dateroundclosed.find(
-            (date) => date && date.trim() !== "" && date !== "null"
+            (date) => date && date.trim() !== "" && date !== "null",
           ) || null;
       } else if (dateroundclosed === "null" || dateroundclosed === "") {
         processedDateRoundClosed = null;
@@ -282,8 +282,8 @@ exports.CreateOrUpdateCapitalRound = (req, res) => {
                   "docs",
                   `doc_${company_id}`,
                   "companyRound",
-                  f
-                )
+                  f,
+                ),
               );
             }
             for (const f of finalSubscriptionDocs) {
@@ -293,8 +293,8 @@ exports.CreateOrUpdateCapitalRound = (req, res) => {
                   "docs",
                   `doc_${company_id}`,
                   "companyRound",
-                  f
-                )
+                  f,
+                ),
               );
             }
 
@@ -387,7 +387,7 @@ exports.CreateOrUpdateCapitalRound = (req, res) => {
               executive_summary: executiveSummary,
             });
           });
-        }
+        },
       );
     }
 
@@ -464,12 +464,12 @@ exports.CreateOrUpdateCapitalRound = (req, res) => {
 
         for (const f of newTermsheetFiles) {
           allFileText += await extractFileText(
-            path.join("upload", "docs", `doc_${company_id}`, "companyRound", f)
+            path.join("upload", "docs", `doc_${company_id}`, "companyRound", f),
           );
         }
         for (const f of newSubscriptionDocs) {
           allFileText += await extractFileText(
-            path.join("upload", "docs", `doc_${company_id}`, "companyRound", f)
+            path.join("upload", "docs", `doc_${company_id}`, "companyRound", f),
           );
         }
 
@@ -630,7 +630,7 @@ function insertAccessLog({
       } else {
         console.log("Access Log Added ✅");
       }
-    }
+    },
   );
 }
 
@@ -693,7 +693,7 @@ exports.SendRecordRoundToinvestor = async (req, res) => {
         .promise()
         .query(
           "SELECT first_name,last_name, email, is_register, unique_code FROM investor_information WHERE id = ?",
-          [investor_id]
+          [investor_id],
         );
 
       if (!investorRows.length) continue;
@@ -709,7 +709,7 @@ exports.SendRecordRoundToinvestor = async (req, res) => {
           .promise()
           .query(
             "SELECT id FROM sharerecordround WHERE company_id = ? AND investor_id = ? AND roundrecord_id = ?",
-            [company_id, investor_id, roundrecord_id]
+            [company_id, investor_id, roundrecord_id],
           );
 
         if (existing.length > 0) {
@@ -735,7 +735,7 @@ exports.SendRecordRoundToinvestor = async (req, res) => {
               company_id,
               investor_id,
               roundrecord_id,
-            ]
+            ],
           );
         await db
           .promise()
@@ -790,10 +790,10 @@ exports.SendRecordRoundToinvestor = async (req, res) => {
                           <b>Amount Invested in this Round:</b> ${
                             record.currency
                               ? `${record.currency} ${Number(
-                                  record.roundsize
+                                  record.roundsize,
                                 ).toLocaleString("en-US")}`
                               : Number(record.roundsize).toLocaleString(
-                                  "en-US"
+                                  "en-US",
                                 ) || "N/A"
                           }
                         </p>
@@ -805,7 +805,7 @@ exports.SendRecordRoundToinvestor = async (req, res) => {
                         <p style="margin:0 0 15px 0;font-size:14px;color:#111;">
                           <b>Fully Diluted Shares at the time of Investment:</b> ${
                             Number(record.issuedshares).toLocaleString(
-                              "en-US"
+                              "en-US",
                             ) || "N/A"
                           }
                         </p>
@@ -836,7 +836,7 @@ exports.SendRecordRoundToinvestor = async (req, res) => {
         </body>
       </html>
     `,
-          })
+          }),
         );
       }
     }
@@ -1019,7 +1019,7 @@ exports.getcheckCapitalMotionlist = (req, res) => {
           results: [roundData],
         });
       });
-    }
+    },
   );
 };
 
@@ -1259,7 +1259,7 @@ exports.investorrecordAuthorize = (req, res) => {
         updated: true,
         results: results,
       });
-    }
+    },
   );
 };
 
@@ -1271,7 +1271,7 @@ function sendEmailToInvestor(
   investorName,
   companyName,
   reports,
-  wiringInstructions = null
+  wiringInstructions = null,
 ) {
   const subject = `Signature Confirmed - Next Steps for ${reports.nameOfRound}`;
 
@@ -1457,7 +1457,7 @@ const storagekyc = multer.diskStorage({
       "..",
       "upload",
       "investor",
-      `inv_${userId}`
+      `inv_${userId}`,
     );
 
     // Create folder if it doesn't exist
@@ -1560,7 +1560,7 @@ exports.updateInvestorProfile = (req, res) => {
             message: "Investor profile updated successfully",
             results: row,
           });
-        }
+        },
       );
     });
   });
@@ -1637,7 +1637,7 @@ exports.getlatestinvestorreport = async (req, res) => {
           message: "",
           results: results,
         });
-      }
+      },
     );
   } catch (err) {
     res.status(500).json({
@@ -1665,7 +1665,7 @@ exports.getlatestinvestorDataroom = async (req, res) => {
           message: "",
           results: results,
         });
-      }
+      },
     );
   } catch (err) {
     res.status(500).json({
@@ -1986,7 +1986,7 @@ exports.getTotalInvestorReport = async (req, res) => {
           message: "",
           results: results,
         });
-      }
+      },
     );
   } catch (err) {
     res.status(500).json({
@@ -2053,7 +2053,7 @@ exports.getcheckNextRoundForInvestor = (req, res) => {
           investorHasShares: investorShares.length > 0,
           nextRoundData: nextRound[0],
         });
-      }
+      },
     );
   });
 };
@@ -2167,7 +2167,7 @@ function calculateRoundZeroCapTable(round) {
     labels: shareholders.map((sh, idx) =>
       sh.firstName || sh.lastName
         ? `${sh.firstName} ${sh.lastName}`.trim()
-        : `Founder ${idx + 1}`
+        : `Founder ${idx + 1}`,
     ),
     datasets: [
       {
@@ -2280,7 +2280,7 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
           round,
           company_id,
           instrumentData,
-          res
+          res,
         );
       }
 
@@ -2321,7 +2321,7 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
               const capTableData = calculateInvestmentRoundCapTable(
                 round,
                 investors,
-                roundZero
+                roundZero,
               );
 
               return res.status(200).json({
@@ -2330,18 +2330,18 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
                 round,
                 capTable: capTableData,
               });
-            }
+            },
           );
-        }
+        },
       );
-    }
+    },
   );
 };
 function handleConvertibleNoteRoundCalculation(
   round,
   company_id,
   instrumentData,
-  res
+  res,
 ) {
   // Get Round 0 data for base shares
   db.query(
@@ -2397,7 +2397,7 @@ function handleConvertibleNoteRoundCalculation(
 
       // Calculate option pool shares
       const optionPoolShares = Math.round(
-        (roundZeroTotalShares * optionPoolPercent) / (1 - optionPoolPercent)
+        (roundZeroTotalShares * optionPoolPercent) / (1 - optionPoolPercent),
       );
 
       const totalSharesPreSeed = roundZeroTotalShares + optionPoolShares;
@@ -2432,7 +2432,7 @@ function handleConvertibleNoteRoundCalculation(
                 "Investor:",
                 investor.first_name,
                 "Amount:",
-                invAmount
+                invAmount,
               );
             });
           }
@@ -2442,7 +2442,7 @@ function handleConvertibleNoteRoundCalculation(
           // ✅ FIXED: Calculate available for investment
           const availableForInvestment = Math.max(
             0,
-            investmentSize - totalConfirmedInvestment
+            investmentSize - totalConfirmedInvestment,
           );
 
           console.log("Available for investment:", availableForInvestment);
@@ -2689,11 +2689,11 @@ function handleConvertibleNoteRoundCalculation(
           // Calculate totals for Convertible Note round
           const totalPostSeedShares = postSeedShareholders.reduce(
             (sum, s) => sum + toNumber(s.shares, 0),
-            0
+            0,
           );
           const totalPostSeedValue = postSeedShareholders.reduce(
             (sum, s) => sum + toNumber(s.value, 0),
-            0
+            0,
           );
 
           const chartData = {
@@ -2702,17 +2702,17 @@ function handleConvertibleNoteRoundCalculation(
               {
                 label: "Current Ownership %",
                 data: postSeedShareholders.map((s) =>
-                  Number(toNumber(s.ownership, 0).toFixed(2))
+                  Number(toNumber(s.ownership, 0).toFixed(2)),
                 ),
                 backgroundColor: postSeedShareholders.map(
                   (s) =>
                     s.type === "Founder"
                       ? "hsl(120,70%,50%)"
                       : s.type === "Options Pool"
-                      ? "hsl(40,70%,50%)"
-                      : s.type === "Available"
-                      ? "hsl(0,70%,50%)" // Red for available
-                      : "hsl(220,70%,50%)" // Investor color
+                        ? "hsl(40,70%,50%)"
+                        : s.type === "Available"
+                          ? "hsl(0,70%,50%)" // Red for available
+                          : "hsl(220,70%,50%)", // Investor color
                 ),
               },
             ],
@@ -2790,9 +2790,9 @@ function handleConvertibleNoteRoundCalculation(
             round,
             capTable: capTableData,
           });
-        }
+        },
       );
-    }
+    },
   );
 }
 
@@ -2902,7 +2902,7 @@ function calculateInvestmentRoundCapTable(round, investors, roundZero) {
         originalPricePerShare =
           toNumber(
             founderData.pricePerShare,
-            founderData.price_per_share || 0.001
+            founderData.price_per_share || 0.001,
           ) || 0.001;
       }
 
@@ -2910,7 +2910,7 @@ function calculateInvestmentRoundCapTable(round, investors, roundZero) {
       roundZeroFounders = (roundZeroFounders || []).map((f) => {
         const shares = toNumber(
           f.shares || f.shareCount || f.share_count || f.shares_count,
-          0
+          0,
         );
         return Object.assign({}, f, { shares });
       });
@@ -2987,13 +2987,13 @@ function calculateInvestmentRoundCapTable(round, investors, roundZero) {
     optionPoolPercent > 0
       ? Math.round(
           (roundZeroTotalShares * (optionPoolPercent / 100)) /
-            (1 - optionPoolPercent / 100)
+            (1 - optionPoolPercent / 100),
         )
       : 0;
 
   const totalSharesPreSeed = roundZeroTotalShares + optionPoolShares;
   const totalSharesPostInvestment = Math.round(
-    totalSharesPreSeed / (1 - investorOwnershipPercent / 100)
+    totalSharesPreSeed / (1 - investorOwnershipPercent / 100),
   );
   const newSharesIssued = totalSharesPostInvestment - totalSharesPreSeed;
   console.log(newSharesIssued, "ll");
@@ -3029,8 +3029,8 @@ function calculateInvestmentRoundCapTable(round, investors, roundZero) {
             founder.voting === "Yes"
               ? "voting"
               : founder.voting === "No"
-              ? "non-voting"
-              : founder.voting || "voting",
+                ? "non-voting"
+                : founder.voting || "voting",
         });
       }
     });
@@ -3088,8 +3088,8 @@ function calculateInvestmentRoundCapTable(round, investors, roundZero) {
             founder.voting === "Yes"
               ? "voting"
               : founder.voting === "No"
-              ? "non-voting"
-              : founder.voting || "voting",
+                ? "non-voting"
+                : founder.voting || "voting",
           newShares: 0,
         });
       }
@@ -3146,10 +3146,10 @@ function calculateInvestmentRoundCapTable(round, investors, roundZero) {
     // If total confirmed investment is less than round size, adjust calculations
     const effectiveInvestmentSize = Math.min(
       totalConfirmedInvestment,
-      investmentSize
+      investmentSize,
     );
     const adjustedNewSharesIssued = Math.round(
-      (effectiveInvestmentSize / investmentSize) * newSharesIssued
+      (effectiveInvestmentSize / investmentSize) * newSharesIssued,
     );
 
     let remainingShares = adjustedNewSharesIssued;
@@ -3160,7 +3160,7 @@ function calculateInvestmentRoundCapTable(round, investors, roundZero) {
 
       // Calculate shares based on ACTUAL investment proportion
       let investorShares = Math.round(
-        (investmentAmount / totalConfirmedInvestment) * adjustedNewSharesIssued
+        (investmentAmount / totalConfirmedInvestment) * adjustedNewSharesIssued,
       );
 
       // Last investor gets remaining shares to avoid rounding issues
@@ -3230,11 +3230,11 @@ function calculateInvestmentRoundCapTable(round, investors, roundZero) {
   // Calculate totals
   const totalPostSeedShares = postSeedShareholders.reduce(
     (sum, s) => sum + toNumber(s.shares, 0),
-    0
+    0,
   );
   const totalPostSeedValue = postSeedShareholders.reduce(
     (sum, s) => sum + toNumber(s.value, 0),
-    0
+    0,
   );
 
   const chartData = {
@@ -3243,16 +3243,16 @@ function calculateInvestmentRoundCapTable(round, investors, roundZero) {
       {
         label: "Post-Investment Ownership %",
         data: postSeedShareholders.map((s) =>
-          Number(toNumber(s.ownership, 0).toFixed(2))
+          Number(toNumber(s.ownership, 0).toFixed(2)),
         ),
         backgroundColor: postSeedShareholders.map((s) =>
           s.type === "Founder"
             ? "hsl(120,70%,50%)"
             : s.type === "Options Pool"
-            ? "hsl(40,70%,50%)"
-            : s.type === "Available"
-            ? "hsl(0,70%,50%)"
-            : "hsl(220,70%,50%)"
+              ? "hsl(40,70%,50%)"
+              : s.type === "Available"
+                ? "hsl(0,70%,50%)"
+                : "hsl(220,70%,50%)",
         ),
       },
     ],
@@ -3350,7 +3350,7 @@ function handleSAFERoundCalculation(round, company_id, res) {
 
       // Calculate option pool shares (as per client formula)
       const optionPoolShares = Math.round(
-        (roundZeroTotalShares * optionPoolPercent) / (1 - optionPoolPercent)
+        (roundZeroTotalShares * optionPoolPercent) / (1 - optionPoolPercent),
       );
 
       const totalSharesIncludingPool = roundZeroTotalShares + optionPoolShares;
@@ -3398,7 +3398,7 @@ function handleSAFERoundCalculation(round, company_id, res) {
 
               // Total shares after conversion
               const totalSharesPostConversion = Math.round(
-                totalSharesIncludingPool / (1 - ownershipPercentage)
+                totalSharesIncludingPool / (1 - ownershipPercentage),
               );
               totalPotentialShares =
                 totalSharesPostConversion - totalSharesIncludingPool;
@@ -3407,20 +3407,20 @@ function handleSAFERoundCalculation(round, company_id, res) {
               const conversionPriceAtCap =
                 valuationCap / totalSharesPostConversion;
               const sharesAtValuationCap = Math.round(
-                effectiveInvestment / conversionPriceAtCap
+                effectiveInvestment / conversionPriceAtCap,
               );
 
               // Apply discount
               const conversionPriceWithDiscount =
                 conversionPriceAtCap * (1 - discountRate);
               const sharesWithDiscount = Math.round(
-                effectiveInvestment / conversionPriceWithDiscount
+                effectiveInvestment / conversionPriceWithDiscount,
               );
 
               // Final conversion (better for investor)
               totalPotentialShares = Math.max(
                 totalPotentialShares,
-                sharesWithDiscount
+                sharesWithDiscount,
               );
 
               conversionDetails = {
@@ -3448,18 +3448,18 @@ function handleSAFERoundCalculation(round, company_id, res) {
               const conversionPriceAtCap =
                 valuationCap / totalSharesIncludingPool;
               const sharesAtValuationCap = Math.round(
-                effectiveInvestment / conversionPriceAtCap
+                effectiveInvestment / conversionPriceAtCap,
               );
 
               const conversionPriceWithDiscount =
                 conversionPriceAtCap * (1 - discountRate);
               const sharesWithDiscount = Math.round(
-                effectiveInvestment / conversionPriceWithDiscount
+                effectiveInvestment / conversionPriceWithDiscount,
               );
 
               totalPotentialShares = Math.max(
                 sharesAtValuationCap,
-                sharesWithDiscount
+                sharesWithDiscount,
               );
 
               conversionDetails = {
@@ -3559,7 +3559,7 @@ function handleSAFERoundCalculation(round, company_id, res) {
                 totalSafeInvestment > 0
                   ? Math.round(
                       (investmentAmount / totalSafeInvestment) *
-                        totalPotentialShares
+                        totalPotentialShares,
                     )
                   : 0;
 
@@ -3622,8 +3622,8 @@ function handleSAFERoundCalculation(round, company_id, res) {
                     s.type === "Founder"
                       ? "hsl(120,70%,50%)"
                       : s.type === "Options Pool"
-                      ? "hsl(40,70%,50%)"
-                      : "hsl(220,70%,50%)"
+                        ? "hsl(40,70%,50%)"
+                        : "hsl(220,70%,50%)",
                   ),
                 },
               ],
@@ -3650,7 +3650,7 @@ function handleSAFERoundCalculation(round, company_id, res) {
                 ? `${safeType} SAFE round with ${
                     investors.length
                   } investor(s) - ${formatCurrency(
-                    totalSafeInvestment
+                    totalSafeInvestment,
                   )} committed`
                 : `${safeType} SAFE round - no investors confirmed yet`,
           };
@@ -3661,9 +3661,9 @@ function handleSAFERoundCalculation(round, company_id, res) {
             round,
             capTable: capTableData,
           });
-        }
+        },
       );
-    }
+    },
   );
 }
 

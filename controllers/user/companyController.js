@@ -129,7 +129,7 @@ exports.getcompanyAlldetail = (req, res) => {
       res.status(200).json({
         results: results,
       });
-    }
+    },
   );
 };
 exports.addSignatory = (req, res) => {
@@ -187,7 +187,7 @@ exports.addSignatory = (req, res) => {
                       }
 
                       const usedColors = colorResults.map(
-                        (c) => c.company_color_code
+                        (c) => c.company_color_code,
                       );
 
                       // Generate a unique random color
@@ -237,7 +237,7 @@ exports.addSignatory = (req, res) => {
                             data.email,
                             `${data.first_name} ${data.last_name}`,
                             inviteLink,
-                            usercompany_name
+                            usercompany_name,
                           );
 
                           // Return with assignedColor for reference
@@ -246,17 +246,17 @@ exports.addSignatory = (req, res) => {
                             company_color_code: assignedColor,
                             status: "1",
                           });
-                        }
+                        },
                       );
-                    }
+                    },
                   );
-                }
+                },
               );
             }
-          }
+          },
         );
       }
-    }
+    },
   );
 };
 
@@ -393,7 +393,7 @@ exports.UserdataUpdate = (req, res) => {
           results: row[0],
         });
       });
-    }
+    },
   );
 };
 
@@ -438,7 +438,7 @@ exports.SendMailToSignatory = (req, res) => {
               rowData.signatory_email,
               `${rowData.first_name} ${rowData.last_name}`,
               inviteLink,
-              corp.company_name
+              corp.company_name,
             );
 
             return res.status(200).json({
@@ -464,7 +464,7 @@ exports.SendMailToSignatory = (req, res) => {
           message: "Signatory not found",
         });
       }
-    }
+    },
   );
 };
 function sendEmailToSignatory(to, fullName, inviteLink, company_name) {

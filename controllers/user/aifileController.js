@@ -24,7 +24,7 @@ const openai = new OpenAI({
 const yahooFinance = require("yahoo-finance2").default;
 const Stripe = require("stripe");
 const stripe = new Stripe(
-  "sk_test_51RUJzWAx6rm2q3pyUl86ZMypACukdO7IsZ0AbsWOcJqg9xWGccwcQwbQvfCaxQniDCWzNg7z2p4rZS1u4mmDDyou00DM7rK8eY"
+  "sk_test_51RUJzWAx6rm2q3pyUl86ZMypACukdO7IsZ0AbsWOcJqg9xWGccwcQwbQvfCaxQniDCWzNg7z2p4rZS1u4mmDDyou00DM7rK8eY",
 );
 const upload = require("../../middlewares/uploadMiddleware");
 const ImageModule = require("docxtemplater-image-module-free");
@@ -51,7 +51,7 @@ exports.uploadDocuments = async (req, res) => {
     const [lockedDocs] = await db.promise().query(
       `SELECT id FROM dataroomdocuments 
        WHERE subcategory_id = ? AND company_id = ? AND locked = 'Yes'`,
-      [datasave.subcatgeoryId, datasave.company_id]
+      [datasave.subcatgeoryId, datasave.company_id],
     );
     const isLocked = lockedDocs.length > 0;
 
@@ -106,7 +106,7 @@ exports.uploadDocuments = async (req, res) => {
     }
 
     const failedExtractions = extractedTexts.filter(
-      (file) => file.text === null && file.error
+      (file) => file.text === null && file.error,
     );
 
     if (failedExtractions.length > 0) {
@@ -137,7 +137,7 @@ exports.uploadDocuments = async (req, res) => {
             fileObj.fileSavedAs,
             null,
             uploadedAt,
-          ]
+          ],
         );
 
         const insertedId = result.insertId;
@@ -148,7 +148,7 @@ exports.uploadDocuments = async (req, res) => {
             .promise()
             .query(
               `INSERT INTO company_logo (dataroomdocuments_id, created_at) VALUES (?, ?)`,
-              [insertedId, uploadedAt]
+              [insertedId, uploadedAt],
             );
         }
 
@@ -246,7 +246,7 @@ exports.uploadDocumentsEdit = async (req, res) => {
           datasave.updated_by_role,
           datee,
           datasave.documentId,
-        ]
+        ],
       );
     }
 
@@ -391,9 +391,9 @@ exports.CreateuserSubscriptionDataRoom = async (req, res) => {
                   (insertErr) => {
                     if (insertErr)
                       console.error("Document log insert failed", insertErr);
-                  }
+                  },
                 );
-              }
+              },
             );
           });
         }
@@ -401,7 +401,7 @@ exports.CreateuserSubscriptionDataRoom = async (req, res) => {
           message: "",
           status: 1,
         });
-      }
+      },
     );
   } catch (err) {
     console.error("Stripe Error:", err);
@@ -487,7 +487,7 @@ exports.CreateuserSubscriptionDataRoomPerinstance = async (req, res) => {
                     .status(500)
                     .json({ message: "Update failed", error: finalErr });
                 }
-              }
+              },
             );
           });
         }
@@ -495,7 +495,7 @@ exports.CreateuserSubscriptionDataRoomPerinstance = async (req, res) => {
           message: "",
           status: 1,
         });
-      }
+      },
     );
   } catch (err) {
     console.error("Stripe Error:", err);
@@ -557,7 +557,7 @@ exports.UserDocDeleteFile = (req, res) => {
       "docs",
       `doc_${company_id}`,
       doc.folder_name,
-      doc.doc_name
+      doc.doc_name,
     );
 
     // 2. Delete the file from filesystem
@@ -602,7 +602,7 @@ exports.filedownload = (req, res) => {
     "docs",
     `doc_${company_id}`,
     folderName,
-    filename
+    filename,
   );
 
   if (fs.existsSync(filePath)) {
@@ -660,7 +660,7 @@ exports.RespoonseAIquestion = async (req, res) => {
           responses.updated_by_id,
           responses.updated_by_role,
           questionId,
-        ]
+        ],
       );
     }
 
@@ -682,7 +682,7 @@ exports.fileApproved = async (req, res) => {
           .json({ message: "Update failed", error: finalErr });
       }
       return res.status(200).json({ message: "Updated successfully" });
-    }
+    },
   );
 };
 function formatCurrentDate() {
@@ -806,7 +806,7 @@ exports.generateDocFile = async (req, res) => {
                       responses.company_id,
                       responses.code,
                       corp,
-                      version
+                      version,
                     );
                     var executiveSummary = fileSummaryResults[0].summary || "";
 
@@ -952,23 +952,23 @@ exports.generateDocFile = async (req, res) => {
                                         let datamiscUploads = [];
                                         try {
                                           datamiscUploads = JSON.parse(
-                                            data.miscUploads || "[]"
+                                            data.miscUploads || "[]",
                                           );
                                         } catch (parseErr) {
                                           console.error(
                                             "Error parsing miscUploads:",
-                                            parseErr
+                                            parseErr,
                                           );
                                           datamiscUploads = [];
                                         }
 
                                         miscUploads = truncatewordarray(
                                           datamiscUploads,
-                                          600
+                                          600,
                                         );
                                         press_public_reaction = truncateword(
                                           data.press_public_reaction,
-                                          600
+                                          600,
                                         );
 
                                         const stockFields = [
@@ -1036,7 +1036,7 @@ exports.generateDocFile = async (req, res) => {
                                       } catch (err) {
                                         console.error(
                                           "Error processing company results:",
-                                          err
+                                          err,
                                         );
                                       }
                                     }
@@ -1045,7 +1045,7 @@ exports.generateDocFile = async (req, res) => {
                                       (qaResults || [])
                                         .filter(
                                           (item) =>
-                                            item.category_id === categoryId
+                                            item.category_id === categoryId,
                                         )
                                         .slice(0, 3)
                                         .map((item, index) => ({
@@ -1066,12 +1066,12 @@ exports.generateDocFile = async (req, res) => {
 
                                     const templatePath = path.resolve(
                                       __dirname,
-                                      "../../upload/temp/Due_Diligence_and_Company_Overview_Document_Keiretsu_Forum_Canada.docx"
+                                      "../../upload/temp/Due_Diligence_and_Company_Overview_Document_Keiretsu_Forum_Canada.docx",
                                     );
 
                                     const content = fs.readFileSync(
                                       templatePath,
-                                      "binary"
+                                      "binary",
                                     );
                                     const imageModule = new ImageModule({
                                       getImage,
@@ -1089,15 +1089,15 @@ exports.generateDocFile = async (req, res) => {
 
                                     const fileName = generateFileName(
                                       company.company_name,
-                                      version
+                                      version,
                                     );
 
                                     // ✅ Convert all logos to base64
                                     const companyLogosBase64 =
                                       await Promise.all(
                                         companyLogoPaths.map((logoPath) =>
-                                          prepareLogoValue(logoPath)
-                                        )
+                                          prepareLogoValue(logoPath),
+                                        ),
                                       );
                                     console.log(companyLogosBase64);
                                     var corp_mail_address = [
@@ -1116,22 +1116,22 @@ exports.generateDocFile = async (req, res) => {
                                         (logo, idx) => ({
                                           image: logo,
                                           index: idx + 1,
-                                        })
+                                        }),
                                       ),
                                       // Keep backward compatibility
                                       companyLogoBase64:
                                         companyLogosBase64[0] || null,
                                       company_name: safedoc(
-                                        company.company_name
+                                        company.company_name,
                                       ),
                                       contact_email: safedoc(company.email),
                                       contact_phone: safedoc(company.phone),
                                       company_website: safedoc(
-                                        company.company_website
+                                        company.company_website,
                                       ),
                                       city_step2: safedoc(company.company_city),
                                       company_country: safedoc(
-                                        company.company_country
+                                        company.company_country,
                                       ),
                                       company_mail_address:
                                         safedoc(corp_mail_address),
@@ -1139,7 +1139,7 @@ exports.generateDocFile = async (req, res) => {
                                       first_name: safedoc(company.first_name),
                                       last_name: safedoc(company.last_name),
                                       created_at: formatWithOrdinal(
-                                        new Date(company.created_at)
+                                        new Date(company.created_at),
                                       ),
                                       version: version,
                                       current_Date: currentDate,
@@ -1204,15 +1204,15 @@ exports.generateDocFile = async (req, res) => {
                                             "Static insert failed:",
                                             insertErr.sqlMessage ||
                                               insertErr.message,
-                                            insertErr
+                                            insertErr,
                                           );
                                         } else {
                                           console.log(
                                             "Static insert success:",
-                                            result
+                                            result,
                                           );
                                         }
-                                      }
+                                      },
                                     );
 
                                     db.query(
@@ -1229,9 +1229,9 @@ exports.generateDocFile = async (req, res) => {
                                         if (insertErr)
                                           console.error(
                                             "Document log insert failed",
-                                            insertErr
+                                            insertErr,
                                           );
-                                      }
+                                      },
                                     );
 
                                     // Save to file system
@@ -1242,7 +1242,7 @@ exports.generateDocFile = async (req, res) => {
                                       "upload",
                                       "docs",
                                       `doc_${responses.company_id}`,
-                                      "investor_report"
+                                      "investor_report",
                                     );
 
                                     fs.mkdirSync(folderPath, {
@@ -1251,7 +1251,7 @@ exports.generateDocFile = async (req, res) => {
 
                                     const filePath = path.join(
                                       folderPath,
-                                      fileName
+                                      fileName,
                                     );
                                     fs.writeFileSync(filePath, buffer);
 
@@ -1269,40 +1269,40 @@ exports.generateDocFile = async (req, res) => {
                                         if (finalErr)
                                           console.error(
                                             "Update status failed",
-                                            finalErr
+                                            finalErr,
                                           );
-                                      }
+                                      },
                                     );
 
                                     // Send the file as response
                                     res.setHeader(
                                       "Access-Control-Expose-Headers",
-                                      "Content-Disposition"
+                                      "Content-Disposition",
                                     );
                                     res.setHeader(
                                       "Content-Disposition",
-                                      `attachment; filename="${fileName}"`
+                                      `attachment; filename="${fileName}"`,
                                     );
                                     res.setHeader(
                                       "Content-Type",
-                                      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                                      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                                     );
                                     res.send(buffer);
-                                  }
+                                  },
                                 );
-                              }
+                              },
                             );
-                          }
+                          },
                         );
-                      }
+                      },
                     );
-                  }
+                  },
                 );
-              }
+              },
             );
-          }
+          },
         );
-      }
+      },
     );
   } catch (error) {
     console.error("Error generating document:", error);
@@ -1327,8 +1327,8 @@ async function prepareLogoValue(url) {
       ext === "png"
         ? "image/png"
         : ext === "jpg" || ext === "jpeg"
-        ? "image/jpeg"
-        : "image/png"; // fallback
+          ? "image/jpeg"
+          : "image/png"; // fallback
 
     return `data:${mimeType};base64,${base64}`;
   } catch (error) {
@@ -1415,10 +1415,10 @@ function formatWithOrdinal(dateObj) {
     day % 10 === 1 && day !== 11
       ? "st"
       : day % 10 === 2 && day !== 12
-      ? "nd"
-      : day % 10 === 3 && day !== 13
-      ? "rd"
-      : "th";
+        ? "nd"
+        : day % 10 === 3 && day !== 13
+          ? "rd"
+          : "th";
 
   return `${month} ${day}${suffix}, ${year}`;
 }
@@ -1442,7 +1442,7 @@ exports.getAISummary = async (req, res) => {
         } else {
           res.status(200).json({ results: [], row: [], status: 2 });
         }
-      }
+      },
     );
   } catch (error) {
     res.status(500).json({ message: "Internal Server Error", error });
@@ -1461,7 +1461,7 @@ exports.aisummaryUpdate = async (req, res) => {
             .json({ message: "DB query failed", error: err });
         }
         res.status(200).json({});
-      }
+      },
     );
   } catch (error) {
     res.status(500).json({ message: "Internal Server Error", error });
@@ -1478,7 +1478,7 @@ exports.generateProcessAI = async (req, res) => {
       .promise()
       .query(
         `SELECT * FROM dataroomdocuments WHERE company_id = ? And locked =?`,
-        [company_id, "Yes"]
+        [company_id, "Yes"],
       );
 
     if (!docs.length) {
@@ -1531,7 +1531,7 @@ exports.generateProcessAI = async (req, res) => {
           "docs",
           `doc_${doc.company_id}`,
           doc.folder_name,
-          doc.doc_name
+          doc.doc_name,
         );
 
         if (!fs.existsSync(filePath)) continue;
@@ -1622,7 +1622,7 @@ exports.generateProcessAI = async (req, res) => {
           category_id,
           subcategoryMap[category_id], // ✅ subcategory_id added
           createdAt,
-        ]
+        ],
       );
 
       const summaryId = summaryResult.insertId;
@@ -1671,13 +1671,13 @@ exports.generateProcessAI = async (req, res) => {
             question,
             null,
             new Date(),
-          ]
+          ],
         );
       }
     }
 
     const execPrompt = `You are a due diligence expert. Below are summaries from different sections:\n\n${sectionSummaries.join(
-      "\n\n"
+      "\n\n",
     )}\n\nGenerate a concise executive summary (max 1000 characters) that captures the key insights.`;
 
     const execResponse = await openai.chat.completions.create({
@@ -1706,7 +1706,7 @@ exports.generateProcessAI = async (req, res) => {
           company_id,
           executiveSummary,
           new Date(),
-        ]
+        ],
       );
 
     db.query(
@@ -1718,7 +1718,7 @@ exports.generateProcessAI = async (req, res) => {
             .status(500)
             .json({ message: "Update failed", error: finalErr });
         }
-      }
+      },
     );
     const [companyResult] = await db.promise().query(
       `
@@ -1727,7 +1727,7 @@ exports.generateProcessAI = async (req, res) => {
           JOIN company c ON cs.company_id = c.id 
           WHERE c.id = ?
         `,
-      [company_id]
+      [company_id],
     );
 
     if (companyResult.length > 0) {
@@ -1767,7 +1767,7 @@ exports.generateProcessAI = async (req, res) => {
             error: finalErr,
           });
         }
-      }
+      },
     );
     db.query(
       `DELETE FROM subscription_statuslockfile WHERE company_id = ?`,
@@ -1775,7 +1775,7 @@ exports.generateProcessAI = async (req, res) => {
       (deleteErr) => {
         if (deleteErr) {
         }
-      }
+      },
     );
     return res.status(200).json({
       message: "Summaries and questions generated.",
@@ -1894,7 +1894,7 @@ exports.checkuserSubscriptionThreeMonth = async (req, res) => {
         }
 
         res.status(200).json({ results: row });
-      }
+      },
     );
   } catch (error) {
     res.status(500).json({ message: "Internal Server Error", error });
@@ -1957,9 +1957,9 @@ exports.perInstancePayment = async (req, res) => {
                 paymentCount,
               });
             }
-          }
+          },
         );
-      }
+      },
     );
   } catch (error) {
     return res.status(500).json({ message: "Internal Server Error", error });
@@ -1984,7 +1984,7 @@ exports.getDocumentcheck = async (req, res) => {
           status: "",
           results: summaryResults,
         });
-      }
+      },
     );
   } catch (error) {
     return res.status(500).json({ message: "Internal Server Error", error });
@@ -2037,7 +2037,7 @@ exports.checkunicode = async (req, res) => {
           status: "",
           results: summaryResults,
         });
-      }
+      },
     );
   } catch (error) {
     return res.status(500).json({ message: "Internal Server Error", error });
@@ -2100,9 +2100,9 @@ exports.checkcreditbalance = async (req, res) => {
               amount_due: amountDue,
               valid_until: subscription.end_date,
             });
-          }
+          },
         );
-      }
+      },
     );
   } catch (error) {
     return res.status(500).json({ message: "Internal Server Error", error });
@@ -2156,7 +2156,7 @@ exports.addinvenstorreport = async (req, res) => {
         const latestVersion = Number(versionResults[0]?.max_version || 0);
         const newVersion = latestVersion + 1;
         logToFile(
-          `Latest version: ${latestVersion}, New version: ${newVersion}`
+          `Latest version: ${latestVersion}, New version: ${newVersion}`,
         );
 
         let previousData = null;
@@ -2239,7 +2239,7 @@ Future Outlook & Strategy: ${futureOutlook}
           "upload",
           "docs",
           `doc_${company_id}`,
-          "investor_report"
+          "investor_report",
         );
         fs.mkdirSync(folderPath, { recursive: true });
 
@@ -2349,7 +2349,7 @@ Future Outlook & Strategy: ${futureOutlook}
             executive_summary,
           });
         });
-      }
+      },
     );
   } catch (error) {
     logError("Unexpected error: " + error.message);
@@ -2442,7 +2442,7 @@ exports.downloadFile = (req, res) => {
     "docs",
     `doc_${userId}`,
     folder,
-    filename
+    filename,
   );
 
   if (!fs.existsSync(filePath)) {
@@ -2486,7 +2486,7 @@ exports.aisummaryInvestorreportUpdate = async (req, res) => {
             .json({ message: "DB query failed", error: err });
         }
         res.status(200).json({});
-      }
+      },
     );
   } catch (error) {
     res.status(500).json({ message: "Internal Server Error", error });
@@ -2639,7 +2639,7 @@ exports.CreateuserSubscriptionInvestorReporting = async (req, res) => {
           message: "",
           status: 1,
         });
-      }
+      },
     );
   } catch (err) {
     console.error("Stripe Error:", err);
@@ -2660,7 +2660,7 @@ exports.getcheckDataRoomPlusInvestorSubscription = async (req, res) => {
             .json({ message: "DB query failed", error: err });
         }
         res.status(200).json({ results: results });
-      }
+      },
     );
   } catch (error) {
     res.status(500).json({ message: "Internal Server Error", error });
@@ -2716,7 +2716,7 @@ exports.checkapprovedorNot = async (req, res) => {
             .json({ message: "DB query failed", error: err });
         }
         res.status(200).json({ results: results });
-      }
+      },
     );
   } catch (error) {
     res.status(500).json({ message: "Internal Server Error", error });
@@ -2869,9 +2869,9 @@ exports.CreateuserSubscription_Academy = async (req, res) => {
                   (insertErr) => {
                     if (insertErr)
                       console.error("Document log insert failed", insertErr);
-                  }
+                  },
                 );
-              }
+              },
             );
           });
         }
@@ -2879,7 +2879,7 @@ exports.CreateuserSubscription_Academy = async (req, res) => {
           message: "",
           status: 1,
         });
-      }
+      },
     );
   } catch (err) {
     console.error("Stripe Error:", err);
@@ -2908,7 +2908,7 @@ exports.uploadcompanyLogo = async (req, res) => {
       "..",
       "upload",
       "docs",
-      `doc_${userId}`
+      `doc_${userId}`,
     );
 
     if (!fs.existsSync(userFolder)) {
@@ -2928,7 +2928,7 @@ exports.uploadcompanyLogo = async (req, res) => {
         "upload",
         "docs",
         `doc_${userId}`,
-        finalFileName
+        finalFileName,
       );
 
       // Update company table with logo path
@@ -3008,9 +3008,9 @@ exports.lockFileCheckSubscription = async (req, res) => {
             }
 
             return res.status(200).json({ allowEdit: paid });
-          }
+          },
         );
-      }
+      },
     );
   } catch (error) {
     res.status(500).json({ message: "Internal Server Error", error });
@@ -3071,13 +3071,13 @@ exports.CreateuserSubscriptionLockFile = async (req, res) => {
           (insertErr) => {
             if (insertErr)
               console.error("Document log insert failed", insertErr);
-          }
+          },
         );
         res.status(200).json({
           message: "",
           status: 1,
         });
-      }
+      },
     );
   } catch (err) {
     console.error("Stripe Error:", err);
@@ -3105,7 +3105,7 @@ exports.fileslockorUnlock = async (req, res) => {
             return res
               .status(200)
               .json({ message: "Document successfully Unlocked" });
-          }
+          },
         );
       } else {
         db.query(
@@ -3120,7 +3120,7 @@ exports.fileslockorUnlock = async (req, res) => {
             return res
               .status(200)
               .json({ message: "Document successfully locked" });
-          }
+          },
         );
       }
     }
@@ -3156,14 +3156,14 @@ exports.allfileslock = async (req, res) => {
               message: `All documents locked successfully.`,
               status: "1",
             });
-          }
+          },
         );
       } else {
         return res
           .status(200)
           .json({ message: "No documents found for this user.", status: "2" });
       }
-    }
+    },
   );
 };
 
@@ -3209,16 +3209,16 @@ exports.getAllExchangeCompanyData = (req, res) => {
           const symbol = result.symbol;
           Promise.all([
             axios.get(
-              `https://financialmodelingprep.com/api/v3/profile/${symbol}?apikey=${apiKey}`
+              `https://financialmodelingprep.com/api/v3/profile/${symbol}?apikey=${apiKey}`,
             ),
             axios.get(
-              `https://financialmodelingprep.com/api/v3/income-statement/${symbol}?limit=1&apikey=${apiKey}`
+              `https://financialmodelingprep.com/api/v3/income-statement/${symbol}?limit=1&apikey=${apiKey}`,
             ),
             axios.get(
-              `https://financialmodelingprep.com/api/v3/ratios/${symbol}?limit=1&apikey=${apiKey}`
+              `https://financialmodelingprep.com/api/v3/ratios/${symbol}?limit=1&apikey=${apiKey}`,
             ),
             axios.get(
-              `https://financialmodelingprep.com/api/v3/enterprise-values/${symbol}?limit=1&apikey=${apiKey}`
+              `https://financialmodelingprep.com/api/v3/enterprise-values/${symbol}?limit=1&apikey=${apiKey}`,
             ),
           ])
             .then(([profileRes, incomeRes, ratioRes, evRes]) => {
@@ -3445,14 +3445,14 @@ async function analyzePublicPeers(company_id, code, companyName, version) {
         // Initialize peerData even if empty
         peerData = {};
         for (const [exchange, companies] of Object.entries(
-          competitorsByExchange
+          competitorsByExchange,
         )) {
           peerData[exchange] = [];
           for (const name of companies) {
             const peerResults = await searchCompany(name);
             const peer = peerResults.find(
               (r) =>
-                r.exchange && r.exchange.includes(exchangeCodeMap[exchange])
+                r.exchange && r.exchange.includes(exchangeCodeMap[exchange]),
             );
             if (!peer) continue;
 
@@ -3473,7 +3473,7 @@ async function analyzePublicPeers(company_id, code, companyName, version) {
     code,
     version,
     prSummary, // "N/A" if no summary
-    miscUploads // empty array if no uploads
+    miscUploads, // empty array if no uploads
   );
 }
 
@@ -3553,7 +3553,7 @@ Output as a JSON array of titles, like:
     } catch (err) {
       console.warn(
         "⚠️ Could not parse miscellaneous uploads JSON. Raw output:",
-        text
+        text,
       );
       return [];
     }
@@ -3569,7 +3569,7 @@ function insertPeerAnalysis(
   code,
   version,
   prSummary,
-  miscUploads
+  miscUploads,
 ) {
   return new Promise((resolve, reject) => {
     const formatted = {
@@ -3621,7 +3621,7 @@ function insertPeerAnalysis(
           return reject(err);
         }
         resolve(result);
-      }
+      },
     );
   });
 }
@@ -3672,7 +3672,7 @@ function checkdataa() {
           console.error("DB Insert Error:", err);
           return reject(err);
         }
-      }
+      },
     );
     // console.log(row);
   });
@@ -3720,14 +3720,14 @@ exports.filelockunlock = async (req, res) => {
               message: msg,
               status: "1",
             });
-          }
+          },
         );
       } else {
         return res
           .status(200)
           .json({ message: "No documents found for this user.", status: "2" });
       }
-    }
+    },
   );
 };
 exports.checkApprovaldoc = async (req, res) => {
@@ -3744,7 +3744,7 @@ exports.checkApprovaldoc = async (req, res) => {
       if (results.length > 0) {
         // Find the first record with status "Inactive"
         const inactiveRecord = results.find(
-          (record) => record.status === "Active"
+          (record) => record.status === "Active",
         );
 
         if (inactiveRecord) {
@@ -3761,7 +3761,7 @@ exports.checkApprovaldoc = async (req, res) => {
           .status(200)
           .json({ message: "No records found", status: "2" });
       }
-    }
+    },
   );
 };
 exports.companyRole = async (req, res) => {
@@ -3775,7 +3775,7 @@ exports.companyRole = async (req, res) => {
       }
 
       return res.status(200).json({ message: "", results: results });
-    }
+    },
   );
 };
 exports.getexistingShares = async (req, res) => {
@@ -3789,6 +3789,6 @@ exports.getexistingShares = async (req, res) => {
       }
 
       return res.status(200).json({ message: "", results: results });
-    }
+    },
   );
 };

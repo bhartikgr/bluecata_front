@@ -24,7 +24,7 @@ const openai = new OpenAI({
 
 const Stripe = require("stripe");
 const stripe = new Stripe(
-  "sk_test_51RUJzWAx6rm2q3pyUl86ZMypACukdO7IsZ0AbsWOcJqg9xWGccwcQwbQvfCaxQniDCWzNg7z2p4rZS1u4mmDDyou00DM7rK8eY"
+  "sk_test_51RUJzWAx6rm2q3pyUl86ZMypACukdO7IsZ0AbsWOcJqg9xWGccwcQwbQvfCaxQniDCWzNg7z2p4rZS1u4mmDDyou00DM7rK8eY",
 );
 const upload = require("../../middlewares/uploadMiddleware");
 
@@ -81,26 +81,26 @@ exports.getAllActiveSubscriptions = async () => {
             (!reportEnd || reportEnd < today)
           ) {
             const diffDays = Math.floor(
-              (today - latestEnd) / (1000 * 60 * 60 * 24)
+              (today - latestEnd) / (1000 * 60 * 60 * 24),
             );
 
             if (diffDays === 42) {
               sendReminder(
                 row.email,
                 row.company_name,
-                "Your data room will be deleted in 2 weeks."
+                "Your data room will be deleted in 2 weeks.",
               );
             } else if (diffDays === 49) {
               sendReminder(
                 row.email,
                 row.company_name,
-                "Your data room will be deleted in 1 week."
+                "Your data room will be deleted in 1 week.",
               );
             } else if (diffDays === 55) {
               sendReminder(
                 row.email,
                 row.company_name,
-                "Your data room will be deleted tomorrow."
+                "Your data room will be deleted tomorrow.",
               );
             } else if (diffDays >= 56) {
               //console.log(`Deleting files for user ${userId}`);
@@ -108,7 +108,7 @@ exports.getAllActiveSubscriptions = async () => {
             }
           }
         }
-      }
+      },
     );
   } catch (error) {
     console.error("Internal Server Error", error);
@@ -191,7 +191,7 @@ cron.schedule("*/1 * * * *", async () => {
     };
 
     for (const [templateType, { hours, dbField }] of Object.entries(
-      reminderTypes
+      reminderTypes,
     )) {
       const template = templateResults.find((t) => t.type === templateType);
 
@@ -222,7 +222,7 @@ cron.schedule("*/1 * * * *", async () => {
             user_name: meeting.name || "User",
             meeting_topic: meeting.topic || "Zoom Meeting",
             event_time: meetingTimeInLocal.format(
-              "dddd, MMMM Do YYYY [at] hh:mm A"
+              "dddd, MMMM Do YYYY [at] hh:mm A",
             ),
             zoom_link: zoomLink,
           };
@@ -234,14 +234,14 @@ cron.schedule("*/1 * * * *", async () => {
             meeting.corp_email,
             "Company",
             htmlBody,
-            emailSubject
+            emailSubject,
           );
 
           await db
             .promise()
             .query(
               `UPDATE zoommeeting_register SET ${dbField} = 1 WHERE id = ?`,
-              [meeting.id]
+              [meeting.id],
             );
         }
       }
@@ -305,20 +305,20 @@ async function upcomingModule() {
 
         // 5. Filter companies who did NOT register for this meeting
         const notRegisteredCompanies = companies.filter(
-          (company) => !registeredUserIds.includes(company.id)
+          (company) => !registeredUserIds.includes(company.id),
         );
 
         // 6. Send emails only if not already sent
         for (const company of notRegisteredCompanies) {
           const dt = meetingTimeInLocal.format(
-            "dddd, MMMM Do YYYY [at] hh:mm A"
+            "dddd, MMMM Do YYYY [at] hh:mm A",
           );
 
           const [alreadySent] = await db
             .promise()
             .query(
               `SELECT id FROM upcomingmoduleemail WHERE user_id = ? AND zoommeeting_id = ?`,
-              [company.id, meetingId]
+              [company.id, meetingId],
             );
 
           if (alreadySent.length === 0) {
@@ -328,14 +328,14 @@ async function upcomingModule() {
               .promise()
               .query(
                 `INSERT INTO upcomingmoduleemail (user_id, zoommeeting_id, created_at) VALUES (?, ?, ?)`,
-                [company.id, meetingId, currentTime]
+                [company.id, meetingId, currentTime],
               );
 
             sendUpcomingModuleZoom(
               company.email,
               company.company_name,
               meeting,
-              dt
+              dt,
             );
           } else {
           }
@@ -511,7 +511,7 @@ function convertCurrencyForRounds() {
 
         if (existingRows.length > 0) {
           console.log(
-            `⚠ Round ${roundId} already converted for ${date}, skipping.`
+            `⚠ Round ${roundId} already converted for ${date}, skipping.`,
           );
           continue; // Skip this round
         }
@@ -536,12 +536,12 @@ function convertCurrencyForRounds() {
             (err) => {
               if (err) reject(err);
               else resolve();
-            }
+            },
           );
         });
 
         console.log(
-          `✅ Round ${roundId}: ${amount} ${currency} → ${amountCad} CAD saved.`
+          `✅ Round ${roundId}: ${amount} ${currency} → ${amountCad} CAD saved.`,
         );
       } catch (err) {
         console.error(`❌ Conversion failed for round ${row.id}:`, err.message);

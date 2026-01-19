@@ -47,7 +47,7 @@ exports.access_token = async (req, res) => {
           "x-api-key": process.env.AIRWALLEX_API_KEY,
           "Content-Type": "application/json",
         },
-      }
+      },
     );
 
     res.status(200).json({ accessToken: response.data.token });
@@ -83,7 +83,7 @@ exports.auth_code = async (req, res) => {
           Authorization: `Bearer ${accessToken}`,
           "Content-Type": "application/json",
         },
-      }
+      },
     );
 
     res.status(200).json({
@@ -144,7 +144,7 @@ exports.create_payment_intent = async (req, res) => {
           Authorization: `Bearer ${accessToken}`,
           "Content-Type": "application/json",
         },
-      }
+      },
     );
 
     console.log("✅ Payment intent created:", response.data.id);
@@ -158,7 +158,7 @@ exports.create_payment_intent = async (req, res) => {
   } catch (err) {
     console.error(
       "❌ Payment Intent error:",
-      err.response?.data || err.message
+      err.response?.data || err.message,
     );
 
     const errorCode = err.response?.data?.code;
@@ -213,7 +213,7 @@ exports.create_redirect_payment_intent = async (req, res) => {
           Authorization: `Bearer ${accessToken}`,
           "Content-Type": "application/json",
         },
-      }
+      },
     );
 
     const intent = response.data;
@@ -237,7 +237,7 @@ exports.create_redirect_payment_intent = async (req, res) => {
           Authorization: `Bearer ${accessToken}`,
           "Content-Type": "application/json",
         },
-      }
+      },
     );
 
     const hostedUrl = redirectResp.data.next_action.redirect_to_url;
@@ -250,7 +250,7 @@ exports.create_redirect_payment_intent = async (req, res) => {
   } catch (err) {
     console.error(
       "Payment Intent Redirect error:",
-      err.response?.data || err.message
+      err.response?.data || err.message,
     );
     return res.status(500).json({ error: err.response?.data || err.message });
   }
@@ -358,9 +358,9 @@ exports.CompanySubscriptionOneTimeDataRoomPlus = async (req, res) => {
                   (insertErr) => {
                     if (insertErr)
                       console.error("Document log insert failed", insertErr);
-                  }
+                  },
                 );
-              }
+              },
             );
           });
         }
@@ -368,14 +368,33 @@ exports.CompanySubscriptionOneTimeDataRoomPlus = async (req, res) => {
           message: "",
           status: 1,
         });
-      }
+      },
     );
   } catch (err) {
     console.error("Stripe Error:", err);
     res.status(500).json({ error: err.message });
   }
 };
+exports.checkSubscriptionExists = async (req, res) => {
+  var corp_id = req.body.company_id;
+  const query = `
+    SELECT * from  usersubscriptiondataroomone_time where company_id = ?
+  `;
 
+  db.query(query, [corp_id], (err, results) => {
+    if (err) {
+      return res.status(500).json({
+        message: "Database query error",
+        error: err,
+      });
+    }
+
+    res.status(200).json({
+      message: "No investor reports found",
+      results: results,
+    });
+  });
+};
 exports.CreateuserSubscriptionDataRoomPerinstance = async (req, res) => {
   const {
     usersubscriptiondataroomone_time_id,
@@ -440,7 +459,7 @@ exports.CreateuserSubscriptionDataRoomPerinstance = async (req, res) => {
           message: "",
           status: 1,
         });
-      }
+      },
     );
   } catch (err) {
     console.error("Stripe Error:", err);

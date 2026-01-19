@@ -45,7 +45,7 @@ exports.getUserallcompnay = (req, res) => {
         status: "1",
         results: results,
       });
-    }
+    },
   );
 };
 exports.getUsercompnayInfo = (req, res) => {
@@ -142,7 +142,7 @@ exports.deletecompany = (req, res) => {
               "..",
               "upload",
               "docs",
-              `doc_${id}`
+              `doc_${id}`,
             );
             fs.rm(filePath, { recursive: true, force: true }, (err) => {
               if (err) {
@@ -387,7 +387,7 @@ exports.getCompanyRecordRoundDetails = (req, res) => {
     if (results[0] && results[0].shared_investors_details) {
       try {
         results[0].shared_investors_details = JSON.parse(
-          `[${results[0].shared_investors_details}]`
+          `[${results[0].shared_investors_details}]`,
         );
       } catch (parseErr) {
         results[0].shared_investors_details = [];

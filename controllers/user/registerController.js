@@ -74,7 +74,7 @@ function generateStrongPassword(length = 12) {
   for (let i = passwordArray.length; i < length; i++) {
     const randomByte = crypto.randomBytes(1).readUInt8();
     passwordArray.push(
-      allChars[Math.floor((randomByte / 256) * allChars.length)]
+      allChars[Math.floor((randomByte / 256) * allChars.length)],
     );
   }
 
@@ -348,10 +348,10 @@ exports.userRegister = async (req, res) => {
                         if (err) {
                           console.error("Company update error:", err);
                         }
-                      }
+                      },
                     );
                   }
-                }
+                },
               );
             }
 
@@ -366,7 +366,7 @@ exports.userRegister = async (req, res) => {
             });
           });
         }
-      }
+      },
     );
   } catch (err) {
     res.status(500).json({
@@ -506,7 +506,7 @@ exports.userLogin = async (req, res) => {
         const token = jwt.sign(
           { id: user.id, email: user.email },
           JWT_SECRET,
-          { expiresIn: "1h" } // ⏰ 1 hour token expiry
+          { expiresIn: "1h" }, // ⏰ 1 hour token expiry
         );
 
         // ✅ Send token & user info
@@ -518,7 +518,7 @@ exports.userLogin = async (req, res) => {
           name: user.name,
           access_token: token,
         });
-      }
+      },
     );
   } catch (err) {
     return res.status(500).json({
@@ -543,7 +543,7 @@ exports.getModules = (req, res) => {
         message: "",
         results: results,
       });
-    }
+    },
   );
 };
 const generateUniqueCode = () => {
@@ -583,7 +583,7 @@ exports.registerforZoom = async (req, res) => {
 
   // Convert slot start times into formatted datetime strings
   const formattedSlots = selectedSlots.map((slot) =>
-    format(new Date(slot.start), "yyyy-MM-dd HH:mm:ss")
+    format(new Date(slot.start), "yyyy-MM-dd HH:mm:ss"),
   );
 
   // ❌ Check for conflicting slots (exact time match)
@@ -606,10 +606,10 @@ exports.registerforZoom = async (req, res) => {
 
     if (conflictResults.length > 0) {
       const conflictingTimes = conflictResults.map((row) =>
-        format(new Date(row.meeting_date), "yyyy-MM-dd hh:mm a")
+        format(new Date(row.meeting_date), "yyyy-MM-dd hh:mm a"),
       );
       const conflictingTimess = conflictResults.map((row) =>
-        format(new Date(row.meeting_date), "yyyy-MM-dd")
+        format(new Date(row.meeting_date), "yyyy-MM-dd"),
       );
 
       return res.status(200).json({
@@ -643,12 +643,12 @@ exports.registerforZoom = async (req, res) => {
             const zoomMeeting = await createZoomMeeting(
               slot,
               data.selectedZone,
-              data.module_id
+              data.module_id,
             );
 
             const meetingDateTime = format(
               new Date(slot.start),
-              "yyyy-MM-dd HH:mm:ss"
+              "yyyy-MM-dd HH:mm:ss",
             );
 
             const token = jwt.sign(
@@ -658,13 +658,13 @@ exports.registerforZoom = async (req, res) => {
                 meetingId: zoomMeeting.id,
               },
               process.env.JWT_SECRET,
-              { expiresIn: "1h" }
+              { expiresIn: "1h" },
             );
 
             const uniqueCode = generateUniqueCode();
             const tokenExpiry = format(
               new Date(slot.start),
-              "yyyy-MM-dd 23:00:00"
+              "yyyy-MM-dd 23:00:00",
             );
 
             const insertMeetingQuery = `
@@ -712,7 +712,7 @@ exports.registerforZoom = async (req, res) => {
           status: "1",
           meetings: meetingRecords,
         });
-      }
+      },
     );
   });
 };
@@ -733,14 +733,14 @@ async function getZoomAccessToken() {
         headers: {
           Authorization: `Basic ${token}`,
         },
-      }
+      },
     );
 
     return response.data.access_token;
   } catch (err) {
     console.error(
       "Error fetching Zoom access token:",
-      err.response?.data || err.message
+      err.response?.data || err.message,
     );
     throw err;
   }
@@ -792,7 +792,7 @@ async function createZoomMeeting(slot, timezone, moduleid) {
           Authorization: `Bearer ${accessToken}`,
           "Content-Type": "application/json",
         },
-      }
+      },
     );
 
     // Optional: Store meeting info in in-memory DB
@@ -809,7 +809,7 @@ async function createZoomMeeting(slot, timezone, moduleid) {
   } catch (error) {
     console.error(
       "❌ Error creating Zoom meeting:",
-      error.response?.data || error.message
+      error.response?.data || error.message,
     );
     throw error;
   }
@@ -850,7 +850,7 @@ exports.selectModule = (req, res) => {
 
               // Ensure date is in correct format (YYYY-MM-DD)
               const dateFormatted = moment(meeting.meeting_date).format(
-                "YYYY-MM-DD"
+                "YYYY-MM-DD",
               );
               const fullDateTimeStr = `${dateFormatted} ${meeting.time}:00`;
 
@@ -866,7 +866,7 @@ exports.selectModule = (req, res) => {
                 meetingTimeInOriginal = moment.tz(
                   fullDateTimeStr,
                   "YYYY-MM-DD HH:mm:ss",
-                  meeting.timezone
+                  meeting.timezone,
                 );
               } catch (e) {
                 console.error("Timezone error:", e, meeting.timezone);
@@ -900,9 +900,9 @@ exports.selectModule = (req, res) => {
             results: moduleResults, // only one module
             zoomMeetings: finalMeetings, // all related meetings
           });
-        }
+        },
       );
-    }
+    },
   );
 };
 
@@ -990,7 +990,7 @@ exports.joinZoomMeeting = (req, res) => {
         //     `);
         //   }
         // );
-      }
+      },
     );
   });
 };
@@ -1022,14 +1022,14 @@ exports.videolimitsave = (req, res) => {
         db.query(
           userInsertQuery,
           [user_id, video_id, date],
-          async (err, result) => {}
+          async (err, result) => {},
         );
         res.status(200).json({
           message: "",
           status: 1,
         });
       }
-    }
+    },
   );
 };
 
@@ -1140,7 +1140,7 @@ exports.getcategories = (req, res) => {
         // Handle subcategory
         if (row.subcategory_id) {
           let subcat = category.subcategories.find(
-            (sc) => sc.id === row.subcategory_id
+            (sc) => sc.id === row.subcategory_id,
           );
 
           if (!subcat) {
@@ -1398,7 +1398,7 @@ exports.resendLink = async (req, res) => {
               message: "Please check your email to activate your account.",
               status: 1,
             });
-          }
+          },
         );
       }
     } else {
@@ -1532,7 +1532,7 @@ function sendEmailResendActivateLink(to, fullName, activationCode) {
 
   // Your frontend URL where users click to activate
   const activationUrl = `https://capavate.com/activate-account?code=${activationCode}&email=${encodeURIComponent(
-    to
+    to,
   )}`;
 
   const htmlBody = `
@@ -1588,7 +1588,7 @@ function sendEmailActivateAccount(to, fullName, activationCode) {
 
   // Your frontend URL where users click to activate
   const activationUrl = `https://capavate.com/activate-account?code=${activationCode}&email=${encodeURIComponent(
-    to
+    to,
   )}`;
 
   const htmlBody = `
@@ -1694,7 +1694,7 @@ exports.checkCompanyEmail = (req, res) => {
                 status: "1", // ✅ Allowed to register
               });
             }
-          }
+          },
         );
       } else {
         // No referral code — allow registration
@@ -1815,7 +1815,7 @@ exports.getzipcode = async (req, res) => {
     "728165937090-15b9f7n63pc8dfc8p7t59in8f0rk279h.apps.googleusercontent.com";
 
   const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(
-    address
+    address,
   )}&key=${apiKey}`;
 
   try {
@@ -1885,7 +1885,7 @@ exports.resetPassword = async (req, res) => {
                 status: 1,
                 message: "Password reset successfully, Please check your email",
               });
-            }
+            },
           );
         } else {
           return res.status(200).json({
@@ -2013,7 +2013,7 @@ exports.register_zoom = (req, res) => {
 
     // ✅ Check for duplicate registrations
     const duplicateIds = selectedMeetings.filter((id) =>
-      registeredIds.includes(id)
+      registeredIds.includes(id),
     );
 
     if (duplicateIds.length > 0) {
@@ -2040,7 +2040,7 @@ exports.register_zoom = (req, res) => {
 
       const validIds = result.map((r) => r.id);
       const invalidIds = selectedMeetings.filter(
-        (id) => !validIds.includes(id)
+        (id) => !validIds.includes(id),
       );
 
       if (invalidIds.length > 0) {
@@ -2066,7 +2066,7 @@ exports.register_zoom = (req, res) => {
             (err3) => {
               if (err3) return reject(err3);
               resolve(meetingId);
-            }
+            },
           );
         });
       });
@@ -2101,7 +2101,7 @@ exports.register_zoom = (req, res) => {
 
                 // Ensure date is in correct format (YYYY-MM-DD)
                 const dateFormatted = moment(meeting.meeting_date).format(
-                  "YYYY-MM-DD"
+                  "YYYY-MM-DD",
                 );
                 const fullDateTimeStr = `${dateFormatted} ${meeting.time}:00`;
 
@@ -2109,7 +2109,7 @@ exports.register_zoom = (req, res) => {
                   !moment(
                     fullDateTimeStr,
                     "YYYY-MM-DD HH:mm:ss",
-                    true
+                    true,
                   ).isValid()
                 ) {
                   console.warn("Invalid date format:", fullDateTimeStr);
@@ -2121,7 +2121,7 @@ exports.register_zoom = (req, res) => {
                   meetingTimeInOriginal = moment.tz(
                     fullDateTimeStr,
                     "YYYY-MM-DD HH:mm:ss",
-                    meeting.timezone
+                    meeting.timezone,
                   );
                 } catch (e) {
                   console.error("Timezone error:", e, meeting.timezone);
@@ -2131,7 +2131,7 @@ exports.register_zoom = (req, res) => {
                 if (!meetingTimeInOriginal.isValid()) {
                   console.warn(
                     "Failed to parse meeting time:",
-                    fullDateTimeStr
+                    fullDateTimeStr,
                   );
                   return null;
                 }
@@ -2324,7 +2324,7 @@ exports.get_combined_zoom_meetings = (req, res) => {
 
           // Ensure date is in correct format (YYYY-MM-DD)
           const dateFormatted = moment(meeting.meeting_date).format(
-            "YYYY-MM-DD"
+            "YYYY-MM-DD",
           );
           const fullDateTimeStr = `${dateFormatted} ${meeting.time}:00`;
 
@@ -2338,7 +2338,7 @@ exports.get_combined_zoom_meetings = (req, res) => {
             meetingTimeInOriginal = moment.tz(
               fullDateTimeStr,
               "YYYY-MM-DD HH:mm:ss",
-              meeting.timezone
+              meeting.timezone,
             );
           } catch (e) {
             console.error("Timezone error:", e, meeting.timezone);
@@ -2407,7 +2407,7 @@ exports.sendAlluserReminderZoomLink = async (req, res) => {
     };
 
     for (const [templateType, { hours, dbField }] of Object.entries(
-      reminderTypes
+      reminderTypes,
     )) {
       const template = templateResults.find((t) => t.type === templateType);
       if (!template) continue;
@@ -2435,7 +2435,7 @@ exports.sendAlluserReminderZoomLink = async (req, res) => {
             user_name: meeting.name || "User",
             meeting_topic: meeting.topic || "Zoom Meeting",
             event_time: meetingTimeInLocal.format(
-              "dddd, MMMM Do YYYY [at] hh:mm A"
+              "dddd, MMMM Do YYYY [at] hh:mm A",
             ),
             zoom_link: zoomLink,
           };
@@ -2450,7 +2450,7 @@ exports.sendAlluserReminderZoomLink = async (req, res) => {
             .promise()
             .query(
               `UPDATE zoommeeting_register SET ${dbField} = 1 WHERE id = ?`,
-              [meeting.id]
+              [meeting.id],
             );
         }
       }
@@ -2527,7 +2527,7 @@ exports.getcompanydetail = async (req, res) => {
         message: "",
         results: row,
       });
-    }
+    },
   );
 };
 
@@ -2564,7 +2564,7 @@ exports.companydataUpdate = async (req, res) => {
           company_linkedin,
         },
       });
-    }
+    },
   );
 };
 
@@ -2619,13 +2619,13 @@ exports.getusersSubscriptionPlan = async (req, res) => {
                     success: true,
                     results: result,
                   });
-                }
+                },
               );
-            }
+            },
           );
-        }
+        },
       );
-    }
+    },
   );
 };
 
@@ -2687,7 +2687,7 @@ WHERE zm.id = ?;
                 <iframe src="${zoom_link}" allow="camera; microphone; fullscreen" sandbox="allow-same-origin allow-scripts allow-popups" onload="window.parent.postMessage('zoom-loaded', '*')"></iframe>
 
             `);
-    }
+    },
   );
 };
 
@@ -2798,7 +2798,7 @@ exports.checkreferralCode = async (req, res) => {
         message: "",
         results: row,
       });
-    }
+    },
   );
 };
 
@@ -2850,7 +2850,7 @@ exports.checkReferralUser = async (req, res) => {
             const existingEmails = companyRows.map((row) => row.email);
             return res.status(200).json({
               message: `These emails are already registered: ${existingEmails.join(
-                ", "
+                ", ",
               )}`,
               status: "2",
             });
@@ -2871,7 +2871,7 @@ exports.checkReferralUser = async (req, res) => {
                 const alreadySharedEmails = sharedRows.map((row) => row.email);
                 return res.status(200).json({
                   message: `Discount code already shared with: ${alreadySharedEmails.join(
-                    ", "
+                    ", ",
                   )}`,
                   status: "2",
                 });
@@ -2920,7 +2920,7 @@ exports.checkReferralUser = async (req, res) => {
                           .promise()
                           .query(
                             `SELECT type FROM discount_code WHERE code = ? LIMIT 1`,
-                            [discount_code]
+                            [discount_code],
                           );
 
                         let allowedModules = [];
@@ -2947,8 +2947,8 @@ exports.checkReferralUser = async (req, res) => {
                               sharedBy,
                               context: "company_to_register",
                               allowedModules,
-                            })
-                          )
+                            }),
+                          ),
                         );
 
                         return res.status(200).json({
@@ -2963,15 +2963,15 @@ exports.checkReferralUser = async (req, res) => {
                           error,
                         });
                       }
-                    }
+                    },
                   );
-                }
+                },
               );
-            }
+            },
           );
-        }
+        },
       );
-    }
+    },
   );
 };
 
@@ -3096,7 +3096,7 @@ exports.getallsharedCodeByCompany = (req, res) => {
         message: "",
         results: results,
       });
-    }
+    },
   );
 };
 exports.getallCodetrack = (req, res) => {
@@ -3234,7 +3234,7 @@ exports.getallCodetrackSingleDetail = (req, res) => {
           shared: shared,
           usage: usageWithEmail[0],
         });
-      }
+      },
     );
   });
 };
@@ -3277,7 +3277,7 @@ exports.get_SessionMeeting = (req, res) => {
           meetingTimeInOriginal = moment.tz(
             fullDateTimeStr,
             "YYYY-MM-DD HH:mm:ss",
-            meeting.timezone
+            meeting.timezone,
           );
         } catch (e) {
           console.error("Timezone error:", e, meeting.timezone);
@@ -3386,7 +3386,7 @@ exports.companyaddWithSignatory = (req, res) => {
                 }
 
                 const usedColors = colorResults.map(
-                  (c) => c.company_color_code
+                  (c) => c.company_color_code,
                 );
 
                 // Generate a unique random color
@@ -3484,7 +3484,7 @@ exports.companyaddWithSignatory = (req, res) => {
                               s.signatory_email,
                               `${s.first_name} ${s.last_name}`,
                               inviteLink,
-                              company_name
+                              company_name,
                             );
 
                             if (insertedCount === signatories.length) {
@@ -3496,7 +3496,7 @@ exports.companyaddWithSignatory = (req, res) => {
                                 company_color_code: assignedColor,
                               });
                             }
-                          }
+                          },
                         );
                       });
                     } else {
@@ -3507,14 +3507,14 @@ exports.companyaddWithSignatory = (req, res) => {
                         company_color_code: assignedColor,
                       });
                     }
-                  }
+                  },
                 );
-              }
+              },
             );
           }
-        }
+        },
       );
-    }
+    },
   );
 };
 
@@ -3675,7 +3675,7 @@ exports.checkSubscriptionPlan = (req, res) => {
           meetingTimeInOriginal = moment.tz(
             fullDateTimeStr,
             "YYYY-MM-DD HH:mm:ss",
-            meeting.timezone
+            meeting.timezone,
           );
         } catch (e) {
           console.error("Timezone error:", e, meeting.timezone);
@@ -3728,7 +3728,7 @@ const storage = multer.diskStorage({
       "upload",
       "docs",
       `doc_${company_id}`,
-      "company_profile"
+      "company_profile",
     );
     fs.mkdirSync(uploadPath, { recursive: true });
     cb(null, uploadPath);
@@ -3757,7 +3757,7 @@ exports.companyProfileUpdate = (req, res) => {
           "docs",
           `doc_${company_id}`,
           "company_profile",
-          req.file.filename
+          req.file.filename,
         )
       : null;
     console.log(req.body);
@@ -3863,7 +3863,7 @@ exports.companyProfileUpdate = (req, res) => {
               else console.log("Audit log inserted successfully");
             });
           }
-        }
+        },
       );
     });
 
@@ -3964,7 +3964,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             });
           });
         }
-      }
+      },
     );
   });
 };
@@ -4019,7 +4019,7 @@ const storageSignature = multer.diskStorage({
       "upload",
       "docs",
       `doc_${company_id}`,
-      "signatory"
+      "signatory",
     );
     fs.mkdirSync(uploadPath, { recursive: true });
     cb(null, uploadPath);
@@ -4098,7 +4098,7 @@ exports.authorizedSignature = (req, res) => {
               status: "success",
               message: "Signature updated successfully",
             });
-          }
+          },
         );
       } else {
         // Insert
@@ -4223,7 +4223,7 @@ exports.authorizedSignature = (req, res) => {
                             userData.first_name + " " + userData.last_name;
                           notifyCompanyOwner(company_id, userFullName);
                         }
-                      }
+                      },
                     );
 
                     // 3️⃣ Return response
@@ -4231,11 +4231,11 @@ exports.authorizedSignature = (req, res) => {
                       status: "success",
                       message: "Signature saved successfully",
                     });
-                  }
+                  },
                 );
-              }
+              },
             );
-          }
+          },
         );
       }
     });
@@ -4690,7 +4690,7 @@ exports.getcountrySymbolLocal = (req, res) => {
         message: "",
         results: row,
       });
-    }
+    },
   );
 };
 // Controller: registerController.contactform

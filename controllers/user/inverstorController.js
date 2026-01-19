@@ -22,7 +22,7 @@ const openai = new OpenAI({
 
 const Stripe = require("stripe");
 const stripe = new Stripe(
-  "sk_test_51RUJzWAx6rm2q3pyUl86ZMypACukdO7IsZ0AbsWOcJqg9xWGccwcQwbQvfCaxQniDCWzNg7z2p4rZS1u4mmDDyou00DM7rK8eY"
+  "sk_test_51RUJzWAx6rm2q3pyUl86ZMypACukdO7IsZ0AbsWOcJqg9xWGccwcQwbQvfCaxQniDCWzNg7z2p4rZS1u4mmDDyou00DM7rK8eY",
 );
 const upload = require("../../middlewares/uploadMiddleware");
 const { json } = require("stream/consumers");
@@ -202,7 +202,7 @@ exports.Addnewinvenstor = (req, res) => {
                       first_name + " " + last_name,
                       companyName,
                       url,
-                      true // already registered
+                      true, // already registered
                     );
 
                     res.status(200).json({
@@ -210,10 +210,10 @@ exports.Addnewinvenstor = (req, res) => {
                       message: "Investor successfully linked to your company",
                       insertedId: result.insertId,
                     });
-                  }
+                  },
                 );
               }
-            }
+            },
           );
         } else {
           // New investor
@@ -254,7 +254,7 @@ exports.Addnewinvenstor = (req, res) => {
                 investorId, // entity_id
                 "Investor", // entity_type
                 JSON.stringify(req.body),
-                ip_address // ip_address
+                ip_address, // ip_address
               );
               const insertQueryre = `
                 INSERT INTO company_investor (created_by_id,created_by_role,company_id, investor_id, created_at)
@@ -275,7 +275,7 @@ exports.Addnewinvenstor = (req, res) => {
                     first_name + " " + last_name,
                     companyName,
                     `https://capavate.com/investor/information/${token}`,
-                    false // not registered
+                    false, // not registered
                   );
 
                   res.status(200).json({
@@ -284,9 +284,9 @@ exports.Addnewinvenstor = (req, res) => {
                       "Investor successfully created and linked to your company",
                     insertedId: result.insertId,
                   });
-                }
+                },
               );
-            }
+            },
           );
         }
       });
@@ -302,7 +302,7 @@ const logUserAction = (
   entityId,
   entityType,
   details,
-  ipAddress
+  ipAddress,
 ) => {
   const selectQuery = `
     SELECT * FROM audit_logs 
@@ -334,7 +334,7 @@ const logUserAction = (
       ],
       (err, result) => {
         if (err) console.error("Log insert error", err);
-      }
+      },
     );
   });
 };
@@ -346,7 +346,7 @@ const sendInvestorInviteEmail = (
   firstName,
   companyName,
   link,
-  isRegistered = false
+  isRegistered = false,
 ) => {
   const subject = isRegistered
     ? `You have been invited by ${companyName} - Capavate`
@@ -492,11 +492,11 @@ exports.SendreportToinvestor = async (req, res) => {
     const [existingShares] = await db.promise().query(
       `SELECT investor_updates_id, investor_email FROM sharereport 
        WHERE investor_updates_id IN (?)`,
-      [records.map((r) => r.id)]
+      [records.map((r) => r.id)],
     );
 
     const existingSet = new Set(
-      existingShares.map((e) => `${e.investor_updates_id}_${e.investor_email}`)
+      existingShares.map((e) => `${e.investor_updates_id}_${e.investor_email}`),
     );
 
     // Prepare data to insert and email
@@ -509,7 +509,7 @@ exports.SendreportToinvestor = async (req, res) => {
           .promise()
           .query(
             "SELECT email, first_name, last_name, is_register, unique_code FROM investor_information WHERE id = ?",
-            [investorId]
+            [investorId],
           );
 
         if (investorRows.length === 0) continue;
@@ -524,7 +524,7 @@ exports.SendreportToinvestor = async (req, res) => {
             .promise()
             .query(
               "UPDATE investor_information SET expired_at = ? WHERE id = ?",
-              [expiredAt, investorId]
+              [expiredAt, investorId],
             );
         }
 
@@ -592,8 +592,8 @@ exports.SendreportToinvestor = async (req, res) => {
             currentDate,
             expiredAt,
             report.type,
-          ]
-        )
+          ],
+        ),
     );
     await Promise.all(insertPromises);
 
@@ -633,7 +633,7 @@ exports.SendreportToinvestor = async (req, res) => {
           auditDetails.entity_type,
           JSON.stringify(auditDetails.details),
           auditDetails.ip_address,
-        ]
+        ],
       );
 
       console.log("Audit log inserted successfully");
@@ -718,7 +718,7 @@ exports.SendreportToinvestor = async (req, res) => {
         return transporter
           .sendMail(mailOptions)
           .then(() => console.log(`Email sent to ${email}`));
-      }
+      },
     );
 
     await Promise.all(emailPromises);
@@ -983,7 +983,7 @@ exports.getInvestorCompany = async (req, res) => {
           message: "",
           results: results,
         });
-      }
+      },
     );
   } catch (err) {
     res.status(500).json({
@@ -1018,7 +1018,7 @@ exports.getInvestorReportslist = async (req, res) => {
           message: "",
           results: updatedResults,
         });
-      }
+      },
     );
   } catch (err) {
     res.status(500).json({
@@ -1061,7 +1061,7 @@ exports.InvestorReportslistDownload = (req, res) => {
           if (err) return callback(err, null);
           if (companyResult.length === 0) return callback(null, null);
           return callback(null, companyResult[0].company_name);
-        }
+        },
       );
     };
 
@@ -1466,13 +1466,13 @@ exports.InvestorAuthorizeConfimataion = (req, res) => {
                   return res.status(200).json({
                     message: `Report status updated to ${types}, email sent`,
                   });
-                }
+                },
               );
-            }
+            },
           );
-        }
+        },
       );
-    }
+    },
   );
 };
 
@@ -1556,7 +1556,7 @@ exports.InvestorrequestToCompany = (req, res) => {
           // ✅ CONDITION: Only process if instrumentType is "Preferred Equity"
           if (round.instrumentType !== "Preferred Equity") {
             console.log(
-              `No warrants: Instrument type is ${round.instrumentType}, not Preferred Equity`
+              `No warrants: Instrument type is ${round.instrumentType}, not Preferred Equity`,
             );
             return;
           }
@@ -1573,7 +1573,7 @@ exports.InvestorrequestToCompany = (req, res) => {
 
             if (!hasWarrants) {
               console.log(
-                "No warrants enabled for this Preferred Equity round"
+                "No warrants enabled for this Preferred Equity round",
               );
               return;
             }
@@ -1586,7 +1586,7 @@ exports.InvestorrequestToCompany = (req, res) => {
             }
 
             const coveragePercentage = parseFloat(
-              instrumentData.warrant_coverage_percentage || 0
+              instrumentData.warrant_coverage_percentage || 0,
             );
             if (coveragePercentage <= 0) {
               console.log("Invalid or zero warrant coverage percentage");
@@ -1635,7 +1635,7 @@ exports.InvestorrequestToCompany = (req, res) => {
                   console.error("Warrant creation error:", warrantErr);
                 } else {
                   console.log(
-                    `Warrant created for investor ${investor_id}, ID: ${warrantResult.insertId}`
+                    `Warrant created for investor ${investor_id}, ID: ${warrantResult.insertId}`,
                   );
 
                   // Optional: Log warrant creation
@@ -1673,12 +1673,12 @@ exports.InvestorrequestToCompany = (req, res) => {
                     if (logErr) console.error("Warrant log error:", logErr);
                   });
                 }
-              }
+              },
             );
           } catch (parseError) {
             console.error("Error parsing instrument data:", parseError);
           }
-        }
+        },
       );
     };
 
@@ -1782,33 +1782,33 @@ exports.getInvestorAllRoundRecord = (req, res) => {
     });
 
     const sortedInvestors = Object.entries(investmentByInvestor).sort(
-      (a, b) => b[1] - a[1]
+      (a, b) => b[1] - a[1],
     );
 
     const rank =
       sortedInvestors.findIndex(
-        ([id]) => parseInt(id) === parseInt(investor_id)
+        ([id]) => parseInt(id) === parseInt(investor_id),
       ) + 1 || 0;
 
     // This investor’s records
     const investorRecords = parsedAll.filter(
-      (r) => r.investor_id === Number(investor_id)
+      (r) => r.investor_id === Number(investor_id),
     );
 
     const totalInvested = investorRecords.reduce(
       (sum, r) => sum + r.investment_amount,
-      0
+      0,
     );
     const investorShares = investorRecords.reduce(
       (sum, r) => sum + r.shares,
-      0
+      0,
     );
 
     // ✅ Correct ownership calculation
     // Use issuedshares from roundrecord (not sum of all rounds)
     const totalIssuedShares = investorRecords.reduce(
       (sum, r) => sum + r.issuedshares,
-      0
+      0,
     );
 
     const ownershipPercent =
@@ -1895,7 +1895,7 @@ exports.verifyInvestment = (req, res) => {
         record.nameOfRound,
         record.roundsize,
         record.issuedshares,
-        record.currency
+        record.currency,
       );
 
       return res
@@ -1914,7 +1914,7 @@ function sendEmailToInvestment_Verify(
   nameOfRound,
   roundsize,
   issuedshares,
-  currency
+  currency,
 ) {
   const subject = `Your investment has been verified - ${companyName}`;
 
@@ -2138,7 +2138,7 @@ exports.fetchInvestorData = (req, res) => {
 
     // Sort rounds by creation date
     const rounds = Object.values(roundsMap).sort(
-      (a, b) => new Date(a.created_at) - new Date(b.created_at)
+      (a, b) => new Date(a.created_at) - new Date(b.created_at),
     );
 
     // Calculate cumulative shares and ownership
@@ -2165,13 +2165,13 @@ exports.fetchInvestorData = (req, res) => {
           if (cap > 0 && cumulativeTotalShares > 0) {
             conversionPrice = Math.min(
               conversionPrice,
-              cap / cumulativeTotalShares
+              cap / cumulativeTotalShares,
             );
           }
           if (discount > 0) {
             conversionPrice = Math.min(
               conversionPrice,
-              pricePerShare * (1 - discount / 100)
+              pricePerShare * (1 - discount / 100),
             );
           }
 
@@ -2228,7 +2228,7 @@ exports.fetchInvestorData = (req, res) => {
         const ownershipPercentage =
           cumulativeTotalShares > 0
             ? parseFloat(
-                (investorShares / cumulativeTotalShares) * 100
+                (investorShares / cumulativeTotalShares) * 100,
               ).toFixed(2)
             : "0.00";
 
@@ -2295,7 +2295,7 @@ exports.fetchInvestorData = (req, res) => {
         totalShares: Math.round(cumulativeTotalShares),
         founderShares: Math.round(stakeholderShares["Founders"] || 0),
         totalInvestorShares: Math.round(
-          cumulativeTotalShares - (stakeholderShares["Founders"] || 0)
+          cumulativeTotalShares - (stakeholderShares["Founders"] || 0),
         ),
       },
     });
@@ -2412,7 +2412,7 @@ exports.getcheckInvestorStatus = (req, res) => {
         message: "",
         result: row,
       });
-    }
+    },
   );
 };
 
@@ -2519,14 +2519,14 @@ exports.getexistingShare = async (req, res) => {
               // If this is an equity round, we need to add option pool shares
               if (currentRound.instrumentType !== "Safe") {
                 const optionPoolPercent = parseFloat(
-                  currentRound.optionPoolPercent || 0
+                  currentRound.optionPoolPercent || 0,
                 );
 
                 if (optionPoolPercent > 0) {
                   // Calculate option pool shares: existingShares / (1 - optionPool%) * optionPool%
                   const optionPoolShares = Math.round(
                     (existingShares * (optionPoolPercent / 100)) /
-                      (1 - optionPoolPercent / 100)
+                      (1 - optionPoolPercent / 100),
                   );
                   existingShares += optionPoolShares;
                 }
@@ -2545,7 +2545,7 @@ exports.getexistingShare = async (req, res) => {
                   currentRoundResults[0].instrumentType !== "Safe",
               },
             });
-          }
+          },
         );
       } else {
         // No specific round provided, return Round 0 shares only
@@ -2706,7 +2706,7 @@ exports.getTotalInvestment = async (req, res) => {
     });
 
     console.log(
-      `Found ${results.length} records, total investment: $${totalInvestment}`
+      `Found ${results.length} records, total investment: $${totalInvestment}`,
     );
 
     res.json({

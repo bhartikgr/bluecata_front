@@ -127,15 +127,15 @@ exports.getSignatoryDetails = (req, res) => {
                         total_shared_reports: totalSharedReports,
                         allroundrecord,
                       });
-                    }
+                    },
                   );
-                }
+                },
               );
-            }
+            },
           );
-        }
+        },
       );
-    }
+    },
   );
 };
 
@@ -210,7 +210,7 @@ exports.getInvestorreportList = (req, res) => {
         message: "Investor report list fetched successfully",
         results: updatedResults,
       });
-    }
+    },
   );
 };
 exports.getShareInvestorreport = (req, res) => {

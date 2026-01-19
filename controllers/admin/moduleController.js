@@ -146,7 +146,7 @@ exports.updatelimit = (req, res) => {
         message: "Module updated successfully",
         id: id,
       });
-    }
+    },
   );
 };
 
@@ -460,7 +460,7 @@ exports.savedataroomtip = (req, res) => {
         res.status(200).json({
           message: "Sub catgeory created successfully",
         });
-      }
+      },
     );
   }
 };
@@ -490,7 +490,7 @@ exports.dataroomPaymentadd = (req, res) => {
           res.status(200).json({
             message: "Successfully updated",
           });
-        }
+        },
       );
     } else {
       const query =
@@ -510,7 +510,7 @@ exports.dataroomPaymentadd = (req, res) => {
           res.status(200).json({
             message: "Successfully Saved ",
           });
-        }
+        },
       );
     }
   });
@@ -656,7 +656,7 @@ exports.addDataroomCategory = (req, res) => {
         res.status(200).json({
           message: "Category updated successfully",
         });
-      }
+      },
     );
   } else {
     const query =
@@ -676,7 +676,7 @@ exports.addDataroomCategory = (req, res) => {
         res.status(200).json({
           message: "Category saved successfully",
         });
-      }
+      },
     );
   }
 };
@@ -744,7 +744,7 @@ exports.discountAddEdit = (req, res) => {
         }
 
         res.status(200).json({ message: "Successfully updated" });
-      }
+      },
     );
   } else {
     const query =
@@ -761,7 +761,7 @@ exports.discountAddEdit = (req, res) => {
         }
 
         res.status(200).json({ message: "Successfully created" });
-      }
+      },
     );
   }
 };
@@ -866,7 +866,7 @@ exports.deletecompany = (req, res) => {
               "..",
               "upload",
               "docs",
-              `doc_${id}`
+              `doc_${id}`,
             );
             fs.rm(filePath, { recursive: true, force: true }, (err) => {
               if (err) {
@@ -924,7 +924,7 @@ exports.createzoommeet = (req, res) => {
   const meetingDateTime = moment.tz(
     `${date} ${time}`,
     "YYYY-MM-DD HH:mm",
-    data.timezone
+    data.timezone,
   );
 
   // ✅ Step 2: Define time range (±29 minutes for 30-min window overlap check)
@@ -1074,7 +1074,7 @@ exports.getzoomdata = (req, res) => {
       res.status(200).json({
         results: results, // <-- include the results here
       });
-    }
+    },
   );
 };
 exports.emailtemplate = (req, res) => {
@@ -1172,7 +1172,7 @@ exports.getemailtemplate = (req, res) => {
       res.status(200).json({
         results: results, // <-- include the results here
       });
-    }
+    },
   );
 };
 
@@ -1218,7 +1218,7 @@ exports.getemailtemplateSingle = (req, res) => {
       res.status(200).json({
         results: row, // <-- include the results here
       });
-    }
+    },
   );
 };
 
@@ -1507,7 +1507,7 @@ exports.shareCodeCompany = async (req, res) => {
         .promise()
         .query(
           `SELECT email FROM shared_discount_code WHERE discount_code = ? AND email IN (${placeholders})`,
-          [discount_code, ...validEmails]
+          [discount_code, ...validEmails],
         );
 
       existingEmails = existingRows.map((row) => row.email);
@@ -1533,7 +1533,7 @@ exports.shareCodeCompany = async (req, res) => {
         .promise()
         .query(
           `SELECT id, company_email FROM company WHERE company_email IN (${placeholders})`,
-          [...emailsWithoutId]
+          [...emailsWithoutId],
         );
 
       companyRows.forEach((row) => {
@@ -1556,7 +1556,7 @@ exports.shareCodeCompany = async (req, res) => {
       .promise()
       .query(
         `INSERT INTO shared_discount_code (shared_by, company_id, discount_code, email, shared_id, created_at) VALUES ?`,
-        [valuesToInsert]
+        [valuesToInsert],
       );
 
     // ✅ Fetch allowedModules for this discount_code
@@ -1929,9 +1929,9 @@ WHERE sdc.id = ?;
               shared: shared,
               usage: usageWithEmail,
             });
-          }
+          },
         );
-      }
+      },
     );
   });
 };
@@ -2053,7 +2053,7 @@ exports.createzoommeetSession = (req, res) => {
   const meetingDateTime = moment.tz(
     `${date} ${time}`,
     "YYYY-MM-DD HH:mm",
-    data.timezone
+    data.timezone,
   );
 
   // ✅ Step 2: Define time range (±29 minutes for 30-min window overlap check)
@@ -2205,7 +2205,7 @@ exports.getsessiondata = (req, res) => {
       res.status(200).json({
         results: results, // <-- include the results here
       });
-    }
+    },
   );
 };
 exports.getboradCasteList = (req, res) => {
@@ -2229,7 +2229,7 @@ exports.getboradCasteList = (req, res) => {
       res.status(200).json({
         results: formattedResults, // <-- include the results here
       });
-    }
+    },
   );
 };
 exports.getallcompiness = (req, res) => {
@@ -2311,7 +2311,7 @@ exports.sharedSessionLink = (req, res) => {
       return res.status(200).json({
         status: 2,
         message: `Some companies are already linked to this session: ${names.join(
-          ", "
+          ", ",
         )}`,
         alreadyLinked: names,
       });
@@ -2381,7 +2381,7 @@ exports.sharedSessionLink = (req, res) => {
                 meetingDateTime,
                 sessionData.meetingLink,
                 sessionData.meeting_date,
-                sessionData.time
+                sessionData.time,
               );
             });
           }
@@ -2405,7 +2405,7 @@ function sendSessionLink(
   eventTime,
   sessionLink,
   meetdate,
-  time
+  time,
 ) {
   const subject = `Your Upcoming Zoom Session: ${moduleName}`;
 
@@ -2611,110 +2611,110 @@ exports.deleteUsers = (req, res) => {
             .promise()
             .query(
               `DELETE FROM company_investor WHERE company_id IN (${placeholders})`,
-              companyIds
+              companyIds,
             );
 
           await connection
             .promise()
             .query(
               `DELETE FROM company_legal_information WHERE company_id IN (${placeholders})`,
-              companyIds
+              companyIds,
             );
           await connection
             .promise()
             .query(
               `DELETE FROM  company_shares_investment WHERE company_id IN (${placeholders})`,
-              companyIds
+              companyIds,
             );
           await connection
             .promise()
             .query(
               `DELETE FROM  company_signatories WHERE company_id IN (${placeholders})`,
-              companyIds
+              companyIds,
             );
           await connection
             .promise()
             .query(
               `DELETE FROM  dataroomai_executive_summary WHERE company_id IN (${placeholders})`,
-              companyIds
+              companyIds,
             );
           await connection
             .promise()
             .query(
               `DELETE FROM  dataroomai_response WHERE company_id IN (${placeholders})`,
-              companyIds
+              companyIds,
             );
           await connection
             .promise()
             .query(
               `DELETE FROM  dataroomai_summary WHERE company_id IN (${placeholders})`,
-              companyIds
+              companyIds,
             );
           await connection
             .promise()
             .query(
               `DELETE FROM   dataroomdocuments WHERE company_id IN (${placeholders})`,
-              companyIds
+              companyIds,
             );
           await connection
             .promise()
             .query(
               `DELETE FROM  dataroom_generatedocument WHERE company_id IN (${placeholders})`,
-              companyIds
+              companyIds,
             );
           await connection
             .promise()
             .query(
               `DELETE FROM  investorrequest_company WHERE company_id IN (${placeholders})`,
-              companyIds
+              companyIds,
             );
           await connection
             .promise()
             .query(
               `DELETE FROM   investor_updates WHERE company_id IN (${placeholders})`,
-              companyIds
+              companyIds,
             );
           await connection
             .promise()
             .query(
               `DELETE FROM   roundrecord WHERE company_id IN (${placeholders})`,
-              companyIds
+              companyIds,
             );
           await connection
             .promise()
             .query(
               `DELETE FROM   shared_discount_code WHERE company_id IN (${placeholders})`,
-              companyIds
+              companyIds,
             );
           await connection
             .promise()
             .query(
               `DELETE FROM   sharerecordround WHERE company_id IN (${placeholders})`,
-              companyIds
+              companyIds,
             );
           await connection
             .promise()
             .query(
               `DELETE FROM sharereport WHERE company_id IN (${placeholders})`,
-              companyIds
+              companyIds,
             );
           await connection
             .promise()
             .query(
               `DELETE FROM subscription_statuslockfile WHERE company_id IN (${placeholders})`,
-              companyIds
+              companyIds,
             );
           await connection
             .promise()
             .query(
               `DELETE FROM  used_referral_code WHERE company_id IN (${placeholders})`,
-              companyIds
+              companyIds,
             );
           await connection
             .promise()
             .query(
               `DELETE FROM  used_referral_code WHERE company_id IN (${placeholders})`,
-              companyIds
+              companyIds,
             );
         }
 
@@ -2739,7 +2739,7 @@ exports.deleteUsers = (req, res) => {
             "..",
             "upload",
             "docs",
-            `doc_${companyId}`
+            `doc_${companyId}`,
           );
           fs.rm(filePath, { recursive: true, force: true }, (err) => {
             if (err) {
