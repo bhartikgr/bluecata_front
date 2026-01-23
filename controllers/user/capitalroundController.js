@@ -326,20 +326,20 @@ exports.CreateOrUpdateCapitalRound = (req, res) => {
             `;
 
             let executiveSummary = "";
-            // try {
-            //   const aiRes = await openai.chat.completions.create({
-            //     model: "gpt-4-turbo",
-            //     messages: [
-            //       {
-            //         role: "system",
-            //         content: "You summarize investment rounds.",
-            //       },
-            //       { role: "user", content: prompt },
-            //     ],
-            //     max_tokens: 500,
-            //   });
-            //   executiveSummary = aiRes.choices[0].message.content.trim();
-            // } catch (e) {}
+            try {
+              const aiRes = await openai.chat.completions.create({
+                model: "gpt-4-turbo",
+                messages: [
+                  {
+                    role: "system",
+                    content: "You summarize investment rounds.",
+                  },
+                  { role: "user", content: prompt },
+                ],
+                max_tokens: 500,
+              });
+              executiveSummary = aiRes.choices[0].message.content.trim();
+            } catch (e) {}
 
             await db
               .promise()
@@ -510,17 +510,17 @@ exports.CreateOrUpdateCapitalRound = (req, res) => {
     `;
 
         let executiveSummary = "";
-        // try {
-        //   const aiRes = await openai.chat.completions.create({
-        //     model: "gpt-4-turbo",
-        //     messages: [
-        //       { role: "system", content: "You summarize investment rounds." },
-        //       { role: "user", content: prompt },
-        //     ],
-        //     max_tokens: 500,
-        //   });
-        //   executiveSummary = aiRes.choices[0].message.content.trim();
-        // } catch (e) {}
+        try {
+          const aiRes = await openai.chat.completions.create({
+            model: "gpt-4-turbo",
+            messages: [
+              { role: "system", content: "You summarize investment rounds." },
+              { role: "user", content: prompt },
+            ],
+            max_tokens: 500,
+          });
+          executiveSummary = aiRes.choices[0].message.content.trim();
+        } catch (e) {}
 
         await db
           .promise()
