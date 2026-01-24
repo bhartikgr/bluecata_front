@@ -2840,7 +2840,9 @@ async function handlePreferredEquityRoundCalculation(round, company_id, res) {
         db.query(
           `SELECT w.*, 
        CONCAT(COALESCE(ii.first_name, ''), ' ', COALESCE(ii.last_name, '')) AS investor_name,
-       r.nameOfRound AS round_name
+       r.nameOfRound AS round_name,
+       r.instrumentType AS original_instrument,
+       r.roundsize AS original_investment
        FROM warrants w
        LEFT JOIN investor_information ii ON w.investor_id = ii.id
        LEFT JOIN roundrecord r ON w.roundrecord_id = r.id
@@ -2860,17 +2862,14 @@ async function handlePreferredEquityRoundCalculation(round, company_id, res) {
       if (warrantsForThisRound.length > 0) {
         totalWarrantShares = 0;
         newlyExercisedCount = 0;
-        warrantDetails = []; // ✅ Reset the array here
-
-        // Calculate total new shares for warrant coverage
-        const totalNewSharesInRound =
-          (calculationResult.seriesAShares || 0) +
-          (calculationResult.convertedShares || 0);
+        warrantDetails = [];
 
         for (const warrant of warrantsForThisRound) {
           let warrantShares = 0;
           let exercisePrice = calculationResult.sharePrice;
           let isNewlyExercised = false;
+          let coverageBasis = "unknown";
+          let calculatedCoverageAmount = 0;
 
           // ✅ CASE A: Warrant already exercised in THIS round
           if (warrant.exercised_in_round_id === round.id) {
@@ -2879,64 +2878,142 @@ async function handlePreferredEquityRoundCalculation(round, company_id, res) {
             exercisePrice =
               parseFloat(warrant.calculated_exercise_price) ||
               calculationResult.sharePrice;
+            coverageBasis = "already_exercised";
           }
           // ✅ CASE B: Warrant pending (exercise it NOW)
           else if (warrant.warrant_status === "pending") {
             isNewlyExercised = true;
 
-            // Calculate exercise price
-            if (warrant.warrant_exercise_type === "next_round_adjusted") {
-              const adjPercent = warrant.warrant_adjustment_percent || 0;
-              const direction =
-                warrant.warrant_adjustment_direction || "decrease";
+            // ✅ CALCULATE EXERCISE PRICE - DOCUMENT SAYS NO ADJUSTMENT!
+            // Document: "Warrant Price = take $10.8 * 2,778 = $30,000"
+            // Means exercise at Series A price, NOT discounted price
+            console.log(`\n🔍 Processing Warrant ${warrant.id}:`);
+            console.log(`   From Round: ${warrant.round_name}`);
+            console.log(
+              `   Original Instrument: ${warrant.original_instrument}`,
+            );
+            console.log(
+              `   Coverage Percentage: ${warrant.warrant_coverage_percentage}%`,
+            );
 
-              if (direction === "decrease") {
-                exercisePrice =
-                  calculationResult.sharePrice * (1 - adjPercent / 100);
-              } else if (direction === "increase") {
-                exercisePrice =
-                  calculationResult.sharePrice * (1 + adjPercent / 100);
-              }
-            } else {
-            }
+            // According to document, warrant exercises at Series A price ($10.80)
+            // NOT at discounted price ($8.64)
+            exercisePrice = calculationResult.sharePrice; // $10.80
 
-            // Calculate warrant shares
+            console.log(
+              `   Share Price: $${calculationResult.sharePrice.toFixed(2)}`,
+            );
+            console.log(
+              `   Exercise Price: $${exercisePrice.toFixed(2)} (Series A price)`,
+            );
+
+            // ✅ CALCULATE WARRANT SHARES - DOCUMENT CORRECT METHOD
             const coveragePercent = warrant.warrant_coverage_percentage || 0;
 
             if (coveragePercent > 0) {
-              // Based on Series A shares (as per document examples)
-              warrantShares = Math.round(
-                calculationResult.seriesAShares * (coveragePercent / 100),
-              );
+              // ✅ DOCUMENT-CORRECT: Warrant based on CONVERTED SAFE/NOTE shares
+              if (calculationResult.convertedShares > 0) {
+                // Document says: "calculate 20% of it" where "it" = converted shares
+                warrantShares = Math.round(
+                  calculationResult.convertedShares * (coveragePercent / 100),
+                );
+                calculatedCoverageAmount = warrantShares * exercisePrice;
+                coverageBasis = "converted_shares";
+
+                console.log(`📊 Document-correct warrant calculation:`);
+                console.log(
+                  `   Converted SAFE/Note Shares: ${calculationResult.convertedShares}`,
+                );
+                console.log(
+                  `   Coverage ${coveragePercent}% of converted shares`,
+                );
+                console.log(`   Warrant Shares: ${warrantShares}`);
+                console.log(
+                  `   Warrant Value: $${calculatedCoverageAmount.toFixed(2)}`,
+                );
+              }
+              // ✅ If no converted shares, check original investment
+              else if (warrant.original_investment > 0) {
+                // Use original round investment
+                const originalInvestment =
+                  parseFloat(warrant.original_investment) || 0;
+                const coverageAmount =
+                  originalInvestment * (coveragePercent / 100);
+                warrantShares = Math.round(coverageAmount / exercisePrice);
+                calculatedCoverageAmount = coverageAmount;
+                coverageBasis = "original_investment";
+
+                console.log(`📊 Fallback warrant calculation:`);
+                console.log(`   Original Investment: $${originalInvestment}`);
+                console.log(
+                  `   Coverage Amount: $${coverageAmount.toFixed(2)}`,
+                );
+                console.log(`   Warrant Shares: ${warrantShares}`);
+              }
+              // ✅ Ultimate fallback
+              else {
+                // This should not happen, but as fallback
+                const investmentSize =
+                  parseFloat(round.roundsize) ||
+                  calculationResult.seriesAInvestment ||
+                  0;
+                const coverageAmount = investmentSize * (coveragePercent / 100);
+                warrantShares = Math.round(coverageAmount / exercisePrice);
+                calculatedCoverageAmount = coverageAmount;
+                coverageBasis = "current_round_investment";
+
+                console.warn(`⚠️ Using fallback warrant calculation`);
+                console.log(`   Current Round Investment: $${investmentSize}`);
+                console.log(`   Warrant Shares: ${warrantShares}`);
+              }
             }
 
-            // Alternative: If coverage amount specified
+            // ✅ If coverage amount specified directly
             if (
               warrant.warrant_coverage_amount &&
               warrant.warrant_coverage_amount > 0
             ) {
-              warrantShares = Math.round(
-                warrant.warrant_coverage_amount / exercisePrice,
+              const coverageAmount = parseFloat(
+                warrant.warrant_coverage_amount,
               );
+              warrantShares = Math.round(coverageAmount / exercisePrice);
+              calculatedCoverageAmount = coverageAmount;
+              coverageBasis = "direct_amount";
+
+              console.log(
+                `📊 Direct coverage amount specified: $${coverageAmount}`,
+              );
+              console.log(`   Warrant Shares: ${warrantShares}`);
             }
 
-            // ✅ Update warrant status in database
+            // ✅ UPDATE WARRANT STATUS IN DATABASE
             if (warrantShares > 0) {
               await new Promise((resolve, reject) => {
                 db.query(
                   `UPDATE warrants 
-               SET warrant_status = 'exercised',
-                   exercised_in_round_id = ?,
-                   calculated_exercise_price = ?,
-                   calculated_warrant_shares = ?,
-                   exercised_date = NOW()
-               WHERE id = ?`,
-                  [round.id, exercisePrice, warrantShares, warrant.id],
+                   SET warrant_status = 'exercised',
+                       exercised_in_round_id = ?,
+                       calculated_exercise_price = ?,
+                       calculated_warrant_shares = ?,
+                       warrant_coverage_amount = ?,
+                       exercised_date = NOW(),
+                       updated_at = NOW()
+                   WHERE id = ?`,
+                  [
+                    round.id,
+                    exercisePrice,
+                    warrantShares,
+                    calculatedCoverageAmount,
+                    warrant.id,
+                  ],
                   (err) => (err ? reject(err) : resolve()),
                 );
               });
 
               newlyExercisedCount++;
+              console.log(
+                `✅ Warrant ${warrant.id} exercised with ${warrantShares} shares`,
+              );
             }
           }
 
@@ -2955,10 +3032,20 @@ async function handlePreferredEquityRoundCalculation(round, company_id, res) {
               adjustment_direction:
                 warrant.warrant_adjustment_direction || "none",
               original_round: warrant.round_name,
+              original_instrument: warrant.original_instrument,
+              coverage_basis: coverageBasis,
+              calculated_coverage_amount: calculatedCoverageAmount,
               status: isNewlyExercised
                 ? "newly_exercised"
                 : "already_exercised",
               exercised_in_round: round.id,
+              // Calculation details for debugging
+              calculation_details: {
+                share_price: calculationResult.sharePrice,
+                converted_shares: calculationResult.convertedShares || 0,
+                series_a_shares: calculationResult.seriesAShares || 0,
+                document_method: "20% of converted SAFE/Note shares",
+              },
             });
           }
         }
@@ -2971,9 +3058,21 @@ async function handlePreferredEquityRoundCalculation(round, company_id, res) {
           calculationResult.postMoneyValuation =
             calculationResult.totalSharesAfterPool *
             calculationResult.sharePrice;
+
+          console.log(`\n📊 WARRANT SUMMARY:`);
+          console.log(`   Total Warrant Shares: ${totalWarrantShares}`);
+          console.log(`   Newly Exercised: ${newlyExercisedCount}`);
+          console.log(
+            `   Total Shares After Warrants: ${calculationResult.totalSharesAfterPool}`,
+          );
+          console.log(
+            `   Post-Money Valuation: $${calculationResult.postMoneyValuation.toFixed(2)}`,
+          );
         } else {
+          console.log(`ℹ️ No warrant shares were exercised`);
         }
       } else {
+        console.log(`ℹ️ No warrants found for this round`);
       }
     }
 
@@ -2989,13 +3088,17 @@ async function handlePreferredEquityRoundCalculation(round, company_id, res) {
       );
     });
 
-    // ✅ STEP 6: Apply warrant calculations if exists (for new warrants in current round)
+    // ✅ STEP 6: Handle new warrants in current round (for future exercise)
     if (warrantsData.length > 0 && calculationResult) {
-      calculationResult = applyWarrantCalculations(
-        calculationResult,
-        warrantsData,
-        round,
+      console.log(
+        `\n📋 ${warrantsData.length} new warrant(s) issued in this round`,
       );
+      console.log(`   These will be exercisable in future priced rounds`);
+
+      calculationResult.newWarrantsIssued = warrantsData.length;
+      calculationResult.newWarrantsData = warrantsData;
+
+      // Don't exercise them now - they'll exercise in future rounds
     }
 
     // ✅ STEP 7: Get investors for this round
@@ -3022,17 +3125,18 @@ async function handlePreferredEquityRoundCalculation(round, company_id, res) {
     );
 
     // ✅ STEP 9: Prepare final response - CORRECTED VARIABLES
-    const totalCalculatedShares = capTable.totalShares || 0;
-    const sharePrice = capTable.sharePrice || 0;
+    const totalCalculatedShares =
+      capTable.totalShares || calculationResult.totalSharesAfterPool || 0;
+    const sharePrice = calculationResult.sharePrice || capTable.sharePrice || 0;
     const shareholders = capTable.shareholders || [];
     const calcResult = calculationResult || {};
 
-    // ✅ FIXED: Calculate warrant flags from actual warrantDetails array
+    // ✅ FIXED: Calculate warrant flags
     const actuallyHasWarrants = warrantDetails.length > 0;
     const actuallyExercisedWarrants = warrantDetails.length > 0;
     const actuallyHasPendingWarrants = warrantsData.length > 0;
 
-    // ✅ FIXED: Calculate total warrant shares from warrantDetails
+    // ✅ FIXED: Calculate total warrant shares
     let totalWarrantSharesFromDetails = 0;
     if (warrantDetails && warrantDetails.length > 0) {
       totalWarrantSharesFromDetails = warrantDetails.reduce(
@@ -3040,6 +3144,31 @@ async function handlePreferredEquityRoundCalculation(round, company_id, res) {
         0,
       );
     }
+
+    // ✅ Calculate final values
+    const finalTotalShares = totalCalculatedShares;
+    const finalPostMoneyValuation = finalTotalShares * sharePrice;
+
+    // ✅ Prepare calculation breakdown for debugging
+    const calculationBreakdown = {
+      // Document-correct values
+      safe_converted_shares: calcResult.convertedShares || 0,
+      warrant_coverage_percentage: warrantDetails[0]?.coverage_percentage || 0,
+      calculated_warrant_shares: totalWarrantSharesFromDetails,
+      warrant_exercise_price: warrantDetails[0]?.exercise_price || sharePrice,
+      warrant_value:
+        totalWarrantSharesFromDetails *
+        (warrantDetails[0]?.exercise_price || sharePrice),
+
+      // For comparison
+      old_method_warrant_shares: (calcResult.seriesAShares || 0) * 0.2, // Wrong method
+      document_method_warrant_shares: (calcResult.convertedShares || 0) * 0.2, // Correct method
+
+      // Verification
+      document_calculation:
+        "Warrant = 20% of SAFE converted shares × Series A price",
+      example: "13,889 SAFE shares × 20% = 2,778 warrants × $10.80 = $30,000",
+    };
 
     // Backend API mein response format update karein
     const finalResponse = {
@@ -3056,8 +3185,8 @@ async function handlePreferredEquityRoundCalculation(round, company_id, res) {
 
       // ✅ Cap table data - FRONTEND COMPATIBLE FORMAT
       capTable: {
-        totalShares: totalCalculatedShares,
-        totalValue: totalCalculatedShares * sharePrice,
+        totalShares: finalTotalShares,
+        totalValue: finalPostMoneyValuation,
         sharePrice: sharePrice,
         shareholders: shareholders,
         calculationType: calculationType,
@@ -3067,19 +3196,17 @@ async function handlePreferredEquityRoundCalculation(round, company_id, res) {
       calculations: {
         sharePrice: parseFloat(sharePrice.toFixed(4)),
         preMoneyValuation: parseFloat(round.pre_money || 0),
-        postMoneyValuation: parseFloat(
-          (totalCalculatedShares * sharePrice).toFixed(2),
-        ),
+        postMoneyValuation: parseFloat(finalPostMoneyValuation.toFixed(2)),
         investmentSize: parseFloat(round.roundsize || 0),
 
-        // Specific calculations
+        // Specific calculations - DOCUMENT CORRECT
         founderShares: calcResult.founderShares || founderShares,
         existingEmployeeShares: calcResult.existingEmployeeShares || 0,
         newOptionShares: calcResult.newOptionShares || 0,
         convertedShares: calcResult.convertedShares || 0,
         seriesAShares: calcResult.seriesAShares || 0,
-        warrantShares: totalWarrantSharesFromDetails, // ✅ Use calculated warrant shares
-        totalSharesAfterPool: totalCalculatedShares,
+        warrantShares: totalWarrantSharesFromDetails, // ✅ Document-correct warrant shares
+        totalSharesAfterPool: finalTotalShares,
 
         // For SAFE/Convertible
         conversionPrice: calcResult.conversionPrice || 0,
@@ -3087,25 +3214,25 @@ async function handlePreferredEquityRoundCalculation(round, company_id, res) {
         principalPlusInterest: calcResult.principalPlusInterest || 0,
         safeInvestment: calcResult.safeInvestment || 0,
         noteInvestment: calcResult.noteInvestment || 0,
+
+        // Warrant calculation details
+        calculationBreakdown: calculationBreakdown,
       },
 
       // ✅ Post Series A cap table
       postSeriesACapTable: {
-        totalSharesAfterWarrants: totalCalculatedShares,
-        totalValue: totalCalculatedShares * sharePrice,
+        totalSharesAfterWarrants: finalTotalShares,
+        totalValue: finalPostMoneyValuation,
         shareholders: shareholders,
       },
 
-      // ✅ FIXED: Warrants data - Use actual warrantDetails array
+      // ✅ FIXED: Warrants data
       hasWarrants: actuallyHasWarrants,
       hasExercisedWarrants: actuallyExercisedWarrants,
       hasPendingWarrants: actuallyHasPendingWarrants,
-      pendingWarrantShares:
-        warrantsData.length > 0
-          ? warrantsData.reduce((sum, w) => sum + (w.potential_shares || 0), 0)
-          : 0,
+      pendingWarrantShares: warrantsData.length,
       exercisedWarrantShares: totalWarrantSharesFromDetails,
-      warrantDetails: warrantDetails, // ✅ This will have the actual array data
+      warrantDetails: warrantDetails,
 
       // ✅ Round info
       roundInfo: {
@@ -3115,9 +3242,22 @@ async function handlePreferredEquityRoundCalculation(round, company_id, res) {
         shareClassType: round.shareClassType,
         investmentSize: round.roundsize,
         preMoneyValuation: round.pre_money,
-        postMoneyValuation: (totalCalculatedShares * sharePrice).toFixed(2),
+        postMoneyValuation: finalPostMoneyValuation.toFixed(2),
         optionPoolPercentPost: round.optionPoolPercent_post,
         currency: round.currency || "USD",
+        issuedShares: finalTotalShares,
+      },
+
+      // ✅ Document verification
+      documentVerification: {
+        expectedWarrantShares: Math.round(
+          (calcResult.convertedShares || 0) * 0.2,
+        ),
+        expectedWarrantValue: Math.round(
+          (calcResult.convertedShares || 0) * 0.2 * sharePrice,
+        ),
+        calculationMethod: "20% of converted SAFE/Note shares",
+        note: "According to document: 'calculate 20% of it which will be # of shares for warrant'",
       },
     };
 
@@ -3126,12 +3266,12 @@ async function handlePreferredEquityRoundCalculation(round, company_id, res) {
       const updated = await updateExistingShares(
         company_id,
         round.id,
-        totalCalculatedShares,
+        finalTotalShares,
       );
 
       if (updated) {
         // Also update the final response to reflect this
-        finalResponse.roundInfo.issuedShares = totalCalculatedShares;
+        finalResponse.roundInfo.issuedShares = finalTotalShares;
       }
     } catch (updateError) {
       console.error(
@@ -3149,10 +3289,12 @@ async function handlePreferredEquityRoundCalculation(round, company_id, res) {
     });
   } catch (error) {
     console.error("❌ Calculation error:", error);
+    console.error("Error stack:", error.stack);
     return res.status(500).json({
       success: false,
       message: "Preferred Equity calculation failed",
       error: error.message,
+      stack: error.stack,
     });
   }
 }
@@ -3421,37 +3563,89 @@ function calculateSimplePreferredEquity(currentRound, founderShares) {
 }
 
 function applyWarrantCalculations(result, warrantsData, round) {
-  const warrant = warrantsData[0];
-  const warrantCoveragePercent = warrant.warrant_coverage_percentage || 0;
+  // ✅ Handle multiple warrants
+  const applicableWarrants = warrantsData.filter(
+    (w) => w.warrant_status === "pending" || w.warrant_status === "exercised",
+  );
 
-  if (warrantCoveragePercent <= 0) {
+  if (applicableWarrants.length === 0) {
     return result;
   }
 
-  // Calculate warrant shares
-  const warrantShares = Math.round(
-    result.seriesAShares * (warrantCoveragePercent / 100),
-  );
+  let totalWarrantShares = 0;
+  const warrantDetails = [];
 
-  // Calculate exercise price
-  let warrantExercisePrice = result.sharePrice;
-  const adjustmentPercent = warrant.warrant_adjustment_percent || 0;
-  const adjustmentDirection =
-    warrant.warrant_adjustment_direction || "decrease";
+  for (const warrant of applicableWarrants) {
+    const warrantCoveragePercent =
+      parseFloat(warrant.warrant_coverage_percentage) || 0;
 
-  if (warrant.warrant_exercise_type === "next_round_adjusted") {
-    if (adjustmentDirection === "decrease") {
-      warrantExercisePrice = result.sharePrice * (1 - adjustmentPercent / 100);
-    } else {
-      warrantExercisePrice = result.sharePrice * (1 + adjustmentPercent / 100);
+    if (warrantCoveragePercent <= 0) {
+      continue;
+    }
+
+    // ✅ STEP 1: Calculate exercise price
+    let warrantExercisePrice = result.sharePrice;
+    const adjustmentPercent =
+      parseFloat(warrant.warrant_adjustment_percent) || 0;
+    const adjustmentDirection =
+      warrant.warrant_adjustment_direction || "decrease";
+
+    if (warrant.warrant_exercise_type === "next_round_adjusted") {
+      if (adjustmentDirection === "decrease") {
+        warrantExercisePrice =
+          result.sharePrice * (1 - adjustmentPercent / 100);
+      } else {
+        warrantExercisePrice =
+          result.sharePrice * (1 + adjustmentPercent / 100);
+      }
+    }
+
+    // ✅ STEP 2: Calculate warrant shares CORRECTLY
+    let warrantShares = 0;
+
+    // Option A: If coverage amount specified
+    if (
+      warrant.warrant_coverage_amount &&
+      warrant.warrant_coverage_amount > 0
+    ) {
+      const coverageAmount = parseFloat(warrant.warrant_coverage_amount);
+      warrantShares = Math.round(coverageAmount / warrantExercisePrice);
+    }
+    // Option B: If coverage percentage specified
+    else if (warrantCoveragePercent > 0) {
+      // ✅ Determine what the coverage is based on
+      const investmentSize =
+        parseFloat(round.roundsize) || result.seriesAInvestment || 0;
+      const coverageAmount = investmentSize * (warrantCoveragePercent / 100);
+      warrantShares = Math.round(coverageAmount / warrantExercisePrice);
+    }
+
+    // ✅ STEP 3: Add to totals
+    if (warrantShares > 0) {
+      totalWarrantShares += warrantShares;
+
+      warrantDetails.push({
+        warrant_id: warrant.id,
+        investor_id: warrant.investor_id,
+        coverage_percentage: warrantCoveragePercent,
+        exercise_price: warrantExercisePrice,
+        warrant_shares: warrantShares,
+        adjustment_percent: adjustmentPercent,
+        adjustment_direction: adjustmentDirection,
+        status: "pending_exercise", // Will exercise in next round
+      });
     }
   }
 
-  // Update result
-  result.warrantShares = warrantShares;
-  result.warrantExercisePrice = warrantExercisePrice;
-  result.totalSharesAfterPool += warrantShares;
-  result.postMoneyValuation = result.totalSharesAfterPool * result.sharePrice;
+  // ✅ STEP 4: Update result
+  if (totalWarrantShares > 0) {
+    result.warrantShares = totalWarrantShares;
+    result.warrantDetails = warrantDetails;
+    result.totalSharesAfterPool += totalWarrantShares;
+    result.postMoneyValuation = result.totalSharesAfterPool * result.sharePrice;
+
+    console.log(`📊 ${totalWarrantShares} warrant shares added for next round`);
+  }
 
   return result;
 }
