@@ -2805,20 +2805,24 @@ async function handlePreferredEquityRoundCalculation(round, company_id, res) {
     let calculationResult;
     let calculationType = "Simple Preferred Equity";
 
-    if (safeRound) {
-      calculationResult = calculateWithSAFEDoc34(
-        round,
-        safeRound,
-        founderShares,
-      );
-      calculationType = "SAFE Conversion (Doc 3 & 4)";
-    } else if (convertibleNoteRound) {
+    const mostRecentRound = previousRounds[0]; // Sorted by created_at DESC
+
+    if (mostRecentRound.instrumentType === "Convertible Note") {
+      // Use Convertible Note calculation
       calculationResult = calculateWithConvertibleNoteDoc56(
         round,
-        convertibleNoteRound,
+        mostRecentRound,
         founderShares,
       );
       calculationType = "Convertible Note Conversion (Doc 5 & 6)";
+    } else if (mostRecentRound.instrumentType === "Safe") {
+      // Use SAFE calculation
+      calculationResult = calculateWithSAFEDoc34(
+        round,
+        mostRecentRound,
+        founderShares,
+      );
+      calculationType = "SAFE Conversion (Doc 3 & 4)";
     } else {
       calculationResult = calculateSimplePreferredEquity(round, founderShares);
     }
