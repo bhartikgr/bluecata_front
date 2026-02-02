@@ -215,7 +215,7 @@ cron.schedule("*/1 * * * *", async () => {
         const diffMinutes = Math.abs(now.diff(reminderTime, "minutes"));
         if (diffMinutes <= 10) {
           const zoomLink =
-            "https://capavate.com/moduleone/" + meeting.module_id;
+            "http://localhost:5000/moduleone/" + meeting.module_id;
 
           const replacements = {
             module_name: meeting.module_name,
@@ -350,7 +350,7 @@ async function upcomingModule() {
 function sendUpcomingModuleZoom(to, companyName, meeting, dateFormatted) {
   const subject = `🔔 Reminder: Upcoming Module - ${meeting.topic}`;
 
-  const registerUrl = `https://capavate.com/moduleone/${meeting.module_id}`; // Update this URL
+  const registerUrl = `http://localhost:5000/moduleone/${meeting.module_id}`; // Update this URL
 
   const message = `
     <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #333;">

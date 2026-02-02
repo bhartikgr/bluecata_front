@@ -1341,7 +1341,7 @@ const sendsharedCode = ({
           <table style="width:100%; border-collapse: collapse;">
             <tr>
               <td style="background:#efefef; padding:10px; text-align:center;">
-                <img src="https://capavate.com/api/upload/images/logo.png" alt="logo" style="width:130px;" />
+                <img src="http://localhost:5000/api/upload/images/logo.png" alt="logo" style="width:130px;" />
               </td>
             </tr>
             <tr>
@@ -1383,13 +1383,13 @@ const sendsharedCode = ({
         <div style="width:600px;margin:0 auto;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;font-family:Verdana,Geneva,sans-serif;">
           <table style="width:100%;">
             <tr><td style="background:#efefef;padding:10px;text-align:center;">
-              <img src="https://capavate.com/api/upload/images/logo.png" style="width:130px;" />
+              <img src="http://localhost:5000/api/upload/images/logo.png" style="width:130px;" />
             </td></tr>
             <tr><td style="padding:20px;">
               <h2>Hello,</h2>
               <p>${sharedBy} has invited you to join BluePrint Catalyst and shared a discount code with you: <b>${discount_code}</b></p>
               <p>Register using the link below to activate your discount:</p>
-              <p><a href="https://capavate.com/register?ref=${discount_code}" style="color:#1e3a8a;">https://capavate.com/register?ref=${discount_code}</a></p>
+              <p><a href="http://localhost:5000/register?ref=${discount_code}" style="color:#1e3a8a;">http://localhost:5000/register?ref=${discount_code}</a></p>
               <p>This gives you access to benefits across:<br/>- ${readableModules}</p>
               <p>Welcome aboard!<br/>Best,<br/>BluePrint Catalyst Team</p>
             </td></tr>
@@ -1409,13 +1409,13 @@ const sendsharedCode = ({
         <div style="width:600px;margin:0 auto;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;font-family:Verdana,Geneva,sans-serif;">
           <table style="width:100%;">
             <tr><td style="background:#efefef;padding:10px;text-align:center;">
-              <img src="https://capavate.com/api/upload/images/logo.png" style="width:130px;" />
+              <img src="http://localhost:5000/api/upload/images/logo.png" style="width:130px;" />
             </td></tr>
             <tr><td style="padding:20px;">
               <h2>Hello,</h2>
               <p>${sharedBy} has shared a discount code with you: <b>${discount_code}</b></p>
               <p>Please log in to your BluePrint Catalyst account and apply this code to enjoy discounts on:<br/>- ${readableModules}</p>
-              <p><a href="https://capavate.com/signatory/login" style="color:#1e3a8a;">https://capavate.com/signatory/login</a></p>
+              <p><a href="http://localhost:5000/signatory/login" style="color:#1e3a8a;">http://localhost:5000/signatory/login</a></p>
               <p>Happy scaling!<br/>BluePrint Catalyst Team</p>
             </td></tr>
           </table>
@@ -1434,13 +1434,13 @@ const sendsharedCode = ({
         <div style="width:600px;margin:0 auto;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;font-family:Verdana,Geneva,sans-serif;">
           <table style="width:100%;">
             <tr><td style="background:#efefef;padding:10px;text-align:center;">
-              <img src="https://capavate.com/api/upload/images/logo.png" style="width:130px;" />
+              <img src="http://localhost:5000/api/upload/images/logo.png" style="width:130px;" />
             </td></tr>
             <tr><td style="padding:20px;">
               <h2>Hello,</h2>
               <p>Here is your discount code: <b>${discount_code}</b></p>
               <p>Register or log in using the link below to redeem it:</p>
-              <p><a href="https://capavate.com/register?ref=${discount_code}" style="color:#1e3a8a;">https://capavate.com/register?ref=${discount_code}</a></p>
+              <p><a href="http://localhost:5000/register?ref=${discount_code}" style="color:#1e3a8a;">http://localhost:5000/register?ref=${discount_code}</a></p>
               <p>Best,<br/>BluePrint Catalyst Team</p>
             </td></tr>
           </table>
