@@ -191,9 +191,9 @@ exports.Addnewinvenstor = (req, res) => {
                         .status(500)
                         .json({ message: "DB insert error", error: err });
                     if (invt_result.is_register === "Yes") {
-                      var url = "http://localhost:5000/investor/login";
+                      var url = "https://capavate.com/investor/login";
                     } else {
-                      var url = `http://localhost:5000/investor/information/${token}`;
+                      var url = `https://capavate.com/investor/information/${token}`;
                     }
 
                     // Send invite email for existing investor
@@ -274,7 +274,7 @@ exports.Addnewinvenstor = (req, res) => {
                     email,
                     first_name + " " + last_name,
                     companyName,
-                    `http://localhost:5000/investor/information/${token}`,
+                    `https://capavate.com/investor/information/${token}`,
                     false, // not registered
                   );
 
@@ -365,7 +365,7 @@ const sendInvestorInviteEmail = (
       <table style="width:100%; border-collapse: collapse;">
         <tr>
           <td style="background:#efefef; padding:10px; text-align:center;">
-            <img src="http://localhost:5000/api/upload/images/logo.png" alt="logo" style="width:130px;" />
+            <img src="https://capavate.com/api/upload/images/logo.png" alt="logo" style="width:130px;" />
           </td>
         </tr>
         <tr>
@@ -646,8 +646,8 @@ exports.SendreportToinvestor = async (req, res) => {
       ({ report, email, first_name, last_name, unique_code }) => {
         const url =
           report.type === "Due Diligence Document"
-            ? `http://localhost:5000/investor/company/duediligence-reportlist/${company_id}`
-            : `http://localhost:5000/investor/company/reportlist/${company_id}`;
+            ? `https://capavate.com/investor/company/duediligence-reportlist/${company_id}`
+            : `https://capavate.com/investor/company/reportlist/${company_id}`;
 
         const mailOptions = {
           from: '"Capavate" <scale@blueprintcatalyst.com>',
@@ -852,7 +852,7 @@ exports.getInvestorReportUpdate = (req, res) => {
     var pathname = "upload/docs/doc_" + company_id;
     const updatedResults = results.map((doc) => ({
       ...doc,
-      downloadUrl: `http://localhost:5000/api/${pathname}/investor_report/${doc.document_name}`,
+      downloadUrl: `https://capavate.com/api/${pathname}/investor_report/${doc.document_name}`,
     }));
     res.status(200).json({
       message: "",
@@ -896,7 +896,7 @@ exports.getInvestorReportDuediligence = (req, res) => {
     var pathname = "upload/docs/doc_" + company_id;
     const updatedResults = results.map((doc) => ({
       ...doc,
-      downloadUrl: `http://localhost:5000/api/${pathname}/investor_report/${doc.document_name}`,
+      downloadUrl: `https://capavate.com/api/${pathname}/investor_report/${doc.document_name}`,
     }));
     res.status(200).json({
       message: "",
@@ -926,7 +926,7 @@ exports.getinvestorReportsLock = (req, res) => {
     var pathname = "upload/docs/doc_" + company_id;
     const updatedResults = results.map((doc) => ({
       ...doc,
-      downloadUrl: `http://localhost:5000/api/${pathname}/investor_report/${doc.document_name}`,
+      downloadUrl: `https://capavate.com/api/${pathname}/investor_report/${doc.document_name}`,
     }));
 
     res.status(200).json({
@@ -955,7 +955,7 @@ exports.getDuediligenceDataroomLock = (req, res) => {
     var pathname = "upload/docs/doc_" + company_id;
     const updatedResults = results.map((doc) => ({
       ...doc,
-      downloadUrl: `http://localhost:5000/api/${pathname}/investor_report/${doc.document_name}`,
+      downloadUrl: `https://capavate.com/api/${pathname}/investor_report/${doc.document_name}`,
     }));
 
     res.status(200).json({
@@ -1011,7 +1011,7 @@ exports.getInvestorReportslist = async (req, res) => {
         var pathname = "upload/docs/doc_" + company_id;
         const updatedResults = results.map((doc) => ({
           ...doc,
-          downloadUrl: `http://localhost:5000/api/${pathname}/investor_report/${doc.document_name}`,
+          downloadUrl: `https://capavate.com/api/${pathname}/investor_report/${doc.document_name}`,
         }));
 
         res.status(200).json({
@@ -1434,7 +1434,7 @@ exports.InvestorAuthorizeConfimataion = (req, res) => {
                                 <tr>
                       <td>
                         <div style="padding:0 20px 20px 20px;">
-                          <a href="http://localhost:5000/investor/company/capital-round-list/${
+                          <a href="https://capavate.com/investor/company/capital-round-list/${
                             dataa.user_id
                           }" 
                             style="background:#CC0000;color:#fff;text-decoration:none;font-size:14px;padding:10px 30px;border-radius:10px;display:inline-block;">
@@ -1931,7 +1931,7 @@ function sendEmailToInvestment_Verify(
       <table style="width:100%; border-collapse: collapse;">
         <tr>
           <td style="background:#efefef; padding:10px; text-align:center;">
-            <img src="http://localhost:5000/api/upload/images/logo.png" alt="logo" style="width:130px;" />
+            <img src="https://capavate.com/api/upload/images/logo.png" alt="logo" style="width:130px;" />
           </td>
         </tr>
         <tr>

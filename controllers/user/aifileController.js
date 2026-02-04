@@ -829,9 +829,9 @@ exports.generateDocFile = async (req, res) => {
                         if (companyLogos && companyLogos.length > 0) {
                           companyLogoPaths = companyLogos.map((logo) => {
                             const pathname = `upload/docs/doc_${responses.company_id}/${logo.folder_name}`;
-                            const fullPath = `http://localhost:5000/api/${pathname}/${logo.doc_name}`;
+                            const fullPath = `https://capavate.com/api/${pathname}/${logo.doc_name}`;
                             //const fullPath =
-                            //"http://localhost:5000/static/media/capavate.b15264e93ae9765cfd05.png";
+                            //"https://capavate.com/static/media/capavate.b15264e93ae9765cfd05.png";
                             //console.log(fullPath);
                             return fullPath;
                           });
@@ -840,9 +840,9 @@ exports.generateDocFile = async (req, res) => {
                         ) {
                           // Fallback to old single logo from company table
                           const pathname = `upload/docs/doc_${responses.company_id}/${logo.folder_name}`;
-                          const fullPath = `http://localhost:5000/api/${pathname}/${fileSummaryResults[0].company_logo}`;
+                          const fullPath = `https://capavate.com/api/${pathname}/${fileSummaryResults[0].company_logo}`;
                           // const fullPath =
-                          //   "http://localhost:5000/static/media/capavate.b15264e93ae9765cfd05.png";
+                          //   "https://capavate.com/static/media/capavate.b15264e93ae9765cfd05.png";
                           companyLogoPaths.push(fullPath);
                         }
 
@@ -1792,7 +1792,7 @@ exports.generateProcessAI = async (req, res) => {
 
 async function sendApprovalEmail({ email, companyName, uniqcode }) {
   const subject = `Due Diligence Summary Ready for Approval - Capavate`;
-  const approvalLink = `http://localhost:5000/approvalpage/${uniqcode}`;
+  const approvalLink = `https://capavate.com/approvalpage/${uniqcode}`;
 
   const transporter = nodemailer.createTransport({
     service: "gmail",
@@ -1816,7 +1816,7 @@ async function sendApprovalEmail({ email, companyName, uniqcode }) {
       <table style="width:100%; border-collapse: collapse;">
         <tr>
           <td style="background:#efefef; padding:10px; text-align:center;">
-            <img src="http://localhost:5000/api/upload/images/logo.png" alt="logo" style="width:130px;" />
+            <img src="https://capavate.com/api/upload/images/logo.png" alt="logo" style="width:130px;" />
           </td>
         </tr>
         <tr>
@@ -2006,8 +2006,8 @@ exports.getcompanyData = async (req, res) => {
         ...doc,
         downloadUrl:
           doc.company_logo && doc.company_logo.trim() !== ""
-            ? `http://localhost:5000/api/${pathname}/${doc.company_logo}`
-            : "http://localhost:5000/api/upload/docs/download.png",
+            ? `https://capavate.com/api/${pathname}/${doc.company_logo}`
+            : "https://capavate.com/api/upload/docs/download.png",
       }));
 
       return res.status(200).json({
@@ -2391,7 +2391,7 @@ exports.getinvestorReports = (req, res) => {
     var pathname = "upload/docs/doc_" + company_id;
     const updatedResults = results.map((doc) => ({
       ...doc,
-      downloadUrl: `http://localhost:5000/api/${pathname}/investor_report/${doc.document_name}`,
+      downloadUrl: `https://capavate.com/api/${pathname}/investor_report/${doc.document_name}`,
     }));
 
     res.status(200).json({
@@ -2423,7 +2423,7 @@ ORDER BY investor_updates.id DESC;
     var pathname = "upload/docs/doc_" + user_id;
     const updatedResults = results.map((doc) => ({
       ...doc,
-      downloadUrl: `http://localhost:5000/api/${pathname}/investor_report/${doc.document_name}`,
+      downloadUrl: `https://capavate.com/api/${pathname}/investor_report/${doc.document_name}`,
     }));
     res.status(200).json({
       results: updatedResults,
