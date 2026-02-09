@@ -1025,6 +1025,7 @@ async function handleCommonStockCalculation(params, updateFlag = false) {
     roundSize,
     optionPoolPercentValue,
     total_shares_before,
+    round0_shares,
     isUpdate: isUpdateFromParams = false,
     optionPoolPercent_post,
   } = params;
@@ -1356,7 +1357,9 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
     roundSize,
     optionPoolPercentValue,
     total_shares_before,
+    round0_shares,
     investorPostMoney,
+    instrumentData,
     isUpdate: isUpdateFromParams = false,
     optionPoolPercent_post,
   } = params;
