@@ -3981,10 +3981,10 @@ function calculatePreMoneyCapTable(allRounds, currentRound) {
   console.log("🔍 CPAVATE STYLE PRE-MONEY CAP TABLE CALCULATION");
   console.log("=".repeat(80));
 
-  // STEP 1: Find Round 0 (Founders Round)
+  // STEP 1: Always include Round 0 (Founders Round) if it exists
   const round0 = allRounds.find((round) => round.round_type === "Round 0");
 
-  if (round0 && parseInt(round0.id) < parseInt(currentRound.id)) {
+  if (round0) {
     console.log(`📌 Found Round 0: ${round0.nameOfRound}`);
 
     // Parse founder data
@@ -4058,7 +4058,7 @@ function calculatePreMoneyCapTable(allRounds, currentRound) {
     }
   }
 
-  // STEP 2: Process other rounds (excluding current round)
+  // STEP 2: Process other rounds (excluding current round and Round 0)
   for (const round of allRounds) {
     if (parseInt(round.id) >= parseInt(currentRound.id)) continue;
     if (round.round_type === "Round 0") continue; // Already processed
@@ -4210,7 +4210,12 @@ function calculatePostMoneyCapTable(allRounds, currentRound, preMoneyCapTable) {
   // For Round 0, post-money is same as pre-money
   if (currentRound.round_type === "Round 0") {
     console.log("Round 0: Post-money same as pre-money");
-    return calculatePreMoneyCapTable(allRounds, currentRound);
+    const result = calculatePreMoneyCapTable(allRounds, currentRound);
+    // Add new_shares column (all zeros for Round 0)
+    result.items.forEach((item) => {
+      item.new_shares = 0;
+    });
+    return result;
   }
 
   const postCapTable = [];
@@ -4220,9 +4225,10 @@ function calculatePostMoneyCapTable(allRounds, currentRound, preMoneyCapTable) {
   console.log("\n📥 Copying pre-money items...");
   preMoneyCapTable.items.forEach((item) => {
     const itemCopy = { ...item };
+    itemCopy.new_shares = 0; // Add new_shares column with 0 for existing items
     postCapTable.push(itemCopy);
     totalShares += itemCopy.shares;
-    console.log(`  Copied: ${item.name} - ${item.shares} shares`);
+    console.log(`  Copied: ${item.name} - ${item.shares} shares (new: 0)`);
   });
 
   // STEP 2: Get CPA calculated values
@@ -4267,6 +4273,7 @@ function calculatePostMoneyCapTable(allRounds, currentRound, preMoneyCapTable) {
           type: "investor",
           name: `${round.nameOfRound} - Converted`,
           shares: roundShares,
+          new_shares: roundShares, // All these are new shares
           percentage: 0,
           round_id: round.id,
           round_name: round.nameOfRound,
@@ -4276,7 +4283,7 @@ function calculatePostMoneyCapTable(allRounds, currentRound, preMoneyCapTable) {
         });
         totalShares += roundShares;
         console.log(
-          `  Added: ${round.nameOfRound} - ${roundShares} converted shares`,
+          `  Added: ${round.nameOfRound} - ${roundShares} converted shares (new: ${roundShares})`,
         );
       });
     } else {
@@ -4285,6 +4292,7 @@ function calculatePostMoneyCapTable(allRounds, currentRound, preMoneyCapTable) {
         type: "investor",
         name: `${currentRound.nameOfRound} - Converted Notes`,
         shares: cpaConvertedShares,
+        new_shares: cpaConvertedShares, // All these are new shares
         percentage: 0,
         round_id: currentRound.id,
         round_name: currentRound.nameOfRound,
@@ -4293,7 +4301,9 @@ function calculatePostMoneyCapTable(allRounds, currentRound, preMoneyCapTable) {
         is_converted: true,
       });
       totalShares += cpaConvertedShares;
-      console.log(`  Added generic converted shares: ${cpaConvertedShares}`);
+      console.log(
+        `  Added generic converted shares: ${cpaConvertedShares} (new: ${cpaConvertedShares})`,
+      );
     }
   }
 
@@ -4308,6 +4318,7 @@ function calculatePostMoneyCapTable(allRounds, currentRound, preMoneyCapTable) {
       type: "investor",
       name: `${currentRound.instrumentType} - ${currentRound.nameOfRound}`,
       shares: cpaActualInvestorShares,
+      new_shares: cpaActualInvestorShares, // All these are new shares
       percentage: 0,
       round_id: currentRound.id,
       round_name: currentRound.nameOfRound,
@@ -4316,7 +4327,7 @@ function calculatePostMoneyCapTable(allRounds, currentRound, preMoneyCapTable) {
     });
     totalShares += cpaActualInvestorShares;
     console.log(
-      `  Added: ${currentRound.nameOfRound} - ${cpaActualInvestorShares} shares`,
+      `  Added: ${currentRound.nameOfRound} - ${cpaActualInvestorShares} shares (new: ${cpaActualInvestorShares})`,
     );
   }
 
@@ -4332,19 +4343,25 @@ function calculatePostMoneyCapTable(allRounds, currentRound, preMoneyCapTable) {
 
     if (existingRoundOptionPool) {
       existingRoundOptionPool.shares += cpaOptionShares;
-      console.log(`  Added to existing option pool: ${cpaOptionShares} shares`);
+      existingRoundOptionPool.new_shares += cpaOptionShares;
+      console.log(
+        `  Added to existing option pool: ${cpaOptionShares} shares (new: ${cpaOptionShares})`,
+      );
     } else {
       postCapTable.push({
         type: "option_pool",
         name: `${currentRound.nameOfRound} Option Pool`,
         shares: cpaOptionShares,
+        new_shares: cpaOptionShares, // All these are new shares
         percentage: 0,
         round_id: currentRound.id,
         round_name: currentRound.nameOfRound,
         investment: 0,
         share_price: parseFloat(currentRound.share_price) || 0,
       });
-      console.log(`  Created new option pool: ${cpaOptionShares} shares`);
+      console.log(
+        `  Created new option pool: ${cpaOptionShares} shares (new: ${cpaOptionShares})`,
+      );
     }
     totalShares += cpaOptionShares;
   }
@@ -4356,21 +4373,23 @@ function calculatePostMoneyCapTable(allRounds, currentRound, preMoneyCapTable) {
     console.log(`\n⚠️ Adjusting to CPA total: ${cpaTotalShares}`);
     const discrepancy = cpaTotalShares - totalShares;
 
-    // Adjust the largest investor entry
-    const investorEntries = postCapTable.filter(
-      (item) => item.type === "investor",
-    );
-    if (investorEntries.length > 0) {
-      const largestInvestor = investorEntries.reduce((max, item) =>
-        item.shares > max.shares ? item : max,
-      );
-      largestInvestor.shares += discrepancy;
-      console.log(
-        `  Adjusted ${largestInvestor.name} by ${discrepancy} shares`,
-      );
+    if (discrepancy !== 0) {
+      // Add adjustment entry
+      postCapTable.push({
+        type: "adjustment",
+        name: "CPA Adjustment",
+        shares: discrepancy,
+        new_shares: discrepancy,
+        percentage: 0,
+        round_id: currentRound.id,
+        round_name: currentRound.nameOfRound,
+        investment: 0,
+        share_price: parseFloat(currentRound.share_price) || 0,
+        is_adjustment: true,
+      });
+      totalShares += discrepancy;
+      console.log(`  Added CPA adjustment: ${discrepancy} shares`);
     }
-
-    totalShares = cpaTotalShares;
   }
 
   // STEP 7: Calculate percentages
@@ -4389,11 +4408,15 @@ function calculatePostMoneyCapTable(allRounds, currentRound, preMoneyCapTable) {
   const totalOptionPool = postCapTable
     .filter((item) => item.type === "option_pool")
     .reduce((sum, item) => sum + item.shares, 0);
+  const totalNewShares = postCapTable
+    .filter((item) => item.new_shares !== undefined)
+    .reduce((sum, item) => sum + (item.new_shares || 0), 0);
 
   console.log("\n" + "=".repeat(80));
   console.log("✅ POST-MONEY CAP TABLE COMPLETE");
   console.log("=".repeat(80));
   console.log(`Total Shares: ${totalShares.toLocaleString()}`);
+  console.log(`Total New Shares: ${totalNewShares.toLocaleString()}`);
   console.log(
     `Founders: ${totalFounders.toLocaleString()} (${((totalFounders / totalShares) * 100).toFixed(2)}%)`,
   );
@@ -4404,10 +4427,22 @@ function calculatePostMoneyCapTable(allRounds, currentRound, preMoneyCapTable) {
     `Option Pool: ${totalOptionPool.toLocaleString()} (${((totalOptionPool / totalShares) * 100).toFixed(2)}%)`,
   );
 
+  console.log("\n📋 POST-MONEY CAP TABLE WITH NEW SHARES:");
+  postCapTable.forEach((item, idx) => {
+    const newSharesDisplay =
+      item.new_shares !== undefined
+        ? ` [New: ${item.new_shares.toLocaleString()}]`
+        : "";
+    console.log(
+      `${idx + 1}. ${item.type.toUpperCase()}: ${item.name} - ${item.shares.toLocaleString()} shares (${item.percentage}%)${newSharesDisplay}`,
+    );
+  });
+
   return {
     items: postCapTable,
     totals: {
       total_shares: totalShares,
+      total_new_shares: totalNewShares,
       total_founders: totalFounders,
       total_investors: totalInvestors,
       total_option_pool: totalOptionPool,
