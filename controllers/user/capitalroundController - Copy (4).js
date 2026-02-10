@@ -1243,7 +1243,7 @@ exports.SendRecordRoundToinvestor = async (req, res) => {
         // Determine URL based on registration
         const isRegistered = is_register === "Yes";
         const url =
-          "https://capavate.com/investor/company/capital-round-list/" +
+          "http://localhost:5000/investor/company/capital-round-list/" +
           company_id;
 
         // Send email using your template
@@ -1268,7 +1268,7 @@ exports.SendRecordRoundToinvestor = async (req, res) => {
             <table style="width:600px;margin:0 auto;border-collapse:collapse;font-family:Verdana,Geneva,sans-serif;">
               <tr>
                 <td style="background:#efefef;padding:10px 0;text-align:center;">
-                  <img src="https://capavate.com/api/upload/images/logo.png" alt="logo" style="width:130px;" />
+                  <img src="http://localhost:5000/api/upload/images/logo.png" alt="logo" style="width:130px;" />
                 </td>
               </tr>
               <tr>
@@ -1681,7 +1681,7 @@ exports.investorrecordAuthorize = (req, res) => {
         const investorEmail = `${investorRows[0].email}`;
 
         // Compose message
-        const reportUrl = "https://capavate.com/crm/investorreport";
+        const reportUrl = "http://localhost:5000/crm/investorreport";
 
         const message = `
           <!DOCTYPE html>
@@ -1871,7 +1871,7 @@ function sendEmailToInvestor(
 
                 <!-- Action Button -->
                 <div style="text-align:center;margin:30px 0;">
-                  <a href="https://capavate.com/investor/dashboard" style="background:#10b981;color:#fff;text-decoration:none;font-size:16px;font-weight:500;padding:12px 40px;border-radius:8px;display:inline-block;">
+                  <a href="http://localhost:5000/investor/dashboard" style="background:#10b981;color:#fff;text-decoration:none;font-size:16px;font-weight:500;padding:12px 40px;border-radius:8px;display:inline-block;">
                     Go to Your Dashboard
                   </a>
                 </div>
