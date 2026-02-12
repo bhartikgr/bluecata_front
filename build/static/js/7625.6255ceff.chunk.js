@@ -1,0 +1,2 @@
+"use strict";(self.webpackChunkkeiretsuproject=self.webpackChunkkeiretsuproject||[]).push([[7625],{7625:(e,t,o)=>{o.r(t),o.d(t,{default:()=>n});var r=o(65043),a=o(73216),s=(o(38421),o(25015),o(65016),o(70579));function n(){(0,a.Zp)();return console.log("test"),(0,r.useEffect)((()=>{localStorage.removeItem("InvestorData"),localStorage.removeItem("InvestorData"),window.location.href="/investor/login"}),[]),(0,s.jsx)(s.Fragment,{})}},25015:()=>{},65016:()=>{}}]);
+//# sourceMappingURL=7625.6255ceff.chunk.js.map
