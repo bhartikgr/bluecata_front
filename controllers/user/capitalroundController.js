@@ -2169,6 +2169,7 @@ function handleSafeCalculation(params) {
     total_converted_shares,
     instrumentType: "Safe",
     roundSize,
+    preMoney,
   });
 }
 
@@ -2260,6 +2261,7 @@ function handleConvertibleNoteCalculation(params) {
     total_converted_shares,
     instrumentType: "Convertible Note",
     roundSize,
+    preMoney,
   });
 
   console.log("\n" + "=".repeat(80));
