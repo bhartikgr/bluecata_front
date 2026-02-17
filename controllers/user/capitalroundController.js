@@ -5043,9 +5043,9 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
           calculations: {
             pre_money_valuation: 0,
             post_money_valuation: 0,
-            total_shares_outstanding: round0CapTable.totals.total_shares,
-            fully_diluted_shares: round0CapTable.totals.total_shares,
-            share_price: parseFloat(currentRound.share_price) || 0.001,
+            total_shares_outstanding: round0CapTable?.totals?.total_shares || 0,
+            fully_diluted_shares: round0CapTable?.totals?.total_shares,
+            share_price: parseFloat(currentRound.share_price) || 0,
           },
         };
 
@@ -6096,7 +6096,7 @@ function calculateCPAVATEPreMoneyCapTable(
     // Method 1: Direct from total_founder_shares field
     founderShares = parseInt(round0.total_founder_shares) || 0;
   }
-
+  console.log(previousRounds, "previousRounds");
   // ========== STEP 1: COLLECT ALL SHARES FROM PREVIOUS ROUNDS ==========
   for (const round of previousRounds) {
     // ========== ROUND 0 - FOUNDERS ==========
@@ -6105,29 +6105,43 @@ function calculateCPAVATEPreMoneyCapTable(
         round.founder_data?.founders &&
         Array.isArray(round.founder_data.founders)
       ) {
-        round.founder_data.founders.forEach((founder, idx) => {
+        // Sirf positive shares wale founders ko include karo
+        const activeFounders = round.founder_data.founders.filter(
+          (founder) => parseFloat(founder.shares) > 0,
+        );
+
+        activeFounders.forEach((founder, idx) => {
           const shares = parseFloat(founder.shares) || 0;
           const firstName = founder.firstName || "";
           const lastName = founder.lastName || "";
-          const founderName =
-            `${firstName} ${lastName}`.trim() || `Founder ${idx + 1}`;
 
-          // ✅ ORIGINAL ROUND 0 VALUES (at $0.01)
+          // ✅ NAME BANANE KA SAHI TARIKA
+          let founderName = "";
+          if (firstName && lastName) {
+            founderName = `${firstName} ${lastName}`.trim();
+          } else if (firstName) {
+            founderName = firstName;
+          } else if (lastName) {
+            founderName = lastName;
+          } else {
+            founderName = `Founder ${idx + 1}`;
+          }
+
           const originalSharePrice = parseFloat(round.share_price) || 0.01;
           const originalValue = shares * originalSharePrice;
 
           capTable.push({
             type: "founder",
-            name: founderName,
+            name: founderName, // ✅ "F f", "F s", "f d"
             shares: shares,
-            percentage: "0.00", // Will calculate after total shares known
+            percentage: "0.00",
             round_id: round.id,
             round_name: round.nameOfRound || "Round 0",
             investment: 0,
-            share_price: originalSharePrice, // $0.01
-            value: originalValue, // $5, $3, $2 (for 500,300,200 shares)
+            share_price: originalSharePrice,
+            value: originalValue,
             founder_id: idx + 1,
-            founder_code: `F${idx + 1}`,
+            founder_code: `F${idx + 1}`, // ✅ F1, F2, F3
             email: founder.email || "",
             phone: founder.phone || "",
             share_type: founder.shareType || "common",
@@ -7403,7 +7417,7 @@ function calculateRound0CapTable(round) {
   const capTable = [];
   let totalShares = 0;
   let totalValue = 0;
-  const sharePrice = parseFloat(round.share_price) || 0.01;
+  const sharePrice = parseFloat(round.share_price) || 0.0;
   const currency = round.currency || "USD";
 
   // Parse founder_data if it exists
@@ -7429,7 +7443,7 @@ function calculateRound0CapTable(round) {
   ) {
     // Process founders from JSON data
     founderData.founders.forEach((founder, idx) => {
-      const shares = parseFloat(founder.shares) || 0;
+      const shares = parseFloat(founder.shares);
       const value = shares * sharePrice;
 
       // Get founder name
