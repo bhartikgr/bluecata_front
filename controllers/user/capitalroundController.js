@@ -6055,18 +6055,10 @@ function calculateCPAVATEPreMoneyCapTable(
         const bNum = parseInt(b.founder_code?.replace(/\D/g, "") || 0);
         return aNum - bNum;
       }),
-    ...capTable.filter((item) => item.type === "investor"),
     ...capTable.filter((item) => item.type === "option_pool"),
+    ...capTable.filter((item) => item.type === "investor"),
     ...capTable.filter((item) => item.type === "pending"),
   ];
-
-  console.log("📊 PRE-MONEY TABLE SUMMARY:", {
-    totalShares,
-    founders: totalFounders,
-    investors: totalInvestors,
-    optionPool: totalOptionPool,
-    founderItems: sortedItems.filter((i) => i.type === "founder").length,
-  });
 
   return {
     items: sortedItems,
@@ -6480,30 +6472,6 @@ function calculateCPAVATEPostMoneyCapTable(
 
   const finalTotalShares = totalShares;
 
-  // ========== ✅ CORRECT VALUE CALCULATION ==========
-  // postCapTable.forEach((item) => {
-  //   if (finalTotalShares > 0 && item.type !== "pending") {
-  //     // Calculate percentage
-  //     item.percentage = ((item.shares / finalTotalShares) * 100).toFixed(2);
-
-  //     // ✅ FIX 2: Different calculation for different types
-  //     if (item.type === "investor" && item.is_new_investment) {
-  //       // New investors - use exact investment amount
-  //       item.value = item.investment || investment;
-  //     } else if (item.type === "investor" && item.is_converted) {
-  //       // Converted investors - calculate from shares
-  //       item.value = Math.round(
-  //         item.shares * (item.conversion_price || sharePrice),
-  //       );
-  //     } else {
-  //       // Everyone else - calculate from post-money valuation
-  //       item.value = Math.round(
-  //         (item.shares / finalTotalShares) * postMoneyValuation,
-  //       );
-  //     }
-  //   }
-  // });
-  // In the final value calculation section
   postCapTable.forEach((item) => {
     if (finalTotalShares > 0 && item.type !== "pending") {
       // Calculate percentage
@@ -6525,21 +6493,20 @@ function calculateCPAVATEPostMoneyCapTable(
   const totalFounders = postCapTable
     .filter((item) => item.type === "founder")
     .reduce((sum, item) => sum + item.shares, 0);
-
-  const totalInvestors = postCapTable
-    .filter((item) => item.type === "investor")
-    .reduce((sum, item) => sum + item.shares, 0);
-
   const totalOptionPool = postCapTable
     .filter((item) => item.type === "option_pool")
+    .reduce((sum, item) => sum + item.shares, 0);
+  const totalInvestors = postCapTable
+    .filter((item) => item.type === "investor")
     .reduce((sum, item) => sum + item.shares, 0);
 
   const totals = {
     total_shares: finalTotalShares,
     total_new_shares: totalNewShares,
     total_founders: totalFounders,
-    total_investors: totalInvestors,
     total_option_pool: totalOptionPool,
+    total_investors: totalInvestors,
+
     total_value: Math.round(postMoneyValuation),
     post_money_valuation: Math.round(postMoneyValuation),
     pre_money_valuation: preMoneyValuation,
@@ -6550,19 +6517,29 @@ function calculateCPAVATEPostMoneyCapTable(
   };
 
   // ========== SORT ITEMS FOR DISPLAY ==========
+  // ========== SORT ITEMS FOR DISPLAY ==========
   const sortedItems = [
+    // Founders first
     ...postCapTable
       .filter((item) => item.type === "founder")
       .sort((a, b) =>
         (a.founder_code || "").localeCompare(b.founder_code || ""),
       ),
+
+    // ✅ Option Pool SECOND (before investors)
+    ...postCapTable.filter((item) => item.type === "option_pool"),
+
+    // Then converted investors
     ...postCapTable.filter(
       (item) => item.type === "investor" && item.is_converted,
     ),
+
+    // Then new investors
     ...postCapTable.filter(
       (item) => item.type === "investor" && item.is_new_investment,
     ),
-    ...postCapTable.filter((item) => item.type === "option_pool"),
+
+    // Then pending instruments
     ...postCapTable.filter((item) => item.type === "pending"),
   ];
 
