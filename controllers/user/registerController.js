@@ -3773,7 +3773,28 @@ exports.companyProfileUpdate = (req, res) => {
           req.file.filename,
         )
       : null;
+    const formatMySQLDate = (dateStr) => {
+      if (!dateStr) return null;
 
+      // Agar YYYY-MM-DD format mein hai
+      if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+        return dateStr;
+      }
+
+      // ISO string se date part nikaalo
+      try {
+        const date = new Date(dateStr);
+        if (isNaN(date.getTime())) return null;
+
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, "0");
+        const day = String(date.getDate()).padStart(2, "0");
+
+        return `${year}-${month}-${day}`;
+      } catch {
+        return null;
+      }
+    };
     // ✅ Update company table
     const companyUpdateQuery = `
       UPDATE company SET
@@ -3799,7 +3820,7 @@ exports.companyProfileUpdate = (req, res) => {
     `;
 
     const companyValues = [
-      req.body.year_registration || null,
+      formatMySQLDate(req.body.year_registration),
       req.body.company_email || null,
       req.body.company_name || null,
       req.body.state_code || null,
