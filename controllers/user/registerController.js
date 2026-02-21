@@ -3746,11 +3746,24 @@ exports.companyProfileUpdate = (req, res) => {
   upload(req, res, function (err) {
     if (err) {
       console.error("File upload error:", err);
-      return res.status(500).json({ error: "File upload failed" });
+      return res.status(500).json({
+        success: false,
+        error: "File upload failed",
+        details: err.message,
+      });
     }
-    console.log(req.body);
+
+    console.log("Request body:", req.body);
     const company_id = req.body.company_id;
-    // Build file path if uploaded
+
+    if (!company_id) {
+      console.error("❌ Company ID missing");
+      return res.status(400).json({
+        success: false,
+        error: "Company ID is required",
+      });
+    }
+
     const filePath = req.file
       ? path.join(
           "upload",
@@ -3761,10 +3774,10 @@ exports.companyProfileUpdate = (req, res) => {
         )
       : null;
 
-    // ✅ Update company table explicitly
+    // ✅ Update company table
     const companyUpdateQuery = `
       UPDATE company SET
-      year_registration=?,
+        year_registration = ?,
         company_email = ?,
         company_name = ?,
         state_code = ?,
@@ -3779,9 +3792,9 @@ exports.companyProfileUpdate = (req, res) => {
         company_state = ?,
         company_country = ?,
         company_postal_code = ?,
-        descriptionStep4=?,
-        problemStep4=?,
-        solutionStep4=?
+        descriptionStep4 = ?,
+        problemStep4 = ?,
+        solutionStep4 = ?
       WHERE id = ?
     `;
 
@@ -3807,166 +3820,135 @@ exports.companyProfileUpdate = (req, res) => {
       company_id,
     ];
 
-    db.query(companyUpdateQuery, companyValues, (err) => {
-      if (err) console.error("Company update error:", err);
+    db.query(companyUpdateQuery, companyValues, (err, companyResult) => {
+      if (err) {
+        console.error("❌ Company update error:", err);
+        return res.status(500).json({
+          success: false,
+          error: "Company update failed",
+          details: err.message,
+        });
+      }
+
+      console.log("✅ Company update result:", companyResult);
+
+      // ✅ Handle legal info
       db.query(
-        "SELECT id FROM audit_logs WHERE user_id = ? AND company_id = ?",
-        [req.body.user_id, company_id],
-        (selectErr, rows) => {
-          if (selectErr) {
-            console.error("Audit log select error:", selectErr);
-            return;
+        "SELECT * FROM company_legal_information WHERE company_id = ?",
+        [company_id],
+        (err, rows) => {
+          if (err) {
+            console.error("❌ Select error:", err);
+            return res.status(500).json({
+              success: false,
+              error: "DB select failed",
+              details: err.message,
+            });
           }
 
+          const filename = req.file
+            ? req.file.filename
+            : rows[0]?.articles || null;
+
           if (rows.length > 0) {
-            // Record exists → update
-            const logUpdateQuery = `
-        UPDATE audit_logs
-        SET module = ?, action = ?, entity_id = ?, entity_type = ?, details = ?, ip_address = ?
-        WHERE id = ?
-      `;
-            const logUpdateValues = [
-              "company-profile",
-              "UPDATE",
+            // Update existing legal info
+            const legalUpdateQuery = `
+              UPDATE company_legal_information SET
+                user_id = ?,
+                articles = ?,
+                entity_name = ?,
+                business_number = ?,
+                jurisdiction_country = ?,
+                entity_type = ?,
+                date_of_incorporation = ?,
+                entity_structure = ?,
+                office_address = ?,
+                mailing_address = ?
+              WHERE company_id = ?
+            `;
+
+            const legalValues = [
+              req.body.user_id,
+              filename,
+              req.body.entity_name || null,
+              req.body.business_number || null,
+              req.body.jurisdiction_country || null,
+              req.body.entity_type || null,
+              req.body.date_of_incorporation || null,
+              req.body.entity_structure || null,
+              req.body.office_address || null,
+              req.body.mailing_address || null,
               company_id,
-              "company",
-              JSON.stringify(req.body),
-              req.body.ip_address,
-              rows[0].id, // update the existing row
             ];
 
-            db.query(logUpdateQuery, logUpdateValues, (updateErr) => {
-              if (updateErr)
-                console.error("Audit log update error:", updateErr);
-              else console.log("Audit log updated successfully");
+            db.query(legalUpdateQuery, legalValues, (err2, legalResult) => {
+              if (err2) {
+                console.error("❌ Legal update error:", err2);
+                return res.status(500).json({
+                  success: false,
+                  error: "Legal info update failed",
+                  details: err2.message,
+                });
+              }
+
+              console.log("✅ Legal update result:", legalResult);
+              return res.status(200).json({
+                success: true,
+                message: "Profile updated successfully",
+                file: req.file ? req.file.filename : null,
+                path: filePath,
+                companyResult,
+                legalResult,
+              });
             });
           } else {
-            // Record does not exist → insert new
-            const logInsertQuery = `
-        INSERT INTO audit_logs 
-        (user_id, company_id, module, action, entity_id, entity_type, details, ip_address) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `;
-            const logInsertValues = [
+            // Insert new legal info
+            const legalInsertQuery = `
+              INSERT INTO company_legal_information
+                (user_id, company_id, articles, entity_name, business_number, 
+                 jurisdiction_country, entity_type, date_of_incorporation, 
+                 entity_structure, office_address, mailing_address, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+            `;
+
+            const legalValues = [
               req.body.user_id,
               company_id,
-              "company-profile",
-              "UPDATE",
-              company_id,
-              "company",
-              JSON.stringify(req.body),
-              req.body.ip_address,
+              filename,
+              req.body.entity_name || null,
+              req.body.business_number || null,
+              req.body.jurisdiction_country || null,
+              req.body.entity_type || null,
+              req.body.date_of_incorporation || null,
+              req.body.entity_structure || null,
+              req.body.office_address || null,
+              req.body.mailing_address || null,
             ];
 
-            db.query(logInsertQuery, logInsertValues, (insertErr) => {
-              if (insertErr)
-                console.error("Audit log insert error:", insertErr);
-              else console.log("Audit log inserted successfully");
+            db.query(legalInsertQuery, legalValues, (err3, legalResult) => {
+              if (err3) {
+                console.error("❌ Legal insert error:", err3);
+                return res.status(500).json({
+                  success: false,
+                  error: "Legal info insert failed",
+                  details: err3.message,
+                });
+              }
+
+              console.log("✅ Legal insert result:", legalResult);
+              return res.status(200).json({
+                success: true,
+                message: "Profile created successfully",
+                file: req.file ? req.file.filename : null,
+                path: filePath,
+                companyResult,
+                legalResult,
+              });
             });
           }
         },
       );
     });
-
-    // ✅ Check if legal info exists
-    db.query(
-      "SELECT * FROM company_legal_information WHERE company_id = ?",
-      [company_id],
-      (err, rows) => {
-        if (err) {
-          console.error("Select error:", err);
-          return res
-            .status(500)
-            .json({ error: "DB select failed", details: err });
-        }
-        const filename = req.file
-          ? req.file.filename
-          : rows[0]?.articles || null;
-        if (rows.length > 0) {
-          // ✅ Update legal info explicitly
-          const legalUpdateQuery = `
-            UPDATE company_legal_information SET
-              user_id = ?,
-              company_id = ?,
-              articles = ?,
-              entity_name = ?,
-              business_number = ?,
-              jurisdiction_country = ?,
-              entity_type = ?,
-              date_of_incorporation = ?,
-              entity_structure = ?,
-              office_address = ?,
-              mailing_address = ?,
-              created_at = NOW()
-            WHERE company_id = ?
-          `;
-          const legalValues = [
-            req.body.user_id,
-            company_id,
-            filename,
-            req.body.entity_name || null,
-            req.body.business_number || null,
-            req.body.jurisdiction_country || null,
-            req.body.entity_type || null,
-            req.body.date_of_incorporation || null,
-            req.body.entity_structure || null,
-            req.body.office_address || null,
-            req.body.mailing_address || null,
-            company_id,
-          ];
-
-          db.query(legalUpdateQuery, legalValues, (err2) => {
-            if (err2) {
-              console.error("Legal update error:", err2);
-              return res
-                .status(500)
-                .json({ error: "Legal info update failed", details: err2 });
-            }
-            return res.status(200).json({
-              message: "Profile updated successfully",
-              file: req.file ? req.file.filename : null,
-              path: filePath,
-            });
-          });
-        } else {
-          // ✅ Insert legal info explicitly
-          const legalInsertQuery = `
-            INSERT INTO company_legal_information
-  (user_id, company_id, articles, entity_name, business_number, jurisdiction_country, entity_type, date_of_incorporation, entity_structure, office_address, mailing_address, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-
-          `;
-          const legalValues = [
-            req.body.user_id,
-            req.body.company_id,
-            filename,
-            req.body.entity_name || null,
-            req.body.business_number || null,
-            req.body.jurisdiction_country || null,
-            req.body.entity_type || null,
-            req.body.date_of_incorporation || null,
-            req.body.entity_structure || null,
-            req.body.office_address || null,
-            req.body.mailing_address || null,
-            new Date(),
-          ];
-
-          db.query(legalInsertQuery, legalValues, (err3) => {
-            if (err3) {
-              console.error("Legal insert error:", err3);
-              return res
-                .status(500)
-                .json({ error: "Legal info insert failed", details: err3 });
-            }
-            return res.status(200).json({
-              message: "Profile created successfully",
-              file: req.file ? req.file.filename : null,
-              path: filePath,
-            });
-          });
-        }
-      },
-    );
   });
 };
 
