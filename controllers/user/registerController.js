@@ -3748,7 +3748,7 @@ exports.companyProfileUpdate = (req, res) => {
       console.error("File upload error:", err);
       return res.status(500).json({ error: "File upload failed" });
     }
-
+    console.log(req.body);
     const company_id = req.body.company_id;
     // Build file path if uploaded
     const filePath = req.file
@@ -3760,11 +3760,11 @@ exports.companyProfileUpdate = (req, res) => {
           req.file.filename,
         )
       : null;
-    console.log(req.body);
 
     // ✅ Update company table explicitly
     const companyUpdateQuery = `
       UPDATE company SET
+      year_registration=?,
         company_email = ?,
         company_name = ?,
         state_code = ?,
@@ -3786,6 +3786,7 @@ exports.companyProfileUpdate = (req, res) => {
     `;
 
     const companyValues = [
+      req.body.year_registration || null,
       req.body.company_email || null,
       req.body.company_name || null,
       req.body.state_code || null,
