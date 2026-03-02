@@ -2757,3 +2757,68 @@ exports.getTotalInvestment = async (req, res) => {
     }
   }
 };
+exports.deleteround = async (req, res) => {
+  const { id, company_id } = req.body;
+
+  // Validate inputs
+  if (!id || !company_id) {
+    return res.status(400).json({
+      success: false,
+      message: "Missing required parameters",
+    });
+  }
+
+  try {
+    // First check if round exists
+    const checkQuery =
+      "SELECT id FROM roundrecord WHERE id = ? AND company_id = ?";
+    const [checkResult] = await db
+      .promise()
+      .query(checkQuery, [id, company_id]);
+
+    if (checkResult.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Round not found",
+      });
+    }
+
+    // Delete from child tables first
+    await db
+      .promise()
+      .query("DELETE FROM round_cap_table_items WHERE round_id = ?", [id]);
+    await db
+      .promise()
+      .query("DELETE FROM round_conversions WHERE round_id = ?", [id]);
+    await db
+      .promise()
+      .query("DELETE FROM round_founders WHERE round_id = ?", [id]);
+    await db
+      .promise()
+      .query("DELETE FROM round_investors WHERE round_id = ?", [id]);
+    await db
+      .promise()
+      .query("DELETE FROM round_option_pools WHERE round_id = ?", [id]);
+
+    // Finally delete from parent table
+    const [deleteResult] = await db
+      .promise()
+      .query("DELETE FROM roundrecord WHERE id = ? AND company_id = ?", [
+        id,
+        company_id,
+      ]);
+
+    res.json({
+      success: true,
+      message: "Round deleted successfully",
+      deleted_round_id: id,
+    });
+  } catch (error) {
+    console.error("❌ Error in deleteround:", error);
+    res.status(500).json({
+      success: false,
+      message: "Database error",
+      error: error.message,
+    });
+  }
+};
