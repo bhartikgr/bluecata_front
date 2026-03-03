@@ -3924,14 +3924,9 @@ async function handleSafeCalculation(params) {
         (optionPoolPercent / 100),
     );
     preMoneyTotalShares = round0Shares + optionPoolShares; // Founders + Option Pool
-    console.log("  First round - new option pool shares:", optionPoolShares);
   } else {
     // Subsequent rounds - previous round's total shares
     preMoneyTotalShares = totalPreMoneyShares; // Includes founders + previous investors + existing option pool
-    console.log(
-      "  Subsequent round - using previous total shares:",
-      preMoneyTotalShares,
-    );
   }
 
   // ==================== STEP 2: CALCULATE SHARE PRICE ====================
@@ -4109,12 +4104,18 @@ async function handleSafeCalculation(params) {
     ...previousPendingSafes,
     ...pendingInstruments,
   ];
+  let previousPendingSafess = [];
+  if (previousPendingSafes.length > 0) {
+    previousPendingSafess = previousPendingSafes;
+  } else {
+    previousPendingSafess = [];
+  }
   const preMoneyCapTable = {
     total_shares: preMoneyTotalShares,
     pre_money_valuation: preMoneyVal,
     currency: currentRound?.currency || "",
     share_price: sharePrice.toFixed(4),
-    pending_instruments: allPendingInstruments,
+    pending_instruments: previousPendingSafess,
 
     founders: {
       list: founderList.map((f) => {
@@ -5150,7 +5151,7 @@ exports.SendRecordRoundToinvestor = async (req, res) => {
         // Determine URL based on registration
         const isRegistered = is_register === "Yes";
         const url =
-          "http://localhost:5000/investor/company/capital-round-list/" +
+          "https://capavate.com/investor/company/capital-round-list/" +
           company_id;
 
         // Send email using your template
@@ -5175,7 +5176,7 @@ exports.SendRecordRoundToinvestor = async (req, res) => {
             <table style="width:600px;margin:0 auto;border-collapse:collapse;font-family:Verdana,Geneva,sans-serif;">
               <tr>
                 <td style="background:#efefef;padding:10px 0;text-align:center;">
-                  <img src="http://localhost:5000/api/upload/images/logo.png" alt="logo" style="width:130px;" />
+                  <img src="https://capavate.com/api/upload/images/logo.png" alt="logo" style="width:130px;" />
                 </td>
               </tr>
               <tr>
@@ -5588,7 +5589,7 @@ exports.investorrecordAuthorize = (req, res) => {
         const investorEmail = `${investorRows[0].email}`;
 
         // Compose message
-        const reportUrl = "http://localhost:5000/crm/investorreport";
+        const reportUrl = "https://capavate.com/crm/investorreport";
 
         const message = `
           <!DOCTYPE html>
@@ -5778,7 +5779,7 @@ function sendEmailToInvestor(
 
                 <!-- Action Button -->
                 <div style="text-align:center;margin:30px 0;">
-                  <a href="http://localhost:5000/investor/dashboard" style="background:#10b981;color:#fff;text-decoration:none;font-size:16px;font-weight:500;padding:12px 40px;border-radius:8px;display:inline-block;">
+                  <a href="https://capavate.com/investor/dashboard" style="background:#10b981;color:#fff;text-decoration:none;font-size:16px;font-weight:500;padding:12px 40px;border-radius:8px;display:inline-block;">
                     Go to Your Dashboard
                   </a>
                 </div>
