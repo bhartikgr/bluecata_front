@@ -2645,293 +2645,353 @@ async function saveCapTableData(
   preMoneyValuation,
   postMoneyValuation,
 ) {
-  const MAX_RETRIES = 5;
+  const MAX_RETRIES = 3;
   let retryCount = 0;
-  let lastError = null;
 
-  while (retryCount < MAX_RETRIES) {
-    try {
-      return await executeSaveWithRetry(
-        roundId,
-        companyId,
-        preTable,
-        postTable,
-        preMoneyTotalShares,
-        postMoneyTotalShares,
-        preMoneyValuation,
-        postMoneyValuation,
-      );
-    } catch (error) {
-      lastError = error;
-
-      // Deadlock error check
-      if (
-        error.code === "ER_LOCK_DEADLOCK" ||
-        error.code === "1205" ||
-        error.code === "1213"
-      ) {
-        retryCount++;
-        console.log(
-          `⚠️ Deadlock detected (attempt ${retryCount}/${MAX_RETRIES - 1}), retrying in ${retryCount * 100}ms...`,
-        );
-
-        // Exponential backoff
-        await new Promise((resolve) => setTimeout(resolve, retryCount * 100));
-      } else {
-        // Not a deadlock error, throw immediately
-        throw error;
-      }
-    }
-  }
-
-  console.error(`❌ Failed after ${MAX_RETRIES} attempts`);
-  throw lastError;
-}
-
-async function executeSaveWithRetry(
-  roundId,
-  companyId,
-  preTable,
-  postTable,
-  preMoneyTotalShares,
-  postMoneyTotalShares,
-  preMoneyValuation,
-  postMoneyValuation,
-) {
-  return new Promise((resolve, reject) => {
-    db.getConnection((err, connection) => {
-      if (err) {
-        console.error("Error getting connection:", err);
-        return reject(err);
-      }
-
-      // Set transaction isolation level
-      connection.query(
-        "SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED",
-        (err) => {
-          if (err) console.warn("⚠️ Could not set isolation level:", err);
-        },
-      );
-
-      connection.beginTransaction(async (err) => {
+  const executeTransaction = () => {
+    return new Promise((resolve, reject) => {
+      db.getConnection((err, connection) => {
         if (err) {
-          connection.release();
+          console.error("Error getting connection:", err);
           return reject(err);
         }
 
-        try {
-          // ==================== DELETE EXISTING DATA (in correct order) ====================
-          const deleteTables = [
-            "round_cap_table_items",
-            "round_conversions",
-            "round_pending_instruments",
-            "round_investors",
-            "round_option_pools",
-            "round_founders",
-          ];
+        // Set timeout to avoid long locks
+        connection.query("SET innodb_lock_wait_timeout = 5", (err) => {
+          if (err) console.warn("Could not set timeout:", err);
+        });
 
-          for (const table of deleteTables) {
-            await new Promise((res, rej) => {
-              connection.query(
-                `DELETE FROM ${table} WHERE round_id = ?`,
-                [roundId],
-                (err) => {
-                  if (err) rej(err);
-                  else res();
-                },
-              );
-            });
-
-            // Small delay between deletes
-            await new Promise((resolve) => setTimeout(resolve, 5));
+        connection.beginTransaction(async (err) => {
+          if (err) {
+            connection.release();
+            return reject(err);
           }
 
-          // ==================== SAVE PRE-MONEY DATA ====================
-          if (preTable) {
-            // 1. Founders - batch insert
-            if (preTable.founders?.list?.length) {
-              await insertFoundersBatch(
-                connection,
-                roundId,
-                companyId,
-                "pre",
-                preTable.founders.list,
-              );
+          try {
+            // ==================== DELETE EXISTING DATA ====================
+            // ✅ IMPORTANT: Pehle child tables, phir parent tables
+            const deleteOrder = [
+              "round_cap_table_items",
+              "round_conversions",
+              "round_pending_instruments",
+              "round_investors",
+              "round_option_pools",
+              "round_founders",
+            ];
+
+            for (const table of deleteOrder) {
+              await new Promise((res, rej) => {
+                connection.query(
+                  `DELETE FROM ${table} WHERE round_id = ?`,
+                  [roundId],
+                  (err) => {
+                    if (err) rej(err);
+                    else res();
+                  },
+                );
+              });
             }
 
-            // 2. Option Pool
-            if (preTable.option_pool) {
-              await insertOptionPoolDirect(
-                connection,
-                roundId,
-                companyId,
-                "pre",
-                preTable.option_pool,
-              );
-            }
+            // ==================== SAVE PRE-MONEY DATA ====================
+            if (preTable) {
+              // 1. Founders
+              if (preTable.founders?.list) {
+                for (const founder of preTable.founders.list) {
+                  await insertFounderDirect(
+                    connection,
+                    roundId,
+                    companyId,
+                    "pre",
+                    founder,
+                  );
+                }
+              }
 
-            // 3. Previous Investors - batch insert
-            if (preTable.previous_investors?.items?.length) {
-              await insertPreviousInvestorsBatch(
-                connection,
-                roundId,
-                companyId,
-                preTable.previous_investors.items,
-              );
-            }
-
-            // 4. Converted Investors
-            if (preTable.converted) {
-              await insertConvertedInvestorDirect(
-                connection,
-                roundId,
-                companyId,
-                "pre",
-                preTable.converted,
-              );
-            }
-
-            // 5. Pending Instruments
-            if (preTable?.pending_instruments?.length) {
-              await insertPendingInstrumentsBatch(
-                connection,
-                roundId,
-                companyId,
-                preTable.pending_instruments,
-                "pre",
-              );
-            }
-          }
-
-          // ==================== SAVE POST-MONEY DATA ====================
-          if (postTable) {
-            // 1. Founders
-            if (postTable.founders?.list?.length) {
-              await insertFoundersBatch(
-                connection,
-                roundId,
-                companyId,
-                "post",
-                postTable.founders.list,
-              );
-            }
-
-            // 2. Previous Investors
-            if (postTable.previous_investors?.items?.length) {
-              await insertPreviousInvestorsBatch(
-                connection,
-                roundId,
-                companyId,
-                postTable.previous_investors.items,
-              );
-            }
-
-            // 3. New Investors
-            if (postTable.investors?.items?.length) {
-              await insertNewInvestorsBatch(
-                connection,
-                roundId,
-                companyId,
-                postTable.investors.items,
-              );
-            }
-
-            // 4. Option Pool
-            if (postTable.option_pool) {
-              await insertOptionPoolDirect(
-                connection,
-                roundId,
-                companyId,
-                "post",
-                postTable.option_pool,
-              );
-            }
-
-            // 5. Converted Investors
-            if (postTable.converted_investors?.items?.length) {
-              await insertConversionsBatch(
-                connection,
-                roundId,
-                companyId,
-                postTable.converted_investors.items,
-              );
-            }
-
-            // 6. Pending Items from postTable.items
-            if (postTable?.items?.length) {
-              const pendingItems = postTable.items.filter(
-                (item) => item.type === "pending" || item.is_pending,
-              );
-              if (pendingItems.length) {
-                await insertPendingItemsFromItemsBatch(
+              // 2. Option Pool
+              if (preTable.option_pool) {
+                await insertOptionPoolDirect(
                   connection,
                   roundId,
                   companyId,
-                  pendingItems,
+                  "pre",
+                  preTable.option_pool,
+                );
+              }
+
+              // 3. Previous Investors (pre-money)
+              if (preTable.previous_investors?.items) {
+                for (const inv of preTable.previous_investors.items) {
+                  const percentage_numeric = parseFloat(inv.percentage) || 0;
+                  const percentage_formatted = inv.percentage || "0.00%";
+                  const value = parseFloat(inv.value) || 0;
+
+                  await new Promise((res, rej) => {
+                    connection.query(
+                      `INSERT INTO round_investors 
+                      (round_id, company_id, cap_table_type, investor_type, first_name, last_name,
+                       email, phone, shares, new_shares, total_shares, investment_amount, share_price,
+                       percentage_numeric, percentage_formatted, value, is_previous, investor_details,
+                       share_class_type, instrument_type, round_name, round_id_ref)
+                      VALUES (?, ?, 'pre', 'previous', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true, ?, ?, ?, ?, ?)`,
+                      [
+                        roundId,
+                        companyId,
+                        inv.investor_details?.firstName ||
+                          inv.name?.split(" ")[0] ||
+                          "",
+                        inv.investor_details?.lastName ||
+                          inv.name?.split(" ").slice(1).join(" ") ||
+                          "",
+                        inv.investor_details?.email || inv.email || "",
+                        inv.investor_details?.phone || inv.phone || "",
+                        parseInt(inv.shares) || 0,
+                        0,
+                        parseInt(inv.shares) || 0,
+                        parseFloat(inv.investment) || 0,
+                        parseFloat(inv.share_price) || 0,
+                        percentage_numeric,
+                        percentage_formatted,
+                        value,
+                        JSON.stringify(inv.investor_details || {}),
+                        inv.share_class_type || inv.shareClassType || "",
+                        inv.instrument_type || inv.instrumentType || "",
+                        inv.round_name || inv.roundName || "",
+                        inv.round_id || inv.roundId || null,
+                      ],
+                      (err) => {
+                        if (err) rej(err);
+                        else res();
+                      },
+                    );
+                  });
+                }
+              }
+
+              // 4. Converted Investors
+              if (preTable.converted) {
+                await insertConvertedInvestorDirect(
+                  connection,
+                  roundId,
+                  companyId,
+                  "pre",
+                  preTable.converted,
+                );
+              }
+
+              // 5. Pending Instruments
+              if (preTable?.pending_instruments) {
+                for (const pending of preTable.pending_instruments) {
+                  await insertPendingInstrument(
+                    connection,
+                    roundId,
+                    companyId,
+                    pending,
+                    "pre",
+                  );
+                }
+              }
+
+              // Post-money pending instruments
+              if (postTable?.pending_instruments) {
+                for (const pending of postTable.pending_instruments) {
+                  await insertPendingInstrument(
+                    connection,
+                    roundId,
+                    companyId,
+                    pending,
+                    "post",
+                  );
+                }
+              }
+            }
+
+            // ==================== SAVE POST-MONEY DATA ====================
+            if (postTable) {
+              if (postTable?.items) {
+                for (const item of postTable.items) {
+                  if (item.type === "pending" || item.is_pending) {
+                    await new Promise((resolve, reject) => {
+                      connection.query(
+                        `INSERT INTO round_investors 
+              (round_id, company_id, cap_table_type, investor_type, first_name, last_name,
+               shares, new_shares, total_shares, investment_amount, share_price,
+               percentage_numeric, percentage_formatted, value, is_pending, 
+               potential_shares, conversion_price, discount_rate, valuation_cap,
+               investor_details, instrument_type, round_name)
+              VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true, ?, ?, ?, ?, ?, ?, ?)`,
+                        [
+                          roundId,
+                          companyId,
+                          "post",
+                          item.name?.split(" ")[0] || "",
+                          item.name?.split(" ").slice(1).join(" ") || "",
+                          0,
+                          0,
+                          0,
+                          parseFloat(item.investment) || 0,
+                          parseFloat(item.conversion_price) || 0,
+                          0,
+                          "0.00%",
+                          0,
+                          parseInt(item.potential_shares) || 0,
+                          parseFloat(item.conversion_price) || 0,
+                          parseFloat(item.discount_rate) || 0,
+                          parseFloat(item.valuation_cap) || 0,
+                          JSON.stringify(item.investor_details || {}),
+                          item.instrument_type || "Safe",
+                          item.roundName || "",
+                        ],
+                        (err) => {
+                          if (err) reject(err);
+                          else resolve();
+                        },
+                      );
+                    });
+                  }
+                }
+              }
+
+              // 1. Founders
+              if (postTable.founders?.list) {
+                for (const founder of postTable.founders.list) {
+                  await insertFounderDirect(
+                    connection,
+                    roundId,
+                    companyId,
+                    "post",
+                    founder,
+                  );
+                }
+              }
+
+              // 2. Previous Investors
+              if (postTable.previous_investors?.items) {
+                for (const inv of postTable.previous_investors.items) {
+                  await insertPreviousInvestorDirect(
+                    connection,
+                    roundId,
+                    companyId,
+                    inv,
+                  );
+                }
+              }
+
+              // 3. New Investors
+              if (postTable.investors?.items) {
+                for (const inv of postTable.investors.items) {
+                  await insertNewInvestorDirect(
+                    connection,
+                    roundId,
+                    companyId,
+                    inv,
+                  );
+                }
+              }
+
+              // 4. Option Pool
+              if (postTable.option_pool) {
+                await insertOptionPoolDirect(
+                  connection,
+                  roundId,
+                  companyId,
+                  "post",
+                  postTable.option_pool,
+                );
+              }
+
+              // 5. Converted Investors
+              if (postTable.converted_investors?.items) {
+                for (const conv of postTable.converted_investors.items) {
+                  await insertConversion(connection, roundId, companyId, conv);
+                }
+              }
+            }
+
+            // ==================== SAVE FLATTENED ITEMS ====================
+            if (preTable?.items) {
+              for (const item of preTable.items) {
+                await insertCapTableItemDirect(
+                  connection,
+                  roundId,
+                  companyId,
+                  "pre",
+                  item,
                 );
               }
             }
 
-            // 7. Pending Instruments
-            if (postTable?.pending_instruments?.length) {
-              await insertPendingInstrumentsBatch(
-                connection,
-                roundId,
-                companyId,
-                postTable.pending_instruments,
-                "post",
-              );
+            if (postTable?.items) {
+              for (const item of postTable.items) {
+                await insertCapTableItemDirect(
+                  connection,
+                  roundId,
+                  companyId,
+                  "post",
+                  item,
+                );
+              }
             }
-          }
 
-          // ==================== SAVE FLATTENED ITEMS ====================
-          // Pre-money items - batch insert
-          if (preTable?.items?.length) {
-            console.log("📋 PRE ITEMS TO SAVE:", preTable.items.length);
-            await insertCapTableItemsBatch(
-              connection,
-              roundId,
-              companyId,
-              "pre",
-              preTable.items,
-            );
-          }
-
-          // Post-money items - batch insert
-          if (postTable?.items?.length) {
-            console.log("📋 POST ITEMS TO SAVE:", postTable.items.length);
-            await insertCapTableItemsBatch(
-              connection,
-              roundId,
-              companyId,
-              "post",
-              postTable.items,
-            );
-          }
-
-          // Commit transaction
-          connection.commit((err) => {
-            if (err) {
-              return connection.rollback(() => {
-                connection.release();
-                reject(err);
+            // Commit
+            connection.commit((err) => {
+              if (err) {
+                return connection.rollback(() => {
+                  connection.release();
+                  reject(err);
+                });
+              }
+              connection.release();
+              resolve({
+                success: true,
+                message: "Cap table data saved successfully",
               });
-            }
-            connection.release();
-            resolve({
-              success: true,
-              message: "Cap table data saved successfully",
             });
-          });
-        } catch (error) {
-          connection.rollback(() => {
-            connection.release();
-            reject(error);
-          });
-        }
+          } catch (error) {
+            connection.rollback(() => {
+              connection.release();
+              reject(error);
+            });
+          }
+        });
       });
     });
-  });
+  };
+
+  // ✅ Retry logic with exponential backoff
+  const executeWithRetry = async () => {
+    while (retryCount < MAX_RETRIES) {
+      try {
+        return await executeTransaction();
+      } catch (error) {
+        retryCount++;
+
+        // Deadlock error check
+        if (
+          error.code === "ER_LOCK_DEADLOCK" ||
+          error.code === "1205" ||
+          error.code === "1213"
+        ) {
+          console.log(
+            `⚠️ Deadlock detected, retry ${retryCount}/${MAX_RETRIES - 1}...`,
+          );
+
+          if (retryCount < MAX_RETRIES) {
+            // Exponential backoff: 100ms, 200ms, 400ms
+            await new Promise((resolve) =>
+              setTimeout(resolve, Math.pow(2, retryCount) * 50),
+            );
+          } else {
+            throw error;
+          }
+        } else {
+          // Not a deadlock error, throw immediately
+          throw error;
+        }
+      }
+    }
+  };
+
+  return executeWithRetry();
 }
 async function updateRoundRecordDataCommonPreferred(roundId, updateData) {
   return new Promise((resolve, reject) => {
@@ -4503,21 +4563,21 @@ async function insertPendingInstrument(
   roundId,
   companyId,
   pending,
-  type = "pre",
+  type,
 ) {
   return new Promise((resolve, reject) => {
     connection.query(
       `INSERT INTO round_pending_instruments 
-      (cap_table_type,round_id, company_id, instrument_type, investor_name, investor_email, 
-       investor_phone, investor_details, investment_amount, potential_shares, 
-       conversion_price, discount_rate, valuation_cap)
+      (round_id, company_id, cap_table_type, instrument_type, investor_name, 
+       investor_email, investor_phone, investor_details, investment_amount, 
+       potential_shares, conversion_price, discount_rate, valuation_cap)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        type,
         roundId,
         companyId,
+        type,
         pending.instrument_type || "Safe",
-        pending.name || pending.investor_name || "",
+        pending.name || "",
         pending.email || "",
         pending.phone || "",
         JSON.stringify(pending.investor_details || {}),
