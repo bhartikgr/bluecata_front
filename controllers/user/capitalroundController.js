@@ -197,7 +197,7 @@ exports.CreateOrUpdateCapitalRound = (req, res) => {
         }
       }
       db.query(
-        "SELECT * FROM roundrecord WHERE id = ?",
+        "SELECT termsheetFile, subscriptiondocument FROM roundrecord WHERE id = ?",
         [id],
         async (err, results) => {
           if (err) {
@@ -2640,358 +2640,324 @@ async function saveCapTableData(
   companyId,
   preTable,
   postTable,
-  preMoneyTotalShares,
-  postMoneyTotalShares,
-  preMoneyValuation,
-  postMoneyValuation,
+  preMoneyTotalShares, // kept for reference / legacy
+  postMoneyTotalShares, // kept for reference / legacy
+  preMoneyValuation, // kept for reference / legacy
+  postMoneyValuation, // kept for reference / legacy
 ) {
-  const MAX_RETRIES = 3;
-  let retryCount = 0;
+  return new Promise((resolve, reject) => {
+    db.getConnection((err, connection) => {
+      if (err) {
+        console.error("Error getting connection:", err);
+        return reject(err);
+      }
 
-  const executeTransaction = () => {
-    return new Promise((resolve, reject) => {
-      db.getConnection((err, connection) => {
+      connection.beginTransaction(async (err) => {
         if (err) {
-          console.error("Error getting connection:", err);
+          connection.release();
           return reject(err);
         }
 
-        // Set timeout to avoid long locks
-        connection.query("SET innodb_lock_wait_timeout = 5", (err) => {
-          if (err) console.warn("Could not set timeout:", err);
-        });
-
-        connection.beginTransaction(async (err) => {
-          if (err) {
-            connection.release();
-            return reject(err);
+        try {
+          // ==================== DELETE EXISTING DATA ====================
+          const tables = [
+            "round_founders",
+            "round_investors",
+            "round_option_pools",
+            "round_conversions",
+            "round_cap_table_items",
+            "round_pending_instruments",
+          ];
+          for (const table of tables) {
+            await new Promise((res, rej) => {
+              connection.query(
+                `DELETE FROM ${table} WHERE round_id = ?`,
+                [roundId],
+                (err) => {
+                  if (err) rej(err);
+                  else res();
+                },
+              );
+            });
           }
 
-          try {
-            // ==================== DELETE EXISTING DATA ====================
-            // ✅ IMPORTANT: Pehle child tables, phir parent tables
-            const deleteOrder = [
-              "round_cap_table_items",
-              "round_conversions",
-              "round_pending_instruments",
-              "round_investors",
-              "round_option_pools",
-              "round_founders",
-            ];
-
-            for (const table of deleteOrder) {
-              await new Promise((res, rej) => {
-                connection.query(
-                  `DELETE FROM ${table} WHERE round_id = ?`,
-                  [roundId],
-                  (err) => {
-                    if (err) rej(err);
-                    else res();
-                  },
-                );
-              });
-            }
-
-            // ==================== SAVE PRE-MONEY DATA ====================
-            if (preTable) {
-              // 1. Founders
-              if (preTable.founders?.list) {
-                for (const founder of preTable.founders.list) {
-                  await insertFounderDirect(
-                    connection,
-                    roundId,
-                    companyId,
-                    "pre",
-                    founder,
-                  );
-                }
-              }
-
-              // 2. Option Pool
-              if (preTable.option_pool) {
-                await insertOptionPoolDirect(
+          // ==================== SAVE PRE-MONEY DATA ====================
+          if (preTable) {
+            // 1. Founders
+            if (preTable.founders?.list) {
+              for (const founder of preTable.founders.list) {
+                await insertFounderDirect(
                   connection,
                   roundId,
                   companyId,
                   "pre",
-                  preTable.option_pool,
+                  founder,
                 );
               }
+            }
 
-              // 3. Previous Investors (pre-money)
-              if (preTable.previous_investors?.items) {
-                for (const inv of preTable.previous_investors.items) {
-                  const percentage_numeric = parseFloat(inv.percentage) || 0;
-                  const percentage_formatted = inv.percentage || "0.00%";
-                  const value = parseFloat(inv.value) || 0;
+            // 2. Option Pool
+            if (preTable.option_pool) {
+              await insertOptionPoolDirect(
+                connection,
+                roundId,
+                companyId,
+                "pre",
+                preTable.option_pool,
+              );
+            }
 
-                  await new Promise((res, rej) => {
+            // 3. Previous Investors (pre-money)
+            if (preTable.previous_investors?.items) {
+              for (const inv of preTable.previous_investors.items) {
+                // Pre-money previous investors — direct insert
+                const percentage_numeric = parseFloat(inv.percentage) || 0;
+                const percentage_formatted = inv.percentage || "0.00%";
+                const value = parseFloat(inv.value) || 0;
+
+                await new Promise((res, rej) => {
+                  connection.query(
+                    `INSERT INTO round_investors 
+                    (round_id, company_id, cap_table_type, investor_type, first_name, last_name,
+                     email, phone, shares, new_shares, total_shares, investment_amount, share_price,
+                     percentage_numeric, percentage_formatted, value, is_previous, investor_details,
+                     share_class_type, instrument_type, round_name, round_id_ref)
+                    VALUES (?, ?, 'pre', 'previous', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true, ?, ?, ?, ?, ?)`,
+                    [
+                      roundId,
+                      companyId,
+                      inv.investor_details?.firstName ||
+                        inv.name?.split(" ")[0] ||
+                        "",
+                      inv.investor_details?.lastName ||
+                        inv.name?.split(" ").slice(1).join(" ") ||
+                        "",
+                      inv.investor_details?.email || inv.email || "",
+                      inv.investor_details?.phone || inv.phone || "",
+                      parseInt(inv.shares) || 0,
+                      0, // new_shares = 0 for pre-money
+                      parseInt(inv.shares) || 0,
+                      parseFloat(inv.investment) || 0,
+                      parseFloat(inv.share_price) || 0,
+                      percentage_numeric, // ✅ direct
+                      percentage_formatted, // ✅ direct
+                      value, // ✅ direct — no recalculation
+                      JSON.stringify(inv.investor_details || {}),
+                      inv.share_class_type || inv.shareClassType || "",
+                      inv.instrument_type || inv.instrumentType || "",
+                      inv.round_name || inv.roundName || "",
+                      inv.round_id || inv.roundId || null,
+                    ],
+                    (err) => {
+                      if (err) rej(err);
+                      else res();
+                    },
+                  );
+                });
+              }
+            }
+
+            // 4. Converted Investors
+            if (preTable.converted) {
+              await insertConvertedInvestorDirect(
+                connection,
+                roundId,
+                companyId,
+                "pre",
+                preTable.converted,
+              );
+            }
+            if (preTable?.pending_instruments) {
+              for (const pending of preTable.pending_instruments) {
+                await insertPendingInstrument(
+                  connection,
+                  roundId,
+                  companyId,
+                  pending,
+                  "pre",
+                );
+              }
+            }
+
+            // Post-money pending instruments
+            if (postTable?.pending_instruments) {
+              for (const pending of postTable.pending_instruments) {
+                await insertPendingInstrument(
+                  connection,
+                  roundId,
+                  companyId,
+                  pending,
+                  "post",
+                );
+              }
+            }
+          }
+
+          // ==================== SAVE POST-MONEY DATA ====================
+          if (postTable) {
+            if (postTable?.items) {
+              for (const item of postTable.items) {
+                if (item.type === "pending" || item.is_pending) {
+                  // Insert into round_investors with is_pending flag
+                  await new Promise((resolve, reject) => {
                     connection.query(
                       `INSERT INTO round_investors 
-                      (round_id, company_id, cap_table_type, investor_type, first_name, last_name,
-                       email, phone, shares, new_shares, total_shares, investment_amount, share_price,
-                       percentage_numeric, percentage_formatted, value, is_previous, investor_details,
-                       share_class_type, instrument_type, round_name, round_id_ref)
-                      VALUES (?, ?, 'pre', 'previous', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true, ?, ?, ?, ?, ?)`,
+            (round_id, company_id, cap_table_type, investor_type, first_name, last_name,
+             shares, new_shares, total_shares, investment_amount, share_price,
+             percentage_numeric, percentage_formatted, value, is_pending, 
+             potential_shares, conversion_price, discount_rate, valuation_cap,
+             investor_details, instrument_type, round_name)
+            VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true, ?, ?, ?, ?, ?, ?, ?)`,
                       [
                         roundId,
                         companyId,
-                        inv.investor_details?.firstName ||
-                          inv.name?.split(" ")[0] ||
-                          "",
-                        inv.investor_details?.lastName ||
-                          inv.name?.split(" ").slice(1).join(" ") ||
-                          "",
-                        inv.investor_details?.email || inv.email || "",
-                        inv.investor_details?.phone || inv.phone || "",
-                        parseInt(inv.shares) || 0,
-                        0,
-                        parseInt(inv.shares) || 0,
-                        parseFloat(inv.investment) || 0,
-                        parseFloat(inv.share_price) || 0,
-                        percentage_numeric,
-                        percentage_formatted,
-                        value,
-                        JSON.stringify(inv.investor_details || {}),
-                        inv.share_class_type || inv.shareClassType || "",
-                        inv.instrument_type || inv.instrumentType || "",
-                        inv.round_name || inv.roundName || "",
-                        inv.round_id || inv.roundId || null,
+                        "post",
+                        item.name?.split(" ")[0] || "",
+                        item.name?.split(" ").slice(1).join(" ") || "",
+                        0, // shares = 0
+                        0, // new_shares = 0
+                        0, // total_shares = 0
+                        parseFloat(item.investment) || 0,
+                        parseFloat(item.conversion_price) || 0,
+                        0, // percentage_numeric
+                        "0.00%", // percentage_formatted
+                        0, // value
+                        parseInt(item.potential_shares) || 0,
+                        parseFloat(item.conversion_price) || 0,
+                        parseFloat(item.discount_rate) || 0,
+                        parseFloat(item.valuation_cap) || 0,
+                        JSON.stringify(item.investor_details || {}),
+                        item.instrument_type || "Safe",
+                        item.roundName || "",
                       ],
                       (err) => {
-                        if (err) rej(err);
-                        else res();
+                        if (err) reject(err);
+                        else resolve();
                       },
                     );
                   });
                 }
               }
-
-              // 4. Converted Investors
-              if (preTable.converted) {
-                await insertConvertedInvestorDirect(
-                  connection,
-                  roundId,
-                  companyId,
-                  "pre",
-                  preTable.converted,
-                );
-              }
-
-              // 5. Pending Instruments
-              if (preTable?.pending_instruments) {
-                for (const pending of preTable.pending_instruments) {
-                  await insertPendingInstrument(
-                    connection,
-                    roundId,
-                    companyId,
-                    pending,
-                    "pre",
-                  );
-                }
-              }
-
-              // Post-money pending instruments
-              if (postTable?.pending_instruments) {
-                for (const pending of postTable.pending_instruments) {
-                  await insertPendingInstrument(
-                    connection,
-                    roundId,
-                    companyId,
-                    pending,
-                    "post",
-                  );
-                }
-              }
             }
-
-            // ==================== SAVE POST-MONEY DATA ====================
-            if (postTable) {
-              if (postTable?.items) {
-                for (const item of postTable.items) {
-                  if (item.type === "pending" || item.is_pending) {
-                    await new Promise((resolve, reject) => {
-                      connection.query(
-                        `INSERT INTO round_investors 
-              (round_id, company_id, cap_table_type, investor_type, first_name, last_name,
-               shares, new_shares, total_shares, investment_amount, share_price,
-               percentage_numeric, percentage_formatted, value, is_pending, 
-               potential_shares, conversion_price, discount_rate, valuation_cap,
-               investor_details, instrument_type, round_name)
-              VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true, ?, ?, ?, ?, ?, ?, ?)`,
-                        [
-                          roundId,
-                          companyId,
-                          "post",
-                          item.name?.split(" ")[0] || "",
-                          item.name?.split(" ").slice(1).join(" ") || "",
-                          0,
-                          0,
-                          0,
-                          parseFloat(item.investment) || 0,
-                          parseFloat(item.conversion_price) || 0,
-                          0,
-                          "0.00%",
-                          0,
-                          parseInt(item.potential_shares) || 0,
-                          parseFloat(item.conversion_price) || 0,
-                          parseFloat(item.discount_rate) || 0,
-                          parseFloat(item.valuation_cap) || 0,
-                          JSON.stringify(item.investor_details || {}),
-                          item.instrument_type || "Safe",
-                          item.roundName || "",
-                        ],
-                        (err) => {
-                          if (err) reject(err);
-                          else resolve();
-                        },
-                      );
-                    });
-                  }
-                }
-              }
-
-              // 1. Founders
-              if (postTable.founders?.list) {
-                for (const founder of postTable.founders.list) {
-                  await insertFounderDirect(
-                    connection,
-                    roundId,
-                    companyId,
-                    "post",
-                    founder,
-                  );
-                }
-              }
-
-              // 2. Previous Investors
-              if (postTable.previous_investors?.items) {
-                for (const inv of postTable.previous_investors.items) {
-                  await insertPreviousInvestorDirect(
-                    connection,
-                    roundId,
-                    companyId,
-                    inv,
-                  );
-                }
-              }
-
-              // 3. New Investors
-              if (postTable.investors?.items) {
-                for (const inv of postTable.investors.items) {
-                  await insertNewInvestorDirect(
-                    connection,
-                    roundId,
-                    companyId,
-                    inv,
-                  );
-                }
-              }
-
-              // 4. Option Pool
-              if (postTable.option_pool) {
-                await insertOptionPoolDirect(
+            // 1. Founders
+            if (postTable.founders?.list) {
+              for (const founder of postTable.founders.list) {
+                await insertFounderDirect(
                   connection,
                   roundId,
                   companyId,
                   "post",
-                  postTable.option_pool,
+                  founder,
                 );
-              }
-
-              // 5. Converted Investors
-              if (postTable.converted_investors?.items) {
-                for (const conv of postTable.converted_investors.items) {
-                  await insertConversion(connection, roundId, companyId, conv);
-                }
               }
             }
 
-            // ==================== SAVE FLATTENED ITEMS ====================
-            if (preTable?.items) {
-              for (const item of preTable.items) {
-                await insertCapTableItemDirect(
+            // 2. Previous Investors
+            if (postTable.previous_investors?.items) {
+              for (const inv of postTable.previous_investors.items) {
+                await insertPreviousInvestorDirect(
                   connection,
                   roundId,
                   companyId,
-                  "pre",
-                  item,
+                  inv,
                 );
               }
             }
 
-            if (postTable?.items) {
-              for (const item of postTable.items) {
-                await insertCapTableItemDirect(
+            // 3. New Investors
+            if (postTable.investors?.items) {
+              for (const inv of postTable.investors.items) {
+                await insertNewInvestorDirect(
                   connection,
                   roundId,
                   companyId,
-                  "post",
-                  item,
+                  inv,
                 );
               }
             }
 
-            // Commit
-            connection.commit((err) => {
-              if (err) {
-                return connection.rollback(() => {
-                  connection.release();
-                  reject(err);
-                });
+            // 4. Option Pool
+            if (postTable.option_pool) {
+              await insertOptionPoolDirect(
+                connection,
+                roundId,
+                companyId,
+                "post",
+                postTable.option_pool,
+              );
+            }
+
+            // 5. Converted Investors (round_conversions table)
+            if (postTable.converted_investors?.items) {
+              for (const conv of postTable.converted_investors.items) {
+                await insertConversion(connection, roundId, companyId, conv);
               }
-              connection.release();
-              resolve({
-                success: true,
-                message: "Cap table data saved successfully",
-              });
-            });
-          } catch (error) {
-            connection.rollback(() => {
-              connection.release();
-              reject(error);
-            });
+            }
           }
-        });
+
+          // ==================== SAVE FLATTENED ITEMS ====================
+
+          // Pre-money items
+          if (preTable?.items) {
+            console.log("📋 PRE ITEMS TO SAVE:", preTable.items.length);
+            for (const item of preTable.items) {
+              console.log(
+                "  Saving item:",
+                item.type,
+                item.name,
+                item.shares,
+                "value:",
+                item.value,
+              );
+              await insertCapTableItemDirect(
+                connection,
+                roundId,
+                companyId,
+                "pre",
+                item,
+              );
+            }
+          } else {
+            console.log("❌ preTable.items is NULL/UNDEFINED");
+          }
+
+          // Post-money items
+          if (postTable?.items) {
+            console.log("📋 POST ITEMS TO SAVE:", postTable.items.length);
+            for (const item of postTable.items) {
+              await insertCapTableItemDirect(
+                connection,
+                roundId,
+                companyId,
+                "post",
+                item,
+              );
+            }
+          }
+
+          // Commit
+          connection.commit((err) => {
+            if (err) {
+              return connection.rollback(() => {
+                connection.release();
+                reject(err);
+              });
+            }
+            connection.release();
+            resolve({
+              success: true,
+              message: "Cap table data saved successfully",
+            });
+          });
+        } catch (error) {
+          connection.rollback(() => {
+            connection.release();
+            reject(error);
+          });
+        }
       });
     });
-  };
-
-  // ✅ Retry logic with exponential backoff
-  const executeWithRetry = async () => {
-    while (retryCount < MAX_RETRIES) {
-      try {
-        return await executeTransaction();
-      } catch (error) {
-        retryCount++;
-
-        // Deadlock error check
-        if (
-          error.code === "ER_LOCK_DEADLOCK" ||
-          error.code === "1205" ||
-          error.code === "1213"
-        ) {
-          console.log(
-            `⚠️ Deadlock detected, retry ${retryCount}/${MAX_RETRIES - 1}...`,
-          );
-
-          if (retryCount < MAX_RETRIES) {
-            // Exponential backoff: 100ms, 200ms, 400ms
-            await new Promise((resolve) =>
-              setTimeout(resolve, Math.pow(2, retryCount) * 50),
-            );
-          } else {
-            throw error;
-          }
-        } else {
-          // Not a deadlock error, throw immediately
-          throw error;
-        }
-      }
-    }
-  };
-
-  return executeWithRetry();
+  });
 }
 async function updateRoundRecordDataCommonPreferred(roundId, updateData) {
   return new Promise((resolve, reject) => {
@@ -4563,21 +4529,21 @@ async function insertPendingInstrument(
   roundId,
   companyId,
   pending,
-  type,
+  type = "pre",
 ) {
   return new Promise((resolve, reject) => {
     connection.query(
       `INSERT INTO round_pending_instruments 
-      (round_id, company_id, cap_table_type, instrument_type, investor_name, 
-       investor_email, investor_phone, investor_details, investment_amount, 
-       potential_shares, conversion_price, discount_rate, valuation_cap)
+      (cap_table_type,round_id, company_id, instrument_type, investor_name, investor_email, 
+       investor_phone, investor_details, investment_amount, potential_shares, 
+       conversion_price, discount_rate, valuation_cap)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
+        type,
         roundId,
         companyId,
-        type,
         pending.instrument_type || "Safe",
-        pending.name || "",
+        pending.name || pending.investor_name || "",
         pending.email || "",
         pending.phone || "",
         JSON.stringify(pending.investor_details || {}),
@@ -5185,7 +5151,7 @@ exports.SendRecordRoundToinvestor = async (req, res) => {
         // Determine URL based on registration
         const isRegistered = is_register === "Yes";
         const url =
-          "https://capavate.com/investor/company/capital-round-list/" +
+          "http://localhost:5000/investor/company/capital-round-list/" +
           company_id;
 
         // Send email using your template
@@ -5210,7 +5176,7 @@ exports.SendRecordRoundToinvestor = async (req, res) => {
             <table style="width:600px;margin:0 auto;border-collapse:collapse;font-family:Verdana,Geneva,sans-serif;">
               <tr>
                 <td style="background:#efefef;padding:10px 0;text-align:center;">
-                  <img src="https://capavate.com/api/upload/images/logo.png" alt="logo" style="width:130px;" />
+                  <img src="http://localhost:5000/api/upload/images/logo.png" alt="logo" style="width:130px;" />
                 </td>
               </tr>
               <tr>
@@ -5623,7 +5589,7 @@ exports.investorrecordAuthorize = (req, res) => {
         const investorEmail = `${investorRows[0].email}`;
 
         // Compose message
-        const reportUrl = "https://capavate.com/crm/investorreport";
+        const reportUrl = "http://localhost:5000/crm/investorreport";
 
         const message = `
           <!DOCTYPE html>
@@ -5813,7 +5779,7 @@ function sendEmailToInvestor(
 
                 <!-- Action Button -->
                 <div style="text-align:center;margin:30px 0;">
-                  <a href="https://capavate.com/investor/dashboard" style="background:#10b981;color:#fff;text-decoration:none;font-size:16px;font-weight:500;padding:12px 40px;border-radius:8px;display:inline-block;">
+                  <a href="http://localhost:5000/investor/dashboard" style="background:#10b981;color:#fff;text-decoration:none;font-size:16px;font-weight:500;padding:12px 40px;border-radius:8px;display:inline-block;">
                     Go to Your Dashboard
                   </a>
                 </div>
