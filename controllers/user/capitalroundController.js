@@ -3700,6 +3700,8 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
 
     // Step 12: Post-money valuation
     postMoneyValuation = totalPostShares * seriesASharePrice;
+    console.log(totalPostShares, "totalPostShares");
+    console.log(seriesASharePrice, "seriesASharePrice");
   } else if (isPreviousRoundRound0) {
     const totalSharesWithConverted = round0Shares + totalConvertedShares;
 
@@ -3992,6 +3994,7 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
       ...previousPendingSafes,
     ],
   };
+
   // ==================== POST-MONEY CAP TABLE ====================
   const postMoneyCapTable = {
     total_shares: totalPostShares,
@@ -4000,6 +4003,7 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
       list: founderList.map((f) => {
         const ownership = f.shares / totalPostShares;
         const rawPercentage = ownership * 100;
+
         return {
           ...f,
           roundName: currentRound.nameOfRound,
