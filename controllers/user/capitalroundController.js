@@ -1394,50 +1394,42 @@ async function handleCommonStockCalculation(params, updateFlag = false) {
       0;
     totalPreMoneyShares = parseInt(round.total_shares_after) || round0Shares;
 
-    const allPreviousInvestorRounds = previousRounds.filter(
-      (r) =>
-        r.instrumentType === "Preferred Equity" ||
-        r.instrumentType === "Common Stock" ||
-        r.instrumentType === "Safe" ||
-        r.instrumentType === "Convertible Note",
-    );
+    // ✅ Sirf latest round ke investors fetch karo
+    const roundInvestors = await new Promise((resolve, reject) => {
+      db.query(
+        `SELECT * FROM round_investors 
+       WHERE round_id = ? AND company_id = ? AND cap_table_type = 'post' 
+       AND (investor_type = 'current' OR investor_type = 'converted' or investor_type = 'previous')
+       ORDER BY id ASC`,
+        [round.id, company_id], // ✅ round.id use kiya (latest round)
+        (err, results) => {
+          if (err) reject(err);
+          else resolve(results || []);
+        },
+      );
+    });
 
-    for (const prevRound of allPreviousInvestorRounds) {
-      const roundInvestors = await new Promise((resolve, reject) => {
-        db.query(
-          `SELECT * FROM round_investors 
-           WHERE round_id = ? AND company_id = ? AND cap_table_type = 'post' 
-           AND (investor_type = 'current' OR investor_type = 'converted')
-           ORDER BY id ASC`,
-          [prevRound.id, company_id],
-          (err, results) => {
-            if (err) reject(err);
-            else resolve(results || []);
-          },
-        );
+    // ✅ Process investors from latest round only
+    roundInvestors.forEach((inv) => {
+      previousInvestorsList.push({
+        type: "investor",
+        name: `${inv.first_name || ""} ${inv.last_name || ""}`.trim(),
+        investor_details: {
+          firstName: inv.first_name || "",
+          lastName: inv.last_name || "",
+          email: inv.email || "",
+          phone: inv.phone || "",
+        },
+        shares: inv.shares,
+        investment: parseFloat(inv.investment_amount || 0),
+        share_price: parseFloat(inv.share_price || 0),
+        share_class_type: inv.share_class_type,
+        instrument_type: inv.instrument_type,
+        round_name: inv.round_name,
+        round_id: round.id, // ✅ round.id (latest round)
+        is_previous: true,
       });
-
-      roundInvestors.forEach((inv) => {
-        previousInvestorsList.push({
-          type: "investor",
-          name: `${inv.first_name || ""} ${inv.last_name || ""}`.trim(),
-          investor_details: {
-            firstName: inv.first_name || "",
-            lastName: inv.last_name || "",
-            email: inv.email || "",
-            phone: inv.phone || "",
-          },
-          shares: inv.shares,
-          investment: parseFloat(inv.investment_amount || 0),
-          share_price: parseFloat(inv.share_price || 0),
-          share_class_type: inv.share_class_type,
-          instrument_type: inv.instrument_type,
-          round_name: inv.round_name,
-          round_id: prevRound.id,
-          is_previous: true,
-        });
-      });
-    }
+    });
 
     previousInvestorsTotalShares = previousInvestorsList.reduce(
       (sum, inv) => sum + (inv.shares || 0),
@@ -1570,25 +1562,28 @@ async function handleCommonStockCalculation(params, updateFlag = false) {
   // ✅ round_pending_instruments NAHI — round_investors se fetch karo
   let previousPendingSafes = [];
 
-  const latestPendingRound = [...previousRounds]
-    .filter(
-      (r) =>
-        r.instrumentType === "Safe" || r.instrumentType === "Convertible Note",
-    )
-    .sort((a, b) => b.id - a.id)[0];
-
-  if (latestPendingRound) {
+  if (
+    latestPreviousRound &&
+    (latestPreviousRound.instrumentType === "Safe" ||
+      latestPreviousRound.instrumentType === "Convertible Note")
+  ) {
     try {
+      // ✅ Use latestPreviousRound.id instead of pendingRound.id
       const pendingRows = await new Promise((resolve, reject) => {
         db.query(
-          `SELECT * FROM round_investors
-           WHERE company_id    = ?
-             AND round_id      = ?
-             AND investor_type = 'pending'
-             AND is_pending    = 1
-             AND cap_table_type = 'post'
-           ORDER BY id ASC`,
-          [company_id, latestPendingRound.id],
+          `SELECT ri.*,
+                r.nameOfRound    AS round_name_ref,
+                r.instrumentType AS round_instrument_type,
+                r.shareClassType AS round_share_class_type
+         FROM round_investors ri
+         LEFT JOIN roundrecord r ON r.id = ri.round_id
+         WHERE ri.company_id     = ?
+           AND ri.round_id       = ?
+           AND ri.investor_type  = 'pending'
+           AND ri.is_pending     = 1
+           AND ri.cap_table_type = 'post'
+         ORDER BY ri.id ASC`,
+          [company_id, latestPreviousRound.id], // ✅ Sirf latest round ID
           (err, results) => {
             if (err) reject(err);
             else resolve(results || []);
@@ -1596,19 +1591,20 @@ async function handleCommonStockCalculation(params, updateFlag = false) {
         );
       });
 
-      previousPendingSafes = pendingRows.map((row) => {
+      pendingRows.forEach((row) => {
         const inv =
           typeof row.investor_details === "string"
             ? JSON.parse(row.investor_details || "{}")
             : row.investor_details || {};
 
-        return {
+        previousPendingSafes.push({
           type: "pending",
           name:
             `${row.first_name || ""} ${row.last_name || ""}`.trim() ||
             inv.firstName ||
             "Pending Investor",
-          instrument_type: row.instrument_type || "Safe",
+          instrument_type:
+            row.instrument_type || latestPreviousRound.instrumentType,
           shares: 0,
           new_shares: 0,
           existing_shares: 0,
@@ -1616,16 +1612,17 @@ async function handleCommonStockCalculation(params, updateFlag = false) {
           potential_shares: parseInt(row.potential_shares) || 0,
           investment: parseFloat(row.investment_amount) || 0,
           investment_amount: parseFloat(row.investment_amount) || 0,
-          conversion_price: parseFloat(row.conversion_price) || 0,
-          discount_rate: parseFloat(row.discount_rate) || 0,
-          valuation_cap: parseFloat(row.valuation_cap) || 0,
-          interest_rate: parseFloat(row.interest_rate) || 0,
-          years: parseFloat(row.years) || 0,
+          principal: parseFloat(row.investment_amount) || 0,
           interest_accrued: parseFloat(row.interest_accrued) || 0,
           total_conversion_amount:
             parseFloat(row.total_conversion_amount) ||
             parseFloat(row.investment_amount) ||
             0,
+          conversion_price: parseFloat(row.conversion_price) || 0,
+          discount_rate: parseFloat(row.discount_rate) || 0,
+          valuation_cap: parseFloat(row.valuation_cap) || 0,
+          interest_rate: parseFloat(row.interest_rate) || 0,
+          years: parseFloat(row.years) || 0,
           maturity_date: row.maturity_date || "",
           percentage: 0,
           percentage_formatted: "0.00%",
@@ -1634,7 +1631,19 @@ async function handleCommonStockCalculation(params, updateFlag = false) {
           is_pending: true,
           is_converted: false,
           round_id: row.round_id,
-          pending_instrument_id: row.id, // ✅ round_investors.id
+
+          shareClassType:
+            row.round_share_class_type ||
+            row.share_class_type ||
+            row.instrument_type ||
+            latestPreviousRound.instrumentType ||
+            "",
+          instrument_type:
+            row.instrument_type || latestPreviousRound.instrumentType || "",
+          round_id: row.round_id,
+          round_name:
+            row.round_name_ref || latestPreviousRound.nameOfRound || "",
+          pending_instrument_id: row.id,
           investor_details: {
             firstName: row.first_name || inv.firstName || "",
             lastName: row.last_name || inv.lastName || "",
@@ -1643,12 +1652,14 @@ async function handleCommonStockCalculation(params, updateFlag = false) {
           },
           email: row.email || inv.email || "",
           phone: row.phone || inv.phone || "",
-        };
+        });
       });
     } catch (error) {
-      console.error("❌ Error fetching pending SAFEs:", error);
+      console.error("❌ Error fetching pending instruments:", error);
       previousPendingSafes = [];
     }
+  } else {
+    console.log("No eligible round found for pending instruments");
   }
 
   // ==================== PARSE INVESTORS FROM round_investments ====================
@@ -1972,6 +1983,7 @@ async function handleCommonStockCalculation(params, updateFlag = false) {
             ];
           })()
         : []),
+      ...previousPendingSafes,
     ],
   };
 
@@ -2252,6 +2264,7 @@ async function handleCommonStockCalculation(params, updateFlag = false) {
           roundName: "Option Pool",
         };
       })(),
+      ...previousPendingSafes,
     ],
 
     post_money_valuation: postMoneyValuation,
@@ -3345,7 +3358,7 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
       db.query(
         `SELECT * FROM round_investors 
        WHERE round_id = ? AND company_id = ? AND cap_table_type = 'post' 
-       AND (investor_type = 'current' OR investor_type = 'converted')
+       AND (investor_type = 'current' OR investor_type = 'converted' or investor_type = 'previous')
        ORDER BY id ASC`,
         [round.id, company_id], // ✅ round.id use kiya (latest round)
         (err, results) => {
@@ -4977,7 +4990,7 @@ async function handleSafeCalculation(params) {
         db.query(
           `SELECT * FROM round_investors 
            WHERE round_id = ? AND company_id = ? AND cap_table_type = 'post' 
-          AND (investor_type = 'current' OR investor_type = 'converted')
+          AND (investor_type = 'current' OR investor_type = 'converted' or investor_type = 'previous')
            ORDER BY id ASC`,
           [prevRound.id, company_id],
           (err, results) => {
@@ -5994,7 +6007,7 @@ async function handleConvertibleNoteCalculation(params) {
         db.query(
           `SELECT * FROM round_investors 
            WHERE round_id = ? AND company_id = ? AND cap_table_type = 'post' 
-           AND (investor_type = 'current' OR investor_type = 'converted')
+           AND (investor_type = 'current' OR investor_type = 'converted' or investor_type = 'previous')
            ORDER BY id ASC`,
           [prevRound.id, company_id],
           (err, results) => {
