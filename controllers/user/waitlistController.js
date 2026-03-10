@@ -276,3 +276,49 @@ exports.saveJoinwaitlist = async (req, res) => {
     });
   }
 };
+
+exports.getInvestorWaitList = async (req, res) => {
+  const { company_id } = req.body;
+
+  // Validate required fields
+  if (!company_id) {
+    return res.status(400).json({
+      status: "2",
+      message: "Company ID is required",
+    });
+  }
+
+  try {
+    // Select from waitlist table with company_id filter
+    const query = `
+      SELECT * FROM waitlist 
+      WHERE company_id = ? 
+      ORDER BY created_at DESC
+    `;
+
+    db.query(query, [company_id], (err, results) => {
+      if (err) {
+        console.error("Database error:", err);
+        return res.status(500).json({
+          status: "2",
+          message: "Database error",
+          error: err.message,
+        });
+      }
+
+      return res.status(200).json({
+        status: "1",
+        message: "Waitlist retrieved successfully",
+        results: results,
+        count: results.length,
+      });
+    });
+  } catch (err) {
+    console.error("Server error:", err);
+    return res.status(500).json({
+      status: "2",
+      message: "Server error",
+      error: err.message,
+    });
+  }
+};
