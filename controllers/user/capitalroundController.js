@@ -12979,7 +12979,6 @@ exports.warrantDataUpdate = (req, res) => {
         warrant_adjustment_percent || 0,
         warrant_adjustment_direction || "decrease",
         warrant_status || "pending",
-        issued_date || new Date(),
         expiration_date || null,
         notes || null,
       ];
@@ -12994,7 +12993,6 @@ exports.warrantDataUpdate = (req, res) => {
           warrant_adjustment_percent = ?,
           warrant_adjustment_direction = ?,
           warrant_status = ?,
-          issued_date = ?,
           expiration_date = ?,
           notes = ?,
           updated_at = NOW()
