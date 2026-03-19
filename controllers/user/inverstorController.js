@@ -1233,6 +1233,7 @@ exports.getInvestorReportCapitalRound = (req, res) => {
       r.created_at,
       r.dateroundclosed,
       r.roundStatus,
+      r.instrumentType,
       s.id AS sharerecord_id,
       s.subscription_status,
       s.signature_status,
@@ -1497,6 +1498,7 @@ exports.InvestorrequestToCompany = (req, res) => {
     shares,
     investment_amount,
     ip_address,
+    selectedWarrantsId, // 👈 Now it's an array of objects [{id, shares, coverage_percentage}]
   } = req.body;
 
   if (!investor_id) {
@@ -1527,164 +1529,288 @@ exports.InvestorrequestToCompany = (req, res) => {
 
     const insertedId = result.insertId;
 
-    // 🔴 NEW: CHECK AND CREATE WARRANT ENTRY (ONLY FOR PREFERRED EQUITY)
-    const checkWarrantsAndCreateEntry = (investmentId) => {
-      // 1. First, get round details to check instrument type and warrants
-      const getRoundSql = `
-        SELECT instrumentType, instrument_type_data 
-        FROM roundrecord 
-        WHERE id = ? AND company_id = ?
-      `;
+    // 🔴 STEP 2: GET INVESTOR DETAILS (first_name, last_name, email, phone)
+    const getInvestorSql = `
+      SELECT first_name, last_name, email, phone 
+      FROM investor_information 
+      WHERE id = ?
+    `;
 
-      db.query(
-        getRoundSql,
-        [roundrecord_id, company_id],
-        (roundErr, roundResult) => {
-          if (roundErr || !roundResult.length) {
-            console.log("Could not fetch round details for warrants");
-            return;
+    db.query(getInvestorSql, [investor_id], (investorErr, investorResult) => {
+      if (investorErr) {
+        console.error("Error fetching investor details:", investorErr);
+      }
+
+      const investor = investorResult?.[0] || {};
+
+      // 🔴 STEP 3: PROCESS SELECTED WARRANTS (with ID and Shares)
+      if (selectedWarrantsId && selectedWarrantsId.length > 0) {
+        // Extract just the IDs for fetching from warrants table
+        const warrantIds = selectedWarrantsId.map((w) => w.id);
+        const placeholders = warrantIds.map(() => "?").join(",");
+
+        const getWarrantsSql = `
+          SELECT * FROM warrants 
+          WHERE id IN (${placeholders})
+        `;
+
+        db.query(getWarrantsSql, warrantIds, (warrantErr, warrantsData) => {
+          if (warrantErr) {
+            console.error("Error fetching warrants:", warrantErr);
+          } else if (warrantsData && warrantsData.length > 0) {
+            // 🔴 STEP 4: INSERT EACH WARRANT INTO investors_warrants with shares from frontend
+            let insertedCount = 0;
+            const totalWarrants = warrantsData.length;
+
+            warrantsData.forEach((warrant) => {
+              // Find the corresponding frontend data to get shares
+              const frontendWarrant = selectedWarrantsId.find(
+                (w) => w.id === warrant.id,
+              );
+              const warrantShares = frontendWarrant?.shares || 0;
+
+              const insertInvestorWarrantSql = `
+                INSERT INTO investors_warrants (
+                investorrequest_company_id,
+                  roundrecord_id,
+                  company_id,
+                  investor_id,
+                  warrant_id,
+                  first_name,
+                  last_name,
+                  email,
+                  phone,
+                  shares,
+                  new_shares,
+                  total_shares,
+                  percentage_numeric,
+                  percentage_formatted,
+                  warrant_coverage_percentage,
+                  warrant_adjustment_percent,
+                  warrant_adjustment_direction,
+                  exercised_in_round_id,
+                  notes,
+                  warrant_status,
+                  created_at,
+                  updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+              `;
+
+              const values = [
+                insertedId,
+                warrant.roundrecord_id,
+                warrant.company_id,
+                investor_id,
+                warrant.id,
+                investor.first_name || "",
+                investor.last_name || "",
+                investor.email || "",
+                investor.phone || "",
+                warrantShares, // 👈 Use shares from frontend
+                warrantShares, // new_shares same as shares
+                warrantShares, // total_shares same as shares
+                "0", // percentage_numeric (will be calculated later)
+                "0.00%", // percentage_formatted
+                warrant.warrant_coverage_percentage,
+                warrant.warrant_adjustment_percent || 0,
+                warrant.warrant_adjustment_direction || "decrease",
+                roundrecord_id,
+                warrant.notes || null,
+                "exercised",
+              ];
+
+              db.query(insertInvestorWarrantSql, values, (insertErr) => {
+                if (insertErr) {
+                  console.error(
+                    `Error inserting warrant ID ${warrant.id}:`,
+                    insertErr,
+                  );
+                } else {
+                  insertedCount++;
+                }
+
+                // After all inserts are processed
+                if (insertedCount === totalWarrants) {
+                }
+              });
+            });
           }
+        });
+      } else {
+        console.log("No warrants selected for this investment");
+      }
 
-          const round = roundResult[0];
-          console.log(round.instrumentType);
-          // ✅ CONDITION: Only process if instrumentType is "Preferred Equity"
-          if (round.instrumentType !== "Preferred Equity") {
-            console.log(
-              `No warrants: Instrument type is ${round.instrumentType}, not Preferred Equity`,
-            );
-            return;
-          }
+      // 🔴 STEP 5: CREATE WARRANT ENTRY (FOR NEW WARRANTS IF ANY)
+      const checkWarrantsAndCreateEntry = (investmentId) => {
+        // Get round details to check instrument type
+        const getRoundSql = `
+          SELECT instrumentType, instrument_type_data 
+          FROM roundrecord 
+          WHERE id = ? AND company_id = ?
+        `;
 
-          try {
-            const instrumentData = round.instrument_type_data
-              ? JSON.parse(round.instrument_type_data)
-              : {};
+        db.query(
+          getRoundSql,
+          [roundrecord_id, company_id],
+          (roundErr, roundResult) => {
+            if (roundErr || !roundResult.length) {
+              console.log("Could not fetch round details for warrants");
+              return;
+            }
 
-            // Check if warrants are enabled for this round
-            const hasWarrants =
-              instrumentData.hasWarrants_preferred === true ||
-              instrumentData.hasWarrants_preferred === "true";
+            const round = roundResult[0];
 
-            if (!hasWarrants) {
+            // Only process if instrumentType is "Preferred Equity"
+            if (round.instrumentType !== "Preferred Equity") {
               console.log(
-                "No warrants enabled for this Preferred Equity round",
+                `No warrants: Instrument type is ${round.instrumentType}`,
               );
               return;
             }
 
-            // Calculate warrant coverage amount
-            const investmentAmount = parseFloat(investment_amount || 0);
-            if (investmentAmount <= 0) {
-              console.log("Invalid investment amount for warrant");
-              return;
-            }
+            try {
+              const instrumentData = round.instrument_type_data
+                ? JSON.parse(round.instrument_type_data)
+                : {};
 
-            const coveragePercentage = parseFloat(
-              instrumentData.warrant_coverage_percentage || 0,
-            );
-            if (coveragePercentage <= 0) {
-              console.log("Invalid or zero warrant coverage percentage");
-              return;
-            }
+              const hasWarrants =
+                instrumentData.hasWarrants_preferred === true ||
+                instrumentData.hasWarrants_preferred === "true";
 
-            const coverageAmount =
-              investmentAmount * (coveragePercentage / 100);
+              if (!hasWarrants) {
+                console.log("No warrants enabled for this round");
+                return;
+              }
 
-            // 2. Create warrant entry
-            const createWarrantSql = `
-            INSERT INTO warrants (
-              roundrecord_id,
-              company_id,
-              investor_id,
-              warrant_coverage_percentage,
-              warrant_exercise_type,
-              warrant_adjustment_percent,
-              warrant_adjustment_direction,
-              warrant_coverage_amount,
-              warrant_status,
-              expiration_date,
-              issued_date,
-              created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
-          `;
+              const investmentAmount = parseFloat(investment_amount || 0);
+              if (investmentAmount <= 0) {
+                console.log("Invalid investment amount for warrant");
+                return;
+              }
 
-            const warrantValues = [
-              roundrecord_id,
-              company_id,
-              investor_id,
-              coveragePercentage,
-              instrumentData.warrant_exercise_type || "next_round_adjusted",
-              parseFloat(instrumentData.warrant_adjustment_percent || 0),
-              instrumentData.warrant_adjustment_direction || "decrease",
-              coverageAmount,
-              "pending",
-              instrumentData.expirationDate_preferred || null,
-            ];
+              const coveragePercentage = parseFloat(
+                instrumentData.warrant_coverage_percentage || 0,
+              );
+              if (coveragePercentage <= 0) {
+                console.log("Invalid warrant coverage percentage");
+                return;
+              }
 
-            db.query(
-              createWarrantSql,
-              warrantValues,
-              (warrantErr, warrantResult) => {
-                if (warrantErr) {
-                  console.error("Warrant creation error:", warrantErr);
-                } else {
-                  console.log(
-                    `Warrant created for investor ${investor_id}, ID: ${warrantResult.insertId}`,
-                  );
+              const coverageAmount =
+                investmentAmount * (coveragePercentage / 100);
 
-                  // Optional: Log warrant creation
-                  const warrantLogSql = `
-                INSERT INTO access_logs_investor
-                (investor_id, user_id, company_id, company_name, action, module, description, ip_address, extra_data, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+              // Create warrant entry
+              const createWarrantSql = `
+                INSERT INTO warrants (
+                  roundrecord_id,
+                  company_id,
+                  investor_id,
+                  warrant_coverage_percentage,
+                  warrant_exercise_type,
+                  warrant_adjustment_percent,
+                  warrant_adjustment_direction,
+                  warrant_coverage_amount,
+                  warrant_status,
+                  expiration_date,
+                  issued_date,
+                  created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
               `;
 
-                  const warrantLogValues = [
-                    investor_id,
-                    created_by_id || null,
-                    company_id || null,
-                    company_name || null,
-                    "WARRANT_CREATED",
-                    "Capital Round",
-                    `Warrant created for ${coveragePercentage}% coverage (Amount: ${coverageAmount})`,
-                    ip_address || null,
-                    JSON.stringify({
-                      warrant_id: warrantResult.insertId,
-                      investment_id: investmentId,
-                      roundrecord_id: roundrecord_id,
-                      instrument_type: "Preferred Equity",
-                      coverage_percentage: coveragePercentage,
-                      coverage_amount: coverageAmount,
-                      exercise_type: instrumentData.warrant_exercise_type,
-                      adjustment_percent:
-                        instrumentData.warrant_adjustment_percent,
-                      adjustment_direction:
-                        instrumentData.warrant_adjustment_direction,
-                    }),
-                  ];
+              const warrantValues = [
+                roundrecord_id,
+                company_id,
+                investor_id,
+                coveragePercentage,
+                instrumentData.warrant_exercise_type || "next_round_adjusted",
+                parseFloat(instrumentData.warrant_adjustment_percent || 0),
+                instrumentData.warrant_adjustment_direction || "decrease",
+                coverageAmount,
+                "pending",
+                instrumentData.expirationDate_preferred || null,
+              ];
 
-                  db.query(warrantLogSql, warrantLogValues, (logErr) => {
-                    if (logErr) console.error("Warrant log error:", logErr);
-                  });
-                }
-              },
-            );
-          } catch (parseError) {
-            console.error("Error parsing instrument data:", parseError);
-          }
-        },
-      );
-    };
+              db.query(
+                createWarrantSql,
+                warrantValues,
+                (warrantErr, warrantResult) => {
+                  if (warrantErr) {
+                    console.error("Warrant creation error:", warrantErr);
+                  } else {
+                    console.log(
+                      `✅ New warrant created for investor ${investor_id}`,
+                    );
 
-    // Call warrant creation function
-    checkWarrantsAndCreateEntry(insertedId);
+                    // Also insert into investors_warrants
+                    const insertInvestorWarrantSql = `
+                    INSERT INTO investors_warrants (
+                      roundrecord_id, company_id, investor_id, warrant_id,
+                      first_name, last_name, email, phone,
+                      shares, new_shares, total_shares,
+                      percentage_numeric, percentage_formatted,
+                      warrant_coverage_percentage,
+                      warrant_adjustment_percent, warrant_adjustment_direction,
+                      calculated_exercise_price, calculated_warrant_shares,
+                      warrant_coverage_amount, notes,
+                      created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '0', '0.00%', ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+                  `;
 
-    // 3️⃣ Insert log into access_logs_investor (ORIGINAL LOG)
+                    const iwValues = [
+                      roundrecord_id,
+                      company_id,
+                      investor_id,
+                      warrantResult.insertId,
+                      investor.first_name || "",
+                      investor.last_name || "",
+                      investor.email || "",
+                      investor.phone || "",
+                      0, // shares initially 0 for new warrants
+                      0,
+                      0,
+                      coveragePercentage,
+                      parseFloat(
+                        instrumentData.warrant_adjustment_percent || 0,
+                      ),
+                      instrumentData.warrant_adjustment_direction || "decrease",
+                      null, // calculated_exercise_price
+                      null, // calculated_warrant_shares
+                      coverageAmount,
+                      instrumentData.warrant_notes || null,
+                    ];
+
+                    db.query(insertInvestorWarrantSql, iwValues, (iwErr) => {
+                      if (iwErr) {
+                        console.error(
+                          "Error inserting into investors_warrants:",
+                          iwErr,
+                        );
+                      }
+                    });
+                  }
+                },
+              );
+            } catch (parseError) {
+              console.error("Error parsing instrument data:", parseError);
+            }
+          },
+        );
+      };
+
+      // Call warrant creation function
+      checkWarrantsAndCreateEntry(insertedId);
+    });
+
+    // 6️⃣ Insert log into access_logs_investor
     const sqlLog = `
       INSERT INTO access_logs_investor
       (investor_id, user_id, company_id, company_name, action, module, description, ip_address, extra_data, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
     `;
+
+    // Calculate total warrant shares for log
+    const totalWarrantShares =
+      selectedWarrantsId?.reduce((sum, w) => sum + (w.shares || 0), 0) || 0;
 
     const logValues = [
       investor_id,
@@ -1693,23 +1819,30 @@ exports.InvestorrequestToCompany = (req, res) => {
       company_name || null,
       "INVESTMENT_REQUEST",
       "Capital Round",
-      `Investor requested ${shares} shares for ${investment_amount}`,
+      `Investor requested ${shares || 0} shares for ${investment_amount || 0}${
+        selectedWarrantsId?.length
+          ? ` with ${selectedWarrantsId.length} warrant(s) (${totalWarrantShares} shares)`
+          : ""
+      }`,
       ip_address || null,
-      JSON.stringify({ requestId: insertedId }),
+      JSON.stringify({
+        requestId: insertedId,
+        warrants: selectedWarrantsId,
+        totalWarrantShares,
+      }),
     ];
 
     db.query(sqlLog, logValues, (err2) => {
       if (err2) {
         console.error("DB Log Error:", err2);
-        return res.status(200).json({
-          message: "Investment request submitted (log failed)",
-          insertedId,
-        });
       }
 
       return res.status(200).json({
+        success: true,
         message: "Investment request submitted successfully",
         insertedId,
+        warrantsProcessed: selectedWarrantsId?.length || 0,
+        totalWarrantShares,
       });
     });
   });
@@ -1853,9 +1986,12 @@ exports.verifyInvestment = (req, res) => {
   const selectQuery = `
     SELECT 
       irc.*, 
-      ii.first_name, ii.last_name, ii.email, 
+      ii.first_name, ii.last_name, ii.email, ii.phone,
       c.company_name,
-      rr.shareClassType, rr.nameOfRound, rr.roundsize, rr.issuedshares, rr.currency
+      rr.shareClassType, rr.nameOfRound, rr.roundsize, rr.issuedshares, rr.currency,rr.instrumentType,
+      rr.id as roundrecord_id,
+      rr.post_money as post_money_valuation,
+      rr.share_price
     FROM investorrequest_company irc
     JOIN investor_information ii ON ii.id = irc.investor_id
     JOIN company c ON c.id = ii.company_id
@@ -1872,29 +2008,300 @@ exports.verifyInvestment = (req, res) => {
     const record = results[0];
     const fullname = `${record.first_name} ${record.last_name}`;
 
-    // 1️⃣ Update request_confirm
-    const updateQuery = `UPDATE investorrequest_company SET request_confirm = 'Yes' WHERE id = ?`;
-    db.query(updateQuery, [verify_id], (err2) => {
-      if (err2)
+    // Get a connection for transaction
+    db.getConnection((err, connection) => {
+      if (err) {
         return res
           .status(500)
-          .json({ message: "Database update error", error: err2 });
+          .json({ message: "Connection error", error: err });
+      }
 
-      // 2️⃣ Send verification email
-      sendEmailToInvestment_Verify(
-        record.email,
-        fullname,
-        record.company_name,
-        record.shareClassType,
-        record.nameOfRound,
-        record.roundsize,
-        record.issuedshares,
-        record.currency,
-      );
+      connection.beginTransaction(async (err) => {
+        if (err) {
+          connection.release();
+          return res
+            .status(500)
+            .json({ message: "Transaction error", error: err });
+        }
 
-      return res
-        .status(200)
-        .json({ message: "Investment verified and email sent successfully" });
+        try {
+          // 1️⃣ Update request_confirm
+          await new Promise((resolve, reject) => {
+            connection.query(
+              `UPDATE investorrequest_company SET request_confirm = 'Yes' WHERE id = ?`,
+              [verify_id],
+              (err2) => {
+                if (err2) reject(err2);
+                else resolve();
+              },
+            );
+          });
+
+          // 2️⃣ Calculate shares based on investment amount
+          const sharePrice = parseFloat(record.share_price) || 0;
+          const investmentAmount = parseFloat(record.amount) || 0;
+          const shares =
+            sharePrice > 0 ? Math.round(investmentAmount / sharePrice) : 0;
+
+          // 3️⃣ Insert into round_investors
+          const insertResult = await new Promise((resolve, reject) => {
+            const insertQuery = `
+              INSERT INTO round_investors 
+              (value, new_shares, total_shares, round_id, round_type, company_id, cap_table_type, investor_type,
+               first_name, last_name, email, phone,
+               shares, investment_amount, share_price,
+               is_pending, instrument_type, share_class_type,
+               round_name, investor_details, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, 'post', 'current',
+                      ?, ?, ?, ?,
+                      ?, ?, ?,
+                      0, ?, ?,
+                      ?, ?, NOW())
+            `;
+
+            const investorDetails = JSON.stringify({
+              firstName: record.first_name,
+              lastName: record.last_name,
+              email: record.email,
+              phone: record.phone,
+              investor_id: record.investor_id,
+            });
+
+            connection.query(
+              insertQuery,
+              [
+                record.investment_amount, // value
+                record.shares, // new_shares
+                record.shares, // total_shares
+                record.roundrecord_id, // round_id
+                "Investor", // round_type
+                record.company_id, // company_id
+                record.first_name, // first_name
+                record.last_name, // last_name
+                record.email, // email
+                record.phone || "", // phone
+                record.shares, // shares
+                record.investment_amount, // investment_amount
+                sharePrice, // share_price
+                record.instrumentType || "", // instrument_type
+                record.shareClassType || "", // share_class_type
+                record.nameOfRound || "Investment Round", // round_name
+                investorDetails, // investor_details
+              ],
+              (err3, result) => {
+                if (err3) reject(err3);
+                else resolve(result);
+              },
+            );
+          });
+
+          const roundInvestorId = insertResult.insertId;
+          // 4️⃣ Update investors_warrants table with round_investors ID
+          const warrantsData = await new Promise((resolve, reject) => {
+            const getWarrantsQuery = `
+              SELECT * FROM investors_warrants 
+              WHERE investorrequest_company_id = ? 
+                AND exercised_in_round_id = ?
+                AND company_id = ?
+                AND investor_id = ?
+            `;
+
+            connection.query(
+              getWarrantsQuery,
+              [
+                verify_id,
+                record.roundrecord_id,
+                record.company_id,
+                record.investor_id,
+              ],
+              (err4, results) => {
+                if (err4) {
+                  console.error("❌ Error fetching warrants:", err4);
+                  reject(err4);
+                } else {
+                  resolve(results);
+                }
+              },
+            );
+          });
+
+          // 🔴 STEP 5: INSERT EACH WARRANT INTO round_investors
+          console.log(warrantsData);
+          let warrantsInserted = 0;
+          if (warrantsData && warrantsData.length > 0) {
+            for (const warrant of warrantsData) {
+              await new Promise((resolve, reject) => {
+                const insertWarrantQuery = `
+  INSERT INTO round_investors 
+  (value, new_shares, total_shares, round_id, round_type, company_id, cap_table_type, investor_type,
+   first_name, last_name, email, phone,
+   shares, investment_amount, share_price,
+   is_pending, instrument_type, share_class_type,
+   round_name, investor_details, created_at,
+   warrant_id)
+  VALUES (?, ?, ?, ?, ?, ?, 'post', 'warrant',
+          ?, ?, ?, ?,
+          ?, 0, ?,
+          0, ?, ?,
+          ?, ?, NOW(),
+          ?)
+`;
+
+                // Create investor details for warrant
+                const warrantInvestorDetails = JSON.stringify({
+                  firstName: warrant.first_name || record.first_name,
+                  lastName: warrant.last_name || record.last_name,
+                  email: warrant.email || record.email,
+                  phone: warrant.phone || record.phone,
+                  investor_id: record.investor_id,
+                  warrant_id: warrant.warrant_id,
+                  is_warrant: true,
+                });
+
+                connection.query(
+                  insertWarrantQuery,
+                  [
+                    // value (1)
+                    warrant.shares * sharePrice, // Calculate warrant value
+
+                    // new_shares (2)
+                    warrant.shares,
+
+                    // total_shares (3)
+                    warrant.shares,
+
+                    // round_id (4)
+                    record.roundrecord_id,
+
+                    // round_type (5)
+                    "Warrant Exercise",
+
+                    // company_id (6)
+                    record.company_id,
+
+                    // first_name (7)
+                    warrant.first_name || record.first_name,
+
+                    // last_name (8)
+                    warrant.last_name || record.last_name,
+
+                    // email (9)
+                    warrant.email || record.email,
+
+                    // phone (10)
+                    warrant.phone || record.phone,
+
+                    // shares (11)
+                    warrant.shares,
+
+                    // share_price (12)
+                    sharePrice,
+
+                    // instrument_type (13)
+                    "Warrant",
+
+                    // share_class_type (14)
+                    "Warrant",
+
+                    // round_name (15)
+                    record.nameOfRound || "Warrant Exercise Round",
+
+                    // investor_details (16)
+                    warrantInvestorDetails,
+
+                    // warrant_id (17)
+                    warrant.id,
+                  ],
+
+                  (err5, result) => {
+                    if (err5) {
+                      console.error(
+                        `❌ Error inserting warrant ID ${warrant.id}:`,
+                        err5,
+                      );
+                      reject(err5);
+                    } else {
+                      warrantsInserted++;
+                      console.log(
+                        `✅ Warrant ID ${warrant.id} inserted into round_investors with ID: ${result.insertId}`,
+                      );
+                      resolve(result);
+                    }
+                  },
+                );
+              });
+            }
+          }
+          await new Promise((resolve, reject) => {
+            const updateWarrantsQuery = `
+              UPDATE investors_warrants 
+              SET round_investor_id = ? 
+              WHERE exercised_in_round_id = ? 
+                AND company_id = ? 
+                AND investor_id = ?
+            `;
+
+            connection.query(
+              updateWarrantsQuery,
+              [
+                roundInvestorId,
+                record.roundrecord_id,
+                record.company_id,
+                record.investor_id,
+              ],
+              (err4, result) => {
+                if (err4) {
+                  console.error("❌ Error updating investors_warrants:", err4);
+                  reject(err4);
+                } else {
+                  resolve(result);
+                }
+              },
+            );
+          });
+
+          // 5️⃣ Commit transaction
+          await new Promise((resolve, reject) => {
+            connection.commit((err) => {
+              if (err) reject(err);
+              else resolve();
+            });
+          });
+
+          // 6️⃣ Send verification email
+          sendEmailToInvestment_Verify(
+            record.email,
+            fullname,
+            record.company_name,
+            record.shareClassType,
+            record.nameOfRound,
+            record.roundsize,
+            record.issuedshares,
+            record.currency,
+            record.company_id,
+            record.roundrecord_id,
+          );
+
+          return res.status(200).json({
+            success: true,
+            message: "Investment verified and added to cap table successfully",
+            roundInvestorId,
+          });
+        } catch (error) {
+          // Rollback on error
+          connection.rollback(() => {
+            connection.release();
+            console.error("❌ Transaction error:", error);
+            return res.status(500).json({
+              success: false,
+              message: "Transaction failed",
+              error: error.message,
+            });
+          });
+        } finally {
+          connection.release();
+        }
+      });
     });
   });
 };
@@ -1909,6 +2316,8 @@ function sendEmailToInvestment_Verify(
   roundsize,
   issuedshares,
   currency,
+  company_id,
+  round_id,
 ) {
   const subject = `Your investment has been verified - ${companyName}`;
 
@@ -1935,9 +2344,16 @@ function sendEmailToInvestment_Verify(
               Your investment in ${companyName} has been verified successfully.
             </p>
             <p style="font-size:14px; color:#111; margin-bottom:20px;">
-              <strong>Round:</strong> ${nameOfRound} - ${shareClassType} <br/>
-              <strong>Round Size:</strong>${currency} ${roundsize} <br/>
-              <strong>Issued Shares:</strong> ${issuedshares}
+              <strong>Round: </strong> ${nameOfRound} - ${shareClassType} <br/>
+              <strong>Round Size: </strong>${currency} ${roundsize} <br/>
+            </p>
+            <p style="font-size:14px; color:#111; margin-bottom:20px;">
+              <strong>View Details:</strong> 
+              <a href="https://capavate.com/investor/company/capital-round-list/view/${company_id}/${round_id}" 
+                target="_blank"
+                style="color:#CC0000; text-decoration:underline;">
+                Click here to view your investment
+              </a>
             </p>
             <p style="font-size:14px; color:#111; margin-bottom:0;">Regards,<br/>Capavate Team</p>
           </td>
@@ -2584,8 +3000,6 @@ exports.getAllocatedShares = async (req, res) => {
       WHERE id = ? AND company_id = ?
     `;
 
-    console.log("Fetching round details for:", { roundrecord_id, company_id });
-
     // Use promise-based query
     const [roundResults] = await db
       .promise()
@@ -2618,7 +3032,6 @@ exports.getAllocatedShares = async (req, res) => {
         AND request_confirm IN ('No', 'Yes')
     `;
 
-    console.log("Fetching investment amounts...");
     const [investmentResults] = await db
       .promise()
       .query(investmentQuery, [roundrecord_id, company_id]);

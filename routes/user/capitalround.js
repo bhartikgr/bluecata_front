@@ -104,4 +104,5 @@ router.post(
   "/getPreviousFundingRound",
   capitalroundController.getPreviousFundingRound,
 );
+router.post("/getCompanyWarrant", capitalroundController.getCompanyWarrant);
 module.exports = router;

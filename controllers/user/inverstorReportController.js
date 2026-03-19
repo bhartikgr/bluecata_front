@@ -2706,3 +2706,55 @@ exports.getRoundsDetail = (req, res) => {
     },
   );
 };
+
+exports.getRoundsWarrant = async (req, res) => {
+  const { round_id, company_id, investor_id } = req.body;
+
+  if (!company_id) {
+    return res.status(400).json({ message: "Missing required fields." });
+  }
+
+  // Investor information query
+  const investorQuery = `SELECT 
+  w.*,
+  CASE 
+    WHEN iw.id IS NOT NULL THEN 'exercised'
+    ELSE 'pending'
+  END as exercise_status,
+  iw.id as investors_warrants_id,
+  iw.shares as exercised_shares,
+  iw.created_at as exercised_date,
+  iw.exercised_in_round_id,
+  iw.warrant_status as w_status,
+  iw.round_investor_id,
+  rr.roundStatus,
+  rr.dateroundclosed,
+  STR_TO_DATE(rr.dateroundclosed, '%m/%d/%Y') as parsed_closed_date
+FROM warrants w
+LEFT JOIN roundrecord rr ON rr.id = w.roundrecord_id
+LEFT JOIN investors_warrants iw 
+  ON iw.warrant_id = w.id 
+  AND iw.company_id = w.company_id 
+  AND iw.investor_id = ?
+WHERE w.company_id = ?
+  AND (w.expiration_date IS NULL OR w.expiration_date >= CURDATE())
+  AND (
+    rr.roundStatus != 'CLOSED' 
+    OR (rr.roundStatus = 'CLOSED' AND STR_TO_DATE(rr.dateroundclosed, '%m/%d/%Y') > CURDATE())
+  )
+ORDER BY w.id DESC`;
+
+  db.query(investorQuery, [investor_id, company_id], (err, investorResult) => {
+    if (err) {
+      console.error("Investor data error:", err);
+      return res.status(500).json({
+        message: "Database error fetching investor data",
+        error: err,
+      });
+    }
+    return res.status(200).json({
+      message: "Warrant List",
+      results: investorResult,
+    });
+  });
+};
