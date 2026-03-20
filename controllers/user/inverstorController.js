@@ -1224,16 +1224,7 @@ exports.getInvestorReportCapitalRound = (req, res) => {
 
   const query = `
     SELECT 
-      r.id AS round_id,
-      r.nameOfRound,
-      r.shareClassType,
-      r.roundsize,
-      r.issuedshares,
-      r.currency,
-      r.created_at,
-      r.dateroundclosed,
-      r.roundStatus,
-      r.instrumentType,
+      r.*,
       s.id AS sharerecord_id,
       s.subscription_status,
       s.signature_status,
