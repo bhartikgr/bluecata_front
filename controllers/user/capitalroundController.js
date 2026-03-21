@@ -6549,6 +6549,7 @@ const sendRecordRoundEmail = async (
 exports.SendRecordRoundToinvestor = async (req, res) => {
   try {
     const {
+      crm_invite_acknowledged,
       country_name,
       ip_address,
       created_by_role,
@@ -6557,7 +6558,6 @@ exports.SendRecordRoundToinvestor = async (req, res) => {
       selectedRecords,
       records,
     } = req.body;
-
     if (
       !company_id ||
       !Array.isArray(selectedRecords) ||
@@ -6629,8 +6629,9 @@ exports.SendRecordRoundToinvestor = async (req, res) => {
         await db
           .promise()
           .query(
-            "INSERT INTO sharerecordround (created_by_role, created_by_id, company_id, investor_id, roundrecord_id, sent_date, created_at) VALUES (?, ?, ?, ?, ?, NOW(), NOW())",
+            "INSERT INTO sharerecordround (crm_invite_acknowledged,created_by_role, created_by_id, company_id, investor_id, roundrecord_id, sent_date, created_at) VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())",
             [
+              "Yes",
               created_by_role,
               created_by_id,
               company_id,
@@ -13277,6 +13278,71 @@ exports.getCompanyWarrant = (req, res) => {
       success: true,
       message: "Warrants fetched successfully",
       results: processedResults,
+    });
+  });
+};
+exports.roundManagementAcklnowlegment = (req, res) => {
+  const { company_id } = req.body; // action_type: 'create', 'edit', 'close'
+
+  let status_create = "Yes";
+  let status_edit = "Yes";
+  let status_closed = "Yes";
+
+  // Insert into round_acknowlegment table
+  const insertQuery = `
+    INSERT INTO round_acknowlegment (company_id, status_create, status_edit, status_closed, created_at) 
+    VALUES (?, ?, ?, ?, NOW())
+    ON DUPLICATE KEY UPDATE
+    status_create =  'Yes',
+    status_edit = 'Yes',
+    status_closed = 'Yes',
+    created_at = NOW()
+  `;
+
+  db.query(
+    insertQuery,
+    [company_id, status_create, status_edit, status_closed],
+    (err, result) => {
+      if (err) {
+        return res.status(500).json({
+          success: false,
+          message: "Database error",
+          error: err,
+        });
+      }
+
+      res.status(200).json({
+        success: true,
+        message: `Round acknowledgment saved successfully`,
+        results: {
+          affectedRows: result.affectedRows,
+          insertId: result.insertId,
+        },
+      });
+    },
+  );
+};
+exports.getroundManagementAcklnowlegment = (req, res) => {
+  const { company_id } = req.body;
+
+  const query = `
+    SELECT 
+      * from round_acknowlegment where company_id =?
+  `;
+
+  db.query(query, [company_id], (err, results) => {
+    if (err) {
+      return res.status(500).json({
+        success: false,
+        message: "Database query error",
+        error: err,
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "",
+      results: results,
     });
   });
 };

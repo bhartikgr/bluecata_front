@@ -1708,7 +1708,19 @@ exports.generateProcessAI = async (req, res) => {
           new Date(),
         ],
       );
-
+    const [existingAck] = await db
+      .promise()
+      .query(`SELECT * FROM dataroom_lock_acknowlegment WHERE uniqcode = ?`, [
+        uniqcode,
+      ]);
+    if (existingAck.length === 0) {
+      const [ackResult] = await db.promise().query(
+        `INSERT INTO dataroom_lock_acknowlegment 
+         (uniqcode, company_id, status,created_at) 
+         VALUES (?, ?, 'Yes',Now())`,
+        [uniqcode, company_id],
+      );
+    }
     db.query(
       "UPDATE usersubscriptiondataroomone_time SET unique_code = ?, status = ? WHERE id = ?",
       [uniqcode, "Active", payid],

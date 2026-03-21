@@ -105,4 +105,12 @@ router.post(
   capitalroundController.getPreviousFundingRound,
 );
 router.post("/getCompanyWarrant", capitalroundController.getCompanyWarrant);
+router.post(
+  "/roundManagementAcklnowlegment",
+  capitalroundController.roundManagementAcklnowlegment,
+);
+router.post(
+  "/getroundManagementAcklnowlegment",
+  capitalroundController.getroundManagementAcklnowlegment,
+);
 module.exports = router;

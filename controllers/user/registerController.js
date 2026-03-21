@@ -3347,7 +3347,8 @@ exports.companyaddWithSignatory = (req, res) => {
     signatory_acknowledged,
     ...rest
   } = req.body;
-  //console.log(req.body);
+
+  console.log(req.body);
   //return;
   if (!company_name || !user_id) {
     return res.status(400).json({ message: "Missing required fields." });
@@ -3415,10 +3416,23 @@ exports.companyaddWithSignatory = (req, res) => {
                 // Insert company with dynamic color
                 var date = new Date();
                 const companyInsertQuery = `
-        INSERT INTO company
-        (signatory_designation,company_email,state_code,country_code,company_name, user_id, company_color_code, company_industory, phone, company_website, employee_number, year_registration, formally_legally, company_street_address, company_country, company_state, company_city, company_postal_code, descriptionStep4, problemStep4, solutionStep4,created_at)
-        VALUES (?, ?,?,?,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,?)
-      `;
+    INSERT INTO company
+    (signatory_designation, company_email, state_code, country_code, company_name, user_id, company_color_code, 
+     company_industory, phone, company_website, employee_number, year_registration, formally_legally, 
+     company_street_address, company_country, company_state, company_city, company_postal_code, 
+     descriptionStep4, problemStep4, solutionStep4, created_at,
+     strategic_priorities, interested_in, seeking_partners, not_consider,
+     competitor_1_name, competitor_1_url, competitor_1_reason,
+     competitor_2_name, competitor_2_url, competitor_2_reason,
+     competitor_3_name, competitor_3_url, competitor_3_reason,
+     board_of_directors, ongoing_disputes, regulatory_compliance,
+     legal_representation, law_firm_name, legal_referral, legal_compliance_review,
+     accounting_firm, accounting_firm_name, accounting_referral,
+     audited_financials, saas_model, holds_ip,
+     operating_geographies, customer_segments, exclusivity_clauses, dependence_risk, long_term_contracts,
+     readiness_reason, value_proposition, live_summary)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`;
 
                 db.query(
                   companyInsertQuery,
@@ -3445,6 +3459,45 @@ exports.companyaddWithSignatory = (req, res) => {
                     rest.problemStep4 || null,
                     rest.solutionStep4 || null,
                     date,
+                    // Section 1 (4 fields)
+                    rest.strategic_priorities || null,
+                    rest.interested_in || null,
+                    rest.seeking_partners || null,
+                    rest.not_consider || null,
+                    // Section 2 (9 fields)
+                    rest.competitor_1_name || null,
+                    rest.competitor_1_url || null,
+                    rest.competitor_1_reason || null,
+                    rest.competitor_2_name || null,
+                    rest.competitor_2_url || null,
+                    rest.competitor_2_reason || null,
+                    rest.competitor_3_name || null,
+                    rest.competitor_3_url || null,
+                    rest.competitor_3_reason || null,
+                    // Section 3 (13 fields)
+                    rest.board_of_directors || null,
+                    rest.ongoing_disputes || null,
+                    rest.regulatory_compliance || null,
+                    rest.legal_representation || null,
+                    rest.law_firm_name || null,
+                    rest.legal_referral || null,
+                    rest.legal_compliance_review || null,
+                    rest.accounting_firm || null,
+                    rest.accounting_firm_name || null,
+                    rest.accounting_referral || null,
+                    rest.audited_financials || null,
+                    rest.saas_model || null,
+                    rest.holds_ip || null,
+                    // Section 4 (5 fields)
+                    rest.operating_geographies || null,
+                    rest.customer_segments || null,
+                    rest.exclusivity_clauses || null,
+                    rest.dependence_risk || null,
+                    rest.long_term_contracts || null,
+                    // Section 5 (3 fields) - FIXED: Added all 3
+                    rest.readiness_reason || null,
+                    rest.value_proposition || null,
+                    rest.live_summary || null,
                   ],
                   (err, companyResult) => {
                     if (err) {
@@ -3458,14 +3511,14 @@ exports.companyaddWithSignatory = (req, res) => {
                     // Send email to company creator
                     sendEmailToUser(userEmail, userName, company_name);
 
-                    // Insert signatories (same as before)
+                    // Insert signatories
                     if (signatories && signatories.length) {
                       let insertedCount = 0;
                       const signatoryInsertQuery = `
-              INSERT INTO company_signatories
-              (company_id, unique_code, user_id, first_name, last_name, signatory_email, linked_in, signatory_phone, signature_role, access_status, invited_by, invited_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `;
+                                                INSERT INTO company_signatories
+                                                (company_id, unique_code, user_id, first_name, last_name, signatory_email, linked_in, signatory_phone, signature_role, access_status, invited_by, invited_at)
+                                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                            `;
 
                       signatories.forEach((s) => {
                         const uniqueCode = generateUniqueCode();
@@ -3830,7 +3883,41 @@ exports.companyProfileUpdate = (req, res) => {
         company_postal_code = ?,
         descriptionStep4 = ?,
         problemStep4 = ?,
-        solutionStep4 = ?
+        solutionStep4 = ?,
+        strategic_priorities = ?,
+        interested_in = ?,
+        seeking_partners = ?,
+        not_consider = ?,
+        competitor_1_name = ?,
+        competitor_1_url = ?,
+        competitor_1_reason = ?,
+        competitor_2_name = ?,
+        competitor_2_url = ?,
+        competitor_2_reason = ?,
+        competitor_3_name = ?,
+        competitor_3_url = ?,
+        competitor_3_reason = ?,
+        board_of_directors = ?,
+        ongoing_disputes = ?,
+        regulatory_compliance = ?,
+        legal_representation = ?,
+        law_firm_name = ?,
+        legal_referral = ?,
+        legal_compliance_review = ?,
+        accounting_firm = ?,
+        accounting_firm_name = ?,
+        accounting_referral = ?,
+        audited_financials = ?,
+        saas_model = ?,
+        holds_ip = ?,
+        operating_geographies = ?,
+        customer_segments = ?,
+        exclusivity_clauses = ?,
+        dependence_risk = ?,
+        long_term_contracts = ?,
+        readiness_reason = ?,
+        value_proposition = ?,
+        live_summary = ?
       WHERE id = ?
     `;
 
@@ -3853,6 +3940,46 @@ exports.companyProfileUpdate = (req, res) => {
       req.body.descriptionStep4 || null,
       req.body.problemStep4 || null,
       req.body.solutionStep4 || null,
+      // Section 1 - Strategic Priorities (ONE value each)
+      req.body.strategic_priorities || null,
+      req.body.interested_in || null,
+      req.body.seeking_partners || null,
+      req.body.not_consider || null,
+      // Section 2 - Competitors (ONE value each)
+      req.body.competitor_1_name || null,
+      req.body.competitor_1_url || null,
+      req.body.competitor_1_reason || null,
+      req.body.competitor_2_name || null,
+      req.body.competitor_2_url || null,
+      req.body.competitor_2_reason || null,
+      req.body.competitor_3_name || null,
+      req.body.competitor_3_url || null,
+      req.body.competitor_3_reason || null,
+      // Section 3 - Corporate Governance (ONE value each)
+      req.body.board_of_directors || null,
+      req.body.ongoing_disputes || null,
+      req.body.regulatory_compliance || null,
+      req.body.legal_representation || null,
+      req.body.law_firm_name || null,
+      req.body.legal_referral || null,
+      req.body.legal_compliance_review || null,
+      req.body.accounting_firm || null,
+      req.body.accounting_firm_name || null,
+      req.body.accounting_referral || null,
+      req.body.audited_financials || null,
+      req.body.saas_model || null,
+      req.body.holds_ip || null,
+      // Section 4 - Market, Customers, Contracts (ONE value each)
+      req.body.operating_geographies || null,
+      req.body.customer_segments || null,
+      req.body.exclusivity_clauses || null,
+      req.body.dependence_risk || null,
+      req.body.long_term_contracts || null,
+      // Section 5 - Readiness (ONE value each)
+      req.body.readiness_reason || null,
+      req.body.value_proposition || null,
+      req.body.live_summary || null,
+      // WHERE clause
       company_id,
     ];
 
