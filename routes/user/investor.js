@@ -95,5 +95,9 @@ router.post(
   "/getInvestorSharedRoundList",
   inverstorController.getInvestorSharedRoundList,
 );
+router.post(
+  "/getRoundInvitaionAcknowlegment",
+  inverstorController.getRoundInvitaionAcknowlegment,
+);
 
 module.exports = router;

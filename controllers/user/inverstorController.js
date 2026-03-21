@@ -1489,6 +1489,7 @@ exports.InvestorrequestToCompany = (req, res) => {
     shares,
     investment_amount,
     ip_address,
+    investment_soft_confirmation,
     selectedWarrantsId, // 👈 Now it's an array of objects [{id, shares, coverage_percentage}]
   } = req.body;
 
@@ -1499,11 +1500,12 @@ exports.InvestorrequestToCompany = (req, res) => {
   // 1️⃣ Insert into investorrequest_company
   const sqlInvestment = `
     INSERT INTO investorrequest_company
-    (next_round_id, investor_id, roundrecord_id, company_id, shares, investment_amount, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, NOW())
+    (investment_soft_confirmation,next_round_id, investor_id, roundrecord_id, company_id, shares, investment_amount, created_at)
+    VALUES (?,?, ?, ?, ?, ?, ?, NOW())
   `;
 
   const investmentValues = [
+    investment_soft_confirmation,
     next_round_id || 0,
     investor_id,
     roundrecord_id || null,
@@ -3587,6 +3589,26 @@ exports.getInvestorSharedRoundList = (req, res) => {
 `;
 
   db.query(query, [company_id, round_id], (err, results) => {
+    if (err) {
+      return res.status(500).json({
+        message: "Database query error",
+        error: err,
+      });
+    }
+
+    res.status(200).json({
+      message: "",
+      results: results,
+    });
+  });
+};
+
+exports.getRoundInvitaionAcknowlegment = (req, res) => {
+  const { company_id } = req.body;
+
+  const query = `SELECT * from investor_round_invite_acknowlegment where company_id = ?`;
+
+  db.query(query, [company_id], (err, results) => {
     if (err) {
       return res.status(500).json({
         message: "Database query error",
