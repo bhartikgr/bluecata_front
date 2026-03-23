@@ -3622,3 +3622,222 @@ exports.getRoundInvitaionAcknowlegment = (req, res) => {
     });
   });
 };
+
+exports.getInvestorOwnership = (req, res) => {
+  const { company_id, investor_id } = req.body;
+
+  if (!company_id || !investor_id) {
+    return res.status(400).json({
+      success: false,
+      message: "Missing required fields: company_id and investor_id",
+    });
+  }
+
+  // First, get all rounds where this investor has confirmed investments
+  const getInvestorRoundsQuery = `
+    SELECT 
+      irc.*,
+      rr.nameOfRound,
+      rr.round_type,
+      rr.roundStatus,
+      rr.currency,
+      rr.pre_money,
+      rr.post_money,
+      rr.share_price as round_share_price,
+      rr.created_at as round_date,
+      rr.total_shares_after,
+      rr.issuedshares,
+      rr.round_target_money
+    FROM investorrequest_company irc
+    LEFT JOIN roundrecord rr ON irc.roundrecord_id = rr.id
+    WHERE irc.company_id = ? 
+      AND irc.investor_id = ?
+      AND irc.request_confirm = 'Yes'
+    ORDER BY rr.created_at DESC
+  `;
+
+  db.query(
+    getInvestorRoundsQuery,
+    [company_id, investor_id],
+    (err, investorRounds) => {
+      if (err) {
+        console.error("Error fetching investor rounds:", err);
+        return res.status(500).json({
+          success: false,
+          message: err.message,
+        });
+      }
+
+      if (!investorRounds || investorRounds.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "No confirmed investments found for this investor in this company",
+        });
+      }
+
+      // Get all rounds for this company to calculate total shares
+      const getAllRoundsQuery = `
+      SELECT id, nameOfRound, round_type, roundStatus, currency, 
+             pre_money, post_money, total_shares_after, created_at,
+             issuedshares, roundsize
+      FROM roundrecord 
+      WHERE company_id = ? 
+      ORDER BY created_at DESC
+    `;
+
+      db.query(getAllRoundsQuery, [company_id], (err, allRounds) => {
+        if (err) {
+          console.error("Error fetching all rounds:", err);
+          return res.status(500).json({
+            success: false,
+            message: err.message,
+          });
+        }
+
+        // Get latest round for total company shares
+        const latestRound =
+          allRounds && allRounds.length > 0 ? allRounds[0] : null;
+        const totalCompanyShares = latestRound
+          ? parseFloat(latestRound.total_shares_after) || 0
+          : 0;
+        const latestValuation = latestRound
+          ? parseFloat(latestRound.post_money) || 0
+          : 0;
+        const currency = latestRound ? latestRound.currency : "USD";
+
+        // Calculate investor ownership from each round
+        let totalInvestorShares = 0;
+        let totalInvestment = 0;
+        let ownershipDetails = [];
+
+        for (const round of investorRounds) {
+          const roundId = round.roundrecord_id;
+          const investorShares = parseFloat(round.shares) || 0;
+          const investorInvestment = parseFloat(round.investment_amount) || 0;
+
+          // Get total shares for this round from roundrecord
+          const roundTotalShares = parseFloat(round.total_shares_after) || 0;
+
+          // Calculate percentage for this round
+          const roundPercentage =
+            roundTotalShares > 0
+              ? (investorShares / roundTotalShares) * 100
+              : 0;
+
+          totalInvestorShares += investorShares;
+          totalInvestment += investorInvestment;
+
+          ownershipDetails.push({
+            round_id: roundId,
+            round_name: round.nameOfRound,
+            round_type: round.round_type,
+            round_status: round.roundStatus,
+            round_date: round.round_date,
+            currency: round.currency || currency,
+            shares: investorShares,
+            shares_formatted: investorShares.toLocaleString(),
+            investment: investorInvestment,
+            investment_formatted: `${round.currency || currency} ${investorInvestment.toLocaleString()}`,
+            round_total_shares: roundTotalShares,
+            round_total_shares_formatted: roundTotalShares.toLocaleString(),
+            ownership_percentage: roundPercentage,
+            ownership_percentage_formatted: roundPercentage.toFixed(2) + "%",
+            share_price:
+              parseFloat(round.share_price) ||
+              parseFloat(round.round_share_price) ||
+              0,
+            confirm_date: round.confirm_date,
+          });
+        }
+
+        // Calculate overall ownership percentage based on latest round
+        const overallOwnershipPercentage =
+          totalCompanyShares > 0
+            ? (totalInvestorShares / totalCompanyShares) * 100
+            : 0;
+
+        const estimatedCurrentValue =
+          latestValuation > 0
+            ? latestValuation * (overallOwnershipPercentage / 100)
+            : totalInvestment;
+
+        // Get investor details from first record
+        const investorRecord = investorRounds[0];
+
+        return res.status(200).json({
+          success: true,
+          investor: {
+            id: investor_id,
+            name: investorRecord.investor_name || `Investor ${investor_id}`,
+            email: investorRecord.email || null,
+            phone: investorRecord.phone || null,
+          },
+          company: {
+            id: company_id,
+            name: investorRecord.company_name || null,
+            latest_round: latestRound
+              ? {
+                  round_id: latestRound.id,
+                  round_name: latestRound.nameOfRound,
+                  round_date: latestRound.created_at,
+                  total_shares: totalCompanyShares,
+                  valuation: latestValuation,
+                  currency: currency,
+                }
+              : null,
+          },
+          summary: {
+            total_shares_owned: totalInvestorShares,
+            total_shares_formatted: totalInvestorShares.toLocaleString(),
+            total_investment: totalInvestment,
+            total_investment_formatted: `${currency} ${totalInvestment.toLocaleString()}`,
+            overall_ownership_percentage: overallOwnershipPercentage,
+            overall_ownership_percentage_formatted:
+              overallOwnershipPercentage.toFixed(2) + "%",
+            estimated_current_value: estimatedCurrentValue,
+            estimated_current_value_formatted: `${currency} ${estimatedCurrentValue.toLocaleString()}`,
+            total_company_shares: totalCompanyShares,
+            latest_company_valuation: latestValuation,
+            number_of_rounds_invested: ownershipDetails.length,
+          },
+          round_wise_ownership: ownershipDetails,
+        });
+      });
+    },
+  );
+};
+
+exports.getcompanyList = (req, res) => {
+  const { investor_id } = req.body;
+
+  const query = `
+ SELECT DISTINCT 
+  srr.company_id,
+  c.company_name,
+  MIN(srr.sent_date) as first_shared_date,
+  MAX(srr.sent_date) as last_shared_date,
+  COUNT(srr.id) as total_documents_shared,
+  GROUP_CONCAT(DISTINCT srr.roundrecord_id) as round_ids,
+  COUNT(DISTINCT srr.roundrecord_id) as total_rounds
+FROM sharerecordround srr
+LEFT JOIN company c ON srr.company_id = c.id
+WHERE srr.investor_id = ?
+GROUP BY srr.company_id, c.company_name
+ORDER BY last_shared_date DESC;
+`;
+
+  db.query(query, [investor_id], (err, results) => {
+    if (err) {
+      return res.status(500).json({
+        message: "Database query error",
+        error: err,
+      });
+    }
+
+    res.status(200).json({
+      message: "",
+      results: results,
+    });
+  });
+};

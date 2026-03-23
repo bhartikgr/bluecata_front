@@ -848,7 +848,7 @@ exports.investorprofile = async (req, res) => {
     }
 
     try {
-      console.log("Received files:", req.files);
+      console.log("Received files:", req.body);
 
       const data = req.body;
 
@@ -908,6 +908,11 @@ exports.investorprofile = async (req, res) => {
       const updateQuery = `
         UPDATE investor_information
         SET 
+          invest_through_company=?,
+          investing_company_name=?,
+          current_job_title=?,
+          investor_company_country=?,
+          investor_company_website=?,
           capavate_interests  =?,
           first_name = ?,
           last_name = ?,
@@ -943,6 +948,11 @@ exports.investorprofile = async (req, res) => {
       `;
 
       const updateData = [
+        data.invest_through_company || null,
+        data.investing_company_name || null,
+        data.current_job_title || null,
+        data.investor_company_country || null,
+        data.investor_company_website || null,
         data.capavate_interests || null,
         data.first_name || null,
         data.last_name || null,
