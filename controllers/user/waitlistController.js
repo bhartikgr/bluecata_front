@@ -66,7 +66,7 @@ function sendWaitlistConfirmationEmail(to, fullName, companyName, formData) {
         >
           <tr>
             <td style="background: #efefef; padding: 10px 0; text-align: center;">
-              <img src="http://localhost:5000/api/upload/images/logo.png" alt="logo" style="width: 130px;" />
+              <img src="https://capavate.com/api/upload/images/logo.png" alt="logo" style="width: 130px;" />
             </td>
           </tr>
           <tr>
@@ -153,7 +153,7 @@ function sendWaitlistConfirmationEmail(to, fullName, companyName, formData) {
               
               <div style="text-align: center; margin: 20px 0;">
                 <a
-                  href="http://localhost:5000/user/login"
+                  href="https://capavate.com/user/login"
                   style="
                     background: #CC0000;
                     color: #fff;
