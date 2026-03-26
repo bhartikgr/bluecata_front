@@ -101,6 +101,438 @@ async function extractFileText(filePath) {
 
   return "";
 }
+// ============================================================
+// DELETE WARRANT API
+// ============================================================
+
+const deleteWarrantData = (warrantData) => {
+  return new Promise((resolve, reject) => {
+    const { roundrecord_id, company_id } = warrantData;
+
+    // First get warrant IDs
+    const getWarrantIdsSql = `SELECT id FROM warrants WHERE company_id = ? AND roundrecord_id = ?`;
+
+    db.query(
+      getWarrantIdsSql,
+      [company_id, roundrecord_id],
+      (err, warrants) => {
+        if (err) {
+          console.error("Error fetching warrant IDs:", err);
+          return reject(err);
+        }
+
+        if (warrants && warrants.length > 0) {
+          const warrantIds = warrants.map((w) => w.id);
+
+          // Delete from round_investors
+          const deleteRoundInvestorsSql = `
+          DELETE FROM round_investors 
+          WHERE warrant_id IN (?) AND round_id = ? AND company_id = ?
+        `;
+
+          db.query(
+            deleteRoundInvestorsSql,
+            [warrantIds, roundrecord_id, company_id],
+            (err2) => {
+              if (err2) {
+                console.error("Error deleting from round_investors:", err2);
+                // Continue with warrant deletion even if this fails
+              }
+
+              // Delete from warrants
+              const deleteWarrantSql = `DELETE FROM warrants WHERE company_id = ? AND roundrecord_id = ?`;
+
+              db.query(
+                deleteWarrantSql,
+                [company_id, roundrecord_id],
+                (err3, result) => {
+                  if (err3) {
+                    console.error("Error deleting warrant:", err3);
+                    return reject(err3);
+                  }
+                  resolve({
+                    success: true,
+                    message: "Warrant deleted successfully",
+                    affectedRows: result.affectedRows,
+                  });
+                },
+              );
+            },
+          );
+        } else {
+          resolve({
+            success: true,
+            message: "No warrants found to delete",
+            affectedRows: 0,
+          });
+        }
+      },
+    );
+  });
+};
+exports.warrantDataUpdate = (req, res) => {
+  const {
+    roundrecord_id,
+    company_id,
+    investor_id,
+    warrant_coverage_percentage,
+    warrant_status,
+    expiration_date,
+    notes,
+    warrantType,
+    warrant_fixed_shares,
+    hasWarrants_preferred,
+  } = req.body;
+  console.log("lll");
+  // First check if record exists
+  const checkSql =
+    "SELECT * FROM warrants WHERE roundrecord_id = ? AND company_id = ?";
+
+  db.query(checkSql, [roundrecord_id, company_id], (checkErr, checkResult) => {
+    if (checkErr) {
+      console.error("Error checking warrant:", checkErr);
+      return res.status(500).json({
+        success: false,
+        message: "Error checking warrant",
+        error: checkErr,
+      });
+    }
+
+    // Prepare common values
+
+    if (checkResult.length === 0) {
+      if (hasWarrants_preferred === true) {
+        const insertSql = `
+        INSERT INTO warrants (
+          warrant_fixed_shares,
+          warrantType,
+          roundrecord_id,
+          company_id,
+          investor_id,
+          warrant_coverage_percentage,
+          warrant_status,
+          issued_date,
+          expiration_date,
+          notes,
+          created_at,
+          updated_at
+        ) VALUES ( ?, ?, ?, ?, ?, ?,  ?, NOW(), ?, ?, NOW(), NOW())
+      `;
+
+        const insertValues = [
+          warrant_fixed_shares,
+          warrantType,
+          roundrecord_id,
+          company_id,
+          investor_id || 0,
+          warrant_coverage_percentage || 0,
+          warrant_status || "pending",
+          expiration_date || null, // ✅ expiration_date
+          notes || null, // ✅ notes
+        ];
+
+        db.query(insertSql, insertValues, (insertErr, insertResult) => {
+          if (insertErr) {
+            console.error("Error inserting warrant:", insertErr);
+            return res.status(500).json({
+              success: false,
+              message: "Error inserting warrant",
+              error: insertErr,
+            });
+          }
+
+          // Second, insert into round_investors table
+          var warrantId = insertResult.insertId;
+
+          return res.status(200).json({
+            success: true,
+            message: "Warrant inserted successfully",
+            operation: "insert",
+            affectedRows: insertResult.affectedRows,
+          });
+        });
+      } else {
+        return res.status(200).json({
+          success: true,
+          message: "Warrant inserted successfully",
+          operation: "",
+          affectedRows: "",
+        });
+      }
+    } else {
+      // Record exists - UPDATE
+      if (hasWarrants_preferred === false) {
+        // Step 1: Get warrant IDs from warrants table
+        const getWarrantIdsSql = `
+            SELECT id FROM warrants 
+            WHERE roundrecord_id = ? AND company_id = ?
+          `;
+
+        db.query(
+          getWarrantIdsSql,
+          [roundrecord_id, company_id],
+          (err2, warrants) => {
+            if (err2) {
+              console.error("Error fetching warrant IDs:", err2);
+              return res.status(500).json({
+                success: false,
+                message: "Error fetching warrant IDs",
+                error: err2,
+              });
+            }
+
+            if (warrants && warrants.length > 0) {
+              const warrantIds = warrants.map((w) => w.id);
+
+              // Step 2: Delete from round_investors using warrant_ids
+              const deleteRoundInvestorsSql = `
+                DELETE FROM round_investors 
+                WHERE warrant_id IN (?) AND round_id = ? AND company_id = ?
+              `;
+
+              db.query(
+                deleteRoundInvestorsSql,
+                [warrantIds, roundrecord_id, company_id],
+                (err3, result3) => {
+                  if (err3) {
+                    console.error(
+                      "Error deleting round_investors records:",
+                      err3,
+                    );
+                    return res.status(500).json({
+                      success: false,
+                      message: "Error deleting round_investors records",
+                      error: err3,
+                    });
+                  }
+
+                  // Step 3: Delete from warrants table
+                  const deleteWarrantsSql = `
+                    DELETE FROM warrants 
+                    WHERE roundrecord_id = ? AND company_id = ?
+                  `;
+
+                  db.query(
+                    deleteWarrantsSql,
+                    [roundrecord_id, company_id],
+                    (err, result) => {
+                      if (err) {
+                        console.error("Error deleting warrants:", err);
+                        return res.status(500).json({
+                          success: false,
+                          message: "Error deleting warrants",
+                          error: err,
+                        });
+                      }
+
+                      return res.status(200).json({
+                        success: true,
+                        message:
+                          "Warrants and associated records deleted successfully",
+                        deletedRoundInvestors: result3.affectedRows,
+                        deletedWarrants: result.affectedRows,
+                        warrantIds: warrantIds,
+                      });
+                    },
+                  );
+                },
+              );
+            } else {
+              // No warrants found
+              return res.status(200).json({
+                success: true,
+                message: "No warrants found to delete",
+                deletedWarrants: 0,
+                deletedRoundInvestors: 0,
+              });
+            }
+          },
+        );
+      } else {
+        // First, get warrant IDs for this round
+        const getWarrantIdsSql = `
+          SELECT id FROM warrants 
+          WHERE roundrecord_id = ? AND company_id = ?
+        `;
+
+        db.query(
+          getWarrantIdsSql,
+          [roundrecord_id, company_id],
+          (err, warrants) => {
+            if (err) {
+              console.error("Error fetching warrant IDs:", err);
+              return res.status(500).json({
+                success: false,
+                message: "Error fetching warrant IDs",
+                error: err,
+              });
+            }
+
+            if (!warrants || warrants.length === 0) {
+              return res.status(404).json({
+                success: false,
+                message: "No warrants found to update",
+              });
+            }
+
+            const warrantIds = warrants[0]?.id;
+            // Update warrants
+            const updateSql = `
+              UPDATE warrants 
+              SET 
+                warrant_fixed_shares = ?,
+                warrantType = ?,
+                company_id = ?,
+                investor_id = ?,
+                warrant_coverage_percentage = ?,
+                warrant_status = ?,
+                expiration_date = ?,
+                updated_at = NOW()
+              WHERE roundrecord_id = ? AND company_id = ?
+            `;
+
+            const updateValues = [
+              warrant_fixed_shares,
+              warrantType,
+              company_id,
+              0,
+              warrant_coverage_percentage,
+              warrant_status,
+              expiration_date,
+              roundrecord_id,
+              company_id,
+            ];
+
+            db.query(updateSql, updateValues, (updateErr, updateResult) => {
+              if (updateErr) {
+                console.error("Error updating warrant:", updateErr);
+                return res.status(500).json({
+                  success: false,
+                  message: "Error updating warrant",
+                  error: updateErr,
+                });
+              }
+              return res.status(200).json({
+                success: true,
+                message:
+                  "Round investor record already exists, skipping insertion",
+                operation: "skip",
+                existingId: "",
+                warrantId: "",
+              });
+            });
+          },
+        );
+      }
+    }
+  });
+};
+// Helper function to update/create warrant data (internal use only)
+const updateWarrantDataInternal = (warrantData) => {
+  return new Promise((resolve, reject) => {
+    const {
+      roundrecord_id,
+      company_id,
+      warrant_coverage_percentage,
+      warrant_status,
+      expiration_date,
+      warrantType,
+      warrant_fixed_shares,
+    } = warrantData;
+
+    // First check if record exists
+    const checkSql =
+      "SELECT * FROM warrants WHERE roundrecord_id = ? AND company_id = ?";
+
+    db.query(
+      checkSql,
+      [roundrecord_id, company_id],
+      (checkErr, checkResult) => {
+        if (checkErr) {
+          console.error("Error checking warrant:", checkErr);
+          return reject(checkErr);
+        }
+
+        if (checkResult.length === 0) {
+          // Insert new warrant
+          const insertSql = `
+          INSERT INTO warrants (
+            warrant_fixed_shares,
+            warrantType,
+            roundrecord_id,
+            company_id,
+            investor_id,
+            warrant_coverage_percentage,
+            warrant_status,
+            issued_date,
+            expiration_date,
+            created_at,
+            updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), ?, NOW(), NOW())
+        `;
+
+          const insertValues = [
+            warrant_fixed_shares,
+            warrantType,
+            roundrecord_id,
+            company_id,
+            0,
+            warrant_coverage_percentage || 0,
+            warrant_status || "pending",
+            expiration_date || null,
+          ];
+
+          db.query(insertSql, insertValues, (insertErr, insertResult) => {
+            if (insertErr) {
+              console.error("Error inserting warrant:", insertErr);
+              return reject(insertErr);
+            }
+            resolve({
+              success: true,
+              operation: "insert",
+              warrantId: insertResult.insertId,
+            });
+          });
+        } else {
+          // Update existing warrant
+          const updateSql = `
+          UPDATE warrants 
+          SET 
+            warrant_fixed_shares = ?,
+            warrantType = ?,
+            warrant_coverage_percentage = ?,
+            warrant_status = ?,
+            expiration_date = ?,
+            updated_at = NOW()
+          WHERE roundrecord_id = ? AND company_id = ?
+        `;
+
+          const updateValues = [
+            warrant_fixed_shares,
+            warrantType,
+            warrant_coverage_percentage || 0,
+            warrant_status || "pending",
+            expiration_date || null,
+            roundrecord_id,
+            company_id,
+          ];
+
+          db.query(updateSql, updateValues, (updateErr, updateResult) => {
+            if (updateErr) {
+              console.error("Error updating warrant:", updateErr);
+              return reject(updateErr);
+            }
+            resolve({
+              success: true,
+              operation: "update",
+              affectedRows: updateResult.affectedRows,
+            });
+          });
+        }
+      },
+    );
+  });
+};
 exports.CreateOrUpdateCapitalRound = (req, res) => {
   const uploadFields = upload.fields([
     { name: "termsheetFile", maxCount: 10 },
@@ -149,6 +581,15 @@ exports.CreateOrUpdateCapitalRound = (req, res) => {
       ClientIP,
       investorPostMoney,
       optionPoolPercent_post,
+
+      hasWarrants_preferred,
+      warrantType,
+      warrant_coverage_percentage,
+      warrant_fixed_shares,
+      warrant_exercise_type,
+      warrant_adjustment_percent,
+      warrant_adjustment_direction,
+      expirationDate_preferred,
     } = req.body;
     let lock = "No";
     if (roundStatus === "CLOSED") {
@@ -289,7 +730,64 @@ exports.CreateOrUpdateCapitalRound = (req, res) => {
             if (err) {
               return res.status(500).json({ message: "DB update error", err });
             }
+            console.log(hasWarrants_preferred);
+            console.log(typeof hasWarrants_preferred);
+            if (hasWarrants_preferred === "true") {
+              console.log(typeof hasWarrants_preferred);
+              const warrantdata = {
+                warrant_coverage_percentage:
+                  parseFloat(warrant_coverage_percentage) || 0,
+                warrant_exercise_type:
+                  warrant_exercise_type || "next_round_adjusted",
+                warrant_adjustment_percent:
+                  parseFloat(warrant_adjustment_percent) || 0,
+                warrant_adjustment_direction:
+                  warrant_adjustment_direction || "decrease",
+                warrant_status: "pending",
+                warrantType: warrantType,
+                warrant_fixed_shares: warrant_fixed_shares,
+                expiration_date: expirationDate_preferred || null,
+                roundrecord_id: id,
+                company_id: company_id,
+                share_class_type: shareClassType,
+                instrument_type: instrumentType,
+                round_name: nameOfRound,
+              };
+              try {
+                await updateWarrantDataInternal(warrantdata);
+              } catch (warrantErr) {
+                console.error("Error updating/creating warrant:", warrantErr);
+                // Don't fail the main operation, just log the error
+              }
+            }
+            if (hasWarrants_preferred === "false") {
+              const warrantUpdateDataa = {
+                warrant_coverage_percentage:
+                  parseFloat(warrant_coverage_percentage) || 0,
+                warrant_exercise_type:
+                  warrant_exercise_type || "next_round_adjusted",
+                warrant_adjustment_percent:
+                  parseFloat(warrant_adjustment_percent) || 0,
+                warrant_adjustment_direction:
+                  warrant_adjustment_direction || "decrease",
+                warrant_status: "pending",
+                warrantType: warrantType,
+                warrant_fixed_shares: warrant_fixed_shares,
+                expiration_date: expirationDate_preferred || null,
+                roundrecord_id: id,
+                company_id: company_id,
+                share_class_type: shareClassType,
+                instrument_type: instrumentType,
+                round_name: nameOfRound,
+              };
 
+              try {
+                await deleteWarrantData(warrantUpdateDataa);
+              } catch (warrantErr) {
+                console.error("Error updating/creating warrant:", warrantErr);
+                // Don't fail the main operation, just log the error
+              }
+            }
             // ⚠️ DECLARE CASCADE VARIABLES OUTSIDE TRY-CATCH
             let subsequentRounds = [];
             let cascadeSuccess = true;
@@ -460,52 +958,52 @@ exports.CreateOrUpdateCapitalRound = (req, res) => {
         }
       }
       const sql = `
-INSERT INTO roundrecord (
-  round_target_money,
-  round_investments,
-  optionPoolPercent_post,
-  investorPostMoney,
-  optionPoolPercent,
-  pre_money,
-  post_money,
-  company_id,
-  created_by_id,
-  created_by_role,
-  updated_by_id,
-  updated_by_role,
-  round_type,
-  nameOfRound,
-  shareClassType,
-  shareclassother,
-  description,
-  instrumentType,
-  instrument_type_data,
-  customInstrument,
-  roundsize,
-  currency,
-  issuedshares,
-  rights,
-  liquidationpreferences,
-  liquidation,
-  liquidationOther,
-  convertible,
-  convertibleType,
-  voting,
-  termsheetFile,
-  subscriptiondocument,
-  generalnotes,
-  dateroundclosed,
-  roundStatus,
-  is_shared,
-  is_locked,
-  created_at,
-  founder_data,
-  total_founder_shares,
-  founder_count
-) VALUES (
-  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-)
-`;
+      INSERT INTO roundrecord (
+        round_target_money,
+        round_investments,
+        optionPoolPercent_post,
+        investorPostMoney,
+        optionPoolPercent,
+        pre_money,
+        post_money,
+        company_id,
+        created_by_id,
+        created_by_role,
+        updated_by_id,
+        updated_by_role,
+        round_type,
+        nameOfRound,
+        shareClassType,
+        shareclassother,
+        description,
+        instrumentType,
+        instrument_type_data,
+        customInstrument,
+        roundsize,
+        currency,
+        issuedshares,
+        rights,
+        liquidationpreferences,
+        liquidation,
+        liquidationOther,
+        convertible,
+        convertibleType,
+        voting,
+        termsheetFile,
+        subscriptiondocument,
+        generalnotes,
+        dateroundclosed,
+        roundStatus,
+        is_shared,
+        is_locked,
+        created_at,
+        founder_data,
+        total_founder_shares,
+        founder_count
+      ) VALUES (
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      )
+      `;
 
       let processedDateRoundClosed = dateroundclosed;
       if (Array.isArray(processedDateRoundClosed)) {
@@ -576,6 +1074,37 @@ INSERT INTO roundrecord (
 
         const newId = result.insertId;
         var currentRound = req.body;
+        if (hasWarrants_preferred === "true") {
+          const warrantInsertData = {
+            roundrecord_id: newId,
+            company_id: company_id,
+            investor_id: 0,
+            warrant_coverage_percentage:
+              parseFloat(warrant_coverage_percentage) || 0,
+            warrant_exercise_type:
+              warrant_exercise_type || "next_round_adjusted",
+            warrant_adjustment_percent:
+              parseFloat(warrant_adjustment_percent) || 0,
+            warrant_adjustment_direction:
+              warrant_adjustment_direction || "decrease",
+            warrant_status: "pending",
+            warrantType: warrantType,
+            warrant_fixed_shares: warrant_fixed_shares,
+            issued_date: new Date().toISOString().split("T")[0],
+            expiration_date: expirationDate_preferred || null,
+            notes: null,
+            share_class_type: shareClassType,
+            instrument_type: instrumentType,
+            round_name: nameOfRound,
+          };
+
+          try {
+            await createWarrantDataInternal(warrantInsertData);
+          } catch (warrantErr) {
+            console.error("Error creating warrant:", warrantErr);
+            // Continue execution even if warrant creation fails
+          }
+        }
         // Calculate shares for new round
         try {
           await calculateAndUpdateIssuedShares(
@@ -2408,6 +2937,7 @@ async function insertConvertedInvestorDirect(
 async function insertConversion(connection, roundId, companyId, conv) {
   return new Promise((resolve, reject) => {
     // Extract investor details
+    console.log(conv);
     const investorDetails = conv.investor_details || {};
     const firstName =
       investorDetails.firstName ||
@@ -2442,7 +2972,9 @@ async function insertConversion(connection, roundId, companyId, conv) {
         parseFloat(conv.investment) || 0, // investment_amount
         parseInt(conv.shares) || 0, // converted_shares
         parseFloat(conv.conversion_price) || 0, // conversion_price
-        parseFloat(conv.principal_plus_interest) || 0, // principal_plus_interest
+        isFinite(parseFloat(conv.principal_plus_interest))
+          ? parseFloat(conv.principal_plus_interest)
+          : 0, // principal_plus_interest
         parseFloat(conv.discount_rate) || 0, // discount_rate
         parseFloat(conv.valuation_cap) || 0, // valuation_cap
         parseFloat(conv.interest_rate) || 0, // interest_rate
@@ -2534,8 +3066,6 @@ async function saveCapTableData(
   postMoneyValuation,
   convert = false,
 ) {
-  //return;
-
   return new Promise((resolve, reject) => {
     db.getConnection((err, connection) => {
       if (err) {
@@ -2658,8 +3188,8 @@ async function saveCapTableData(
                 );
               }
             }
+
             // 5. Pending instruments from preTable.items — PRE only
-            //if (convert === false) {
             if (preTable.items) {
               for (const item of preTable.items) {
                 if (item.type === "pending" || item.is_pending) {
@@ -2674,8 +3204,8 @@ async function saveCapTableData(
                        is_pending, potential_shares,
                        conversion_price, discount_rate, valuation_cap,
                        interest_rate, years, interest_accrued, total_conversion_amount, maturity_date,
-                       investor_details, instrument_type, round_name,share_class_type)
-                      VALUES (?, ?, 'pre', 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,?)`,
+                       investor_details, instrument_type, round_name, share_class_type)
+                      VALUES (?, ?, 'pre', 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                       [
                         roundId,
                         companyId,
@@ -2687,15 +3217,15 @@ async function saveCapTableData(
                           "",
                         item.investor_details?.email || item.email || "",
                         item.investor_details?.phone || item.phone || "",
-                        0, // shares
-                        0, // new_shares
-                        0, // total_shares
+                        0,
+                        0,
+                        0,
                         parseFloat(item.investment || item.investment_amount) ||
                           0,
                         parseFloat(item.conversion_price) || 0,
-                        0, // percentage_numeric
+                        0,
                         "0.00%",
-                        0, // value
+                        0,
                         parseInt(item.potential_shares) || 0,
                         parseFloat(item.conversion_price) || 0,
                         parseFloat(item.discount_rate) || 0,
@@ -2719,7 +3249,61 @@ async function saveCapTableData(
                 }
               }
             }
-            // }
+
+            // 6. ✅ SAVE WARRANTS FOR PRE-MONEY
+            // Look for warrant items in preTable.items
+            if (preTable.items) {
+              for (const item of preTable.items) {
+                if (item.is_warrant === true) {
+                  const percentage_numeric = parseFloat(item.percentage) || 0;
+                  const percentage_formatted = item.percentage || "0.00%";
+                  const value = parseFloat(item.value) || 0;
+
+                  await new Promise((res, rej) => {
+                    connection.query(
+                      `INSERT INTO round_investors 
+                      (round_id, company_id, cap_table_type, investor_type, first_name, last_name,
+                       email, phone, shares, new_shares, total_shares, investment_amount, share_price,
+                       percentage_numeric, percentage_formatted, value, is_previous, 
+                       is_new_investment, investor_details, share_class_type, instrument_type, 
+                       round_name, round_id_ref, warrant_id)
+                      VALUES (?, ?, 'pre', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0,  1, ?, ?, ?, ?, ?, ?)`,
+                      [
+                        roundId,
+                        companyId,
+                        item.investor_type || "warrant",
+                        item.investor_details?.firstName ||
+                          item.name?.split(" ")[0] ||
+                          "",
+                        item.investor_details?.lastName ||
+                          item.name?.split(" ").slice(1).join(" ") ||
+                          "",
+                        item.investor_details?.email || item.email || "",
+                        item.investor_details?.phone || item.phone || "",
+                        parseInt(item.shares) || 0,
+                        parseInt(item.new_shares) || 0,
+                        parseInt(item.shares) || 0,
+                        parseFloat(item.investment) || 0,
+                        parseFloat(item.share_price) || 0,
+                        percentage_numeric,
+                        percentage_formatted,
+                        value,
+                        JSON.stringify(item.investor_details || {}),
+                        item.share_class_type || item.shareClassType || "",
+                        item.instrument_type || item.instrumentType || "",
+                        item.round_name || item.roundName || "",
+                        item.round_id || item.roundId || null,
+                        item.warrant_id || null,
+                      ],
+                      (err) => {
+                        if (err) rej(err);
+                        else res();
+                      },
+                    );
+                  });
+                }
+              }
+            }
           }
 
           // ==================== SAVE POST-MONEY DATA ====================
@@ -2792,6 +3376,7 @@ async function saveCapTableData(
                 }
               }
             }
+
             // 6. Pending instruments from postTable.items — POST only
             if (convert === false) {
               if (postTable.items) {
@@ -2808,7 +3393,7 @@ async function saveCapTableData(
                        is_pending, potential_shares,
                        conversion_price, discount_rate, valuation_cap,
                        interest_rate, years, interest_accrued, total_conversion_amount, maturity_date,
-                       investor_details, instrument_type, round_name,share_class_type)
+                       investor_details, instrument_type, round_name, share_class_type)
                       VALUES (?, ?, 'post', 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                         [
                           roundId,
@@ -2855,6 +3440,61 @@ async function saveCapTableData(
                 }
               }
             }
+
+            // 7. ✅ SAVE WARRANTS FOR POST-MONEY
+            // Look for warrant items in postTable.items
+            if (postTable.items) {
+              for (const item of postTable.items) {
+                if (item.is_warrant === true) {
+                  const percentage_numeric = parseFloat(item.percentage) || 0;
+                  const percentage_formatted = item.percentage || "0.00%";
+                  const value = parseFloat(item.value) || 0;
+
+                  await new Promise((res, rej) => {
+                    connection.query(
+                      `INSERT INTO round_investors 
+                      (round_id, company_id, cap_table_type, investor_type, first_name, last_name,
+                       email, phone, shares, new_shares, total_shares, investment_amount, share_price,
+                       percentage_numeric, percentage_formatted, value, is_previous, 
+                       is_new_investment, investor_details, share_class_type, instrument_type, 
+                       round_name, round_id_ref, warrant_id)
+                      VALUES (?, ?, 'post', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0,  1, ?, ?, ?, ?, ?, ?)`,
+                      [
+                        roundId,
+                        companyId,
+                        item.investor_type || "warrant",
+                        item.investor_details?.firstName ||
+                          item.name?.split(" ")[0] ||
+                          "",
+                        item.investor_details?.lastName ||
+                          item.name?.split(" ").slice(1).join(" ") ||
+                          "",
+                        item.investor_details?.email || item.email || "",
+                        item.investor_details?.phone || item.phone || "",
+                        parseInt(item.shares) || 0,
+                        parseInt(item.new_shares) || 0,
+                        parseInt(item.shares) || 0,
+                        parseFloat(item.investment) || 0,
+                        parseFloat(item.share_price) || 0,
+                        percentage_numeric,
+                        percentage_formatted,
+                        value,
+                        JSON.stringify(item.investor_details || {}),
+                        item.share_class_type || item.shareClassType || "",
+                        item.instrument_type || item.instrumentType || "",
+                        item.round_name || item.roundName || "",
+                        item.round_id || item.roundId || null,
+                        item.warrant_id || null,
+                      ],
+                      (err) => {
+                        if (err) rej(err);
+                        else res();
+                      },
+                    );
+                  });
+                }
+              }
+            }
           }
 
           // ==================== SAVE FLATTENED ITEMS ====================
@@ -2870,7 +3510,6 @@ async function saveCapTableData(
                 item,
               );
             }
-          } else {
           }
 
           // Post-money items
@@ -3073,7 +3712,10 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
   let totalPreMoneyShares = round0Shares;
   let previousInvestorsList = [];
   let previousInvestorsTotalShares = 0;
-
+  let previousWarrantsList = [];
+  let previousWarrantsTotalShares = 0;
+  let currentRoundWarrantsList = [];
+  let currentRoundWarrantsTotalShares = 0;
   // ✅ CONDITION: Only fetch previous investors if there are previous rounds
   if (previousRounds.length > 0 && latestPreviousRound) {
     const round = latestPreviousRound;
@@ -3087,7 +3729,7 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
       db.query(
         `SELECT * FROM round_investors 
        WHERE round_id = ? AND company_id = ? AND cap_table_type = 'post' 
-       AND (investor_type = 'current' OR investor_type = 'converted' or investor_type = 'previous' or investor_type = 'warrant' or investor_type = 'warrant not exercised')
+       AND (investor_type = 'current' OR investor_type = 'converted' or investor_type = 'previous'  or investor_type = 'warrant' or investor_type = 'warrant not exercised')
        ORDER BY id ASC`,
         [round.id, company_id],
         (err, results) => {
@@ -3098,32 +3740,135 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
     });
 
     roundInvestors.forEach((inv) => {
-      previousInvestorsList.push({
-        type: "investor",
-        name: `${inv.first_name || ""} ${inv.last_name || ""}`.trim(),
-        investor_details: {
-          firstName: inv.first_name || "",
-          lastName: inv.last_name || "",
-          email: inv.email || "",
-          phone: inv.phone || "",
-        },
-        shares: inv.shares,
-        investment: parseFloat(inv.investment_amount || 0),
-        share_price: parseFloat(inv.share_price || 0),
-        share_class_type: inv.share_class_type,
-        instrument_type: inv.instrument_type,
-        round_name: inv.round_name,
-        round_id: round.id,
-        is_previous: true,
-      });
+      if (
+        inv.investor_type === "warrant" ||
+        inv.investor_type === "warrant not exercised"
+      ) {
+        previousWarrantsList.push({
+          type: "warrant",
+          name: `${inv.first_name || ""} ${inv.last_name || ""}`.trim(),
+          investor_details: {
+            firstName: inv.first_name || "",
+            lastName: inv.last_name || "",
+            email: inv.email || "",
+            phone: inv.phone || "",
+          },
+          shares: inv.shares,
+          investor_type: inv.investor_type,
+          investment: parseFloat(inv.investment_amount || 0),
+          share_price: parseFloat(inv.share_price || 0),
+          share_class_type: inv.share_class_type,
+          instrument_type: inv.instrument_type,
+          round_name: inv.round_name,
+          round_id: round.id,
+          warrant_id: inv.warrant_id,
+          is_previous: true,
+        });
+      } else {
+        previousInvestorsList.push({
+          type: "investor",
+          name: `${inv.first_name || ""} ${inv.last_name || ""}`.trim(),
+          investor_details: {
+            firstName: inv.first_name || "",
+            lastName: inv.last_name || "",
+            email: inv.email || "",
+            phone: inv.phone || "",
+          },
+          shares: inv.shares,
+          investment: parseFloat(inv.investment_amount || 0),
+          share_price: parseFloat(inv.share_price || 0),
+          share_class_type: inv.share_class_type,
+          instrument_type: inv.instrument_type,
+          round_name: inv.round_name,
+          round_id: round.id,
+          is_previous: true,
+        });
+      }
     });
 
     previousInvestorsTotalShares = previousInvestorsList.reduce(
       (sum, inv) => sum + (inv.shares || 0),
       0,
     );
+    previousWarrantsTotalShares = previousWarrantsList.reduce(
+      (sum, warrant) => sum + (warrant.shares || 0),
+      0,
+    );
   }
+  // ========== GET CURRENT ROUND WARRANTS ==========
+  try {
+    const currentRoundWarrants = await new Promise((resolve, reject) => {
+      db.query(
+        `SELECT w.* 
+         FROM warrants w
+         WHERE w.roundrecord_id = ? AND w.company_id = ?`,
+        [id, company_id],
+        (err, results) => {
+          if (err) reject(err);
+          else resolve(results || []);
+        },
+      );
+    });
 
+    // Parse investors list for names
+    let roundInvestorsList = [];
+    try {
+      if (round_investments) {
+        roundInvestorsList =
+          typeof round_investments === "string"
+            ? JSON.parse(round_investments)
+            : round_investments;
+      }
+    } catch (e) {
+      console.error("Error parsing round_investments:", e);
+    }
+
+    currentRoundWarrants.forEach((warrant, index) => {
+      let investorName = "Warrant Holder";
+      let investorEmail = "";
+      let investorPhone = "";
+      let investorFirstName = "";
+      let investorLastName = "";
+
+      if (roundInvestorsList && roundInvestorsList.length > 0) {
+        const investor = roundInvestorsList[0];
+        investorFirstName = investor.firstName || "";
+        investorLastName = investor.lastName || "";
+        investorName =
+          `${investorFirstName} ${investorLastName}`.trim() || "Warrant Holder";
+        investorEmail = investor.email || "";
+        investorPhone = investor.phone || "";
+      }
+
+      currentRoundWarrantsList.push({
+        type: "warrant",
+        name: investorName,
+        investor_details: {
+          firstName: investorFirstName,
+          lastName: investorLastName,
+          email: investorEmail,
+          phone: investorPhone,
+        },
+        shares: warrant.shares || 0,
+        investor_type: "warrant not exercised",
+        investment: 0,
+        share_price: 0,
+        share_class_type: null,
+        instrument_type: null,
+        round_name: currentRound?.nameOfRound || "",
+        round_id: id,
+        warrant_id: warrant.id,
+        is_previous: false,
+      });
+    });
+
+    currentRoundWarrantsTotalShares = currentRoundWarrantsList.reduce(
+      (sum, warrant) => sum + (warrant.shares || 0),
+      0,
+    );
+  } catch (error) {
+    console.error("❌ Error fetching current round warrants:", error);
+  }
   const alreadyConvertedRounds = await getAlreadyConvertedRounds(
     company_id,
     id,
@@ -3149,7 +3894,6 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
       latestRound?.id,
     );
   }
-
   for (const investor of preconversion) {
     if (alreadyConvertedIds.includes(parseInt(investor.round_id))) continue;
 
@@ -3236,7 +3980,6 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
       moic: "0X",
     });
   }
-
   // ========== FETCH PREVIOUS PENDING SAFEs / NOTES ==========
   let previousPendingSafes = [];
 
@@ -3488,7 +4231,42 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
     total_option_pool = optionPoolShares;
     total_shares_befores = round0Shares;
   }
-
+  const buildWarrantItem = (warrant, totalShares, valuation, cur) => {
+    const ownership = warrant.shares / totalShares;
+    const rawPercentage = ownership * 100;
+    let investorType = "warrant";
+    if (warrant.investor_type === "warrant not exercised") {
+      investorType = "warrant not exercised";
+    }
+    return {
+      type: "investor",
+      name: warrant.name,
+      investor_details: warrant.investor_details,
+      shares: warrant.shares,
+      new_shares: warrant.shares,
+      existing_shares: 0,
+      total: warrant.shares,
+      email: warrant.investor_details?.email || "",
+      phone: warrant.investor_details?.phone || "",
+      percentage_raw: rawPercentage,
+      percentage: rawPercentage.toFixed(2) + "%",
+      percentage_formatted: rawPercentage.toFixed(2) + "%",
+      value: ((rawPercentage * valuation) / 100).toFixed(2),
+      investment: warrant.investment,
+      investment_amount: warrant.investment,
+      share_price: warrant.share_price,
+      is_previous: false,
+      is_warrant: true,
+      is_new_investment: true,
+      is_converted: false,
+      investor_type: investorType,
+      share_class_type: warrant.share_class_type,
+      instrument_type: warrant.instrument_type,
+      round_name: warrant.round_name,
+      round_id: warrant.round_id,
+      warrant_id: warrant.warrant_id,
+    };
+  };
   // Rest of the code remains exactly the same...
   const investorsWithShares = investorsList.map((inv) => {
     const amount = parseFloat(inv.amount) || 0;
@@ -3630,6 +4408,34 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
             };
           })()
         : null,
+    warrants:
+      previousWarrantsList.length > 0
+        ? {
+            name: "Warrants",
+            total_shares: previousWarrantsTotalShares,
+            percentage_raw:
+              (previousWarrantsTotalShares / preMoneyTotalSharesCalc) * 100,
+            percentage:
+              (
+                (previousWarrantsTotalShares / preMoneyTotalSharesCalc) *
+                100
+              ).toFixed(2) + "%",
+            total_value: (
+              ((previousWarrantsTotalShares / preMoneyTotalSharesCalc) *
+                100 *
+                preMoneyVal) /
+              100
+            ).toFixed(2),
+            items: previousWarrantsList.map((w) =>
+              buildWarrantItem(
+                w,
+                preMoneyTotalSharesCalc,
+                preMoneyVal,
+                currentRound?.currency || "USD",
+              ),
+            ),
+          }
+        : null,
     pre_money_valuation: preMoneyVal,
     share_price: (preMoneyVal / preMoneyTotalSharesCalc).toFixed(4),
     items: [
@@ -3703,6 +4509,14 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
           round_id: inv.round_id,
         };
       }),
+      ...previousWarrantsList.map((w) =>
+        buildWarrantItem(
+          w,
+          preMoneyTotalSharesCalc,
+          preMoneyVal,
+          currentRound?.currency || "USD",
+        ),
+      ),
       ...(totalConvertedShares > 0
         ? (() => {
             const ownership = totalConvertedShares / preMoneyTotalSharesCalc;
@@ -3917,6 +4731,41 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
         is_option_pool: true,
       };
     })(),
+    warrants:
+      currentRoundWarrantsList.length > 0
+        ? {
+            name: "Warrants",
+            total_shares: currentRoundWarrantsTotalShares,
+            new_shares: currentRoundWarrantsTotalShares,
+            total: currentRoundWarrantsTotalShares,
+            percentage_raw:
+              (currentRoundWarrantsTotalShares / totalPostShares) * 100,
+            percentage:
+              (
+                (currentRoundWarrantsTotalShares / totalPostShares) *
+                100
+              ).toFixed(2) + "%",
+            percentage_formatted:
+              (
+                (currentRoundWarrantsTotalShares / totalPostShares) *
+                100
+              ).toFixed(2) + "%",
+            total_value: (
+              ((currentRoundWarrantsTotalShares / totalPostShares) *
+                100 *
+                postMoneyValuation) /
+              100
+            ).toFixed(2),
+            items: currentRoundWarrantsList.map((w) =>
+              buildWarrantItem(
+                w,
+                totalPostShares,
+                postMoneyValuation,
+                currentRound?.currency || "USD",
+              ),
+            ),
+          }
+        : null,
     items: [
       ...founderList.map((f) => {
         const ownership = f.shares / totalPostShares;
@@ -3964,6 +4813,22 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
           round_id: inv.round_id,
         };
       }),
+      ...previousWarrantsList.map((w) =>
+        buildWarrantItem(
+          w,
+          totalPostShares,
+          postMoneyValuation,
+          currentRound?.currency || "USD",
+        ),
+      ),
+      ...currentRoundWarrantsList.map((w) =>
+        buildWarrantItem(
+          w,
+          totalPostShares,
+          postMoneyValuation,
+          currentRound?.currency || "USD",
+        ),
+      ),
       ...(totalConvertedShares > 0
         ? conversionDetails.map((conv) => ({
             type: "investor",
@@ -4423,8 +5288,6 @@ async function handleSafeCalculation(params) {
   }
 
   // ==================== EXTRACT SAFE TERMS ====================
-  // ✅ Safe frontend bhejta hai: { discountRate: "...", valuationCap: "..." }
-  // No interest, no maturity date, no years — Safe has none of these
   const discountRate = parseFloat(parsedInstrumentData.discountRate) || 0;
   const valuationCap = parseFloat(parsedInstrumentData.valuationCap) || 0;
 
@@ -4506,6 +5369,96 @@ async function handleSafeCalculation(params) {
   let totalPreMoneyShares = round0Shares;
   let previousInvestorsList = [];
   let previousInvestorsTotalShares = 0;
+  let previousWarrantsList = [];
+  let previousWarrantsTotalShares = 0;
+
+  // ==================== GET CURRENT ROUND WARRANTS ====================
+  let currentRoundWarrantsList = [];
+  let currentRoundWarrantsTotalShares = 0;
+
+  try {
+    const currentRoundWarrants = await new Promise((resolve, reject) => {
+      db.query(
+        `SELECT w.* 
+       FROM warrants w
+       WHERE w.roundrecord_id = ? AND w.company_id = ?`,
+        [id, company_id],
+        (err, results) => {
+          if (err) reject(err);
+          else resolve(results || []);
+        },
+      );
+    });
+
+    // Parse investors list for names
+    let roundInvestorsList = [];
+    try {
+      if (round_investments) {
+        roundInvestorsList =
+          typeof round_investments === "string"
+            ? JSON.parse(round_investments)
+            : round_investments;
+      }
+    } catch (e) {
+      console.error("Error parsing round_investments:", e);
+    }
+
+    currentRoundWarrants.forEach((warrant, index) => {
+      let investorName = "Warrant Holder";
+      let investorEmail = "";
+      let investorPhone = "";
+      let investorFirstName = "";
+      let investorLastName = "";
+
+      // Try to get from round_investments first
+      if (roundInvestorsList && roundInvestorsList.length > 0) {
+        const investor = roundInvestorsList[0];
+        investorFirstName = "Warrant Holder";
+        investorLastName = "";
+        investorName = "Warrant Holder";
+        investorEmail = "";
+        investorPhone = "";
+      }
+
+      // If still empty, use warrant table data (if stored)
+      if (!investorName || investorName === "Warrant Holder") {
+        // Check if warrant table has investor details stored
+        investorFirstName = "";
+        investorLastName = "";
+        investorName = "Warrant Holder";
+        investorEmail = "";
+        investorPhone = "";
+      }
+
+      currentRoundWarrantsList.push({
+        type: "warrant",
+        name: investorName,
+        investor_details: {
+          firstName: investorFirstName,
+          lastName: investorLastName,
+          email: investorEmail,
+          phone: investorPhone,
+        },
+        shares: warrant.shares || 0,
+        investor_type: "warrant not exercised",
+        investment: 0,
+        share_price: 0,
+        share_class_type: null,
+        instrument_type: null,
+        round_name: currentRound?.nameOfRound || "",
+        round_id: id,
+        warrant_id: warrant.id,
+        is_previous: false,
+      });
+    });
+
+    currentRoundWarrantsTotalShares = currentRoundWarrantsList.reduce(
+      (sum, warrant) => sum + (warrant.shares || 0),
+      0,
+    );
+  } catch (error) {
+    console.error("❌ Error fetching current round warrants:", error);
+  }
 
   if (latestPreviousRound) {
     const round = latestPreviousRound;
@@ -4526,10 +5479,12 @@ async function handleSafeCalculation(params) {
     for (const prevRound of allPreviousInvestorRounds) {
       const roundInvestors = await new Promise((resolve, reject) => {
         db.query(
-          `SELECT * FROM round_investors 
-           WHERE round_id = ? AND company_id = ? AND cap_table_type = 'post' 
-          AND (investor_type = 'current' OR investor_type = 'converted' or investor_type = 'previous' or investor_type = 'warrant' or investor_type = 'warrant not exercised')
-           ORDER BY id ASC`,
+          `SELECT ri.*, w.id as warrant_id 
+           FROM round_investors ri
+           LEFT JOIN warrants w ON w.id = ri.warrant_id
+           WHERE ri.round_id = ? AND ri.company_id = ? AND ri.cap_table_type = 'post' 
+           AND (ri.investor_type = 'current' OR ri.investor_type = 'converted' or ri.investor_type = 'previous' or ri.investor_type = 'warrant' or ri.investor_type = 'warrant not exercised')
+           ORDER BY ri.id ASC`,
           [prevRound.id, company_id],
           (err, results) => {
             if (err) reject(err);
@@ -4539,29 +5494,60 @@ async function handleSafeCalculation(params) {
       });
 
       roundInvestors.forEach((inv) => {
-        previousInvestorsList.push({
-          type: "investor",
-          name: `${inv.first_name || ""} ${inv.last_name || ""}`.trim(),
-          investor_details: {
-            firstName: inv.first_name || "",
-            lastName: inv.last_name || "",
-            email: inv.email || "",
-            phone: inv.phone || "",
-          },
-          shares: inv.shares,
-          investment: parseFloat(inv.investment_amount || 0),
-          share_price: parseFloat(inv.share_price || 0),
-          share_class_type: inv.share_class_type,
-          instrument_type: inv.instrument_type,
-          round_name: inv.round_name,
-          round_id: prevRound.id,
-          is_previous: true,
-        });
+        if (
+          inv.investor_type === "warrant" ||
+          inv.investor_type === "warrant not exercised"
+        ) {
+          previousWarrantsList.push({
+            type: "warrant",
+            name: `${inv.first_name || ""} ${inv.last_name || ""}`.trim(),
+            investor_details: {
+              firstName: inv.first_name || "",
+              lastName: inv.last_name || "",
+              email: inv.email || "",
+              phone: inv.phone || "",
+            },
+            shares: inv.shares,
+            investor_type: inv.investor_type,
+            investment: parseFloat(inv.investment_amount || 0),
+            share_price: parseFloat(inv.share_price || 0),
+            share_class_type: inv.share_class_type,
+            instrument_type: inv.instrument_type,
+            round_name: inv.round_name,
+            round_id: prevRound.id,
+            warrant_id: inv.warrant_id,
+            is_previous: true,
+          });
+        } else {
+          previousInvestorsList.push({
+            type: "investor",
+            name: `${inv.first_name || ""} ${inv.last_name || ""}`.trim(),
+            investor_details: {
+              firstName: inv.first_name || "",
+              lastName: inv.last_name || "",
+              email: inv.email || "",
+              phone: inv.phone || "",
+            },
+            shares: inv.shares,
+            investor_type: inv.investor_type,
+            investment: parseFloat(inv.investment_amount || 0),
+            share_price: parseFloat(inv.share_price || 0),
+            share_class_type: inv.share_class_type,
+            instrument_type: inv.instrument_type,
+            round_name: inv.round_name,
+            round_id: prevRound.id,
+            is_previous: true,
+          });
+        }
       });
     }
 
     previousInvestorsTotalShares = previousInvestorsList.reduce(
       (sum, inv) => sum + (inv.shares || 0),
+      0,
+    );
+    previousWarrantsTotalShares = previousWarrantsList.reduce(
+      (sum, warrant) => sum + (warrant.shares || 0),
       0,
     );
   }
@@ -4579,10 +5565,11 @@ async function handleSafeCalculation(params) {
       (round0Shares / (1 - optionPoolPercent / 100)) *
         (optionPoolPercent / 100),
     );
-    preMoneyTotalShares = round0Shares + optionPoolShares;
+    preMoneyTotalShares =
+      round0Shares + optionPoolShares + previousWarrantsTotalShares;
   } else {
     optionPoolShares = 0;
-    preMoneyTotalShares = totalPreMoneyShares;
+    preMoneyTotalShares = totalPreMoneyShares + previousWarrantsTotalShares;
   }
 
   // ==================== STEP 2: SHARE PRICE ====================
@@ -4590,13 +5577,13 @@ async function handleSafeCalculation(params) {
 
   // ==================== STEP 3: CONVERSION PRICE ====================
   const discountedPrice = sharePrice * (1 - discountRate / 100);
-  const capPrice =
-    valuationCap > 0 ? valuationCap / preMoneyTotalShares : Infinity;
+  const capPrice = valuationCap > 0 ? valuationCap / preMoneyTotalShares : "";
   const conversionPrice = Math.min(discountedPrice, capPrice);
 
   // ==================== STEP 4: POST-MONEY ====================
   const postMoneyValuation = preMoneyVal + roundSizeVal;
-  const postMoneyTotalShares = preMoneyTotalShares; // No new shares issued
+  const postMoneyTotalShares =
+    preMoneyTotalShares + currentRoundWarrantsTotalShares; // ✅ Add current round warrants
 
   const totalOptionPoolShares =
     existingOptionPoolShares + (isFirstInvestmentRound ? optionPoolShares : 0);
@@ -4605,7 +5592,6 @@ async function handleSafeCalculation(params) {
   const investorPostMoneyOwnership = (roundSizeVal / postMoneyValuation) * 100;
 
   // ==================== STEP 5: PER INVESTOR PENDING INSTRUMENTS ====================
-  // ✅ Safe: no interest — potential_shares = principal / conversionPrice only
   const pendingInstruments = investorsList.map((inv, index) => {
     const principal = parseFloat(inv.amount) || roundSizeVal;
     const potentialShares =
@@ -4617,7 +5603,7 @@ async function handleSafeCalculation(params) {
         `${inv.firstName || ""} ${inv.lastName || ""}`.trim() ||
         inv.name ||
         `SAFE Investor ${index + 1}`,
-      instrument_type: "Safe", // ✅
+      instrument_type: "Safe",
       shares: 0,
       new_shares: 0,
       existing_shares: 0,
@@ -4636,13 +5622,8 @@ async function handleSafeCalculation(params) {
       is_pending: true,
       round_id: id,
       round_name: currentRound?.nameOfRound || "",
-      // ✅ FIX: Add shareClassType at root level
       shareClassType: currentRound?.shareClassType || "Safe",
-
-      // ✅ FIX: Add roundId
       roundId: currentRound?.id,
-
-      // ✅ FIX: Add instrument_type
       instrument_type: "Safe",
       investor_details: {
         firstName: inv.firstName || "",
@@ -4655,14 +5636,13 @@ async function handleSafeCalculation(params) {
     };
   });
 
-  // Default investor agar list empty hai
   if (pendingInstruments.length === 0) {
     const potentialShares =
       conversionPrice > 0 ? Math.round(roundSizeVal / conversionPrice) : 0;
     pendingInstruments.push({
       type: "pending",
       name: currentRound?.nameOfRound || "SAFE Investor",
-      instrument_type: "Safe", // ✅
+      instrument_type: "Safe",
       shares: 0,
       new_shares: 0,
       existing_shares: 0,
@@ -4680,13 +5660,8 @@ async function handleSafeCalculation(params) {
       value_formatted: "0.00",
       is_pending: true,
       round_id: latestPreviousRound?.id,
-
       shareClassType: currentRound?.shareClassType || "Safe",
-
-      // ✅ FIX: Add round_name
       round_name: currentRound?.nameOfRound || "",
-
-      // ✅ FIX: Add roundId
       roundId: currentRound?.id,
       investor_details: {
         firstName: "",
@@ -4703,10 +5678,6 @@ async function handleSafeCalculation(params) {
   );
 
   // ==================== GET ALL PREVIOUS PENDING SAFEs / NOTES ====================
-  // ✅ FIX: latestPendingRound (1 round) nahi — saare previous Safe/Note rounds loop karo
-  // Scenario: Safe Round pehle tha, ab Convertible Note create ho raha hai
-  // Old code: sirf latestPendingRound (Convertible Note itself) fetch karta — Safe skip
-  // New code: saare previous Safe + Note rounds ke pending investors fetch karo
   let previousPendingSafes = [];
 
   const allPreviousPendingRounds = [...previousRounds]
@@ -4714,7 +5685,7 @@ async function handleSafeCalculation(params) {
       (r) =>
         r.instrumentType === "Safe" || r.instrumentType === "Convertible Note",
     )
-    .sort((a, b) => a.id - b.id); // ascending — purane pehle
+    .sort((a, b) => a.id - b.id);
 
   if (
     latestPreviousRound &&
@@ -4722,7 +5693,6 @@ async function handleSafeCalculation(params) {
       latestPreviousRound.instrumentType === "Convertible Note")
   ) {
     try {
-      // ✅ Use latestPreviousRound.id instead of pendingRound.id
       const pendingRows = await new Promise((resolve, reject) => {
         db.query(
           `SELECT ri.*,
@@ -4737,7 +5707,7 @@ async function handleSafeCalculation(params) {
            AND ri.is_pending     = 1
            AND ri.cap_table_type = 'post'
          ORDER BY ri.id ASC`,
-          [company_id, latestPreviousRound.id], // ✅ Sirf latest round ID
+          [company_id, latestPreviousRound.id],
           (err, results) => {
             if (err) reject(err);
             else resolve(results || []);
@@ -4785,7 +5755,6 @@ async function handleSafeCalculation(params) {
           is_pending: true,
           is_converted: false,
           round_id: row.round_id,
-
           shareClassType:
             row.round_share_class_type ||
             row.share_class_type ||
@@ -4794,7 +5763,6 @@ async function handleSafeCalculation(params) {
             "",
           instrument_type:
             row.instrument_type || latestPreviousRound.instrumentType || "",
-          round_id: row.round_id,
           round_name:
             row.round_name_ref || latestPreviousRound.nameOfRound || "",
           pending_instrument_id: row.id,
@@ -4812,10 +5780,8 @@ async function handleSafeCalculation(params) {
       console.error("❌ Error fetching pending instruments:", error);
       previousPendingSafes = [];
     }
-  } else {
   }
 
-  // ✅ Merge: saare previous pending (Safe + Note) + current round ke pending
   const allPendingInstruments = [
     ...previousPendingSafes,
     ...pendingInstruments,
@@ -4883,6 +5849,12 @@ async function handleSafeCalculation(params) {
   const buildPrevInvestorItem = (inv, totalShares, valuation, cur) => {
     const ownership = inv.shares / totalShares;
     const rawPercentage = ownership * 100;
+    let investorType = "previous";
+    if (inv.investor_type === "warrant") {
+      investorType = "warrant";
+    } else if (inv.investor_type === "warrant not exercised") {
+      investorType = "warrant not exercised";
+    }
     return {
       type: "investor",
       name: inv.name,
@@ -4903,7 +5875,7 @@ async function handleSafeCalculation(params) {
       is_previous: true,
       is_new_investment: false,
       is_converted: false,
-      investor_type: "previous",
+      investor_type: investorType,
       share_class_type: inv.share_class_type,
       instrument_type: inv.instrument_type,
       round_name: inv.round_name,
@@ -4911,11 +5883,44 @@ async function handleSafeCalculation(params) {
     };
   };
 
-  // ==================== PRE-MONEY CAP TABLE ====================
-  // CASE 1: No previous round → fresh calculate (founders + option pool)
-  // CASE 2: Previous round exists → use previous round's post_money_cap_table directly
-  //         Only update: pending_instruments = previousPendingSafes (all Safe/Note rounds before this)
+  const buildWarrantItem = (warrant, totalShares, valuation, cur) => {
+    const ownership = warrant.shares / totalShares;
+    const rawPercentage = ownership * 100;
+    let investorType = "warrant";
+    if (warrant.investor_type === "warrant not exercised") {
+      investorType = "warrant not exercised";
+    }
+    return {
+      type: "investor",
+      name: warrant.name,
+      investor_details: warrant.investor_details,
+      shares: warrant.shares,
+      new_shares: warrant.shares,
+      existing_shares: 0,
+      total: warrant.shares,
+      email: warrant.investor_details?.email || "",
+      phone: warrant.investor_details?.phone || "",
+      percentage: rawPercentage.toFixed(2) + "%",
+      percentage_formatted: rawPercentage.toFixed(2) + "%",
+      value: parseFloat(((rawPercentage * valuation) / 100).toFixed(2)),
+      value_formatted: `${cur} ${((rawPercentage * valuation) / 100).toFixed(2)}`,
+      investment: warrant.investment,
+      investment_amount: warrant.investment,
+      share_price: warrant.share_price,
+      is_previous: false,
+      is_warrant: true,
+      is_new_investment: true,
+      is_converted: false,
+      investor_type: investorType,
+      share_class_type: warrant.share_class_type,
+      instrument_type: warrant.instrument_type,
+      round_name: warrant.round_name,
+      round_id: warrant.round_id,
+      warrant_id: warrant.warrant_id,
+    };
+  };
 
+  // ==================== PRE-MONEY CAP TABLE ====================
   let previousRoundPostCapTable = null;
   if (latestPreviousRound) {
     try {
@@ -4941,117 +5946,133 @@ async function handleSafeCalculation(params) {
     }
   }
 
-  const preMoneyCapTable = {
-    total_shares: preMoneyTotalShares,
-    pre_money_valuation: preMoneyVal,
-    currency,
-    share_price: sharePrice.toFixed(4),
-    pending_instruments: previousPendingSafes, // ✅ sirf previous rounds ke
+  const preMoneyCapTable = previousRoundPostCapTable
+    ? {
+        ...previousRoundPostCapTable,
+        pending_instruments: previousPendingSafes,
+        items: [
+          ...(previousRoundPostCapTable.items || []).filter(
+            (item) => !item.is_pending,
+          ),
 
-    founders: {
-      list: founderList.map((f) => {
-        const ownership = f.shares / preMoneyTotalShares;
-        const rawPercentage = ownership * 100;
-        return {
-          ...f,
+          ...previousPendingSafes,
+        ],
+      }
+    : {
+        total_shares: preMoneyTotalShares,
+        pre_money_valuation: preMoneyVal,
+        currency,
+        share_price: sharePrice.toFixed(4),
+        pending_instruments: previousPendingSafes,
+
+        founders: {
+          list: founderList.map((f) => {
+            const ownership = f.shares / preMoneyTotalShares;
+            const rawPercentage = ownership * 100;
+            return {
+              ...f,
+              roundName: round0Name,
+              share_class_type: round0Shareclassstype,
+              percentage: rawPercentage.toFixed(2) + "%",
+              value: ((rawPercentage * preMoneyVal) / 100).toFixed(2),
+            };
+          }),
+          total_shares: round0Shares,
+          total_percentage:
+            ((round0Shares / preMoneyTotalShares) * 100).toFixed(2) + "%",
+          total_value: (
+            ((round0Shares / preMoneyTotalShares) * 100 * preMoneyVal) /
+            100
+          ).toFixed(2),
           roundName: round0Name,
           share_class_type: round0Shareclassstype,
-          percentage: rawPercentage.toFixed(2) + "%",
-          value: ((rawPercentage * preMoneyVal) / 100).toFixed(2),
-        };
-      }),
-      total_shares: round0Shares,
-      total_percentage:
-        ((round0Shares / preMoneyTotalShares) * 100).toFixed(2) + "%",
-      total_value: (
-        ((round0Shares / preMoneyTotalShares) * 100 * preMoneyVal) /
-        100
-      ).toFixed(2),
-      roundName: round0Name,
-      share_class_type: round0Shareclassstype,
-    },
+        },
 
-    option_pool: {
-      shares: totalOptionPoolShares,
-      existing_shares: existingOptionPoolShares,
-      new_shares: newOptionPoolShares,
-      total: totalOptionPoolShares,
-      percentage:
-        ((totalOptionPoolShares / preMoneyTotalShares) * 100).toFixed(2) + "%",
-      value: (
-        ((totalOptionPoolShares / preMoneyTotalShares) * 100 * preMoneyVal) /
-        100
-      ).toFixed(2),
-      shareClassType: "Option Pool",
-      instrumentType: "Options",
-      roundName: "Option Pool",
-      is_option_pool: true,
-    },
+        option_pool: {
+          shares: totalOptionPoolShares,
+          existing_shares: existingOptionPoolShares,
+          new_shares: newOptionPoolShares,
+          total: totalOptionPoolShares,
+          percentage:
+            ((totalOptionPoolShares / preMoneyTotalShares) * 100).toFixed(2) +
+            "%",
+          value: (
+            ((totalOptionPoolShares / preMoneyTotalShares) *
+              100 *
+              preMoneyVal) /
+            100
+          ).toFixed(2),
+          shareClassType: "Option Pool",
+          instrumentType: "Options",
+          roundName: "Option Pool",
+          is_option_pool: true,
+        },
 
-    previous_investors:
-      previousInvestorsList.length > 0
-        ? {
-            name: "Previous Investors",
-            total_shares: previousInvestorsTotalShares,
-            percentage:
-              (
-                (previousInvestorsTotalShares / preMoneyTotalShares) *
-                100
-              ).toFixed(2) + "%",
-            total_value: (
-              ((previousInvestorsTotalShares / preMoneyTotalShares) *
-                100 *
-                preMoneyVal) /
-              100
-            ).toFixed(2),
-            items: previousInvestorsList.map((inv) => {
-              const ownership = inv.shares / preMoneyTotalShares;
-              const rawPercentage = ownership * 100;
-              return {
-                ...inv,
-                percentage: rawPercentage.toFixed(2) + "%",
-                value: ((rawPercentage * preMoneyVal) / 100).toFixed(2),
-              };
-            }),
-            is_grouped: false,
-          }
-        : null,
+        previous_investors:
+          previousInvestorsList.length > 0
+            ? {
+                name: "Previous Investors",
+                total_shares: previousInvestorsTotalShares,
+                percentage:
+                  (
+                    (previousInvestorsTotalShares / preMoneyTotalShares) *
+                    100
+                  ).toFixed(2) + "%",
+                total_value: (
+                  ((previousInvestorsTotalShares / preMoneyTotalShares) *
+                    100 *
+                    preMoneyVal) /
+                  100
+                ).toFixed(2),
+                items: previousInvestorsList.map((inv) => {
+                  const ownership = inv.shares / preMoneyTotalShares;
+                  const rawPercentage = ownership * 100;
+                  return {
+                    ...inv,
+                    percentage: rawPercentage.toFixed(2) + "%",
+                    value: ((rawPercentage * preMoneyVal) / 100).toFixed(2),
+                  };
+                }),
+                is_grouped: false,
+              }
+            : null,
 
-    converted: null,
+        converted: null,
 
-    items: [
-      // Founders
-      ...founderList.map((f) =>
-        buildFounderItem(f, preMoneyTotalShares, preMoneyVal, currency),
-      ),
-      // Option Pool
-      buildOptionPoolItem(
-        totalOptionPoolShares,
-        preMoneyTotalShares,
-        preMoneyVal,
-        currency,
-        newOptionPoolShares,
-        existingOptionPoolShares,
-      ),
-      // Previous Preferred/Common investors
-      ...previousInvestorsList.map((inv) =>
-        buildPrevInvestorItem(inv, preMoneyTotalShares, preMoneyVal, currency),
-      ),
-      // ✅ Previous Safe/Note rounds ke pending — current Convertible Note NAHI
-      ...previousPendingSafes,
-    ],
-  };
+        items: [
+          ...founderList.map((f) =>
+            buildFounderItem(f, preMoneyTotalShares, preMoneyVal, currency),
+          ),
+          buildOptionPoolItem(
+            totalOptionPoolShares,
+            preMoneyTotalShares,
+            preMoneyVal,
+            currency,
+            newOptionPoolShares,
+            existingOptionPoolShares,
+          ),
+          ...previousInvestorsList.map((inv) =>
+            buildPrevInvestorItem(
+              inv,
+              preMoneyTotalShares,
+              preMoneyVal,
+              currency,
+            ),
+          ),
+          ...previousWarrantsList.map((w) =>
+            buildWarrantItem(w, preMoneyTotalShares, preMoneyVal, currency),
+          ),
+          ...previousPendingSafes,
+        ],
+      };
+
   // ==================== POST-MONEY CAP TABLE ====================
-  // Post = state AFTER current Convertible Note investment recorded
-  // pending_instruments = allPendingInstruments (previous Safe/Note + current Note)
-  // items mein bhi allPendingInstruments
-  // value = postMoneyValuation se calculate (preMoneyVal nahi)
   const postMoneyCapTable = {
     total_shares: postMoneyTotalShares,
     post_money_valuation: preMoneyVal,
     currency,
     share_price: sharePrice.toFixed(4),
-    pending_instruments: allPendingInstruments, // ✅ previous + current
+    pending_instruments: allPendingInstruments,
 
     founders: {
       list: founderList.map((f) => {
@@ -5065,7 +6086,7 @@ async function handleSafeCalculation(params) {
           new_shares: 0,
           total: f.shares,
           percentage: rawPercentage.toFixed(2) + "%",
-          value: ((rawPercentage * preMoneyVal) / 100).toFixed(2), // ✅ postMoneyValuation
+          value: ((rawPercentage * preMoneyVal) / 100).toFixed(2),
           shareClassType: f.shareClassType || "",
           instrumentType: f.instrumentType || "",
           round_id: round0?.id || null,
@@ -5075,7 +6096,7 @@ async function handleSafeCalculation(params) {
       total_percentage:
         ((round0Shares / postMoneyTotalShares) * 100).toFixed(2) + "%",
       total_value: (
-        ((round0Shares / postMoneyTotalShares) * 100 * preMoneyVal) / // ✅
+        ((round0Shares / postMoneyTotalShares) * 100 * preMoneyVal) /
         100
       ).toFixed(2),
     },
@@ -5088,7 +6109,7 @@ async function handleSafeCalculation(params) {
       percentage:
         ((totalOptionPoolShares / postMoneyTotalShares) * 100).toFixed(2) + "%",
       value: (
-        ((totalOptionPoolShares / postMoneyTotalShares) * 100 * preMoneyVal) / // ✅
+        ((totalOptionPoolShares / postMoneyTotalShares) * 100 * preMoneyVal) /
         100
       ).toFixed(2),
       shareClassType: "Option Pool",
@@ -5112,7 +6133,7 @@ async function handleSafeCalculation(params) {
             total_value: (
               ((previousInvestorsTotalShares / postMoneyTotalShares) *
                 100 *
-                preMoneyVal) / // ✅
+                preMoneyVal) /
               100
             ).toFixed(2),
             items: previousInvestorsList.map((inv) => {
@@ -5124,7 +6145,7 @@ async function handleSafeCalculation(params) {
                 new_shares: 0,
                 total: inv.shares,
                 percentage: rawPercentage.toFixed(2) + "%",
-                value: ((rawPercentage * preMoneyVal) / 100).toFixed(2), // ✅
+                value: ((rawPercentage * preMoneyVal) / 100).toFixed(2),
               };
             }),
             is_grouped: false,
@@ -5148,34 +6169,57 @@ async function handleSafeCalculation(params) {
 
     converted_investors: null,
 
+    // ✅ Add current round warrants to items
+    warrants:
+      currentRoundWarrantsList.length > 0
+        ? {
+            name: "Warrants",
+            total_shares: currentRoundWarrantsTotalShares,
+            new_shares: currentRoundWarrantsTotalShares,
+            total: currentRoundWarrantsTotalShares,
+            percentage:
+              (
+                (currentRoundWarrantsTotalShares / postMoneyTotalShares) *
+                100
+              ).toFixed(2) + "%",
+            total_value: (
+              ((currentRoundWarrantsTotalShares / postMoneyTotalShares) *
+                100 *
+                preMoneyVal) /
+              100
+            ).toFixed(2),
+            items: currentRoundWarrantsList.map((w) =>
+              buildWarrantItem(w, postMoneyTotalShares, preMoneyVal, currency),
+            ),
+            is_grouped: true,
+          }
+        : null,
+
     items: [
-      // Founders — postMoneyValuation se value
       ...founderList.map((f) => ({
-        ...buildFounderItem(f, postMoneyTotalShares, preMoneyVal, currency), // ✅
+        ...buildFounderItem(f, postMoneyTotalShares, preMoneyVal, currency),
         roundName: "Round 0",
         roundId: round0?.id || null,
         round_id: round0?.id || null,
       })),
-      // Option Pool — postMoneyValuation se value
       buildOptionPoolItem(
         totalOptionPoolShares,
         postMoneyTotalShares,
-        preMoneyVal, // ✅
+        preMoneyVal,
         currency,
         0,
         totalOptionPoolShares,
       ),
-      // Previous Investors — postMoneyValuation se value
-      ...previousInvestorsList.map(
-        (inv) =>
-          buildPrevInvestorItem(
-            inv,
-            postMoneyTotalShares,
-            preMoneyVal,
-            currency,
-          ), // ✅
+      ...previousInvestorsList.map((inv) =>
+        buildPrevInvestorItem(inv, postMoneyTotalShares, preMoneyVal, currency),
       ),
-      // ✅ Previous Safe/Note pending + current Convertible Note pending dono
+      ...previousWarrantsList.map((w) =>
+        buildWarrantItem(w, postMoneyTotalShares, preMoneyVal, currency),
+      ),
+      // ✅ Add current round warrants
+      ...currentRoundWarrantsList.map((w) =>
+        buildWarrantItem(w, postMoneyTotalShares, preMoneyVal, currency),
+      ),
       ...allPendingInstruments,
     ],
   };
@@ -5442,6 +6486,96 @@ async function handleConvertibleNoteCalculation(params) {
   let totalPreMoneyShares = round0Shares;
   let previousInvestorsList = [];
   let previousInvestorsTotalShares = 0;
+  let previousWarrantsList = [];
+  let previousWarrantsTotalShares = 0;
+
+  // ==================== GET CURRENT ROUND WARRANTS ====================
+  let currentRoundWarrantsList = [];
+  let currentRoundWarrantsTotalShares = 0;
+
+  try {
+    const currentRoundWarrants = await new Promise((resolve, reject) => {
+      db.query(
+        `SELECT w.* 
+       FROM warrants w
+       WHERE w.roundrecord_id = ? AND w.company_id = ?`,
+        [id, company_id],
+        (err, results) => {
+          if (err) reject(err);
+          else resolve(results || []);
+        },
+      );
+    });
+
+    // Parse investors list for names
+    let roundInvestorsList = [];
+    try {
+      if (round_investments) {
+        roundInvestorsList =
+          typeof round_investments === "string"
+            ? JSON.parse(round_investments)
+            : round_investments;
+      }
+    } catch (e) {
+      console.error("Error parsing round_investments:", e);
+    }
+
+    currentRoundWarrants.forEach((warrant, index) => {
+      let investorName = "Warrant Holder";
+      let investorEmail = "";
+      let investorPhone = "";
+      let investorFirstName = "";
+      let investorLastName = "";
+
+      // Try to get from round_investments first
+      if (roundInvestorsList && roundInvestorsList.length > 0) {
+        const investor = roundInvestorsList[0];
+        investorFirstName = "Warrant Holder";
+        investorLastName = "";
+        investorName = "Warrant Holder";
+        investorEmail = "";
+        investorPhone = "";
+      }
+
+      // If still empty, use warrant table data (if stored)
+      if (!investorName || investorName === "Warrant Holder") {
+        // Check if warrant table has investor details stored
+        investorFirstName = "";
+        investorLastName = "";
+        investorName = "Warrant Holder";
+        investorEmail = "";
+        investorPhone = "";
+      }
+
+      currentRoundWarrantsList.push({
+        type: "warrant",
+        name: investorName,
+        investor_details: {
+          firstName: investorFirstName,
+          lastName: investorLastName,
+          email: investorEmail,
+          phone: investorPhone,
+        },
+        shares: warrant.shares || 0,
+        investor_type: "warrant not exercised",
+        investment: 0,
+        share_price: 0,
+        share_class_type: null,
+        instrument_type: null,
+        round_name: currentRound?.nameOfRound || "",
+        round_id: id,
+        warrant_id: warrant.id,
+        is_previous: false,
+      });
+    });
+
+    currentRoundWarrantsTotalShares = currentRoundWarrantsList.reduce(
+      (sum, warrant) => sum + (warrant.shares || 0),
+      0,
+    );
+  } catch (error) {
+    console.error("❌ Error fetching current round warrants:", error);
+  }
 
   if (latestPreviousRound) {
     const round = latestPreviousRound;
@@ -5475,29 +6609,61 @@ async function handleConvertibleNoteCalculation(params) {
       });
 
       roundInvestors.forEach((inv) => {
-        previousInvestorsList.push({
-          type: "investor",
-          name: `${inv.first_name || ""} ${inv.last_name || ""}`.trim(),
-          investor_details: {
-            firstName: inv.first_name || "",
-            lastName: inv.last_name || "",
-            email: inv.email || "",
-            phone: inv.phone || "",
-          },
-          shares: inv.shares,
-          investment: parseFloat(inv.investment_amount || 0),
-          share_price: parseFloat(inv.share_price || 0),
-          share_class_type: inv.share_class_type,
-          instrument_type: inv.instrument_type,
-          round_name: inv.round_name,
-          round_id: prevRound.id,
-          is_previous: true,
-        });
+        if (
+          inv.investor_type === "warrant" ||
+          inv.investor_type === "warrant not exercised"
+        ) {
+          previousWarrantsList.push({
+            type: "warrant",
+            name: `${inv.first_name || ""} ${inv.last_name || ""}`.trim(),
+            investor_details: {
+              firstName: inv.first_name || "",
+              lastName: inv.last_name || "",
+              email: inv.email || "",
+              phone: inv.phone || "",
+            },
+            shares: inv.shares,
+            investor_type: inv.investor_type,
+            investment: parseFloat(inv.investment_amount || 0),
+            share_price: parseFloat(inv.share_price || 0),
+            share_class_type: inv.share_class_type,
+            instrument_type: inv.instrument_type,
+            round_name: inv.round_name,
+            round_id: prevRound.id,
+            warrant_id: inv.warrant_id,
+            is_previous: true,
+          });
+        } else {
+          previousInvestorsList.push({
+            type: "investor",
+            name: `${inv.first_name || ""} ${inv.last_name || ""}`.trim(),
+            investor_details: {
+              firstName: inv.first_name || "",
+              lastName: inv.last_name || "",
+              email: inv.email || "",
+              phone: inv.phone || "",
+            },
+            shares: inv.shares,
+            investor_type: inv.investor_type,
+            investment: parseFloat(inv.investment_amount || 0),
+            share_price: parseFloat(inv.share_price || 0),
+            share_class_type: inv.share_class_type,
+            instrument_type: inv.instrument_type,
+            round_name: inv.round_name,
+            round_id: prevRound.id,
+            is_previous: true,
+            warrant_id: inv.warrant_id,
+          });
+        }
       });
     }
 
     previousInvestorsTotalShares = previousInvestorsList.reduce(
       (sum, inv) => sum + (inv.shares || 0),
+      0,
+    );
+    previousWarrantsTotalShares = previousWarrantsList.reduce(
+      (sum, warrant) => sum + (warrant.shares || 0),
       0,
     );
   }
@@ -5515,10 +6681,11 @@ async function handleConvertibleNoteCalculation(params) {
       (round0Shares / (1 - optionPoolPercent / 100)) *
         (optionPoolPercent / 100),
     );
-    preMoneyTotalShares = round0Shares + optionPoolShares;
+    preMoneyTotalShares =
+      round0Shares + optionPoolShares + previousWarrantsTotalShares;
   } else {
     optionPoolShares = 0;
-    preMoneyTotalShares = totalPreMoneyShares;
+    preMoneyTotalShares = totalPreMoneyShares + previousWarrantsTotalShares;
   }
 
   // ==================== STEP 2: SHARE PRICE ====================
@@ -5526,13 +6693,13 @@ async function handleConvertibleNoteCalculation(params) {
 
   // ==================== STEP 3: CONVERSION PRICE ====================
   const discountedPrice = sharePrice * (1 - discountRate / 100);
-  const capPrice =
-    valuationCap > 0 ? valuationCap / preMoneyTotalShares : Infinity;
+  const capPrice = valuationCap > 0 ? valuationCap / preMoneyTotalShares : "";
   const conversionPrice = Math.min(discountedPrice, capPrice);
 
   // ==================== STEP 4: POST-MONEY ====================
   const postMoneyValuation = preMoneyVal;
-  const postMoneyTotalShares = preMoneyTotalShares; // No new shares issued
+  const postMoneyTotalShares =
+    preMoneyTotalShares + currentRoundWarrantsTotalShares;
 
   const totalOptionPoolShares =
     existingOptionPoolShares + (isFirstInvestmentRound ? optionPoolShares : 0);
@@ -5541,13 +6708,9 @@ async function handleConvertibleNoteCalculation(params) {
   const investorPostMoneyOwnership = (roundSizeVal / postMoneyValuation) * 100;
 
   // ==================== STEP 5: PER INVESTOR PENDING INSTRUMENTS ====================
-  // SIMPLE interest: interestAccrued = principal × (interestRate/100) × years
-  // ==================== STEP 3: PER INVESTOR PENDING INSTRUMENTS ====================
-  // COMPOUND interest formula: principal × (1 + rate/100)^years
   const pendingInstruments = investorsList.map((inv, index) => {
     const principal = parseFloat(inv.amount) || roundSizeVal;
 
-    // ✅ COMPOUND interest calculation
     const totalConversionAmount =
       principal * Math.pow(1 + interestRate / 100, years);
     const interestAccrued = totalConversionAmount - principal;
@@ -5570,11 +6733,7 @@ async function handleConvertibleNoteCalculation(params) {
       total: 0,
       principal,
       shareClassType: currentRound?.shareClassType || "Convertible Note",
-
-      // ✅ FIX: Add round_name
       round_name: currentRound?.nameOfRound || "",
-
-      // ✅ FIX: Add roundId
       roundId: currentRound?.id,
       interest_rate: interestRate,
       years: parseFloat(years.toFixed(2)),
@@ -5593,7 +6752,6 @@ async function handleConvertibleNoteCalculation(params) {
       value_formatted: "0.00",
       is_pending: true,
       round_id: id,
-      round_name: currentRound?.nameOfRound || "",
       investor_details: {
         firstName: inv.firstName || "",
         lastName: inv.lastName || "",
@@ -5605,7 +6763,6 @@ async function handleConvertibleNoteCalculation(params) {
     };
   });
 
-  // Default investor agar list empty hai
   if (pendingInstruments.length === 0) {
     const principal = roundSizeVal;
     const interestAccrued = principal * (interestRate / 100) * years;
@@ -5641,20 +6798,9 @@ async function handleConvertibleNoteCalculation(params) {
       value_formatted: "0.00",
       is_pending: true,
       round_id: id,
-      shareClassType:
-        row.round_share_class_type ||
-        row.share_class_type ||
-        row.instrument_type ||
-        latestPreviousRound?.shareClassType ||
-        latestPreviousRound?.instrumentType ||
-        "",
-
-      // ✅ FIX: round_name from database
-      round_name: row.round_name_ref || latestPreviousRound?.nameOfRound || "",
-
-      // ✅ FIX: roundId from database
-      roundId: latestPreviousRound?.id,
+      shareClassType: "",
       round_name: currentRound?.nameOfRound || "",
+      roundId: currentRound?.id,
       investor_details: {
         firstName: "",
         lastName: "",
@@ -5670,10 +6816,6 @@ async function handleConvertibleNoteCalculation(params) {
   );
 
   // ==================== GET ALL PREVIOUS PENDING SAFEs / NOTES ====================
-  // ✅ FIX: latestPendingRound (1 round) nahi — saare previous Safe/Note rounds loop karo
-  // Scenario: Safe Round pehle tha, ab Convertible Note create ho raha hai
-  // Old code: sirf latestPendingRound (Convertible Note itself) fetch karta — Safe skip
-  // New code: saare previous Safe + Note rounds ke pending investors fetch karo
   let previousPendingSafes = [];
 
   const allPreviousPendingRounds = [...previousRounds]
@@ -5681,7 +6823,7 @@ async function handleConvertibleNoteCalculation(params) {
       (r) =>
         r.instrumentType === "Safe" || r.instrumentType === "Convertible Note",
     )
-    .sort((a, b) => a.id - b.id); // ascending — purane pehle
+    .sort((a, b) => a.id - b.id);
 
   if (
     latestPreviousRound &&
@@ -5778,7 +6920,6 @@ async function handleConvertibleNoteCalculation(params) {
     }
   }
 
-  // ✅ Merge: saare previous pending (Safe + Note) + current round ke pending
   const allPendingInstruments = [
     ...previousPendingSafes,
     ...pendingInstruments,
@@ -5846,6 +6987,12 @@ async function handleConvertibleNoteCalculation(params) {
   const buildPrevInvestorItem = (inv, totalShares, valuation, cur) => {
     const ownership = inv.shares / totalShares;
     const rawPercentage = ownership * 100;
+    let investorType = "previous";
+    if (inv.investor_type === "warrant") {
+      investorType = "warrant";
+    } else if (inv.investor_type === "warrant not exercised") {
+      investorType = "warrant not exercised";
+    }
     return {
       type: "investor",
       name: inv.name,
@@ -5866,7 +7013,7 @@ async function handleConvertibleNoteCalculation(params) {
       is_previous: true,
       is_new_investment: false,
       is_converted: false,
-      investor_type: "previous",
+      investor_type: investorType,
       share_class_type: inv.share_class_type,
       instrument_type: inv.instrument_type,
       round_name: inv.round_name,
@@ -5874,11 +7021,44 @@ async function handleConvertibleNoteCalculation(params) {
     };
   };
 
-  // ==================== PRE-MONEY CAP TABLE ====================
-  // CASE 1: No previous round → fresh calculate (founders + option pool)
-  // CASE 2: Previous round exists → use previous round's post_money_cap_table directly
-  //         Only update: pending_instruments = previousPendingSafes (all Safe/Note rounds before this)
+  const buildWarrantItem = (warrant, totalShares, valuation, cur) => {
+    const ownership = warrant.shares / totalShares;
+    const rawPercentage = ownership * 100;
+    let investorType = "warrant";
+    if (warrant.investor_type === "warrant not exercised") {
+      investorType = "warrant not exercised";
+    }
+    return {
+      type: "investor",
+      name: warrant.name,
+      investor_details: warrant.investor_details,
+      shares: warrant.shares,
+      new_shares: warrant.shares,
+      existing_shares: 0,
+      total: warrant.shares,
+      email: warrant.investor_details?.email || "",
+      phone: warrant.investor_details?.phone || "",
+      percentage: rawPercentage.toFixed(2) + "%",
+      percentage_formatted: rawPercentage.toFixed(2) + "%",
+      value: parseFloat(((rawPercentage * valuation) / 100).toFixed(2)),
+      value_formatted: `${cur} ${((rawPercentage * valuation) / 100).toFixed(2)}`,
+      investment: warrant.investment,
+      investment_amount: warrant.investment,
+      share_price: warrant.share_price,
+      is_previous: false,
+      is_warrant: true,
+      is_new_investment: true,
+      is_converted: false,
+      investor_type: investorType,
+      share_class_type: warrant.share_class_type,
+      instrument_type: warrant.instrument_type,
+      round_name: warrant.round_name,
+      round_id: warrant.round_id,
+      warrant_id: warrant.warrant_id,
+    };
+  };
 
+  // ==================== PRE-MONEY CAP TABLE ====================
   let previousRoundPostCapTable = null;
   if (latestPreviousRound) {
     try {
@@ -5903,16 +7083,16 @@ async function handleConvertibleNoteCalculation(params) {
       console.error("❌ Error fetching previous round post cap table:", error);
     }
   }
+
   const preMoneyCapTable = previousRoundPostCapTable
     ? {
-        // ✅ Previous round ka POST as-is use karo
         ...previousRoundPostCapTable,
-        // Override only what changes for this round's PRE view
         pending_instruments: previousPendingSafes,
         items: [
           ...(previousRoundPostCapTable.items || []).filter(
             (item) => !item.is_pending,
           ),
+
           ...previousPendingSafes,
         ],
       }
@@ -5921,7 +7101,7 @@ async function handleConvertibleNoteCalculation(params) {
         pre_money_valuation: preMoneyVal,
         currency,
         share_price: sharePrice.toFixed(4),
-        pending_instruments: previousPendingSafes, // ✅ sirf previous rounds ke
+        pending_instruments: previousPendingSafes,
 
         founders: {
           list: founderList.map((f) => {
@@ -5998,11 +7178,9 @@ async function handleConvertibleNoteCalculation(params) {
         converted: null,
 
         items: [
-          // Founders
           ...founderList.map((f) =>
             buildFounderItem(f, preMoneyTotalShares, preMoneyVal, currency),
           ),
-          // Option Pool
           buildOptionPoolItem(
             totalOptionPoolShares,
             preMoneyTotalShares,
@@ -6011,7 +7189,6 @@ async function handleConvertibleNoteCalculation(params) {
             newOptionPoolShares,
             existingOptionPoolShares,
           ),
-          // Previous Preferred/Common investors
           ...previousInvestorsList.map((inv) =>
             buildPrevInvestorItem(
               inv,
@@ -6020,19 +7197,17 @@ async function handleConvertibleNoteCalculation(params) {
               currency,
             ),
           ),
-          // ✅ Previous Safe/Note rounds ke pending — current Convertible Note NAHI
+          ...previousWarrantsList.map((w) =>
+            buildWarrantItem(w, preMoneyTotalShares, preMoneyVal, currency),
+          ),
           ...previousPendingSafes,
         ],
-      }; // end ternary (no previous round case)
+      };
 
   // ==================== POST-MONEY CAP TABLE ====================
-  // Post = state AFTER current Convertible Note investment recorded
-  // pending_instruments = allPendingInstruments (previous Safe/Note + current Note)
-  // items mein bhi allPendingInstruments
-  // value = postMoneyValuation se calculate (preMoneyVal nahi)
   const postMoneyCapTable = {
     total_shares: postMoneyTotalShares,
-    post_money_valuation: postMoneyValuation, // ✅ $1,200,000, not $1,600,000
+    post_money_valuation: postMoneyValuation,
     currency,
     share_price: sharePrice.toFixed(4),
     pending_instruments: allPendingInstruments,
@@ -6049,7 +7224,6 @@ async function handleConvertibleNoteCalculation(params) {
           new_shares: 0,
           total: f.shares,
           percentage: rawPercentage.toFixed(2) + "%",
-          // ✅ FIX: postMoneyValuation use karo
           value: ((rawPercentage * postMoneyValuation) / 100).toFixed(2),
           shareClassType: f.shareClassType || "",
           instrumentType: f.instrumentType || "",
@@ -6059,7 +7233,6 @@ async function handleConvertibleNoteCalculation(params) {
       total_shares: round0Shares,
       total_percentage:
         ((round0Shares / postMoneyTotalShares) * 100).toFixed(2) + "%",
-      // ✅ FIX: postMoneyValuation use karo
       total_value: (
         ((round0Shares / postMoneyTotalShares) * 100 * postMoneyValuation) /
         100
@@ -6073,7 +7246,6 @@ async function handleConvertibleNoteCalculation(params) {
       total: totalOptionPoolShares,
       percentage:
         ((totalOptionPoolShares / postMoneyTotalShares) * 100).toFixed(2) + "%",
-      // ✅ FIX: postMoneyValuation use karo
       value: (
         ((totalOptionPoolShares / postMoneyTotalShares) *
           100 *
@@ -6098,7 +7270,6 @@ async function handleConvertibleNoteCalculation(params) {
                 (previousInvestorsTotalShares / postMoneyTotalShares) *
                 100
               ).toFixed(2) + "%",
-            // ✅ FIX: postMoneyValuation use karo
             total_value: (
               ((previousInvestorsTotalShares / postMoneyTotalShares) *
                 100 *
@@ -6114,7 +7285,6 @@ async function handleConvertibleNoteCalculation(params) {
                 new_shares: 0,
                 total: inv.shares,
                 percentage: rawPercentage.toFixed(2) + "%",
-                // ✅ FIX: postMoneyValuation use karo
                 value: ((rawPercentage * postMoneyValuation) / 100).toFixed(2),
               };
             }),
@@ -6140,7 +7310,6 @@ async function handleConvertibleNoteCalculation(params) {
     converted_investors: null,
 
     items: [
-      // Founders — postMoneyValuation se value
       ...founderList.map((f) => {
         const ownership = f.shares / postMoneyTotalShares;
         const rawPercentage = ownership * 100;
@@ -6154,7 +7323,6 @@ async function handleConvertibleNoteCalculation(params) {
           phone: f.phone,
           founder_code: f.founder_code,
           percentage: rawPercentage.toFixed(2) + "%",
-          // ✅ FIX: postMoneyValuation use karo
           value: ((rawPercentage * postMoneyValuation) / 100).toFixed(2),
           shareClassType: f.shareClassType || "Common Shares",
           instrumentType: f.instrumentType || "Common Stock",
@@ -6163,7 +7331,6 @@ async function handleConvertibleNoteCalculation(params) {
           round_id: round0?.id || null,
         };
       }),
-      // Option Pool
       {
         type: "option_pool",
         name: "Employee Option Pool",
@@ -6175,7 +7342,6 @@ async function handleConvertibleNoteCalculation(params) {
         percentage:
           ((totalOptionPoolShares / postMoneyTotalShares) * 100).toFixed(2) +
           "%",
-        // ✅ FIX: postMoneyValuation use karo
         value: (
           ((totalOptionPoolShares / postMoneyTotalShares) *
             100 *
@@ -6186,7 +7352,6 @@ async function handleConvertibleNoteCalculation(params) {
         instrumentType: "Options",
         roundName: "Option Pool",
       },
-      // Previous Investors
       ...previousInvestorsList.map((inv) => {
         const ownership = inv.shares / postMoneyTotalShares;
         const rawPercentage = ownership * 100;
@@ -6198,7 +7363,6 @@ async function handleConvertibleNoteCalculation(params) {
           new_shares: 0,
           total: inv.shares,
           percentage: rawPercentage.toFixed(2) + "%",
-          // ✅ FIX: postMoneyValuation use karo
           value: ((rawPercentage * postMoneyValuation) / 100).toFixed(2),
           investment: inv.investment,
           share_price: inv.share_price,
@@ -6209,7 +7373,12 @@ async function handleConvertibleNoteCalculation(params) {
           round_id: inv.round_id,
         };
       }),
-      // Pending instruments (previous + current)
+      ...previousWarrantsList.map((w) =>
+        buildWarrantItem(w, postMoneyTotalShares, postMoneyValuation, currency),
+      ),
+      ...currentRoundWarrantsList.map((w) =>
+        buildWarrantItem(w, postMoneyTotalShares, postMoneyValuation, currency),
+      ),
       ...allPendingInstruments,
     ],
   };
@@ -8251,241 +9420,437 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
                                     });
 
                                   // ========== PRE-MONEY BUILD ==========
-                                  const preFounderItems = (
-                                    preFounders || []
-                                  ).map((f) => ({
-                                    type: "founder",
-                                    founder_code: f.founder_code,
-                                    name: `${f.first_name || ""} ${f.last_name || ""}`.trim(),
-                                    email: f.email,
-                                    phone: f.phone,
-                                    shares: f.shares,
-                                    shares_formatted: fmt(f.shares),
-                                    value: parseFloat(f.value || 0),
-                                    value_formatted: money(f.value),
-                                    share_class_type: f.share_class_type,
-                                    instrument_type: f.instrument_type,
-                                    round_name: f.round_name,
-                                  }));
 
-                                  const prePool =
-                                    (preOptionPools || [])[0] || null;
-                                  const prePoolShares = prePool
-                                    ? prePool.shares
-                                    : 0;
-                                  const prePoolValue = prePool
-                                    ? parseFloat(prePool.value || 0)
-                                    : 0;
+                                  // ✅ GET PRE-MONEY WARRANTS
+                                  const getPreWarrantsQuery = `
+                                    SELECT ri.*, w.expiration_date, w.id as warrant_id
+                                    FROM round_investors ri
+                                    LEFT JOIN warrants w ON w.id = ri.warrant_id
+                                    WHERE ri.round_id = ? 
+                                      AND ri.company_id = ? 
+                                      AND ri.cap_table_type = 'pre'
+                                      AND ri.investor_type IN ('warrant', 'warrant not exercised')
+                                      AND (w.expiration_date IS NULL OR w.expiration_date >= CURDATE())
+                                  `;
 
-                                  const prePrevInv = (
-                                    preInvestors || []
-                                  ).filter(
-                                    (i) => i.investor_type === "previous",
-                                  );
-                                  const preConvInv = (
-                                    preInvestors || []
-                                  ).filter(
-                                    (i) => i.investor_type === "converted",
-                                  );
+                                  db.query(
+                                    getPreWarrantsQuery,
+                                    [round_id, company_id],
+                                    (preWarrantErr, preWarrantResults) => {
+                                      if (preWarrantErr) {
+                                        console.error(
+                                          "Error fetching pre-money warrants:",
+                                          preWarrantErr,
+                                        );
+                                      }
 
-                                  const prePrevShares = prePrevInv.reduce(
-                                    (s, i) => s + i.shares,
-                                    0,
-                                  );
-                                  const prePrevValue = prePrevInv.reduce(
-                                    (s, i) => s + parseFloat(i.value || 0),
-                                    0,
-                                  );
-                                  const preConvShares = preConvInv.reduce(
-                                    (s, i) => s + i.shares,
-                                    0,
-                                  );
-                                  const preConvValue = preConvInv.reduce(
-                                    (s, i) => s + parseFloat(i.value || 0),
-                                    0,
-                                  );
+                                      const preValidWarrants =
+                                        preWarrantResults || [];
 
-                                  const preTotalFounderShares =
-                                    preFounderItems.reduce(
-                                      (s, f) => s + f.shares,
-                                      0,
-                                    );
-                                  const preTotalFounderValue =
-                                    preFounderItems.reduce(
-                                      (s, f) => s + f.value,
-                                      0,
-                                    );
-                                  const preTotalShares =
-                                    preTotalFounderShares +
-                                    prePoolShares +
-                                    prePrevShares +
-                                    preConvShares;
-                                  const preTotalValue =
-                                    preTotalFounderValue +
-                                    prePoolValue +
-                                    prePrevValue +
-                                    preConvValue;
+                                      const preFounderItems = (
+                                        preFounders || []
+                                      ).map((f) => ({
+                                        type: "founder",
+                                        founder_code: f.founder_code,
+                                        name: `${f.first_name || ""} ${f.last_name || ""}`.trim(),
+                                        email: f.email,
+                                        phone: f.phone,
+                                        shares: f.shares,
+                                        shares_formatted: fmt(f.shares),
+                                        value: parseFloat(f.value || 0),
+                                        value_formatted: money(f.value),
+                                        share_class_type: f.share_class_type,
+                                        instrument_type: f.instrument_type,
+                                        round_name: f.round_name,
+                                      }));
 
-                                  // Group previous investors by round_name
-                                  const prePrevGroups = {};
-                                  prePrevInv.forEach((i) => {
-                                    const key =
-                                      i.round_name || "Previous Investors";
-                                    if (!prePrevGroups[key]) {
-                                      prePrevGroups[key] = {
-                                        round_name: key,
-                                        round_id_ref: i.round_id_ref,
-                                        shareClassType:
-                                          i.share_class_type ||
-                                          i.instrument_type ||
-                                          "",
-                                        instrument_type:
-                                          i.instrument_type || "",
-                                        items: [],
-                                        total_shares: 0,
-                                        total_value: 0,
-                                      };
-                                    }
-                                    prePrevGroups[key].items.push(i);
-                                    prePrevGroups[key].total_shares += i.shares;
-                                    prePrevGroups[key].total_value +=
-                                      parseFloat(i.value || 0);
-                                  });
+                                      const prePool =
+                                        (preOptionPools || [])[0] || null;
+                                      const prePoolShares = prePool
+                                        ? prePool.shares
+                                        : 0;
+                                      const prePoolValue = prePool
+                                        ? parseFloat(prePool.value || 0)
+                                        : 0;
 
-                                  const prePendingItems = groupPendingByRound(
-                                    (pendingInstruments || [])
-                                      .filter((p) => p.cap_table_type === "pre")
-                                      .map(buildPendingItem),
-                                  );
+                                      const prePrevInv = (
+                                        preInvestors || []
+                                      ).filter(
+                                        (i) => i.investor_type === "previous",
+                                      );
+                                      const preConvInv = (
+                                        preInvestors || []
+                                      ).filter(
+                                        (i) => i.investor_type === "converted",
+                                      );
 
-                                  // ✅ Calculate pre-money percentages
-                                  const preMoneyCapTable = {
-                                    total_shares: preTotalShares,
-                                    pre_money_valuation: preMoneyVal,
-                                    currency,
-                                    items: [
-                                      ...preFounderItems.map((item) => ({
-                                        ...item,
+                                      // ✅ Calculate pre-warrant totals
+                                      const preWarrantShares =
+                                        preValidWarrants.reduce(
+                                          (s, i) => s + i.shares,
+                                          0,
+                                        );
+                                      const preWarrantValue =
+                                        preValidWarrants.reduce(
+                                          (s, i) =>
+                                            s + parseFloat(i.value || 0),
+                                          0,
+                                        );
+
+                                      const prePrevShares = prePrevInv.reduce(
+                                        (s, i) => s + i.shares,
+                                        0,
+                                      );
+                                      const prePrevValue = prePrevInv.reduce(
+                                        (s, i) => s + parseFloat(i.value || 0),
+                                        0,
+                                      );
+                                      const preConvShares = preConvInv.reduce(
+                                        (s, i) => s + i.shares,
+                                        0,
+                                      );
+                                      const preConvValue = preConvInv.reduce(
+                                        (s, i) => s + parseFloat(i.value || 0),
+                                        0,
+                                      );
+
+                                      const preTotalFounderShares =
+                                        preFounderItems.reduce(
+                                          (s, f) => s + f.shares,
+                                          0,
+                                        );
+                                      const preTotalFounderValue =
+                                        preFounderItems.reduce(
+                                          (s, f) => s + f.value,
+                                          0,
+                                        );
+                                      const preTotalShares =
+                                        preTotalFounderShares +
+                                        prePoolShares +
+                                        prePrevShares +
+                                        preConvShares +
+                                        preWarrantShares; // ✅ Add pre-warrant shares
+                                      const preTotalValue =
+                                        preTotalFounderValue +
+                                        prePoolValue +
+                                        prePrevValue +
+                                        preConvValue +
+                                        preWarrantValue; // ✅ Add pre-warrant value
+
+                                      // Group previous investors by round_name
+                                      const prePrevGroups = {};
+                                      prePrevInv.forEach((i) => {
+                                        const key =
+                                          i.round_name || "Previous Investors";
+                                        if (!prePrevGroups[key]) {
+                                          prePrevGroups[key] = {
+                                            round_name: key,
+                                            round_id_ref: i.round_id_ref,
+                                            shareClassType:
+                                              i.share_class_type ||
+                                              i.instrument_type ||
+                                              "",
+                                            instrument_type:
+                                              i.instrument_type || "",
+                                            items: [],
+                                            total_shares: 0,
+                                            total_value: 0,
+                                          };
+                                        }
+                                        prePrevGroups[key].items.push(i);
+                                        prePrevGroups[key].total_shares +=
+                                          i.shares;
+                                        prePrevGroups[key].total_value +=
+                                          parseFloat(i.value || 0);
+                                      });
+
+                                      // ✅ Group pre-warrants by round_name
+                                      const preWarrantGroups = {};
+                                      preValidWarrants.forEach((i) => {
+                                        const key = i.round_name || "Warrant";
+                                        if (!preWarrantGroups[key]) {
+                                          preWarrantGroups[key] = {
+                                            round_name: key,
+                                            round_id_ref: i.round_id_ref,
+                                            items: [],
+                                            total_shares: 0,
+                                            total_value: 0,
+                                            investor_type: i.investor_type,
+                                          };
+                                        }
+                                        preWarrantGroups[key].items.push(i);
+                                        preWarrantGroups[key].total_shares +=
+                                          i.shares;
+                                        preWarrantGroups[key].total_value +=
+                                          parseFloat(i.value || 0);
+                                      });
+
+                                      const prePendingItems =
+                                        groupPendingByRound(
+                                          (pendingInstruments || [])
+                                            .filter(
+                                              (p) => p.cap_table_type === "pre",
+                                            )
+                                            .map(buildPendingItem),
+                                        );
+
+                                      // Helper function for pre-money warrants
+                                      const buildPreWarrantItem = (
+                                        warrant,
+                                        totalShares,
+                                        valuation,
+                                      ) => ({
+                                        type: "investor",
+                                        name:
+                                          `${warrant.first_name || ""} ${warrant.last_name || ""}`.trim() ||
+                                          "Warrant Holder",
+                                        investor_details: {
+                                          firstName: warrant.first_name || "",
+                                          lastName: warrant.last_name || "",
+                                          email: warrant.email || "",
+                                          phone: warrant.phone || "",
+                                        },
+                                        shares: warrant.shares,
+                                        new_shares: warrant.shares,
+                                        existing_shares: 0,
+                                        total: warrant.shares,
+                                        shares_formatted: fmt(warrant.shares),
                                         percentage: calculatePercentage(
-                                          item.shares,
-                                          preTotalShares,
+                                          warrant.shares,
+                                          totalShares,
                                         ),
                                         percentage_formatted:
                                           calculatePercentage(
-                                            item.shares,
-                                            preTotalShares,
+                                            warrant.shares,
+                                            totalShares,
                                           ).toFixed(2) + "%",
-                                      })),
-                                      ...(prePool
-                                        ? [
-                                            {
-                                              type: "option_pool",
-                                              founder_code: "O",
-                                              name: "Employee Option Pool",
-                                              shares: prePoolShares,
-                                              shares_formatted:
-                                                fmt(prePoolShares),
-                                              percentage: calculatePercentage(
-                                                prePoolShares,
-                                                preTotalShares,
-                                              ),
-                                              percentage_formatted:
-                                                calculatePercentage(
-                                                  prePoolShares,
-                                                  preTotalShares,
-                                                ).toFixed(2) + "%",
-                                              value: prePoolValue,
-                                              value_formatted:
-                                                money(prePoolValue),
-                                              is_option_pool: true,
-                                              existing_shares:
-                                                prePool.existing_shares ||
-                                                prePoolShares,
-                                              new_shares:
-                                                prePool.new_shares || 0,
-                                            },
-                                          ]
-                                        : []),
-                                      ...Object.values(prePrevGroups).map(
-                                        (group) => ({
-                                          type: "investor",
-                                          name: group.round_name,
-                                          label: `${group.items.length} investor${group.items.length > 1 ? "s" : ""}`,
-                                          round_id_ref: group.round_id_ref,
-                                          shares: group.total_shares,
-                                          shares_formatted: fmt(
-                                            group.total_shares,
-                                          ),
-                                          percentage: calculatePercentage(
-                                            group.total_shares,
-                                            preTotalShares,
-                                          ),
-                                          percentage_formatted:
-                                            calculatePercentage(
-                                              group.total_shares,
+                                        value: parseFloat(warrant.value || 0),
+                                        value_formatted: money(warrant.value),
+                                        investment: parseFloat(
+                                          warrant.investment_amount || 0,
+                                        ),
+                                        share_price: parseFloat(
+                                          warrant.share_price || 0,
+                                        ),
+                                        is_previous: false,
+                                        is_warrant: true,
+                                        is_new_investment: true,
+                                        is_converted: false,
+                                        investor_type: warrant.investor_type,
+                                        share_class_type:
+                                          warrant.share_class_type,
+                                        instrument_type:
+                                          warrant.instrument_type,
+                                        round_name: warrant.round_name,
+                                        round_id: warrant.round_id,
+                                        warrant_id: warrant.warrant_id,
+                                      });
+
+                                      // ✅ Calculate pre-money percentages
+                                      const preMoneyCapTable = {
+                                        total_shares: preTotalShares,
+                                        pre_money_valuation: preMoneyVal,
+                                        currency,
+                                        items: [
+                                          ...preFounderItems.map((item) => ({
+                                            ...item,
+                                            percentage: calculatePercentage(
+                                              item.shares,
                                               preTotalShares,
-                                            ).toFixed(2) + "%",
-                                          value: group.total_value,
-                                          value_formatted: money(
-                                            group.total_value,
-                                          ),
-                                          investor_details: group.items.map(
-                                            (i) => ({
+                                            ),
+                                            percentage_formatted:
+                                              calculatePercentage(
+                                                item.shares,
+                                                preTotalShares,
+                                              ).toFixed(2) + "%",
+                                          })),
+                                          ...(prePool
+                                            ? [
+                                                {
+                                                  type: "option_pool",
+                                                  founder_code: "O",
+                                                  name: "Employee Option Pool",
+                                                  shares: prePoolShares,
+                                                  shares_formatted:
+                                                    fmt(prePoolShares),
+                                                  percentage:
+                                                    calculatePercentage(
+                                                      prePoolShares,
+                                                      preTotalShares,
+                                                    ),
+                                                  percentage_formatted:
+                                                    calculatePercentage(
+                                                      prePoolShares,
+                                                      preTotalShares,
+                                                    ).toFixed(2) + "%",
+                                                  value: prePoolValue,
+                                                  value_formatted:
+                                                    money(prePoolValue),
+                                                  is_option_pool: true,
+                                                  existing_shares:
+                                                    prePool.existing_shares ||
+                                                    prePoolShares,
+                                                  new_shares:
+                                                    prePool.new_shares || 0,
+                                                },
+                                              ]
+                                            : []),
+                                          ...Object.values(prePrevGroups).map(
+                                            (group) => ({
                                               type: "investor",
-                                              name: `${i.first_name || ""} ${i.last_name || ""}`.trim(),
-                                              email: i.email,
-                                              phone: i.phone,
-                                              shares: i.shares,
-                                              shares_formatted: fmt(i.shares),
+                                              name: group.round_name,
+                                              label: `${group.items.length} investor${group.items.length > 1 ? "s" : ""}`,
+                                              round_id_ref: group.round_id_ref,
+                                              shares: group.total_shares,
+                                              shares_formatted: fmt(
+                                                group.total_shares,
+                                              ),
                                               percentage: calculatePercentage(
-                                                i.shares,
+                                                group.total_shares,
                                                 preTotalShares,
                                               ),
                                               percentage_formatted:
                                                 calculatePercentage(
-                                                  i.shares,
+                                                  group.total_shares,
                                                   preTotalShares,
                                                 ).toFixed(2) + "%",
-                                              value: parseFloat(i.value || 0),
-                                              value_formatted: money(i.value),
-                                              share_class_type:
-                                                i.share_class_type,
-                                              instrument_type:
-                                                i.instrument_type,
-                                              round_name: i.round_name,
-                                              round_id_ref: i.round_id_ref,
-                                              investor_details: parseDetails(
-                                                i.investor_details,
+                                              value: group.total_value,
+                                              value_formatted: money(
+                                                group.total_value,
                                               ),
-                                              is_previous: true,
+                                              investor_details: group.items.map(
+                                                (i) => ({
+                                                  type: "investor",
+                                                  name: `${i.first_name || ""} ${i.last_name || ""}`.trim(),
+                                                  email: i.email,
+                                                  phone: i.phone,
+                                                  shares: i.shares,
+                                                  shares_formatted: fmt(
+                                                    i.shares,
+                                                  ),
+                                                  percentage:
+                                                    calculatePercentage(
+                                                      i.shares,
+                                                      preTotalShares,
+                                                    ),
+                                                  percentage_formatted:
+                                                    calculatePercentage(
+                                                      i.shares,
+                                                      preTotalShares,
+                                                    ).toFixed(2) + "%",
+                                                  value: parseFloat(
+                                                    i.value || 0,
+                                                  ),
+                                                  value_formatted: money(
+                                                    i.value,
+                                                  ),
+                                                  share_class_type:
+                                                    i.share_class_type,
+                                                  instrument_type:
+                                                    i.instrument_type,
+                                                  round_name: i.round_name,
+                                                  round_id_ref: i.round_id_ref,
+                                                  investor_details:
+                                                    parseDetails(
+                                                      i.investor_details,
+                                                    ),
+                                                  is_previous: true,
+                                                }),
+                                              ),
                                             }),
                                           ),
-                                        }),
-                                      ),
-                                      ...(preConvInv.length > 0
-                                        ? [
-                                            {
-                                              type: "investor",
-                                              name: "Converted Notes",
-                                              label: `${preConvInv.length} investor${preConvInv.length > 1 ? "s" : ""}`,
-                                              shares: preConvShares,
-                                              shares_formatted:
-                                                fmt(preConvShares),
-                                              percentage: calculatePercentage(
-                                                preConvShares,
+                                          ...(preConvInv.length > 0
+                                            ? [
+                                                {
+                                                  type: "investor",
+                                                  name: "Converted Notes",
+                                                  label: `${preConvInv.length} investor${preConvInv.length > 1 ? "s" : ""}`,
+                                                  shares: preConvShares,
+                                                  shares_formatted:
+                                                    fmt(preConvShares),
+                                                  percentage:
+                                                    calculatePercentage(
+                                                      preConvShares,
+                                                      preTotalShares,
+                                                    ),
+                                                  percentage_formatted:
+                                                    calculatePercentage(
+                                                      preConvShares,
+                                                      preTotalShares,
+                                                    ).toFixed(2) + "%",
+                                                  value: preConvValue,
+                                                  value_formatted:
+                                                    money(preConvValue),
+                                                  items: preConvInv.map(
+                                                    (i) => ({
+                                                      type: "investor",
+                                                      name: `${i.first_name || ""} ${i.last_name || ""}`.trim(),
+                                                      shares: i.shares,
+                                                      shares_formatted: fmt(
+                                                        i.shares,
+                                                      ),
+                                                      percentage:
+                                                        calculatePercentage(
+                                                          i.shares,
+                                                          preTotalShares,
+                                                        ),
+                                                      percentage_formatted:
+                                                        calculatePercentage(
+                                                          i.shares,
+                                                          preTotalShares,
+                                                        ).toFixed(2) + "%",
+                                                      value: parseFloat(
+                                                        i.value || 0,
+                                                      ),
+                                                      value_formatted: money(
+                                                        i.value,
+                                                      ),
+                                                      is_converted: true,
+                                                      investor_details:
+                                                        parseDetails(
+                                                          i.investor_details,
+                                                        ),
+                                                    }),
+                                                  ),
+                                                },
+                                              ]
+                                            : []),
+                                          // ✅ Add pre-money warrants
+                                          ...Object.values(
+                                            preWarrantGroups,
+                                          ).map((group) => ({
+                                            type: "investor",
+                                            name: group.round_name,
+                                            label: `${group.items.length} warrant${group.items.length > 1 ? "s" : ""}`,
+                                            shares: group.total_shares,
+                                            new_shares: group.total_shares,
+                                            existing_shares: 0,
+                                            total: group.total_shares,
+                                            shares_formatted: fmt(
+                                              group.total_shares,
+                                            ),
+                                            percentage: calculatePercentage(
+                                              group.total_shares,
+                                              preTotalShares,
+                                            ),
+                                            percentage_formatted:
+                                              calculatePercentage(
+                                                group.total_shares,
                                                 preTotalShares,
-                                              ),
-                                              percentage_formatted:
-                                                calculatePercentage(
-                                                  preConvShares,
-                                                  preTotalShares,
-                                                ).toFixed(2) + "%",
-                                              value: preConvValue,
-                                              value_formatted:
-                                                money(preConvValue),
-                                              items: preConvInv.map((i) => ({
+                                              ).toFixed(2) + "%",
+                                            value: group.total_value,
+                                            value_formatted: money(
+                                              group.total_value,
+                                            ),
+                                            investor_type: group.investor_type,
+                                            is_warrant: true,
+                                            is_new_investment: true,
+                                            investor_details: group.items.map(
+                                              (i) => ({
                                                 type: "investor",
                                                 name: `${i.first_name || ""} ${i.last_name || ""}`.trim(),
+                                                email: i.email,
+                                                phone: i.phone,
                                                 shares: i.shares,
                                                 shares_formatted: fmt(i.shares),
                                                 percentage: calculatePercentage(
@@ -8499,348 +9864,317 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
                                                   ).toFixed(2) + "%",
                                                 value: parseFloat(i.value || 0),
                                                 value_formatted: money(i.value),
-                                                is_converted: true,
-                                                investor_details: parseDetails(
-                                                  i.investor_details,
-                                                ),
-                                              })),
-                                            },
-                                          ]
-                                        : []),
-                                      ...prePendingItems,
-                                    ],
-                                    totals: {
-                                      total_shares: preTotalShares,
-                                      total_shares_formatted:
-                                        fmt(preTotalShares),
-                                      total_founders: preTotalFounderShares,
-                                      total_option_pool: prePoolShares,
-                                      total_investors:
-                                        prePrevShares + preConvShares,
-                                      total_value: preTotalValue,
-                                      total_value_formatted:
-                                        money(preTotalValue),
-                                      total_percentage: "100.00%",
-                                    },
-                                  };
+                                                investor_type: i.investor_type,
+                                                is_warrant: true,
+                                                warrant_id: i.warrant_id,
+                                              }),
+                                            ),
+                                          })),
+                                          ...prePendingItems,
+                                        ],
+                                        totals: {
+                                          total_shares: preTotalShares,
+                                          total_shares_formatted:
+                                            fmt(preTotalShares),
+                                          total_founders: preTotalFounderShares,
+                                          total_option_pool: prePoolShares,
+                                          total_investors:
+                                            prePrevShares +
+                                            preConvShares +
+                                            preWarrantShares,
+                                          total_value: preTotalValue,
+                                          total_value_formatted:
+                                            money(preTotalValue),
+                                          total_percentage: "100.00%",
+                                        },
+                                      };
 
-                                  // ========== POST-MONEY BUILD WITH WARRANT EXPIRY CHECK ==========
+                                      // ========== POST-MONEY BUILD WITH WARRANT EXPIRY CHECK ==========
 
-                                  // Get all investors first
-                                  const postPrevInv = (
-                                    postInvestors || []
-                                  ).filter(
-                                    (i) => i.investor_type === "previous",
-                                  );
-                                  const postConvInv = (
-                                    postInvestors || []
-                                  ).filter(
-                                    (i) => i.investor_type === "converted",
-                                  );
-                                  const postCurrInv = (
-                                    postInvestors || []
-                                  ).filter(
-                                    (i) => i.investor_type === "current",
-                                  );
-
-                                  // ✅ Get warrants and check expiry by joining with warrants table
-                                  const postWarrantInv = [];
-
-                                  // We'll use a separate query to get warrants with expiry check
-                                  const getWarrantsWithExpiryQuery = `
-                                    SELECT ri.*, w.expiration_date 
-                                    FROM round_investors ri
-                                    LEFT JOIN warrants w ON w.id = ri.warrant_id
-                                    WHERE ri.round_id = ? 
-                                      AND ri.company_id = ? 
-                                      AND ri.cap_table_type = 'post'
-                                      AND ri.investor_type IN ('warrant', 'warrant not exercised')
-                                      AND (w.expiration_date IS NULL OR w.expiration_date >= CURDATE())
-                                  `;
-
-                                  // Execute the query synchronously within the callback
-                                  db.query(
-                                    getWarrantsWithExpiryQuery,
-                                    [round_id, company_id],
-                                    (warrantErr, warrantResults) => {
-                                      if (warrantErr) {
-                                        console.error(
-                                          "Error fetching warrants with expiry:",
-                                          warrantErr,
-                                        );
-                                      }
-
-                                      const validWarrants =
-                                        warrantResults || [];
-
-                                      // Now continue with the rest of the post-money build
-                                      const postFounderItems = (
-                                        postFounders || []
-                                      ).map((f) => ({
-                                        type: "founder",
-                                        founder_code: f.founder_code,
-                                        name: `${f.first_name || ""} ${f.last_name || ""}`.trim(),
-                                        email: f.email,
-                                        phone: f.phone,
-                                        existing_shares: f.shares,
-                                        new_shares: 0,
-                                        shares: f.shares,
-                                        total_shares: f.shares,
-                                        shares_formatted: fmt(f.shares),
-                                        value: parseFloat(f.value || 0),
-                                        value_formatted: money(f.value),
-                                        share_class_type: f.share_class_type,
-                                        instrument_type: f.instrument_type,
-                                        round_name: f.round_name,
-                                      }));
-
-                                      const postPool =
-                                        (postOptionPools || [])[0] || null;
-                                      const postPoolExisting = postPool
-                                        ? postPool.existing_shares || 0
-                                        : 0;
-                                      const postPoolNew = postPool
-                                        ? postPool.new_shares || 0
-                                        : 0;
-                                      const postPoolTotal = postPool
-                                        ? postPool.shares
-                                        : 0;
-                                      const postPoolValue = postPool
-                                        ? parseFloat(postPool.value || 0)
-                                        : 0;
-
-                                      const postPrevShares = postPrevInv.reduce(
-                                        (s, i) => s + i.shares,
-                                        0,
+                                      // Get all investors first
+                                      const postPrevInv = (
+                                        postInvestors || []
+                                      ).filter(
+                                        (i) => i.investor_type === "previous",
                                       );
-                                      const postPrevValue = postPrevInv.reduce(
-                                        (s, i) => s + parseFloat(i.value || 0),
-                                        0,
+                                      const postConvInv = (
+                                        postInvestors || []
+                                      ).filter(
+                                        (i) => i.investor_type === "converted",
                                       );
-                                      const postConvShares = postConvInv.reduce(
-                                        (s, i) => s + i.shares,
-                                        0,
-                                      );
-                                      const postConvValue = postConvInv.reduce(
-                                        (s, i) => s + parseFloat(i.value || 0),
-                                        0,
-                                      );
-                                      const postCurrShares = postCurrInv.reduce(
-                                        (s, i) => s + i.shares,
-                                        0,
-                                      );
-                                      const postCurrValue = postCurrInv.reduce(
-                                        (s, i) => s + parseFloat(i.value || 0),
-                                        0,
+                                      const postCurrInv = (
+                                        postInvestors || []
+                                      ).filter(
+                                        (i) => i.investor_type === "current",
                                       );
 
-                                      // ✅ Calculate warrant totals from valid warrants only
-                                      const postWarrantShares =
-                                        validWarrants.reduce(
-                                          (s, i) => s + i.shares,
-                                          0,
-                                        );
-                                      const postWarrantValue =
-                                        validWarrants.reduce(
-                                          (s, i) =>
-                                            s + parseFloat(i.value || 0),
-                                          0,
-                                        );
+                                      // ✅ Get warrants and check expiry by joining with warrants table
+                                      const postWarrantInv = [];
 
-                                      const postTotalFounderShares =
-                                        postFounderItems.reduce(
-                                          (s, f) => s + f.shares,
-                                          0,
-                                        );
-                                      const postTotalFounderValue =
-                                        postFounderItems.reduce(
-                                          (s, f) => s + f.value,
-                                          0,
-                                        );
+                                      // We'll use a separate query to get warrants with expiry check
+                                      const getWarrantsWithExpiryQuery = `
+                                        SELECT ri.*, w.expiration_date 
+                                        FROM round_investors ri
+                                        LEFT JOIN warrants w ON w.id = ri.warrant_id
+                                        WHERE ri.round_id = ? 
+                                          AND ri.company_id = ? 
+                                          AND ri.cap_table_type = 'post'
+                                          AND ri.investor_type IN ('warrant', 'warrant not exercised')
+                                          AND (w.expiration_date IS NULL OR w.expiration_date >= CURDATE())
+                                      `;
 
-                                      const postTotalShares =
-                                        postTotalFounderShares +
-                                        postPoolTotal +
-                                        postPrevShares +
-                                        postConvShares +
-                                        postCurrShares +
-                                        postWarrantShares; // ✅ Add warrant shares
+                                      // Execute the query synchronously within the callback
+                                      db.query(
+                                        getWarrantsWithExpiryQuery,
+                                        [round_id, company_id],
+                                        (warrantErr, warrantResults) => {
+                                          if (warrantErr) {
+                                            console.error(
+                                              "Error fetching warrants with expiry:",
+                                              warrantErr,
+                                            );
+                                          }
 
-                                      const postTotalNewShares =
-                                        postPoolNew +
-                                        postConvShares +
-                                        postCurrShares +
-                                        postWarrantShares; // ✅ Add warrant shares to new shares
+                                          const validWarrants =
+                                            warrantResults || [];
 
-                                      const postTotalValue =
-                                        postTotalFounderValue +
-                                        postPoolValue +
-                                        postPrevValue +
-                                        postConvValue +
-                                        postCurrValue +
-                                        postWarrantValue; // ✅ Add warrant value
+                                          // Now continue with the rest of the post-money build
+                                          const postFounderItems = (
+                                            postFounders || []
+                                          ).map((f) => ({
+                                            type: "founder",
+                                            founder_code: f.founder_code,
+                                            name: `${f.first_name || ""} ${f.last_name || ""}`.trim(),
+                                            email: f.email,
+                                            phone: f.phone,
+                                            existing_shares: f.shares,
+                                            new_shares: 0,
+                                            shares: f.shares,
+                                            total_shares: f.shares,
+                                            shares_formatted: fmt(f.shares),
+                                            value: parseFloat(f.value || 0),
+                                            value_formatted: money(f.value),
+                                            share_class_type:
+                                              f.share_class_type,
+                                            instrument_type: f.instrument_type,
+                                            round_name: f.round_name,
+                                          }));
 
-                                      const postPendingItems =
-                                        groupPendingByRound(
-                                          (pendingInstruments || [])
-                                            .filter(
-                                              (p) =>
-                                                p.cap_table_type === "post",
-                                            )
-                                            .map(buildPendingItem),
-                                        );
+                                          const postPool =
+                                            (postOptionPools || [])[0] || null;
+                                          const postPoolExisting = postPool
+                                            ? postPool.existing_shares || 0
+                                            : 0;
+                                          const postPoolNew = postPool
+                                            ? postPool.new_shares || 0
+                                            : 0;
+                                          const postPoolTotal = postPool
+                                            ? postPool.shares
+                                            : 0;
+                                          const postPoolValue = postPool
+                                            ? parseFloat(postPool.value || 0)
+                                            : 0;
 
-                                      // Previous investors group by round_name
-                                      const postPrevGroups = {};
-                                      postPrevInv.forEach((i) => {
-                                        const key =
-                                          i.round_name || "Previous Investors";
-                                        if (!postPrevGroups[key]) {
-                                          postPrevGroups[key] = {
-                                            round_name: key,
-                                            round_id_ref: i.round_id_ref,
-                                            items: [],
-                                            total_shares: 0,
-                                            total_value: 0,
-                                          };
-                                        }
-                                        postPrevGroups[key].items.push(i);
-                                        postPrevGroups[key].total_shares +=
-                                          i.shares;
-                                        postPrevGroups[key].total_value +=
-                                          parseFloat(i.value || 0);
-                                      });
+                                          const postPrevShares =
+                                            postPrevInv.reduce(
+                                              (s, i) => s + i.shares,
+                                              0,
+                                            );
+                                          const postPrevValue =
+                                            postPrevInv.reduce(
+                                              (s, i) =>
+                                                s + parseFloat(i.value || 0),
+                                              0,
+                                            );
+                                          const postConvShares =
+                                            postConvInv.reduce(
+                                              (s, i) => s + i.shares,
+                                              0,
+                                            );
+                                          const postConvValue =
+                                            postConvInv.reduce(
+                                              (s, i) =>
+                                                s + parseFloat(i.value || 0),
+                                              0,
+                                            );
+                                          const postCurrShares =
+                                            postCurrInv.reduce(
+                                              (s, i) => s + i.shares,
+                                              0,
+                                            );
+                                          const postCurrValue =
+                                            postCurrInv.reduce(
+                                              (s, i) =>
+                                                s + parseFloat(i.value || 0),
+                                              0,
+                                            );
 
-                                      // Converted investors group by round_name
-                                      const postConvGroups = {};
-                                      postConvInv.forEach((i) => {
-                                        const key =
-                                          i.round_name || "Converted Notes";
-                                        if (!postConvGroups[key]) {
-                                          postConvGroups[key] = {
-                                            round_name: key,
-                                            round_id_ref: i.round_id_ref,
-                                            items: [],
-                                            total_shares: 0,
-                                            total_value: 0,
-                                          };
-                                        }
-                                        postConvGroups[key].items.push(i);
-                                        postConvGroups[key].total_shares +=
-                                          i.shares;
-                                        postConvGroups[key].total_value +=
-                                          parseFloat(i.value || 0);
-                                      });
+                                          // ✅ Calculate warrant totals from valid warrants only
+                                          const postWarrantShares =
+                                            validWarrants.reduce(
+                                              (s, i) => s + i.shares,
+                                              0,
+                                            );
+                                          const postWarrantValue =
+                                            validWarrants.reduce(
+                                              (s, i) =>
+                                                s + parseFloat(i.value || 0),
+                                              0,
+                                            );
 
-                                      // Current (new) investors group by round_name
-                                      const postCurrGroups = {};
-                                      postCurrInv.forEach((i) => {
-                                        const key =
-                                          i.round_name || "New Investors";
-                                        if (!postCurrGroups[key]) {
-                                          postCurrGroups[key] = {
-                                            round_name: key,
-                                            round_id_ref: i.round_id_ref,
-                                            items: [],
-                                            total_shares: 0,
-                                            total_new_shares: 0,
-                                            total_value: 0,
-                                          };
-                                        }
-                                        postCurrGroups[key].items.push(i);
-                                        postCurrGroups[key].total_shares +=
-                                          i.shares;
-                                        postCurrGroups[key].total_new_shares +=
-                                          i.new_shares || i.shares;
-                                        postCurrGroups[key].total_value +=
-                                          parseFloat(i.value || 0);
-                                      });
+                                          const postTotalFounderShares =
+                                            postFounderItems.reduce(
+                                              (s, f) => s + f.shares,
+                                              0,
+                                            );
+                                          const postTotalFounderValue =
+                                            postFounderItems.reduce(
+                                              (s, f) => s + f.value,
+                                              0,
+                                            );
 
-                                      // ✅ Warrants group by round_name (from valid warrants only)
-                                      const postWarrantGroups = {};
-                                      validWarrants.forEach((i) => {
-                                        const key = i.round_name || "Warrant";
-                                        if (!postWarrantGroups[key]) {
-                                          postWarrantGroups[key] = {
-                                            round_name: key,
-                                            round_id_ref: i.round_id_ref,
-                                            items: [],
-                                            total_shares: 0,
-                                            total_value: 0,
-                                            investor_type: i.investor_type,
-                                          };
-                                        }
-                                        postWarrantGroups[key].items.push(i);
-                                        postWarrantGroups[key].total_shares +=
-                                          i.shares;
-                                        postWarrantGroups[key].total_value +=
-                                          parseFloat(i.value || 0);
-                                      });
+                                          const postTotalShares =
+                                            postTotalFounderShares +
+                                            postPoolTotal +
+                                            postPrevShares +
+                                            postConvShares +
+                                            postCurrShares +
+                                            postWarrantShares; // ✅ Add warrant shares
 
-                                      // Helper: group → item
+                                          const postTotalNewShares =
+                                            postPoolNew +
+                                            postConvShares +
+                                            postCurrShares +
+                                            postWarrantShares; // ✅ Add warrant shares to new shares
 
-                                      const buildGroupItem = (
-                                        group,
-                                        investorType,
-                                        totalShares,
-                                      ) => ({
-                                        type: "investor",
-                                        investor_type: investorType, // ✅ This will be 'warrant' or 'warrant not exercised'
-                                        name: group.round_name,
-                                        label: `${group.items.length} investor${group.items.length > 1 ? "s" : ""}`,
-                                        round_id_ref: group.round_id_ref,
-                                        shares: group.total_shares,
-                                        existing_shares:
-                                          investorType === "current" ||
-                                          investorType === "converted" ||
-                                          investorType === "warrant" ||
-                                          investorType ===
-                                            "warrant not exercised" // ✅ Add this
-                                            ? 0
-                                            : group.total_shares,
-                                        new_shares:
-                                          investorType === "current" ||
-                                          investorType === "converted" ||
-                                          investorType === "warrant" ||
-                                          investorType ===
-                                            "warrant not exercised" // ✅ Add this
-                                            ? group.total_shares
-                                            : 0,
-                                        total_shares: group.total_shares,
-                                        shares_formatted: fmt(
-                                          group.total_shares,
-                                        ),
-                                        percentage: calculatePercentage(
-                                          group.total_shares,
-                                          totalShares,
-                                        ),
-                                        percentage_formatted:
-                                          calculatePercentage(
-                                            group.total_shares,
+                                          const postTotalValue =
+                                            postTotalFounderValue +
+                                            postPoolValue +
+                                            postPrevValue +
+                                            postConvValue +
+                                            postCurrValue +
+                                            postWarrantValue; // ✅ Add warrant value
+
+                                          const postPendingItems =
+                                            groupPendingByRound(
+                                              (pendingInstruments || [])
+                                                .filter(
+                                                  (p) =>
+                                                    p.cap_table_type === "post",
+                                                )
+                                                .map(buildPendingItem),
+                                            );
+
+                                          // Previous investors group by round_name
+                                          const postPrevGroups = {};
+                                          postPrevInv.forEach((i) => {
+                                            const key =
+                                              i.round_name ||
+                                              "Previous Investors";
+                                            if (!postPrevGroups[key]) {
+                                              postPrevGroups[key] = {
+                                                round_name: key,
+                                                round_id_ref: i.round_id_ref,
+                                                items: [],
+                                                total_shares: 0,
+                                                total_value: 0,
+                                              };
+                                            }
+                                            postPrevGroups[key].items.push(i);
+                                            postPrevGroups[key].total_shares +=
+                                              i.shares;
+                                            postPrevGroups[key].total_value +=
+                                              parseFloat(i.value || 0);
+                                          });
+
+                                          // Converted investors group by round_name
+                                          const postConvGroups = {};
+                                          postConvInv.forEach((i) => {
+                                            const key =
+                                              i.round_name || "Converted Notes";
+                                            if (!postConvGroups[key]) {
+                                              postConvGroups[key] = {
+                                                round_name: key,
+                                                round_id_ref: i.round_id_ref,
+                                                items: [],
+                                                total_shares: 0,
+                                                total_value: 0,
+                                              };
+                                            }
+                                            postConvGroups[key].items.push(i);
+                                            postConvGroups[key].total_shares +=
+                                              i.shares;
+                                            postConvGroups[key].total_value +=
+                                              parseFloat(i.value || 0);
+                                          });
+
+                                          // Current (new) investors group by round_name
+                                          const postCurrGroups = {};
+                                          postCurrInv.forEach((i) => {
+                                            const key =
+                                              i.round_name || "New Investors";
+                                            if (!postCurrGroups[key]) {
+                                              postCurrGroups[key] = {
+                                                round_name: key,
+                                                round_id_ref: i.round_id_ref,
+                                                items: [],
+                                                total_shares: 0,
+                                                total_new_shares: 0,
+                                                total_value: 0,
+                                              };
+                                            }
+                                            postCurrGroups[key].items.push(i);
+                                            postCurrGroups[key].total_shares +=
+                                              i.shares;
+                                            postCurrGroups[
+                                              key
+                                            ].total_new_shares +=
+                                              i.new_shares || i.shares;
+                                            postCurrGroups[key].total_value +=
+                                              parseFloat(i.value || 0);
+                                          });
+
+                                          // ✅ Warrants group by round_name (from valid warrants only)
+                                          const postWarrantGroups = {};
+                                          validWarrants.forEach((i) => {
+                                            const key =
+                                              i.round_name || "Warrant";
+                                            if (!postWarrantGroups[key]) {
+                                              postWarrantGroups[key] = {
+                                                round_name: key,
+                                                round_id_ref: i.round_id_ref,
+                                                items: [],
+                                                total_shares: 0,
+                                                total_value: 0,
+                                                investor_type: i.investor_type,
+                                              };
+                                            }
+                                            postWarrantGroups[key].items.push(
+                                              i,
+                                            );
+                                            postWarrantGroups[
+                                              key
+                                            ].total_shares += i.shares;
+                                            postWarrantGroups[
+                                              key
+                                            ].total_value += parseFloat(
+                                              i.value || 0,
+                                            );
+                                          });
+
+                                          // Helper: group → item
+
+                                          const buildGroupItem = (
+                                            group,
+                                            investorType,
                                             totalShares,
-                                          ).toFixed(2) + "%",
-                                        value: group.total_value,
-                                        value_formatted: money(
-                                          group.total_value,
-                                        ),
-                                        is_previous:
-                                          investorType === "previous",
-                                        is_new_investment:
-                                          investorType === "current",
-                                        is_converted:
-                                          investorType === "converted",
-                                        is_warrant:
-                                          investorType === "warrant" ||
-                                          investorType ===
-                                            "warrant not exercised", // ✅ Update this line
-                                        investor_details: group.items.map(
-                                          (i) => ({
+                                          ) => ({
                                             type: "investor",
                                             investor_type: investorType, // ✅ This will be 'warrant' or 'warrant not exercised'
-                                            name: `${i.first_name || ""} ${i.last_name || ""}`.trim(),
-                                            email: i.email,
-                                            phone: i.phone,
-                                            shares: i.shares,
+                                            name: group.round_name,
+                                            label: `${group.items.length} investor${group.items.length > 1 ? "s" : ""}`,
+                                            round_id_ref: group.round_id_ref,
+                                            shares: group.total_shares,
                                             existing_shares:
                                               investorType === "current" ||
                                               investorType === "converted" ||
@@ -8848,38 +10182,32 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
                                               investorType ===
                                                 "warrant not exercised" // ✅ Add this
                                                 ? 0
-                                                : i.shares,
+                                                : group.total_shares,
                                             new_shares:
                                               investorType === "current" ||
                                               investorType === "converted" ||
                                               investorType === "warrant" ||
                                               investorType ===
                                                 "warrant not exercised" // ✅ Add this
-                                                ? i.new_shares || i.shares
+                                                ? group.total_shares
                                                 : 0,
-                                            shares_formatted: fmt(i.shares),
+                                            total_shares: group.total_shares,
+                                            shares_formatted: fmt(
+                                              group.total_shares,
+                                            ),
                                             percentage: calculatePercentage(
-                                              i.shares,
+                                              group.total_shares,
                                               totalShares,
                                             ),
                                             percentage_formatted:
                                               calculatePercentage(
-                                                i.shares,
+                                                group.total_shares,
                                                 totalShares,
                                               ).toFixed(2) + "%",
-                                            value: parseFloat(i.value || 0),
-                                            value_formatted: money(i.value),
-                                            investment_amount: parseFloat(
-                                              i.investment_amount || 0,
+                                            value: group.total_value,
+                                            value_formatted: money(
+                                              group.total_value,
                                             ),
-                                            share_price: parseFloat(
-                                              i.share_price || 0,
-                                            ),
-                                            share_class_type:
-                                              i.share_class_type,
-                                            instrument_type: i.instrument_type,
-                                            round_name: i.round_name,
-                                            round_id_ref: i.round_id_ref,
                                             is_previous:
                                               investorType === "previous",
                                             is_new_investment:
@@ -8890,213 +10218,302 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
                                               investorType === "warrant" ||
                                               investorType ===
                                                 "warrant not exercised", // ✅ Update this line
-                                            investor_details: parseDetails(
-                                              i.investor_details,
+                                            investor_details: group.items.map(
+                                              (i) => ({
+                                                type: "investor",
+                                                investor_type: investorType, // ✅ This will be 'warrant' or 'warrant not exercised'
+                                                name: `${i.first_name || ""} ${i.last_name || ""}`.trim(),
+                                                email: i.email,
+                                                phone: i.phone,
+                                                shares: i.shares,
+                                                existing_shares:
+                                                  investorType === "current" ||
+                                                  investorType ===
+                                                    "converted" ||
+                                                  investorType === "warrant" ||
+                                                  investorType ===
+                                                    "warrant not exercised" // ✅ Add this
+                                                    ? 0
+                                                    : i.shares,
+                                                new_shares:
+                                                  investorType === "current" ||
+                                                  investorType ===
+                                                    "converted" ||
+                                                  investorType === "warrant" ||
+                                                  investorType ===
+                                                    "warrant not exercised" // ✅ Add this
+                                                    ? i.new_shares || i.shares
+                                                    : 0,
+                                                shares_formatted: fmt(i.shares),
+                                                percentage: calculatePercentage(
+                                                  i.shares,
+                                                  totalShares,
+                                                ),
+                                                percentage_formatted:
+                                                  calculatePercentage(
+                                                    i.shares,
+                                                    totalShares,
+                                                  ).toFixed(2) + "%",
+                                                value: parseFloat(i.value || 0),
+                                                value_formatted: money(i.value),
+                                                investment_amount: parseFloat(
+                                                  i.investment_amount || 0,
+                                                ),
+                                                share_price: parseFloat(
+                                                  i.share_price || 0,
+                                                ),
+                                                share_class_type:
+                                                  i.share_class_type,
+                                                instrument_type:
+                                                  i.instrument_type,
+                                                round_name: i.round_name,
+                                                round_id_ref: i.round_id_ref,
+                                                is_previous:
+                                                  investorType === "previous",
+                                                is_new_investment:
+                                                  investorType === "current",
+                                                is_converted:
+                                                  investorType === "converted",
+                                                is_warrant:
+                                                  investorType === "warrant" ||
+                                                  investorType ===
+                                                    "warrant not exercised", // ✅ Update this line
+                                                investor_details: parseDetails(
+                                                  i.investor_details,
+                                                ),
+                                                potential_shares:
+                                                  parseInt(
+                                                    i.potential_shares,
+                                                  ) || 0,
+                                                conversion_price:
+                                                  parseFloat(
+                                                    i.conversion_price,
+                                                  ) || 0,
+                                                discount_rate:
+                                                  parseFloat(i.discount_rate) ||
+                                                  0,
+                                                valuation_cap:
+                                                  parseFloat(i.valuation_cap) ||
+                                                  0,
+                                                interest_rate:
+                                                  parseFloat(i.interest_rate) ||
+                                                  0,
+                                                years: parseFloat(i.years) || 0,
+                                                interest_accrued:
+                                                  parseFloat(
+                                                    i.interest_accrued,
+                                                  ) || 0,
+                                                total_conversion_amount:
+                                                  parseFloat(
+                                                    i.total_conversion_amount,
+                                                  ) ||
+                                                  parseFloat(
+                                                    i.investment_amount,
+                                                  ) ||
+                                                  0,
+                                                maturity_date:
+                                                  i.maturity_date || null,
+                                                warrant_id: i.warrant_id,
+                                              }),
                                             ),
-                                            potential_shares:
-                                              parseInt(i.potential_shares) || 0,
-                                            conversion_price:
-                                              parseFloat(i.conversion_price) ||
-                                              0,
-                                            discount_rate:
-                                              parseFloat(i.discount_rate) || 0,
-                                            valuation_cap:
-                                              parseFloat(i.valuation_cap) || 0,
-                                            interest_rate:
-                                              parseFloat(i.interest_rate) || 0,
-                                            years: parseFloat(i.years) || 0,
-                                            interest_accrued:
-                                              parseFloat(i.interest_accrued) ||
-                                              0,
-                                            total_conversion_amount:
-                                              parseFloat(
-                                                i.total_conversion_amount,
-                                              ) ||
-                                              parseFloat(i.investment_amount) ||
-                                              0,
-                                            maturity_date:
-                                              i.maturity_date || null,
-                                            warrant_id: i.warrant_id,
-                                          }),
-                                        ),
-                                      });
+                                          });
 
-                                      // ========== POST-MONEY CAP TABLE WITH WARRANTS ==========
-                                      const postMoneyCapTable = {
-                                        total_shares: postTotalShares,
-                                        post_money_valuation: postMoneyVal,
-                                        currency,
-                                        items: [
-                                          ...postFounderItems.map((item) => ({
-                                            ...item,
-                                            percentage: calculatePercentage(
-                                              item.shares,
-                                              postTotalShares,
-                                            ),
-                                            percentage_formatted:
-                                              calculatePercentage(
-                                                item.shares,
-                                                postTotalShares,
-                                              ).toFixed(2) + "%",
-                                          })),
-                                          ...(postPool
-                                            ? [
-                                                {
-                                                  type: "option_pool",
-                                                  name: "Employee Option Pool",
-                                                  label: "Options Pool",
-                                                  existing_shares:
-                                                    postPoolExisting,
-                                                  new_shares: postPoolNew,
-                                                  shares: postPoolTotal,
-                                                  total_shares: postPoolTotal,
-                                                  shares_formatted:
-                                                    fmt(postPoolTotal),
+                                          // ========== POST-MONEY CAP TABLE WITH WARRANTS ==========
+                                          const postMoneyCapTable = {
+                                            total_shares: postTotalShares,
+                                            post_money_valuation: postMoneyVal,
+                                            currency,
+                                            items: [
+                                              ...postFounderItems.map(
+                                                (item) => ({
+                                                  ...item,
                                                   percentage:
                                                     calculatePercentage(
-                                                      postPoolTotal,
+                                                      item.shares,
                                                       postTotalShares,
                                                     ),
                                                   percentage_formatted:
                                                     calculatePercentage(
-                                                      postPoolTotal,
+                                                      item.shares,
                                                       postTotalShares,
                                                     ).toFixed(2) + "%",
-                                                  value: postPoolValue,
-                                                  value_formatted:
-                                                    money(postPoolValue),
-                                                  is_option_pool: true,
-                                                  instrument_type:
-                                                    postPool.instrument_type ||
-                                                    "Options",
-                                                },
-                                              ]
-                                            : []),
-                                          ...Object.values(postPrevGroups).map(
-                                            (g) =>
-                                              buildGroupItem(
-                                                g,
-                                                "previous",
-                                                postTotalShares,
+                                                }),
                                               ),
-                                          ),
-                                          ...Object.values(postConvGroups).map(
-                                            (g) =>
-                                              buildGroupItem(
-                                                g,
-                                                "converted",
-                                                postTotalShares,
+                                              ...(postPool
+                                                ? [
+                                                    {
+                                                      type: "option_pool",
+                                                      name: "Employee Option Pool",
+                                                      label: "Options Pool",
+                                                      existing_shares:
+                                                        postPoolExisting,
+                                                      new_shares: postPoolNew,
+                                                      shares: postPoolTotal,
+                                                      total_shares:
+                                                        postPoolTotal,
+                                                      shares_formatted:
+                                                        fmt(postPoolTotal),
+                                                      percentage:
+                                                        calculatePercentage(
+                                                          postPoolTotal,
+                                                          postTotalShares,
+                                                        ),
+                                                      percentage_formatted:
+                                                        calculatePercentage(
+                                                          postPoolTotal,
+                                                          postTotalShares,
+                                                        ).toFixed(2) + "%",
+                                                      value: postPoolValue,
+                                                      value_formatted:
+                                                        money(postPoolValue),
+                                                      is_option_pool: true,
+                                                      instrument_type:
+                                                        postPool.instrument_type ||
+                                                        "Options",
+                                                    },
+                                                  ]
+                                                : []),
+                                              ...Object.values(
+                                                postPrevGroups,
+                                              ).map((g) =>
+                                                buildGroupItem(
+                                                  g,
+                                                  "previous",
+                                                  postTotalShares,
+                                                ),
                                               ),
-                                          ),
-                                          ...Object.values(postCurrGroups).map(
-                                            (g) =>
-                                              buildGroupItem(
-                                                g,
-                                                "current",
-                                                postTotalShares,
+                                              ...Object.values(
+                                                postConvGroups,
+                                              ).map((g) =>
+                                                buildGroupItem(
+                                                  g,
+                                                  "converted",
+                                                  postTotalShares,
+                                                ),
                                               ),
-                                          ),
-                                          // ✅ Add warrant groups
-                                          ...Object.values(
-                                            postWarrantGroups,
-                                          ).map((g) =>
-                                            buildGroupItem(
-                                              g,
-                                              g.investor_type,
-                                              postTotalShares,
-                                            ),
-                                          ),
-                                          ...postPendingItems.map((item) => ({
-                                            ...item,
-                                            percentage: calculatePercentage(
-                                              item.total_potential_shares || 0,
-                                              postTotalShares,
-                                            ),
-                                            percentage_formatted:
-                                              calculatePercentage(
-                                                item.total_potential_shares ||
-                                                  0,
-                                                postTotalShares,
-                                              ).toFixed(2) + "%",
-                                          })),
-                                        ],
-                                        totals: {
-                                          total_shares: postTotalShares,
-                                          total_shares_formatted:
-                                            fmt(postTotalShares),
-                                          total_new_shares: postTotalNewShares,
-                                          total_new_shares_formatted:
-                                            fmt(postTotalNewShares),
-                                          total_founders:
-                                            postTotalFounderShares,
-                                          total_option_pool: postPoolTotal,
-                                          total_investors:
-                                            postPrevShares +
-                                            postConvShares +
-                                            postCurrShares +
-                                            postWarrantShares,
-                                          total_value: postTotalValue,
-                                          total_value_formatted:
-                                            money(postTotalValue),
-                                          total_percentage: "100.00%",
-                                        },
-                                      };
+                                              ...Object.values(
+                                                postCurrGroups,
+                                              ).map((g) =>
+                                                buildGroupItem(
+                                                  g,
+                                                  "current",
+                                                  postTotalShares,
+                                                ),
+                                              ),
+                                              // ✅ Add warrant groups
+                                              ...Object.values(
+                                                postWarrantGroups,
+                                              ).map((g) =>
+                                                buildGroupItem(
+                                                  g,
+                                                  g.investor_type,
+                                                  postTotalShares,
+                                                ),
+                                              ),
+                                              ...postPendingItems.map(
+                                                (item) => ({
+                                                  ...item,
+                                                  percentage:
+                                                    calculatePercentage(
+                                                      item.total_potential_shares ||
+                                                        0,
+                                                      postTotalShares,
+                                                    ),
+                                                  percentage_formatted:
+                                                    calculatePercentage(
+                                                      item.total_potential_shares ||
+                                                        0,
+                                                      postTotalShares,
+                                                    ).toFixed(2) + "%",
+                                                }),
+                                              ),
+                                            ],
+                                            totals: {
+                                              total_shares: postTotalShares,
+                                              total_shares_formatted:
+                                                fmt(postTotalShares),
+                                              total_new_shares:
+                                                postTotalNewShares,
+                                              total_new_shares_formatted:
+                                                fmt(postTotalNewShares),
+                                              total_founders:
+                                                postTotalFounderShares,
+                                              total_option_pool: postPoolTotal,
+                                              total_investors:
+                                                postPrevShares +
+                                                postConvShares +
+                                                postCurrShares +
+                                                postWarrantShares,
+                                              total_value: postTotalValue,
+                                              total_value_formatted:
+                                                money(postTotalValue),
+                                              total_percentage: "100.00%",
+                                            },
+                                          };
 
-                                      // ========== FINAL RESPONSE ==========
-                                      return res.status(200).json({
-                                        success: true,
-                                        round: {
-                                          id: currentRound.id,
-                                          name: currentRound.nameOfRound,
-                                          shareClassType:
-                                            currentRound.shareClassType,
-                                          incorporation_date:
-                                            currentRound.year_registration,
-                                          type: currentRound.round_type,
-                                          instrument:
-                                            currentRound.instrumentType,
-                                          status: currentRound.roundStatus,
-                                          date: currentRound.created_at,
-                                          pre_money: currentRound.pre_money,
-                                          post_money: currentRound.post_money,
-                                          investment: currentRound.roundsize,
-                                          currency: currentRound.currency,
-                                          share_price: currentRound.share_price,
-                                          round_target_money:
-                                            currentRound.round_target_money,
-                                          issued_shares:
-                                            currentRound.issuedshares,
-                                          option_pool_percent:
-                                            currentRound.optionPoolPercent,
-                                          option_pool_percent_post:
-                                            currentRound.optionPoolPercent_post,
-                                          instrument_type_data:
-                                            currentRound.instrument_type_data,
-                                          investor_post_money:
-                                            currentRound.investorPostMoney,
+                                          // ========== FINAL RESPONSE ==========
+                                          return res.status(200).json({
+                                            success: true,
+                                            round: {
+                                              id: currentRound.id,
+                                              name: currentRound.nameOfRound,
+                                              shareClassType:
+                                                currentRound.shareClassType,
+                                              incorporation_date:
+                                                currentRound.year_registration,
+                                              type: currentRound.round_type,
+                                              instrument:
+                                                currentRound.instrumentType,
+                                              status: currentRound.roundStatus,
+                                              date: currentRound.created_at,
+                                              pre_money: currentRound.pre_money,
+                                              post_money:
+                                                currentRound.post_money,
+                                              investment:
+                                                currentRound.roundsize,
+                                              currency: currentRound.currency,
+                                              share_price:
+                                                currentRound.share_price,
+                                              round_target_money:
+                                                currentRound.round_target_money,
+                                              issued_shares:
+                                                currentRound.issuedshares,
+                                              option_pool_percent:
+                                                currentRound.optionPoolPercent,
+                                              option_pool_percent_post:
+                                                currentRound.optionPoolPercent_post,
+                                              instrument_type_data:
+                                                currentRound.instrument_type_data,
+                                              investor_post_money:
+                                                currentRound.investorPostMoney,
+                                            },
+                                            cap_table: {
+                                              pre_money: preMoneyCapTable,
+                                              post_money: postMoneyCapTable,
+                                            },
+                                            calculations: {
+                                              pre_money_valuation: preMoneyVal,
+                                              post_money_valuation:
+                                                postMoneyVal,
+                                              total_shares_outstanding:
+                                                postTotalShares,
+                                              fully_diluted_shares:
+                                                postTotalShares,
+                                              share_price:
+                                                parseFloat(
+                                                  currentRound.share_price,
+                                                ) || 0,
+                                              total_new_shares:
+                                                postTotalNewShares,
+                                              total_investors:
+                                                postPrevShares +
+                                                postConvShares +
+                                                postCurrShares +
+                                                postWarrantShares,
+                                            },
+                                          });
                                         },
-                                        cap_table: {
-                                          pre_money: preMoneyCapTable,
-                                          post_money: postMoneyCapTable,
-                                        },
-                                        calculations: {
-                                          pre_money_valuation: preMoneyVal,
-                                          post_money_valuation: postMoneyVal,
-                                          total_shares_outstanding:
-                                            postTotalShares,
-                                          fully_diluted_shares: postTotalShares,
-                                          share_price:
-                                            parseFloat(
-                                              currentRound.share_price,
-                                            ) || 0,
-                                          total_new_shares: postTotalNewShares,
-                                          total_investors:
-                                            postPrevShares +
-                                            postConvShares +
-                                            postCurrShares +
-                                            postWarrantShares,
-                                        },
-                                      });
+                                      );
                                     },
                                   );
                                 },
@@ -12842,6 +14259,9 @@ exports.createWarrant = (req, res) => {
     notes,
     warrantType,
     warrant_fixed_shares,
+    share_class_type,
+    instrument_type,
+    round_name,
   } = req.body;
   const sql = `
     INSERT INTO warrants (
@@ -12885,423 +14305,72 @@ exports.createWarrant = (req, res) => {
 
     const warrantId = result.insertId;
 
-    // Second, insert into round_investors table
-    const roundInvestorSql = `
-      INSERT INTO round_investors (
-        round_id,
-        company_id,
-        warrant_id,
-        round_type,
-        cap_table_type,
-        investor_type,
-        created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, NOW())
-    `;
-
-    const roundInvestorValues = [
-      roundrecord_id,
-      company_id,
-      warrantId,
-      "Company",
-      "post",
-      "warrant not exercised",
-    ];
-
-    db.query(roundInvestorSql, roundInvestorValues, (err2, result2) => {
-      if (err2) {
-        console.error("Error inserting into round_investors:", err2);
-        // Optional: Rollback the warrant insertion if needed
-        return res.status(500).json({
-          success: false,
-          message: "Error creating round investor record",
-          error: err2,
-          warrantId: warrantId, // Still return the warrantId even if round_investors fails
-        });
-      }
-
-      return res.status(200).json({
-        success: true,
-        message: "Warrant created successfully with round investor record",
-        warrantId: warrantId,
-        roundInvestorId: result2.insertId,
-      });
+    return res.status(200).json({
+      success: true,
+      message: "Warrant created successfully with round investor record",
+      warrantId: "",
+      roundInvestorId: "",
     });
   });
 };
+const createWarrantDataInternal = (warrantData) => {
+  return new Promise((resolve, reject) => {
+    const {
+      roundrecord_id,
+      company_id,
+      investor_id,
+      warrant_coverage_percentage,
+      warrant_status,
+      issued_date,
+      expiration_date,
+      notes,
+      warrantType,
+      warrant_fixed_shares,
+    } = warrantData;
 
-exports.warrantDataUpdate = (req, res) => {
-  const {
-    roundrecord_id,
-    company_id,
-    investor_id,
-    warrant_coverage_percentage,
-    warrant_status,
-    expiration_date,
-    notes,
-    warrantType,
-    warrant_fixed_shares,
-    hasWarrants_preferred,
-  } = req.body;
+    const sql = `
+      INSERT INTO warrants (
+        warrantType,
+        warrant_fixed_shares,
+        roundrecord_id,
+        company_id,
+        investor_id,
+        warrant_coverage_percentage,
+        warrant_status,
+        issued_date,
+        expiration_date,
+        notes,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,  NOW(), NOW())
+    `;
 
-  // First check if record exists
-  const checkSql =
-    "SELECT * FROM warrants WHERE roundrecord_id = ? AND company_id = ?";
+    const values = [
+      warrantType,
+      warrant_fixed_shares,
+      roundrecord_id,
+      company_id,
+      investor_id || 0,
+      warrant_coverage_percentage || 0,
+      warrant_status || "pending",
+      issued_date || new Date(),
+      expiration_date || null,
+      notes || null,
+    ];
 
-  db.query(checkSql, [roundrecord_id, company_id], (checkErr, checkResult) => {
-    if (checkErr) {
-      console.error("Error checking warrant:", checkErr);
-      return res.status(500).json({
-        success: false,
-        message: "Error checking warrant",
-        error: checkErr,
-      });
-    }
-
-    // Prepare common values
-
-    if (checkResult.length === 0) {
-      if (hasWarrants_preferred === true) {
-        const insertSql = `
-        INSERT INTO warrants (
-          warrant_fixed_shares,
-          warrantType,
-          roundrecord_id,
-          company_id,
-          investor_id,
-          warrant_coverage_percentage,
-          warrant_status,
-          issued_date,
-          expiration_date,
-          notes,
-          created_at,
-          updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?,  ?, NOW(), ?, ?, NOW(), NOW())
-      `;
-
-        const insertValues = [
-          warrant_fixed_shares,
-          warrantType,
-          roundrecord_id,
-          company_id,
-          investor_id || 0,
-          warrant_coverage_percentage || 0,
-          warrant_status || "pending",
-          expiration_date || null, // ✅ expiration_date
-          notes || null, // ✅ notes
-        ];
-
-        db.query(insertSql, insertValues, (insertErr, insertResult) => {
-          if (insertErr) {
-            console.error("Error inserting warrant:", insertErr);
-            return res.status(500).json({
-              success: false,
-              message: "Error inserting warrant",
-              error: insertErr,
-            });
-          }
-
-          // Second, insert into round_investors table
-          var warrantId = insertResult.insertId;
-          const roundInvestorSql = `
-          INSERT INTO round_investors (
-            round_id,
-            company_id,
-            warrant_id,
-            round_type,
-            cap_table_type,
-            investor_type,
-            created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, NOW())
-        `;
-
-          const roundInvestorValues = [
-            roundrecord_id,
-            company_id,
-            warrantId,
-            "Company",
-            "post",
-            "warrant not exercised",
-          ];
-
-          db.query(roundInvestorSql, roundInvestorValues, (err2, result2) => {
-            if (err2) {
-              console.error("Error inserting into round_investors:", err2);
-              // Optional: Rollback the warrant insertion if needed
-              return res.status(500).json({
-                success: false,
-                message: "Error creating round investor record",
-                error: err2,
-                warrantId: warrantId,
-              });
-            }
-            // return res.status(200).json({
-            //   success: true,
-            //   message: "Warrant inserted successfully",
-            //   operation: "insert",
-            //   affectedRows: insertResult.affectedRows,
-            // });
-          });
-          return res.status(200).json({
-            success: true,
-            message: "Warrant inserted successfully",
-            operation: "insert",
-            affectedRows: insertResult.affectedRows,
-          });
-        });
+    db.query(sql, values, (err, result) => {
+      if (err) {
+        console.error("Error creating warrant:", err);
+        reject(err);
       } else {
-        return res.status(200).json({
+        resolve({
           success: true,
-          message: "Warrant inserted successfully",
-          operation: "",
-          affectedRows: "",
+          message: "Warrant created successfully",
+          warrantId: result.insertId,
+          affectedRows: result.affectedRows,
         });
       }
-    } else {
-      // Record exists - UPDATE
-      if (hasWarrants_preferred === false) {
-        // Step 1: Get warrant IDs from warrants table
-        const getWarrantIdsSql = `
-        SELECT id FROM warrants 
-        WHERE roundrecord_id = ? AND company_id = ?
-      `;
-
-        db.query(
-          getWarrantIdsSql,
-          [roundrecord_id, company_id],
-          (err2, warrants) => {
-            if (err2) {
-              console.error("Error fetching warrant IDs:", err2);
-              return res.status(500).json({
-                success: false,
-                message: "Error fetching warrant IDs",
-                error: err2,
-              });
-            }
-
-            if (warrants && warrants.length > 0) {
-              const warrantIds = warrants.map((w) => w.id);
-
-              // Step 2: Delete from round_investors using warrant_ids
-              const deleteRoundInvestorsSql = `
-        DELETE FROM round_investors 
-        WHERE warrant_id IN (?) AND round_id = ? AND company_id = ?
-      `;
-
-              db.query(
-                deleteRoundInvestorsSql,
-                [warrantIds, roundrecord_id, company_id],
-                (err3, result3) => {
-                  if (err3) {
-                    console.error(
-                      "Error deleting round_investors records:",
-                      err3,
-                    );
-                    return res.status(500).json({
-                      success: false,
-                      message: "Error deleting round_investors records",
-                      error: err3,
-                    });
-                  }
-
-                  // Step 3: Delete from warrants table
-                  const deleteWarrantsSql = `
-            DELETE FROM warrants 
-            WHERE roundrecord_id = ? AND company_id = ?
-          `;
-
-                  db.query(
-                    deleteWarrantsSql,
-                    [roundrecord_id, company_id],
-                    (err, result) => {
-                      if (err) {
-                        console.error("Error deleting warrants:", err);
-                        return res.status(500).json({
-                          success: false,
-                          message: "Error deleting warrants",
-                          error: err,
-                        });
-                      }
-
-                      return res.status(200).json({
-                        success: true,
-                        message:
-                          "Warrants and associated records deleted successfully",
-                        deletedRoundInvestors: result3.affectedRows,
-                        deletedWarrants: result.affectedRows,
-                        warrantIds: warrantIds,
-                      });
-                    },
-                  );
-                },
-              );
-            } else {
-              // No warrants found
-              return res.status(200).json({
-                success: true,
-                message: "No warrants found to delete",
-                deletedWarrants: 0,
-                deletedRoundInvestors: 0,
-              });
-            }
-          },
-        );
-      } else {
-        // First, get warrant IDs for this round
-        const getWarrantIdsSql = `
-  SELECT id FROM warrants 
-  WHERE roundrecord_id = ? AND company_id = ?
-`;
-
-        db.query(
-          getWarrantIdsSql,
-          [roundrecord_id, company_id],
-          (err, warrants) => {
-            if (err) {
-              console.error("Error fetching warrant IDs:", err);
-              return res.status(500).json({
-                success: false,
-                message: "Error fetching warrant IDs",
-                error: err,
-              });
-            }
-
-            if (!warrants || warrants.length === 0) {
-              return res.status(404).json({
-                success: false,
-                message: "No warrants found to update",
-              });
-            }
-
-            const warrantIds = warrants.map((w) => w.id);
-
-            // Update warrants
-            const updateSql = `
-              UPDATE warrants 
-              SET 
-                warrant_fixed_shares = ?,
-                warrantType = ?,
-                company_id = ?,
-                investor_id = ?,
-                warrant_coverage_percentage = ?,
-                warrant_status = ?,
-                expiration_date = ?,
-                updated_at = NOW()
-              WHERE roundrecord_id = ? AND company_id = ?
-            `;
-
-            const updateValues = [
-              warrant_fixed_shares,
-              warrantType,
-              company_id,
-              0,
-              warrant_coverage_percentage,
-              warrant_status,
-              expiration_date,
-              roundrecord_id,
-              company_id,
-            ];
-
-            db.query(updateSql, updateValues, (updateErr, updateResult) => {
-              if (updateErr) {
-                console.error("Error updating warrant:", updateErr);
-                return res.status(500).json({
-                  success: false,
-                  message: "Error updating warrant",
-                  error: updateErr,
-                });
-              }
-              var warrantId = updateResult.id;
-              // First check if record already exists in round_investors
-              const checkRoundInvestorSql = `
-                SELECT id FROM round_investors 
-                WHERE round_id = ? AND company_id = ? AND warrant_id = ?
-              `;
-
-              const checkValues = [roundrecord_id, company_id, warrantId];
-
-              db.query(
-                checkRoundInvestorSql,
-                checkValues,
-                (checkErr, checkResult) => {
-                  if (checkErr) {
-                    console.error("Error checking round_investors:", checkErr);
-                    return res.status(500).json({
-                      success: false,
-                      message: "Error checking round investor record",
-                      error: checkErr,
-                      warrantId: warrantId,
-                    });
-                  }
-
-                  // If record already exists, skip insertion
-                  if (checkResult && checkResult.length > 0) {
-                    return res.status(200).json({
-                      success: true,
-                      message:
-                        "Round investor record already exists, skipping insertion",
-                      operation: "skip",
-                      existingId: checkResult[0].id,
-                      warrantId: warrantId,
-                    });
-                  }
-
-                  // Record doesn't exist, proceed with insert
-                  const roundInvestorSql = `
-                    INSERT INTO round_investors (
-                      round_id,
-                      company_id,
-                      warrant_id,
-                      round_type,
-                      cap_table_type,
-                      investor_type,
-                      created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, NOW())
-                  `;
-
-                  const roundInvestorValues = [
-                    roundrecord_id,
-                    company_id,
-                    warrantId,
-                    "Company",
-                    "post",
-                    "warrant not exercised",
-                  ];
-
-                  db.query(
-                    roundInvestorSql,
-                    roundInvestorValues,
-                    (err2, result2) => {
-                      if (err2) {
-                        console.error(
-                          "Error inserting into round_investors:",
-                          err2,
-                        );
-                        return res.status(500).json({
-                          success: false,
-                          message: "Error creating round investor record",
-                          error: err2,
-                          warrantId: warrantId,
-                        });
-                      }
-
-                      return res.status(200).json({
-                        success: true,
-                        message:
-                          "Warrant inserted successfully with round investor record",
-                        operation: "insert",
-                        affectedRows: result2.affectedRows,
-                        roundInvestorId: result2.insertId,
-                        warrantId: warrantId,
-                      });
-                    },
-                  );
-                },
-              );
-            });
-          },
-        );
-      }
-    }
+    });
   });
 };
 
