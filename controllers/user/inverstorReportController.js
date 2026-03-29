@@ -2768,10 +2768,7 @@ LEFT JOIN investors_warrants iw
   AND iw.investor_id = ?
 WHERE w.company_id = ?
   AND (w.expiration_date IS NULL OR w.expiration_date >= CURDATE())
-  AND (
-    rr.roundStatus != 'CLOSED' 
-    OR (rr.roundStatus = 'CLOSED' AND STR_TO_DATE(rr.dateroundclosed, '%m/%d/%Y') > CURDATE())
-  )
+  
 ORDER BY w.id DESC`;
 
   db.query(investorQuery, [investor_id, company_id], (err, investorResult) => {
