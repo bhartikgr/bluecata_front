@@ -1141,28 +1141,46 @@ exports.getInvestorCompany = async (req, res) => {
   }
 };
 exports.getInvitaionCompany = async (req, res) => {
-  var investor_id = req.body.investor_id;
+  const { investor_id } = req.body;
+
+  if (!investor_id) {
+    return res.status(400).json({
+      status: 0,
+      message: "investor_id is required",
+    });
+  }
 
   try {
-    // Check if user already exists
-    db.query(
-      "SELECT company.*,company_investor.id as company_investor_id FROM company_investor JOIN company ON company.id = company_investor.company_id WHERE company_investor.investor_id = ? And company_investor.joinstatus = 'No' GROUP BY company.id ORDER BY MAX(company_investor.id) DESC",
-      [investor_id],
-      async (err, results) => {
-        if (err) {
-          return res
-            .status(500)
-            .json({ message: "Database query error", error: err });
-        }
+    const query = `
+      SELECT 
+        company.*,
+        company_investor.id as company_investor_id
+      FROM company_investor 
+      JOIN company ON company.id = company_investor.company_id 
+      WHERE company_investor.investor_id = ? 
+        AND company_investor.joinstatus = 'No'
+      ORDER BY company_investor.id DESC
+    `;
 
-        res.status(200).json({
-          message: "",
-          results: results,
+    db.query(query, [investor_id], (err, results) => {
+      if (err) {
+        return res.status(500).json({
+          status: 0,
+          message: "Database query error",
+          error: err,
         });
-      },
-    );
+      }
+
+      return res.status(200).json({
+        status: 1,
+        message: "Pending invitations fetched successfully",
+        data: results,
+        total: results.length,
+      });
+    });
   } catch (err) {
-    res.status(500).json({
+    return res.status(500).json({
+      status: 0,
       message: "Server error",
       error: err.message,
     });
@@ -4339,15 +4357,20 @@ exports.getInvestors = (req, res) => {
 
   // Query to get investors that are NOT linked in company_investor table
   const query = `
-    SELECT * FROM company_add_investors 
-    WHERE company_id = ? 
-    AND id NOT IN (
-      SELECT company_add_investors_id 
-      FROM company_investor 
-      WHERE company_add_investors_id IS NOT NULL
-    )
-    ORDER BY created_at DESC
-  `;
+  SELECT 
+    cai.*,
+    ci.id as company_investor_id,
+    ci.joinstatus,
+    ci.created_at as linked_at,
+    CASE 
+      WHEN ci.id IS NOT NULL THEN 'linked'
+      ELSE 'pending'
+    END as investor_status
+  FROM company_add_investors cai
+  LEFT JOIN company_investor ci ON ci.company_add_investors_id = cai.id AND ci.company_id = cai.company_id
+  WHERE cai.company_id = ?
+  ORDER BY cai.created_at DESC
+`;
 
   db.query(query, [company_id], (err, results) => {
     if (err) {
@@ -4695,7 +4718,7 @@ exports.sendInvitation = (req, res) => {
       } else {
         return res.status(200).json({
           status: 3,
-          message: "Failed to send invitations",
+          message: "Invitation already send",
           summary: {
             total,
             success: 0,
