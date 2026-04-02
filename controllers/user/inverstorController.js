@@ -4731,3 +4731,40 @@ exports.sendInvitation = (req, res) => {
     };
   });
 };
+
+exports.Capitalmotionviewed = (req, res) => {
+  const { investor_id, round_id, company_id } = req.body; // Only the record id is needed for the update
+
+  if (!investor_id) {
+    return res.status(400).json({ message: "Investor ID is required" });
+  }
+
+  const query = `
+    UPDATE sharerecordround
+    SET access_status = 'Only View',activity_date=NOW(),
+        date_view = NOW()
+    WHERE investor_id = ? And roundrecord_id = ? And company_id = ? AND access_status = 'Not View'
+  `;
+
+  db.query(query, [investor_id, round_id, company_id], (err, results) => {
+    if (err) {
+      return res.status(500).json({
+        message: "Database query error",
+        error: err,
+      });
+    }
+
+    if (results.affectedRows === 0) {
+      return res.status(200).json({
+        message: "Access status was already updated or not eligible",
+        updated: false,
+      });
+    }
+
+    res.status(200).json({
+      message: "Access status updated successfully",
+      updated: true,
+      results: results,
+    });
+  });
+};

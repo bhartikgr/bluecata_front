@@ -1193,3 +1193,205 @@ exports.getTotalNumberContact = async (req, res) => {
     });
   }
 };
+
+exports.getTotalNumberRoundA = async (req, res) => {
+  try {
+    const company_id = req.body.company_id;
+
+    // First query: Get investorrequest_company data
+    db.query(
+      "SELECT * FROM investorrequest_company WHERE company_id = ?",
+      [company_id],
+      async (err, results) => {
+        if (err) {
+          return res
+            .status(500)
+            .json({ message: "Database query error", error: err });
+        }
+
+        // Second query: Get totalCountSoftCircle
+        db.query(
+          "SELECT COUNT(*) as totalCountSoftCircle FROM investorrequest_company WHERE company_id = ?",
+          [company_id],
+          (err2, softCircleResults) => {
+            if (err2) {
+              return res
+                .status(500)
+                .json({ message: "Database query error", error: err2 });
+            }
+
+            // Third query: Get totalCountConfirmedInvestor
+            db.query(
+              "SELECT COUNT(*) as totalCountConfirmedInvestor FROM company_investor WHERE company_id = ? AND joinstatus = ?",
+              [company_id, "Yes"],
+              (err3, confirmedResults) => {
+                if (err3) {
+                  return res
+                    .status(500)
+                    .json({ message: "Database query error", error: err3 });
+                }
+
+                // Fourth query: Get totalCountInvestorsEngagement
+                db.query(
+                  "SELECT COUNT(*) as totalCountInvestorsEngagement FROM company_investor WHERE company_id = ? AND joinstatus = ?",
+                  [company_id, "Yes"],
+                  (err4, engagementResults) => {
+                    if (err4) {
+                      return res
+                        .status(500)
+                        .json({ message: "Database query error", error: err4 });
+                    }
+
+                    // Fifth query: Get totalCountDocumentView from sharerecordround
+                    db.query(
+                      "SELECT COUNT(*) as totalCountDocumentView FROM sharerecordround WHERE company_id = ? AND access_status = ?",
+                      [company_id, "Only View"],
+                      (err5, documentResults) => {
+                        if (err5) {
+                          return res.status(500).json({
+                            message: "Database query error",
+                            error: err5,
+                          });
+                        }
+
+                        // Sixth query: Get totalCountSoftCircleRatio (request_confirm = 'No')
+                        db.query(
+                          "SELECT COUNT(*) as softCircleNotConfirmed FROM investorrequest_company WHERE company_id = ? AND request_confirm = ?",
+                          [company_id, "No"],
+                          (err6, softCircleRatioResults) => {
+                            if (err6) {
+                              return res.status(500).json({
+                                message: "Database query error",
+                                error: err6,
+                              });
+                            }
+
+                            // Get total investorrequest_company count for ratio calculation
+                            db.query(
+                              "SELECT COUNT(*) as totalInvestorRequests FROM investorrequest_company WHERE company_id = ?",
+                              [company_id],
+                              (err7, totalRequestsResults) => {
+                                if (err7) {
+                                  return res.status(500).json({
+                                    message: "Database query error",
+                                    error: err7,
+                                  });
+                                }
+
+                                // Seventh query: Get totalCountInvestors from company_add_investors
+                                db.query(
+                                  "SELECT COUNT(*) as totalCountInvestors FROM company_add_investors WHERE company_id = ?",
+                                  [company_id],
+                                  (err8, investorsResults) => {
+                                    if (err8) {
+                                      return res.status(500).json({
+                                        message: "Database query error",
+                                        error: err8,
+                                      });
+                                    }
+
+                                    return res.status(200).json({
+                                      message: "",
+                                      results: results,
+                                      totalCountSoftCircle:
+                                        softCircleResults[0]
+                                          ?.totalCountSoftCircle || 0,
+                                      totalCountConfirmedInvestor:
+                                        confirmedResults[0]
+                                          ?.totalCountConfirmedInvestor || 0,
+                                      totalCountInvestorsEngagement:
+                                        engagementResults[0]
+                                          ?.totalCountInvestorsEngagement || 0,
+                                      totalCountDocumentView:
+                                        documentResults[0]
+                                          ?.totalCountDocumentView || 0,
+                                      totalCountSoftCircleRatio: {
+                                        notConfirmed:
+                                          softCircleRatioResults[0]
+                                            ?.softCircleNotConfirmed || 0,
+                                        totalRequests:
+                                          totalRequestsResults[0]
+                                            ?.totalInvestorRequests || 0,
+                                        ratio:
+                                          totalRequestsResults[0]
+                                            ?.totalInvestorRequests > 0
+                                            ? ((softCircleRatioResults[0]
+                                                ?.softCircleNotConfirmed || 0) /
+                                                totalRequestsResults[0]
+                                                  ?.totalInvestorRequests) *
+                                              100
+                                            : 0,
+                                      },
+                                      totalCountInvestors:
+                                        investorsResults[0]
+                                          ?.totalCountInvestors || 0,
+                                    });
+                                  },
+                                );
+                              },
+                            );
+                          },
+                        );
+                      },
+                    );
+                  },
+                );
+              },
+            );
+          },
+        );
+      },
+    );
+  } catch (error) {
+    res.status(500).json({
+      message: "Internal server error",
+      error: error.message,
+    });
+  }
+};
+
+exports.getTotalNumberCapTableAnalytics = async (req, res) => {
+  try {
+    const company_id = req.body.company_id;
+
+    db.query(
+      "SELECT founder_data FROM roundrecord WHERE company_id = ? AND round_type = ?",
+      [company_id, "Round 0"],
+      (err, results) => {
+        if (err) {
+          return res.status(500).json({
+            message: "Database query error",
+            error: err,
+          });
+        }
+
+        let totalFounders = 0;
+        let totalShares = 0;
+        let pricePerShare = 0;
+        let ownershipBreakdown = [];
+
+        if (results && results.length > 0 && results[0].founder_data) {
+          try {
+            const founderData = JSON.parse(results[0].founder_data);
+            totalFounders = founderData?.founders?.length || 0;
+            totalShares = parseFloat(founderData?.totalShares) || 0;
+            pricePerShare = parseFloat(founderData?.pricePerShare) || 0;
+            ownershipBreakdown = founderData?.ownershipBreakdown || [];
+          } catch (parseError) {
+            console.error("Error parsing founder_data:", parseError);
+          }
+        }
+
+        return res.status(200).json({
+          message: "",
+          totalFounders: totalFounders,
+        });
+      },
+    );
+  } catch (error) {
+    res.status(500).json({
+      message: "Internal server error",
+      error: error.message,
+    });
+  }
+};
