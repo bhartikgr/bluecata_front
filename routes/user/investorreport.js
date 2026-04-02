@@ -70,4 +70,8 @@ router.post(
   "/getRoundsConversionWithWarrant",
   inverstorReportController.getRoundsConversionWithWarrant,
 );
+router.post(
+  "/getinvestorEndRecordData",
+  inverstorReportController.getinvestorEndRecordData,
+);
 module.exports = router;

@@ -1758,6 +1758,63 @@ exports.getinvestorRecorData = async (req, res) => {
     });
   });
 };
+exports.getinvestorEndRecordData = async (req, res) => {
+  const { id, email } = req.body;
+
+  if (!id || !email) {
+    return res.status(400).json({ message: "Missing required fields." });
+  }
+
+  // Investor information query
+  const investorQuery = `SELECT * FROM company_investor WHERE investor_id = ?`;
+
+  db.query(investorQuery, [id], (err, investorResult) => {
+    if (err) {
+      console.error("Investor data error:", err);
+      return res.status(500).json({
+        message: "Database error fetching investor data",
+        error: err,
+      });
+    }
+
+    if (investorResult.length === 0) {
+      return res.status(404).json({
+        message: "Investor not found",
+        results: [],
+      });
+    }
+
+    // Share report query
+    const shareReportQuery = `
+      SELECT * FROM sharerecordround 
+      WHERE (investor_id = ? AND access_status = 'Only View') OR (access_status = 'Download')
+    `;
+
+    db.query(shareReportQuery, [id], (err, shareReportResult) => {
+      if (err) {
+        console.error("Share report error:", err);
+        return res.status(500).json({
+          message: "Database error fetching share report",
+          error: err,
+        });
+      }
+
+      // Combine both results
+      const investorData = investorResult[0];
+
+      return res.status(200).json({
+        message: "Investor data fetched successfully",
+        results: [
+          {
+            total_portfolio_company: investorResult,
+            investor_report_reviewed:
+              shareReportResult.length > 0 ? shareReportResult : [],
+          },
+        ],
+      });
+    });
+  });
+};
 
 exports.getRoundsDetail = (req, res) => {
   const { company_id, round_id } = req.body;
