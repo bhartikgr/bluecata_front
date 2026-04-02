@@ -38,14 +38,14 @@ exports.getInvestorlist = (req, res) => {
 
   const query = `
     SELECT DISTINCT investor_information.*, 
-           company_investor.investorType, 
-           company_investor.investmentPreference,
-           company_investor.id as company_investor_id 
-    FROM investor_information 
-    INNER JOIN company_investor ON company_investor.investor_id = investor_information.id 
-    WHERE company_investor.company_id = ?  And company_investor.joinstatus = 'Yes'
-    GROUP BY investor_information.id 
-    ORDER BY investor_information.id DESC
+       company_investor.investorType, 
+       company_investor.investmentPreference,
+       company_investor.id as company_investor_id 
+FROM investor_information 
+INNER JOIN company_investor ON company_investor.investor_id = investor_information.id 
+WHERE company_investor.company_id = ?  
+  AND company_investor.joinstatus = 'Yes'
+ORDER BY investor_information.id DESC 
   `;
 
   db.query(query, [company_id], (err, results) => {
