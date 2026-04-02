@@ -1538,7 +1538,7 @@ exports.checkInvestorRecordround = (req, res) => {
   const { company_id, id } = req.body;
 
   const query = `
-    SELECT 
+   SELECT 
       ii.id AS investor_id, 
       ci.investorType, 
       ci.investmentPreference, 
@@ -1552,7 +1552,6 @@ exports.checkInvestorRecordround = (req, res) => {
     WHERE ci.company_id = ?
       AND ii.id = ?
       AND ii.is_register = 'Yes'
-    GROUP BY ii.id
     ORDER BY ii.id DESC
   `;
 
