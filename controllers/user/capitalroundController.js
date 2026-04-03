@@ -3196,28 +3196,33 @@ async function calculateWarrantFromInvestorData(warrant, inv) {
   let adjustedPrice = 0;
   let finalValue = 0;
   let calculationMethod = "";
-
   // Get investor's existing shares and share price
   const existingShares = parseFloat(inv.shares) || 0;
-  const sharePrice = parseFloat(inv.share_price) || 0;
+  const sharePrice =
+    parseFloat(inv.share_price) || parseFloat(inv.conversion_price);
   const coveragePercentage =
     parseFloat(warrant.warrant_coverage_percentage_main) || 0;
-
+  console.log(warrant.id, "warrantid");
   if (warrant.warrantType === "percentage") {
     // Percentage based warrant with discount
+
     const discountPercentage =
       parseFloat(warrant.warrant_coverage_percentage) || 0;
 
     // Calculate coverage shares
+
     const coverageDecimal = coveragePercentage / 100;
+
     potentialShares = existingShares * coverageDecimal;
 
-    // Apply discount to get adjusted price
     const discountDecimal = 1 - discountPercentage / 100;
+
     adjustedPrice = sharePrice * discountDecimal;
 
     // Calculate final value
+
     finalValue = potentialShares * adjustedPrice;
+
     calculationMethod = "percentage_with_discount";
   } else if (warrant.warrantType === "fixed") {
     // Fixed price warrant (no discount)
@@ -3335,104 +3340,120 @@ async function insertWarrantEntry(
       parseFloat(warrant.warrant_coverage_percentage_main) || 0;
     const percentage_formatted = `${percentage_numeric}%`;
     const value = calculation.finalValue;
-    const warrantInvestorName =
-      `${inv.firstName || ""} ${inv.lastName || ""} (Warrant)`.trim();
-    const deleteQuery = `
-      DELETE FROM round_investors 
-      WHERE warrant_id = ? And round_id = ?
-      AND investor_type = 'warrant not exercised'
+
+    const investorFirstName =
+      inv.firstName ||
+      inv.first_name ||
+      inv.investor_details?.firstName ||
+      inv.investor_details?.first_name ||
+      "";
+    const investorLastName =
+      inv.lastName ||
+      inv.last_name ||
+      inv.investor_details?.lastName ||
+      inv.investor_details?.last_name ||
+      "";
+    const investorEmail = inv.email || inv.investor_details?.email || "";
+    const investorPhone = inv.phone || inv.investor_details?.phone || "";
+
+    // ✅ Step 1: First INSERT new warrant record
+    const insertQuery = `
+      INSERT INTO round_investors 
+      (warrant_id, round_id, company_id, cap_table_type, investor_type, first_name, last_name,
+       email, phone, shares, new_shares, total_shares, investment_amount, share_price,
+       percentage_numeric, percentage_formatted, value, is_new_investment, investor_details,
+       share_class_type, instrument_type, round_name, round_id_ref)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
-    connection.query(
-      deleteQuery,
-      [warrant.id, roundId],
-      (deleteErr, deleteResult) => {
-        if (deleteErr) {
-          console.error("Error deleting existing warrant record:", deleteErr);
-          return reject(deleteErr);
-        }
+    const values = [
+      warrant.id,
+      roundId,
+      companyId,
+      "post",
+      "warrant",
+      investorFirstName,
+      investorLastName || "",
+      investorEmail || "",
+      investorPhone || "",
+      Math.round(calculation.potentialShares),
+      Math.round(calculation.potentialShares),
+      Math.round(calculation.potentialShares),
+      0,
+      calculation.adjustedPrice,
+      percentage_numeric,
+      percentage_formatted,
+      value,
+      1,
+      JSON.stringify({
+        original_investor: {
+          id: inv.investor_id || inv.id,
+          name: `${inv.firstName} ${inv.lastName}`,
+          email: inv.email,
+          existing_shares: calculation.existingShares,
+          share_price: calculation.sharePrice,
+        },
+        warrant_details: {
+          id: warrant.id,
+          type: warrant.warrantType,
+          coverage_percentage: warrant.warrant_coverage_percentage_main,
+          discount_percentage: warrant.warrant_coverage_percentage,
+          fixed_price: warrant.warrant_fixed_shares,
+          expiration_date: warrant.expiration_date,
+        },
+        calculation_details: calculation,
+      }),
+      inv.shareClassType || "Warrant",
+      inv.instrumentType || "Warrant",
+      inv.roundName || "",
+      warrant.roundrecord_id || roundId,
+    ];
 
-        if (deleteResult.affectedRows > 0) {
-          console.log(
-            `Deleted ${deleteResult.affectedRows} existing warrant record(s) for warrant_id: ${warrant.id}`,
-          );
-        }
+    // Validate count
+    if (values.length !== 23) {
+      console.error(`Value count mismatch! Expected 23, got ${values.length}`);
+      return reject(
+        new Error(`Value count mismatch: expected 23, got ${values.length}`),
+      );
+    }
 
-        // ✅ Step 2: Insert new warrant record
-        const query = `
-        INSERT INTO round_investors 
-        (warrant_id, round_id, company_id, cap_table_type, investor_type, first_name, last_name,
-         email, phone, shares, new_shares, total_shares, investment_amount, share_price,
-         percentage_numeric, percentage_formatted, value, is_new_investment, investor_details,
-         share_class_type, instrument_type, round_name, round_id_ref)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    // ✅ First INSERT
+    connection.query(insertQuery, values, (insertErr, insertResult) => {
+      if (insertErr) {
+        console.error("Error inserting warrant entry:", insertErr);
+        return reject(insertErr);
+      }
+
+      console.log(`✅ Warrant inserted for warrant_id: ${warrant.id}`);
+
+      // ✅ Step 2: Then DELETE old warrant records (if any)
+      const deleteQuery = `
+        DELETE FROM round_investors 
+        WHERE warrant_id = ? 
+          AND round_id = ?
+          AND investor_type = 'warrant not exercised' 
+          AND cap_table_type = 'post'
+          AND id != ?  /* Don't delete the newly inserted record */
       `;
 
-        const values = [
-          warrant.id,
-          roundId,
-          companyId,
-          "post",
-          "warrant",
-          inv.firstName,
-          inv.lastName || "",
-          inv.email || "",
-          inv.phone || "",
-          Math.round(calculation.potentialShares),
-          Math.round(calculation.potentialShares),
-          Math.round(calculation.potentialShares),
-          0,
-          calculation.adjustedPrice,
-          percentage_numeric,
-          percentage_formatted,
-          value,
-          1,
-          JSON.stringify({
-            original_investor: {
-              id: inv.investor_id || inv.id,
-              name: `${inv.firstName} ${inv.lastName}`,
-              email: inv.email,
-              existing_shares: calculation.existingShares,
-              share_price: calculation.sharePrice,
-            },
-            warrant_details: {
-              id: warrant.id,
-              type: warrant.warrantType,
-              coverage_percentage: warrant.warrant_coverage_percentage_main,
-              discount_percentage: warrant.warrant_coverage_percentage,
-              fixed_price: warrant.warrant_fixed_shares,
-              expiration_date: warrant.expiration_date,
-            },
-            calculation_details: calculation,
-          }),
-          warrant.share_class_type || "Warrant",
-          "Warrant",
-          warrant.round_name || inv.roundName || "",
-          warrant.roundrecord_id || roundId,
-        ];
-
-        // Validate count
-        if (values.length !== 23) {
-          console.error(
-            `Value count mismatch! Expected 23, got ${values.length}`,
-          );
-          return reject(
-            new Error(
-              `Value count mismatch: expected 23, got ${values.length}`,
-            ),
-          );
-        }
-
-        connection.query(query, values, (err, result) => {
-          if (err) {
-            console.error("Error inserting warrant entry:", err);
-            reject(err);
-          } else {
-            resolve(result);
+      connection.query(
+        deleteQuery,
+        [warrant.id, roundId, insertResult.insertId],
+        (deleteErr, deleteResult) => {
+          if (deleteErr) {
+            console.error("Error deleting existing warrant record:", deleteErr);
+            // Don't reject here, insertion was successful
+            console.warn("Delete failed but insert succeeded");
+          } else if (deleteResult.affectedRows > 0) {
+            console.log(
+              `🗑️ Deleted ${deleteResult.affectedRows} old warrant record(s) for warrant_id: ${warrant.id}`,
+            );
           }
-        });
-      },
-    );
+
+          resolve(insertResult);
+        },
+      );
+    });
   });
 }
 // Helper function to calculate years between two dates
@@ -3450,6 +3471,96 @@ const calculateYearsToMaturity = (maturityDate) => {
 
   return diffYears;
 };
+
+async function insertWarrantExercisedConverted(
+  connection,
+  roundId,
+  companyId,
+  type, // 'pre' or 'post'
+  inv,
+) {
+  // ✅ inv object mein already percentage aur value calculated hai
+  if (type === "post") {
+    // Check if this is a converted investor (SAFE/Convertible Note)
+    const isConverted =
+      inv.is_converted === true ||
+      inv.instrument_type === "Safe" ||
+      inv.instrument_type === "Convertible Note";
+
+    if (isConverted) {
+      // Get the original round ID from the converted investor
+      const originalRoundId = inv.round_id_ref;
+
+      if (originalRoundId) {
+        // Check for warrants attached to the original SAFE round
+        const warrantData = await checkInvestorWarrant(
+          connection,
+          originalRoundId,
+          inv,
+        );
+
+        // If warrant exists, calculate and insert warrant entry
+        if (warrantData && warrantData.length > 0) {
+          for (const warrant of warrantData) {
+            // Check if warrant is expired
+            const isExpired = await isWarrantExpired(warrant);
+
+            if (!isExpired) {
+              // Calculate warrant values based on warrant type
+              const warrantCalculation = await calculateWarrantFromInvestorData(
+                warrant,
+                inv,
+              );
+
+              // Insert warrant as separate entry
+              await insertWarrantEntry(
+                connection,
+                roundId,
+                companyId,
+                inv,
+                warrant,
+                warrantCalculation,
+              );
+            } else {
+            }
+          }
+        } else {
+        }
+      } else {
+      }
+    } else {
+    }
+  }
+}
+async function checkInvestorConvertedWarrant(connection, roundId, inv) {
+  return new Promise((resolve, reject) => {
+    // Get investor_id from inv object
+    const investorId = inv.investor_id || inv.id;
+
+    let query = `
+      SELECT * FROM warrants 
+      WHERE roundrecord_id = ? 
+    `;
+
+    let params = [roundId];
+
+    // If investor_id exists, filter by it
+    if (investorId) {
+      query += ` AND investor_id = ?`;
+      params.push(investorId);
+    }
+
+    connection.query(query, params, (err, results) => {
+      if (err) {
+        console.error("Error checking warrant:", err);
+        reject(err);
+      } else {
+        resolve(results);
+      }
+    });
+  });
+}
+//Converted Warranted
 async function insertConvertedInvestorDirect(
   connection,
   roundId,
@@ -3458,6 +3569,7 @@ async function insertConvertedInvestorDirect(
   converted,
 ) {
   // ✅ Agar converted object mein items array hai to first item lo
+  console.log(converted, "converted");
   const item =
     converted.items && converted.items.length > 0
       ? converted.items[0]
@@ -4030,8 +4142,8 @@ async function saveCapTableData(
                        is_pending, potential_shares,
                        conversion_price, discount_rate, valuation_cap,
                        interest_rate, years, interest_accrued, total_conversion_amount, maturity_date,
-                       investor_details, instrument_type, round_name, share_class_type)
-                      VALUES (?, ?, 'post', 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                       investor_details, instrument_type, round_name, share_class_type,round_id_ref)
+                      VALUES (?, ?, 'post', 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                         [
                           roundId,
                           companyId,
@@ -4066,6 +4178,7 @@ async function saveCapTableData(
                           item.instrument_type || "Safe",
                           item.round_name || item.roundName || "",
                           item.shareClassType || "",
+                          item.round_id,
                         ],
                         (err) => {
                           if (err) rej(err);
@@ -4166,6 +4279,17 @@ async function saveCapTableData(
               await insertWarrantExercised(connection, roundId, companyId, inv);
             }
           }
+          if (postTable.converted_investors && checkround === "price") {
+            for (const conv of postTable.converted_investors.items) {
+              await insertWarrantExercisedConverted(
+                connection,
+                roundId,
+                companyId,
+                "post",
+                conv,
+              );
+            }
+          }
           // Commit
           connection.commit((err) => {
             if (err) {
@@ -4190,6 +4314,7 @@ async function saveCapTableData(
     });
   });
 }
+
 async function updateRoundRecordDataCommonPreferred(roundId, updateData) {
   return new Promise((resolve, reject) => {
     const query = `
@@ -4404,6 +4529,7 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
           round_id: round.id,
           warrant_id: inv.warrant_id,
           is_previous: true,
+          round_id_ref: inv.round_id_ref,
         });
       } else {
         previousInvestorsList.push({
@@ -4423,6 +4549,7 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
           round_name: inv.round_name,
           round_id: round.id,
           is_previous: true,
+          round_id_ref: inv.round_id_ref,
         });
       }
     });
@@ -4536,7 +4663,6 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
   }
   for (const investor of preconversion) {
     if (alreadyConvertedIds.includes(parseInt(investor.round_id))) continue;
-
     const instrumentData = parseInstrumentData(investor.instrument_type_data);
     const isSafe = investor.instrument_type === "Safe";
     const isNote = investor.instrument_type === "Convertible Note";
@@ -4595,6 +4721,7 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
       round_name: investor.nameOfRound || "",
       instrument_type: investor.instrument_type,
       investment: principal,
+      round_id_ref: investor.round_id_ref,
       conversion_price: conversionPrice,
       convertedShares,
       investor_name:
@@ -5295,6 +5422,7 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
                 name: conv.investor_name,
                 instrument_type: conv.instrument_type,
                 shares: conv.convertedShares,
+                round_id_ref: conv.round_id_ref,
                 new_shares: conv.convertedShares,
                 total: conv.convertedShares,
                 investment: conv.investment,
@@ -5476,6 +5604,7 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
             shares: conv.convertedShares,
             new_shares: conv.convertedShares,
             total: conv.convertedShares,
+            round_id_ref: conv.round_id_ref,
             is_converted: true,
             percentage_raw: conv.percentage_raw,
             percentage: conv.percentage,
@@ -6159,6 +6288,7 @@ async function handleSafeCalculation(params) {
             round_id: prevRound.id,
             warrant_id: inv.warrant_id,
             is_previous: true,
+            round_id_ref: inv.round_id_ref,
           });
         } else {
           previousInvestorsList.push({
@@ -6178,6 +6308,7 @@ async function handleSafeCalculation(params) {
             instrument_type: inv.instrument_type,
             round_name: inv.round_name,
             round_id: prevRound.id,
+            round_id_ref: inv.round_id_ref,
             is_previous: true,
           });
         }
@@ -6397,6 +6528,7 @@ async function handleSafeCalculation(params) {
           is_pending: true,
           is_converted: false,
           round_id: row.round_id,
+          round_id_ref: row.round_id_ref,
           shareClassType:
             row.round_share_class_type ||
             row.share_class_type ||
@@ -6453,6 +6585,7 @@ async function handleSafeCalculation(params) {
       instrumentType: f.instrumentType || "",
       roundName: round0Name,
       round_id: f.round_id || null,
+      round_id_ref: f.round_id_ref,
       is_option_pool: false,
       is_previous: false,
       is_converted: false,
@@ -6522,6 +6655,7 @@ async function handleSafeCalculation(params) {
       instrument_type: inv.instrument_type,
       round_name: inv.round_name,
       round_id: inv.round_id,
+      round_id_ref: inv.round_id_ref,
     };
   };
 
@@ -7274,6 +7408,7 @@ async function handleConvertibleNoteCalculation(params) {
             round_name: inv.round_name,
             round_id: prevRound.id,
             warrant_id: inv.warrant_id,
+            round_id_ref: inv.round_id_ref,
             is_previous: true,
           });
         } else {
@@ -7296,6 +7431,7 @@ async function handleConvertibleNoteCalculation(params) {
             round_id: prevRound.id,
             is_previous: true,
             warrant_id: inv.warrant_id,
+            round_id_ref: inv.round_id_ref,
           });
         }
       });
@@ -7392,6 +7528,7 @@ async function handleConvertibleNoteCalculation(params) {
       percentage: 0,
       percentage_formatted: "0.00%",
       value: 0,
+      round_id_ref: currentRound?.id,
       value_formatted: "0.00",
       is_pending: true,
       round_id: id,
@@ -7444,6 +7581,7 @@ async function handleConvertibleNoteCalculation(params) {
       shareClassType: "",
       round_name: currentRound?.nameOfRound || "",
       roundId: currentRound?.id,
+      round_id_ref: currentRound?.id,
       investor_details: {
         firstName: "",
         lastName: "",
@@ -7544,6 +7682,7 @@ async function handleConvertibleNoteCalculation(params) {
           instrument_type:
             row.instrument_type || latestPreviousRound.instrumentType || "",
           round_id: row.round_id,
+          round_id_ref: row?.id,
           round_name:
             row.round_name_ref || latestPreviousRound.nameOfRound || "",
           pending_instrument_id: row.id,
@@ -7661,6 +7800,7 @@ async function handleConvertibleNoteCalculation(params) {
       instrument_type: inv.instrument_type,
       round_name: inv.round_name,
       round_id: inv.round_id,
+      round_id_ref: inv?.id,
     };
   };
 

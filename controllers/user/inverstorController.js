@@ -568,6 +568,7 @@ exports.deleteinvestor = (req, res) => {
   const query1 = `DELETE FROM company_investor WHERE company_id = ? AND investor_id = ?`;
   const query2 = `DELETE FROM sharereport WHERE company_id = ? AND investor_id = ?`;
   const query3 = `DELETE FROM sharerecordround WHERE company_id = ? AND investor_id = ?`;
+  const query4 = `DELETE FROM round_investors WHERE company_id = ? AND investor_id = ?`;
 
   db.query(query1, [company_id, id], (err, result1) => {
     if (err) {
@@ -593,8 +594,17 @@ exports.deleteinvestor = (req, res) => {
           });
         }
 
-        res.status(200).json({
-          message: "Investor and related records deleted successfully",
+        db.query(query4, [company_id, id], (err, result3) => {
+          if (err) {
+            return res.status(500).json({
+              message: "Error deleting from sharerecordround",
+              error: err,
+            });
+          }
+
+          res.status(200).json({
+            message: "Investor and related records deleted successfully",
+          });
         });
       });
     });
@@ -4765,5 +4775,58 @@ exports.Capitalmotionviewed = (req, res) => {
       updated: true,
       results: results,
     });
+  });
+};
+
+exports.comapnyclosedRound = (req, res) => {
+  const { company_id, id } = req.body;
+  console.log(req.body);
+  // First check if Round 0 exists
+  const checkRoundZeroQuery = `SELECT id FROM roundrecord WHERE company_id = ? AND id = ?`;
+
+  db.query(checkRoundZeroQuery, [company_id, id], (err, roundZeroResult) => {
+    if (err) {
+      return res.status(500).json({
+        success: false,
+        message: "Database query error",
+        error: err,
+      });
+    }
+
+    // If Round 0 exists
+    if (roundZeroResult.length > 0) {
+      // Get acknowledgement records
+      const currentDate = new Date().toISOString().split("T")[0]; // YYYY-MM-DD format
+      const roundId = id; // Assuming round_id is in the table
+
+      const updateQuery = `
+      UPDATE roundrecord 
+      SET roundStatus = 'CLOSED', 
+          dateroundclosed = ?,
+          updated_at = NOW()
+      WHERE id = ?
+    `;
+
+      db.query(
+        updateQuery,
+        [currentDate, roundId],
+        (updateErr, updateResults) => {
+          if (updateErr) {
+            return res.status(500).json({
+              success: false,
+              message: "Failed to update round status",
+              error: updateErr,
+            });
+          }
+
+          res.status(200).json({
+            success: true,
+            message: "Round closed successfully",
+            results: roundZeroResult,
+            updateResults: updateResults,
+          });
+        },
+      );
+    }
   });
 };
