@@ -8425,8 +8425,20 @@ async function handleConvertibleNoteCalculation(params) {
       ...allPendingInstruments,
     ],
   };
-   writeLog("investorPostMoney", { investorPostMoneyOwnership.toFixed(2) });
-  writeLog("postMoneyCapTable", { postMoneyCapTable });
+  writeLog("postMoneyCapTable", {
+    total_shares: postMoneyCapTable?.total_shares,
+    post_money_valuation: postMoneyCapTable?.post_money_valuation,
+    share_price: postMoneyCapTable?.share_price,
+    currency: postMoneyCapTable?.currency,
+    items_count: postMoneyCapTable?.items?.length,
+    pending_count: postMoneyCapTable?.pending_instruments?.length,
+    founders_count: postMoneyCapTable?.founders?.list?.length,
+    option_pool_shares: postMoneyCapTable?.option_pool?.shares,
+    has_converted_investors: !!postMoneyCapTable?.converted_investors,
+    has_warrants: !!postMoneyCapTable?.warrants,
+    roundName: postMoneyCapTable?.roundName,
+    instrumentType: postMoneyCapTable?.instrumentType,
+  });
   // ==================== DATABASE UPDATE ====================
   const dbUpdateData = {
     share_price: sharePrice.toFixed(4),
