@@ -3827,23 +3827,14 @@ async function saveCapTableData(
   postMoneyValuation,
   convert = false,
 ) {
-  writeLog("saveCapTableData_START", {
-    checkround,
-    roundId,
-    companyId,
-    preMoneyTotalShares,
-    postMoneyTotalShares,
-    preMoneyValuation,
-    postMoneyValuation,
-    convert,
-    hasPreTable: !!preTable,
-    hasPostTable: !!postTable,
-    preTableKeys: preTable ? Object.keys(preTable) : [],
-    postTableKeys: postTable ? Object.keys(postTable) : [],
-  });
   return new Promise((resolve, reject) => {
     db.getConnection((err, connection) => {
       if (err) {
+        writeLog(
+          "getConnection_ERROR",
+          { error: err.message, code: err.code },
+          err,
+        );
         console.error("❌ DB Connection Error:", err);
         console.error("Error Code:", err.code);
         console.error("Error Message:", err.message);
@@ -3855,10 +3846,9 @@ async function saveCapTableData(
         });
       }
 
-      console.log("✅ Database connection acquired");
-
       connection.beginTransaction(async (err) => {
         if (err) {
+          writeLog("beginTransaction_ERROR", { error: err.message }, err);
           console.error("❌ Transaction Begin Error:", err);
           connection.release();
           return reject({
