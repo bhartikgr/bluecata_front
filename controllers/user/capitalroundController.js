@@ -22,10 +22,6 @@ const transporter = nodemailer.createTransport({
     pass: process.env.EMAIL_PASS,
   },
 });
-const logDir = path.join(__dirname, "../logs");
-if (!fs.existsSync(logDir)) {
-  fs.mkdirSync(logDir, { recursive: true });
-}
 //Email Detail
 // Storage for term sheet files
 const storage = multer.diskStorage({
@@ -3818,51 +3814,6 @@ async function insertCapTableItemDirect(
   });
 }
 
-function writeLogFile(filename, data) {
-  const timestamp = new Date().toISOString();
-  const logData = {
-    timestamp,
-    ...data,
-  };
-
-  const logFilePath = path.join(logDir, `${filename}.json`);
-
-  // Append to log file
-  fs.appendFileSync(
-    logFilePath,
-    JSON.stringify(logData, null, 2) + ",\n",
-    "utf8",
-  );
-  console.log(`📝 Log written to: ${logFilePath}`);
-}
-
-// Function to create a new log session
-function startLogSession(roundId, companyId) {
-  const sessionId = `${Date.now()}_${roundId}_${companyId}`;
-  const sessionData = {
-    sessionId,
-    roundId,
-    companyId,
-    startTime: new Date().toISOString(),
-    steps: [],
-  };
-
-  writeLogFile(`session_${sessionId}`, sessionData);
-  return sessionId;
-}
-
-// Function to add step log
-function addStepLog(sessionId, stepName, data, error = null) {
-  const stepLog = {
-    step: stepName,
-    timestamp: new Date().toISOString(),
-    data: data,
-    error: error ? { message: error.message, stack: error.stack } : null,
-    success: !error,
-  };
-
-  writeLogFile(`steps_${sessionId}`, stepLog);
-}
 // ==================== MAIN saveCapTableData — Direct values, NO recalculation ====================
 async function saveCapTableData(
   checkround,
@@ -3876,36 +3827,12 @@ async function saveCapTableData(
   postMoneyValuation,
   convert = false,
 ) {
-  // Start log session
-  const sessionId = startLogSession(roundId, companyId);
-
-  addStepLog(sessionId, "saveCapTableData_START", {
-    checkround,
-    roundId,
-    companyId,
-    preMoneyTotalShares,
-    postMoneyTotalShares,
-    preMoneyValuation,
-    postMoneyValuation,
-    convert,
-    hasPreTable: !!preTable,
-    hasPostTable: !!postTable,
-    preTableKeys: preTable ? Object.keys(preTable) : [],
-    postTableKeys: postTable ? Object.keys(postTable) : [],
-  });
-
   return new Promise((resolve, reject) => {
-    addStepLog(sessionId, "getConnection_START", {});
-
     db.getConnection((err, connection) => {
       if (err) {
         console.error("❌ DB Connection Error:", err);
-        addStepLog(
-          sessionId,
-          "getConnection_ERROR",
-          { error: err.message },
-          err,
-        );
+        console.error("Error Code:", err.code);
+        console.error("Error Message:", err.message);
         return reject({
           success: false,
           error: "Database connection failed",
@@ -3915,19 +3842,10 @@ async function saveCapTableData(
       }
 
       console.log("✅ Database connection acquired");
-      addStepLog(sessionId, "getConnection_SUCCESS", {
-        connectionThreadId: connection.threadId,
-      });
 
       connection.beginTransaction(async (err) => {
         if (err) {
           console.error("❌ Transaction Begin Error:", err);
-          addStepLog(
-            sessionId,
-            "beginTransaction_ERROR",
-            { error: err.message },
-            err,
-          );
           connection.release();
           return reject({
             success: false,
@@ -3935,8 +3853,6 @@ async function saveCapTableData(
             details: err.message,
           });
         }
-
-        addStepLog(sessionId, "beginTransaction_SUCCESS", {});
 
         try {
           // ==================== DELETE EXISTING DATA ====================
@@ -3949,7 +3865,6 @@ async function saveCapTableData(
           ];
 
           console.log("📋 Deleting existing data from tables:", tables);
-          addStepLog(sessionId, "delete_START", { tables });
 
           for (const table of tables) {
             await new Promise((res, rej) => {
@@ -3959,20 +3874,11 @@ async function saveCapTableData(
                 (err) => {
                   if (err) {
                     console.error(`❌ Error deleting from ${table}:`, err);
-                    addStepLog(
-                      sessionId,
-                      `delete_ERROR_${table}`,
-                      { error: err.message },
-                      err,
-                    );
                     rej(err);
                   } else {
                     console.log(
                       `✅ Deleted from ${table} for round_id: ${roundId}`,
                     );
-                    addStepLog(sessionId, `delete_SUCCESS_${table}`, {
-                      roundId,
-                    });
                     res();
                   }
                 },
@@ -3980,170 +3886,97 @@ async function saveCapTableData(
             });
           }
 
-          addStepLog(sessionId, "delete_COMPLETE", {});
-
           // ==================== SAVE PRE-MONEY DATA ====================
           if (preTable) {
             console.log("📊 Saving PRE-MONEY data...");
-            addStepLog(sessionId, "preMoney_START", {});
 
             // 1. Founders — PRE only
             if (preTable.founders?.list) {
               console.log(
                 `  👥 Saving ${preTable.founders.list.length} founders`,
               );
-              addStepLog(sessionId, "preFounders_START", {
-                count: preTable.founders.list.length,
-              });
-
-              for (let i = 0; i < preTable.founders.list.length; i++) {
-                const founder = preTable.founders.list[i];
-                try {
-                  await insertFounderDirect(
-                    connection,
-                    roundId,
-                    companyId,
-                    "pre",
-                    founder,
-                  );
-                  addStepLog(sessionId, `preFounder_${i}_SUCCESS`, {
-                    founderName: founder.name,
-                  });
-                } catch (err) {
-                  addStepLog(
-                    sessionId,
-                    `preFounder_${i}_ERROR`,
-                    { founderName: founder.name, error: err.message },
-                    err,
-                  );
-                  throw err;
-                }
+              for (const founder of preTable.founders.list) {
+                await insertFounderDirect(
+                  connection,
+                  roundId,
+                  companyId,
+                  "pre",
+                  founder,
+                );
               }
             }
 
             // 2. Option Pool — PRE
             if (preTable.option_pool) {
               console.log("  📦 Saving option pool");
-              addStepLog(sessionId, "preOptionPool_START", {
-                optionPool: preTable.option_pool,
-              });
-
-              try {
-                await insertOptionPoolDirect(
-                  connection,
-                  roundId,
-                  companyId,
-                  "pre",
-                  preTable.option_pool,
-                );
-                addStepLog(sessionId, "preOptionPool_SUCCESS", {});
-              } catch (err) {
-                addStepLog(
-                  sessionId,
-                  "preOptionPool_ERROR",
-                  { error: err.message },
-                  err,
-                );
-                throw err;
-              }
+              await insertOptionPoolDirect(
+                connection,
+                roundId,
+                companyId,
+                "pre",
+                preTable.option_pool,
+              );
             }
 
             // 3. Previous Investors — PRE
             if (preTable.previous_investors?.items) {
-              console.log(
-                `  💼 Saving ${preTable.previous_investors.items.length} previous investors`,
-              );
-              addStepLog(sessionId, "prePreviousInvestors_START", {
-                count: preTable.previous_investors.items.length,
-              });
+              for (const inv of preTable.previous_investors.items) {
+                const percentage_numeric = parseFloat(inv.percentage) || 0;
+                const percentage_formatted = inv.percentage || "0.00%";
+                const value = parseFloat(inv.value) || 0;
 
-              for (
-                let i = 0;
-                i < preTable.previous_investors.items.length;
-                i++
-              ) {
-                const inv = preTable.previous_investors.items[i];
-                try {
-                  const percentage_numeric = parseFloat(inv.percentage) || 0;
-                  const percentage_formatted = inv.percentage || "0.00%";
-                  const value = parseFloat(inv.value) || 0;
-
-                  await new Promise((res, rej) => {
-                    connection.query(
-                      `INSERT INTO round_investors 
-                      (round_id, company_id, cap_table_type, investor_type, first_name, last_name,
-                       email, phone, shares, new_shares, total_shares, investment_amount, share_price,
-                       percentage_numeric, percentage_formatted, value, is_previous, investor_details,
-                       share_class_type, instrument_type, round_name, round_id_ref)
-                      VALUES (?, ?, 'pre', 'previous', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true, ?, ?, ?, ?, ?)`,
-                      [
-                        roundId,
-                        companyId,
-                        inv.investor_details?.firstName ||
-                          inv.name?.split(" ")[0] ||
-                          "",
-                        inv.investor_details?.lastName ||
-                          inv.name?.split(" ").slice(1).join(" ") ||
-                          "",
-                        inv.investor_details?.email || inv.email || "",
-                        inv.investor_details?.phone || inv.phone || "",
-                        parseInt(inv.shares) || 0,
-                        0,
-                        parseInt(inv.shares) || 0,
-                        parseFloat(inv.investment) || 0,
-                        parseFloat(inv.share_price) || 0,
-                        percentage_numeric,
-                        percentage_formatted,
-                        value,
-                        JSON.stringify(inv.investor_details || {}),
-                        inv.share_class_type || inv.shareClassType || "",
-                        inv.instrument_type || inv.instrumentType || "",
-                        inv.round_name || inv.roundName || "",
-                        inv.round_id || inv.roundId || null,
-                      ],
-                      (err) => {
-                        if (err) rej(err);
-                        else res();
-                      },
-                    );
-                  });
-                  addStepLog(sessionId, `prePreviousInvestor_${i}_SUCCESS`, {
-                    investorName: inv.name,
-                  });
-                } catch (err) {
-                  addStepLog(
-                    sessionId,
-                    `prePreviousInvestor_${i}_ERROR`,
-                    { investorName: inv.name, error: err.message },
-                    err,
+                await new Promise((res, rej) => {
+                  connection.query(
+                    `INSERT INTO round_investors 
+                    (round_id, company_id, cap_table_type, investor_type, first_name, last_name,
+                     email, phone, shares, new_shares, total_shares, investment_amount, share_price,
+                     percentage_numeric, percentage_formatted, value, is_previous, investor_details,
+                     share_class_type, instrument_type, round_name, round_id_ref)
+                    VALUES (?, ?, 'pre', 'previous', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true, ?, ?, ?, ?, ?)`,
+                    [
+                      roundId,
+                      companyId,
+                      inv.investor_details?.firstName ||
+                        inv.name?.split(" ")[0] ||
+                        "",
+                      inv.investor_details?.lastName ||
+                        inv.name?.split(" ").slice(1).join(" ") ||
+                        "",
+                      inv.investor_details?.email || inv.email || "",
+                      inv.investor_details?.phone || inv.phone || "",
+                      parseInt(inv.shares) || 0,
+                      0,
+                      parseInt(inv.shares) || 0,
+                      parseFloat(inv.investment) || 0,
+                      parseFloat(inv.share_price) || 0,
+                      percentage_numeric,
+                      percentage_formatted,
+                      value,
+                      JSON.stringify(inv.investor_details || {}),
+                      inv.share_class_type || inv.shareClassType || "",
+                      inv.instrument_type || inv.instrumentType || "",
+                      inv.round_name || inv.roundName || "",
+                      inv.round_id || inv.roundId || null,
+                    ],
+                    (err) => {
+                      if (err) rej(err);
+                      else res();
+                    },
                   );
-                  throw err;
-                }
+                });
               }
             }
 
             // 4. Converted Investors — PRE
             if (convert === false) {
               if (preTable.converted) {
-                addStepLog(sessionId, "preConverted_START", {});
-                try {
-                  await insertConvertedInvestorDirect(
-                    connection,
-                    roundId,
-                    companyId,
-                    "pre",
-                    preTable.converted,
-                  );
-                  addStepLog(sessionId, "preConverted_SUCCESS", {});
-                } catch (err) {
-                  addStepLog(
-                    sessionId,
-                    "preConverted_ERROR",
-                    { error: err.message },
-                    err,
-                  );
-                  throw err;
-                }
+                await insertConvertedInvestorDirect(
+                  connection,
+                  roundId,
+                  companyId,
+                  "pre",
+                  preTable.converted,
+                );
               }
             }
 
@@ -4152,29 +3985,216 @@ async function saveCapTableData(
               const pendingItems = preTable.items.filter(
                 (item) => item.type === "pending" || item.is_pending,
               );
-              console.log(
-                `  ⏳ Saving ${pendingItems.length} pending instruments (PRE)`,
-              );
-              addStepLog(sessionId, "prePending_START", {
-                count: pendingItems.length,
-              });
 
-              for (let i = 0; i < pendingItems.length; i++) {
-                const item = pendingItems[i];
-                try {
+              for (const item of pendingItems) {
+                await new Promise((res, rej) => {
+                  connection.query(
+                    `INSERT INTO round_investors 
+                      (round_id, company_id, cap_table_type, investor_type,
+                       first_name, last_name, email, phone,
+                       shares, new_shares, total_shares,
+                       investment_amount, share_price,
+                       percentage_numeric, percentage_formatted, value,
+                       is_pending, potential_shares,
+                       conversion_price, discount_rate, valuation_cap,
+                       interest_rate, years, interest_accrued, total_conversion_amount, maturity_date,
+                       investor_details, instrument_type, round_name, share_class_type)
+                      VALUES (?, ?, 'pre', 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                    [
+                      roundId,
+                      companyId,
+                      item.investor_details?.firstName ||
+                        item.name?.split(" ")[0] ||
+                        "",
+                      item.investor_details?.lastName ||
+                        item.name?.split(" ").slice(1).join(" ") ||
+                        "",
+                      item.investor_details?.email || item.email || "",
+                      item.investor_details?.phone || item.phone || "",
+                      0,
+                      0,
+                      0,
+                      parseFloat(item.investment || item.investment_amount) ||
+                        0,
+                      parseFloat(item.conversion_price) || 0,
+                      0,
+                      "0.00%",
+                      0,
+                      parseInt(item.potential_shares) || 0,
+                      parseFloat(item.conversion_price) || 0,
+                      parseFloat(item.discount_rate) || 0,
+                      parseFloat(item.valuation_cap) || 0,
+                      parseFloat(item.interest_rate) || 0,
+                      parseFloat(item.years) || 0,
+                      parseFloat(item.interest_accrued) || 0,
+                      parseFloat(item.total_conversion_amount) || 0,
+                      item.maturity_date || null,
+                      JSON.stringify(item.investor_details || {}),
+                      item.instrument_type || "Safe",
+                      item.round_name || item.roundName || "",
+                      item.shareClassType || "",
+                    ],
+                    (err) => {
+                      if (err) rej(err);
+                      else res();
+                    },
+                  );
+                });
+              }
+            }
+
+            // 6. SAVE WARRANTS FOR PRE-MONEY
+            if (preTable.items) {
+              const warrantItems = preTable.items.filter(
+                (item) => item.is_warrant === true,
+              );
+
+              for (const item of warrantItems) {
+                const percentage_numeric = parseFloat(item.percentage) || 0;
+                const percentage_formatted = item.percentage || "0.00%";
+                const value = parseFloat(item.value) || 0;
+
+                await new Promise((res, rej) => {
+                  connection.query(
+                    `INSERT INTO round_investors 
+                      (round_id, company_id, cap_table_type, investor_type, first_name, last_name,
+                       email, phone, shares, new_shares, total_shares, investment_amount, share_price,
+                       percentage_numeric, percentage_formatted, value, is_previous, 
+                       is_new_investment, investor_details, share_class_type, instrument_type, 
+                       round_name, round_id_ref, warrant_id)
+                      VALUES (?, ?, 'pre', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0,  1, ?, ?, ?, ?, ?, ?)`,
+                    [
+                      roundId,
+                      companyId,
+                      item.investor_type || "warrant",
+                      item.investor_details?.firstName ||
+                        item.name?.split(" ")[0] ||
+                        "",
+                      item.investor_details?.lastName ||
+                        item.name?.split(" ").slice(1).join(" ") ||
+                        "",
+                      item.investor_details?.email || item.email || "",
+                      item.investor_details?.phone || item.phone || "",
+                      parseInt(item.shares) || 0,
+                      parseInt(item.new_shares) || 0,
+                      parseInt(item.shares) || 0,
+                      parseFloat(item.investment) || 0,
+                      parseFloat(item.share_price) || 0,
+                      percentage_numeric,
+                      percentage_formatted,
+                      value,
+                      JSON.stringify(item.investor_details || {}),
+                      item.share_class_type || item.shareClassType || "",
+                      item.instrument_type || item.instrumentType || "",
+                      item.round_name || item.roundName || "",
+                      item.round_id || item.roundId || null,
+                      item.warrant_id || null,
+                    ],
+                    (err) => {
+                      if (err) rej(err);
+                      else res();
+                    },
+                  );
+                });
+              }
+            }
+          }
+
+          // ==================== SAVE POST-MONEY DATA ====================
+          if (postTable) {
+            // 1. Founders — POST only
+            if (postTable.founders?.list) {
+              for (const founder of postTable.founders.list) {
+                await insertFounderDirect(
+                  connection,
+                  roundId,
+                  companyId,
+                  "post",
+                  founder,
+                );
+              }
+            }
+
+            // 2. Option Pool — POST
+            if (postTable.option_pool) {
+              await insertOptionPoolDirect(
+                connection,
+                roundId,
+                companyId,
+                "post",
+                postTable.option_pool,
+              );
+            }
+
+            // 3. Previous Investors — POST
+            if (postTable.previous_investors?.items) {
+              for (const inv of postTable.previous_investors.items) {
+                await insertPreviousInvestorDirect(
+                  connection,
+                  roundId,
+                  companyId,
+                  inv,
+                );
+              }
+            }
+
+            // 4. New Investors — POST
+            if (postTable.investors?.items) {
+              for (const inv of postTable.investors.items) {
+                await insertNewInvestorDirect(
+                  connection,
+                  roundId,
+                  companyId,
+                  inv,
+                );
+              }
+            }
+
+            // 5. Converted Investors — POST
+            if (convert === true) {
+              if (postTable.converted_investors?.items) {
+                for (const conv of postTable.converted_investors.items) {
+                  await insertConversion(connection, roundId, companyId, conv);
+                }
+              }
+
+              if (postTable.converted_investors) {
+                for (const conv of postTable.converted_investors.items) {
+                  await insertConvertedInvestorDirect(
+                    connection,
+                    roundId,
+                    companyId,
+                    "post",
+                    conv,
+                  );
+                }
+              }
+            }
+
+            // 6. Pending instruments from postTable.items — POST only
+            if (convert === false) {
+              if (postTable.items) {
+                const pendingItems = postTable.items.filter(
+                  (item) => item.type === "pending" || item.is_pending,
+                );
+                console.log(
+                  `  ⏳ Saving ${pendingItems.length} pending instruments (POST)`,
+                );
+
+                for (const item of pendingItems) {
                   await new Promise((res, rej) => {
                     connection.query(
                       `INSERT INTO round_investors 
-                        (round_id, company_id, cap_table_type, investor_type,
-                         first_name, last_name, email, phone,
-                         shares, new_shares, total_shares,
-                         investment_amount, share_price,
-                         percentage_numeric, percentage_formatted, value,
-                         is_pending, potential_shares,
-                         conversion_price, discount_rate, valuation_cap,
-                         interest_rate, years, interest_accrued, total_conversion_amount, maturity_date,
-                         investor_details, instrument_type, round_name, share_class_type)
-                        VALUES (?, ?, 'pre', 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                      (round_id, company_id, cap_table_type, investor_type,
+                       first_name, last_name, email, phone,
+                       shares, new_shares, total_shares,
+                       investment_amount, share_price,
+                       percentage_numeric, percentage_formatted, value,
+                       is_pending, potential_shares,
+                       conversion_price, discount_rate, valuation_cap,
+                       interest_rate, years, interest_accrued, total_conversion_amount, maturity_date,
+                       investor_details, instrument_type, round_name, share_class_type, round_id_ref)
+                      VALUES (?, ?, 'post', 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                       [
                         roundId,
                         companyId,
@@ -4208,6 +4228,7 @@ async function saveCapTableData(
                         item.instrument_type || "Safe",
                         item.round_name || item.roundName || "",
                         item.shareClassType || "",
+                        item.round_id,
                       ],
                       (err) => {
                         if (err) rej(err);
@@ -4215,355 +4236,6 @@ async function saveCapTableData(
                       },
                     );
                   });
-                  addStepLog(sessionId, `prePending_${i}_SUCCESS`, {
-                    itemName: item.name,
-                  });
-                } catch (err) {
-                  addStepLog(
-                    sessionId,
-                    `prePending_${i}_ERROR`,
-                    { itemName: item.name, error: err.message },
-                    err,
-                  );
-                  throw err;
-                }
-              }
-            }
-
-            // 6. SAVE WARRANTS FOR PRE-MONEY
-            if (preTable.items) {
-              const warrantItems = preTable.items.filter(
-                (item) => item.is_warrant === true,
-              );
-              console.log(`  🎫 Saving ${warrantItems.length} warrants (PRE)`);
-              addStepLog(sessionId, "preWarrants_START", {
-                count: warrantItems.length,
-              });
-
-              for (let i = 0; i < warrantItems.length; i++) {
-                const item = warrantItems[i];
-                try {
-                  const percentage_numeric = parseFloat(item.percentage) || 0;
-                  const percentage_formatted = item.percentage || "0.00%";
-                  const value = parseFloat(item.value) || 0;
-
-                  await new Promise((res, rej) => {
-                    connection.query(
-                      `INSERT INTO round_investors 
-                        (round_id, company_id, cap_table_type, investor_type, first_name, last_name,
-                         email, phone, shares, new_shares, total_shares, investment_amount, share_price,
-                         percentage_numeric, percentage_formatted, value, is_previous, 
-                         is_new_investment, investor_details, share_class_type, instrument_type, 
-                         round_name, round_id_ref, warrant_id)
-                        VALUES (?, ?, 'pre', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0,  1, ?, ?, ?, ?, ?, ?)`,
-                      [
-                        roundId,
-                        companyId,
-                        item.investor_type || "warrant",
-                        item.investor_details?.firstName ||
-                          item.name?.split(" ")[0] ||
-                          "",
-                        item.investor_details?.lastName ||
-                          item.name?.split(" ").slice(1).join(" ") ||
-                          "",
-                        item.investor_details?.email || item.email || "",
-                        item.investor_details?.phone || item.phone || "",
-                        parseInt(item.shares) || 0,
-                        parseInt(item.new_shares) || 0,
-                        parseInt(item.shares) || 0,
-                        parseFloat(item.investment) || 0,
-                        parseFloat(item.share_price) || 0,
-                        percentage_numeric,
-                        percentage_formatted,
-                        value,
-                        JSON.stringify(item.investor_details || {}),
-                        item.share_class_type || item.shareClassType || "",
-                        item.instrument_type || item.instrumentType || "",
-                        item.round_name || item.roundName || "",
-                        item.round_id || item.roundId || null,
-                        item.warrant_id || null,
-                      ],
-                      (err) => {
-                        if (err) rej(err);
-                        else res();
-                      },
-                    );
-                  });
-                  addStepLog(sessionId, `preWarrant_${i}_SUCCESS`, {
-                    warrantId: item.warrant_id,
-                  });
-                } catch (err) {
-                  addStepLog(
-                    sessionId,
-                    `preWarrant_${i}_ERROR`,
-                    { error: err.message },
-                    err,
-                  );
-                  throw err;
-                }
-              }
-            }
-
-            addStepLog(sessionId, "preMoney_COMPLETE", {});
-          }
-
-          // ==================== SAVE POST-MONEY DATA ====================
-          if (postTable) {
-            console.log("📊 Saving POST-MONEY data...");
-            addStepLog(sessionId, "postMoney_START", {});
-
-            // Similar logging for POST-MONEY sections...
-            // (Add similar try-catch blocks for each POST-MONEY section)
-
-            // 1. Founders — POST only
-            if (postTable.founders?.list) {
-              console.log(
-                `  👥 Saving ${postTable.founders.list.length} founders (POST)`,
-              );
-              addStepLog(sessionId, "postFounders_START", {
-                count: postTable.founders.list.length,
-              });
-
-              for (let i = 0; i < postTable.founders.list.length; i++) {
-                const founder = postTable.founders.list[i];
-                try {
-                  await insertFounderDirect(
-                    connection,
-                    roundId,
-                    companyId,
-                    "post",
-                    founder,
-                  );
-                  addStepLog(sessionId, `postFounder_${i}_SUCCESS`, {
-                    founderName: founder.name,
-                  });
-                } catch (err) {
-                  addStepLog(
-                    sessionId,
-                    `postFounder_${i}_ERROR`,
-                    { founderName: founder.name, error: err.message },
-                    err,
-                  );
-                  throw err;
-                }
-              }
-            }
-
-            // 2. Option Pool — POST
-            if (postTable.option_pool) {
-              console.log("  📦 Saving option pool (POST)");
-              addStepLog(sessionId, "postOptionPool_START", {});
-
-              try {
-                await insertOptionPoolDirect(
-                  connection,
-                  roundId,
-                  companyId,
-                  "post",
-                  postTable.option_pool,
-                );
-                addStepLog(sessionId, "postOptionPool_SUCCESS", {});
-              } catch (err) {
-                addStepLog(
-                  sessionId,
-                  "postOptionPool_ERROR",
-                  { error: err.message },
-                  err,
-                );
-                throw err;
-              }
-            }
-
-            // 3. Previous Investors — POST
-            if (postTable.previous_investors?.items) {
-              console.log(
-                `  💼 Saving ${postTable.previous_investors.items.length} previous investors (POST)`,
-              );
-              addStepLog(sessionId, "postPreviousInvestors_START", {
-                count: postTable.previous_investors.items.length,
-              });
-
-              for (
-                let i = 0;
-                i < postTable.previous_investors.items.length;
-                i++
-              ) {
-                const inv = postTable.previous_investors.items[i];
-                try {
-                  await insertPreviousInvestorDirect(
-                    connection,
-                    roundId,
-                    companyId,
-                    inv,
-                  );
-                  addStepLog(sessionId, `postPreviousInvestor_${i}_SUCCESS`, {
-                    investorName: inv.name,
-                  });
-                } catch (err) {
-                  addStepLog(
-                    sessionId,
-                    `postPreviousInvestor_${i}_ERROR`,
-                    { investorName: inv.name, error: err.message },
-                    err,
-                  );
-                  throw err;
-                }
-              }
-            }
-
-            // 4. New Investors — POST
-            if (postTable.investors?.items) {
-              console.log(
-                `  🆕 Saving ${postTable.investors.items.length} new investors (POST)`,
-              );
-              addStepLog(sessionId, "postNewInvestors_START", {
-                count: postTable.investors.items.length,
-              });
-
-              for (let i = 0; i < postTable.investors.items.length; i++) {
-                const inv = postTable.investors.items[i];
-                try {
-                  await insertNewInvestorDirect(
-                    connection,
-                    roundId,
-                    companyId,
-                    inv,
-                  );
-                  addStepLog(sessionId, `postNewInvestor_${i}_SUCCESS`, {
-                    investorName: inv.name,
-                  });
-                } catch (err) {
-                  addStepLog(
-                    sessionId,
-                    `postNewInvestor_${i}_ERROR`,
-                    { investorName: inv.name, error: err.message },
-                    err,
-                  );
-                  throw err;
-                }
-              }
-            }
-
-            // 5. Converted Investors — POST
-            if (convert === true) {
-              if (postTable.converted_investors?.items) {
-                console.log(
-                  `  🔄 Saving ${postTable.converted_investors.items.length} converted investors (POST)`,
-                );
-                addStepLog(sessionId, "postConverted_START", {
-                  count: postTable.converted_investors.items.length,
-                });
-
-                for (
-                  let i = 0;
-                  i < postTable.converted_investors.items.length;
-                  i++
-                ) {
-                  const conv = postTable.converted_investors.items[i];
-                  try {
-                    await insertConversion(
-                      connection,
-                      roundId,
-                      companyId,
-                      conv,
-                    );
-                    addStepLog(sessionId, `postConverted_${i}_SUCCESS`, {});
-                  } catch (err) {
-                    addStepLog(
-                      sessionId,
-                      `postConverted_${i}_ERROR`,
-                      { error: err.message },
-                      err,
-                    );
-                    throw err;
-                  }
-                }
-              }
-            }
-
-            // 6. Pending instruments from postTable.items — POST only
-            if (convert === false) {
-              if (postTable.items) {
-                const pendingItems = postTable.items.filter(
-                  (item) => item.type === "pending" || item.is_pending,
-                );
-                console.log(
-                  `  ⏳ Saving ${pendingItems.length} pending instruments (POST)`,
-                );
-                addStepLog(sessionId, "postPending_START", {
-                  count: pendingItems.length,
-                });
-
-                for (let i = 0; i < pendingItems.length; i++) {
-                  const item = pendingItems[i];
-                  try {
-                    await new Promise((res, rej) => {
-                      connection.query(
-                        `INSERT INTO round_investors 
-                        (round_id, company_id, cap_table_type, investor_type,
-                         first_name, last_name, email, phone,
-                         shares, new_shares, total_shares,
-                         investment_amount, share_price,
-                         percentage_numeric, percentage_formatted, value,
-                         is_pending, potential_shares,
-                         conversion_price, discount_rate, valuation_cap,
-                         interest_rate, years, interest_accrued, total_conversion_amount, maturity_date,
-                         investor_details, instrument_type, round_name, share_class_type, round_id_ref)
-                        VALUES (?, ?, 'post', 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                        [
-                          roundId,
-                          companyId,
-                          item.investor_details?.firstName ||
-                            item.name?.split(" ")[0] ||
-                            "",
-                          item.investor_details?.lastName ||
-                            item.name?.split(" ").slice(1).join(" ") ||
-                            "",
-                          item.investor_details?.email || item.email || "",
-                          item.investor_details?.phone || item.phone || "",
-                          0,
-                          0,
-                          0,
-                          parseFloat(
-                            item.investment || item.investment_amount,
-                          ) || 0,
-                          parseFloat(item.conversion_price) || 0,
-                          0,
-                          "0.00%",
-                          0,
-                          parseInt(item.potential_shares) || 0,
-                          parseFloat(item.conversion_price) || 0,
-                          parseFloat(item.discount_rate) || 0,
-                          parseFloat(item.valuation_cap) || 0,
-                          parseFloat(item.interest_rate) || 0,
-                          parseFloat(item.years) || 0,
-                          parseFloat(item.interest_accrued) || 0,
-                          parseFloat(item.total_conversion_amount) || 0,
-                          item.maturity_date || null,
-                          JSON.stringify(item.investor_details || {}),
-                          item.instrument_type || "Safe",
-                          item.round_name || item.roundName || "",
-                          item.shareClassType || "",
-                          item.round_id,
-                        ],
-                        (err) => {
-                          if (err) rej(err);
-                          else res();
-                        },
-                      );
-                    });
-                    addStepLog(sessionId, `postPending_${i}_SUCCESS`, {
-                      itemName: item.name,
-                    });
-                  } catch (err) {
-                    addStepLog(
-                      sessionId,
-                      `postPending_${i}_ERROR`,
-                      { itemName: item.name, error: err.message },
-                      err,
-                    );
-                    throw err;
-                  }
                 }
               }
             }
@@ -4574,214 +4246,106 @@ async function saveCapTableData(
                 (item) => item.is_warrant === true,
               );
               console.log(`  🎫 Saving ${warrantItems.length} warrants (POST)`);
-              addStepLog(sessionId, "postWarrants_START", {
-                count: warrantItems.length,
-              });
 
-              for (let i = 0; i < warrantItems.length; i++) {
-                const item = warrantItems[i];
-                try {
-                  const percentage_numeric = parseFloat(item.percentage) || 0;
-                  const percentage_formatted = item.percentage || "0.00%";
-                  const value = parseFloat(item.value) || 0;
+              for (const item of warrantItems) {
+                const percentage_numeric = parseFloat(item.percentage) || 0;
+                const percentage_formatted = item.percentage || "0.00%";
+                const value = parseFloat(item.value) || 0;
 
-                  await new Promise((res, rej) => {
-                    connection.query(
-                      `INSERT INTO round_investors 
-                        (round_id, company_id, cap_table_type, investor_type, first_name, last_name,
-                         email, phone, shares, new_shares, total_shares, investment_amount, share_price,
-                         percentage_numeric, percentage_formatted, value, is_previous, 
-                         is_new_investment, investor_details, share_class_type, instrument_type, 
-                         round_name, round_id_ref, warrant_id)
-                        VALUES (?, ?, 'post', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0,  1, ?, ?, ?, ?, ?, ?)`,
-                      [
-                        roundId,
-                        companyId,
-                        item.investor_type || "warrant",
-                        item.investor_details?.firstName ||
-                          item.name?.split(" ")[0] ||
-                          "",
-                        item.investor_details?.lastName ||
-                          item.name?.split(" ").slice(1).join(" ") ||
-                          "",
-                        item.investor_details?.email || item.email || "",
-                        item.investor_details?.phone || item.phone || "",
-                        parseInt(item.shares) || 0,
-                        parseInt(item.new_shares) || 0,
-                        parseInt(item.shares) || 0,
-                        parseFloat(item.investment) || 0,
-                        parseFloat(item.share_price) || 0,
-                        percentage_numeric,
-                        percentage_formatted,
-                        value,
-                        JSON.stringify(item.investor_details || {}),
-                        item.share_class_type || item.shareClassType || "",
-                        item.instrument_type || item.instrumentType || "",
-                        item.round_name || item.roundName || "",
-                        item.round_id || item.roundId || null,
-                        item.warrant_id || null,
-                      ],
-                      (err) => {
-                        if (err) rej(err);
-                        else res();
-                      },
-                    );
-                  });
-                  addStepLog(sessionId, `postWarrant_${i}_SUCCESS`, {
-                    warrantId: item.warrant_id,
-                  });
-                } catch (err) {
-                  addStepLog(
-                    sessionId,
-                    `postWarrant_${i}_ERROR`,
-                    { error: err.message },
-                    err,
+                await new Promise((res, rej) => {
+                  connection.query(
+                    `INSERT INTO round_investors 
+                      (round_id, company_id, cap_table_type, investor_type, first_name, last_name,
+                       email, phone, shares, new_shares, total_shares, investment_amount, share_price,
+                       percentage_numeric, percentage_formatted, value, is_previous, 
+                       is_new_investment, investor_details, share_class_type, instrument_type, 
+                       round_name, round_id_ref, warrant_id)
+                      VALUES (?, ?, 'post', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0,  1, ?, ?, ?, ?, ?, ?)`,
+                    [
+                      roundId,
+                      companyId,
+                      item.investor_type || "warrant",
+                      item.investor_details?.firstName ||
+                        item.name?.split(" ")[0] ||
+                        "",
+                      item.investor_details?.lastName ||
+                        item.name?.split(" ").slice(1).join(" ") ||
+                        "",
+                      item.investor_details?.email || item.email || "",
+                      item.investor_details?.phone || item.phone || "",
+                      parseInt(item.shares) || 0,
+                      parseInt(item.new_shares) || 0,
+                      parseInt(item.shares) || 0,
+                      parseFloat(item.investment) || 0,
+                      parseFloat(item.share_price) || 0,
+                      percentage_numeric,
+                      percentage_formatted,
+                      value,
+                      JSON.stringify(item.investor_details || {}),
+                      item.share_class_type || item.shareClassType || "",
+                      item.instrument_type || item.instrumentType || "",
+                      item.round_name || item.roundName || "",
+                      item.round_id || item.roundId || null,
+                      item.warrant_id || null,
+                    ],
+                    (err) => {
+                      if (err) rej(err);
+                      else res();
+                    },
                   );
-                  throw err;
-                }
+                });
               }
             }
-
-            addStepLog(sessionId, "postMoney_COMPLETE", {});
           }
 
           // ==================== SAVE FLATTENED ITEMS ====================
           if (preTable?.items) {
-            console.log(
-              `📋 Saving ${preTable.items.length} flattened PRE items`,
-            );
-            addStepLog(sessionId, "flattenedPre_START", {
-              count: preTable.items.length,
-            });
-
-            for (let i = 0; i < preTable.items.length; i++) {
-              const item = preTable.items[i];
-              try {
-                await insertCapTableItemDirect(
-                  connection,
-                  roundId,
-                  companyId,
-                  "pre",
-                  item,
-                );
-              } catch (err) {
-                addStepLog(
-                  sessionId,
-                  `flattenedPre_${i}_ERROR`,
-                  { error: err.message },
-                  err,
-                );
-                throw err;
-              }
+            for (const item of preTable.items) {
+              await insertCapTableItemDirect(
+                connection,
+                roundId,
+                companyId,
+                "pre",
+                item,
+              );
             }
           }
 
           if (postTable?.items) {
-            console.log(
-              `📋 Saving ${postTable.items.length} flattened POST items`,
-            );
-            addStepLog(sessionId, "flattenedPost_START", {
-              count: postTable.items.length,
-            });
-
-            for (let i = 0; i < postTable.items.length; i++) {
-              const item = postTable.items[i];
-              try {
-                await insertCapTableItemDirect(
-                  connection,
-                  roundId,
-                  companyId,
-                  "post",
-                  item,
-                );
-              } catch (err) {
-                addStepLog(
-                  sessionId,
-                  `flattenedPost_${i}_ERROR`,
-                  { error: err.message },
-                  err,
-                );
-                throw err;
-              }
+            for (const item of postTable.items) {
+              await insertCapTableItemDirect(
+                connection,
+                roundId,
+                companyId,
+                "post",
+                item,
+              );
             }
           }
 
           if (postTable.investors?.items && checkround === "price") {
-            console.log(
-              `🎫 Processing ${postTable.investors.items.length} warrant exercises`,
-            );
-            addStepLog(sessionId, "warrantExercised_START", {
-              count: postTable.investors.items.length,
-            });
-
-            for (let i = 0; i < postTable.investors.items.length; i++) {
-              const inv = postTable.investors.items[i];
-              try {
-                await insertWarrantExercised(
-                  connection,
-                  roundId,
-                  companyId,
-                  inv,
-                );
-              } catch (err) {
-                addStepLog(
-                  sessionId,
-                  `warrantExercised_${i}_ERROR`,
-                  { error: err.message },
-                  err,
-                );
-                // Don't throw, continue with others
-              }
+            for (const inv of postTable.investors.items) {
+              await insertWarrantExercised(connection, roundId, companyId, inv);
             }
           }
 
           if (postTable.converted_investors && checkround === "price") {
-            console.log(
-              `🎫 Processing ${postTable.converted_investors.items.length} converted warrant exercises`,
-            );
-            addStepLog(sessionId, "convertedWarrantExercised_START", {
-              count: postTable.converted_investors.items.length,
-            });
-
-            for (
-              let i = 0;
-              i < postTable.converted_investors.items.length;
-              i++
-            ) {
-              const conv = postTable.converted_investors.items[i];
-              try {
-                await insertWarrantExercisedConverted(
-                  connection,
-                  roundId,
-                  companyId,
-                  "post",
-                  conv,
-                );
-              } catch (err) {
-                addStepLog(
-                  sessionId,
-                  `convertedWarrantExercised_${i}_ERROR`,
-                  { error: err.message },
-                  err,
-                );
-                // Don't throw, continue with others
-              }
+            for (const conv of postTable.converted_investors.items) {
+              await insertWarrantExercisedConverted(
+                connection,
+                roundId,
+                companyId,
+                "post",
+                conv,
+              );
             }
           }
 
           // Commit transaction
           console.log("💾 Committing transaction...");
-          addStepLog(sessionId, "commit_START", {});
-
           connection.commit((err) => {
             if (err) {
               console.error("❌ Commit Error:", err);
-              addStepLog(
-                sessionId,
-                "commit_ERROR",
-                { error: err.message },
-                err,
-              );
               return connection.rollback(() => {
                 connection.release();
                 reject({
@@ -4792,28 +4356,15 @@ async function saveCapTableData(
               });
             }
             console.log("✅ Transaction committed successfully");
-            addStepLog(sessionId, "commit_SUCCESS", {});
             connection.release();
-
-            addStepLog(sessionId, "saveCapTableData_COMPLETE", {
-              success: true,
-            });
-
             resolve({
               success: true,
               message: "Cap table data saved successfully",
-              sessionId: sessionId,
             });
           });
         } catch (error) {
           console.error("❌ saveCapTableData ERROR:", error);
           console.error("Error Stack:", error.stack);
-          addStepLog(
-            sessionId,
-            "saveCapTableData_ERROR",
-            { error: error.message, stack: error.stack },
-            error,
-          );
           connection.rollback(() => {
             connection.release();
             reject({
@@ -4821,7 +4372,6 @@ async function saveCapTableData(
               error: error.message,
               stack: error.stack,
               details: error,
-              sessionId: sessionId,
             });
           });
         }
@@ -7765,6 +7315,60 @@ function updateRoundCalculationsSafeConvertibleNote(params) {
   });
 }
 // 4. CONVERTIBLE NOTE HANDLER
+const logDir = path.join(__dirname, "../logs");
+if (!fs.existsSync(logDir)) {
+  fs.mkdirSync(logDir, { recursive: true });
+}
+let globalSessionId = null;
+
+// Function to write log
+function writeLog(step, data, error = null) {
+  const logEntry = {
+    timestamp: new Date().toISOString(),
+    sessionId: globalSessionId,
+    step: step,
+    data: data,
+    error: error ? { message: error.message, stack: error.stack } : null,
+    success: !error,
+  };
+
+  const logFilePath = path.join(logDir, `debug_${globalSessionId}.json`);
+  fs.appendFileSync(
+    logFilePath,
+    JSON.stringify(logEntry, null, 2) + ",\n",
+    "utf8",
+  );
+  console.log(`[${step}]`, data);
+}
+
+// Start log session
+function startLogSession(roundId, companyId, functionName) {
+  globalSessionId = `${Date.now()}_${functionName}_${roundId}_${companyId}`;
+  const logFilePath = path.join(logDir, `debug_${globalSessionId}.json`);
+  fs.writeFileSync(logFilePath, "[\n", "utf8");
+
+  writeLog("SESSION_START", {
+    functionName,
+    roundId,
+    companyId,
+    startTime: new Date().toISOString(),
+  });
+
+  return globalSessionId;
+}
+
+// End log session
+function endLogSession(success, error = null) {
+  writeLog("SESSION_END", {
+    endTime: new Date().toISOString(),
+    success: success,
+    error: error ? error.message : null,
+  });
+
+  const logFilePath = path.join(logDir, `debug_${globalSessionId}.json`);
+  fs.appendFileSync(logFilePath, "]", "utf8");
+  console.log(`\n📝 Log saved: ${logFilePath}`);
+}
 async function handleConvertibleNoteCalculation(params) {
   const {
     id,
@@ -8809,7 +8413,7 @@ async function handleConvertibleNoteCalculation(params) {
       ...allPendingInstruments,
     ],
   };
-
+  writeLog("postMoneyCapTable", { postMoneyCapTable });
   // ==================== DATABASE UPDATE ====================
   const dbUpdateData = {
     share_price: sharePrice.toFixed(4),
