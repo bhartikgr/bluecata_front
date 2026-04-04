@@ -3828,6 +3828,8 @@ async function saveCapTableData(
   convert = false,
 ) {
   return new Promise((resolve, reject) => {
+    writeLog("getConnection_START", {});
+
     db.getConnection((err, connection) => {
       if (err) {
         writeLog(
@@ -3835,9 +3837,6 @@ async function saveCapTableData(
           { error: err.message, code: err.code },
           err,
         );
-        console.error("❌ DB Connection Error:", err);
-        console.error("Error Code:", err.code);
-        console.error("Error Message:", err.message);
         return reject({
           success: false,
           error: "Database connection failed",
@@ -3846,10 +3845,11 @@ async function saveCapTableData(
         });
       }
 
+      writeLog("getConnection_SUCCESS", { threadId: connection.threadId });
+
       connection.beginTransaction(async (err) => {
         if (err) {
           writeLog("beginTransaction_ERROR", { error: err.message }, err);
-          console.error("❌ Transaction Begin Error:", err);
           connection.release();
           return reject({
             success: false,
@@ -3857,6 +3857,8 @@ async function saveCapTableData(
             details: err.message,
           });
         }
+
+        writeLog("beginTransaction_SUCCESS", {});
 
         try {
           // ==================== DELETE EXISTING DATA ====================
@@ -3868,7 +3870,7 @@ async function saveCapTableData(
             "round_cap_table_items",
           ];
 
-          console.log("📋 Deleting existing data from tables:", tables);
+          writeLog("delete_START", { tables });
 
           for (const table of tables) {
             await new Promise((res, rej) => {
@@ -3877,12 +3879,14 @@ async function saveCapTableData(
                 [roundId],
                 (err) => {
                   if (err) {
-                    console.error(`❌ Error deleting from ${table}:`, err);
+                    writeLog(
+                      `delete_ERROR_${table}`,
+                      { error: err.message },
+                      err,
+                    );
                     rej(err);
                   } else {
-                    console.log(
-                      `✅ Deleted from ${table} for round_id: ${roundId}`,
-                    );
+                    writeLog(`delete_SUCCESS_${table}`, { roundId });
                     res();
                   }
                 },
@@ -3890,15 +3894,17 @@ async function saveCapTableData(
             });
           }
 
+          writeLog("delete_COMPLETE", {});
+
           // ==================== SAVE PRE-MONEY DATA ====================
           if (preTable) {
-            console.log("📊 Saving PRE-MONEY data...");
+            writeLog("preMoney_START", {});
 
             // 1. Founders — PRE only
             if (preTable.founders?.list) {
-              console.log(
-                `  👥 Saving ${preTable.founders.list.length} founders`,
-              );
+              writeLog("preFounders_START", {
+                count: preTable.founders.list.length,
+              });
               for (const founder of preTable.founders.list) {
                 await insertFounderDirect(
                   connection,
@@ -3908,11 +3914,14 @@ async function saveCapTableData(
                   founder,
                 );
               }
+              writeLog("preFounders_COMPLETE", {
+                count: preTable.founders.list.length,
+              });
             }
 
             // 2. Option Pool — PRE
             if (preTable.option_pool) {
-              console.log("  📦 Saving option pool");
+              writeLog("preOptionPool_START", {});
               await insertOptionPoolDirect(
                 connection,
                 roundId,
@@ -3920,10 +3929,14 @@ async function saveCapTableData(
                 "pre",
                 preTable.option_pool,
               );
+              writeLog("preOptionPool_COMPLETE", {});
             }
 
             // 3. Previous Investors — PRE
             if (preTable.previous_investors?.items) {
+              writeLog("prePreviousInvestors_START", {
+                count: preTable.previous_investors.items.length,
+              });
               for (const inv of preTable.previous_investors.items) {
                 const percentage_numeric = parseFloat(inv.percentage) || 0;
                 const percentage_formatted = inv.percentage || "0.00%";
@@ -3969,19 +3982,22 @@ async function saveCapTableData(
                   );
                 });
               }
+              writeLog("prePreviousInvestors_COMPLETE", {
+                count: preTable.previous_investors.items.length,
+              });
             }
 
             // 4. Converted Investors — PRE
-            if (convert === false) {
-              if (preTable.converted) {
-                await insertConvertedInvestorDirect(
-                  connection,
-                  roundId,
-                  companyId,
-                  "pre",
-                  preTable.converted,
-                );
-              }
+            if (convert === false && preTable.converted) {
+              writeLog("preConverted_START", {});
+              await insertConvertedInvestorDirect(
+                connection,
+                roundId,
+                companyId,
+                "pre",
+                preTable.converted,
+              );
+              writeLog("preConverted_COMPLETE", {});
             }
 
             // 5. Pending instruments from preTable.items — PRE only
@@ -3989,7 +4005,7 @@ async function saveCapTableData(
               const pendingItems = preTable.items.filter(
                 (item) => item.type === "pending" || item.is_pending,
               );
-
+              writeLog("prePending_START", { count: pendingItems.length });
               for (const item of pendingItems) {
                 await new Promise((res, rej) => {
                   connection.query(
@@ -4045,6 +4061,7 @@ async function saveCapTableData(
                   );
                 });
               }
+              writeLog("prePending_COMPLETE", { count: pendingItems.length });
             }
 
             // 6. SAVE WARRANTS FOR PRE-MONEY
@@ -4052,7 +4069,7 @@ async function saveCapTableData(
               const warrantItems = preTable.items.filter(
                 (item) => item.is_warrant === true,
               );
-
+              writeLog("preWarrants_START", { count: warrantItems.length });
               for (const item of warrantItems) {
                 const percentage_numeric = parseFloat(item.percentage) || 0;
                 const percentage_formatted = item.percentage || "0.00%";
@@ -4101,13 +4118,31 @@ async function saveCapTableData(
                   );
                 });
               }
+              writeLog("preWarrants_COMPLETE", { count: warrantItems.length });
             }
+            writeLog("preMoney_COMPLETE", {});
           }
 
           // ==================== SAVE POST-MONEY DATA ====================
           if (postTable) {
+            writeLog("postMoney_START", {
+              hasFounders: !!postTable.founders?.list,
+              foundersCount: postTable.founders?.list?.length || 0,
+              hasOptionPool: !!postTable.option_pool,
+              hasPreviousInvestors: !!postTable.previous_investors?.items,
+              previousInvestorsCount:
+                postTable.previous_investors?.items?.length || 0,
+              hasInvestors: !!postTable.investors?.items,
+              investorsCount: postTable.investors?.items?.length || 0,
+              hasConverted: !!postTable.converted_investors,
+              itemsCount: postTable.items?.length || 0,
+            });
+
             // 1. Founders — POST only
             if (postTable.founders?.list) {
+              writeLog("postFounders_START", {
+                count: postTable.founders.list.length,
+              });
               for (const founder of postTable.founders.list) {
                 await insertFounderDirect(
                   connection,
@@ -4117,10 +4152,14 @@ async function saveCapTableData(
                   founder,
                 );
               }
+              writeLog("postFounders_COMPLETE", {
+                count: postTable.founders.list.length,
+              });
             }
 
             // 2. Option Pool — POST
             if (postTable.option_pool) {
+              writeLog("postOptionPool_START", {});
               await insertOptionPoolDirect(
                 connection,
                 roundId,
@@ -4128,10 +4167,14 @@ async function saveCapTableData(
                 "post",
                 postTable.option_pool,
               );
+              writeLog("postOptionPool_COMPLETE", {});
             }
 
             // 3. Previous Investors — POST
             if (postTable.previous_investors?.items) {
+              writeLog("postPreviousInvestors_START", {
+                count: postTable.previous_investors.items.length,
+              });
               for (const inv of postTable.previous_investors.items) {
                 await insertPreviousInvestorDirect(
                   connection,
@@ -4140,10 +4183,16 @@ async function saveCapTableData(
                   inv,
                 );
               }
+              writeLog("postPreviousInvestors_COMPLETE", {
+                count: postTable.previous_investors.items.length,
+              });
             }
 
             // 4. New Investors — POST
             if (postTable.investors?.items) {
+              writeLog("postNewInvestors_START", {
+                count: postTable.investors.items.length,
+              });
               for (const inv of postTable.investors.items) {
                 await insertNewInvestorDirect(
                   connection,
@@ -4152,43 +4201,34 @@ async function saveCapTableData(
                   inv,
                 );
               }
+              writeLog("postNewInvestors_COMPLETE", {
+                count: postTable.investors.items.length,
+              });
             }
 
             // 5. Converted Investors — POST
-            if (convert === true) {
-              if (postTable.converted_investors?.items) {
-                for (const conv of postTable.converted_investors.items) {
-                  await insertConversion(connection, roundId, companyId, conv);
-                }
+            if (convert === true && postTable.converted_investors?.items) {
+              writeLog("postConverted_START", {
+                count: postTable.converted_investors.items.length,
+              });
+              for (const conv of postTable.converted_investors.items) {
+                await insertConversion(connection, roundId, companyId, conv);
               }
-
-              if (postTable.converted_investors) {
-                for (const conv of postTable.converted_investors.items) {
-                  await insertConvertedInvestorDirect(
-                    connection,
-                    roundId,
-                    companyId,
-                    "post",
-                    conv,
-                  );
-                }
-              }
+              writeLog("postConverted_COMPLETE", {
+                count: postTable.converted_investors.items.length,
+              });
             }
 
             // 6. Pending instruments from postTable.items — POST only
-            if (convert === false) {
-              if (postTable.items) {
-                const pendingItems = postTable.items.filter(
-                  (item) => item.type === "pending" || item.is_pending,
-                );
-                console.log(
-                  `  ⏳ Saving ${pendingItems.length} pending instruments (POST)`,
-                );
-
-                for (const item of pendingItems) {
-                  await new Promise((res, rej) => {
-                    connection.query(
-                      `INSERT INTO round_investors 
+            if (convert === false && postTable.items) {
+              const pendingItems = postTable.items.filter(
+                (item) => item.type === "pending" || item.is_pending,
+              );
+              writeLog("postPending_START", { count: pendingItems.length });
+              for (const item of pendingItems) {
+                await new Promise((res, rej) => {
+                  connection.query(
+                    `INSERT INTO round_investors 
                       (round_id, company_id, cap_table_type, investor_type,
                        first_name, last_name, email, phone,
                        shares, new_shares, total_shares,
@@ -4199,49 +4239,49 @@ async function saveCapTableData(
                        interest_rate, years, interest_accrued, total_conversion_amount, maturity_date,
                        investor_details, instrument_type, round_name, share_class_type, round_id_ref)
                       VALUES (?, ?, 'post', 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                      [
-                        roundId,
-                        companyId,
-                        item.investor_details?.firstName ||
-                          item.name?.split(" ")[0] ||
-                          "",
-                        item.investor_details?.lastName ||
-                          item.name?.split(" ").slice(1).join(" ") ||
-                          "",
-                        item.investor_details?.email || item.email || "",
-                        item.investor_details?.phone || item.phone || "",
+                    [
+                      roundId,
+                      companyId,
+                      item.investor_details?.firstName ||
+                        item.name?.split(" ")[0] ||
+                        "",
+                      item.investor_details?.lastName ||
+                        item.name?.split(" ").slice(1).join(" ") ||
+                        "",
+                      item.investor_details?.email || item.email || "",
+                      item.investor_details?.phone || item.phone || "",
+                      0,
+                      0,
+                      0,
+                      parseFloat(item.investment || item.investment_amount) ||
                         0,
-                        0,
-                        0,
-                        parseFloat(item.investment || item.investment_amount) ||
-                          0,
-                        parseFloat(item.conversion_price) || 0,
-                        0,
-                        "0.00%",
-                        0,
-                        parseInt(item.potential_shares) || 0,
-                        parseFloat(item.conversion_price) || 0,
-                        parseFloat(item.discount_rate) || 0,
-                        parseFloat(item.valuation_cap) || 0,
-                        parseFloat(item.interest_rate) || 0,
-                        parseFloat(item.years) || 0,
-                        parseFloat(item.interest_accrued) || 0,
-                        parseFloat(item.total_conversion_amount) || 0,
-                        item.maturity_date || null,
-                        JSON.stringify(item.investor_details || {}),
-                        item.instrument_type || "Safe",
-                        item.round_name || item.roundName || "",
-                        item.shareClassType || "",
-                        item.round_id,
-                      ],
-                      (err) => {
-                        if (err) rej(err);
-                        else res();
-                      },
-                    );
-                  });
-                }
+                      parseFloat(item.conversion_price) || 0,
+                      0,
+                      "0.00%",
+                      0,
+                      parseInt(item.potential_shares) || 0,
+                      parseFloat(item.conversion_price) || 0,
+                      parseFloat(item.discount_rate) || 0,
+                      parseFloat(item.valuation_cap) || 0,
+                      parseFloat(item.interest_rate) || 0,
+                      parseFloat(item.years) || 0,
+                      parseFloat(item.interest_accrued) || 0,
+                      parseFloat(item.total_conversion_amount) || 0,
+                      item.maturity_date || null,
+                      JSON.stringify(item.investor_details || {}),
+                      item.instrument_type || "Safe",
+                      item.round_name || item.roundName || "",
+                      item.shareClassType || "",
+                      item.round_id,
+                    ],
+                    (err) => {
+                      if (err) rej(err);
+                      else res();
+                    },
+                  );
+                });
               }
+              writeLog("postPending_COMPLETE", { count: pendingItems.length });
             }
 
             // 7. SAVE WARRANTS FOR POST-MONEY
@@ -4249,8 +4289,7 @@ async function saveCapTableData(
               const warrantItems = postTable.items.filter(
                 (item) => item.is_warrant === true,
               );
-              console.log(`  🎫 Saving ${warrantItems.length} warrants (POST)`);
-
+              writeLog("postWarrants_START", { count: warrantItems.length });
               for (const item of warrantItems) {
                 const percentage_numeric = parseFloat(item.percentage) || 0;
                 const percentage_formatted = item.percentage || "0.00%";
@@ -4299,11 +4338,14 @@ async function saveCapTableData(
                   );
                 });
               }
+              writeLog("postWarrants_COMPLETE", { count: warrantItems.length });
             }
+            writeLog("postMoney_COMPLETE", {});
           }
 
           // ==================== SAVE FLATTENED ITEMS ====================
           if (preTable?.items) {
+            writeLog("flattenedPre_START", { count: preTable.items.length });
             for (const item of preTable.items) {
               await insertCapTableItemDirect(
                 connection,
@@ -4313,9 +4355,11 @@ async function saveCapTableData(
                 item,
               );
             }
+            writeLog("flattenedPre_COMPLETE", { count: preTable.items.length });
           }
 
           if (postTable?.items) {
+            writeLog("flattenedPost_START", { count: postTable.items.length });
             for (const item of postTable.items) {
               await insertCapTableItemDirect(
                 connection,
@@ -4325,15 +4369,27 @@ async function saveCapTableData(
                 item,
               );
             }
+            writeLog("flattenedPost_COMPLETE", {
+              count: postTable.items.length,
+            });
           }
 
           if (postTable.investors?.items && checkround === "price") {
+            writeLog("warrantExercised_START", {
+              count: postTable.investors.items.length,
+            });
             for (const inv of postTable.investors.items) {
               await insertWarrantExercised(connection, roundId, companyId, inv);
             }
+            writeLog("warrantExercised_COMPLETE", {
+              count: postTable.investors.items.length,
+            });
           }
 
           if (postTable.converted_investors && checkround === "price") {
+            writeLog("convertedWarrantExercised_START", {
+              count: postTable.converted_investors.items.length,
+            });
             for (const conv of postTable.converted_investors.items) {
               await insertWarrantExercisedConverted(
                 connection,
@@ -4343,32 +4399,46 @@ async function saveCapTableData(
                 conv,
               );
             }
+            writeLog("convertedWarrantExercised_COMPLETE", {
+              count: postTable.converted_investors.items.length,
+            });
           }
 
           // Commit transaction
-          console.log("💾 Committing transaction...");
+          writeLog("commit_START", {});
           connection.commit((err) => {
             if (err) {
-              console.error("❌ Commit Error:", err);
+              writeLog(
+                "commit_ERROR",
+                { error: err.message, code: err.code, errno: err.errno },
+                err,
+              );
               return connection.rollback(() => {
                 connection.release();
                 reject({
                   success: false,
                   error: "Transaction commit failed",
                   details: err.message,
+                  code: err.code,
+                  errno: err.errno,
                 });
               });
             }
-            console.log("✅ Transaction committed successfully");
+            writeLog("commit_SUCCESS", {});
             connection.release();
+
+            writeLog("saveCapTableData_COMPLETE", { success: true });
             resolve({
               success: true,
               message: "Cap table data saved successfully",
             });
           });
         } catch (error) {
-          console.error("❌ saveCapTableData ERROR:", error);
-          console.error("Error Stack:", error.stack);
+          writeLog(
+            "saveCapTableData_ERROR",
+            { error: error.message, stack: error.stack },
+            error,
+          );
           connection.rollback(() => {
             connection.release();
             reject({
