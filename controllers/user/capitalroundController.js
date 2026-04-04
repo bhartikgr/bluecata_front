@@ -7404,6 +7404,10 @@ async function handleConvertibleNoteCalculation(params) {
 
   if (!currentRound || !currentRound.id) {
     console.warn("⚠️ currentRound.id is missing, using id from params:", id);
+    writeLog("WARNING", {
+      message: "currentRound.id is missing, using id from params",
+      effectiveRoundId: id,
+    });
     effectiveRoundId = id;
   } else {
     effectiveRoundId = currentRound.id;
@@ -7416,7 +7420,12 @@ async function handleConvertibleNoteCalculation(params) {
     parsedInstrumentData.maturityDate_note ||
     parsedInstrumentData.maturityDate ||
     "";
-
+  writeLog("CONVERTIBLE_TERMS", {
+    discountRate,
+    valuationCap,
+    interestRate,
+    maturityDate,
+  });
   // ==================== CALCULATE YEARS ====================
   let years = 0;
   if (maturityDate) {
@@ -7501,7 +7510,10 @@ async function handleConvertibleNoteCalculation(params) {
   const previousRounds = await getPreviousRoundsForCompany(company_id, id);
   const sortedPreviousRounds = [...previousRounds].sort((a, b) => b.id - a.id);
   const latestPreviousRound = sortedPreviousRounds[0];
-
+  writeLog("PREVIOUS_ROUNDS_FETCHED", {
+    count: previousRounds.length,
+    latestRoundId: latestPreviousRound?.id,
+  });
   // ==================== GET PREVIOUS INVESTORS ====================
   let existingOptionPoolShares = 0;
   let totalPreMoneyShares = round0Shares;
@@ -8413,6 +8425,7 @@ async function handleConvertibleNoteCalculation(params) {
       ...allPendingInstruments,
     ],
   };
+   writeLog("investorPostMoney", { investorPostMoneyOwnership.toFixed(2) });
   writeLog("postMoneyCapTable", { postMoneyCapTable });
   // ==================== DATABASE UPDATE ====================
   const dbUpdateData = {
