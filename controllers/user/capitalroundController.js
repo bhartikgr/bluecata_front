@@ -3813,7 +3813,62 @@ async function insertCapTableItemDirect(
     );
   });
 }
+// Helper function to convert date to MySQL format
+function convertToMySQLDate(dateString) {
+  if (!dateString) return null;
 
+  // If already in YYYY-MM-DD format
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
+    return dateString;
+  }
+
+  // Convert DD-Month-YYYY to YYYY-MM-DD
+  // Example: '13-June-2028' -> '2028-06-13'
+  const monthMap = {
+    January: "01",
+    February: "02",
+    March: "03",
+    April: "04",
+    May: "05",
+    June: "06",
+    July: "07",
+    August: "08",
+    September: "09",
+    October: "10",
+    November: "11",
+    December: "12",
+    Jan: "01",
+    Feb: "02",
+    Mar: "03",
+    Apr: "04",
+    Jun: "06",
+    Jul: "07",
+    Aug: "08",
+    Sep: "09",
+    Oct: "10",
+    Nov: "11",
+    Dec: "12",
+  };
+
+  // Check if format is DD-Month-YYYY
+  const match = dateString.match(/^(\d{1,2})-([A-Za-z]+)-(\d{4})$/);
+  if (match) {
+    const day = match[1].padStart(2, "0");
+    const month = monthMap[match[2]];
+    const year = match[3];
+    if (month) {
+      return `${year}-${month}-${day}`;
+    }
+  }
+
+  // Try to parse with Date object as fallback
+  const parsedDate = new Date(dateString);
+  if (!isNaN(parsedDate)) {
+    return parsedDate.toISOString().split("T")[0];
+  }
+
+  return null;
+}
 // ==================== MAIN saveCapTableData — Direct values, NO recalculation ====================
 async function saveCapTableData(
   checkround,
@@ -4008,6 +4063,9 @@ async function saveCapTableData(
               writeLog("prePending_START", { count: pendingItems.length });
               for (const item of pendingItems) {
                 await new Promise((res, rej) => {
+                  const formattedMaturityDate = convertToMySQLDate(
+                    item.maturity_date,
+                  );
                   connection.query(
                     `INSERT INTO round_investors 
                       (round_id, company_id, cap_table_type, investor_type,
@@ -4048,7 +4106,7 @@ async function saveCapTableData(
                       parseFloat(item.years) || 0,
                       parseFloat(item.interest_accrued) || 0,
                       parseFloat(item.total_conversion_amount) || 0,
-                      item.maturity_date || null,
+                      formattedMaturityDate || null,
                       JSON.stringify(item.investor_details || {}),
                       item.instrument_type || "Safe",
                       item.round_name || item.roundName || "",
@@ -4227,6 +4285,10 @@ async function saveCapTableData(
               writeLog("postPending_START", { count: pendingItems.length });
               for (const item of pendingItems) {
                 await new Promise((res, rej) => {
+                  const formattedMaturityDate = convertToMySQLDate(
+                    item.maturity_date,
+                  );
+
                   connection.query(
                     `INSERT INTO round_investors 
                       (round_id, company_id, cap_table_type, investor_type,
@@ -4267,7 +4329,7 @@ async function saveCapTableData(
                       parseFloat(item.years) || 0,
                       parseFloat(item.interest_accrued) || 0,
                       parseFloat(item.total_conversion_amount) || 0,
-                      item.maturity_date || null,
+                      formattedMaturityDate || null,
                       JSON.stringify(item.investor_details || {}),
                       item.instrument_type || "Safe",
                       item.round_name || item.roundName || "",
