@@ -3827,6 +3827,20 @@ async function saveCapTableData(
   postMoneyValuation,
   convert = false,
 ) {
+  writeLog("saveCapTableData_START", {
+    checkround,
+    roundId,
+    companyId,
+    preMoneyTotalShares,
+    postMoneyTotalShares,
+    preMoneyValuation,
+    postMoneyValuation,
+    convert,
+    hasPreTable: !!preTable,
+    hasPostTable: !!postTable,
+    preTableKeys: preTable ? Object.keys(preTable) : [],
+    postTableKeys: postTable ? Object.keys(postTable) : [],
+  });
   return new Promise((resolve, reject) => {
     db.getConnection((err, connection) => {
       if (err) {
@@ -7332,7 +7346,7 @@ function writeLog(step, data, error = null) {
     success: !error,
   };
 
-  const logFilePath = path.join(logDir, `debug_${globalSessionId}.json`);
+  const logFilePath = path.join(logDir, `conv_${globalSessionId}.json`);
   fs.appendFileSync(
     logFilePath,
     JSON.stringify(logEntry, null, 2) + ",\n",
@@ -7404,10 +7418,7 @@ async function handleConvertibleNoteCalculation(params) {
 
   if (!currentRound || !currentRound.id) {
     console.warn("⚠️ currentRound.id is missing, using id from params:", id);
-    writeLog("WARNING", {
-      message: "currentRound.id is missing, using id from params",
-      effectiveRoundId: id,
-    });
+
     effectiveRoundId = id;
   } else {
     effectiveRoundId = currentRound.id;
@@ -7420,12 +7431,7 @@ async function handleConvertibleNoteCalculation(params) {
     parsedInstrumentData.maturityDate_note ||
     parsedInstrumentData.maturityDate ||
     "";
-  writeLog("CONVERTIBLE_TERMS", {
-    discountRate,
-    valuationCap,
-    interestRate,
-    maturityDate,
-  });
+
   // ==================== CALCULATE YEARS ====================
   let years = 0;
   if (maturityDate) {
@@ -7510,10 +7516,7 @@ async function handleConvertibleNoteCalculation(params) {
   const previousRounds = await getPreviousRoundsForCompany(company_id, id);
   const sortedPreviousRounds = [...previousRounds].sort((a, b) => b.id - a.id);
   const latestPreviousRound = sortedPreviousRounds[0];
-  writeLog("PREVIOUS_ROUNDS_FETCHED", {
-    count: previousRounds.length,
-    latestRoundId: latestPreviousRound?.id,
-  });
+
   // ==================== GET PREVIOUS INVESTORS ====================
   let existingOptionPoolShares = 0;
   let totalPreMoneyShares = round0Shares;
@@ -8425,20 +8428,7 @@ async function handleConvertibleNoteCalculation(params) {
       ...allPendingInstruments,
     ],
   };
-  writeLog("postMoneyCapTable", {
-    total_shares: postMoneyCapTable?.total_shares,
-    post_money_valuation: postMoneyCapTable?.post_money_valuation,
-    share_price: postMoneyCapTable?.share_price,
-    currency: postMoneyCapTable?.currency,
-    items_count: postMoneyCapTable?.items?.length,
-    pending_count: postMoneyCapTable?.pending_instruments?.length,
-    founders_count: postMoneyCapTable?.founders?.list?.length,
-    option_pool_shares: postMoneyCapTable?.option_pool?.shares,
-    has_converted_investors: !!postMoneyCapTable?.converted_investors,
-    has_warrants: !!postMoneyCapTable?.warrants,
-    roundName: postMoneyCapTable?.roundName,
-    instrumentType: postMoneyCapTable?.instrumentType,
-  });
+
   // ==================== DATABASE UPDATE ====================
   const dbUpdateData = {
     share_price: sharePrice.toFixed(4),
