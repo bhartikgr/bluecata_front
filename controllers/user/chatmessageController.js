@@ -42,7 +42,7 @@ exports.getOrCreateConversation = async (req, res) => {
     participant2_type,
     participant2_id,
   } = req.body;
-
+  console.log(req.body);
   try {
     // Check if conversation exists
     const checkQuery = `

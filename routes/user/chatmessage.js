@@ -6,7 +6,7 @@ const uploadDocsMiddleware = require("../../middlewares/uploadDocsMiddleware");
 
 // Chat Routes
 router.post(
-  "/get-or-create-conversation",
+  "/get_or_create_conversation",
   chatmessageController.getOrCreateConversation,
 );
 router.post(
