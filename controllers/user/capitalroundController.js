@@ -8923,7 +8923,8 @@ exports.getInvestorCapitalMotionlist = (req, res) => {
     roundrecord.*, 
     sharerecordround.sent_date,
     sharerecordround.investor_id,
-    company.company_name
+    company.company_name,
+    company.company_country,company.company_city
   FROM sharerecordround
   JOIN roundrecord ON roundrecord.id = sharerecordround.roundrecord_id
   LEFT JOIN company ON company.id = roundrecord.company_id
@@ -15182,11 +15183,6 @@ exports.getPreviousRoundForAutoFill = (req, res) => {
         employeeOwnershipPercent =
           (cumulativeOptionPoolShares / totalShares) * 100;
       }
-
-      // ============================================
-      // ✅ AUTOFILL - ALWAYS TRUE
-      // ============================================
-      const canAutofill = true; // ✅ ALWAYS TRUE - CONDITION REMOVED
 
       // ✅ PRE-MONEY POOL = PREVIOUS ROUND POST-MONEY POOL
       const existingOptionPoolPercent =

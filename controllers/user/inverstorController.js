@@ -721,6 +721,8 @@ exports.SendreportToinvestor = async (req, res) => {
     created_by_role,
     selectedRecords,
     records,
+    ip_address,
+    country_name,
   } = req.body;
 
   if (
@@ -877,13 +879,14 @@ exports.SendreportToinvestor = async (req, res) => {
         entity_id: sharedReportIds.join(","), // multiple report IDs
         entity_type: "investor_updates",
         details: `Shared investor reports (${sharedReportIds.length}) with ${selectedRecords.length} investor(s).`,
-        ip_address: req.ip || req.headers["x-forwarded-for"] || "N/A",
+        ip_address: ip_address,
+        country_name: country_name,
       };
 
       await db.promise().query(
         `INSERT INTO audit_logs 
-     (user_id, company_id,created_by_role, module, action, entity_id, entity_type, details, ip_address, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+     (user_id, company_id,created_by_role, module, action, entity_id, entity_type, details, ip_address,country_name, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,?, NOW())`,
         [
           auditDetails.user_id,
           auditDetails.company_id,
@@ -894,6 +897,7 @@ exports.SendreportToinvestor = async (req, res) => {
           auditDetails.entity_type,
           JSON.stringify(auditDetails.details),
           auditDetails.ip_address,
+          auditDetails.country_name,
         ],
       );
 
@@ -1267,11 +1271,11 @@ exports.getInvitaionCompany = async (req, res) => {
     const query = `
       SELECT 
         company.*,
-        company_investor.id as company_investor_id
+        company_investor.id as company_investor_id,
+        company_investor.joinstatus
       FROM company_investor 
       JOIN company ON company.id = company_investor.company_id 
       WHERE company_investor.investor_id = ? 
-        AND company_investor.joinstatus = 'No'
       ORDER BY company_investor.id DESC
     `;
 
@@ -1300,7 +1304,8 @@ exports.getInvitaionCompany = async (req, res) => {
   }
 };
 exports.joinedcompany = async (req, res) => {
-  const { company_investor_id, company_name, company_email } = req.body;
+  const { company_investor_id, company_name, company_email, investor_email } =
+    req.body;
 
   // Validate input
   if (!company_investor_id) {
@@ -1660,7 +1665,7 @@ exports.checkInvestorRecordround = (req, res) => {
       c.id as company_id
     FROM company_investor ci
     JOIN investor_information ii ON ii.id = ci.investor_id
-    JOIN sharerecordround sr ON sr.investor_id = ii.id
+    left JOIN sharerecordround sr ON sr.investor_id = ii.id
     JOIN company c ON c.id = ci.company_id
     WHERE ci.company_id = ?
       AND ii.id = ?
@@ -4456,10 +4461,28 @@ ORDER BY last_shared_date DESC;
     });
   });
 };
+exports.getcompanyListForInvestor = (req, res) => {
+  const { investor_id } = req.body;
+  console.log(req.body);
+  const query = `SELECT ci.investor_id, ci.company_id, c.company_name FROM company_investor ci INNER JOIN company c ON ci.company_id = c.id WHERE ci.investor_id = ?`;
+
+  db.query(query, [investor_id], (err, results) => {
+    if (err) {
+      return res.status(500).json({
+        message: "Database query error",
+        error: err,
+      });
+    }
+
+    res.status(200).json({
+      message: "",
+      results: results,
+    });
+  });
+};
 exports.getInvestors = (req, res) => {
   const { company_id } = req.body;
 
-  // Validate company_id
   if (!company_id) {
     return res.status(400).json({
       status: 0,
@@ -4467,13 +4490,13 @@ exports.getInvestors = (req, res) => {
     });
   }
 
-  // Query to get investors that are NOT linked in company_investor table
   const query = `
   SELECT 
     cai.*,
     ci.id as company_investor_id,
     ci.joinstatus,
     ci.created_at as linked_at,
+    ci.joined_at,
     CASE 
       WHEN ci.id IS NOT NULL THEN 'linked'
       ELSE 'pending'
@@ -4931,5 +4954,36 @@ exports.comapnyclosedRound = (req, res) => {
         },
       );
     }
+  });
+};
+
+exports.getCompetitiveCompany = (req, res) => {
+  const { company_id } = req.body;
+
+  // Validate company_id
+  if (!company_id) {
+    return res.status(400).json({
+      status: 0,
+      message: "company_id is required",
+    });
+  }
+
+  // Query to get investors that are NOT linked in company_investor table
+  const query = `SELECT * from company where id != ? order by id desc`;
+
+  db.query(query, [company_id], (err, results) => {
+    if (err) {
+      return res.status(500).json({
+        status: 0,
+        message: "Database query error",
+        error: err,
+      });
+    }
+
+    return res.status(200).json({
+      status: 1,
+      message: "Investors fetched successfully",
+      results: results,
+    });
   });
 };

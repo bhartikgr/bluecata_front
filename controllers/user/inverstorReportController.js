@@ -593,6 +593,7 @@ exports.investorInformation = async (req, res) => {
         const updateQuery = `
           UPDATE investor_information
           SET 
+          roundcalculation_warning_accepted=?,
             state=?,
             stateCode=?,
             countrycode=?,
@@ -637,6 +638,7 @@ exports.investorInformation = async (req, res) => {
         `;
 
         const updateData = [
+          "Yes",
           data.state || null,
           data.stateCode || null,
           data.countrycode || null,
@@ -1812,6 +1814,42 @@ exports.getinvestorEndRecordData = async (req, res) => {
           },
         ],
       });
+    });
+  });
+};
+exports.fetchDataRoundparticipating = async (req, res) => {
+  const { id } = req.body;
+
+  if (!id) {
+    return res.status(400).json({ message: "Missing required fields." });
+  }
+
+  // Query to get total count of unique roundrecord_id for this investor
+  const query = `
+    SELECT COUNT(DISTINCT roundrecord_id) as total_unique_rounds
+    FROM investorrequest_company 
+    WHERE investor_id = ?
+  `;
+
+  db.query(query, [id], (err, result) => {
+    if (err) {
+      console.error("Database error:", err);
+      return res.status(500).json({
+        status: 0,
+        message: "Database error",
+        error: err,
+      });
+    }
+
+    const totalUniqueRounds = result[0]?.total_unique_rounds || 0;
+
+    return res.status(200).json({
+      status: 1,
+      message: "Total unique rounds fetched successfully",
+      data: {
+        investor_id: id,
+        total_unique_rounds: totalUniqueRounds,
+      },
     });
   });
 };

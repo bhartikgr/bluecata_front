@@ -1188,10 +1188,11 @@ exports.generateDocFile = async (req, res) => {
                                     // Save to DB
                                     db.query(
                                       `INSERT INTO investor_updates (
-                                        company_id, type, version, update_date, document_name,
+                                        unique_code,company_id, type, version, update_date, document_name,
                                         is_locked, created_at, updated_at
-                                      ) VALUES (?, ?, ?, NOW(), ?, ?, NOW(), NOW())`,
+                                      ) VALUES (?, ?, ?, ?, NOW(), ?, ?, NOW(), NOW())`,
                                       [
+                                        responses.code,
                                         responses.company_id,
                                         "Due Diligence Document",
                                         version,
@@ -1217,9 +1218,10 @@ exports.generateDocFile = async (req, res) => {
 
                                     db.query(
                                       `INSERT INTO dataroom_generatedocument
-                                 (company_id, version, usersubscriptiondataroomone_time_id, document_name, created_at)
-                                 VALUES (?, ?, ?, ?, NOW())`,
+                                 (unique_code,company_id, version, usersubscriptiondataroomone_time_id, document_name, created_at)
+                                 VALUES (?, ?, ?, ?, ?, NOW())`,
                                       [
+                                        responses.code,
                                         responses.company_id,
                                         version,
                                         oneTimeId,
@@ -2048,6 +2050,30 @@ exports.checkunicode = async (req, res) => {
         return res.status(200).json({
           status: "",
           results: summaryResults,
+        });
+      },
+    );
+  } catch (error) {
+    return res.status(500).json({ message: "Internal Server Error", error });
+  }
+};
+exports.checkDocumentApprovedorNot = async (req, res) => {
+  const { company_id, code } = req.body;
+  try {
+    // Step 1: Get total summaries
+    db.query(
+      "SELECT * FROM dataroom_generatedocument WHERE company_id = ? And unique_code = ?",
+      [company_id, code],
+      (err, results) => {
+        if (err) {
+          return res
+            .status(500)
+            .json({ message: "DB summary query failed", error: err });
+        }
+
+        return res.status(200).json({
+          status: "",
+          results: results,
         });
       },
     );

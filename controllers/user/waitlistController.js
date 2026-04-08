@@ -211,11 +211,17 @@ exports.saveJoinwaitlist = async (req, res) => {
   } = req.body;
 
   // Validate required fields
-
   if (!email) {
     return res.status(400).json({
       status: "2",
       message: "Email is required",
+    });
+  }
+
+  if (!company_id) {
+    return res.status(400).json({
+      status: "2",
+      message: "Company ID is required",
     });
   }
 
@@ -245,14 +251,14 @@ exports.saveJoinwaitlist = async (req, res) => {
         });
       }
 
-      // If not exists, insert into waitlist table
-      const insertQuery = `
+      // Insert into waitlist table
+      const insertWaitlistQuery = `
         INSERT INTO waitlist 
         (code, company_id, company_name, first_name, last_name, email, phone, city, country, created_at) 
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `;
       const code = crypto.randomBytes(16).toString("hex");
-      const values = [
+      const waitlistValues = [
         code,
         company_id,
         company_name || null,
@@ -265,7 +271,7 @@ exports.saveJoinwaitlist = async (req, res) => {
         created_at || new Date(),
       ];
 
-      db.query(insertQuery, values, (err, result) => {
+      db.query(insertWaitlistQuery, waitlistValues, (err, waitlistResult) => {
         if (err) {
           console.error("Database error:", err);
           return res.status(500).json({
@@ -274,6 +280,54 @@ exports.saveJoinwaitlist = async (req, res) => {
             error: err.message,
           });
         }
+
+        // Insert into company_add_investors table (silent - no duplicate message)
+        const checkInvestorQuery = `
+          SELECT id FROM company_add_investors 
+          WHERE company_id = ? AND email = ?
+        `;
+
+        db.query(
+          checkInvestorQuery,
+          [company_id, email],
+          (err, investorExisting) => {
+            if (err) {
+              console.error("Error checking company_add_investors:", err);
+              // Continue with response even if this fails
+            }
+
+            // Only insert if not exists (silent - no message returned)
+            if (!investorExisting || investorExisting.length === 0) {
+              const insertInvestorQuery = `
+              INSERT INTO company_add_investors 
+              (company_id, email, first_name, last_name, created_at) 
+              VALUES (?, ?, ?, ?, ?)
+            `;
+              const investorValues = [
+                company_id,
+                email,
+                first_name || null,
+                last_name || null,
+                created_at || new Date(),
+              ];
+
+              db.query(
+                insertInvestorQuery,
+                investorValues,
+                (err, investorResult) => {
+                  if (err) {
+                    console.error(
+                      "Error inserting into company_add_investors:",
+                      err,
+                    );
+                    // Don't return error response, just log it
+                  }
+                  // Continue to send email and response
+                },
+              );
+            }
+          },
+        );
 
         // Send confirmation email to user
         const fullName = `${first_name || ""} ${last_name || ""}`.trim();
@@ -300,7 +354,7 @@ exports.saveJoinwaitlist = async (req, res) => {
         return res.status(200).json({
           status: "1",
           message: "Successfully joined waitlist",
-          insertId: result.insertId,
+          insertId: waitlistResult.insertId,
         });
       });
     });
