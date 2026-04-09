@@ -68,25 +68,60 @@ exports.getinvestorlistwithsearch = (req, res) => {
 
   let query = `
     SELECT DISTINCT 
-      investor_information.*, 
-      company_investor.investorType, 
-      company_investor.investmentPreference,
-      company_investor.id as company_investor_id,
-      investorrequest_company.investment_amount,
-      investorrequest_company.roundrecord_id,
-      roundrecord.nameOfRound,
-      roundrecord.roundsize,
-      roundrecord.currency
-    FROM investor_information 
-    INNER JOIN company_investor 
-      ON company_investor.investor_id = investor_information.id 
-    LEFT JOIN investorrequest_company 
-      ON investorrequest_company.investor_id = investor_information.id
-      AND investorrequest_company.company_id = company_investor.company_id
-    LEFT JOIN roundrecord 
-      ON roundrecord.id = investorrequest_company.roundrecord_id
-    WHERE company_investor.company_id = ?
-      AND company_investor.joinstatus = 'Yes'
+  investor_information.*, 
+  company_investor.investorType, 
+  company_investor.investmentPreference,
+  company_investor.id as company_investor_id,
+  investorrequest_company.investment_amount,
+  investorrequest_company.roundrecord_id,
+  roundrecord.nameOfRound,
+  roundrecord.roundsize,
+  roundrecord.currency
+FROM investor_information 
+INNER JOIN company_investor 
+  ON company_investor.investor_id = investor_information.id 
+LEFT JOIN investorrequest_company 
+  ON investorrequest_company.investor_id = investor_information.id
+  AND investorrequest_company.company_id = company_investor.company_id
+LEFT JOIN roundrecord 
+  ON roundrecord.id = investorrequest_company.roundrecord_id
+WHERE company_investor.company_id = ?
+  AND company_investor.joinstatus = 'Yes'
+GROUP BY 
+  investor_information.id,
+  investor_information.first_name,
+  investor_information.last_name,
+  investor_information.email,
+  investor_information.phone,
+  investor_information.company_name,
+  investor_information.job_title,
+  investor_information.type_of_investor,
+  investor_information.profile_picture,
+  investor_information.investor_type,
+  investor_information.cheque_size,
+  investor_information.geo_focus,
+  investor_information.preferred_stages,
+  investor_information.city,
+  investor_information.state,
+  investor_information.country,
+  investor_information.full_address,
+  investor_information.accredited_status,
+  investor_information.bio_short,
+  investor_information.linkedIn_profile,
+  investor_information.industry_expertise,
+  investor_information.stateCode,
+  investor_information.countrycode,
+  investor_information.created_at,
+  investor_information.updated_at,
+  company_investor.investorType,
+  company_investor.investmentPreference,
+  company_investor.id,
+  investorrequest_company.investment_amount,
+  investorrequest_company.roundrecord_id,
+  roundrecord.nameOfRound,
+  roundrecord.roundsize,
+  roundrecord.currency
+ORDER BY investor_information.id DESC
   `;
 
   const params = [company_id];
