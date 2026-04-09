@@ -66,139 +66,129 @@ exports.getInvestorlist = (req, res) => {
 exports.getinvestorlistwithsearch = (req, res) => {
   const { company_id, search = "" } = req.body;
 
+  // ✅ Subquery approach — deduplicate investor first, then join
+  // This avoids only_full_group_by AND duplicate rows from multiple rounds
   let query = `
-    SELECT DISTINCT 
-  investor_information.*, 
-  company_investor.investorType, 
-  company_investor.investmentPreference,
-  company_investor.id as company_investor_id,
-  investorrequest_company.investment_amount,
-  investorrequest_company.roundrecord_id,
-  roundrecord.nameOfRound,
-  roundrecord.roundsize,
-  roundrecord.currency
-FROM investor_information 
-INNER JOIN company_investor 
-  ON company_investor.investor_id = investor_information.id 
-LEFT JOIN investorrequest_company 
-  ON investorrequest_company.investor_id = investor_information.id
-  AND investorrequest_company.company_id = company_investor.company_id
-LEFT JOIN roundrecord 
-  ON roundrecord.id = investorrequest_company.roundrecord_id
-WHERE company_investor.company_id = ?
-  AND company_investor.joinstatus = 'Yes'
-GROUP BY 
-  investor_information.id,
-  investor_information.first_name,
-  investor_information.last_name,
-  investor_information.email,
-  investor_information.phone,
-  investor_information.company_name,
-  investor_information.job_title,
-  investor_information.type_of_investor,
-  investor_information.profile_picture,
-  investor_information.investor_type,
-  investor_information.cheque_size,
-  investor_information.geo_focus,
-  investor_information.preferred_stages,
-  investor_information.city,
-  investor_information.state,
-  investor_information.country,
-  investor_information.full_address,
-  investor_information.accredited_status,
-  investor_information.bio_short,
-  investor_information.linkedIn_profile,
-  investor_information.industry_expertise,
-  investor_information.stateCode,
-  investor_information.countrycode,
-  investor_information.created_at,
-  investor_information.updated_at,
-  company_investor.investorType,
-  company_investor.investmentPreference,
-  company_investor.id,
-  investorrequest_company.investment_amount,
-  investorrequest_company.roundrecord_id,
-  roundrecord.nameOfRound,
-  roundrecord.roundsize,
-  roundrecord.currency
-ORDER BY investor_information.id DESC
+    SELECT 
+      ii.id,
+      ii.unique_code,
+      ii.first_name,
+      ii.last_name,
+      ii.email,
+      ii.phone,
+      ii.screen_name,
+      ii.company_name,
+      ii.job_title,
+      ii.current_job_title,
+      ii.type_of_investor,
+      ii.investor_type,
+      ii.profile_picture,
+      ii.city,
+      ii.state,
+      ii.stateCode,
+      ii.country,
+      ii.countrycode,
+      ii.full_address,
+      ii.accredited_status,
+      ii.bio_short,
+      ii.linkedIn_profile,
+      ii.industry_expertise,
+      ii.capavate_interests,
+      ii.cheque_size,
+      ii.geo_focus,
+      ii.preferred_stages,
+      ii.hands_on,
+      ii.network_bio,
+      ii.ma_interests,
+      ii.notes,
+      ii.kyc_document,
+      ii.invest_through_company,
+      ii.investing_company_name,
+      ii.investor_company_country,
+      ii.investor_company_website,
+      ii.company_country,
+      ii.company_website,
+      ii.country_tax,
+      ii.tax_id,
+      ii.mailing_address,
+      ii.agreement_accepted,
+      ii.eligibility_accepted,
+      ii.risk_warning_accepted,
+      ii.roundcalculation_warning_accepted,
+      ii.created_at,
+      ii.updated_at,
+      ci.investorType,
+      ci.investmentPreference,
+      ci.id                                        AS company_investor_id,
+      irc.investment_amount,
+      irc.roundrecord_id,
+      rr.nameOfRound,
+      rr.roundsize,
+      rr.currency
+    FROM investor_information ii
+    INNER JOIN company_investor ci
+      ON ci.investor_id = ii.id
+      AND ci.company_id = ?
+      AND ci.joinstatus = 'Yes'
+    LEFT JOIN (
+      SELECT investor_id, company_id,
+             MAX(investment_amount) AS investment_amount,
+             MAX(roundrecord_id)    AS roundrecord_id
+      FROM investorrequest_company
+      WHERE company_id = ?
+      GROUP BY investor_id, company_id
+    ) irc ON irc.investor_id = ii.id
+    LEFT JOIN roundrecord rr ON rr.id = irc.roundrecord_id
+    WHERE 1=1
   `;
 
-  const params = [company_id];
+  const params = [company_id, company_id];
 
-  // 🔍 ADVANCED SEARCH PARSING
-  // Users can type: "John", "$10000", "Series A", "Angel", "10000-50000"
+  // 🔍 ADVANCED SEARCH
   if (search && search.trim() !== "") {
     const searchTerm = search.trim();
 
-    // Check if search contains investment range (e.g., "10000-50000")
     const rangeMatch = searchTerm.match(/^(\d+)-(\d+)$/);
     if (rangeMatch) {
-      const minAmount = parseInt(rangeMatch[1]);
-      const maxAmount = parseInt(rangeMatch[2]);
-      query += ` AND investorrequest_company.investment_amount BETWEEN ? AND ?`;
-      params.push(minAmount, maxAmount);
-    }
-    // Check if search is a number (single investment amount)
-    else if (/^\d+$/.test(searchTerm)) {
-      query += ` AND investorrequest_company.investment_amount >= ?`;
+      query += ` AND irc.investment_amount BETWEEN ? AND ?`;
+      params.push(parseInt(rangeMatch[1]), parseInt(rangeMatch[2]));
+    } else if (/^\d+$/.test(searchTerm)) {
+      query += ` AND irc.investment_amount >= ?`;
       params.push(parseInt(searchTerm));
-    }
-    // Check if search contains dollar sign
-    else if (searchTerm.startsWith("$")) {
+    } else if (searchTerm.startsWith("$")) {
       const amount = parseInt(searchTerm.substring(1));
       if (!isNaN(amount)) {
-        query += ` AND investorrequest_company.investment_amount >= ?`;
+        query += ` AND irc.investment_amount >= ?`;
         params.push(amount);
       }
-    }
-    // General text search (name, email, round, investor type)
-    else {
+    } else {
       query += ` AND (
-        investor_information.first_name LIKE ? OR
-        investor_information.last_name LIKE ? OR
-        investor_information.email LIKE ? OR
-        investor_information.screen_name LIKE ? OR
-        investor_information.type_of_investor LIKE ? OR
-        investor_information.capavate_interests LIKE ? OR
-        company_investor.investorType LIKE ? OR
-        company_investor.investmentPreference LIKE ? OR
-        roundrecord.nameOfRound LIKE ? OR
-        roundrecord.instrumentType LIKE ? OR
-        CONCAT(roundrecord.roundsize, ' ', roundrecord.currency) LIKE ?
+        ii.first_name LIKE ? OR
+        ii.last_name LIKE ? OR
+        ii.email LIKE ? OR
+        ii.screen_name LIKE ? OR
+        ii.type_of_investor LIKE ? OR
+        ii.capavate_interests LIKE ? OR
+        ci.investorType LIKE ? OR
+        ci.investmentPreference LIKE ? OR
+        rr.nameOfRound LIKE ? OR
+        rr.instrumentType LIKE ? OR
+        CONCAT(rr.roundsize, ' ', rr.currency) LIKE ?
       )`;
-      const searchPattern = `%${searchTerm}%`;
-      params.push(
-        searchPattern,
-        searchPattern,
-        searchPattern,
-        searchPattern,
-        searchPattern,
-        searchPattern,
-        searchPattern,
-        searchPattern,
-        searchPattern,
-        searchPattern,
-        searchPattern,
-      );
+      const s = `%${searchTerm}%`;
+      params.push(s, s, s, s, s, s, s, s, s, s, s);
     }
   }
 
-  // ✅ IMPORTANT: GROUP BY added to remove duplicates
-  query += ` GROUP BY investor_information.id`;
-  query += ` ORDER BY investor_information.id DESC`;
+  query += ` ORDER BY ii.id DESC`;
 
   db.query(query, params, (err, results) => {
     if (err) {
-      return res.status(500).json({
-        message: "Database query error",
-        error: err,
-      });
+      return res
+        .status(500)
+        .json({ message: "Database query error", error: err });
     }
-
-    res.status(200).json({
-      results,
-    });
+    res.status(200).json({ results });
   });
 };
 

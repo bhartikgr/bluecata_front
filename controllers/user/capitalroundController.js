@@ -2121,10 +2121,10 @@ async function handleCommonStockCalculation(params, updateFlag = false) {
     );
     seriesAInvestorShares = totalNewSharesThisRound - newOptionShares;
     newInvestorShares = seriesAInvestorShares;
-    updatedSharePrice =
-      preMoneyVal / (preMoneyTotalSharesCalc + newOptionShares);
+    updatedSharePrice = preMoneyVal / preMoneyTotalSharesCalc;
 
     previous_investors_total = previousInvestorsTotalShares;
+    //total_option_pool = existingOptionPoolShares + newOptionShares;
     total_option_pool = existingOptionPoolShares + newOptionShares;
     total_shares_befores = preMoneyTotalSharesCalc;
   } else if (isPreviousRoundRound0) {
