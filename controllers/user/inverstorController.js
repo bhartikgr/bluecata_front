@@ -119,7 +119,7 @@ exports.getinvestorlistwithsearch = (req, res) => {
       ii.updated_at,
       ci.investorType,
       ci.investmentPreference,
-      ci.id                                        AS company_investor_id,
+      ci.id AS company_investor_id,
       irc.investment_amount,
       irc.roundrecord_id,
       rr.nameOfRound,
