@@ -2121,9 +2121,9 @@ async function handleCommonStockCalculation(params, updateFlag = false) {
     );
     seriesAInvestorShares = totalNewSharesThisRound - newOptionShares;
     newInvestorShares = seriesAInvestorShares;
-    //updatedSharePrice = preMoneyVal / preMoneyTotalSharesCalc;
-    updatedSharePrice =
-      preMoneyVal / (preMoneyTotalSharesCalc + newOptionShares);
+    updatedSharePrice = preMoneyVal / preMoneyTotalSharesCalc;
+    //updatedSharePrice =
+    // preMoneyVal / (preMoneyTotalSharesCalc + newOptionShares);
 
     previous_investors_total = previousInvestorsTotalShares;
     //total_option_pool = existingOptionPoolShares + newOptionShares;
