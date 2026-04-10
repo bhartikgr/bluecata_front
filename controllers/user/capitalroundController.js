@@ -1775,7 +1775,9 @@ async function handleCommonStockCalculation(params, updateFlag = false) {
       }
     }
   } catch (error) {}
-
+  if (round0Shares === 0 && totalFounderShares > 0) {
+    round0Shares = totalFounderShares; // 100,000 ✅
+  }
   const previousRounds = await getPreviousRoundsForCompany(company_id, id);
   const sortedPreviousRounds = [...previousRounds].sort((a, b) => b.id - a.id);
   const latestPreviousRound = sortedPreviousRounds[0];
@@ -1953,6 +1955,7 @@ async function handleCommonStockCalculation(params, updateFlag = false) {
   if (
     latestPreviousRound &&
     (latestPreviousRound.instrumentType === "Safe" ||
+      latestPreviousRound.instrumentType === "Convertible Note" ||
       latestPreviousRound.instrumentType === "Convertible Note")
   ) {
     try {
@@ -3833,6 +3836,7 @@ async function saveCapTableData(
   postMoneyValuation,
   convert = false,
 ) {
+  console.log(postTable.previous_investors);
   return new Promise((resolve, reject) => {
     db.getConnection((err, connection) => {
       if (err) {
@@ -4507,7 +4511,9 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
   } catch (error) {
     console.error("❌ Error fetching founder data:", error);
   }
-
+  if (round0Shares === 0 && totalFounderShares > 0) {
+    round0Shares = totalFounderShares; // 100,000 ✅
+  }
   const previousRounds = await getPreviousRoundsForCompany(company_id, id);
   const sortedPreviousRounds = [...previousRounds].sort((a, b) => b.id - a.id);
   const latestPreviousRound = sortedPreviousRounds[0];
