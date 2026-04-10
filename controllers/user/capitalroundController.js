@@ -2063,17 +2063,10 @@ async function handleCommonStockCalculation(params, updateFlag = false) {
   let newOptionShares = 0;
   let seriesAInvestorShares = 0;
   let total_shares_befores = 0;
+  let totalWarrantShares = 0;
   const postMoneyValuation = preMoneyVal + roundSizeVal;
 
   if (hasInvestmentRoundBefore) {
-    console.log("1");
-
-    // ── PDF: CAPAVATE Round Calculations Part 1 & 2 ──────────────────────
-    // sharePrice = preMoneyVal / preMoneyTotalSharesCalc  (client formula)
-    // preMoneyTotalSharesCalc = totalPreMoneyShares (existing shares from prev round)
-    // shares per investor = proportional from seriesAInvestorShares (NOT amount/price)
-    // ─────────────────────────────────────────────────────────────────────
-
     preMoneyTotalSharesCalc = totalPreMoneyShares; // 138,889
 
     const totalExistingShares = round0Shares + previousInvestorsTotalShares; // 127,778
@@ -2100,10 +2093,44 @@ async function handleCommonStockCalculation(params, updateFlag = false) {
 
     // ✅ sharePrice = preMoneyVal / preMoneyTotalSharesCalc = 45,000/138,889 = 0.324
     updatedSharePrice = preMoneyVal / preMoneyTotalSharesCalc;
+    try {
+      const currentRoundWarrants = await new Promise((resolve, reject) => {
+        db.query(
+          `SELECT w.* 
+        FROM warrants w
+        WHERE w.roundrecord_id = ? 
+          AND w.company_id = ?
+          AND (w.expiration_date IS NULL OR w.expiration_date >= CURDATE())`,
+          [id, company_id],
+          (err, results) => {
+            if (err) reject(err);
+            else resolve(results || []);
+          },
+        );
+      });
+      if (currentRoundWarrants && currentRoundWarrants.length > 0) {
+        for (const warrant of currentRoundWarrants) {
+          // ✅ CORRECT: Base = New investor shares (not converted shares)
+          const baseInvestor = {
+            shares: seriesAInvestorShares, // Series A investors ki shares
+            convertedShares: seriesAInvestorShares,
+          };
 
+          const result = await calculateWarrantSharesForOptionPool(
+            warrant,
+            baseInvestor,
+            updatedSharePrice, // Current round share price
+          );
+
+          totalWarrantShares += result.warrantShares;
+        }
+      }
+    } catch (error) {
+      console.error("❌ Error fetching current round warrants:", error);
+    }
     previous_investors_total = previousInvestorsTotalShares;
     total_option_pool = existingOptionPoolShares + newOptionShares;
-    total_shares_befores = preMoneyTotalSharesCalc;
+    total_shares_befores = preMoneyTotalSharesCalc + totalWarrantShares;
   } else if (isPreviousRoundRound0) {
     console.log("2");
     const totalSharesWithConverted = round0Shares + totalConvertedShares;
@@ -2228,8 +2255,6 @@ async function handleCommonStockCalculation(params, updateFlag = false) {
       },
     };
   });
-  console.log(investorsWithShares);
-
   // ==================== PRE-MONEY CAP TABLE ====================
   const preMoneyCapTable = {
     total_shares: preMoneyTotalSharesCalc,
@@ -3170,6 +3195,8 @@ async function calculateWarrantFromInvestorData(warrant, inv) {
 
     calculationMethod = "percentage_with_discount";
   } else if (warrant.warrantType === "fixed") {
+    console.log(sharePrice, "sharePrice");
+    console.log(existingShares, "existingShares");
     // Fixed price warrant (no discount)
     const fixedWarrantPrice = parseFloat(warrant.warrant_fixed_shares) || 0;
 
@@ -3179,7 +3206,8 @@ async function calculateWarrantFromInvestorData(warrant, inv) {
 
     // Fixed price (no discount applied)
     adjustedPrice = fixedWarrantPrice;
-
+    console.log(fixedWarrantPrice, "fixedWarrantPrice");
+    console.log(potentialShares, "potentialShares");
     // Calculate final value
     finalValue = potentialShares * fixedWarrantPrice;
     calculationMethod = "fixed_price";
@@ -5921,6 +5949,7 @@ async function calculateWarrantSharesForOptionPool(
     parseFloat(baseInvestor.shares) ||
     parseFloat(baseInvestor.convertedShares) ||
     0;
+
   const coveragePercentage =
     parseFloat(warrant.warrant_coverage_percentage_main) || 0;
 
