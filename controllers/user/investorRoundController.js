@@ -1688,7 +1688,7 @@ exports.archiveInvitation = (req, res) => {
 
     return res.status(200).json({
       status: 1,
-      message: "Invitation archived successfully",
+      message: "Archived successfully",
     });
   });
 };
@@ -1726,7 +1726,7 @@ exports.unarchiveInvitation = (req, res) => {
 
     return res.status(200).json({
       status: 1,
-      message: "Invitation archived successfully",
+      message: "Archived successfully",
     });
   });
 };
