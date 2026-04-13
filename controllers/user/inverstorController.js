@@ -1286,7 +1286,7 @@ exports.getInvestorCompany = async (req, res) => {
 };
 exports.getInvitaionCompany = async (req, res) => {
   const { investor_id } = req.body;
-
+  console.log(investor_id);
   if (!investor_id) {
     return res.status(400).json({
       status: 0,
@@ -1297,16 +1297,26 @@ exports.getInvitaionCompany = async (req, res) => {
   try {
     const query = `
       SELECT 
-        company.*,
-        company_investor.id as company_investor_id,
-        company_investor.joinstatus
-      FROM company_investor 
-      JOIN company ON company.id = company_investor.company_id 
-      WHERE company_investor.investor_id = ? 
-      ORDER BY company_investor.id DESC
+  company.*,
+  company_investor.company_id,
+  company_investor.id as company_investor_id,
+  company_investor.joinstatus,
+  sr.roundrecord_id,
+  rr.nameOfRound
+FROM company_investor 
+JOIN company ON company.id = company_investor.company_id 
+LEFT JOIN (
+  SELECT company_id, investor_id, MAX(id) as max_id
+  FROM sharerecordround 
+  GROUP BY company_id, investor_id
+) latest_sr ON latest_sr.company_id = company.id AND latest_sr.investor_id = ?
+LEFT JOIN sharerecordround sr ON sr.id = latest_sr.max_id
+LEFT JOIN roundrecord rr ON rr.id = sr.roundrecord_id
+WHERE company_investor.investor_id = ? And company_investor.archived_status = 'No'
+ORDER BY company_investor.id DESC
     `;
 
-    db.query(query, [investor_id], (err, results) => {
+    db.query(query, [investor_id, investor_id], (err, results) => {
       if (err) {
         return res.status(500).json({
           status: 0,
@@ -1314,7 +1324,7 @@ exports.getInvitaionCompany = async (req, res) => {
           error: err,
         });
       }
-
+      console.log(results);
       return res.status(200).json({
         status: 1,
         message: "Pending invitations fetched successfully",
@@ -1330,6 +1340,64 @@ exports.getInvitaionCompany = async (req, res) => {
     });
   }
 };
+
+exports.getarchivedCompany = async (req, res) => {
+  const { investor_id } = req.body;
+  console.log(investor_id);
+  if (!investor_id) {
+    return res.status(400).json({
+      status: 0,
+      message: "investor_id is required",
+    });
+  }
+
+  try {
+    const query = `
+      SELECT 
+  company.*,
+  company_investor.company_id,
+  company_investor.id as company_investor_id,
+  company_investor.joinstatus,
+  sr.roundrecord_id,
+  rr.nameOfRound
+FROM company_investor 
+JOIN company ON company.id = company_investor.company_id 
+LEFT JOIN (
+  SELECT company_id, investor_id, MAX(id) as max_id
+  FROM sharerecordround 
+  GROUP BY company_id, investor_id
+) latest_sr ON latest_sr.company_id = company.id AND latest_sr.investor_id = ?
+LEFT JOIN sharerecordround sr ON sr.id = latest_sr.max_id
+LEFT JOIN roundrecord rr ON rr.id = sr.roundrecord_id
+WHERE company_investor.investor_id = ? And company_investor.archived_status = 'Yes'
+ORDER BY company_investor.id DESC
+    `;
+
+    db.query(query, [investor_id, investor_id], (err, results) => {
+      if (err) {
+        return res.status(500).json({
+          status: 0,
+          message: "Database query error",
+          error: err,
+        });
+      }
+      console.log(results);
+      return res.status(200).json({
+        status: 1,
+        message: "Pending invitations fetched successfully",
+        data: results,
+        total: results.length,
+      });
+    });
+  } catch (err) {
+    return res.status(500).json({
+      status: 0,
+      message: "Server error",
+      error: err.message,
+    });
+  }
+};
+
 exports.joinedcompany = async (req, res) => {
   const { company_investor_id, company_name, company_email, investor_email } =
     req.body;
@@ -5214,4 +5282,146 @@ exports.getContactConnection = (req, res) => {
       );
     },
   );
+};
+
+exports.joinAngelNetwork = async (req, res) => {
+  const {
+    investor_id,
+    firstName,
+    lastName,
+    email,
+    phone,
+    city,
+    country,
+    portfolio_companies,
+  } = req.body;
+
+  try {
+    // ── STEP 1: CHECK IF EMAIL ALREADY EXISTS ──
+    const checkQuery = `SELECT id, email, code FROM waitlist WHERE email = ? LIMIT 1`;
+
+    db.query(checkQuery, [email], (checkErr, checkResult) => {
+      if (checkErr) {
+        return res.status(500).json({
+          status: "2",
+          message: checkErr.message,
+        });
+      }
+
+      // ── EMAIL ALREADY EXISTS ──
+      if (checkResult.length > 0) {
+        return res.status(200).json({
+          status: "0",
+          message:
+            "This email is already registered in the Angel Network waitlist.",
+          code: checkResult[0].code, // ✅ return existing code
+        });
+      }
+
+      // ── STEP 2: GENERATE UNIQUE CODE ──
+      const uniqueCode = crypto.randomBytes(16).toString("hex");
+      // Example output: "6b9b0eb3f23afc0fe30f2285e568a09f"
+
+      // ── STEP 3: INSERT WITH CODE ──
+      const insertQuery = `
+        INSERT INTO waitlist 
+        (first_name, last_name, email, phone, city, country, code, created_at) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
+      `;
+
+      db.query(
+        insertQuery,
+        [firstName, lastName, email, phone, city, country, uniqueCode],
+        (err, result) => {
+          if (err) {
+            return res.status(500).json({
+              status: "2",
+              message: err.message,
+            });
+          }
+
+          // ── SEND EMAIL TO INVESTOR ──
+          const emailContent = `
+            <h2>Welcome to Capavate Angel Network!</h2>
+            <p>Dear ${firstName} ${lastName},</p>
+            <p>You have successfully joined the Capavate Angel Network waitlist.</p>
+            <p><strong>Your Unique Member Code:</strong> ${uniqueCode}</p>
+            
+            <h3>Your Portfolio Companies:</h3>
+            <ul>
+              ${portfolio_companies
+                .map(
+                  (company) =>
+                    `<li>${company.name} - <a href="${company.profile_link}">View Profile</a></li>`,
+                )
+                .join("")}
+            </ul>
+            
+            <p>These companies will be notified about your interest.</p>
+            <p>View your <a href="http://localhost:5000/investor/profile/${investor_id}">Investor Profile</a></p>
+          `;
+
+          // sendEmail(email, "Welcome to Capavate Angel Network", emailContent);
+
+          // ── SEND NOTIFICATION TO EACH PORTFOLIO COMPANY ──
+          portfolio_companies.forEach((company) => {
+            const companyEmail = `
+              <h3>Investor Joined Angel Network</h3>
+              <p>Investor ${firstName} ${lastName} from your cap table has joined the Capavate Angel Network.</p>
+              <p>Member Code: <strong>${uniqueCode}</strong></p>
+              <p>View their profile: <a href="http://localhost:5000/investor/profile/${investor_id}">Investor Profile</a></p>
+            `;
+            // sendEmail(company.email, "Investor Joined Angel Network", companyEmail);
+          });
+
+          return res.json({
+            status: "1",
+            message: "Successfully joined Angel Network",
+            code: uniqueCode, // ✅ return generated code to frontend
+          });
+        },
+      );
+    });
+  } catch (err) {
+    return res.status(500).json({
+      status: "2",
+      message: err.message,
+    });
+  }
+};
+
+exports.checkmembership = async (req, res) => {
+  const { email } = req.body;
+
+  try {
+    // ── STEP 1: CHECK IF EMAIL ALREADY EXISTS ──
+    const checkQuery = `SELECT *  FROM waitlist WHERE email = ? LIMIT 1`;
+
+    db.query(checkQuery, [email], (checkErr, checkResult) => {
+      if (checkErr) {
+        return res.status(500).json({
+          status: "2",
+          message: checkErr.message,
+        });
+      }
+
+      // ── EMAIL ALREADY EXISTS ──
+      if (checkResult.length > 0) {
+        return res.status(200).json({
+          status: "1",
+          message: "Already Join",
+        });
+      } else {
+        return res.status(200).json({
+          status: "0",
+          message: "",
+        });
+      }
+    });
+  } catch (err) {
+    return res.status(500).json({
+      status: "2",
+      message: err.message,
+    });
+  }
 };
