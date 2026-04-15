@@ -529,6 +529,62 @@ exports.getInvestorWaitList = async (req, res) => {
     });
   }
 };
+exports.interestInvestor = async (req, res) => {
+  const { company_id } = req.body;
+
+  // Validate required fields
+  if (!company_id) {
+    return res.status(400).json({
+      status: "2",
+      message: "Company ID is required",
+    });
+  }
+
+  try {
+    // Select from waitlist table with company_id filter
+    const query = `
+      SELECT 
+      ci.*,
+      ii.first_name,
+      ii.last_name,
+      ii.email,
+      ii.phone,
+      ii.city,
+      ii.country,
+      ii.type_of_investor
+    FROM company_investor ci
+    INNER JOIN investor_information ii ON ii.id = ci.investor_id
+    WHERE ci.company_id = ? 
+      AND ci.joinstatus = 'Yes'
+    ORDER BY ci.id DESC
+    `;
+
+    db.query(query, [company_id], (err, results) => {
+      if (err) {
+        console.error("Database error:", err);
+        return res.status(500).json({
+          status: "2",
+          message: "Database error",
+          error: err.message,
+        });
+      }
+
+      return res.status(200).json({
+        status: "1",
+        message: "",
+        results: results,
+        count: results.length,
+      });
+    });
+  } catch (err) {
+    console.error("Server error:", err);
+    return res.status(500).json({
+      status: "2",
+      message: "Server error",
+      error: err.message,
+    });
+  }
+};
 
 exports.joinAngelNetwork = async (req, res) => {
   const {
@@ -543,63 +599,93 @@ exports.joinAngelNetwork = async (req, res) => {
   } = req.body;
 
   try {
-    // Save to waitlist
-    const insertQuery = `
-            INSERT INTO angel_network_waitlist 
-            (investor_id, first_name, last_name, email, phone, city, country, created_at) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
-        `;
+    // ── STEP 1: CHECK IF EMAIL ALREADY EXISTS ──
+    const checkQuery = `SELECT id, email, code FROM waitlist WHERE email = ? LIMIT 1`;
 
-    db.query(
-      insertQuery,
-      [investor_id, firstName, lastName, email, phone, city, country],
-      (err, result) => {
-        if (err) throw err;
+    db.query(checkQuery, [email], (checkErr, checkResult) => {
+      if (checkErr) {
+        return res.status(500).json({
+          status: "2",
+          message: checkErr.message,
+        });
+      }
 
-        // Send email to investor
-        const emailContent = `
-                <h2>Welcome to Capavate Angel Network!</h2>
-                <p>Dear ${firstName} ${lastName},</p>
-                <p>You have successfully joined the Capavate Angel Network waitlist.</p>
-                
-                <h3>Your Portfolio Companies:</h3>
-                <ul>
-                    ${portfolio_companies
-                      .map(
-                        (company) =>
-                          `<li>${company.name} - <a href="${company.profile_link}">View Profile</a></li>`,
-                      )
-                      .join("")}
-                </ul>
-                
-                <p>These companies will be notified about your interest.</p>
-                <p>View your <a href="${API_BASE_URL}investor/profile/${investor_id}">Investor Profile</a></p>
+      // ── EMAIL ALREADY EXISTS ──
+      if (checkResult.length > 0) {
+        return res.status(200).json({
+          status: "0",
+          message:
+            "This email is already registered in the Angel Network waitlist.",
+          code: checkResult[0].code, // ✅ return existing code
+        });
+      }
+
+      // ── STEP 2: GENERATE UNIQUE CODE ──
+      const uniqueCode = crypto.randomBytes(16).toString("hex");
+      // Example output: "6b9b0eb3f23afc0fe30f2285e568a09f"
+
+      // ── STEP 3: INSERT WITH CODE ──
+      const insertQuery = `
+        INSERT INTO waitlist 
+        (first_name, last_name, email, phone, city, country, code, created_at) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
+      `;
+
+      db.query(
+        insertQuery,
+        [firstName, lastName, email, phone, city, country, uniqueCode],
+        (err, result) => {
+          if (err) {
+            return res.status(500).json({
+              status: "2",
+              message: err.message,
+            });
+          }
+
+          // ── SEND EMAIL TO INVESTOR ──
+          const emailContent = `
+            <h2>Welcome to Capavate Angel Network!</h2>
+            <p>Dear ${firstName} ${lastName},</p>
+            <p>You have successfully joined the Capavate Angel Network waitlist.</p>
+            <p><strong>Your Unique Member Code:</strong> ${uniqueCode}</p>
+            
+            <h3>Your Portfolio Companies:</h3>
+            <ul>
+              ${portfolio_companies
+                .map(
+                  (company) =>
+                    `<li>${company.name} - <a href="${company.profile_link}">View Profile</a></li>`,
+                )
+                .join("")}
+            </ul>
+            
+            <p>These companies will be notified about your interest.</p>
+            <p>View your <a href="https://capavate.com/investor/profile/${investor_id}">Investor Profile</a></p>
+          `;
+
+          // sendEmail(email, "Welcome to Capavate Angel Network", emailContent);
+
+          // ── SEND NOTIFICATION TO EACH PORTFOLIO COMPANY ──
+          portfolio_companies.forEach((company) => {
+            const companyEmail = `
+              <h3>Investor Joined Angel Network</h3>
+              <p>Investor ${firstName} ${lastName} from your cap table has joined the Capavate Angel Network.</p>
+              <p>Member Code: <strong>${uniqueCode}</strong></p>
+              <p>View their profile: <a href="https://capavate.com/investor/profile/${investor_id}">Investor Profile</a></p>
             `;
+            // sendEmail(company.email, "Investor Joined Angel Network", companyEmail);
+          });
 
-        sendEmail(email, "Welcome to Capavate Angel Network", emailContent);
-
-        // Send notification to each portfolio company
-        portfolio_companies.forEach((company) => {
-          const companyEmail = `
-                    <h3>Investor Joined Angel Network</h3>
-                    <p>Investor ${firstName} ${lastName} from your cap table has joined the Capavate Angel Network.</p>
-                    <p>View their profile: <a href="${API_BASE_URL}investor/profile/${investor_id}">Investor Profile</a></p>
-                `;
-          sendEmail(
-            company.email,
-            "Investor Joined Angel Network",
-            companyEmail,
-          );
-        });
-
-        res.json({
-          status: "1",
-          message: "Successfully joined Angel Network",
-        });
-      },
-    );
+          return res.json({
+            status: "1",
+            message: "Successfully joined Angel Network",
+            code: uniqueCode, // ✅ return generated code to frontend
+          });
+        },
+      );
+    });
   } catch (err) {
-    res.status(500).json({
+    return res.status(500).json({
       status: "2",
       message: err.message,
     });

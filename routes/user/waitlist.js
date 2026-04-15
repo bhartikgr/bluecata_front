@@ -8,4 +8,5 @@ router.post("/saveAcademypopup", waitlistController.saveAcademypopup);
 router.post("/saveJoinwaitlist", waitlistController.saveJoinwaitlist);
 router.post("/getInvestorWaitList", waitlistController.getInvestorWaitList);
 router.post("/joinAngelNetwork", waitlistController.joinAngelNetwork);
+router.post("/interestInvestor", waitlistController.interestInvestor);
 module.exports = router;

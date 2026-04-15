@@ -5299,6 +5299,7 @@ exports.joinAngelNetwork = async (req, res) => {
     city,
     country,
     portfolio_companies,
+    type,
   } = req.body;
 
   try {
@@ -5330,13 +5331,13 @@ exports.joinAngelNetwork = async (req, res) => {
       // ── STEP 3: INSERT WITH CODE ──
       const insertQuery = `
         INSERT INTO waitlist 
-        (first_name, last_name, email, phone, city, country, code, created_at) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
+        (type,first_name, last_name, email, phone, city, country, code, created_at) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
       `;
 
       db.query(
         insertQuery,
-        [firstName, lastName, email, phone, city, country, uniqueCode],
+        [type, firstName, lastName, email, phone, city, country, uniqueCode],
         (err, result) => {
           if (err) {
             return res.status(500).json({
