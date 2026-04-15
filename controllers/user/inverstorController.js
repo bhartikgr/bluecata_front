@@ -2114,8 +2114,9 @@ exports.InvestorrequestToCompany = (req, res) => {
     percentageprice,
     selectedWarrantsId, // 👈 Now it's an array of objects [{id, shares, coverage_percentage}]
     round_share_price,
+    investReasons,
+    investNotes,
   } = req.body;
-
   if (!investor_id) {
     return res.status(400).json({ message: "Investor ID is required" });
   }
@@ -2123,11 +2124,13 @@ exports.InvestorrequestToCompany = (req, res) => {
   // 1️⃣ Insert into investorrequest_company
   const sqlInvestment = `
     INSERT INTO investorrequest_company
-    (investment_soft_confirmation,next_round_id, investor_id, roundrecord_id, company_id, shares, investment_amount, created_at)
-    VALUES (?,?, ?, ?, ?, ?, ?, NOW())
+    (investReasons,investNotes,investment_soft_confirmation,next_round_id, investor_id, roundrecord_id, company_id, shares, investment_amount, created_at)
+    VALUES (?, ?, ?,?, ?, ?, ?, ?, ?, NOW())
   `;
 
   const investmentValues = [
+    JSON.stringify(investReasons) || null,
+    investNotes || null,
     investment_soft_confirmation,
     next_round_id || 0,
     investor_id,
@@ -3934,7 +3937,9 @@ exports.deleteround = async (req, res) => {
     await db
       .promise()
       .query("DELETE FROM round_pending_instruments WHERE round_id = ?", [id]);
-
+    await db
+      .promise()
+      .query("DELETE FROM sharerecordround WHERE roundrecord_id = ?", [id]);
     // Finally delete from parent table
     const [deleteResult] = await db
       .promise()
