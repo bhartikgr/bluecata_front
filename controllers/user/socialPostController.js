@@ -446,7 +446,7 @@ exports.getPosts = (req, res) => {
             AND EXISTS (
               SELECT 1 FROM waitlist w WHERE w.type = 'Investor' AND w.author_id = sp.author_id
               AND EXISTS (
-                SELECT 1 FROM waitlist wc WHERE wc.type = 'Company' AND wc.author_id = ?
+                SELECT 1 FROM waitlist wc WHERE wc.type = 'Company' AND wc.company_id = ?
               )
             ) THEN 'angel_network'
 
@@ -485,7 +485,7 @@ exports.getPosts = (req, res) => {
               SELECT 1 FROM waitlist w WHERE w.type = 'Investor' AND w.author_id = sp.author_id
               AND EXISTS (
                 SELECT 1 FROM waitlist w_company
-                WHERE w_company.type = 'Company' AND w_company.author_id = ?
+                WHERE w_company.type = 'Company' AND w_company.company_id = ?
               )
             )
           )
@@ -532,7 +532,7 @@ exports.getPosts = (req, res) => {
         if (p.author_type === "company") {
           authorImage = `https://capavate.com/api/upload/docs/doc_${p.author_id}/company_profile/${p.author_raw_image}`;
         } else {
-          authorImage = `"https://capavate.com/api/upload/investor/inv_${p.author_id}/${p.author_raw_image}`;
+          authorImage = `https://capavate.com/api/upload/investor/inv_${p.author_id}/${p.author_raw_image}`;
         }
       }
 
@@ -545,9 +545,16 @@ exports.getPosts = (req, res) => {
         images: p.image_urls
           ? (() => {
               try {
-                return typeof p.image_urls === "string"
-                  ? JSON.parse(p.image_urls)
-                  : p.image_urls;
+                const parsed =
+                  typeof p.image_urls === "string"
+                    ? JSON.parse(p.image_urls)
+                    : p.image_urls;
+                const base = "https://capavate.com/api";
+                return Array.isArray(parsed)
+                  ? parsed.map((img) =>
+                      img && !img.startsWith("http") ? `${base}${img}` : img,
+                    )
+                  : [];
               } catch {
                 return [];
               }
