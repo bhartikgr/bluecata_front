@@ -32,7 +32,7 @@ exports.getroundChart = (req, res) => {
     (err, roundResults) => {
       if (err || !roundResults || roundResults.length === 0) {
         return res
-          .status(404)
+          .status(200)
           .json({ success: false, message: "Round not found" });
       }
 
