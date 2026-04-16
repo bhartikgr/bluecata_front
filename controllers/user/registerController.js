@@ -106,7 +106,7 @@ function sendEmailResetpassword(to, fullName, newPassword) {
       <table style="width:100%; border-collapse: collapse;">
         <tr>
           <td style="background:#efefef; padding:10px; text-align:center;">
-            <img src="http://localhost:5000/api/upload/images/logo.png" alt="logo" style="width:130px;" />
+            <img src="https://capavate.com/api/upload/images/logo.png" alt="logo" style="width:130px;" />
           </td>
         </tr>
         <tr>
@@ -407,7 +407,7 @@ function sendEmailLoginpassword(to, fullName, newPassword) {
         >
           <tr>
             <td style="background: #efefef; padding: 10px 0; text-align: center;">
-              <img src="http://localhost:5000/api/upload/images/logo.png" alt="logo" style="width: 130px;" />
+              <img src="https://capavate.com/api/upload/images/logo.png" alt="logo" style="width: 130px;" />
             </td>
           </tr>
           <tr>
@@ -431,7 +431,7 @@ function sendEmailLoginpassword(to, fullName, newPassword) {
               </p>
               <div style="text-align: center; margin: 20px 0;">
                 <a
-                  href="http://localhost:5000/user/login"
+                  href="https://capavate.com/user/login"
                   style="
                     background: #CC0000;
                     color: #fff;
@@ -1499,7 +1499,7 @@ function sendEmailAccountActivated(to, fullName) {
         <table style="width: 100%; border-collapse: collapse;">
           <tr>
             <td style="background: #efefef; padding: 10px 0; text-align: center;">
-              <img src="http://localhost:5000/api/upload/images/logo.png" alt="Capavate Logo" style="width: 130px;" />
+              <img src="https://capavate.com/api/upload/images/logo.png" alt="Capavate Logo" style="width: 130px;" />
             </td>
           </tr>
           <tr>
@@ -1509,7 +1509,7 @@ function sendEmailAccountActivated(to, fullName) {
                 Your account has been successfully activated. You can now log in using your credentials.
               </p>
               <div style="text-align: center; margin: 20px 0;">
-                <a href="http://localhost:5000/user/login" style="background:#CC0000; color:#fff; text-decoration:none; font-size:14px; padding:10px 30px; border-radius:10px;">Login Now</a>
+                <a href="https://capavate.com/user/login" style="background:#CC0000; color:#fff; text-decoration:none; font-size:14px; padding:10px 30px; border-radius:10px;">Login Now</a>
               </div>
               <p style="margin: 30px 0 10px 0; font-size: 14px; text-align: center; color: #555;">
                 Capavate Powered by <b>Blueprint Catalyst Ltd</b>
@@ -1539,7 +1539,7 @@ function sendEmailResendActivateLink(to, fullName, activationCode) {
   const subject = "Activate your Capavate account";
 
   // Your frontend URL where users click to activate
-  const activationUrl = `http://localhost:5000/activate-account?code=${activationCode}&email=${encodeURIComponent(
+  const activationUrl = `https://capavate.com/activate-account?code=${activationCode}&email=${encodeURIComponent(
     to,
   )}`;
 
@@ -1556,7 +1556,7 @@ function sendEmailResendActivateLink(to, fullName, activationCode) {
         <table style="width: 100%; border-collapse: collapse;">
           <tr>
             <td style="background: #efefef; padding: 10px 0; text-align: center;">
-              <img src="http://localhost:5000/api/upload/images/logo.png" alt="logo" style="width: 130px;" />
+              <img src="https://capavate.com/api/upload/images/logo.png" alt="logo" style="width: 130px;" />
             </td>
           </tr>
           <tr>
@@ -1595,7 +1595,7 @@ function sendEmailActivateAccount(to, fullName, activationCode) {
   const subject = "Activate your Capavate account";
 
   // Your frontend URL where users click to activate
-  const activationUrl = `http://localhost:5000/activate-account?code=${activationCode}&email=${encodeURIComponent(
+  const activationUrl = `https://capavate.com/activate-account?code=${activationCode}&email=${encodeURIComponent(
     to,
   )}`;
 
@@ -1612,7 +1612,7 @@ function sendEmailActivateAccount(to, fullName, activationCode) {
         <table style="width: 100%; border-collapse: collapse;">
           <tr>
             <td style="background: #efefef; padding: 10px 0; text-align: center;">
-              <img src="http://localhost:5000/api/upload/images/logo.png" alt="logo" style="width: 130px;" />
+              <img src="https://capavate.com/api/upload/images/logo.png" alt="logo" style="width: 130px;" />
             </td>
           </tr>
           <tr>
@@ -1936,7 +1936,7 @@ function sendEmailResetpassword(to, fullName, newPassword) {
       <table style="width:100%; border-collapse: collapse;">
         <tr>
           <td style="background:#efefef; padding:10px; text-align:center;">
-            <img src="http://localhost:5000/api/upload/images/logo.png" alt="logo" style="width:130px;" />
+            <img src="https://capavate.com/api/upload/images/logo.png" alt="logo" style="width:130px;" />
           </td>
         </tr>
         <tr>
@@ -2437,8 +2437,7 @@ exports.sendAlluserReminderZoomLink = async (req, res) => {
         console.log(meeting.zoom_meeting_id);
         if (diffMinutes <= 10) {
           const zoomLink =
-            "http://localhost:5000/api/zoommeeting?token=" +
-            meeting.unique_code;
+            "https://capavate.com/api/zoommeeting?token=" + meeting.unique_code;
 
           const replacements = {
             user_name: meeting.name || "User",
@@ -2543,7 +2542,54 @@ exports.getcompanydetail = async (req, res) => {
     },
   );
 };
+exports.getcompanyData = async (req, res) => {
+  const id = req.body.company_id;
 
+  db.query(
+    `SELECT 
+       company.*, 
+       company_legal_information.mailing_address,
+       company_legal_information.articles,
+       company_legal_information.entity_name,
+       company_legal_information.business_number,
+       company_legal_information.jurisdiction_country,
+       company_legal_information.entity_type,
+       company_legal_information.date_of_incorporation,
+       company_legal_information.entity_structure,
+       company_legal_information.office_address,
+       users.first_name as owner_first_name,
+       users.last_name as owner_last_name
+        FROM company
+        LEFT JOIN company_legal_information 
+              ON company_legal_information.company_id = company.id
+        LEFT JOIN users
+              ON users.id = company.user_id
+        WHERE company.id = ?`,
+    [id],
+    async (err, row) => {
+      if (err) {
+        return res
+          .status(500)
+          .json({ message: "Database query error", error: err });
+      }
+
+      // Add company logo URL to each row if company_logo exists
+      const resultsWithLogo = row.map((item) => {
+        if (item.company_logo) {
+          const pathname = `upload/docs/doc_${item.id}/company_profile`;
+          const fullPath = `https://capavate.com/api/${pathname}/${item.company_logo}`;
+          return { ...item, company_logo_url: fullPath };
+        }
+        return { ...item, company_logo_url: null };
+      });
+
+      res.status(200).json({
+        message: "",
+        results: resultsWithLogo,
+      });
+    },
+  );
+};
 exports.companydataUpdate = async (req, res) => {
   const { id, company_shares, first_name, last_name, phone, company_linkedin } =
     req.body;
@@ -2756,7 +2802,7 @@ function sendContactEmail({
       <table style="width:100%; border-collapse: collapse;">
         <tr>
           <td style="background:#efefef; padding:10px; text-align:center;">
-            <img src="http://localhost:5000/api/upload/images/logo.png" alt="logo" style="width:130px;" />
+            <img src="https://capavate.com/api/upload/images/logo.png" alt="logo" style="width:130px;" />
           </td>
         </tr>
         <tr>
@@ -3019,7 +3065,7 @@ const sendsharedCode = ({
 The company **${sharedBy}** has shared a referral code with you: ${discount_code}
 
 Register using the link below to activate your discount:
-http://localhost:5000/register?ref=${discount_code}
+https://capavate.com/register?ref=${discount_code}
 
 With this code, you'll get benefits on:
 - ${readableModules}
@@ -3038,7 +3084,7 @@ BluePrint Catalyst Team`;
 ${sharedBy} has invited you to join BluePrint Catalyst and shared a discount code with you: ${discount_code}
 
 Register using the link below to activate your discount:  
-http://localhost:5000/register?ref=${discount_code}
+https://capavate.com/register?ref=${discount_code}
 
 This gives you access to benefits across:
 - ${readableModules}
@@ -3058,7 +3104,7 @@ ${sharedBy} has shared a discount code with you: ${discount_code}
 Please log in to your BluePrint Catalyst account and apply this code to enjoy discounts on:
 - ${readableModules}
 
-Log in here: http://localhost:5000/login
+Log in here: https://capavate.com/login
 
 Happy scaling!  
 BluePrint Catalyst Team`;
@@ -3071,7 +3117,7 @@ BluePrint Catalyst Team`;
 Here is your discount code: ${discount_code}
 
 Register or log in using the link below to redeem it:  
-http://localhost:5000/register?ref=${discount_code}
+https://capavate.com/register?ref=${discount_code}
 
 Best,  
 BluePrint Catalyst Team`;
@@ -3708,7 +3754,7 @@ exports.companyaddWithSignatory = (req, res) => {
                                 s.signatory_email &&
                                 s.signatory_email.trim() !== ""
                               ) {
-                                const inviteLink = `http://localhost:5000/signatory/accept/${uniqueCode}`;
+                                const inviteLink = `https://capavate.com/signatory/accept/${uniqueCode}`;
                                 sendEmailToSignatory(
                                   s.signatory_email,
                                   `${s.first_name || ""} ${s.last_name || ""}`.trim() ||
@@ -3773,7 +3819,7 @@ function sendEmailToUser(to, fullName, companyName) {
       <table style="width:100%; border-collapse: collapse;">
         <tr>
           <td style="background:#efefef; padding:15px; text-align:center;">
-            <img src="http://localhost:5000/api/upload/images/logo.png" alt="Capavate Logo" style="width:130px;" />
+            <img src="https://capavate.com/api/upload/images/logo.png" alt="Capavate Logo" style="width:130px;" />
           </td>
         </tr>
         <tr>
@@ -3786,7 +3832,7 @@ function sendEmailToUser(to, fullName, companyName) {
               You can now manage your company and track your company's progress through your dashboard.
             </p>
             <p style="font-size:14px; color:#111; margin-bottom:15px;">
-              <a href="http://localhost:5000/user/dashboard" style=" background: #CC0000;
+              <a href="https://capavate.com/user/dashboard" style=" background: #CC0000;
                     color: #fff; padding:10px 20px; text-decoration:none; border-radius:5px; font-weight:bold;">Go to Dashboard</a>
             </p>
             <p style="font-size:14px; color:#111; margin-bottom:0;">Regards,<br/>Capavate Team</p>
@@ -3830,7 +3876,7 @@ function sendEmailToSignatory(to, fullName, inviteLink, company_name) {
       <table style="width:100%; border-collapse: collapse;">
         <tr>
           <td style="background:#efefef; padding:10px; text-align:center;">
-            <img src="http://localhost:5000/api/upload/images/logo.png" alt="logo" style="width:130px;" />
+            <img src="https://capavate.com/api/upload/images/logo.png" alt="logo" style="width:130px;" />
           </td>
         </tr>
         <tr>
@@ -4624,7 +4670,7 @@ const notifyCompanyOwner = (company_id, user_name) => {
         <table style="width:100%; border-collapse: collapse;">
           <tr>
             <td style="background:#efefef; padding:10px; text-align:center;">
-              <img src="http://localhost:5000/api/upload/images/logo.png" alt="logo" style="width:130px;" />
+              <img src="https://capavate.com/api/upload/images/logo.png" alt="logo" style="width:130px;" />
             </td>
           </tr>
           <tr>
@@ -4754,7 +4800,7 @@ function sendDeclineEmail(to, fullName, companyName, reason) {
         <table style="width:100%;border-collapse:collapse;">
           <tr>
             <td style="background:#efefef;padding:15px;text-align:center;">
-              <img src="http://localhost:5000/api/upload/images/logo.png" alt="Capavate Logo" style="width:130px;" />
+              <img src="https://capavate.com/api/upload/images/logo.png" alt="Capavate Logo" style="width:130px;" />
             </td>
           </tr>
           <tr>
@@ -4770,7 +4816,7 @@ function sendDeclineEmail(to, fullName, companyName, reason) {
                 Please review and submit your signature again if required.
               </p>
               <p style="font-size:14px;color:#111;margin-bottom:15px;">
-                <a href="http://localhost:5000/authorized-signature" style="background:#CC0000;color:#fff;padding:10px 20px;text-decoration:none;border-radius:5px;font-weight:bold;">Click Here</a>
+                <a href="https://capavate.com/authorized-signature" style="background:#CC0000;color:#fff;padding:10px 20px;text-decoration:none;border-radius:5px;font-weight:bold;">Click Here</a>
               </p>
               <p style="font-size:14px;color:#111;margin-bottom:0;">Regards,<br/>Capavate Team</p>
             </td>
@@ -4875,7 +4921,7 @@ function sendApprovalEmail(to, fullName, companyName) {
       <table style="width:100%; border-collapse: collapse;">
         <tr>
           <td style="background:#efefef; padding:15px; text-align:center;">
-            <img src="http://localhost:5000/api/upload/images/logo.png" alt="Capavate Logo" style="width:130px;" />
+            <img src="https://capavate.com/api/upload/images/logo.png" alt="Capavate Logo" style="width:130px;" />
           </td>
         </tr>
         <tr>
@@ -4888,7 +4934,7 @@ function sendApprovalEmail(to, fullName, companyName) {
               You can now manage your company and perform all actions available on your dashboard.
             </p>
             <p style="font-size:14px; color:#111; margin-bottom:15px;">
-              <a href="http://localhost:5000/authorized-signature" style="background:#CC0000; color:#fff; padding:10px 20px; text-decoration:none; border-radius:5px; font-weight:bold;">
+              <a href="https://capavate.com/authorized-signature" style="background:#CC0000; color:#fff; padding:10px 20px; text-decoration:none; border-radius:5px; font-weight:bold;">
                 Click Here
               </a>
             </p>
@@ -4954,7 +5000,7 @@ function sendContactEmail(to, fullName, phone, message) {
       <table style="width:100%; border-collapse: collapse;">
         <tr>
           <td style="background:#efefef; padding:15px; text-align:center;">
-            <img src="http://localhost:5000/api/upload/images/logo.png" alt="Capavate Logo" style="width:130px;" />
+            <img src="https://capavate.com/api/upload/images/logo.png" alt="Capavate Logo" style="width:130px;" />
           </td>
         </tr>
 
@@ -5106,7 +5152,7 @@ function sendContactFormEmail(data) {
       <table style="width:100%; border-collapse: collapse;">
         <tr>
           <td style="background:#efefef; padding:10px; text-align:center;">
-            <img src="http://localhost:5000/api/upload/images/logo.png" alt="logo" style="width:130px;" />
+            <img src="https://capavate.com/api/upload/images/logo.png" alt="logo" style="width:130px;" />
           </td>
         </tr>
         <tr>
@@ -5629,4 +5675,35 @@ exports.saveCompanyAcknowlegment = (req, res) => {
       });
     }
   });
+};
+
+exports.getInvestorData = async (req, res) => {
+  const id = req.body.investor_id;
+
+  db.query(
+    `SELECT * from investor_information where id = ?`,
+    [id],
+    async (err, row) => {
+      if (err) {
+        return res
+          .status(500)
+          .json({ message: "Database query error", error: err });
+      }
+
+      // Add company logo URL to each row if company_logo exists
+      const resultsWithLogo = row.map((item) => {
+        if (item.company_logo) {
+          const pathname = `upload/docs/inv_${item.id}`;
+          const fullPath = `https://capavate.com/api/${pathname}/${item.profile_picture}`;
+          return { ...item, company_logo_url: fullPath };
+        }
+        return { ...item, company_logo_url: null };
+      });
+
+      res.status(200).json({
+        message: "",
+        results: resultsWithLogo,
+      });
+    },
+  );
 };

@@ -101,5 +101,6 @@ router.post(
   "/saveCompanyAcknowlegment",
   registerController.saveCompanyAcknowlegment,
 );
-
+router.post("/getcompanyData", registerController.getcompanyData);
+router.post("/getInvestorData", registerController.getInvestorData);
 module.exports = router;

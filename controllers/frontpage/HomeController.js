@@ -156,7 +156,7 @@ function sendContactEmailToAdmin(name, email, phone, message) {
         >
           <tr>
             <td style="background: #CC0201; padding: 20px 0; text-align: center;">
-              <img src="http://localhost:5000/api/upload/images/logo.png" alt="logo" style="width: 130px;" />
+              <img src="https://capavate.com/api/upload/images/logo.png" alt="logo" style="width: 130px;" />
             </td>
           </tr>
           <tr>

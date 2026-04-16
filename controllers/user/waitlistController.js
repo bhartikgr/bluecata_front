@@ -66,7 +66,7 @@ function sendWaitlistConfirmationEmail(to, fullName, companyName, formData) {
         >
           <tr>
             <td style="background: #efefef; padding: 10px 0; text-align: center;">
-              <img src="http://localhost:5000/api/upload/images/logo.png" alt="logo" style="width: 130px;" />
+              <img src="https://capavate.com/api/upload/images/logo.png" alt="logo" style="width: 130px;" />
             </td>
           </tr>
           <tr>
@@ -153,7 +153,7 @@ function sendWaitlistConfirmationEmail(to, fullName, companyName, formData) {
               
               <div style="text-align: center; margin: 20px 0;">
                 <a
-                  href="http://localhost:5000/user/login"
+                  href="https://capavate.com/user/login"
                   style="
                     background: #CC0000;
                     color: #fff;
@@ -660,7 +660,7 @@ exports.joinAngelNetwork = async (req, res) => {
             </ul>
             
             <p>These companies will be notified about your interest.</p>
-            <p>View your <a href="http://localhost:5000/investor/profile/${investor_id}">Investor Profile</a></p>
+            <p>View your <a href="https://capavate.com/investor/profile/${investor_id}">Investor Profile</a></p>
           `;
 
           // sendEmail(email, "Welcome to Capavate Angel Network", emailContent);
@@ -671,7 +671,7 @@ exports.joinAngelNetwork = async (req, res) => {
               <h3>Investor Joined Angel Network</h3>
               <p>Investor ${firstName} ${lastName} from your cap table has joined the Capavate Angel Network.</p>
               <p>Member Code: <strong>${uniqueCode}</strong></p>
-              <p>View their profile: <a href="http://localhost:5000/investor/profile/${investor_id}">Investor Profile</a></p>
+              <p>View their profile: <a href="https://capavate.com/investor/profile/${investor_id}">Investor Profile</a></p>
             `;
             // sendEmail(company.email, "Investor Joined Angel Network", companyEmail);
           });

@@ -91,7 +91,7 @@ exports.getInvestorDataRoomList = async (req, res) => {
             : row.access_status === "Only View"
               ? "View Only"
               : "Not Viewed",
-        downloadUrl: `http://localhost:5000/api/${pathname}/investor_report/${row.document_name}`,
+        downloadUrl: `https://capavate.com/api/${pathname}/investor_report/${row.document_name}`,
       }));
 
       res.json({

@@ -21,5 +21,9 @@ router.post(
   "/getTotalNumberCapTableAnalytics",
   companydashboardController.getTotalNumberCapTableAnalytics,
 );
+router.post(
+  "/fetchSocialMediaFollower",
+  companydashboardController.fetchSocialMediaFollower,
+);
 
 module.exports = router;
