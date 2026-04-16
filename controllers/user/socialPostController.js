@@ -241,6 +241,11 @@ exports.createPost = async (req, res) => {
         const postId = result.insertId;
         const authorDetails = await getUserDetails(author_id, author_type);
 
+        const base = process.env.API_BASE_URL || "https://capavate.com/api";
+        const imagesWithBase = imageUrls.map((img) =>
+          img && !img.startsWith("http") ? `${base}${img}` : img,
+        );
+
         const newPost = {
           id: postId,
           author_id: parseInt(author_id),
@@ -249,11 +254,13 @@ exports.createPost = async (req, res) => {
           author_image: authorDetails.image,
           content: content || "",
           image_urls: imageUrlsJson,
-          images: imageUrls,
+          images: imagesWithBase, // ✅ full URL with /api prefix
           visibility: visibility || "network",
           likes_count: 0,
           comments_count: 0,
           liked: false,
+          followed: false,
+          sender_category: "own",
           created_at: new Date().toISOString(),
         };
 
