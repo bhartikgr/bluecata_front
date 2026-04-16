@@ -316,19 +316,15 @@ exports.getPosts = (req, res) => {
         END as author_raw_image,
         COALESCE(sp.likes_count, 0) as likes_count,
         COALESCE(sp.comments_count, 0) as comments_count,
-
-        -- ✅ Is following
         CASE WHEN sf.id IS NOT NULL THEN 1 ELSE 0 END as is_following,
-
-        -- ✅ Sender Category
+        
+        -- Sender Category
         CASE
           WHEN sp.author_id = ? AND sp.author_type = 'investor' THEN 'own'
-
           WHEN sp.author_type = 'company'
             AND sp.author_id IN (
               SELECT DISTINCT company_id FROM sharerecordround WHERE investor_id = ?
             ) THEN 'portfolio_company'
-
           WHEN sp.author_type = 'investor'
             AND sp.author_id IN (
               SELECT DISTINCT srr2.investor_id
@@ -336,23 +332,17 @@ exports.getPosts = (req, res) => {
               JOIN sharerecordround srr2 ON srr1.company_id = srr2.company_id
               WHERE srr1.investor_id = ? AND srr2.investor_id != srr1.investor_id
             ) THEN 'fellow_shareholder'
-
-          WHEN sp.author_type = 'investor'
-            AND sp.author_id IN (
-              SELECT DISTINCT w2.author_id FROM waitlist w1
-              JOIN waitlist w2 ON w1.type = w2.type
-              WHERE w1.type = 'Investor' AND w1.author_id = ? AND w2.author_id != w1.author_id
+          WHEN EXISTS (
+              SELECT 1 FROM waitlist w2
+              WHERE w2.author_id = sp.author_id
             ) THEN 'angel_network'
-
           ELSE 'network'
         END as sender_category,
-
-        -- ✅ Region from waitlist (for angel_network badge)
+        
         (SELECT w.city FROM waitlist w
           WHERE w.author_id = sp.author_id AND w.type = 'Investor' LIMIT 1
         ) as author_region,
-
-        -- ✅ Shared company name (for fellow_shareholder badge)
+        
         (
           SELECT c2.company_name
           FROM sharerecordround srr1
@@ -371,31 +361,32 @@ exports.getPosts = (req, res) => {
         AND sf.following_id = sp.author_id AND sf.following_type = sp.author_type
       WHERE sp.is_deleted = 0
         AND (
+          -- 1. User's own posts
           (sp.author_id = ? AND sp.author_type = ?)
-
+          
+          -- 2. Angel Network: If user is in waitlist, show ALL posts from waitlist members
+          OR (
+            EXISTS (SELECT 1 FROM waitlist WHERE author_id = ?)
+            AND EXISTS (SELECT 1 FROM waitlist w WHERE w.author_id = sp.author_id)
+          )
+          
+          -- 3. Shared Cap Table: Company posts (if rounds shared)
           OR (
             sp.author_type = 'company'
-            AND sp.author_id IN (
-              SELECT DISTINCT company_id FROM sharerecordround WHERE investor_id = ?
+            AND EXISTS (
+              SELECT 1 FROM sharerecordround 
+              WHERE investor_id = ? AND company_id = sp.author_id
             )
           )
-
+          
+          -- 4. Shared Cap Table: Fellow investors (if rounds shared)
           OR (
             sp.author_type = 'investor'
-            AND sp.author_id IN (
-              SELECT DISTINCT srr2.investor_id
-              FROM sharerecordround srr1
+            AND sp.author_id != ?
+            AND EXISTS (
+              SELECT 1 FROM sharerecordround srr1
               INNER JOIN sharerecordround srr2 ON srr1.company_id = srr2.company_id
-              WHERE srr1.investor_id = ? AND srr2.investor_id != srr1.investor_id
-            )
-          )
-
-          OR (
-            sp.author_type = 'investor'
-            AND sp.author_id IN (
-              SELECT DISTINCT w2.author_id FROM waitlist w1
-              INNER JOIN waitlist w2 ON w1.type = w2.type
-              WHERE w1.type = 'Investor' AND w1.author_id = ? AND w2.author_id != w1.author_id
+              WHERE srr1.investor_id = ? AND srr2.investor_id = sp.author_id
             )
           )
         )
@@ -404,20 +395,39 @@ exports.getPosts = (req, res) => {
     `;
 
     queryParams = [
+      // For sender_category (4 params)
+      user_id, // own
+      user_id, // portfolio_company
+      user_id, // fellow_shareholder
+
+      // For shared_company_name
       user_id,
+
+      // For likes check
       user_id,
+      user_type,
+
+      // For follows
       user_id,
+      user_type,
+
+      // For own posts
       user_id,
-      user_id, // sender_category (5)
+      user_type,
+
+      // For Angel Network - current user in waitlist
       user_id,
-      user_type, // likes check
+
+      // For portfolio company (if rounds shared)
       user_id,
-      user_type, // is_following join
+
+      // For fellow shareholder - not equal
       user_id,
-      user_type, // own posts
+
+      // For fellow shareholder - share record
       user_id,
-      user_id,
-      user_id, // visibility (3)
+
+      // Pagination
       limit,
       offset,
     ];
@@ -435,36 +445,26 @@ exports.getPosts = (req, res) => {
         END as author_raw_image,
         COALESCE(sp.likes_count, 0) as likes_count,
         COALESCE(sp.comments_count, 0) as comments_count,
-
-        -- ✅ Is following
         CASE WHEN sf.id IS NOT NULL THEN 1 ELSE 0 END as is_following,
-
-        -- ✅ Sender Category
+        
+        -- Sender Category
         CASE
           WHEN sp.author_id = ? AND sp.author_type = 'company' THEN 'own'
-
           WHEN sp.author_type = 'investor'
             AND sp.author_id IN (
               SELECT DISTINCT investor_id FROM sharerecordround
               WHERE company_id = ? AND investor_id IS NOT NULL
             ) THEN 'fellow_shareholder'
-
-          WHEN sp.author_type = 'investor'
-            AND EXISTS (
-              SELECT 1 FROM waitlist w WHERE w.type = 'Investor' AND w.author_id = sp.author_id
-              AND EXISTS (
-                SELECT 1 FROM waitlist wc WHERE wc.type = 'Company' AND wc.company_id = ?
-              )
+          WHEN EXISTS (
+              SELECT 1 FROM waitlist w WHERE w.author_id = sp.author_id
             ) THEN 'angel_network'
-
           ELSE 'network'
         END as sender_category,
-
-        -- ✅ Region from waitlist (for angel_network badge)
+        
         (SELECT w.city FROM waitlist w
           WHERE w.author_id = sp.author_id AND w.type = 'Investor' LIMIT 1
         ) as author_region,
-
+        
         NULL as shared_company_name
 
       FROM social_posts sp
@@ -476,24 +476,21 @@ exports.getPosts = (req, res) => {
         AND sf.following_id = sp.author_id AND sf.following_type = sp.author_type
       WHERE sp.is_deleted = 0
         AND (
+          -- 1. Company's own posts
           (sp.author_id = ? AND sp.author_type = ?)
-
+          
+          -- 2. Angel Network: If company is in waitlist, show ALL posts from waitlist members
           OR (
-            sp.author_type = 'investor'
-            AND sp.author_id IN (
-              SELECT DISTINCT investor_id FROM sharerecordround
-              WHERE company_id = ? AND investor_id IS NOT NULL AND investor_id != 0
-            )
+            EXISTS (SELECT 1 FROM waitlist WHERE author_id = ?)
+            AND EXISTS (SELECT 1 FROM waitlist w WHERE w.author_id = sp.author_id)
           )
-
+          
+          -- 3. Shared Cap Table: Investors who received rounds from this company
           OR (
             sp.author_type = 'investor'
             AND EXISTS (
-              SELECT 1 FROM waitlist w WHERE w.type = 'Investor' AND w.author_id = sp.author_id
-              AND EXISTS (
-                SELECT 1 FROM waitlist w_company
-                WHERE w_company.type = 'Company' AND w_company.company_id = ?
-              )
+              SELECT 1 FROM sharerecordround 
+              WHERE company_id = ? AND investor_id = sp.author_id
             )
           )
         )
@@ -502,17 +499,29 @@ exports.getPosts = (req, res) => {
     `;
 
     queryParams = [
+      // For sender_category (2 params)
+      user_id, // own
+      user_id, // fellow_shareholder
+
+      // For likes check
       user_id,
+      user_type,
+
+      // For follows
       user_id,
-      user_id, // sender_category (3)
+      user_type,
+
+      // For own posts
       user_id,
-      user_type, // likes check
+      user_type,
+
+      // For Angel Network - current company in waitlist (using author_id column)
       user_id,
-      user_type, // is_following join
+
+      // For fellow shareholder (investors who got rounds)
       user_id,
-      user_type, // own posts
-      user_id,
-      user_id, // visibility (2)
+
+      // Pagination
       limit,
       offset,
     ];
@@ -568,10 +577,9 @@ exports.getPosts = (req, res) => {
             })()
           : [],
         liked: p.is_liked === 1,
-        followed: p.is_following === 1, // ✅ real follow status from DB
+        followed: p.is_following === 1,
         likes: parseInt(p.likes_count) || 0,
         comments: parseInt(p.comments_count) || 0,
-        // ✅ Sender info for frontend badge
         sender_category: p.sender_category || "network",
         author_region: p.author_region || null,
         shared_company_name: p.shared_company_name || null,
