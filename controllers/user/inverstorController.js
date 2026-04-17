@@ -5097,7 +5097,7 @@ exports.getContactConnection = (req, res) => {
     });
   }
 
-  // Step 1: Get all rounds of current investor
+  // Step 1: Get all rounds of current investor (for Cap Table connections)
   const getInvestorRoundsQuery = `
     SELECT DISTINCT roundrecord_id 
     FROM (
@@ -5120,109 +5120,172 @@ exports.getContactConnection = (req, res) => {
         });
       }
 
+      let roundrecordIds = roundResults.map((r) => r.roundrecord_id);
+
       if (roundResults.length === 0) {
-        return res.status(200).json({
-          status: 1,
-          message: "No rounds found for this investor",
-          data: {
-            current_investor: null,
-            connections: [],
-            total_connections: 0,
-          },
-        });
+        roundrecordIds = [];
       }
 
-      const roundrecordIds = roundResults.map((r) => r.roundrecord_id);
+      // Step 2: Get Cap Table connections
+      const processCapTableConnections = (callback) => {
+        if (roundrecordIds.length === 0) {
+          return callback(null, []);
+        }
 
-      // Step 2: Get all other investors from these rounds with company details from company table
-      const getConnectionsQuery = `
-        SELECT DISTINCT 
-          ii.id as investor_id,
-          ii.first_name,
-          ii.last_name,
-          CONCAT(ii.first_name, ' ', ii.last_name) as investor_name,
-          ii.email,
-          ii.phone,
-          ii.job_title,
-          ii.type_of_investor,
-          ii.profile_picture,
-          ii.investor_type,
-          ii.cheque_size,
-          ii.geo_focus,
-          ii.preferred_stages,
-          ii.city,
-          ii.state,
-          ii.country,
-          ii.full_address,
-          ii.accredited_status,
-          -- Company details from company table
-          c.id as company_id,
-          c.company_name,
-          c.company_logo,
-          c.company_email,
-          c.phone as company_phone,
-          c.company_website,
-          COUNT(DISTINCT all_investors.roundrecord_id) as common_rounds_count,
-          GROUP_CONCAT(DISTINCT all_investors.roundrecord_id) as common_round_ids
-        FROM (
-          SELECT roundrecord_id, investor_id FROM sharerecordround WHERE roundrecord_id IN (?)
-          UNION
-          SELECT roundrecord_id, investor_id FROM investorrequest_company WHERE roundrecord_id IN (?)
-        ) AS all_investors
-        INNER JOIN investor_information ii ON all_investors.investor_id = ii.id
-        LEFT JOIN company c ON ii.company_id = c.id
-        WHERE all_investors.investor_id != ?
-          AND all_investors.investor_id != 0
-        GROUP BY ii.id, ii.first_name, ii.last_name, ii.email, ii.phone, 
-                 ii.job_title, ii.type_of_investor, ii.profile_picture, 
-                 ii.investor_type, ii.cheque_size, ii.geo_focus, 
-                 ii.preferred_stages, ii.city, ii.state, ii.country, 
-                 ii.full_address, ii.accredited_status,
-                 c.id, c.company_name, c.company_logo, c.company_email, 
-                 c.phone, c.company_website
-        ORDER BY common_rounds_count DESC, ii.first_name ASC
-      `;
+        const getCapTableConnectionsQuery = `
+          SELECT DISTINCT 
+            ii.id as investor_id,
+            ii.first_name,
+            ii.last_name,
+            CONCAT(ii.first_name, ' ', ii.last_name) as investor_name,
+            ii.email,
+            ii.phone,
+            ii.job_title,
+            ii.type_of_investor,
+            ii.profile_picture,
+            ii.investor_type,
+            ii.cheque_size,
+            ii.geo_focus,
+            ii.preferred_stages,
+            ii.city,
+            ii.state,
+            ii.country,
+            ii.full_address,
+            ii.accredited_status,
+            'captable' as connection_type,
+            c.id as company_id,
+            c.company_name,
+            c.company_logo,
+            c.company_email,
+            c.phone as company_phone,
+            c.company_website,
+            COUNT(DISTINCT all_investors.roundrecord_id) as common_rounds_count,
+            GROUP_CONCAT(DISTINCT all_investors.roundrecord_id) as common_round_ids
+          FROM (
+            SELECT roundrecord_id, investor_id FROM sharerecordround WHERE roundrecord_id IN (?)
+            UNION
+            SELECT roundrecord_id, investor_id FROM investorrequest_company WHERE roundrecord_id IN (?)
+          ) AS all_investors
+          INNER JOIN investor_information ii ON all_investors.investor_id = ii.id
+          LEFT JOIN company c ON ii.company_id = c.id
+          WHERE all_investors.investor_id != ?
+            AND all_investors.investor_id != 0
+          GROUP BY ii.id, ii.first_name, ii.last_name, ii.email, ii.phone, 
+                   ii.job_title, ii.type_of_investor, ii.profile_picture, 
+                   ii.investor_type, ii.cheque_size, ii.geo_focus, 
+                   ii.preferred_stages, ii.city, ii.state, ii.country, 
+                   ii.full_address, ii.accredited_status,
+                   c.id, c.company_name, c.company_logo, c.company_email, 
+                   c.phone, c.company_website
+        `;
 
-      db.query(
-        getConnectionsQuery,
-        [roundrecordIds, roundrecordIds, investor_id],
-        (err2, connectionResults) => {
-          if (err2) {
-            console.error("Error fetching connections:", err2);
+        db.query(
+          getCapTableConnectionsQuery,
+          [roundrecordIds, roundrecordIds, investor_id],
+          (err2, results) => {
+            if (err2) {
+              console.error("Error fetching cap table connections:", err2);
+              return callback(err2);
+            }
+            callback(null, results);
+          },
+        );
+      };
+
+      // Step 3: Get Angel Network connections from angel_network
+      const processAngelConnections = (callback) => {
+        const getAngelConnectionsQuery = `
+          SELECT DISTINCT
+            w.author_id as investor_id,
+            'angel' as connection_type,
+            'Capavate Angels Network' as network_name,
+            'Active Member' as membership_status,
+            w.created_at as joined_date
+          FROM angel_network w
+          WHERE w.type = 'Investor'
+            AND w.author_id != ?
+            AND w.author_id != 0
+            AND w.author_id IS NOT NULL
+          GROUP BY w.author_id
+        `;
+
+        db.query(getAngelConnectionsQuery, [investor_id], (err3, results) => {
+          if (err3) {
+            console.error("Error fetching angel connections:", err3);
+            return callback(err3);
+          }
+          callback(null, results);
+        });
+      };
+
+      processCapTableConnections((err2, capTableConnections) => {
+        if (err2) {
+          return res.status(500).json({
+            status: 0,
+            message: "Database error",
+            error: err2.message,
+          });
+        }
+
+        processAngelConnections((err3, angelConnectionsRaw) => {
+          if (err3) {
             return res.status(500).json({
               status: 0,
               message: "Database error",
-              error: err2.message,
+              error: err3.message,
             });
           }
 
-          // Get current investor details with company information
-          db.query(
-            `SELECT 
-              ii.id as investor_id, 
-              ii.first_name, 
+          // Get all unique investor_ids from both sources
+          const allInvestorIds = new Set();
+          capTableConnections.forEach((conn) =>
+            allInvestorIds.add(conn.investor_id),
+          );
+          angelConnectionsRaw.forEach((conn) =>
+            allInvestorIds.add(conn.investor_id),
+          );
+
+          if (allInvestorIds.size === 0) {
+            return res.status(200).json({
+              status: 1,
+              message: "No connections found",
+              data: {
+                current_investor: null,
+                connections: [],
+                total_connections: 0,
+                total_captable_connections: 0,
+                total_angel_connections: 0,
+                total_rounds_involved: roundrecordIds.length,
+              },
+            });
+          }
+
+          const investorIdsList = Array.from(allInvestorIds);
+
+          // Step 4: Get investor details WITH their company information
+          const getInvestorDetailsQuery = `
+            SELECT 
+              ii.id as investor_id,
+              ii.first_name,
               ii.last_name,
               CONCAT(ii.first_name, ' ', ii.last_name) as investor_name,
-              ii.email, 
-              ii.phone, 
+              ii.email,
+              ii.phone,
               ii.job_title,
               ii.type_of_investor,
-              ii.investor_type,
               ii.profile_picture,
+              ii.investor_type,
               ii.cheque_size,
               ii.geo_focus,
               ii.preferred_stages,
-              ii.bio_short,
-              ii.linkedIn_profile,
-              ii.industry_expertise,
-              ii.accredited_status,
               ii.city,
               ii.state,
               ii.country,
               ii.full_address,
-              ii.stateCode,
-              ii.countrycode,
-              -- Company details from company table
+              ii.accredited_status,
+              ii.bio_short,
+              ii.linkedIn_profile,
+              ii.industry_expertise,
               c.id as company_id,
               c.company_name,
               c.company_logo,
@@ -5231,60 +5294,272 @@ exports.getContactConnection = (req, res) => {
               c.company_website
             FROM investor_information ii
             LEFT JOIN company c ON ii.company_id = c.id
-            WHERE ii.id = ?`,
-            [investor_id],
-            (err3, currentResult) => {
-              if (err3) {
-                console.error("Error fetching current investor:", err3);
+            WHERE ii.id IN (?)
+          `;
+
+          db.query(
+            getInvestorDetailsQuery,
+            [investorIdsList],
+            (err5, investorDetails) => {
+              if (err5) {
+                console.error("Error fetching investor details:", err5);
                 return res.status(500).json({
                   status: 0,
                   message: "Database error",
-                  error: err3.message,
+                  error: err5.message,
                 });
               }
 
-              const currentInvestor = currentResult[0];
+              const investorDetailsMap = new Map();
+              investorDetails.forEach((investor) => {
+                investorDetailsMap.set(investor.investor_id, investor);
+              });
 
-              // Add computed location field
-              if (currentInvestor) {
-                const locationParts = [
-                  currentInvestor.city,
-                  currentInvestor.state,
-                  currentInvestor.country,
-                ].filter(Boolean);
-                currentInvestor.location =
-                  locationParts.length > 0
-                    ? locationParts.join(", ")
-                    : currentInvestor.full_address || "-";
+              // Step 5: Create a map to track which rounds each investor is in (for company info)
+              const investorRoundsMap = new Map();
+
+              // If there are cap table connections, get round details for company info
+              if (capTableConnections.length > 0) {
+                const investorIdsForRounds = capTableConnections.map(
+                  (c) => c.investor_id,
+                );
+                const getInvestorRoundsInfoQuery = `
+                SELECT DISTINCT
+                  ir.investor_id,
+                  c.id as round_company_id,
+                  c.company_name as round_company_name,
+                  c.company_logo as round_company_logo,
+                  rr.round_name
+                FROM (
+                  SELECT investor_id, roundrecord_id FROM sharerecordround WHERE investor_id IN (?)
+                  UNION
+                  SELECT investor_id, roundrecord_id FROM investorrequest_company WHERE investor_id IN (?)
+                ) ir
+                LEFT JOIN roundrecord rr ON ir.roundrecord_id = rr.id
+                LEFT JOIN company c ON rr.company_id = c.id
+                WHERE ir.investor_id IN (?)
+              `;
+
+                db.query(
+                  getInvestorRoundsInfoQuery,
+                  [
+                    investorIdsForRounds,
+                    investorIdsForRounds,
+                    investorIdsForRounds,
+                  ],
+                  (err6, roundInfoResults) => {
+                    if (err6) {
+                      console.error("Error fetching round info:", err6);
+                    } else {
+                      roundInfoResults.forEach((info) => {
+                        if (!investorRoundsMap.has(info.investor_id)) {
+                          investorRoundsMap.set(info.investor_id, []);
+                        }
+                        if (info.round_company_name) {
+                          investorRoundsMap.get(info.investor_id).push({
+                            company_name: info.round_company_name,
+                            round_name: info.round_name,
+                          });
+                        }
+                      });
+                    }
+
+                    // Continue with merging (defined below)
+                    mergeConnections();
+                  },
+                );
+              } else {
+                mergeConnections();
               }
 
-              // Add computed location for each connection
-              connectionResults.forEach((conn) => {
-                const locationParts = [
-                  conn.city,
-                  conn.state,
-                  conn.country,
-                ].filter(Boolean);
-                conn.location =
-                  locationParts.length > 0
-                    ? locationParts.join(", ")
-                    : conn.full_address || "-";
-              });
+              function mergeConnections() {
+                const connectionsMap = new Map();
 
-              return res.status(200).json({
-                status: 1,
-                message: "Contact connections fetched successfully",
-                data: {
-                  current_investor: currentInvestor || null,
-                  connections: connectionResults,
-                  total_connections: connectionResults.length,
-                  total_rounds_involved: roundrecordIds.length,
-                },
-              });
+                // Add Cap Table connections
+                capTableConnections.forEach((conn) => {
+                  const details = investorDetailsMap.get(conn.investor_id);
+                  if (details) {
+                    const roundCompanies =
+                      investorRoundsMap.get(conn.investor_id) || [];
+                    const uniqueCompanies = [
+                      ...new Map(
+                        roundCompanies.map((item) => [item.company_name, item]),
+                      ).values(),
+                    ];
+
+                    connectionsMap.set(conn.investor_id, {
+                      ...details,
+                      connection_type: "captable",
+                      common_rounds_count: conn.common_rounds_count,
+                      common_round_ids: conn.common_round_ids,
+                      round_companies: uniqueCompanies,
+                      // If multiple rounds, show first company or "Multiple Companies"
+                      display_company_name:
+                        uniqueCompanies.length === 1
+                          ? uniqueCompanies[0].company_name
+                          : uniqueCompanies.length > 1
+                            ? `${uniqueCompanies.length} Companies`
+                            : details.company_name || "N/A",
+                    });
+                  }
+                });
+
+                // Add Angel connections
+                angelConnectionsRaw.forEach((conn) => {
+                  const details = investorDetailsMap.get(conn.investor_id);
+                  if (details) {
+                    if (!connectionsMap.has(conn.investor_id)) {
+                      connectionsMap.set(conn.investor_id, {
+                        ...details,
+                        connection_type: "angel",
+                        network_name: conn.network_name,
+                        membership_status: conn.membership_status,
+                        angel_joined_date: conn.joined_date,
+                        display_company_name: "Capavate Angels Network",
+                        round_companies: [],
+                      });
+                    } else {
+                      const existing = connectionsMap.get(conn.investor_id);
+                      existing.connection_type = "both";
+                      existing.network_name = conn.network_name;
+                      existing.membership_status = conn.membership_status;
+                      existing.angel_joined_date = conn.joined_date;
+                      if (
+                        !existing.display_company_name ||
+                        existing.display_company_name === "N/A"
+                      ) {
+                        existing.display_company_name =
+                          "Capavate Angels Network";
+                      }
+                      connectionsMap.set(conn.investor_id, existing);
+                    }
+                  }
+                });
+
+                let allConnections = Array.from(connectionsMap.values());
+
+                // Step 6: Get current investor details
+                db.query(
+                  `SELECT 
+                  ii.id as investor_id, 
+                  ii.first_name, 
+                  ii.last_name,
+                  CONCAT(ii.first_name, ' ', ii.last_name) as investor_name,
+                  ii.email, 
+                  ii.phone, 
+                  ii.job_title,
+                  ii.type_of_investor,
+                  ii.investor_type,
+                  ii.profile_picture,
+                  ii.cheque_size,
+                  ii.geo_focus,
+                  ii.preferred_stages,
+                  ii.bio_short,
+                  ii.linkedIn_profile,
+                  ii.industry_expertise,
+                  ii.accredited_status,
+                  ii.city,
+                  ii.state,
+                  ii.country,
+                  ii.full_address,
+                  ii.stateCode,
+                  ii.countrycode,
+                  c.id as company_id,
+                  c.company_name,
+                  c.company_logo,
+                  c.company_email,
+                  c.phone as company_phone,
+                  c.company_website
+                FROM investor_information ii
+                LEFT JOIN company c ON ii.company_id = c.id
+                WHERE ii.id = ?`,
+                  [investor_id],
+                  (err4, currentResult) => {
+                    if (err4) {
+                      console.error("Error fetching current investor:", err4);
+                      return res.status(500).json({
+                        status: 0,
+                        message: "Database error",
+                        error: err4.message,
+                      });
+                    }
+
+                    const currentInvestor = currentResult[0];
+
+                    if (currentInvestor) {
+                      const locationParts = [
+                        currentInvestor.city,
+                        currentInvestor.state,
+                        currentInvestor.country,
+                      ].filter(Boolean);
+                      currentInvestor.location =
+                        locationParts.length > 0
+                          ? locationParts.join(", ")
+                          : currentInvestor.full_address || "-";
+                    }
+
+                    allConnections.forEach((conn) => {
+                      const locationParts = [
+                        conn.city,
+                        conn.state,
+                        conn.country,
+                      ].filter(Boolean);
+                      conn.location =
+                        locationParts.length > 0
+                          ? locationParts.join(", ")
+                          : conn.full_address || "-";
+
+                      if (
+                        !conn.membership_status &&
+                        conn.connection_type === "angel"
+                      ) {
+                        conn.membership_status = "Active Member";
+                      } else if (!conn.membership_status) {
+                        conn.membership_status = "NO";
+                      }
+
+                      conn.is_angel =
+                        conn.connection_type === "angel" ||
+                        conn.connection_type === "both";
+                      conn.is_captable =
+                        conn.connection_type === "captable" ||
+                        conn.connection_type === "both";
+
+                      // Set company_name for display (priority: round company > investor's own company > angel network)
+                      if (
+                        conn.display_company_name &&
+                        conn.display_company_name !== "N/A"
+                      ) {
+                        conn.company_name = conn.display_company_name;
+                      } else if (
+                        !conn.company_name &&
+                        conn.connection_type === "angel"
+                      ) {
+                        conn.company_name = "Capavate Angels Network";
+                      } else if (!conn.company_name) {
+                        conn.company_name = "Independent Investor";
+                      }
+                    });
+
+                    return res.status(200).json({
+                      status: 1,
+                      message: "Contact connections fetched successfully",
+                      data: {
+                        current_investor: currentInvestor || null,
+                        connections: allConnections,
+                        total_connections: allConnections.length,
+                        total_captable_connections: capTableConnections.length,
+                        total_angel_connections: angelConnectionsRaw.length,
+                        total_rounds_involved: roundrecordIds.length,
+                      },
+                    });
+                  },
+                );
+              }
             },
           );
-        },
-      );
+        });
+      });
     },
   );
 };
@@ -5305,7 +5580,7 @@ exports.joinAngelNetwork = async (req, res) => {
 
   try {
     // ── STEP 1: CHECK IF EMAIL ALREADY EXISTS ──
-    const checkQuery = `SELECT id, email, code FROM waitlist WHERE email = ? LIMIT 1`;
+    const checkQuery = `SELECT id, email, code FROM angel_network WHERE email = ? LIMIT 1`;
 
     db.query(checkQuery, [email], (checkErr, checkResult) => {
       if (checkErr) {
@@ -5320,7 +5595,7 @@ exports.joinAngelNetwork = async (req, res) => {
         return res.status(200).json({
           status: "0",
           message:
-            "This email is already registered in the Angel Network waitlist.",
+            "This email is already registered in the Angel Network angel_network.",
           code: checkResult[0].code, // ✅ return existing code
         });
       }
@@ -5331,7 +5606,7 @@ exports.joinAngelNetwork = async (req, res) => {
 
       // ── STEP 3: INSERT WITH CODE ──
       const insertQuery = `
-        INSERT INTO waitlist 
+        INSERT INTO angel_network 
         (author_id,type,first_name, last_name, email, phone, city, country, code, created_at) 
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
       `;
@@ -5361,7 +5636,7 @@ exports.joinAngelNetwork = async (req, res) => {
           const emailContent = `
             <h2>Welcome to Capavate Angel Network!</h2>
             <p>Dear ${firstName} ${lastName},</p>
-            <p>You have successfully joined the Capavate Angel Network waitlist.</p>
+            <p>You have successfully joined the Capavate Angel Network angel_network.</p>
             <p><strong>Your Unique Member Code:</strong> ${uniqueCode}</p>
             
             <h3>Your Portfolio Companies:</h3>
@@ -5412,7 +5687,7 @@ exports.checkmembership = async (req, res) => {
 
   try {
     // ── STEP 1: CHECK IF EMAIL ALREADY EXISTS ──
-    const checkQuery = `SELECT *  FROM waitlist WHERE email = ? LIMIT 1`;
+    const checkQuery = `SELECT *  FROM angel_network WHERE email = ? LIMIT 1`;
 
     db.query(checkQuery, [email], (checkErr, checkResult) => {
       if (checkErr) {

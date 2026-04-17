@@ -12,9 +12,7 @@ const path = require("path");
 const pdfParse = require("pdf-parse");
 const OpenAI = require("openai");
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 require("dotenv").config();
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -22,10 +20,7 @@ const logoBase64 = process.env.LOGO_BASE64;
 
 const transporter = nodemailer.createTransport({
   service: "gmail",
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
+  auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
 });
 
 // ─── Multer Storage ───────────────────────────────────────────────────────────
@@ -39,15 +34,12 @@ const storage = multer.diskStorage({
       "docs",
       "social_post",
     );
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
+    if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
     cb(null, uploadDir);
   },
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname);
-    const uniqueName = `post_${Date.now()}_${Math.round(Math.random() * 1e6)}${ext}`;
-    cb(null, uniqueName);
+    cb(null, `post_${Date.now()}_${Math.round(Math.random() * 1e6)}${ext}`);
   },
 });
 
@@ -59,8 +51,9 @@ const fileFilter = (req, file, cb) => {
     "image/gif",
     "image/avif",
   ];
-  if (allowed.includes(file.mimetype)) cb(null, true);
-  else cb(new Error("Only image files are allowed"), false);
+  allowed.includes(file.mimetype)
+    ? cb(null, true)
+    : cb(new Error("Only image files are allowed"), false);
 };
 
 const upload = multer({
@@ -68,53 +61,45 @@ const upload = multer({
   fileFilter,
   limits: { fileSize: 5 * 1024 * 1024, files: 10 },
 });
-
 exports.uploadMiddleware = upload.array("images", 10);
 
 // ─── Helper: get user name + image ───────────────────────────────────────────
 const getUserDetails = (userId, userType) => {
   return new Promise((resolve) => {
+    const base = process.env.API_BASE_URL || "https://capavate.com/api";
     if (userType === "company") {
       db.query(
         `SELECT id, company_name as name, company_logo as image FROM company WHERE id = ?`,
         [userId],
         (err, results) => {
           if (err || !results || results.length === 0)
-            resolve({ id: userId, name: "Unknown", image: null });
-          else {
-            const row = results[0];
-            const imageUrl = row.image
-              ? `https://capavate.com/api/upload/docs/doc_${userId}/company_profile/${row.image}`
-              : null;
-            resolve({
-              id: userId,
-              name: row.name || "Company",
-              image: imageUrl,
-            });
-          }
+            return resolve({ id: userId, name: "Unknown", image: null });
+          const row = results[0];
+          resolve({
+            id: userId,
+            name: row.name || "Company",
+            image: row.image
+              ? `${base}/upload/docs/doc_${userId}/company_profile/${row.image}`
+              : null,
+          });
         },
       );
     } else {
       db.query(
-        `SELECT id,
-                TRIM(CONCAT(COALESCE(first_name,''), ' ', COALESCE(last_name,''))) as name,
-                profile_picture as image
+        `SELECT id, TRIM(CONCAT(COALESCE(first_name,''), ' ', COALESCE(last_name,''))) as name, profile_picture as image
          FROM investor_information WHERE id = ?`,
         [userId],
         (err, results) => {
           if (err || !results || results.length === 0)
-            resolve({ id: userId, name: "Investor", image: null });
-          else {
-            const row = results[0];
-            const imageUrl = row.image
-              ? `https://capavate.com/api/upload/investor/inv_${userId}/${row.image}`
-              : null;
-            resolve({
-              id: userId,
-              name: row.name || "Investor",
-              image: imageUrl,
-            });
-          }
+            return resolve({ id: userId, name: "Investor", image: null });
+          const row = results[0];
+          resolve({
+            id: userId,
+            name: row.name || "Investor",
+            image: row.image
+              ? `${base}/upload/investor/inv_${userId}/${row.image}`
+              : null,
+          });
         },
       );
     }
@@ -128,37 +113,21 @@ const getVisibleUserIds = async (author_id, author_type) => {
     let params = [];
 
     if (author_type === "company") {
+      // ✅ sharerecordround investors + ALL angel_network investors
       query = `
-        SELECT DISTINCT srr.investor_id as user_id
-        FROM sharerecordround srr
-        WHERE srr.company_id = ?
-          AND srr.investor_id IS NOT NULL
-          AND srr.investor_id != 0
+        SELECT DISTINCT user_id FROM (
+          SELECT DISTINCT srr.investor_id as user_id
+          FROM sharerecordround srr
+          WHERE srr.company_id = ? AND srr.investor_id IS NOT NULL AND srr.investor_id != 0
+          UNION
+          SELECT DISTINCT w.author_id as user_id
+          FROM angel_network w
+          WHERE w.type = 'Investor' AND w.author_id IS NOT NULL AND w.author_id != 0
+        ) AS all_visible_users
       `;
       params = [author_id];
-
-      console.log(`🔍 Getting visible users for company ${author_id}`);
-
-      db.query(query, params, (err, results) => {
-        if (err) {
-          console.error("Error in getVisibleUserIds:", err);
-          reject(err);
-          return;
-        }
-        if (!results || !Array.isArray(results)) {
-          resolve([]);
-          return;
-        }
-        const userIds = results
-          .map((r) => r.user_id)
-          .filter((id) => id !== null && id !== 0);
-        console.log(
-          `✅ Company ${author_id} post visible to investors:`,
-          userIds,
-        );
-        resolve([...new Set(userIds)]);
-      });
     } else if (author_type === "investor") {
+      // ✅ portfolio companies + fellow shareholders + all angel_network investors
       query = `
         SELECT DISTINCT user_id FROM (
           SELECT DISTINCT srr.company_id as user_id
@@ -171,33 +140,45 @@ const getVisibleUserIds = async (author_id, author_type) => {
           WHERE srr1.investor_id = ? AND srr2.investor_id != ?
           UNION
           SELECT DISTINCT w.author_id as user_id
-          FROM waitlist w
+          FROM angel_network w
           WHERE w.type = 'Investor' AND w.author_id != ?
         ) AS users
       `;
       params = [author_id, author_id, author_id, author_id];
-
-      console.log(`🔍 Getting visible users for investor ${author_id}`);
-
-      db.query(query, params, (err, results) => {
-        if (err) {
-          console.error("Error in getVisibleUserIds:", err);
-          reject(err);
-          return;
-        }
-        if (!results || !Array.isArray(results)) {
-          resolve([]);
-          return;
-        }
-        const userIds = results
-          .map((r) => r.user_id)
-          .filter((id) => id !== null && id !== 0);
-        console.log(`✅ Investor ${author_id} post visible to:`, userIds);
-        resolve([...new Set(userIds)]);
-      });
     } else {
-      resolve([]);
+      return resolve([]);
     }
+
+    db.query(query, params, (err, results) => {
+      if (err) {
+        console.error("getVisibleUserIds error:", err);
+        return reject(err);
+      }
+      if (!results || !Array.isArray(results)) return resolve([]);
+      const userIds = [
+        ...new Set(
+          results.map((r) => r.user_id).filter((id) => id && id !== 0),
+        ),
+      ];
+      console.log(
+        `✅ ${author_type} ${author_id} post visible to ${userIds.length} users`,
+      );
+      resolve(userIds);
+    });
+  });
+};
+
+// ─── Helper: get post author for socket emit ─────────────────────────────────
+const getPostAuthor = (post_id) => {
+  return new Promise((resolve) => {
+    db.query(
+      `SELECT author_id, author_type FROM social_posts WHERE id = ?`,
+      [post_id],
+      (err, results) => {
+        if (err || !results || results.length === 0) return resolve(null);
+        resolve(results[0]);
+      },
+    );
   });
 };
 
@@ -221,8 +202,7 @@ exports.createPost = async (req, res) => {
     const imageUrlsJson = JSON.stringify(imageUrls);
 
     db.query(
-      `INSERT INTO social_posts 
-        (author_id, author_type, content, image_urls, visibility, likes_count, comments_count, is_deleted, created_at, updated_at)
+      `INSERT INTO social_posts (author_id, author_type, content, image_urls, visibility, likes_count, comments_count, is_deleted, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, 0, 0, 0, NOW(), NOW())`,
       [
         author_id,
@@ -232,19 +212,14 @@ exports.createPost = async (req, res) => {
         visibility || "network",
       ],
       async (err, result) => {
-        if (err) {
+        if (err)
           return res
             .status(500)
             .json({ success: false, message: "Database error", error: err });
-        }
 
         const postId = result.insertId;
         const authorDetails = await getUserDetails(author_id, author_type);
-
         const base = process.env.API_BASE_URL || "https://capavate.com/api";
-        const imagesWithBase = imageUrls.map((img) =>
-          img && !img.startsWith("http") ? `${base}${img}` : img,
-        );
 
         const newPost = {
           id: postId,
@@ -254,7 +229,9 @@ exports.createPost = async (req, res) => {
           author_image: authorDetails.image,
           content: content || "",
           image_urls: imageUrlsJson,
-          images: imagesWithBase, // ✅ full URL with /api prefix
+          images: imageUrls.map((img) =>
+            !img.startsWith("http") ? `${base}${img}` : img,
+          ),
           visibility: visibility || "network",
           likes_count: 0,
           comments_count: 0,
@@ -286,7 +263,7 @@ exports.createPost = async (req, res) => {
 };
 
 // =============================================================================
-// GET POSTS (with visibility filter + sender_category)
+// GET POSTS
 // =============================================================================
 exports.getPosts = (req, res) => {
   const { user_id, user_type, page = 1 } = req.body;
@@ -317,8 +294,6 @@ exports.getPosts = (req, res) => {
         COALESCE(sp.likes_count, 0) as likes_count,
         COALESCE(sp.comments_count, 0) as comments_count,
         CASE WHEN sf.id IS NOT NULL THEN 1 ELSE 0 END as is_following,
-        
-        -- Sender Category
         CASE
           WHEN sp.author_id = ? AND sp.author_type = 'investor' THEN 'own'
           WHEN sp.author_type = 'company'
@@ -333,16 +308,11 @@ exports.getPosts = (req, res) => {
               WHERE srr1.investor_id = ? AND srr2.investor_id != srr1.investor_id
             ) THEN 'fellow_shareholder'
           WHEN EXISTS (
-              SELECT 1 FROM waitlist w2
-              WHERE w2.author_id = sp.author_id
+              SELECT 1 FROM angel_network w2 WHERE w2.author_id = sp.author_id
             ) THEN 'angel_network'
           ELSE 'network'
         END as sender_category,
-        
-        (SELECT w.city FROM waitlist w
-          WHERE w.author_id = sp.author_id AND w.type = 'Investor' LIMIT 1
-        ) as author_region,
-        
+        (SELECT w.city FROM angel_network w WHERE w.author_id = sp.author_id AND w.type = 'Investor' LIMIT 1) as author_region,
         (
           SELECT c2.company_name
           FROM sharerecordround srr1
@@ -351,43 +321,33 @@ exports.getPosts = (req, res) => {
           WHERE srr1.investor_id = ? AND srr2.investor_id = sp.author_id
           LIMIT 1
         ) as shared_company_name
-
       FROM social_posts sp
-      LEFT JOIN social_post_likes spl
-        ON spl.post_id = sp.id AND spl.user_id = ? AND spl.user_type = ?
+      LEFT JOIN social_post_likes spl ON spl.post_id = sp.id AND spl.user_id = ? AND spl.user_type = ?
       LEFT JOIN company c ON sp.author_type = 'company' AND c.id = sp.author_id
       LEFT JOIN investor_information ii ON sp.author_type = 'investor' AND ii.id = sp.author_id
       LEFT JOIN follows sf ON sf.follower_id = ? AND sf.follower_type = ?
         AND sf.following_id = sp.author_id AND sf.following_type = sp.author_type
       WHERE sp.is_deleted = 0
         AND (
-          -- 1. User's own posts
           (sp.author_id = ? AND sp.author_type = ?)
-          
-          -- 2. Angel Network: If user is in waitlist, show ALL posts from waitlist members
           OR (
-            EXISTS (SELECT 1 FROM waitlist WHERE author_id = ?)
-            AND EXISTS (SELECT 1 FROM waitlist w WHERE w.author_id = sp.author_id)
+            EXISTS (SELECT 1 FROM angel_network WHERE author_id = ?)
+            AND EXISTS (SELECT 1 FROM angel_network w WHERE w.author_id = sp.author_id)
           )
-          
-          -- 3. Shared Cap Table: Company posts (if rounds shared)
           OR (
             sp.author_type = 'company'
-            AND EXISTS (
-              SELECT 1 FROM sharerecordround 
-              WHERE investor_id = ? AND company_id = sp.author_id
-            )
+            AND EXISTS (SELECT 1 FROM sharerecordround WHERE investor_id = ? AND company_id = sp.author_id)
           )
-          
-          -- 4. Shared Cap Table: Fellow investors (if rounds shared)
           OR (
-            sp.author_type = 'investor'
-            AND sp.author_id != ?
+            sp.author_type = 'investor' AND sp.author_id != ?
             AND EXISTS (
               SELECT 1 FROM sharerecordround srr1
               INNER JOIN sharerecordround srr2 ON srr1.company_id = srr2.company_id
               WHERE srr1.investor_id = ? AND srr2.investor_id = sp.author_id
             )
+          )
+          OR (
+            EXISTS (SELECT 1 FROM angel_network w WHERE w.author_id = sp.author_id)
           )
         )
       ORDER BY sp.created_at DESC
@@ -395,39 +355,20 @@ exports.getPosts = (req, res) => {
     `;
 
     queryParams = [
-      // For sender_category (4 params)
-      user_id, // own
-      user_id, // portfolio_company
-      user_id, // fellow_shareholder
-
-      // For shared_company_name
       user_id,
-
-      // For likes check
       user_id,
-      user_type,
-
-      // For follows
+      user_id, // sender_category (3)
+      user_id, // shared_company_name
       user_id,
-      user_type,
-
-      // For own posts
+      user_type, // likes
       user_id,
-      user_type,
-
-      // For Angel Network - current user in waitlist
+      user_type, // follows
       user_id,
-
-      // For portfolio company (if rounds shared)
+      user_type, // own posts
+      user_id, // angel network check
+      user_id, // portfolio company
       user_id,
-
-      // For fellow shareholder - not equal
-      user_id,
-
-      // For fellow shareholder - share record
-      user_id,
-
-      // Pagination
+      user_id, // fellow shareholder
       limit,
       offset,
     ];
@@ -446,52 +387,32 @@ exports.getPosts = (req, res) => {
         COALESCE(sp.likes_count, 0) as likes_count,
         COALESCE(sp.comments_count, 0) as comments_count,
         CASE WHEN sf.id IS NOT NULL THEN 1 ELSE 0 END as is_following,
-        
-        -- Sender Category
         CASE
           WHEN sp.author_id = ? AND sp.author_type = 'company' THEN 'own'
           WHEN sp.author_type = 'investor'
             AND sp.author_id IN (
-              SELECT DISTINCT investor_id FROM sharerecordround
-              WHERE company_id = ? AND investor_id IS NOT NULL
+              SELECT DISTINCT investor_id FROM sharerecordround WHERE company_id = ? AND investor_id IS NOT NULL
             ) THEN 'fellow_shareholder'
-          WHEN EXISTS (
-              SELECT 1 FROM waitlist w WHERE w.author_id = sp.author_id
-            ) THEN 'angel_network'
+          WHEN EXISTS (SELECT 1 FROM angel_network w WHERE w.author_id = sp.author_id) THEN 'angel_network'
           ELSE 'network'
         END as sender_category,
-        
-        (SELECT w.city FROM waitlist w
-          WHERE w.author_id = sp.author_id AND w.type = 'Investor' LIMIT 1
-        ) as author_region,
-        
+        (SELECT w.city FROM angel_network w WHERE w.author_id = sp.author_id AND w.type = 'Investor' LIMIT 1) as author_region,
         NULL as shared_company_name
-
       FROM social_posts sp
-      LEFT JOIN social_post_likes spl
-        ON spl.post_id = sp.id AND spl.user_id = ? AND spl.user_type = ?
+      LEFT JOIN social_post_likes spl ON spl.post_id = sp.id AND spl.user_id = ? AND spl.user_type = ?
       LEFT JOIN company c ON sp.author_type = 'company' AND c.id = sp.author_id
       LEFT JOIN investor_information ii ON sp.author_type = 'investor' AND ii.id = sp.author_id
       LEFT JOIN follows sf ON sf.follower_id = ? AND sf.follower_type = ?
         AND sf.following_id = sp.author_id AND sf.following_type = sp.author_type
       WHERE sp.is_deleted = 0
         AND (
-          -- 1. Company's own posts
           (sp.author_id = ? AND sp.author_type = ?)
-          
-          -- 2. Angel Network: If company is in waitlist, show ALL posts from waitlist members
-          OR (
-            EXISTS (SELECT 1 FROM waitlist WHERE author_id = ?)
-            AND EXISTS (SELECT 1 FROM waitlist w WHERE w.author_id = sp.author_id)
-          )
-          
-          -- 3. Shared Cap Table: Investors who received rounds from this company
           OR (
             sp.author_type = 'investor'
-            AND EXISTS (
-              SELECT 1 FROM sharerecordround 
-              WHERE company_id = ? AND investor_id = sp.author_id
-            )
+            AND EXISTS (SELECT 1 FROM sharerecordround WHERE company_id = ? AND investor_id = sp.author_id)
+          )
+          OR (
+            EXISTS (SELECT 1 FROM angel_network w WHERE w.author_id = sp.author_id)
           )
         )
       ORDER BY sp.created_at DESC
@@ -499,42 +420,27 @@ exports.getPosts = (req, res) => {
     `;
 
     queryParams = [
-      // For sender_category (2 params)
-      user_id, // own
-      user_id, // fellow_shareholder
-
-      // For likes check
       user_id,
-      user_type,
-
-      // For follows
+      user_id, // sender_category (2)
       user_id,
-      user_type,
-
-      // For own posts
+      user_type, // likes
       user_id,
-      user_type,
-
-      // For Angel Network - current company in waitlist (using author_id column)
+      user_type, // follows
       user_id,
-
-      // For fellow shareholder (investors who got rounds)
-      user_id,
-
-      // Pagination
+      user_type, // own posts
+      user_id, // fellow shareholder
       limit,
       offset,
     ];
   } else {
-    return res.status(400).json({
-      success: false,
-      message: "Invalid user_type. Must be 'company' or 'investor'",
-    });
+    return res
+      .status(400)
+      .json({ success: false, message: "Invalid user_type" });
   }
 
   db.query(query, queryParams, (err, posts) => {
     if (err) {
-      console.error("Database error:", err);
+      console.error("getPosts error:", err);
       return res.status(500).json({
         success: false,
         message: "Database error",
@@ -542,14 +448,15 @@ exports.getPosts = (req, res) => {
       });
     }
 
+    const base = process.env.API_BASE_URL || "https://capavate.com/api";
+
     const enriched = posts.map((p) => {
       let authorImage = null;
       if (p.author_raw_image) {
-        if (p.author_type === "company") {
-          authorImage = `https://capavate.com/api/upload/docs/doc_${p.author_id}/company_profile/${p.author_raw_image}`;
-        } else {
-          authorImage = `https://capavate.com/api/upload/investor/inv_${p.author_id}/${p.author_raw_image}`;
-        }
+        authorImage =
+          p.author_type === "company"
+            ? `${base}/upload/docs/doc_${p.author_id}/company_profile/${p.author_raw_image}`
+            : `${base}/upload/investor/inv_${p.author_id}/${p.author_raw_image}`;
       }
 
       return {
@@ -565,7 +472,6 @@ exports.getPosts = (req, res) => {
                   typeof p.image_urls === "string"
                     ? JSON.parse(p.image_urls)
                     : p.image_urls;
-                const base = "https://capavate.com/api";
                 return Array.isArray(parsed)
                   ? parsed.map((img) =>
                       img && !img.startsWith("http") ? `${base}${img}` : img,
@@ -591,7 +497,7 @@ exports.getPosts = (req, res) => {
       posts: enriched,
       pagination: {
         current_page: parseInt(page),
-        limit: limit,
+        limit,
         has_more: enriched.length === limit,
       },
     });
@@ -599,9 +505,9 @@ exports.getPosts = (req, res) => {
 };
 
 // =============================================================================
-// LIKE / UNLIKE POST
+// LIKE / UNLIKE POST — ✅ FIX: visibleUserIds pass to socket
 // =============================================================================
-exports.likePost = (req, res) => {
+exports.likePost = async (req, res) => {
   const { post_id, user_id, user_type } = req.body;
 
   if (!post_id || !user_id || !user_type) {
@@ -614,14 +520,37 @@ exports.likePost = (req, res) => {
   db.query(
     `SELECT id FROM social_post_likes WHERE post_id = ? AND user_id = ? AND user_type = ?`,
     [post_id, user_id, user_type],
-    (err, existing) => {
+    async (err, existing) => {
       if (err)
         return res
           .status(500)
           .json({ success: false, message: "Database error", error: err });
 
+      // ✅ Get post author for socket broadcast
+      const postAuthor = await getPostAuthor(post_id);
+
+      const emitUpdate = async (likesCount) => {
+        const io = req.app.get("io");
+        if (io) {
+          let visibleUserIds = [];
+          if (postAuthor) {
+            try {
+              visibleUserIds = await getVisibleUserIds(
+                postAuthor.author_id,
+                postAuthor.author_type,
+              );
+            } catch {}
+          }
+          io.emitLikeUpdate(
+            post_id,
+            likesCount,
+            postAuthor?.author_id,
+            visibleUserIds,
+          );
+        }
+      };
+
       if (existing && existing.length > 0) {
-        // ── Unlike ──
         db.query(
           `DELETE FROM social_post_likes WHERE post_id = ? AND user_id = ? AND user_type = ?`,
           [post_id, user_id, user_type],
@@ -641,14 +570,13 @@ exports.likePost = (req, res) => {
                 db.query(
                   `SELECT likes_count FROM social_posts WHERE id = ?`,
                   [post_id],
-                  (err4, updated) => {
+                  async (err4, updated) => {
                     if (err4)
                       return res
                         .status(500)
                         .json({ success: false, message: err4.message });
                     const likesCount = updated[0]?.likes_count || 0;
-                    const io = req.app.get("io");
-                    if (io) io.emitLikeUpdate(post_id, likesCount);
+                    await emitUpdate(likesCount);
                     return res.status(200).json({
                       success: true,
                       action: "unliked",
@@ -661,7 +589,6 @@ exports.likePost = (req, res) => {
           },
         );
       } else {
-        // ── Like ──
         db.query(
           `INSERT INTO social_post_likes (post_id, user_id, user_type, created_at) VALUES (?, ?, ?, NOW())`,
           [post_id, user_id, user_type],
@@ -681,14 +608,13 @@ exports.likePost = (req, res) => {
                 db.query(
                   `SELECT likes_count FROM social_posts WHERE id = ?`,
                   [post_id],
-                  (err4, updated) => {
+                  async (err4, updated) => {
                     if (err4)
                       return res
                         .status(500)
                         .json({ success: false, message: err4.message });
                     const likesCount = updated[0]?.likes_count || 0;
-                    const io = req.app.get("io");
-                    if (io) io.emitLikeUpdate(post_id, likesCount);
+                    await emitUpdate(likesCount);
                     return res.status(200).json({
                       success: true,
                       action: "liked",
@@ -706,9 +632,9 @@ exports.likePost = (req, res) => {
 };
 
 // =============================================================================
-// ADD COMMENT
+// ADD COMMENT — ✅ FIX: visibleUserIds pass to socket
 // =============================================================================
-exports.addComment = (req, res) => {
+exports.addComment = async (req, res) => {
   const { post_id, comment, author_id, author_type, parent_comment_id } =
     req.body;
 
@@ -720,8 +646,7 @@ exports.addComment = (req, res) => {
   }
 
   db.query(
-    `INSERT INTO social_post_comments 
-      (post_id, author_id, author_type, comment, parent_comment_id, is_deleted, created_at, updated_at)
+    `INSERT INTO social_post_comments (post_id, author_id, author_type, comment, parent_comment_id, is_deleted, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, 0, NOW(), NOW())`,
     [
       post_id,
@@ -755,8 +680,26 @@ exports.addComment = (req, res) => {
         created_at: new Date().toISOString(),
       };
 
+      // ✅ Get post author and visible users for broadcast
       const io = req.app.get("io");
-      if (io) io.emitNewComment(post_id, newComment);
+      if (io) {
+        const postAuthor = await getPostAuthor(post_id);
+        let visibleUserIds = [];
+        if (postAuthor) {
+          try {
+            visibleUserIds = await getVisibleUserIds(
+              postAuthor.author_id,
+              postAuthor.author_type,
+            );
+          } catch {}
+        }
+        io.emitNewComment(
+          post_id,
+          newComment,
+          postAuthor?.author_id,
+          visibleUserIds,
+        );
+      }
 
       return res.status(200).json({
         success: true,
@@ -772,22 +715,20 @@ exports.addComment = (req, res) => {
 // =============================================================================
 exports.getComments = (req, res) => {
   const { post_id } = req.body;
-
-  if (!post_id) {
+  if (!post_id)
     return res
       .status(400)
       .json({ success: false, message: "post_id is required" });
-  }
+
+  const base = process.env.API_BASE_URL || "https://capavate.com/api";
 
   db.query(
     `SELECT spc.*,
-      CASE
-        WHEN spc.author_type = 'company' THEN c.company_name
-        ELSE TRIM(CONCAT(COALESCE(ii.first_name,''), ' ', COALESCE(ii.last_name,'')))
+      CASE WHEN spc.author_type = 'company' THEN c.company_name
+           ELSE TRIM(CONCAT(COALESCE(ii.first_name,''), ' ', COALESCE(ii.last_name,'')))
       END as author_name,
-      CASE
-        WHEN spc.author_type = 'company' THEN c.company_logo
-        ELSE ii.profile_picture
+      CASE WHEN spc.author_type = 'company' THEN c.company_logo
+           ELSE ii.profile_picture
       END as author_raw_image
      FROM social_post_comments spc
      LEFT JOIN company c ON spc.author_type = 'company' AND c.id = spc.author_id
@@ -804,11 +745,10 @@ exports.getComments = (req, res) => {
       const comments = results.map((c) => {
         let authorImage = null;
         if (c.author_raw_image) {
-          if (c.author_type === "company") {
-            authorImage = `https://capavate.com/api/upload/docs/doc_${c.author_id}/company_profile/${c.author_raw_image}`;
-          } else {
-            authorImage = `https://capavate.com/api/upload/investor/inv_${c.author_id}/${c.author_raw_image}`;
-          }
+          authorImage =
+            c.author_type === "company"
+              ? `${base}/upload/docs/doc_${c.author_id}/company_profile/${c.author_raw_image}`
+              : `${base}/upload/investor/inv_${c.author_id}/${c.author_raw_image}`;
         }
         return {
           ...c,
@@ -826,26 +766,23 @@ exports.getComments = (req, res) => {
 
 // =============================================================================
 // GET SINGLE POST BY ID
-// GET /api/user/socialpost/post/:id
 // =============================================================================
 exports.getPostById = (req, res) => {
   const { id } = req.params;
-
-  if (!id) {
+  if (!id)
     return res
       .status(400)
       .json({ success: false, message: "post id is required" });
-  }
+
+  const base = process.env.API_BASE_URL || "https://capavate.com/api";
 
   db.query(
     `SELECT sp.*,
-      CASE
-        WHEN sp.author_type = 'company' THEN c.company_name
-        ELSE TRIM(CONCAT(COALESCE(ii.first_name,''), ' ', COALESCE(ii.last_name,'')))
+      CASE WHEN sp.author_type = 'company' THEN c.company_name
+           ELSE TRIM(CONCAT(COALESCE(ii.first_name,''), ' ', COALESCE(ii.last_name,'')))
       END as author_name,
-      CASE
-        WHEN sp.author_type = 'company' THEN c.company_logo
-        ELSE ii.profile_picture
+      CASE WHEN sp.author_type = 'company' THEN c.company_logo
+           ELSE ii.profile_picture
       END as author_raw_image
      FROM social_posts sp
      LEFT JOIN company c ON sp.author_type = 'company' AND c.id = sp.author_id
@@ -865,42 +802,47 @@ exports.getPostById = (req, res) => {
       const p = results[0];
       let authorImage = null;
       if (p.author_raw_image) {
-        if (p.author_type === "company") {
-          authorImage = `https://capavate.com/api/upload/docs/doc_${p.author_id}/company_profile/${p.author_raw_image}`;
-        } else {
-          authorImage = `https://capavate.com/api/upload/investor/inv_${p.author_id}/${p.author_raw_image}`;
-        }
+        authorImage =
+          p.author_type === "company"
+            ? `${base}/upload/docs/doc_${p.author_id}/company_profile/${p.author_raw_image}`
+            : `${base}/upload/investor/inv_${p.author_id}/${p.author_raw_image}`;
       }
 
-      const post = {
-        ...p,
-        author_name:
-          (p.author_name || "").trim() ||
-          (p.author_type === "company" ? "Company" : "Investor"),
-        author_image: authorImage,
-        images: p.image_urls
-          ? (() => {
-              try {
-                return typeof p.image_urls === "string"
-                  ? JSON.parse(p.image_urls)
-                  : p.image_urls;
-              } catch {
-                return [];
-              }
-            })()
-          : [],
-        likes: p.likes_count || 0,
-        comments: p.comments_count || 0,
-      };
-
-      return res.status(200).json({ success: true, post });
+      return res.status(200).json({
+        success: true,
+        post: {
+          ...p,
+          author_name:
+            (p.author_name || "").trim() ||
+            (p.author_type === "company" ? "Company" : "Investor"),
+          author_image: authorImage,
+          images: p.image_urls
+            ? (() => {
+                try {
+                  const parsed =
+                    typeof p.image_urls === "string"
+                      ? JSON.parse(p.image_urls)
+                      : p.image_urls;
+                  return Array.isArray(parsed)
+                    ? parsed.map((img) =>
+                        img && !img.startsWith("http") ? `${base}${img}` : img,
+                      )
+                    : [];
+                } catch {
+                  return [];
+                }
+              })()
+            : [],
+          likes: p.likes_count || 0,
+          comments: p.comments_count || 0,
+        },
+      });
     },
   );
 };
 
 // =============================================================================
 // FOLLOW / UNFOLLOW
-// POST /api/user/socialpost/follow
 // =============================================================================
 exports.followUser = (req, res) => {
   const { follower_id, follower_type, following_id, following_type } = req.body;
@@ -920,22 +862,16 @@ exports.followUser = (req, res) => {
       .json({ success: false, message: "Cannot follow yourself" });
   }
 
-  // Check if already following
   db.query(
-    `SELECT id FROM follows
-     WHERE follower_id = ? AND follower_type = ?
-       AND following_id = ? AND following_type = ?`,
+    `SELECT id FROM follows WHERE follower_id = ? AND follower_type = ? AND following_id = ? AND following_type = ?`,
     [follower_id, follower_type, following_id, following_type],
     (err, existing) => {
       if (err)
         return res.status(500).json({ success: false, message: err.message });
 
       if (existing && existing.length > 0) {
-        // ── Unfollow ──
         db.query(
-          `DELETE FROM follows
-           WHERE follower_id = ? AND follower_type = ?
-             AND following_id = ? AND following_type = ?`,
+          `DELETE FROM follows WHERE follower_id = ? AND follower_type = ? AND following_id = ? AND following_type = ?`,
           [follower_id, follower_type, following_id, following_type],
           (err2) => {
             if (err2)
@@ -954,6 +890,13 @@ exports.followUser = (req, res) => {
                   action: "unfollowed",
                 },
               );
+              io.to(`social_user_${follower_id}`).emit("social:follow_update", {
+                follower_id: parseInt(follower_id),
+                follower_type,
+                following_id: parseInt(following_id),
+                following_type,
+                action: "unfollowed",
+              });
             }
             return res
               .status(200)
@@ -961,10 +904,8 @@ exports.followUser = (req, res) => {
           },
         );
       } else {
-        // ── Follow ──
         db.query(
-          `INSERT INTO follows (follower_id, follower_type, following_id, following_type)
-           VALUES (?, ?, ?, ?)`,
+          `INSERT INTO follows (follower_id, follower_type, following_id, following_type) VALUES (?, ?, ?, ?)`,
           [follower_id, follower_type, following_id, following_type],
           (err2) => {
             if (err2)
@@ -983,6 +924,13 @@ exports.followUser = (req, res) => {
                   action: "followed",
                 },
               );
+              io.to(`social_user_${follower_id}`).emit("social:follow_update", {
+                follower_id: parseInt(follower_id),
+                follower_type,
+                following_id: parseInt(following_id),
+                following_type,
+                action: "followed",
+              });
             }
             return res.status(200).json({ success: true, action: "followed" });
           },
@@ -994,50 +942,41 @@ exports.followUser = (req, res) => {
 
 // =============================================================================
 // CHECK FOLLOW STATUS
-// POST /api/user/socialpost/follow/status
 // =============================================================================
 exports.checkFollowStatus = (req, res) => {
   const { follower_id, follower_type, following_id, following_type } = req.body;
-
   db.query(
-    `SELECT id FROM follows
-     WHERE follower_id = ? AND follower_type = ?
-       AND following_id = ? AND following_type = ?`,
+    `SELECT id FROM follows WHERE follower_id = ? AND follower_type = ? AND following_id = ? AND following_type = ?`,
     [follower_id, follower_type, following_id, following_type],
     (err, results) => {
       if (err)
         return res.status(500).json({ success: false, message: err.message });
-      return res.status(200).json({
-        success: true,
-        is_following: results && results.length > 0,
-      });
+      return res
+        .status(200)
+        .json({ success: true, is_following: results && results.length > 0 });
     },
   );
 };
 
 // =============================================================================
 // GET FOLLOWERS LIST
-// POST /api/user/socialpost/followers
-// body: { user_id, user_type }
 // =============================================================================
 exports.getFollowers = (req, res) => {
   const { user_id, user_type } = req.body;
-
-  if (!user_id || !user_type) {
+  if (!user_id || !user_type)
     return res
       .status(400)
       .json({ success: false, message: "user_id and user_type required" });
-  }
+
+  const base = process.env.API_BASE_URL || "https://capavate.com/api";
 
   db.query(
     `SELECT sf.*,
-      CASE
-        WHEN sf.follower_type = 'company' THEN c.company_name
-        ELSE TRIM(CONCAT(COALESCE(ii.first_name,''), ' ', COALESCE(ii.last_name,'')))
+      CASE WHEN sf.follower_type = 'company' THEN c.company_name
+           ELSE TRIM(CONCAT(COALESCE(ii.first_name,''), ' ', COALESCE(ii.last_name,'')))
       END as follower_name,
-      CASE
-        WHEN sf.follower_type = 'company' THEN c.company_logo
-        ELSE ii.profile_picture
+      CASE WHEN sf.follower_type = 'company' THEN c.company_logo
+           ELSE ii.profile_picture
       END as follower_raw_image
      FROM follows sf
      LEFT JOIN company c ON sf.follower_type = 'company' AND c.id = sf.follower_id
@@ -1048,59 +987,45 @@ exports.getFollowers = (req, res) => {
     (err, results) => {
       if (err)
         return res.status(500).json({ success: false, message: err.message });
-
-      const followers = results.map((f) => {
-        let image = null;
-        if (f.follower_raw_image) {
-          if (f.follower_type === "company") {
-            image = `https://capavate.com/api/upload/docs/doc_${f.follower_id}/company_profile/${f.follower_raw_image}`;
-          } else {
-            image = `https://capavate.com/api/upload/investor/inv_${f.follower_id}/${f.follower_raw_image}`;
-          }
-        }
-        return {
-          id: f.follower_id,
-          type: f.follower_type,
-          name:
-            (f.follower_name || "").trim() ||
-            (f.follower_type === "company" ? "Company" : "Investor"),
-          image,
-          followed_at: f.created_at,
-        };
-      });
-
-      return res.status(200).json({
-        success: true,
-        followers,
-        total: followers.length,
-      });
+      const followers = results.map((f) => ({
+        id: f.follower_id,
+        type: f.follower_type,
+        name:
+          (f.follower_name || "").trim() ||
+          (f.follower_type === "company" ? "Company" : "Investor"),
+        image: f.follower_raw_image
+          ? f.follower_type === "company"
+            ? `${base}/upload/docs/doc_${f.follower_id}/company_profile/${f.follower_raw_image}`
+            : `${base}/upload/investor/inv_${f.follower_id}/${f.follower_raw_image}`
+          : null,
+        followed_at: f.created_at,
+      }));
+      return res
+        .status(200)
+        .json({ success: true, followers, total: followers.length });
     },
   );
 };
 
 // =============================================================================
 // GET FOLLOWING LIST
-// POST /api/user/socialpost/following
-// body: { user_id, user_type }
 // =============================================================================
 exports.getFollowing = (req, res) => {
   const { user_id, user_type } = req.body;
-
-  if (!user_id || !user_type) {
+  if (!user_id || !user_type)
     return res
       .status(400)
       .json({ success: false, message: "user_id and user_type required" });
-  }
+
+  const base = process.env.API_BASE_URL || "https://capavate.com/api";
 
   db.query(
     `SELECT sf.*,
-      CASE
-        WHEN sf.following_type = 'company' THEN c.company_name
-        ELSE TRIM(CONCAT(COALESCE(ii.first_name,''), ' ', COALESCE(ii.last_name,'')))
+      CASE WHEN sf.following_type = 'company' THEN c.company_name
+           ELSE TRIM(CONCAT(COALESCE(ii.first_name,''), ' ', COALESCE(ii.last_name,'')))
       END as following_name,
-      CASE
-        WHEN sf.following_type = 'company' THEN c.company_logo
-        ELSE ii.profile_picture
+      CASE WHEN sf.following_type = 'company' THEN c.company_logo
+           ELSE ii.profile_picture
       END as following_raw_image
      FROM follows sf
      LEFT JOIN company c ON sf.following_type = 'company' AND c.id = sf.following_id
@@ -1111,32 +1036,55 @@ exports.getFollowing = (req, res) => {
     (err, results) => {
       if (err)
         return res.status(500).json({ success: false, message: err.message });
-
-      const following = results.map((f) => {
-        let image = null;
-        if (f.following_raw_image) {
-          if (f.following_type === "company") {
-            image = `https://capavate.com/api/upload/docs/doc_${f.following_id}/company_profile/${f.following_raw_image}`;
-          } else {
-            image = `https://capavate.com/api/upload/investor/inv_${f.following_id}/${f.following_raw_image}`;
-          }
-        }
-        return {
-          id: f.following_id,
-          type: f.following_type,
-          name:
-            (f.following_name || "").trim() ||
-            (f.following_type === "company" ? "Company" : "Investor"),
-          image,
-          followed_at: f.created_at,
-        };
-      });
-
-      return res.status(200).json({
-        success: true,
-        following,
-        total: following.length,
-      });
+      const following = results.map((f) => ({
+        id: f.following_id,
+        type: f.following_type,
+        name:
+          (f.following_name || "").trim() ||
+          (f.following_type === "company" ? "Company" : "Investor"),
+        image: f.following_raw_image
+          ? f.following_type === "company"
+            ? `${base}/upload/docs/doc_${f.following_id}/company_profile/${f.following_raw_image}`
+            : `${base}/upload/investor/inv_${f.following_id}/${f.following_raw_image}`
+          : null,
+        followed_at: f.created_at,
+      }));
+      return res
+        .status(200)
+        .json({ success: true, following, total: following.length });
     },
   );
+};
+
+// =============================================================================
+// FETCH SOCIAL MEDIA FOLLOWER COUNT
+// =============================================================================
+exports.fetchSocialMediaFollower = async (req, res) => {
+  try {
+    const { id, type } = req.body;
+    if (!id || !type)
+      return res
+        .status(400)
+        .json({ success: false, message: "id and type required" });
+
+    db.query(
+      `SELECT
+        (SELECT COUNT(*) FROM follows WHERE following_id = ? AND following_type = ?) AS followers_count,
+        (SELECT COUNT(*) FROM follows WHERE follower_id = ? AND follower_type = ?) AS following_count`,
+      [id, type, id, type],
+      (err, results) => {
+        if (err)
+          return res.status(500).json({ success: false, message: err.message });
+        return res.status(200).json({
+          success: true,
+          followers: parseInt(results[0]?.followers_count) || 0,
+          following: parseInt(results[0]?.following_count) || 0,
+        });
+      },
+    );
+  } catch (error) {
+    res
+      .status(500)
+      .json({ message: "Internal server error", error: error.message });
+  }
 };

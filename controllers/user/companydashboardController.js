@@ -1851,3 +1851,33 @@ exports.fetchSocialMediaFollower = async (req, res) => {
       .json({ message: "Internal server error", error: error.message });
   }
 };
+
+exports.getlatestfundingRoundDate = async (req, res) => {
+  try {
+    const { company_id } = req.body;
+
+    if (!company_id) {
+      return res
+        .status(200)
+        .json({ success: false, message: "Company id is required" });
+    }
+
+    db.query(
+      `Select * from  roundrecord where company_id = ? And roundStatus = ? order by id desc limit 1`,
+      [company_id, "ACTIVE"],
+      (err, results) => {
+        if (err)
+          return res.status(500).json({ success: false, message: err.message });
+
+        return res.status(200).json({
+          success: true,
+          results: results,
+        });
+      },
+    );
+  } catch (error) {
+    res
+      .status(500)
+      .json({ message: "Internal server error", error: error.message });
+  }
+};
