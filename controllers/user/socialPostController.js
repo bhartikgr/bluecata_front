@@ -308,11 +308,11 @@ exports.getPosts = (req, res) => {
               JOIN sharerecordround srr2 ON srr1.company_id = srr2.company_id
               WHERE srr1.investor_id = ? AND srr2.investor_id != srr1.investor_id
             ) THEN 'fellow_shareholder'
-          WHEN EXISTS (SELECT 1 FROM waitlist w2 WHERE w2.author_id = sp.author_id) THEN 'angel_network'
+          WHEN EXISTS (SELECT 1 FROM angel_network w2 WHERE w2.author_id = sp.author_id) THEN 'angel_network'
           ELSE 'network'
         END as sender_category,
 
-        (SELECT w.city FROM waitlist w WHERE w.author_id = sp.author_id AND w.type = 'Investor' LIMIT 1) as author_region,
+        (SELECT w.city FROM angel_network w WHERE w.author_id = sp.author_id AND w.type = 'Investor' LIMIT 1) as author_region,
         (
           SELECT c2.company_name FROM sharerecordround srr1
           JOIN sharerecordround srr2 ON srr1.company_id = srr2.company_id
@@ -334,14 +334,14 @@ exports.getPosts = (req, res) => {
       WHERE sp.is_deleted = 0
         AND (
           (sp.author_id = ? AND sp.author_type = ?)
-          OR (EXISTS (SELECT 1 FROM waitlist WHERE author_id = ?) AND EXISTS (SELECT 1 FROM waitlist w WHERE w.author_id = sp.author_id))
+          OR (EXISTS (SELECT 1 FROM angel_network WHERE author_id = ?) AND EXISTS (SELECT 1 FROM angel_network w WHERE w.author_id = sp.author_id))
           OR (sp.author_type = 'company' AND EXISTS (SELECT 1 FROM sharerecordround WHERE investor_id = ? AND company_id = sp.author_id))
           OR (sp.author_type = 'investor' AND sp.author_id != ? AND EXISTS (
             SELECT 1 FROM sharerecordround srr1
             INNER JOIN sharerecordround srr2 ON srr1.company_id = srr2.company_id
             WHERE srr1.investor_id = ? AND srr2.investor_id = sp.author_id
           ))
-          OR (EXISTS (SELECT 1 FROM waitlist w WHERE w.author_id = sp.author_id))
+          OR (EXISTS (SELECT 1 FROM angel_network w WHERE w.author_id = sp.author_id))
         )
 
       -- ✅ ORDER BY: sirf current user ka pin upar aayega
@@ -394,11 +394,11 @@ exports.getPosts = (req, res) => {
           WHEN sp.author_id = ? AND sp.author_type = 'company' THEN 'own'
           WHEN sp.author_type = 'investor'
             AND sp.author_id IN (SELECT DISTINCT investor_id FROM sharerecordround WHERE company_id = ? AND investor_id IS NOT NULL) THEN 'fellow_shareholder'
-          WHEN EXISTS (SELECT 1 FROM waitlist w WHERE w.author_id = sp.author_id) THEN 'angel_network'
+          WHEN EXISTS (SELECT 1 FROM angel_network w WHERE w.author_id = sp.author_id) THEN 'angel_network'
           ELSE 'network'
         END as sender_category,
 
-        (SELECT w.city FROM waitlist w WHERE w.author_id = sp.author_id AND w.type = 'Investor' LIMIT 1) as author_region,
+        (SELECT w.city FROM angel_network w WHERE w.author_id = sp.author_id AND w.type = 'Investor' LIMIT 1) as author_region,
         NULL as shared_company_name
 
       FROM social_posts sp
@@ -416,7 +416,7 @@ exports.getPosts = (req, res) => {
         AND (
           (sp.author_id = ? AND sp.author_type = ?)
           OR (sp.author_type = 'investor' AND EXISTS (SELECT 1 FROM sharerecordround WHERE company_id = ? AND investor_id = sp.author_id))
-          OR (EXISTS (SELECT 1 FROM waitlist w WHERE w.author_id = sp.author_id))
+          OR (EXISTS (SELECT 1 FROM angel_network w WHERE w.author_id = sp.author_id))
         )
 
       -- ✅ ORDER BY: sirf current company ka pin upar aayega
