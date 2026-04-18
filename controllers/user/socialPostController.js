@@ -373,82 +373,73 @@ exports.getPosts = (req, res) => {
     ];
   } else if (user_type === "company") {
     query = `
-    SELECT DISTINCT sp.*,
-      CASE WHEN spl.id IS NOT NULL THEN 1 ELSE 0 END as is_liked,
-      CASE
-        WHEN sp.author_type = 'company' THEN c.company_name
-        ELSE TRIM(CONCAT(COALESCE(ii.first_name,''), ' ', COALESCE(ii.last_name,'')))
-      END as author_name,
-      CASE
-        WHEN sp.author_type = 'company' THEN c.company_logo
-        ELSE ii.profile_picture
-      END as author_raw_image,
-      COALESCE(sp.likes_count, 0) as likes_count,
-      COALESCE(sp.comments_count, 0) as comments_count,
-      CASE WHEN sf.id IS NOT NULL THEN 1 ELSE 0 END as is_following,
-      CASE WHEN spp.id IS NOT NULL THEN 1 ELSE 0 END as is_pinned,
-      CASE
-        WHEN sp.author_id = ? AND sp.author_type = 'company' THEN 'own'
-        WHEN sp.author_type = 'investor'
-          AND sp.author_id IN (SELECT DISTINCT investor_id FROM sharerecordround WHERE company_id = ? AND investor_id IS NOT NULL) THEN 'fellow_shareholder'
-        WHEN EXISTS (SELECT 1 FROM angel_network w WHERE w.author_id = sp.author_id) THEN 'angel_network'
-        ELSE 'network'
-      END as sender_category,
-      (SELECT w.city FROM angel_network w WHERE w.author_id = sp.author_id AND w.type = 'Investor' LIMIT 1) as author_region,
-      NULL as shared_company_name
-    FROM social_posts sp
-    LEFT JOIN social_post_likes spl ON spl.post_id = sp.id AND spl.user_id = ? AND spl.user_type = ?
-    LEFT JOIN company c ON sp.author_type = 'company' AND c.id = sp.author_id
-    LEFT JOIN investor_information ii ON sp.author_type = 'investor' AND ii.id = sp.author_id
-    LEFT JOIN follows sf ON sf.follower_id = ? AND sf.follower_type = ?
-      AND sf.following_id = sp.author_id AND sf.following_type = sp.author_type
-    LEFT JOIN social_post_pins spp ON spp.post_id = sp.id
-      AND spp.pinned_by_id = ? AND spp.pinned_by_type = ?
-    WHERE sp.is_deleted = 0
-      AND (
-        -- 1. Company ki own posts (Always visible)
-        (sp.author_id = ? AND sp.author_type = 'company')
-        
-        OR
-        
-        -- 2. Investors jinhonne company mein investment kiya hai (sharerecordround)
-        --    Ye unki post dikhegi chahe woh angel member ho ya nahi
-        (
-          sp.author_type = 'investor'
-          AND EXISTS (SELECT 1 FROM sharerecordround WHERE company_id = ? AND investor_id = sp.author_id)
+      SELECT DISTINCT sp.*,
+        CASE WHEN spl.id IS NOT NULL THEN 1 ELSE 0 END as is_liked,
+        CASE
+          WHEN sp.author_type = 'company' THEN c.company_name
+          ELSE TRIM(CONCAT(COALESCE(ii.first_name,''), ' ', COALESCE(ii.last_name,'')))
+        END as author_name,
+        CASE
+          WHEN sp.author_type = 'company' THEN c.company_logo
+          ELSE ii.profile_picture
+        END as author_raw_image,
+        COALESCE(sp.likes_count, 0) as likes_count,
+        COALESCE(sp.comments_count, 0) as comments_count,
+        CASE WHEN sf.id IS NOT NULL THEN 1 ELSE 0 END as is_following,
+
+        -- ✅ is_pinned: sirf current company ne pin kiya ho tab 1
+        CASE WHEN spp.id IS NOT NULL THEN 1 ELSE 0 END as is_pinned,
+
+        CASE
+          WHEN sp.author_id = ? AND sp.author_type = 'company' THEN 'own'
+          WHEN sp.author_type = 'investor'
+            AND sp.author_id IN (SELECT DISTINCT investor_id FROM sharerecordround WHERE company_id = ? AND investor_id IS NOT NULL) THEN 'fellow_shareholder'
+          WHEN EXISTS (SELECT 1 FROM angel_network w WHERE w.author_id = sp.author_id) THEN 'angel_network'
+          ELSE 'network'
+        END as sender_category,
+
+        (SELECT w.city FROM angel_network w WHERE w.author_id = sp.author_id AND w.type = 'Investor' LIMIT 1) as author_region,
+        NULL as shared_company_name
+
+      FROM social_posts sp
+      LEFT JOIN social_post_likes spl ON spl.post_id = sp.id AND spl.user_id = ? AND spl.user_type = ?
+      LEFT JOIN company c ON sp.author_type = 'company' AND c.id = sp.author_id
+      LEFT JOIN investor_information ii ON sp.author_type = 'investor' AND ii.id = sp.author_id
+      LEFT JOIN follows sf ON sf.follower_id = ? AND sf.follower_type = ?
+        AND sf.following_id = sp.author_id AND sf.following_type = sp.author_type
+
+      -- ✅ Pin check: current company ke liye
+      LEFT JOIN social_post_pins spp ON spp.post_id = sp.id
+        AND spp.pinned_by_id = ? AND spp.pinned_by_type = ?
+
+      WHERE sp.is_deleted = 0
+        AND (
+          (sp.author_id = ? AND sp.author_type = ?)
+          OR (sp.author_type = 'investor' AND EXISTS (SELECT 1 FROM sharerecordround WHERE company_id = ? AND investor_id = sp.author_id))
+          OR (EXISTS (SELECT 1 FROM angel_network w WHERE w.author_id = sp.author_id))
         )
-        
-        OR
-        
-        -- 3. ✅ Angel network posts (tabhi visible jab company bhi angel_network member ho)
-        --    NOTE: Agar company angel member nahi hai, toh ye condition false hogi
-        --    Isliye koi bhi angel post nahi dikhegi
-        (
-          EXISTS (SELECT 1 FROM angel_network WHERE author_id = ?)
-          AND EXISTS (SELECT 1 FROM angel_network WHERE author_id = sp.author_id)
-        )
-      )
-    ORDER BY
-      CASE WHEN spp.id IS NOT NULL THEN 1 ELSE 0 END DESC,
-      sp.created_at DESC
-    LIMIT ? OFFSET ?
-  `;
+
+      -- ✅ ORDER BY: sirf current company ka pin upar aayega
+      ORDER BY
+        CASE WHEN spp.id IS NOT NULL THEN 1 ELSE 0 END DESC,
+        sp.created_at DESC
+      LIMIT ? OFFSET ?
+    `;
 
     queryParams = [
-      user_id, // CASE: own check
-      user_id, // CASE: fellow_shareholder check
-      user_id, // likes user_id
-      user_type, // likes user_type
-      user_id, // follows follower_id
-      user_type, // follows follower_type
-      user_id, // pin check (pinned_by_id)
-      user_type, // pin check (pinned_by_type)
-      user_id, // WHERE: own posts author_id
-      user_type, // WHERE: own posts author_type (company)
-      user_id, // WHERE: fellow shareholder (company_id)
-      user_id, // WHERE: angel network check (current company is angel member)
-      limit, // LIMIT
-      offset, // OFFSET
+      user_id,
+      user_id, // sender_category (2)
+      user_id,
+      user_type, // likes
+      user_id,
+      user_type, // follows
+      user_id,
+      user_type, // pin check (pinned_by_id, pinned_by_type)
+      user_id,
+      user_type, // own posts
+      user_id, // fellow shareholder
+      limit,
+      offset,
     ];
   } else {
     return res
