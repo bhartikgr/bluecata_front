@@ -219,7 +219,8 @@ exports.getMessages = async (req, res) => {
           WHEN m.sender_type = 'company' THEN 
             (SELECT company_name FROM company WHERE id = m.sender_id)
           ELSE (SELECT name FROM admin WHERE id = m.sender_id)
-        END as sender_name
+        END as sender_name,
+        0 as is_starred
       FROM chat_messages m
       WHERE m.conversation_id = ? AND m.is_deleted = 0
       ORDER BY m.created_at DESC
@@ -528,4 +529,373 @@ exports.markMessageRead = async (req, res) => {
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
+};
+
+// =============================================================================
+// STAR / UNSTAR MESSAGE
+// POST /api/user/chatmessage/star
+// ✅ Uses chat_message_stars table — per-user star
+//    User A star kare → sirf User A ko dikhega
+// =============================================================================
+exports.starMessage = (req, res) => {
+  const { message_id, conversation_id, starred_by_id, starred_by_type } =
+    req.body;
+
+  if (!message_id || !conversation_id || !starred_by_id || !starred_by_type) {
+    return res
+      .status(400)
+      .json({ success: false, message: "All fields required" });
+  }
+
+  // Check already starred
+  db.query(
+    `SELECT id FROM chat_message_stars WHERE message_id = ? AND starred_by_id = ? AND starred_by_type = ?`,
+    [message_id, starred_by_id, starred_by_type],
+    (err, existing) => {
+      if (err)
+        return res.status(500).json({ success: false, message: err.message });
+
+      if (existing && existing.length > 0) {
+        // ── Unstar ──
+        db.query(
+          `DELETE FROM chat_message_stars WHERE message_id = ? AND starred_by_id = ? AND starred_by_type = ?`,
+          [message_id, starred_by_id, starred_by_type],
+          (err2) => {
+            if (err2)
+              return res
+                .status(500)
+                .json({ success: false, message: err2.message });
+            return res
+              .status(200)
+              .json({ success: true, action: "unstarred", is_starred: false });
+          },
+        );
+      } else {
+        // ── Star ──
+        db.query(
+          `INSERT INTO chat_message_stars (message_id, conversation_id, starred_by_id, starred_by_type, created_at)
+           VALUES (?, ?, ?, ?, NOW())`,
+          [message_id, conversation_id, starred_by_id, starred_by_type],
+          (err2) => {
+            if (err2)
+              return res
+                .status(500)
+                .json({ success: false, message: err2.message });
+            return res
+              .status(200)
+              .json({ success: true, action: "starred", is_starred: true });
+          },
+        );
+      }
+    },
+  );
+};
+
+// =============================================================================
+// GET STARRED MESSAGES
+// POST /api/user/chatmessage/starred
+// Returns all starred messages for a user in a conversation
+// =============================================================================
+exports.getStarredMessages = (req, res) => {
+  const { conversation_id, starred_by_id, starred_by_type } = req.body;
+
+  if (!conversation_id || !starred_by_id || !starred_by_type) {
+    return res
+      .status(400)
+      .json({ success: false, message: "All fields required" });
+  }
+
+  db.query(
+    `SELECT m.*,
+      cms.created_at as starred_at,
+      CASE
+        WHEN m.sender_type = 'investor' THEN
+          (SELECT CONCAT(first_name, ' ', last_name) FROM investor_information WHERE id = m.sender_id)
+        WHEN m.sender_type = 'company' THEN
+          (SELECT company_name FROM company WHERE id = m.sender_id)
+        ELSE (SELECT name FROM admin WHERE id = m.sender_id)
+      END as sender_name,
+      1 as is_starred
+     FROM chat_message_stars cms
+     INNER JOIN chat_messages m ON m.id = cms.message_id
+     WHERE cms.conversation_id = ?
+       AND cms.starred_by_id = ?
+       AND cms.starred_by_type = ?
+       AND m.is_deleted = 0
+     ORDER BY m.created_at ASC`,
+    [conversation_id, starred_by_id, starred_by_type],
+    (err, results) => {
+      if (err)
+        return res.status(500).json({ success: false, message: err.message });
+      return res.status(200).json({ success: true, messages: results });
+    },
+  );
+};
+
+// =============================================================================
+// STAR / UNSTAR CONVERSATION
+// POST /api/user/chatmessage/star-conversation
+// ✅ Per-user star — sirf us user ko dikhega jisne star kiya
+// =============================================================================
+exports.starConversation = (req, res) => {
+  const { conversation_id, starred_by_id, starred_by_type } = req.body;
+
+  if (!conversation_id || !starred_by_id || !starred_by_type) {
+    return res
+      .status(400)
+      .json({ success: false, message: "All fields required" });
+  }
+
+  db.query(
+    `SELECT id FROM chat_conversation_stars WHERE conversation_id = ? AND starred_by_id = ? AND starred_by_type = ?`,
+    [conversation_id, starred_by_id, starred_by_type],
+    (err, existing) => {
+      if (err)
+        return res.status(500).json({ success: false, message: err.message });
+
+      if (existing && existing.length > 0) {
+        // Unstar
+        db.query(
+          `DELETE FROM chat_conversation_stars WHERE conversation_id = ? AND starred_by_id = ? AND starred_by_type = ?`,
+          [conversation_id, starred_by_id, starred_by_type],
+          (err2) => {
+            if (err2)
+              return res
+                .status(500)
+                .json({ success: false, message: err2.message });
+            return res.status(200).json({ success: true, action: "unstarred" });
+          },
+        );
+      } else {
+        // Star
+        db.query(
+          `INSERT INTO chat_conversation_stars (conversation_id, starred_by_id, starred_by_type, created_at) VALUES (?, ?, ?, NOW())`,
+          [conversation_id, starred_by_id, starred_by_type],
+          (err2) => {
+            if (err2)
+              return res
+                .status(500)
+                .json({ success: false, message: err2.message });
+            return res.status(200).json({ success: true, action: "starred" });
+          },
+        );
+      }
+    },
+  );
+};
+
+// =============================================================================
+// GET STARRED CONVERSATION IDs
+// POST /api/user/chatmessage/starred-conversations
+// =============================================================================
+exports.getStarredConversations = (req, res) => {
+  const { starred_by_id, starred_by_type } = req.body;
+
+  if (!starred_by_id || !starred_by_type) {
+    return res.status(400).json({
+      success: false,
+      message: "starred_by_id and starred_by_type required",
+    });
+  }
+
+  db.query(
+    `SELECT conversation_id FROM chat_conversation_stars WHERE starred_by_id = ? AND starred_by_type = ?`,
+    [starred_by_id, starred_by_type],
+    (err, results) => {
+      if (err)
+        return res.status(500).json({ success: false, message: err.message });
+      return res.status(200).json({
+        success: true,
+        starred_ids: results.map((r) => r.conversation_id),
+      });
+    },
+  );
+};
+
+//getInvestorCrmData
+exports.getInvestorCrmData = (req, res) => {
+  const { investor_id, company_id } = req.body;
+
+  if (!investor_id || !company_id) {
+    return res.status(400).json({
+      success: false,
+      message: "investor_id and company_id required",
+    });
+  }
+
+  db.query(
+    `SELECT cai.id as crm_id, cai.company_id, ii.id as investor_id, ii.email
+     FROM investor_information ii
+     LEFT JOIN company_add_investors cai
+       ON cai.email = ii.email AND cai.company_id = ?
+     WHERE ii.id = ?`,
+    [company_id, investor_id],
+    (err, results) => {
+      if (err)
+        return res.status(500).json({ success: false, message: err.message });
+
+      // ✅ in_crm = true agar company_add_investors mein record hai (crm_id not null)
+      const isInCrm = results.length > 0 && results[0].crm_id !== null;
+
+      return res.status(200).json({
+        success: true,
+        in_crm: isInCrm,
+      });
+    },
+  );
+};
+exports.addInvestorToCrm = (req, res) => {
+  const { investor_id, company_id } = req.body;
+
+  if (!investor_id || !company_id) {
+    return res.status(400).json({
+      success: false,
+      message: "investor_id and company_id required",
+    });
+  }
+
+  db.query(
+    `SELECT cai.id as crm_id, cai.company_id, ii.id as investor_id, ii.email
+     FROM investor_information ii
+     LEFT JOIN company_add_investors cai
+       ON cai.email = ii.email AND cai.company_id = ?
+     WHERE ii.id = ?`,
+    [company_id, investor_id],
+    (err, results) => {
+      if (err)
+        return res.status(500).json({ success: false, message: err.message });
+
+      // ✅ in_crm = true agar company_add_investors mein record hai (crm_id not null)
+      const isInCrm = results.length > 0 && results[0].crm_id !== null;
+
+      return res.status(200).json({
+        success: true,
+        in_crm: isInCrm,
+      });
+    },
+  );
+};
+exports.addInvestorToCrm = (req, res) => {
+  const { investor_id, company_id } = req.body;
+
+  if (!investor_id || !company_id) {
+    return res
+      .status(400)
+      .json({ success: false, message: "investor_id and company_id required" });
+  }
+
+  // Step 1: investor_information se details fetch karo
+  db.query(
+    `SELECT id, email, first_name, last_name FROM investor_information WHERE id = ?`,
+    [investor_id],
+    (err, invResults) => {
+      if (err)
+        return res.status(500).json({ success: false, message: err.message });
+      if (!invResults || invResults.length === 0) {
+        return res
+          .status(404)
+          .json({ success: false, message: "Investor not found" });
+      }
+
+      const investor = invResults[0];
+
+      // Step 2: Check already in CRM
+      db.query(
+        `SELECT id FROM company_add_investors WHERE email = ? AND company_id = ?`,
+        [investor.email, company_id],
+        (err2, existing) => {
+          if (err2)
+            return res
+              .status(500)
+              .json({ success: false, message: err2.message });
+
+          if (existing && existing.length > 0) {
+            // Already in CRM
+            return res
+              .status(200)
+              .json({ success: true, in_crm: true, message: "Already in CRM" });
+          }
+
+          // Step 3: Insert into company_add_investors
+          db.query(
+            `INSERT INTO company_add_investors (company_id, email, first_name, last_name, created_at)
+             VALUES (?, ?, ?, ?, NOW())`,
+            [
+              company_id,
+              investor.email,
+              investor.first_name,
+              investor.last_name,
+            ],
+            (err3) => {
+              if (err3)
+                return res
+                  .status(500)
+                  .json({ success: false, message: err3.message });
+              return res.status(200).json({
+                success: true,
+                in_crm: true,
+                message: "Investor added to CRM",
+              });
+            },
+          );
+        },
+      );
+    },
+  );
+};
+exports.getInvestorData = async (req, res) => {
+  const id = req.body.investor_id;
+
+  db.query(
+    `SELECT * from investor_information where id = ?`,
+    [id],
+    async (err, row) => {
+      if (err) {
+        return res
+          .status(500)
+          .json({ message: "Database query error", error: err });
+      }
+
+      // Add company logo URL to each row if company_logo exists
+      const resultsWithLogo = row.map((item) => {
+        if (item.company_logo) {
+          const pathname = `upload/docs/inv_${item.id}`;
+          const fullPath = `https://capavate.com/api/${pathname}/${item.profile_picture}`;
+          return { ...item, company_logo_url: fullPath };
+        }
+        return { ...item, company_logo_url: null };
+      });
+
+      res.status(200).json({
+        message: "",
+        results: resultsWithLogo,
+      });
+    },
+  );
+};
+exports.getCompanyDetails = async (req, res) => {
+  const id = req.body.company_id;
+
+  db.query(`SELECT * from company where id = ?`, [id], async (err, row) => {
+    if (err) {
+      return res
+        .status(500)
+        .json({ message: "Database query error", error: err });
+    }
+
+    // Add company logo URL to each row if company_logo exists
+    const resultsWithLogo = row.map((item) => {
+      if (item.company_logo) {
+        const pathname = `upload/docs/doc_${item.id}`;
+        const fullPath = `https://capavate.com/api/${pathname}/company_profile/${item.company_logo}`;
+        return { ...item, company_logo_url: fullPath };
+      }
+      return { ...item, company_logo_url: null };
+    });
+
+    res.status(200).json({
+      message: "",
+      results: resultsWithLogo,
+    });
+  });
 };

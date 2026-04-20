@@ -1798,6 +1798,60 @@ exports.checkInvestorRecordround = (req, res) => {
     });
   });
 };
+exports.getinvestorDataProfile = (req, res) => {
+  const { id } = req.body;
+
+  // ✅ Check if id is provided
+  if (!id) {
+    return res.status(400).json({
+      success: false,
+      message: "Investor ID is required",
+    });
+  }
+
+  // ✅ Fixed query - removed extra parameter
+  const query = `SELECT *, type_of_investor as investorType FROM investor_information WHERE id = ?`;
+
+  db.query(query, [id], (err, rows) => {
+    if (err) {
+      console.error("Database query error:", err);
+      return res.status(500).json({
+        success: false,
+        message: "Database query error",
+        error: err.message,
+      });
+    }
+
+    // ✅ Check if investor exists
+    if (rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Investor not found",
+      });
+    }
+
+    // Process results to add profile picture URL
+    const processedResults = rows.map((row) => {
+      // Create a copy of the row
+      const processedRow = { ...row };
+
+      // Add profile picture URL if profile_picture exists
+      if (row.profile_picture) {
+        processedRow.profile_picture_url = `${process.env.API_BASE_URL || "https://capavate.com/api"}/upload/investor/inv_${row.id}/${row.profile_picture}`;
+      } else {
+        processedRow.profile_picture_url = null;
+      }
+
+      return processedRow;
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "Success",
+      results: processedResults, // ✅ Return single object instead of array
+    });
+  });
+};
 exports.checkInvestorRecord = (req, res) => {
   const { company_id, id } = req.body;
 
@@ -5721,13 +5775,13 @@ exports.joinAngelNetwork = async (req, res) => {
 };
 
 exports.checkmembership = async (req, res) => {
-  const { email } = req.body;
+  const { email, investor_id } = req.body;
 
   try {
     // ── STEP 1: CHECK IF EMAIL ALREADY EXISTS ──
-    const checkQuery = `SELECT *  FROM angel_network WHERE email = ? LIMIT 1`;
+    const checkQuery = `SELECT * FROM sharerecordround LEFT JOIN roundrecord ON roundrecord.id = sharerecordround.roundrecord_id WHERE sharerecordround.investor_id = ? AND roundrecord.roundStatus = 'ACTIVE' ORDER BY sharerecordround.id DESC LIMIT 1`;
 
-    db.query(checkQuery, [email], (checkErr, checkResult) => {
+    db.query(checkQuery, [investor_id], (checkErr, checkResult) => {
       if (checkErr) {
         return res.status(500).json({
           status: "2",

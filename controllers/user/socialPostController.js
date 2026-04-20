@@ -281,165 +281,178 @@ exports.getPosts = (req, res) => {
 
   if (user_type === "investor") {
     query = `
-      SELECT DISTINCT sp.*,
-        CASE WHEN spl.id IS NOT NULL THEN 1 ELSE 0 END as is_liked,
-        CASE
-          WHEN sp.author_type = 'company' THEN c.company_name
-          ELSE TRIM(CONCAT(COALESCE(ii.first_name,''), ' ', COALESCE(ii.last_name,'')))
-        END as author_name,
-        CASE
-          WHEN sp.author_type = 'company' THEN c.company_logo
-          ELSE ii.profile_picture
-        END as author_raw_image,
-        COALESCE(sp.likes_count, 0) as likes_count,
-        COALESCE(sp.comments_count, 0) as comments_count,
-        CASE WHEN sf.id IS NOT NULL THEN 1 ELSE 0 END as is_following,
-
-        -- ✅ is_pinned: sirf current investor ne pin kiya ho tab 1
-        CASE WHEN spp.id IS NOT NULL THEN 1 ELSE 0 END as is_pinned,
-
-        CASE
-          WHEN sp.author_id = ? AND sp.author_type = 'investor' THEN 'own'
-          WHEN sp.author_type = 'company'
-            AND sp.author_id IN (SELECT DISTINCT company_id FROM sharerecordround WHERE investor_id = ?) THEN 'portfolio_company'
-          WHEN sp.author_type = 'investor'
-            AND sp.author_id IN (
-              SELECT DISTINCT srr2.investor_id FROM sharerecordround srr1
-              JOIN sharerecordround srr2 ON srr1.company_id = srr2.company_id
-              WHERE srr1.investor_id = ? AND srr2.investor_id != srr1.investor_id
-            ) THEN 'fellow_shareholder'
-          WHEN EXISTS (SELECT 1 FROM angel_network w2 WHERE w2.author_id = sp.author_id) THEN 'angel_network'
-          ELSE 'network'
-        END as sender_category,
-
-        (SELECT w.city FROM angel_network w WHERE w.author_id = sp.author_id AND w.type = 'Investor' LIMIT 1) as author_region,
-        (
-          SELECT c2.company_name FROM sharerecordround srr1
-          JOIN sharerecordround srr2 ON srr1.company_id = srr2.company_id
-          JOIN company c2 ON c2.id = srr1.company_id
-          WHERE srr1.investor_id = ? AND srr2.investor_id = sp.author_id LIMIT 1
-        ) as shared_company_name
-
-      FROM social_posts sp
-      LEFT JOIN social_post_likes spl ON spl.post_id = sp.id AND spl.user_id = ? AND spl.user_type = ?
-      LEFT JOIN company c ON sp.author_type = 'company' AND c.id = sp.author_id
-      LEFT JOIN investor_information ii ON sp.author_type = 'investor' AND ii.id = sp.author_id
-      LEFT JOIN follows sf ON sf.follower_id = ? AND sf.follower_type = ?
-        AND sf.following_id = sp.author_id AND sf.following_type = sp.author_type
-
-      -- ✅ Pin check: current investor ke liye
-      LEFT JOIN social_post_pins spp ON spp.post_id = sp.id
-        AND spp.pinned_by_id = ? AND spp.pinned_by_type = ?
-
-      WHERE sp.is_deleted = 0
-        AND (
-          (sp.author_id = ? AND sp.author_type = ?)
-          OR (EXISTS (SELECT 1 FROM angel_network WHERE author_id = ?) AND EXISTS (SELECT 1 FROM angel_network w WHERE w.author_id = sp.author_id))
-          OR (sp.author_type = 'company' AND EXISTS (SELECT 1 FROM sharerecordround WHERE investor_id = ? AND company_id = sp.author_id))
-          OR (sp.author_type = 'investor' AND sp.author_id != ? AND EXISTS (
-            SELECT 1 FROM sharerecordround srr1
-            INNER JOIN sharerecordround srr2 ON srr1.company_id = srr2.company_id
-            WHERE srr1.investor_id = ? AND srr2.investor_id = sp.author_id
-          ))
-          OR (EXISTS (SELECT 1 FROM angel_network w WHERE w.author_id = sp.author_id))
-        )
-
-      -- ✅ ORDER BY: sirf current user ka pin upar aayega
-      ORDER BY
-        CASE WHEN spp.id IS NOT NULL THEN 1 ELSE 0 END DESC,
-        sp.created_at DESC
-      LIMIT ? OFFSET ?
-    `;
+    SELECT DISTINCT sp.*,
+      CASE WHEN spl.id IS NOT NULL THEN 1 ELSE 0 END as is_liked,
+      CASE
+        WHEN sp.author_type = 'company' THEN c.company_name
+        ELSE TRIM(CONCAT(COALESCE(ii.first_name,''), ' ', COALESCE(ii.last_name,'')))
+      END as author_name,
+      CASE
+        WHEN sp.author_type = 'company' THEN c.company_logo
+        ELSE ii.profile_picture
+      END as author_raw_image,
+      COALESCE(sp.likes_count, 0) as likes_count,
+      COALESCE(sp.comments_count, 0) as comments_count,
+      CASE WHEN sf.id IS NOT NULL THEN 1 ELSE 0 END as is_following,
+      CASE WHEN spp.id IS NOT NULL THEN 1 ELSE 0 END as is_pinned,
+      CASE
+        WHEN sp.author_id = ? AND sp.author_type = 'investor' THEN 'own'
+        WHEN sp.author_type = 'company'
+          AND sp.author_id IN (SELECT DISTINCT company_id FROM sharerecordround WHERE investor_id = ?) THEN 'portfolio_company'
+        WHEN sp.author_type = 'investor'
+          AND sp.author_id IN (
+            SELECT DISTINCT srr2.investor_id FROM sharerecordround srr1
+            JOIN sharerecordround srr2 ON srr1.company_id = srr2.company_id
+            WHERE srr1.investor_id = ? AND srr2.investor_id != srr1.investor_id
+          ) THEN 'fellow_shareholder'
+        WHEN EXISTS (SELECT 1 FROM angel_network WHERE author_id = sp.author_id) THEN 'angel_network'
+        ELSE 'network'
+      END as sender_category,
+      (SELECT w.city FROM angel_network w WHERE w.author_id = sp.author_id AND w.type = 'Investor' LIMIT 1) as author_region,
+      (
+        SELECT c2.company_name FROM sharerecordround srr1
+        JOIN sharerecordround srr2 ON srr1.company_id = srr2.company_id
+        JOIN company c2 ON c2.id = srr1.company_id
+        WHERE srr1.investor_id = ? AND srr2.investor_id = sp.author_id LIMIT 1
+      ) as shared_company_name
+    FROM social_posts sp
+    LEFT JOIN social_post_likes spl ON spl.post_id = sp.id AND spl.user_id = ? AND spl.user_type = ?
+    LEFT JOIN company c ON sp.author_type = 'company' AND c.id = sp.author_id
+    LEFT JOIN investor_information ii ON sp.author_type = 'investor' AND ii.id = sp.author_id
+    LEFT JOIN follows sf ON sf.follower_id = ? AND sf.follower_type = ?
+      AND sf.following_id = sp.author_id AND sf.following_type = sp.author_type
+    LEFT JOIN social_post_pins spp ON spp.post_id = sp.id
+      AND spp.pinned_by_id = ? AND spp.pinned_by_type = ?
+    WHERE sp.is_deleted = 0
+      AND (
+        -- 1. Own posts
+        (sp.author_id = ? AND sp.author_type = ?)
+        
+        OR
+        
+        -- 2. PUBLIC: visibility = 'network' → Everyone on Capavate platform
+        (sp.visibility = 'network')
+        
+        OR
+        
+        -- 3. Portfolio company (investor invested in company)
+        (sp.author_type = 'company' AND EXISTS (SELECT 1 FROM sharerecordround WHERE investor_id = ? AND company_id = sp.author_id))
+        
+        OR
+        
+        -- 4. Fellow shareholder (same company, same round - regardless of angel status)
+        --    ✅ A, B, C ek hi company mein same round shared → sabki ek dusre ki post dikhegi
+        (sp.author_type = 'investor' AND sp.author_id != ? AND EXISTS (
+          SELECT 1 FROM sharerecordround srr1
+          INNER JOIN sharerecordround srr2 ON srr1.company_id = srr2.company_id
+          WHERE srr1.investor_id = ? AND srr2.investor_id = sp.author_id
+        ))
+        
+        OR
+        
+        -- 5. Angel network (ONLY if current investor is angel member)
+        (EXISTS (SELECT 1 FROM angel_network WHERE author_id = ?) AND EXISTS (SELECT 1 FROM angel_network WHERE author_id = sp.author_id))
+      )
+    ORDER BY
+      CASE WHEN spp.id IS NOT NULL THEN 1 ELSE 0 END DESC,
+      sp.created_at DESC
+    LIMIT ? OFFSET ?
+  `;
 
     queryParams = [
-      user_id,
-      user_id,
-      user_id, // sender_category (3)
-      user_id, // shared_company_name
-      user_id,
-      user_type, // likes
-      user_id,
-      user_type, // follows
-      user_id,
-      user_type, // pin check (pinned_by_id, pinned_by_type)
-      user_id,
-      user_type, // own posts
-      user_id, // angel network check
-      user_id, // portfolio company
-      user_id,
-      user_id, // fellow shareholder
-      limit,
-      offset,
+      user_id, // 1: CASE own
+      user_id, // 2: CASE portfolio_company
+      user_id, // 3: CASE fellow_shareholder
+      user_id, // 4: shared_company_name
+      user_id, // 5: likes user_id
+      user_type, // 6: likes user_type
+      user_id, // 7: follows follower_id
+      user_type, // 8: follows follower_type
+      user_id, // 9: pins pinned_by_id
+      user_type, // 10: pins pinned_by_type
+      user_id, // 11: WHERE own posts author_id
+      user_type, // 12: WHERE own posts author_type
+      user_id, // 13: WHERE portfolio company check
+      user_id, // 14: WHERE fellow shareholder outer
+      user_id, // 15: WHERE fellow shareholder inner
+      user_id, // 16: WHERE angel network check
+      limit, // 17: LIMIT
+      offset, // 18: OFFSET
     ];
   } else if (user_type === "company") {
     query = `
-      SELECT DISTINCT sp.*,
-        CASE WHEN spl.id IS NOT NULL THEN 1 ELSE 0 END as is_liked,
-        CASE
-          WHEN sp.author_type = 'company' THEN c.company_name
-          ELSE TRIM(CONCAT(COALESCE(ii.first_name,''), ' ', COALESCE(ii.last_name,'')))
-        END as author_name,
-        CASE
-          WHEN sp.author_type = 'company' THEN c.company_logo
-          ELSE ii.profile_picture
-        END as author_raw_image,
-        COALESCE(sp.likes_count, 0) as likes_count,
-        COALESCE(sp.comments_count, 0) as comments_count,
-        CASE WHEN sf.id IS NOT NULL THEN 1 ELSE 0 END as is_following,
-
-        -- ✅ is_pinned: sirf current company ne pin kiya ho tab 1
-        CASE WHEN spp.id IS NOT NULL THEN 1 ELSE 0 END as is_pinned,
-
-        CASE
-          WHEN sp.author_id = ? AND sp.author_type = 'company' THEN 'own'
-          WHEN sp.author_type = 'investor'
-            AND sp.author_id IN (SELECT DISTINCT investor_id FROM sharerecordround WHERE company_id = ? AND investor_id IS NOT NULL) THEN 'fellow_shareholder'
-          WHEN EXISTS (SELECT 1 FROM angel_network w WHERE w.author_id = sp.author_id) THEN 'angel_network'
-          ELSE 'network'
-        END as sender_category,
-
-        (SELECT w.city FROM angel_network w WHERE w.author_id = sp.author_id AND w.type = 'Investor' LIMIT 1) as author_region,
-        NULL as shared_company_name
-
-      FROM social_posts sp
-      LEFT JOIN social_post_likes spl ON spl.post_id = sp.id AND spl.user_id = ? AND spl.user_type = ?
-      LEFT JOIN company c ON sp.author_type = 'company' AND c.id = sp.author_id
-      LEFT JOIN investor_information ii ON sp.author_type = 'investor' AND ii.id = sp.author_id
-      LEFT JOIN follows sf ON sf.follower_id = ? AND sf.follower_type = ?
-        AND sf.following_id = sp.author_id AND sf.following_type = sp.author_type
-
-      -- ✅ Pin check: current company ke liye
-      LEFT JOIN social_post_pins spp ON spp.post_id = sp.id
-        AND spp.pinned_by_id = ? AND spp.pinned_by_type = ?
-
-      WHERE sp.is_deleted = 0
-        AND (
-          (sp.author_id = ? AND sp.author_type = ?)
-          OR (sp.author_type = 'investor' AND EXISTS (SELECT 1 FROM sharerecordround WHERE company_id = ? AND investor_id = sp.author_id))
-          OR (EXISTS (SELECT 1 FROM angel_network w WHERE w.author_id = sp.author_id))
-        )
-
-      -- ✅ ORDER BY: sirf current company ka pin upar aayega
-      ORDER BY
-        CASE WHEN spp.id IS NOT NULL THEN 1 ELSE 0 END DESC,
-        sp.created_at DESC
-      LIMIT ? OFFSET ?
-    `;
+    SELECT DISTINCT sp.*,
+      CASE WHEN spl.id IS NOT NULL THEN 1 ELSE 0 END as is_liked,
+      CASE
+        WHEN sp.author_type = 'company' THEN c.company_name
+        ELSE TRIM(CONCAT(COALESCE(ii.first_name,''), ' ', COALESCE(ii.last_name,'')))
+      END as author_name,
+      CASE
+        WHEN sp.author_type = 'company' THEN c.company_logo
+        ELSE ii.profile_picture
+      END as author_raw_image,
+      COALESCE(sp.likes_count, 0) as likes_count,
+      COALESCE(sp.comments_count, 0) as comments_count,
+      CASE WHEN sf.id IS NOT NULL THEN 1 ELSE 0 END as is_following,
+      CASE WHEN spp.id IS NOT NULL THEN 1 ELSE 0 END as is_pinned,
+      CASE
+        WHEN sp.author_id = ? AND sp.author_type = 'company' THEN 'own'
+        WHEN sp.author_type = 'investor'
+          AND sp.author_id IN (SELECT DISTINCT investor_id FROM sharerecordround WHERE company_id = ? AND investor_id IS NOT NULL) THEN 'fellow_shareholder'
+        WHEN EXISTS (SELECT 1 FROM angel_network WHERE author_id = sp.author_id) THEN 'angel_network'
+        ELSE 'network'
+      END as sender_category,
+      (SELECT w.city FROM angel_network w WHERE w.author_id = sp.author_id AND w.type = 'Investor' LIMIT 1) as author_region,
+      NULL as shared_company_name
+    FROM social_posts sp
+    LEFT JOIN social_post_likes spl ON spl.post_id = sp.id AND spl.user_id = ? AND spl.user_type = ?
+    LEFT JOIN company c ON sp.author_type = 'company' AND c.id = sp.author_id
+    LEFT JOIN investor_information ii ON sp.author_type = 'investor' AND ii.id = sp.author_id
+    LEFT JOIN follows sf ON sf.follower_id = ? AND sf.follower_type = ?
+      AND sf.following_id = sp.author_id AND sf.following_type = sp.author_type
+    LEFT JOIN social_post_pins spp ON spp.post_id = sp.id
+      AND spp.pinned_by_id = ? AND spp.pinned_by_type = ?
+    WHERE sp.is_deleted = 0
+      AND (
+        -- 1. Own posts
+        (sp.author_id = ? AND sp.author_type = ?)
+        
+        OR
+        
+        -- 2. ✅ PUBLIC: visibility = 'network' → Everyone on Capavate platform
+        (sp.visibility = 'network')
+        
+        OR
+        
+        -- 3. Investors who invested in this company
+        (sp.author_type = 'investor' AND EXISTS (SELECT 1 FROM sharerecordround WHERE company_id = ? AND investor_id = sp.author_id))
+        
+        OR
+        
+        -- 4. Angel network (ONLY if company is angel member)
+        (EXISTS (SELECT 1 FROM angel_network WHERE author_id = ?) AND EXISTS (SELECT 1 FROM angel_network WHERE author_id = sp.author_id))
+      )
+    ORDER BY
+      CASE WHEN spp.id IS NOT NULL THEN 1 ELSE 0 END DESC,
+      sp.created_at DESC
+    LIMIT ? OFFSET ?
+  `;
 
     queryParams = [
-      user_id,
-      user_id, // sender_category (2)
-      user_id,
-      user_type, // likes
-      user_id,
-      user_type, // follows
-      user_id,
-      user_type, // pin check (pinned_by_id, pinned_by_type)
-      user_id,
-      user_type, // own posts
-      user_id, // fellow shareholder
-      limit,
-      offset,
+      user_id, // 1: CASE own
+      user_id, // 2: CASE fellow_shareholder
+      user_id, // 3: likes user_id
+      user_type, // 4: likes user_type
+      user_id, // 5: follows follower_id
+      user_type, // 6: follows follower_type
+      user_id, // 7: pins pinned_by_id
+      user_type, // 8: pins pinned_by_type
+      user_id, // 9: WHERE own posts author_id
+      user_type, // 10: WHERE own posts author_type
+      user_id, // 11: WHERE sharerecordround check
+      user_id, // 12: WHERE angel network check
+      limit, // 13: LIMIT
+      offset, // 14: OFFSET
     ];
   } else {
     return res
@@ -493,7 +506,7 @@ exports.getPosts = (req, res) => {
           : [],
         liked: p.is_liked === 1,
         followed: p.is_following === 1,
-        is_pinned: p.is_pinned === 1, // ✅ per-user pin
+        is_pinned: p.is_pinned === 1,
         likes: parseInt(p.likes_count) || 0,
         comments: parseInt(p.comments_count) || 0,
         sender_category: p.sender_category || "network",
@@ -1189,6 +1202,29 @@ exports.pinPost = (req, res) => {
           },
         );
       }
+    },
+  );
+};
+
+exports.getCompanyLocation = (req, res) => {
+  const { company_id } = req.body;
+  if (!company_id)
+    return res
+      .status(400)
+      .json({ success: false, message: "company_id required" });
+
+  db.query(
+    `SELECT id, company_name, company_city, company_state, company_country
+     FROM company WHERE id = ?`,
+    [company_id],
+    (err, results) => {
+      if (err)
+        return res.status(500).json({ success: false, message: err.message });
+      if (!results || results.length === 0)
+        return res
+          .status(404)
+          .json({ success: false, message: "Company not found" });
+      return res.status(200).json({ success: true, company: results[0] });
     },
   );
 };
