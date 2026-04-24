@@ -495,6 +495,7 @@ function formatDateToBOC(dateStr) {
 }
 
 function convertCurrencyForRounds() {
+  console.log("🚀🚀🚀 NEW CODE WITH ssssConversion IS RUNNING 🚀🚀🚀");
   const fetchQuery = `
     SELECT id, roundsize, currency, dateroundclosed
     FROM roundrecord
@@ -584,6 +585,10 @@ function convertCurrencyForRounds() {
 
 // 3. Cron Job (Runs every midnight)
 cron.schedule("0 0 * * *", () => {
-  //  convertCurrencyForRounds();
+  console.log(
+    "🕐 TEST CRON - Currency conversion starting at:",
+    new Date().toISOString(),
+  );
+  convertCurrencyForRounds();
 });
 //Round Rate Convert For Investor
