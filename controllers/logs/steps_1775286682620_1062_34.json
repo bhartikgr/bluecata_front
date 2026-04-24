@@ -1,0 +1,343 @@
+{
+  "timestamp": "2026-04-04T07:11:22.621Z",
+  "step": "saveCapTableData_START",
+  "data": {
+    "checkround": "unprice",
+    "roundId": 1062,
+    "companyId": 34,
+    "preMoneyTotalShares": 111111,
+    "postMoneyTotalShares": 111111,
+    "preMoneyValuation": 45000,
+    "postMoneyValuation": 165000,
+    "convert": false,
+    "hasPreTable": true,
+    "hasPostTable": true,
+    "preTableKeys": [
+      "total_shares",
+      "pre_money_valuation",
+      "currency",
+      "share_price",
+      "pending_instruments",
+      "founders",
+      "option_pool",
+      "previous_investors",
+      "converted",
+      "items"
+    ],
+    "postTableKeys": [
+      "total_shares",
+      "post_money_valuation",
+      "currency",
+      "share_price",
+      "pending_instruments",
+      "founders",
+      "option_pool",
+      "previous_investors",
+      "investors",
+      "converted_investors",
+      "warrants",
+      "items"
+    ]
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.627Z",
+  "step": "getConnection_START",
+  "data": {},
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.629Z",
+  "step": "getConnection_SUCCESS",
+  "data": {
+    "connectionThreadId": 165
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.632Z",
+  "step": "beginTransaction_SUCCESS",
+  "data": {},
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.632Z",
+  "step": "delete_START",
+  "data": {
+    "tables": [
+      "round_founders",
+      "round_investors",
+      "round_option_pools",
+      "round_conversions",
+      "round_cap_table_items"
+    ]
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.663Z",
+  "step": "delete_SUCCESS_round_founders",
+  "data": {
+    "roundId": 1062
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.666Z",
+  "step": "delete_SUCCESS_round_investors",
+  "data": {
+    "roundId": 1062
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.667Z",
+  "step": "delete_SUCCESS_round_option_pools",
+  "data": {
+    "roundId": 1062
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.668Z",
+  "step": "delete_SUCCESS_round_conversions",
+  "data": {
+    "roundId": 1062
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.670Z",
+  "step": "delete_SUCCESS_round_cap_table_items",
+  "data": {
+    "roundId": 1062
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.671Z",
+  "step": "delete_COMPLETE",
+  "data": {},
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.671Z",
+  "step": "preMoney_START",
+  "data": {},
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.672Z",
+  "step": "preFounders_START",
+  "data": {
+    "count": 1
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.673Z",
+  "step": "preFounder_0_SUCCESS",
+  "data": {
+    "founderName": "s s"
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.675Z",
+  "step": "preOptionPool_START",
+  "data": {
+    "optionPool": {
+      "shares": 11111,
+      "existing_shares": 0,
+      "new_shares": 11111,
+      "total": 11111,
+      "percentage": "10.00%",
+      "value": "4499.96",
+      "shareClassType": "Option Pool",
+      "instrumentType": "Options",
+      "roundName": "Option Pool",
+      "is_option_pool": true
+    }
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.676Z",
+  "step": "preOptionPool_SUCCESS",
+  "data": {},
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.677Z",
+  "step": "prePending_START",
+  "data": {
+    "count": 0
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.678Z",
+  "step": "preWarrants_START",
+  "data": {
+    "count": 0
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.679Z",
+  "step": "preMoney_COMPLETE",
+  "data": {},
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.681Z",
+  "step": "postMoney_START",
+  "data": {},
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.682Z",
+  "step": "postFounders_START",
+  "data": {
+    "count": 1
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.683Z",
+  "step": "postFounder_0_SUCCESS",
+  "data": {
+    "founderName": "s s"
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.683Z",
+  "step": "postOptionPool_START",
+  "data": {},
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.684Z",
+  "step": "postOptionPool_SUCCESS",
+  "data": {},
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.685Z",
+  "step": "postNewInvestors_START",
+  "data": {
+    "count": 0
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.686Z",
+  "step": "postPending_START",
+  "data": {
+    "count": 1
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.688Z",
+  "step": "postPending_0_SUCCESS",
+  "data": {
+    "itemName": "s s"
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.690Z",
+  "step": "postWarrants_START",
+  "data": {
+    "count": 1
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.691Z",
+  "step": "postWarrant_0_SUCCESS",
+  "data": {
+    "warrantId": 33
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.692Z",
+  "step": "postMoney_COMPLETE",
+  "data": {},
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.693Z",
+  "step": "flattenedPre_START",
+  "data": {
+    "count": 2
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.695Z",
+  "step": "flattenedPost_START",
+  "data": {
+    "count": 4
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.698Z",
+  "step": "commit_START",
+  "data": {},
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.700Z",
+  "step": "commit_SUCCESS",
+  "data": {},
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T07:11:22.701Z",
+  "step": "saveCapTableData_COMPLETE",
+  "data": {
+    "success": true
+  },
+  "error": null,
+  "success": true
+},
