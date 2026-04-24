@@ -573,7 +573,10 @@ function convertCurrencyForRounds() {
           `✅ Round ${roundId}: ${amount} ${currency} → ${amountCad} CAD saved.`,
         );
       } catch (err) {
-        console.error(`❌ Conversion failed for round ${row.id}:`, err.message);
+        console.error(
+          `❌ ssssConversion failed for round ${row.id}:`,
+          err.message,
+        );
       }
     }
   });

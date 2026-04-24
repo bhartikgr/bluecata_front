@@ -1798,23 +1798,14 @@ exports.getTotalNumberCapTableAnalytics = async (req, res) => {
           try {
             let founderData = results[0].founder_data;
 
-            // SAFE PARSING - Handles both string and object
-            if (!founderData || founderData === null) {
-              founderData = {};
-            } else if (typeof founderData === "object") {
-              // Already an object - use as is (DON'T PARSE)
+            // FIX: Only parse if it's a string, otherwise use as is
+            if (typeof founderData === "string") {
+              founderData = JSON.parse(founderData);
+            }
+            // If it's already an object (like your PM2 logs show), use it directly
+            else if (typeof founderData === "object" && founderData !== null) {
+              // Already an object, no parsing needed
               founderData = founderData;
-            } else if (typeof founderData === "string") {
-              // It's a string - try to parse
-              try {
-                founderData = JSON.parse(founderData);
-              } catch (e) {
-                console.error(
-                  "Failed to parse founder_data string:",
-                  e.message,
-                );
-                founderData = {};
-              }
             } else {
               founderData = {};
             }
@@ -1824,7 +1815,13 @@ exports.getTotalNumberCapTableAnalytics = async (req, res) => {
             pricePerShare = parseFloat(founderData?.pricePerShare) || 0;
             ownershipBreakdown = founderData?.ownershipBreakdown || [];
           } catch (parseError) {
-            console.error("Error processing founder_data:", parseError);
+            console.error("Error parsing founder_data:", parseError);
+            console.error(
+              "Type of founder_data:",
+              typeof results[0].founder_data,
+            );
+            console.error("Actual value:", results[0].founder_data);
+
             totalFounders = 0;
             totalShares = 0;
             pricePerShare = 0;
