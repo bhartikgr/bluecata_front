@@ -1792,12 +1792,22 @@ exports.getTotalNumberCapTableAnalytics = async (req, res) => {
         let ownershipBreakdown = [];
 
         if (results?.length > 0 && results[0].founder_data) {
+          // Solution 1: Simple fix with proper type checking
           try {
             let founderData = results[0].founder_data;
 
-            // ONLY parse if it's string
+            // Handle both string and object cases
             if (typeof founderData === "string") {
               founderData = JSON.parse(founderData);
+            } else if (
+              typeof founderData === "object" &&
+              founderData !== null
+            ) {
+              // Already an object, use as is
+              founderData = founderData;
+            } else {
+              // Invalid data, use empty object
+              founderData = {};
             }
 
             totalFounders = founderData?.founders?.length || 0;
@@ -1806,6 +1816,16 @@ exports.getTotalNumberCapTableAnalytics = async (req, res) => {
             ownershipBreakdown = founderData?.ownershipBreakdown || [];
           } catch (parseError) {
             console.error("Error parsing founder_data:", parseError);
+            console.error(
+              "Type of founder_data:",
+              typeof results[0].founder_data,
+            );
+            console.error("Raw value:", results[0].founder_data);
+            // Set default values on error
+            totalFounders = 0;
+            totalShares = 0;
+            pricePerShare = 0;
+            ownershipBreakdown = [];
           }
         }
         return res.status(200).json({
