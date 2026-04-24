@@ -566,6 +566,6 @@ function convertCurrencyForRounds() {
 
 // 3. Cron Job (Runs every midnight)
 cron.schedule("0 0 * * *", () => {
-  convertCurrencyForRounds();
+  //  convertCurrencyForRounds();
 });
 //Round Rate Convert For Investor

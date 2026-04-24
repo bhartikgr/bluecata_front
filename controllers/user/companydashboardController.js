@@ -1791,9 +1791,15 @@ exports.getTotalNumberCapTableAnalytics = async (req, res) => {
         let pricePerShare = 0;
         let ownershipBreakdown = [];
 
-        if (results && results.length > 0 && results[0].founder_data) {
+        if (results?.length > 0 && results[0].founder_data) {
           try {
-            const founderData = JSON.parse(results[0].founder_data);
+            let founderData = results[0].founder_data;
+
+            // ONLY parse if it's string
+            if (typeof founderData === "string") {
+              founderData = JSON.parse(founderData);
+            }
+
             totalFounders = founderData?.founders?.length || 0;
             totalShares = parseFloat(founderData?.totalShares) || 0;
             pricePerShare = parseFloat(founderData?.pricePerShare) || 0;
@@ -1802,7 +1808,6 @@ exports.getTotalNumberCapTableAnalytics = async (req, res) => {
             console.error("Error parsing founder_data:", parseError);
           }
         }
-
         return res.status(200).json({
           message: "",
           totalFounders: totalFounders,
