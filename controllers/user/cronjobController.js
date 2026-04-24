@@ -458,12 +458,14 @@ async function getBOCRate(currencyRaw, date) {
 
 // 2. Main Function → Convert all foreign rounds
 function formatDateToBOC(dateStr) {
+  // Handle null, undefined, empty, or non-string values
   if (!dateStr || typeof dateStr !== "string") {
     return null;
   }
 
   const parts = dateStr.split("/");
 
+  // Check if we have exactly 3 parts and all are valid
   if (parts.length !== 3) {
     console.log("Invalid date format:", dateStr);
     return null;
@@ -471,12 +473,25 @@ function formatDateToBOC(dateStr) {
 
   const [month, day, year] = parts;
 
-  if (!month || !day || !year) {
-    console.log("Missing date parts:", dateStr);
+  // Check if month, day, year exist and are not empty
+  if (
+    !month ||
+    !day ||
+    !year ||
+    month.trim() === "" ||
+    day.trim() === "" ||
+    year.trim() === ""
+  ) {
+    console.log("Missing or empty date parts:", { month, day, year });
     return null;
   }
 
-  return `${year}-${day.padStart(2, "0")}-${month.padStart(2, "0")}`;
+  // Ensure month and day are treated as strings and padded
+  const paddedMonth = String(month).padStart(2, "0");
+  const paddedDay = String(day).padStart(2, "0");
+  const formattedYear = String(year);
+
+  return `${formattedYear}-${paddedDay}-${paddedMonth}`;
 }
 
 function convertCurrencyForRounds() {

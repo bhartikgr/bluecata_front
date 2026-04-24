@@ -1793,6 +1793,8 @@ exports.getTotalNumberCapTableAnalytics = async (req, res) => {
 
         if (results?.length > 0 && results[0].founder_data) {
           // Solution 1: Simple fix with proper type checking
+
+          console.log(results[0]);
           try {
             let founderData = results[0].founder_data;
 
