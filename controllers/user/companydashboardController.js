@@ -1796,32 +1796,52 @@ exports.getTotalNumberCapTableAnalytics = async (req, res) => {
           try {
             let founderData = results[0].founder_data;
 
-            // Handle both string and object cases
-            if (typeof founderData === "string") {
-              founderData = JSON.parse(founderData);
-            } else if (
-              typeof founderData === "object" &&
-              founderData !== null
+            // Handle null, undefined, or empty values
+            if (
+              !founderData ||
+              founderData === null ||
+              founderData === "null"
             ) {
-              // Already an object, use as is
+              // Data is null or empty, use default empty object
+              founderData = {};
+            }
+            // If it's already an object (from database)
+            else if (typeof founderData === "object" && founderData !== null) {
               founderData = founderData;
+            }
+            // If it's a string, parse it
+            else if (typeof founderData === "string") {
+              try {
+                // Check if string is empty or 'null'
+                if (founderData.trim() === "" || founderData === "null") {
+                  founderData = {};
+                } else {
+                  founderData = JSON.parse(founderData);
+                }
+              } catch (parseErr) {
+                console.error("JSON parse error:", parseErr);
+                founderData = {};
+              }
             } else {
-              // Invalid data, use empty object
+              // Any other case, use empty object
               founderData = {};
             }
 
+            // Safely extract values with defaults
             totalFounders = founderData?.founders?.length || 0;
             totalShares = parseFloat(founderData?.totalShares) || 0;
             pricePerShare = parseFloat(founderData?.pricePerShare) || 0;
-            ownershipBreakdown = founderData?.ownershipBreakdown || [];
+            ownershipBreakdown = Array.isArray(founderData?.ownershipBreakdown)
+              ? founderData.ownershipBreakdown
+              : [];
+
+            // Optional: Log for debugging
+            if (totalFounders === 0) {
+              console.log("No founder data found for company");
+            }
           } catch (parseError) {
             console.error("Error parsing founder_data:", parseError);
-            console.error(
-              "Type of founder_data:",
-              typeof results[0].founder_data,
-            );
-            console.error("Raw value:", results[0].founder_data);
-            // Set default values on error
+            // Set all values to defaults
             totalFounders = 0;
             totalShares = 0;
             pricePerShare = 0;
