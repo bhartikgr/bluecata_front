@@ -585,10 +585,6 @@ function convertCurrencyForRounds() {
 
 // 3. Cron Job (Runs every midnight)
 cron.schedule("0 0 * * *", () => {
-  console.log(
-    "🕐 TEST CRON - Currency conversion starting at:",
-    new Date().toISOString(),
-  );
-  convertCurrencyForRounds();
+  //  convertCurrencyForRounds();
 });
 //Round Rate Convert For Investor
