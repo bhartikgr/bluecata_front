@@ -125,9 +125,10 @@ exports.uploadDocuments = async (req, res) => {
       try {
         const [result] = await db.promise().query(
           `INSERT INTO dataroomdocuments 
-           (company_id, created_by_id, created_by_role, category_id, subcategory_id, folder_name, doc_name, summary_txt, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (locked,company_id, created_by_id, created_by_role, category_id, subcategory_id, folder_name, doc_name, summary_txt, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
+            "Yes",
             datasave.company_id,
             datasave.created_by_id,
             datasave.created_by_role,
@@ -830,19 +831,15 @@ exports.generateDocFile = async (req, res) => {
                           companyLogoPaths = companyLogos.map((logo) => {
                             const pathname = `upload/docs/doc_${responses.company_id}/${logo.folder_name}`;
                             const fullPath = `https://capavate.com/api/${pathname}/${logo.doc_name}`;
-                            //const fullPath =
-                            //"https://capavate.com/static/media/capavate.b15264e93ae9765cfd05.png";
-                            //console.log(fullPath);
                             return fullPath;
                           });
                         } else if (
                           fileSummaryResults[0].company_logo !== null
                         ) {
-                          // Fallback to old single logo from company table
-                          const pathname = `upload/docs/doc_${responses.company_id}/${logo.folder_name}`;
-                          const fullPath = `https://capavate.com/api/${pathname}/${fileSummaryResults[0].company_logo}`;
-                          // const fullPath =
-                          //   "https://capavate.com/static/media/capavate.b15264e93ae9765cfd05.png";
+                          // ✅ FIX - logo variable nahi tha, seedha company table se lo
+                          const companyLogo =
+                            fileSummaryResults[0].company_logo;
+                          const fullPath = `https://capavate.com/api/upload/docs/doc_${responses.company_id}/${companyLogo}`;
                           companyLogoPaths.push(fullPath);
                         }
 

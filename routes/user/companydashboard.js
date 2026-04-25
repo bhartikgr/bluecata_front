@@ -1,0 +1,33 @@
+const express = require("express");
+const router = express.Router();
+const companydashboardController = require("../../controllers/user/companydashboardController");
+const uploadDocsMiddleware = require("../../middlewares/uploadDocsMiddleware");
+
+// Define the POST /login route
+router.post("/getroundChart", companydashboardController.getroundChart);
+router.post(
+  "/getInvitedInvestor",
+  companydashboardController.getInvitedInvestor,
+);
+router.post(
+  "/getTotalNumberContact",
+  companydashboardController.getTotalNumberContact,
+);
+router.post(
+  "/getTotalNumberRoundA",
+  companydashboardController.getTotalNumberRoundA,
+);
+router.post(
+  "/getTotalNumberCapTableAnalytics",
+  companydashboardController.getTotalNumberCapTableAnalytics,
+);
+router.post(
+  "/fetchSocialMediaFollower",
+  companydashboardController.fetchSocialMediaFollower,
+);
+router.post(
+  "/getlatestfundingRoundDate",
+  companydashboardController.getlatestfundingRoundDate,
+);
+
+module.exports = router;
