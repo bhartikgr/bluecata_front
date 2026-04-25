@@ -766,529 +766,497 @@ exports.generateDocFile = async (req, res) => {
 
         const company = result[0];
 
+        const oneTimeId = "1";
+
         db.query(
-          `SELECT * FROM usersubscriptiondataroomone_time WHERE unique_code = ?`,
-          [responses.code],
-          (err, qaResultss) => {
-            if (err || !qaResultss?.length) {
-              return res
-                .status(500)
-                .json({ message: "One-time code not found", error: err });
-            }
-
-            const oneTimeId = qaResultss[0].id;
-
-            db.query(
-              `SELECT * 
+          `SELECT * 
              FROM investor_updates 
              WHERE company_id = ? AND type = 'Due Diligence Document' order by id desc`,
-              [responses.company_id],
-              async (err, versionResult) => {
-                if (err) {
-                  return res
-                    .status(500)
-                    .json({ message: "Version fetch failed", error: err });
-                }
+          [responses.company_id],
+          async (err, versionResult) => {
+            if (err) {
+              return res
+                .status(500)
+                .json({ message: "Version fetch failed", error: err });
+            }
 
-                const latestVersion = Number(versionResult[0]?.version || 0);
-                const version = latestVersion + 1;
+            const latestVersion = Number(versionResult[0]?.version || 0);
+            const version = latestVersion + 1;
 
+            db.query(
+              `SELECT dataroomai_summary.*, company.company_logo,company.company_name FROM dataroomai_summary JOIN company ON company.id = dataroomai_summary.company_id WHERE dataroomai_summary.company_id = ? AND dataroomai_summary.uniqcode = ?`,
+              [responses.company_id, responses.code],
+              async (err, fileSummaryResults) => {
+                if (err)
+                  return res.status(500).json({
+                    message: "Management Summary fetch failed",
+                    error: err,
+                  });
+                var corp = fileSummaryResults[0].company_name;
+                await analyzePublicPeers(
+                  responses.company_id,
+                  responses.code,
+                  corp,
+                  version,
+                );
+                var executiveSummary = fileSummaryResults[0].summary || "";
+
+                // ✅ FETCH MULTIPLE COMPANY LOGOS FROM dataroomdocuments + company_logo tables
                 db.query(
-                  `SELECT dataroomai_summary.*, company.company_logo,company.company_name FROM dataroomai_summary JOIN company ON company.id = dataroomai_summary.company_id WHERE dataroomai_summary.company_id = ? AND dataroomai_summary.uniqcode = ?`,
-                  [responses.company_id, responses.code],
-                  async (err, fileSummaryResults) => {
-                    if (err)
-                      return res.status(500).json({
-                        message: "Management Summary fetch failed",
-                        error: err,
-                      });
-                    var corp = fileSummaryResults[0].company_name;
-                    await analyzePublicPeers(
-                      responses.company_id,
-                      responses.code,
-                      corp,
-                      version,
-                    );
-                    var executiveSummary = fileSummaryResults[0].summary || "";
-
-                    // ✅ FETCH MULTIPLE COMPANY LOGOS FROM dataroomdocuments + company_logo tables
-                    db.query(
-                      `SELECT cl.id as logo_id, cl.dataroomdocuments_id, dd.doc_name,dd.folder_name, cl.created_at as logo_created_at
+                  `SELECT cl.id as logo_id, cl.dataroomdocuments_id, dd.doc_name,dd.folder_name, cl.created_at as logo_created_at
                        FROM dataroomdocuments dd
                        INNER JOIN company_logo cl ON dd.id = cl.dataroomdocuments_id
                        WHERE dd.company_id = ? AND dd.Ai_generate = 'Yes'
                        ORDER BY cl.created_at DESC`,
-                      [responses.company_id],
-                      async (err, companyLogos) => {
-                        if (err) {
-                          console.error("Error fetching company logos:", err);
-                          companyLogos = []; // Continue with empty array if error
-                        }
+                  [responses.company_id],
+                  async (err, companyLogos) => {
+                    if (err) {
+                      console.error("Error fetching company logos:", err);
+                      companyLogos = []; // Continue with empty array if error
+                    }
 
-                        // Prepare logo paths array
-                        let companyLogoPaths = [];
-                        if (companyLogos && companyLogos.length > 0) {
-                          companyLogoPaths = companyLogos.map((logo) => {
-                            const pathname = `upload/docs/doc_${responses.company_id}/${logo.folder_name}`;
-                            const fullPath = `https://capavate.com/api/${pathname}/${logo.doc_name}`;
-                            return fullPath;
-                          });
-                        } else if (
-                          fileSummaryResults[0].company_logo !== null
-                        ) {
-                          // ✅ FIX - logo variable nahi tha, seedha company table se lo
-                          const companyLogo =
-                            fileSummaryResults[0].company_logo;
-                          const fullPath = `https://capavate.com/api/upload/docs/doc_${responses.company_id}/${companyLogo}`;
-                          companyLogoPaths.push(fullPath);
-                        }
+                    // Prepare logo paths array
+                    let companyLogoPaths = [];
+                    if (companyLogos && companyLogos.length > 0) {
+                      companyLogoPaths = companyLogos.map((logo) => {
+                        const pathname = `upload/docs/doc_${responses.company_id}/${logo.folder_name}`;
+                        const fullPath = `https://capavate.com/api/${pathname}/${logo.doc_name}`;
+                        return fullPath;
+                      });
+                    } else if (fileSummaryResults[0].company_logo !== null) {
+                      // ✅ FIX - logo variable nahi tha, seedha company table se lo
+                      const companyLogo = fileSummaryResults[0].company_logo;
+                      const fullPath = `https://capavate.com/api/upload/docs/doc_${responses.company_id}/${companyLogo}`;
+                      companyLogoPaths.push(fullPath);
+                    }
 
-                        let managementSummary = "",
-                          productOr_Summary = "",
-                          salesmarketing = "",
-                          operations = "",
-                          regulatory = "",
-                          technology = "",
-                          riskmanagement = "",
-                          finanicalinformation = "";
+                    let managementSummary = "",
+                      productOr_Summary = "",
+                      salesmarketing = "",
+                      operations = "",
+                      regulatory = "",
+                      technology = "",
+                      riskmanagement = "",
+                      finanicalinformation = "";
 
-                        fileSummaryResults?.forEach((row) => {
-                          const text = row.summary?.substring(0, 800) || "";
-                          switch (row.category_id) {
-                            case 1:
-                              if (!managementSummary) managementSummary = text;
-                              break;
-                            case 2:
-                              if (!productOr_Summary) productOr_Summary = text;
-                              break;
-                            case 3:
-                              if (!salesmarketing) salesmarketing = text;
-                              break;
-                            case 4:
-                              if (!technology) technology = text;
-                              break;
-                            case 5:
-                              if (!operations) operations = text;
-                              break;
-                            case 6:
-                              if (!regulatory) regulatory = text;
-                              break;
-                            case 7:
-                              if (!riskmanagement) riskmanagement = text;
-                              break;
-                            case 8:
-                              if (!finanicalinformation)
-                                finanicalinformation = text;
-                              break;
-                          }
-                        });
+                    fileSummaryResults?.forEach((row) => {
+                      const text = row.summary?.substring(0, 800) || "";
+                      switch (row.category_id) {
+                        case 1:
+                          if (!managementSummary) managementSummary = text;
+                          break;
+                        case 2:
+                          if (!productOr_Summary) productOr_Summary = text;
+                          break;
+                        case 3:
+                          if (!salesmarketing) salesmarketing = text;
+                          break;
+                        case 4:
+                          if (!technology) technology = text;
+                          break;
+                        case 5:
+                          if (!operations) operations = text;
+                          break;
+                        case 6:
+                          if (!regulatory) regulatory = text;
+                          break;
+                        case 7:
+                          if (!riskmanagement) riskmanagement = text;
+                          break;
+                        case 8:
+                          if (!finanicalinformation)
+                            finanicalinformation = text;
+                          break;
+                      }
+                    });
 
-                        db.query(
-                          `SELECT category_id, subcategory_id, summary 
+                    db.query(
+                      `SELECT category_id, subcategory_id, summary 
                          FROM dataroomai_summary_subcategory 
                          WHERE company_id = ? AND uniqcode = ? 
                          ORDER BY id DESC`,
-                          [responses.company_id, responses.code],
-                          (err, advisorResults) => {
-                            if (err)
-                              return res.status(500).json({
-                                message: "Advisor fetch failed",
-                                error: err,
-                              });
+                      [responses.company_id, responses.code],
+                      (err, advisorResults) => {
+                        if (err)
+                          return res.status(500).json({
+                            message: "Advisor fetch failed",
+                            error: err,
+                          });
 
-                            let boardOfadvisor = "N/A",
-                              Intellectual = "N/A";
+                        let boardOfadvisor = "N/A",
+                          Intellectual = "N/A";
 
-                            for (const row of advisorResults) {
-                              if (
-                                row.category_id === 1 &&
-                                row.subcategory_id === 3
-                              )
-                                boardOfadvisor =
-                                  row.summary?.substring(0, 200) || "N/A";
-                              else if (
-                                row.category_id === 2 &&
-                                row.subcategory_id === 6
-                              )
-                                Intellectual =
-                                  row.summary?.substring(0, 200) || "N/A";
-                            }
+                        for (const row of advisorResults) {
+                          if (row.category_id === 1 && row.subcategory_id === 3)
+                            boardOfadvisor =
+                              row.summary?.substring(0, 200) || "N/A";
+                          else if (
+                            row.category_id === 2 &&
+                            row.subcategory_id === 6
+                          )
+                            Intellectual =
+                              row.summary?.substring(0, 200) || "N/A";
+                        }
 
-                            db.query(
-                              `SELECT questions, answer, category_id 
+                        db.query(
+                          `SELECT questions, answer, category_id 
                              FROM dataroomai_response 
                              WHERE company_id = ? AND uniqcode = ?`,
-                              [responses.company_id, responses.code],
-                              (err, qaResults) => {
-                                if (err)
-                                  return res.status(500).json({
-                                    message: "Q&A fetch failed",
-                                    error: err,
-                                  });
-                                db.query(
-                                  `SELECT * from company_exchange_world_details where uniqcode =? And company_id =? order by id desc Limit 1`,
-                                  [responses.code, responses.company_id],
-                                  async (err, companyresults) => {
-                                    let canada_TSX = "N/A";
-                                    let USA_NASDAQ = "N/A";
-                                    let USA_NYSE = "N/A";
-                                    let England_FTSE = "N/A";
-                                    let Australia_ASX = "N/A";
-                                    let EU = "N/A";
-                                    let China_HKEX = "N/A";
-                                    let China_SSE = "N/A";
-                                    let Singapore_SGX = "N/A";
-                                    let India_NSE = "N/A";
-                                    let press_public_reaction = "N/A";
-                                    let miscUploads = "N/A";
+                          [responses.company_id, responses.code],
+                          (err, qaResults) => {
+                            if (err)
+                              return res.status(500).json({
+                                message: "Q&A fetch failed",
+                                error: err,
+                              });
+                            db.query(
+                              `SELECT * from company_exchange_world_details where uniqcode =? And company_id =? order by id desc Limit 1`,
+                              [responses.code, responses.company_id],
+                              async (err, companyresults) => {
+                                let canada_TSX = "N/A";
+                                let USA_NASDAQ = "N/A";
+                                let USA_NYSE = "N/A";
+                                let England_FTSE = "N/A";
+                                let Australia_ASX = "N/A";
+                                let EU = "N/A";
+                                let China_HKEX = "N/A";
+                                let China_SSE = "N/A";
+                                let Singapore_SGX = "N/A";
+                                let India_NSE = "N/A";
+                                let press_public_reaction = "N/A";
+                                let miscUploads = "N/A";
 
-                                    if (companyresults.length > 0) {
-                                      try {
-                                        const data = companyresults[0];
+                                if (companyresults.length > 0) {
+                                  try {
+                                    const data = companyresults[0];
 
-                                        let datamiscUploads = [];
-                                        try {
-                                          datamiscUploads = JSON.parse(
-                                            data.miscUploads || "[]",
-                                          );
-                                        } catch (parseErr) {
-                                          console.error(
-                                            "Error parsing miscUploads:",
-                                            parseErr,
-                                          );
-                                          datamiscUploads = [];
-                                        }
-
-                                        miscUploads = truncatewordarray(
-                                          datamiscUploads,
-                                          600,
-                                        );
-                                        press_public_reaction = truncateword(
-                                          data.press_public_reaction,
-                                          600,
-                                        );
-
-                                        const stockFields = [
-                                          "canada_TSX",
-                                          "usa_NASDAQ",
-                                          "usa_NYSE",
-                                          "england_FTSE",
-                                          "australia_ASX",
-                                          "EU",
-                                          "china_HKEX",
-                                          "china_SSE",
-                                          "singapore_SGX",
-                                          "india_NSE",
-                                        ];
-
-                                        stockFields.forEach((field) => {
-                                          const value = data[field];
-                                          if (
-                                            value !== undefined &&
-                                            value !== null
-                                          ) {
-                                            switch (field) {
-                                              case "usa_NASDAQ":
-                                                USA_NASDAQ =
-                                                  parseAndTruncate(value);
-                                                break;
-                                              case "usa_NYSE":
-                                                USA_NYSE =
-                                                  parseAndTruncate(value);
-                                                break;
-                                              case "canada_TSX":
-                                                canada_TSX =
-                                                  parseAndTruncate(value);
-                                                break;
-                                              case "england_FTSE":
-                                                England_FTSE =
-                                                  parseAndTruncate(value);
-                                                break;
-                                              case "australia_ASX":
-                                                Australia_ASX =
-                                                  parseAndTruncate(value);
-                                                break;
-                                              case "EU":
-                                                EU = parseAndTruncate(value);
-                                                break;
-                                              case "china_HKEX":
-                                                China_HKEX =
-                                                  parseAndTruncate(value);
-                                                break;
-                                              case "china_SSE":
-                                                China_SSE =
-                                                  parseAndTruncate(value);
-                                                break;
-                                              case "singapore_SGX":
-                                                Singapore_SGX =
-                                                  parseAndTruncate(value);
-                                                break;
-                                              case "india_NSE":
-                                                India_NSE =
-                                                  parseAndTruncate(value);
-                                                break;
-                                            }
-                                          }
-                                        });
-                                      } catch (err) {
-                                        console.error(
-                                          "Error processing company results:",
-                                          err,
-                                        );
-                                      }
+                                    let datamiscUploads = [];
+                                    try {
+                                      datamiscUploads = JSON.parse(
+                                        data.miscUploads || "[]",
+                                      );
+                                    } catch (parseErr) {
+                                      console.error(
+                                        "Error parsing miscUploads:",
+                                        parseErr,
+                                      );
+                                      datamiscUploads = [];
                                     }
 
-                                    const getQA = (categoryId) =>
-                                      (qaResults || [])
-                                        .filter(
-                                          (item) =>
-                                            item.category_id === categoryId,
-                                        )
-                                        .slice(0, 3)
-                                        .map((item, index) => ({
-                                          index: index + 1,
-                                          question:
-                                            item.questions?.trim() || "N/A",
-                                          answer: item.answer?.trim() || "N/A",
-                                        }));
-
-                                    const questionAnswers = getQA(2);
-                                    const questionAnswersSalesMarketing =
-                                      getQA(3);
-                                    const questionAnswersTechnology = getQA(4);
-                                    const questionAnswersOperations = getQA(5);
-                                    const questionAnswersRegulatory = getQA(6);
-                                    const questionAnswersfinancialinformation =
-                                      getQA(8);
-
-                                    const templatePath = path.resolve(
-                                      __dirname,
-                                      "../../upload/temp/Due_Diligence_and_Company_Overview_Document_Keiretsu_Forum_Canada.docx",
+                                    miscUploads = truncatewordarray(
+                                      datamiscUploads,
+                                      600,
+                                    );
+                                    press_public_reaction = truncateword(
+                                      data.press_public_reaction,
+                                      600,
                                     );
 
-                                    const content = fs.readFileSync(
-                                      templatePath,
-                                      "binary",
+                                    const stockFields = [
+                                      "canada_TSX",
+                                      "usa_NASDAQ",
+                                      "usa_NYSE",
+                                      "england_FTSE",
+                                      "australia_ASX",
+                                      "EU",
+                                      "china_HKEX",
+                                      "china_SSE",
+                                      "singapore_SGX",
+                                      "india_NSE",
+                                    ];
+
+                                    stockFields.forEach((field) => {
+                                      const value = data[field];
+                                      if (
+                                        value !== undefined &&
+                                        value !== null
+                                      ) {
+                                        switch (field) {
+                                          case "usa_NASDAQ":
+                                            USA_NASDAQ =
+                                              parseAndTruncate(value);
+                                            break;
+                                          case "usa_NYSE":
+                                            USA_NYSE = parseAndTruncate(value);
+                                            break;
+                                          case "canada_TSX":
+                                            canada_TSX =
+                                              parseAndTruncate(value);
+                                            break;
+                                          case "england_FTSE":
+                                            England_FTSE =
+                                              parseAndTruncate(value);
+                                            break;
+                                          case "australia_ASX":
+                                            Australia_ASX =
+                                              parseAndTruncate(value);
+                                            break;
+                                          case "EU":
+                                            EU = parseAndTruncate(value);
+                                            break;
+                                          case "china_HKEX":
+                                            China_HKEX =
+                                              parseAndTruncate(value);
+                                            break;
+                                          case "china_SSE":
+                                            China_SSE = parseAndTruncate(value);
+                                            break;
+                                          case "singapore_SGX":
+                                            Singapore_SGX =
+                                              parseAndTruncate(value);
+                                            break;
+                                          case "india_NSE":
+                                            India_NSE = parseAndTruncate(value);
+                                            break;
+                                        }
+                                      }
+                                    });
+                                  } catch (err) {
+                                    console.error(
+                                      "Error processing company results:",
+                                      err,
                                     );
-                                    const imageModule = new ImageModule({
-                                      getImage,
-                                      getSize,
-                                      centered: true,
-                                    });
-                                    const zip = new PizZip(content);
-                                    const doc = new Docxtemplater(zip, {
-                                      paragraphLoop: true,
-                                      linebreaks: true,
-                                      modules: [imageModule],
-                                    });
+                                  }
+                                }
 
-                                    const currentDate = formatCurrentDate();
+                                const getQA = (categoryId) =>
+                                  (qaResults || [])
+                                    .filter(
+                                      (item) => item.category_id === categoryId,
+                                    )
+                                    .slice(0, 3)
+                                    .map((item, index) => ({
+                                      index: index + 1,
+                                      question: item.questions?.trim() || "N/A",
+                                      answer: item.answer?.trim() || "N/A",
+                                    }));
 
-                                    const fileName = generateFileName(
-                                      company.company_name,
-                                      version,
-                                    );
+                                const questionAnswers = getQA(2);
+                                const questionAnswersSalesMarketing = getQA(3);
+                                const questionAnswersTechnology = getQA(4);
+                                const questionAnswersOperations = getQA(5);
+                                const questionAnswersRegulatory = getQA(6);
+                                const questionAnswersfinancialinformation =
+                                  getQA(8);
 
-                                    // ✅ Convert all logos to base64
-                                    const companyLogosBase64 =
-                                      await Promise.all(
-                                        companyLogoPaths.map((logoPath) =>
-                                          prepareLogoValue(logoPath),
-                                        ),
-                                      );
-                                    console.log(companyLogosBase64);
-                                    var corp_mail_address = [
-                                      company.company_street_address,
-                                      company.company_city,
-                                      company.company_state,
-                                      company.company_postal_code,
-                                      company.company_country,
-                                    ]
-                                      .filter(Boolean)
-                                      .join(", ");
+                                const templatePath = path.resolve(
+                                  __dirname,
+                                  "../../upload/temp/Due_Diligence_and_Company_Overview_Document_Keiretsu_Forum_Canada.docx",
+                                );
 
-                                    doc.render({
-                                      // ✅ Pass array of logos to template
-                                      companyLogos: companyLogosBase64.map(
-                                        (logo, idx) => ({
-                                          image: logo,
-                                          index: idx + 1,
-                                        }),
-                                      ),
-                                      // Keep backward compatibility
-                                      companyLogoBase64:
-                                        companyLogosBase64[0] || null,
-                                      company_name: safedoc(
-                                        company.company_name,
-                                      ),
-                                      contact_email: safedoc(company.email),
-                                      contact_phone: safedoc(company.phone),
-                                      company_website: safedoc(
-                                        company.company_website,
-                                      ),
-                                      city_step2: safedoc(company.company_city),
-                                      company_country: safedoc(
-                                        company.company_country,
-                                      ),
-                                      company_mail_address:
-                                        safedoc(corp_mail_address),
-                                      website: safedoc(company.company_website),
-                                      first_name: safedoc(company.first_name),
-                                      last_name: safedoc(company.last_name),
-                                      created_at: formatWithOrdinal(
-                                        new Date(company.created_at),
-                                      ),
-                                      version: version,
-                                      current_Date: currentDate,
-                                      executiveSummary:
-                                        safedoc(executiveSummary),
-                                      managementSummary:
-                                        safedoc(managementSummary),
-                                      boardOfadvisor: safedoc(boardOfadvisor),
-                                      productOr_Summary:
-                                        safedoc(productOr_Summary),
-                                      Intellectual: safedoc(Intellectual),
-                                      salesmarketing: safedoc(salesmarketing),
-                                      operations: safedoc(operations),
-                                      regulatory: safedoc(regulatory),
-                                      technology: safedoc(technology),
-                                      riskmanagement: safedoc(riskmanagement),
-                                      finanicalinformation:
-                                        safedoc(finanicalinformation),
-                                      qas: questionAnswers,
-                                      salesMarketing:
-                                        questionAnswersSalesMarketing,
-                                      technologyInfrastructure:
-                                        questionAnswersTechnology,
-                                      questionAnswersOperations,
-                                      questionAnswersRegulatory,
-                                      questionAnswersfinancialinformation,
-                                      canada_TSX: canada_TSX,
-                                      USA_NASDAQ: USA_NASDAQ,
-                                      USA_NYSE: USA_NYSE,
-                                      England_FTSE: England_FTSE,
-                                      Australia_ASX: Australia_ASX,
-                                      EU: EU,
-                                      China_HKEX: China_HKEX,
-                                      China_SSE: China_SSE,
-                                      Singapore_SGX: Singapore_SGX,
-                                      India_NSE: India_NSE,
-                                      miscUploads: miscUploads,
-                                      press_public_reaction:
-                                        press_public_reaction,
-                                    });
+                                const content = fs.readFileSync(
+                                  templatePath,
+                                  "binary",
+                                );
+                                const imageModule = new ImageModule({
+                                  getImage,
+                                  getSize,
+                                  centered: true,
+                                });
+                                const zip = new PizZip(content);
+                                const doc = new Docxtemplater(zip, {
+                                  paragraphLoop: true,
+                                  linebreaks: true,
+                                  modules: [imageModule],
+                                });
 
-                                    const buffer = doc
-                                      .getZip()
-                                      .generate({ type: "nodebuffer" });
+                                const currentDate = formatCurrentDate();
 
-                                    // Save to DB
-                                    db.query(
-                                      `INSERT INTO investor_updates (
+                                const fileName = generateFileName(
+                                  company.company_name,
+                                  version,
+                                );
+
+                                // ✅ Convert all logos to base64
+                                const companyLogosBase64 = await Promise.all(
+                                  companyLogoPaths.map((logoPath) =>
+                                    prepareLogoValue(logoPath),
+                                  ),
+                                );
+                                console.log(companyLogosBase64);
+                                var corp_mail_address = [
+                                  company.company_street_address,
+                                  company.company_city,
+                                  company.company_state,
+                                  company.company_postal_code,
+                                  company.company_country,
+                                ]
+                                  .filter(Boolean)
+                                  .join(", ");
+
+                                doc.render({
+                                  // ✅ Pass array of logos to template
+                                  companyLogos: companyLogosBase64.map(
+                                    (logo, idx) => ({
+                                      image: logo,
+                                      index: idx + 1,
+                                    }),
+                                  ),
+                                  // Keep backward compatibility
+                                  companyLogoBase64:
+                                    companyLogosBase64[0] || null,
+                                  company_name: safedoc(company.company_name),
+                                  contact_email: safedoc(company.email),
+                                  contact_phone: safedoc(company.phone),
+                                  company_website: safedoc(
+                                    company.company_website,
+                                  ),
+                                  city_step2: safedoc(company.company_city),
+                                  company_country: safedoc(
+                                    company.company_country,
+                                  ),
+                                  company_mail_address:
+                                    safedoc(corp_mail_address),
+                                  website: safedoc(company.company_website),
+                                  first_name: safedoc(company.first_name),
+                                  last_name: safedoc(company.last_name),
+                                  created_at: formatWithOrdinal(
+                                    new Date(company.created_at),
+                                  ),
+                                  version: version,
+                                  current_Date: currentDate,
+                                  executiveSummary: safedoc(executiveSummary),
+                                  managementSummary: safedoc(managementSummary),
+                                  boardOfadvisor: safedoc(boardOfadvisor),
+                                  productOr_Summary: safedoc(productOr_Summary),
+                                  Intellectual: safedoc(Intellectual),
+                                  salesmarketing: safedoc(salesmarketing),
+                                  operations: safedoc(operations),
+                                  regulatory: safedoc(regulatory),
+                                  technology: safedoc(technology),
+                                  riskmanagement: safedoc(riskmanagement),
+                                  finanicalinformation:
+                                    safedoc(finanicalinformation),
+                                  qas: questionAnswers,
+                                  salesMarketing: questionAnswersSalesMarketing,
+                                  technologyInfrastructure:
+                                    questionAnswersTechnology,
+                                  questionAnswersOperations,
+                                  questionAnswersRegulatory,
+                                  questionAnswersfinancialinformation,
+                                  canada_TSX: canada_TSX,
+                                  USA_NASDAQ: USA_NASDAQ,
+                                  USA_NYSE: USA_NYSE,
+                                  England_FTSE: England_FTSE,
+                                  Australia_ASX: Australia_ASX,
+                                  EU: EU,
+                                  China_HKEX: China_HKEX,
+                                  China_SSE: China_SSE,
+                                  Singapore_SGX: Singapore_SGX,
+                                  India_NSE: India_NSE,
+                                  miscUploads: miscUploads,
+                                  press_public_reaction: press_public_reaction,
+                                });
+
+                                const buffer = doc
+                                  .getZip()
+                                  .generate({ type: "nodebuffer" });
+
+                                // Save to DB
+                                db.query(
+                                  `INSERT INTO investor_updates (
                                         unique_code,company_id, type, version, update_date, document_name,
                                         is_locked, created_at, updated_at
                                       ) VALUES (?, ?, ?, ?, NOW(), ?, ?, NOW(), NOW())`,
-                                      [
-                                        responses.code,
-                                        responses.company_id,
-                                        "Due Diligence Document",
-                                        version,
-                                        fileName,
-                                        1,
-                                      ],
-                                      (insertErr, result) => {
-                                        if (insertErr) {
-                                          console.error(
-                                            "Static insert failed:",
-                                            insertErr.sqlMessage ||
-                                              insertErr.message,
-                                            insertErr,
-                                          );
-                                        } else {
-                                          console.log(
-                                            "Static insert success:",
-                                            result,
-                                          );
-                                        }
-                                      },
-                                    );
-
-                                    db.query(
-                                      `INSERT INTO dataroom_generatedocument
-                                 (unique_code,company_id, version, usersubscriptiondataroomone_time_id, document_name, created_at)
-                                 VALUES (?, ?, ?, ?, ?, NOW())`,
-                                      [
-                                        responses.code,
-                                        responses.company_id,
-                                        version,
-                                        oneTimeId,
-                                        fileName,
-                                      ],
-                                      (insertErr) => {
-                                        if (insertErr)
-                                          console.error(
-                                            "Document log insert failed",
-                                            insertErr,
-                                          );
-                                      },
-                                    );
-
-                                    // Save to file system
-                                    const folderPath = path.join(
-                                      __dirname,
-                                      "..",
-                                      "..",
-                                      "upload",
-                                      "docs",
-                                      `doc_${responses.company_id}`,
-                                      "investor_report",
-                                    );
-
-                                    fs.mkdirSync(folderPath, {
-                                      recursive: true,
-                                    });
-
-                                    const filePath = path.join(
-                                      folderPath,
-                                      fileName,
-                                    );
-                                    fs.writeFileSync(filePath, buffer);
-
-                                    // Update subscription status
-                                    db.query(
-                                      `UPDATE usersubscriptiondataroomone_time
-                                     SET status = ?
-                                     WHERE company_id = ? AND unique_code = ?`,
-                                      [
-                                        "Inactive",
-                                        responses.company_id,
-                                        responses.code,
-                                      ],
-                                      (finalErr) => {
-                                        if (finalErr)
-                                          console.error(
-                                            "Update status failed",
-                                            finalErr,
-                                          );
-                                      },
-                                    );
-
-                                    // Send the file as response
-                                    res.setHeader(
-                                      "Access-Control-Expose-Headers",
-                                      "Content-Disposition",
-                                    );
-                                    res.setHeader(
-                                      "Content-Disposition",
-                                      `attachment; filename="${fileName}"`,
-                                    );
-                                    res.setHeader(
-                                      "Content-Type",
-                                      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                                    );
-                                    res.send(buffer);
+                                  [
+                                    responses.code,
+                                    responses.company_id,
+                                    "Due Diligence Document",
+                                    version,
+                                    fileName,
+                                    1,
+                                  ],
+                                  (insertErr, result) => {
+                                    if (insertErr) {
+                                      console.error(
+                                        "Static insert failed:",
+                                        insertErr.sqlMessage ||
+                                          insertErr.message,
+                                        insertErr,
+                                      );
+                                    } else {
+                                      console.log(
+                                        "Static insert success:",
+                                        result,
+                                      );
+                                    }
                                   },
                                 );
+
+                                db.query(
+                                  `INSERT INTO dataroom_generatedocument
+                                 (unique_code,company_id, version, usersubscriptiondataroomone_time_id, document_name, created_at)
+                                 VALUES (?, ?, ?, ?, ?, NOW())`,
+                                  [
+                                    responses.code,
+                                    responses.company_id,
+                                    version,
+                                    oneTimeId,
+                                    fileName,
+                                  ],
+                                  (insertErr) => {
+                                    if (insertErr)
+                                      console.error(
+                                        "Document log insert failed",
+                                        insertErr,
+                                      );
+                                  },
+                                );
+
+                                // Save to file system
+                                const folderPath = path.join(
+                                  __dirname,
+                                  "..",
+                                  "..",
+                                  "upload",
+                                  "docs",
+                                  `doc_${responses.company_id}`,
+                                  "investor_report",
+                                );
+
+                                fs.mkdirSync(folderPath, {
+                                  recursive: true,
+                                });
+
+                                const filePath = path.join(
+                                  folderPath,
+                                  fileName,
+                                );
+                                fs.writeFileSync(filePath, buffer);
+
+                                // Update subscription status
+                                db.query(
+                                  `UPDATE usersubscriptiondataroomone_time
+                                     SET status = ?
+                                     WHERE company_id = ? AND unique_code = ?`,
+                                  [
+                                    "Inactive",
+                                    responses.company_id,
+                                    responses.code,
+                                  ],
+                                  (finalErr) => {
+                                    if (finalErr)
+                                      console.error(
+                                        "Update status failed",
+                                        finalErr,
+                                      );
+                                  },
+                                );
+
+                                // Send the file as response
+                                res.setHeader(
+                                  "Access-Control-Expose-Headers",
+                                  "Content-Disposition",
+                                );
+                                res.setHeader(
+                                  "Content-Disposition",
+                                  `attachment; filename="${fileName}"`,
+                                );
+                                res.setHeader(
+                                  "Content-Type",
+                                  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                );
+                                res.send(buffer);
                               },
                             );
                           },
