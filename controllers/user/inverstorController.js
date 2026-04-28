@@ -71,6 +71,7 @@ exports.getinvestorlistwithsearch = (req, res) => {
   let query = `
     SELECT 
       ii.id,
+      ii.is_register,
       ii.unique_code,
       ii.first_name,
       ii.last_name,
@@ -699,6 +700,7 @@ exports.deleteinvestor = (req, res) => {
   const query2 = `DELETE FROM sharereport WHERE company_id = ? AND investor_id = ?`;
   const query3 = `DELETE FROM sharerecordround WHERE company_id = ? AND investor_id = ?`;
   const query4 = `DELETE FROM round_investors WHERE company_id = ? AND investor_id = ?`;
+  const query5 = `DELETE FROM sharereport WHERE company_id = ? AND investor_id = ?`;
 
   db.query(query1, [company_id, id], (err, result1) => {
     if (err) {
@@ -732,8 +734,17 @@ exports.deleteinvestor = (req, res) => {
             });
           }
 
-          res.status(200).json({
-            message: "Investor and related records deleted successfully",
+          db.query(query5, [company_id, id], (err, result3) => {
+            if (err) {
+              return res.status(500).json({
+                message: "Error deleting from sharerecordround",
+                error: err,
+              });
+            }
+
+            res.status(200).json({
+              message: "Investor and related records deleted successfully",
+            });
           });
         });
       });
@@ -3190,7 +3201,7 @@ function sendEmailToInvestment_Verify(
             </p>
             <p style="font-size:14px; color:#111; margin-bottom:20px;">
               <strong>View Details:</strong> 
-              <a href="https://capavate.com/investor/company/capital-round-list/view/${company_id}/${round_id}" 
+              <a href="https://capavate.com/investor/company/company-round-list/view/${company_id}/${round_id}" 
                 target="_blank"
                 style="color:#CC0000; text-decoration:underline;">
                 Click here to view your investment

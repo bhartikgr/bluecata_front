@@ -6967,7 +6967,7 @@ async function handleSafeCalculation(params) {
     console.error("❌ Error fetching current round warrants:", error);
   }
 
-  if (latestPreviousRound) {
+  if (previousRounds.length > 0 && latestPreviousRound) {
     const round = latestPreviousRound;
     existingOptionPoolShares =
       parseFloat(round.total_option_pool) ||
@@ -6982,74 +6982,70 @@ async function handleSafeCalculation(params) {
         r.instrumentType === "Safe" ||
         r.instrumentType === "Convertible Note",
     );
-
-    for (const prevRound of allPreviousInvestorRounds) {
-      const roundInvestors = await new Promise((resolve, reject) => {
-        db.query(
-          `SELECT ri.*, w.id as warrant_id 
+    const roundInvestors = await new Promise((resolve, reject) => {
+      db.query(
+        `SELECT ri.*, w.id as warrant_id 
            FROM round_investors ri
            LEFT JOIN warrants w ON w.id = ri.warrant_id
            WHERE ri.round_id = ? AND ri.company_id = ? AND ri.cap_table_type = 'post' 
            AND (ri.investor_type = 'current' OR ri.investor_type = 'converted' or ri.investor_type = 'previous' or ri.investor_type = 'warrant' or ri.investor_type = 'warrant not exercised')
            ORDER BY ri.id ASC`,
-          [prevRound.id, company_id],
-          (err, results) => {
-            if (err) reject(err);
-            else resolve(results || []);
+        [round.id, company_id],
+        (err, results) => {
+          if (err) reject(err);
+          else resolve(results || []);
+        },
+      );
+    });
+    roundInvestors.forEach((inv) => {
+      if (
+        inv.investor_type === "warrant" ||
+        inv.investor_type === "warrant not exercised"
+      ) {
+        previousWarrantsList.push({
+          type: "warrant",
+          name: `${inv.first_name || ""} ${inv.last_name || ""}`.trim(),
+          investor_details: {
+            firstName: inv.first_name || "",
+            lastName: inv.last_name || "",
+            email: inv.email || "",
+            phone: inv.phone || "",
           },
-        );
-      });
-
-      roundInvestors.forEach((inv) => {
-        if (
-          inv.investor_type === "warrant" ||
-          inv.investor_type === "warrant not exercised"
-        ) {
-          previousWarrantsList.push({
-            type: "warrant",
-            name: `${inv.first_name || ""} ${inv.last_name || ""}`.trim(),
-            investor_details: {
-              firstName: inv.first_name || "",
-              lastName: inv.last_name || "",
-              email: inv.email || "",
-              phone: inv.phone || "",
-            },
-            shares: parseFloat(inv.shares) || 0,
-            investor_type: inv.investor_type,
-            investment: parseFloat(inv.investment_amount || 0),
-            share_price: parseFloat(inv.share_price || 0),
-            share_class_type: inv.share_class_type,
-            instrument_type: inv.instrument_type,
-            round_name: inv.round_name,
-            round_id: prevRound.id,
-            warrant_id: inv.warrant_id,
-            is_previous: true,
-            round_id_ref: inv.round_id_ref,
-          });
-        } else {
-          previousInvestorsList.push({
-            type: "investor",
-            name: `${inv.first_name || ""} ${inv.last_name || ""}`.trim(),
-            investor_details: {
-              firstName: inv.first_name || "",
-              lastName: inv.last_name || "",
-              email: inv.email || "",
-              phone: inv.phone || "",
-            },
-            shares: parseFloat(inv.shares) || 0,
-            investor_type: inv.investor_type,
-            investment: parseFloat(inv.investment_amount || 0),
-            share_price: parseFloat(inv.share_price || 0),
-            share_class_type: inv.share_class_type,
-            instrument_type: inv.instrument_type,
-            round_name: inv.round_name,
-            round_id: prevRound.id,
-            round_id_ref: inv.round_id_ref,
-            is_previous: true,
-          });
-        }
-      });
-    }
+          shares: parseFloat(inv.shares) || 0,
+          investor_type: inv.investor_type,
+          investment: parseFloat(inv.investment_amount || 0),
+          share_price: parseFloat(inv.share_price || 0),
+          share_class_type: inv.share_class_type,
+          instrument_type: inv.instrument_type,
+          round_name: inv.round_name,
+          round_id: round.id,
+          warrant_id: inv.warrant_id,
+          is_previous: true,
+          round_id_ref: inv.round_id_ref,
+        });
+      } else {
+        previousInvestorsList.push({
+          type: "investor",
+          name: `${inv.first_name || ""} ${inv.last_name || ""}`.trim(),
+          investor_details: {
+            firstName: inv.first_name || "",
+            lastName: inv.last_name || "",
+            email: inv.email || "",
+            phone: inv.phone || "",
+          },
+          shares: parseFloat(inv.shares) || 0,
+          investor_type: inv.investor_type,
+          investment: parseFloat(inv.investment_amount || 0),
+          share_price: parseFloat(inv.share_price || 0),
+          share_class_type: inv.share_class_type,
+          instrument_type: inv.instrument_type,
+          round_name: inv.round_name,
+          round_id: round.id,
+          round_id_ref: inv.round_id_ref,
+          is_previous: true,
+        });
+      }
+    });
 
     previousInvestorsTotalShares = previousInvestorsList.reduce(
       (sum, inv) => sum + (inv.shares || 0),
@@ -7470,129 +7466,410 @@ async function handleSafeCalculation(params) {
       console.error("❌ Error fetching previous round post cap table:", error);
     }
   }
+  //console.log(previousRoundPostCapTable);
+  // ==================== PRE-MONEY CAP TABLE ====================
+  // ==================== PRE-MONEY CAP TABLE (FIXED) ====================
+  let preMoneyCapTable;
 
-  const preMoneyCapTable = previousRoundPostCapTable
-    ? {
-        ...previousRoundPostCapTable,
-        pending_instruments: previousPendingSafes,
-        items: [
-          ...(previousRoundPostCapTable.items || []).filter(
-            (item) => !item.is_pending,
-          ),
-          ...previousPendingSafes,
-        ],
-      }
-    : {
-        total_shares: preMoneyTotalShares,
-        pre_money_valuation: preMoneyVal,
-        currency,
-        share_price: sharePrice.toString(), // ✅ NO toFixed
-        pending_instruments: previousPendingSafes,
-        founders: {
-          list: founderList.map((f) => {
-            const ownership = f.shares / preMoneyTotalShares;
+  if (previousRoundPostCapTable) {
+    // ✅ USE PREVIOUS ROUND'S POST CAP TABLE AS BASE FOR PRE-MONEY
+    // Extract ONLY pre-money relevant data from previous round's post cap table
+    const prevItems = previousRoundPostCapTable.items || [];
+
+    // Filter items that should be in pre-money (NOT new investors, NOT converted)
+    const preMoneyItems = prevItems.filter(
+      (item) =>
+        item.type !== "investor" ||
+        item.is_previous === true || // Previous investors
+        (item.is_warrant === true && item.is_previous === true) || // Previous warrants
+        item.type === "founder" ||
+        item.type === "option_pool",
+    );
+
+    preMoneyCapTable = {
+      total_shares: preMoneyTotalShares,
+      pre_money_valuation: preMoneyVal,
+      currency: currency,
+      share_price: sharePrice.toString(),
+      pending_instruments: previousPendingSafes, // Pending SAFEs for THIS round
+      // Founders from previous round (updated percentages)
+      founders: previousRoundPostCapTable.founders
+        ? {
+            ...previousRoundPostCapTable.founders,
+            list: (previousRoundPostCapTable.founders.list || []).map((f) => {
+              const ownership = (f.shares || 0) / preMoneyTotalShares;
+              const rawPercentage = ownership * 100;
+              const exactValue = (rawPercentage * preMoneyVal) / 100;
+              return {
+                ...f,
+                percentage_raw: rawPercentage,
+                percentage: rawPercentage.toFixed(4) + "%",
+                percentage_formatted: rawPercentage.toFixed(4) + "%",
+                value: exactValue,
+                value_formatted: `${currency} ${exactValue.toFixed(2)}`,
+              };
+            }),
+            total_shares: previousRoundPostCapTable.founders.total_shares || 0,
+            total_percentage_raw:
+              ((previousRoundPostCapTable.founders.total_shares || 0) /
+                preMoneyTotalShares) *
+              100,
+            total_percentage:
+              (
+                ((previousRoundPostCapTable.founders.total_shares || 0) /
+                  preMoneyTotalShares) *
+                100
+              ).toFixed(4) + "%",
+            total_value:
+              (((previousRoundPostCapTable.founders.total_shares || 0) /
+                preMoneyTotalShares) *
+                100 *
+                preMoneyVal) /
+              100,
+          }
+        : null,
+
+      // Option Pool from previous round
+      option_pool: previousRoundPostCapTable.option_pool
+        ? {
+            ...previousRoundPostCapTable.option_pool,
+            shares: totalOptionPoolShares,
+            percentage_raw: (totalOptionPoolShares / preMoneyTotalShares) * 100,
+            percentage:
+              ((totalOptionPoolShares / preMoneyTotalShares) * 100).toFixed(4) +
+              "%",
+            value:
+              ((totalOptionPoolShares / preMoneyTotalShares) *
+                100 *
+                preMoneyVal) /
+              100,
+          }
+        : null,
+
+      // Previous Investors (NOT new investors)
+      previous_investors: (() => {
+        const prevInvestors = prevItems.filter(
+          (item) =>
+            item.type === "investor" &&
+            item.is_previous === true &&
+            !item.is_converted,
+        );
+
+        if (prevInvestors.length === 0 && previousInvestorsList.length === 0) {
+          return null;
+        }
+
+        const totalPrevShares =
+          previousInvestorsTotalShares > 0
+            ? previousInvestorsTotalShares
+            : prevInvestors.reduce((sum, inv) => sum + (inv.shares || 0), 0);
+
+        return {
+          name: "Previous Investors",
+          total_shares: totalPrevShares,
+          percentage_raw: (totalPrevShares / preMoneyTotalShares) * 100,
+          percentage:
+            ((totalPrevShares / preMoneyTotalShares) * 100).toFixed(4) + "%",
+          total_value:
+            ((totalPrevShares / preMoneyTotalShares) * 100 * preMoneyVal) / 100,
+          items: (prevInvestors.length > 0
+            ? prevInvestors
+            : previousInvestorsList
+          ).map((inv) => {
+            const ownership = (inv.shares || 0) / preMoneyTotalShares;
             const rawPercentage = ownership * 100;
-            const exactValue = (rawPercentage * preMoneyVal) / 100;
             return {
-              ...f,
-              roundName: round0Name,
-              share_class_type: round0Shareclassstype,
+              ...inv,
               percentage_raw: rawPercentage,
               percentage: rawPercentage.toFixed(4) + "%",
-              value: exactValue,
-              value_formatted: `${currency} ${exactValue.toFixed(2)}`,
+              value: (rawPercentage * preMoneyVal) / 100,
             };
           }),
-          total_shares: round0Shares,
-          total_percentage_raw: (round0Shares / preMoneyTotalShares) * 100,
-          total_percentage:
-            ((round0Shares / preMoneyTotalShares) * 100).toFixed(4) + "%",
-          total_value:
-            ((round0Shares / preMoneyTotalShares) * 100 * preMoneyVal) / 100,
-          total_value_formatted: `${currency} ${(((round0Shares / preMoneyTotalShares) * 100 * preMoneyVal) / 100).toFixed(2)}`,
-          roundName: round0Name,
-          share_class_type: round0Shareclassstype,
-        },
-        option_pool: {
-          shares: totalOptionPoolShares,
-          existing_shares: existingOptionPoolShares,
-          new_shares: newOptionPoolShares,
-          total: totalOptionPoolShares,
-          percentage_raw: (totalOptionPoolShares / preMoneyTotalShares) * 100,
+          is_grouped: false,
+        };
+      })(),
+
+      // Previous Warrants (NOT current round warrants)
+      warrants: (() => {
+        const prevWarrants = prevItems.filter(
+          (item) =>
+            item.type === "investor" &&
+            (item.investor_type === "warrant" ||
+              item.investor_type === "warrant not exercised") &&
+            item.is_previous === true,
+        );
+
+        if (prevWarrants.length === 0 && previousWarrantsList.length === 0) {
+          return null;
+        }
+
+        const totalWarrantShares =
+          previousWarrantsTotalShares > 0
+            ? previousWarrantsTotalShares
+            : prevWarrants.reduce((sum, w) => sum + (w.shares || 0), 0);
+
+        return {
+          name: "Warrants",
+          total_shares: totalWarrantShares,
+          percentage_raw: (totalWarrantShares / preMoneyTotalShares) * 100,
           percentage:
-            ((totalOptionPoolShares / preMoneyTotalShares) * 100).toFixed(4) +
-            "%",
-          value:
-            ((totalOptionPoolShares / preMoneyTotalShares) *
-              100 *
-              preMoneyVal) /
+            ((totalWarrantShares / preMoneyTotalShares) * 100).toFixed(4) + "%",
+          total_value:
+            ((totalWarrantShares / preMoneyTotalShares) * 100 * preMoneyVal) /
             100,
-          value_formatted: `${currency} ${(((totalOptionPoolShares / preMoneyTotalShares) * 100 * preMoneyVal) / 100).toFixed(2)}`,
-          shareClassType: "Option Pool",
-          instrumentType: "Options",
-          roundName: "Option Pool",
-          is_option_pool: true,
-        },
-        previous_investors:
-          previousInvestorsList.length > 0
-            ? {
-                name: "Previous Investors",
-                total_shares: previousInvestorsTotalShares,
+          items: (prevWarrants.length > 0
+            ? prevWarrants
+            : previousWarrantsList
+          ).map((w) => {
+            const ownership = (w.shares || 0) / preMoneyTotalShares;
+            const rawPercentage = ownership * 100;
+            return {
+              ...w,
+              percentage_raw: rawPercentage,
+              percentage: rawPercentage.toFixed(4) + "%",
+              value: (rawPercentage * preMoneyVal) / 100,
+            };
+          }),
+        };
+      })(),
+
+      // Items array - ONLY pre-money items
+      items: [
+        // Founders
+        ...(previousRoundPostCapTable.founders?.list || founderList).map(
+          (f) => {
+            const ownership = (f.shares || 0) / preMoneyTotalShares;
+            const rawPercentage = ownership * 100;
+            return {
+              type: "founder",
+              name: f.name || `${f.firstName} ${f.lastName}`,
+              shares: f.shares || 0,
+              new_shares: 0,
+              existing_shares: f.shares || 0,
+              total: f.shares || 0,
+              email: f.email,
+              phone: f.phone,
+              percentage_raw: rawPercentage,
+              percentage: rawPercentage.toFixed(4) + "%",
+              percentage_formatted: rawPercentage.toFixed(4) + "%",
+              value: (rawPercentage * preMoneyVal) / 100,
+              shareClassType: f.shareClassType || "Common Shares",
+              instrumentType: f.instrumentType || "Common Stock",
+            };
+          },
+        ),
+
+        // Option Pool
+        ...(totalOptionPoolShares > 0
+          ? [
+              {
+                type: "option_pool",
+                name: "Employee Option Pool",
+                shares: totalOptionPoolShares,
+                existing_shares: existingOptionPoolShares,
+                new_shares: newOptionPoolShares,
+                total: totalOptionPoolShares,
+                is_option_pool: true,
                 percentage_raw:
-                  (previousInvestorsTotalShares / preMoneyTotalShares) * 100,
+                  (totalOptionPoolShares / preMoneyTotalShares) * 100,
                 percentage:
-                  (
-                    (previousInvestorsTotalShares / preMoneyTotalShares) *
-                    100
-                  ).toFixed(4) + "%",
-                total_value:
-                  ((previousInvestorsTotalShares / preMoneyTotalShares) *
+                  ((totalOptionPoolShares / preMoneyTotalShares) * 100).toFixed(
+                    4,
+                  ) + "%",
+                value:
+                  ((totalOptionPoolShares / preMoneyTotalShares) *
                     100 *
                     preMoneyVal) /
                   100,
-                total_value_formatted: `${currency} ${(((previousInvestorsTotalShares / preMoneyTotalShares) * 100 * preMoneyVal) / 100).toFixed(2)}`,
-                items: previousInvestorsList.map((inv) => {
-                  const ownership = inv.shares / preMoneyTotalShares;
-                  const rawPercentage = ownership * 100;
-                  const exactValue = (rawPercentage * preMoneyVal) / 100;
-                  return {
-                    ...inv,
-                    percentage_raw: rawPercentage,
-                    percentage: rawPercentage.toFixed(4) + "%",
-                    value: exactValue,
-                    value_formatted: `${currency} ${exactValue.toFixed(2)}`,
-                  };
-                }),
-                is_grouped: false,
-              }
-            : null,
-        converted: null,
-        items: [
-          ...founderList.map((f) =>
-            buildFounderItem(f, preMoneyTotalShares, preMoneyVal, currency),
-          ),
-          buildOptionPoolItem(
-            totalOptionPoolShares,
+                shareClassType: "Option Pool",
+                instrumentType: "Options",
+              },
+            ]
+          : []),
+
+        // Previous Investors (only is_previous = true)
+        ...(previousInvestorsList.length > 0
+          ? previousInvestorsList.map((inv) => {
+              const ownership = (inv.shares || 0) / preMoneyTotalShares;
+              const rawPercentage = ownership * 100;
+              return {
+                type: "investor",
+                name: inv.name,
+                shares: inv.shares,
+                new_shares: 0,
+                existing_shares: inv.shares,
+                total: inv.shares,
+                percentage_raw: rawPercentage,
+                percentage: rawPercentage.toFixed(4) + "%",
+                value: (rawPercentage * preMoneyVal) / 100,
+                is_previous: true,
+                investor_type: inv.investor_type || "previous",
+              };
+            })
+          : []),
+
+        // Previous Warrants
+        ...(previousWarrantsList.length > 0
+          ? previousWarrantsList.map((w) => {
+              const ownership = (w.shares || 0) / preMoneyTotalShares;
+              const rawPercentage = ownership * 100;
+              return {
+                type: "investor",
+                name: w.name,
+                shares: w.shares,
+                existing_shares: w.shares,
+                total: w.shares,
+                percentage_raw: rawPercentage,
+                percentage: rawPercentage.toFixed(4) + "%",
+                value: (rawPercentage * preMoneyVal) / 100,
+                is_warrant: true,
+                is_previous: true,
+                investor_type: w.investor_type || "warrant",
+              };
+            })
+          : []),
+
+        // Pending Instruments (SAFEs for THIS round)
+        ...previousPendingSafes,
+      ],
+    };
+  } else {
+    // ✅ NO PREVIOUS ROUND - Build from scratch
+    preMoneyCapTable = {
+      total_shares: preMoneyTotalShares,
+      pre_money_valuation: preMoneyVal,
+      currency,
+      share_price: sharePrice.toString(),
+      pending_instruments: previousPendingSafes,
+      founders: {
+        list: founderList.map((f) => {
+          const ownership = f.shares / preMoneyTotalShares;
+          const rawPercentage = ownership * 100;
+          const exactValue = (rawPercentage * preMoneyVal) / 100;
+          return {
+            ...f,
+            roundName: round0Name,
+            share_class_type: round0Shareclassstype,
+            percentage_raw: rawPercentage,
+            percentage: rawPercentage.toFixed(4) + "%",
+            value: exactValue,
+            value_formatted: `${currency} ${exactValue.toFixed(2)}`,
+          };
+        }),
+        total_shares: round0Shares,
+        total_percentage_raw: (round0Shares / preMoneyTotalShares) * 100,
+        total_percentage:
+          ((round0Shares / preMoneyTotalShares) * 100).toFixed(4) + "%",
+        total_value:
+          ((round0Shares / preMoneyTotalShares) * 100 * preMoneyVal) / 100,
+      },
+      option_pool: {
+        shares: totalOptionPoolShares,
+        existing_shares: existingOptionPoolShares,
+        new_shares: newOptionPoolShares,
+        total: totalOptionPoolShares,
+        percentage_raw: (totalOptionPoolShares / preMoneyTotalShares) * 100,
+        percentage:
+          ((totalOptionPoolShares / preMoneyTotalShares) * 100).toFixed(4) +
+          "%",
+        value:
+          ((totalOptionPoolShares / preMoneyTotalShares) * 100 * preMoneyVal) /
+          100,
+        shareClassType: "Option Pool",
+        instrumentType: "Options",
+        roundName: "Option Pool",
+        is_option_pool: true,
+      },
+      previous_investors:
+        previousInvestorsList.length > 0
+          ? {
+              name: "Previous Investors",
+              total_shares: previousInvestorsTotalShares,
+              percentage_raw:
+                (previousInvestorsTotalShares / preMoneyTotalShares) * 100,
+              percentage:
+                (
+                  (previousInvestorsTotalShares / preMoneyTotalShares) *
+                  100
+                ).toFixed(4) + "%",
+              total_value:
+                ((previousInvestorsTotalShares / preMoneyTotalShares) *
+                  100 *
+                  preMoneyVal) /
+                100,
+              items: previousInvestorsList.map((inv) => {
+                const ownership = inv.shares / preMoneyTotalShares;
+                const rawPercentage = ownership * 100;
+                return {
+                  ...inv,
+                  percentage_raw: rawPercentage,
+                  percentage: rawPercentage.toFixed(4) + "%",
+                  value: (rawPercentage * preMoneyVal) / 100,
+                };
+              }),
+              is_grouped: false,
+            }
+          : null,
+      warrants:
+        previousWarrantsList.length > 0
+          ? {
+              name: "Warrants",
+              total_shares: previousWarrantsTotalShares,
+              percentage_raw:
+                (previousWarrantsTotalShares / preMoneyTotalShares) * 100,
+              percentage:
+                (
+                  (previousWarrantsTotalShares / preMoneyTotalShares) *
+                  100
+                ).toFixed(4) + "%",
+              total_value:
+                ((previousWarrantsTotalShares / preMoneyTotalShares) *
+                  100 *
+                  preMoneyVal) /
+                100,
+              items: previousWarrantsList.map((w) => {
+                const ownership = w.shares / preMoneyTotalShares;
+                const rawPercentage = ownership * 100;
+                return {
+                  ...w,
+                  percentage_raw: rawPercentage,
+                  percentage: rawPercentage.toFixed(4) + "%",
+                  value: (rawPercentage * preMoneyVal) / 100,
+                };
+              }),
+            }
+          : null,
+      items: [
+        ...founderList.map((f) =>
+          buildFounderItem(f, preMoneyTotalShares, preMoneyVal, currency),
+        ),
+        ...(totalOptionPoolShares > 0
+          ? [
+              buildOptionPoolItem(
+                totalOptionPoolShares,
+                preMoneyTotalShares,
+                preMoneyVal,
+                currency,
+                newOptionPoolShares,
+                existingOptionPoolShares,
+              ),
+            ]
+          : []),
+        ...previousInvestorsList.map((inv) =>
+          buildPrevInvestorItem(
+            inv,
             preMoneyTotalShares,
             preMoneyVal,
             currency,
-            newOptionPoolShares,
-            existingOptionPoolShares,
           ),
-          ...previousInvestorsList.map((inv) =>
-            buildPrevInvestorItem(
-              inv,
-              preMoneyTotalShares,
-              preMoneyVal,
-              currency,
-            ),
-          ),
-          ...previousWarrantsList.map((w) =>
-            buildWarrantItem(w, preMoneyTotalShares, preMoneyVal, currency),
-          ),
-          ...previousPendingSafes,
-        ],
-      };
+        ),
+        ...previousWarrantsList.map((w) =>
+          buildWarrantItem(w, preMoneyTotalShares, preMoneyVal, currency),
+        ),
+        ...previousPendingSafes,
+      ],
+    };
+  }
 
   // ==================== POST-MONEY CAP TABLE ====================
   const postMoneyCapTable = {
@@ -8607,6 +8884,7 @@ async function handleConvertibleNoteCalculation(params) {
   };
 
   // ==================== PRE-MONEY CAP TABLE ====================
+  // ==================== FETCH PREVIOUS ROUND'S POST CAP TABLE ====================
   let previousRoundPostCapTable = null;
   if (latestPreviousRound) {
     try {
@@ -8626,134 +8904,421 @@ async function handleConvertibleNoteCalculation(params) {
           typeof prevRoundData.post_money_cap_table === "string"
             ? JSON.parse(prevRoundData.post_money_cap_table)
             : prevRoundData.post_money_cap_table;
+        console.log(
+          "✅ Fetched previous round post cap table for Convertible Note calculation",
+        );
       }
     } catch (error) {
       console.error("❌ Error fetching previous round post cap table:", error);
     }
   }
 
-  const preMoneyCapTable = previousRoundPostCapTable
-    ? {
-        ...previousRoundPostCapTable,
-        pending_instruments: previousPendingSafes,
-        items: [
-          ...(previousRoundPostCapTable.items || []).filter(
-            (item) => !item.is_pending,
-          ),
-          ...previousPendingSafes,
-        ],
-      }
-    : {
-        total_shares: preMoneyTotalShares,
-        pre_money_valuation: preMoneyVal,
-        currency,
-        share_price: sharePrice.toString(), // ✅ NO toFixed
-        pending_instruments: previousPendingSafes,
-        founders: {
-          list: founderList.map((f) => {
-            const ownership = f.shares / preMoneyTotalShares;
+  // ==================== PRE-MONEY CAP TABLE (FIXED) ====================
+  let preMoneyCapTable;
+
+  if (previousRoundPostCapTable) {
+    // ✅ USE PREVIOUS ROUND'S POST CAP TABLE AS BASE
+    const prevItems = previousRoundPostCapTable.items || [];
+
+    // Filter items that should be in pre-money (NOT new investors, NOT converted)
+    const preMoneyItems = prevItems.filter(
+      (item) =>
+        item.type !== "investor" ||
+        item.is_previous === true || // Previous investors
+        (item.is_warrant === true && item.is_previous === true) || // Previous warrants
+        item.type === "founder" ||
+        item.type === "option_pool",
+    );
+
+    preMoneyCapTable = {
+      total_shares: preMoneyTotalShares,
+      pre_money_valuation: preMoneyVal,
+      currency: currency,
+      share_price: sharePrice.toString(),
+      pending_instruments: previousPendingSafes,
+
+      // Founders from previous round (updated percentages)
+      founders: previousRoundPostCapTable.founders
+        ? {
+            ...previousRoundPostCapTable.founders,
+            list: (previousRoundPostCapTable.founders.list || []).map((f) => {
+              const ownership = (f.shares || 0) / preMoneyTotalShares;
+              const rawPercentage = ownership * 100;
+              const exactValue = (rawPercentage * preMoneyVal) / 100;
+              return {
+                ...f,
+                percentage_raw: rawPercentage,
+                percentage: rawPercentage.toFixed(4) + "%",
+                percentage_formatted: rawPercentage.toFixed(4) + "%",
+                value: exactValue,
+                value_formatted: `${currency} ${exactValue.toFixed(2)}`,
+              };
+            }),
+            total_shares: previousRoundPostCapTable.founders.total_shares || 0,
+            total_percentage_raw:
+              ((previousRoundPostCapTable.founders.total_shares || 0) /
+                preMoneyTotalShares) *
+              100,
+            total_percentage:
+              (
+                ((previousRoundPostCapTable.founders.total_shares || 0) /
+                  preMoneyTotalShares) *
+                100
+              ).toFixed(4) + "%",
+            total_value:
+              (((previousRoundPostCapTable.founders.total_shares || 0) /
+                preMoneyTotalShares) *
+                100 *
+                preMoneyVal) /
+              100,
+          }
+        : null,
+
+      // Option Pool from previous round
+      option_pool: previousRoundPostCapTable.option_pool
+        ? {
+            ...previousRoundPostCapTable.option_pool,
+            shares: totalOptionPoolShares,
+            percentage_raw: (totalOptionPoolShares / preMoneyTotalShares) * 100,
+            percentage:
+              ((totalOptionPoolShares / preMoneyTotalShares) * 100).toFixed(4) +
+              "%",
+            value:
+              ((totalOptionPoolShares / preMoneyTotalShares) *
+                100 *
+                preMoneyVal) /
+              100,
+          }
+        : null,
+
+      // Previous Investors (NOT new investors)
+      previous_investors: (() => {
+        const prevInvestors = prevItems.filter(
+          (item) =>
+            item.type === "investor" &&
+            item.is_previous === true &&
+            !item.is_converted,
+        );
+
+        if (prevInvestors.length === 0 && previousInvestorsList.length === 0) {
+          return null;
+        }
+
+        const totalPrevShares =
+          previousInvestorsTotalShares > 0
+            ? previousInvestorsTotalShares
+            : prevInvestors.reduce((sum, inv) => sum + (inv.shares || 0), 0);
+
+        return {
+          name: "Previous Investors",
+          total_shares: totalPrevShares,
+          percentage_raw: (totalPrevShares / preMoneyTotalShares) * 100,
+          percentage:
+            ((totalPrevShares / preMoneyTotalShares) * 100).toFixed(4) + "%",
+          total_value:
+            ((totalPrevShares / preMoneyTotalShares) * 100 * preMoneyVal) / 100,
+          items: (prevInvestors.length > 0
+            ? prevInvestors
+            : previousInvestorsList
+          ).map((inv) => {
+            const ownership = (inv.shares || 0) / preMoneyTotalShares;
             const rawPercentage = ownership * 100;
-            const exactValue = (rawPercentage * preMoneyVal) / 100;
             return {
-              ...f,
-              roundName: round0Name,
-              share_class_type: round0Shareclassstype,
+              ...inv,
               percentage_raw: rawPercentage,
               percentage: rawPercentage.toFixed(4) + "%",
-              value: exactValue,
-              value_formatted: `${currency} ${exactValue.toFixed(2)}`,
+              value: (rawPercentage * preMoneyVal) / 100,
             };
           }),
-          total_shares: round0Shares,
-          total_percentage_raw: (round0Shares / preMoneyTotalShares) * 100,
-          total_percentage:
-            ((round0Shares / preMoneyTotalShares) * 100).toFixed(4) + "%",
-          total_value:
-            ((round0Shares / preMoneyTotalShares) * 100 * preMoneyVal) / 100,
-          total_value_formatted: `${currency} ${(((round0Shares / preMoneyTotalShares) * 100 * preMoneyVal) / 100).toFixed(2)}`,
-          roundName: round0Name,
-          share_class_type: round0Shareclassstype,
-        },
-        option_pool: {
-          shares: totalOptionPoolShares,
-          existing_shares: existingOptionPoolShares,
-          new_shares: newOptionPoolShares,
-          total: totalOptionPoolShares,
-          percentage_raw: (totalOptionPoolShares / preMoneyTotalShares) * 100,
+          is_grouped: false,
+        };
+      })(),
+
+      // Previous Warrants (NOT current round warrants)
+      warrants: (() => {
+        const prevWarrants = prevItems.filter(
+          (item) =>
+            item.type === "investor" &&
+            (item.investor_type === "warrant" ||
+              item.investor_type === "warrant not exercised") &&
+            item.is_previous === true,
+        );
+
+        if (prevWarrants.length === 0 && previousWarrantsList.length === 0) {
+          return null;
+        }
+
+        const totalWarrantShares =
+          previousWarrantsTotalShares > 0
+            ? previousWarrantsTotalShares
+            : prevWarrants.reduce((sum, w) => sum + (w.shares || 0), 0);
+
+        return {
+          name: "Warrants",
+          total_shares: totalWarrantShares,
+          percentage_raw: (totalWarrantShares / preMoneyTotalShares) * 100,
           percentage:
-            ((totalOptionPoolShares / preMoneyTotalShares) * 100).toFixed(4) +
-            "%",
-          value:
-            ((totalOptionPoolShares / preMoneyTotalShares) *
-              100 *
-              preMoneyVal) /
+            ((totalWarrantShares / preMoneyTotalShares) * 100).toFixed(4) + "%",
+          total_value:
+            ((totalWarrantShares / preMoneyTotalShares) * 100 * preMoneyVal) /
             100,
-          value_formatted: `${currency} ${(((totalOptionPoolShares / preMoneyTotalShares) * 100 * preMoneyVal) / 100).toFixed(2)}`,
-          shareClassType: "Option Pool",
-          instrumentType: "Options",
-          roundName: "Option Pool",
-          is_option_pool: true,
-        },
-        previous_investors:
-          previousInvestorsList.length > 0
-            ? {
-                name: "Previous Investors",
-                total_shares: previousInvestorsTotalShares,
+          items: (prevWarrants.length > 0
+            ? prevWarrants
+            : previousWarrantsList
+          ).map((w) => {
+            const ownership = (w.shares || 0) / preMoneyTotalShares;
+            const rawPercentage = ownership * 100;
+            return {
+              ...w,
+              percentage_raw: rawPercentage,
+              percentage: rawPercentage.toFixed(4) + "%",
+              value: (rawPercentage * preMoneyVal) / 100,
+            };
+          }),
+        };
+      })(),
+
+      converted: null,
+      investors: null,
+
+      // Items array - ONLY pre-money items
+      items: [
+        // Founders
+        ...(previousRoundPostCapTable.founders?.list || founderList).map(
+          (f) => {
+            const ownership = (f.shares || 0) / preMoneyTotalShares;
+            const rawPercentage = ownership * 100;
+            return {
+              type: "founder",
+              name: f.name || `${f.firstName} ${f.lastName}`,
+              shares: f.shares || 0,
+              new_shares: 0,
+              existing_shares: f.shares || 0,
+              total: f.shares || 0,
+              email: f.email,
+              phone: f.phone,
+              percentage_raw: rawPercentage,
+              percentage: rawPercentage.toFixed(4) + "%",
+              percentage_formatted: rawPercentage.toFixed(4) + "%",
+              value: (rawPercentage * preMoneyVal) / 100,
+              shareClassType: f.shareClassType || "Common Shares",
+              instrumentType: f.instrumentType || "Common Stock",
+            };
+          },
+        ),
+
+        // Option Pool
+        ...(totalOptionPoolShares > 0
+          ? [
+              {
+                type: "option_pool",
+                name: "Employee Option Pool",
+                shares: totalOptionPoolShares,
+                existing_shares: existingOptionPoolShares,
+                new_shares: newOptionPoolShares,
+                total: totalOptionPoolShares,
+                is_option_pool: true,
                 percentage_raw:
-                  (previousInvestorsTotalShares / preMoneyTotalShares) * 100,
+                  (totalOptionPoolShares / preMoneyTotalShares) * 100,
                 percentage:
-                  (
-                    (previousInvestorsTotalShares / preMoneyTotalShares) *
-                    100
-                  ).toFixed(4) + "%",
-                total_value:
-                  ((previousInvestorsTotalShares / preMoneyTotalShares) *
+                  ((totalOptionPoolShares / preMoneyTotalShares) * 100).toFixed(
+                    4,
+                  ) + "%",
+                value:
+                  ((totalOptionPoolShares / preMoneyTotalShares) *
                     100 *
                     preMoneyVal) /
                   100,
-                total_value_formatted: `${currency} ${(((previousInvestorsTotalShares / preMoneyTotalShares) * 100 * preMoneyVal) / 100).toFixed(2)}`,
-                items: previousInvestorsList.map((inv) => {
-                  const ownership = inv.shares / preMoneyTotalShares;
-                  const rawPercentage = ownership * 100;
-                  const exactValue = (rawPercentage * preMoneyVal) / 100;
-                  return {
-                    ...inv,
-                    percentage_raw: rawPercentage,
-                    percentage: rawPercentage.toFixed(4) + "%",
-                    value: exactValue,
-                    value_formatted: `${currency} ${exactValue.toFixed(2)}`,
-                  };
-                }),
-                is_grouped: false,
-              }
-            : null,
-        converted: null,
-        items: [
-          ...founderList.map((f) =>
-            buildFounderItem(f, preMoneyTotalShares, preMoneyVal, currency),
-          ),
-          buildOptionPoolItem(
-            totalOptionPoolShares,
+                shareClassType: "Option Pool",
+                instrumentType: "Options",
+              },
+            ]
+          : []),
+
+        // Previous Investors (only is_previous = true)
+        ...(previousInvestorsList.length > 0
+          ? previousInvestorsList.map((inv) => {
+              const ownership = (inv.shares || 0) / preMoneyTotalShares;
+              const rawPercentage = ownership * 100;
+              return {
+                type: "investor",
+                name: inv.name,
+                shares: inv.shares,
+                new_shares: 0,
+                existing_shares: inv.shares,
+                total: inv.shares,
+                percentage_raw: rawPercentage,
+                percentage: rawPercentage.toFixed(4) + "%",
+                value: (rawPercentage * preMoneyVal) / 100,
+                is_previous: true,
+                investor_type: inv.investor_type || "previous",
+              };
+            })
+          : []),
+
+        // Previous Warrants
+        ...(previousWarrantsList.length > 0
+          ? previousWarrantsList.map((w) => {
+              const ownership = (w.shares || 0) / preMoneyTotalShares;
+              const rawPercentage = ownership * 100;
+              return {
+                type: "investor",
+                name: w.name,
+                shares: w.shares,
+                existing_shares: w.shares,
+                total: w.shares,
+                percentage_raw: rawPercentage,
+                percentage: rawPercentage.toFixed(4) + "%",
+                value: (rawPercentage * preMoneyVal) / 100,
+                is_warrant: true,
+                is_previous: true,
+                investor_type: w.investor_type || "warrant",
+              };
+            })
+          : []),
+
+        // Pending Instruments (Convertible Notes for THIS round)
+        ...previousPendingSafes,
+      ],
+    };
+  } else {
+    // ✅ NO PREVIOUS ROUND - Build from scratch
+    preMoneyCapTable = {
+      total_shares: preMoneyTotalShares,
+      pre_money_valuation: preMoneyVal,
+      currency,
+      share_price: sharePrice.toString(),
+      pending_instruments: previousPendingSafes,
+      founders: {
+        list: founderList.map((f) => {
+          const ownership = f.shares / preMoneyTotalShares;
+          const rawPercentage = ownership * 100;
+          const exactValue = (rawPercentage * preMoneyVal) / 100;
+          return {
+            ...f,
+            roundName: round0Name,
+            share_class_type: round0Shareclassstype,
+            percentage_raw: rawPercentage,
+            percentage: rawPercentage.toFixed(4) + "%",
+            value: exactValue,
+            value_formatted: `${currency} ${exactValue.toFixed(2)}`,
+          };
+        }),
+        total_shares: round0Shares,
+        total_percentage_raw: (round0Shares / preMoneyTotalShares) * 100,
+        total_percentage:
+          ((round0Shares / preMoneyTotalShares) * 100).toFixed(4) + "%",
+        total_value:
+          ((round0Shares / preMoneyTotalShares) * 100 * preMoneyVal) / 100,
+      },
+      option_pool: {
+        shares: totalOptionPoolShares,
+        existing_shares: existingOptionPoolShares,
+        new_shares: newOptionPoolShares,
+        total: totalOptionPoolShares,
+        percentage_raw: (totalOptionPoolShares / preMoneyTotalShares) * 100,
+        percentage:
+          ((totalOptionPoolShares / preMoneyTotalShares) * 100).toFixed(4) +
+          "%",
+        value:
+          ((totalOptionPoolShares / preMoneyTotalShares) * 100 * preMoneyVal) /
+          100,
+        shareClassType: "Option Pool",
+        instrumentType: "Options",
+        roundName: "Option Pool",
+        is_option_pool: true,
+      },
+      previous_investors:
+        previousInvestorsList.length > 0
+          ? {
+              name: "Previous Investors",
+              total_shares: previousInvestorsTotalShares,
+              percentage_raw:
+                (previousInvestorsTotalShares / preMoneyTotalShares) * 100,
+              percentage:
+                (
+                  (previousInvestorsTotalShares / preMoneyTotalShares) *
+                  100
+                ).toFixed(4) + "%",
+              total_value:
+                ((previousInvestorsTotalShares / preMoneyTotalShares) *
+                  100 *
+                  preMoneyVal) /
+                100,
+              items: previousInvestorsList.map((inv) => {
+                const ownership = inv.shares / preMoneyTotalShares;
+                const rawPercentage = ownership * 100;
+                return {
+                  ...inv,
+                  percentage_raw: rawPercentage,
+                  percentage: rawPercentage.toFixed(4) + "%",
+                  value: (rawPercentage * preMoneyVal) / 100,
+                };
+              }),
+              is_grouped: false,
+            }
+          : null,
+      warrants:
+        previousWarrantsList.length > 0
+          ? {
+              name: "Warrants",
+              total_shares: previousWarrantsTotalShares,
+              percentage_raw:
+                (previousWarrantsTotalShares / preMoneyTotalShares) * 100,
+              percentage:
+                (
+                  (previousWarrantsTotalShares / preMoneyTotalShares) *
+                  100
+                ).toFixed(4) + "%",
+              total_value:
+                ((previousWarrantsTotalShares / preMoneyTotalShares) *
+                  100 *
+                  preMoneyVal) /
+                100,
+              items: previousWarrantsList.map((w) => {
+                const ownership = w.shares / preMoneyTotalShares;
+                const rawPercentage = ownership * 100;
+                return {
+                  ...w,
+                  percentage_raw: rawPercentage,
+                  percentage: rawPercentage.toFixed(4) + "%",
+                  value: (rawPercentage * preMoneyVal) / 100,
+                };
+              }),
+            }
+          : null,
+      converted: null,
+      items: [
+        ...founderList.map((f) =>
+          buildFounderItem(f, preMoneyTotalShares, preMoneyVal, currency),
+        ),
+        ...(totalOptionPoolShares > 0
+          ? [
+              buildOptionPoolItem(
+                totalOptionPoolShares,
+                preMoneyTotalShares,
+                preMoneyVal,
+                currency,
+                newOptionPoolShares,
+                existingOptionPoolShares,
+              ),
+            ]
+          : []),
+        ...previousInvestorsList.map((inv) =>
+          buildPrevInvestorItem(
+            inv,
             preMoneyTotalShares,
             preMoneyVal,
             currency,
-            newOptionPoolShares,
-            existingOptionPoolShares,
           ),
-          ...previousInvestorsList.map((inv) =>
-            buildPrevInvestorItem(
-              inv,
-              preMoneyTotalShares,
-              preMoneyVal,
-              currency,
-            ),
-          ),
-          ...previousWarrantsList.map((w) =>
-            buildWarrantItem(w, preMoneyTotalShares, preMoneyVal, currency),
-          ),
-          ...previousPendingSafes,
-        ],
-      };
+        ),
+        ...previousWarrantsList.map((w) =>
+          buildWarrantItem(w, preMoneyTotalShares, preMoneyVal, currency),
+        ),
+        ...previousPendingSafes,
+      ],
+    };
+  }
 
   // ==================== POST-MONEY CAP TABLE ====================
   const postMoneyCapTable = {
@@ -9225,9 +9790,7 @@ const sendRecordRoundEmail = async (
   const { email, first_name, last_name } = investorInfo;
   const { displayName } = companyInfo;
 
-  const url =
-    "https://capavate.com/investor/company/capital-round-list/" +
-    companyInfo.company_id;
+  const url = "https://capavate.com/investor/company/watch-list/";
 
   const mailOptions = {
     from: '"Capavate" <scale@blueprintcatalyst.com>',

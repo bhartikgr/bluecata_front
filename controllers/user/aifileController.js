@@ -1540,12 +1540,12 @@ exports.generateProcessAI = async (req, res) => {
       if (!fileTexts.length) continue;
 
       const combinedText = fileTexts.join("\n\n---\n\n").slice(0, 15000);
-      const prompt = `You are an AI assistant helping with due diligence document analysis.\n\nHere is the combined content of multiple documents:\n\n${combinedText}\n\nPlease:\n1. Identify key sections or topics.\n2. Summarize each in no more than 1000 characters.\n3. Return the result as a JSON array in this format:\n[\n  {\n    "heading": "Section Heading",\n    "summary": "Summary text..."\n  }\n]`;
+      const prompt = `You are an AI assistant helping with due dataroom document analysis.\n\nHere is the combined content of multiple documents:\n\n${combinedText}\n\nPlease:\n1. Identify key sections or topics.\n2. Summarize each in no more than 1000 characters.\n3. Return the result as a JSON array in this format:\n[\n  {\n    "heading": "Section Heading",\n    "summary": "Summary text..."\n  }\n]`;
 
       const response = await openai.chat.completions.create({
         model: "gpt-4-turbo",
         messages: [
-          { role: "system", content: "You summarize due diligence documents." },
+          { role: "system", content: "You summarize dataroom documents." },
           { role: "user", content: prompt },
         ],
         max_tokens: 1000,
@@ -1596,12 +1596,12 @@ exports.generateProcessAI = async (req, res) => {
       summaries.push({ category_id, summary: fileSummary });
       sectionSummaries.push(fileSummary);
 
-      const qPrompt = `You are a due diligence analyst. Based on the following summary:\n\n"${fileSummary}"\n\nGenerate 3 important due diligence questions. Return them as a JSON array of strings.`;
+      const qPrompt = `You are a due dataroom analyst. Based on the following summary:\n\n"${fileSummary}"\n\nGenerate 3 important dataroom questions. Return them as a JSON array of strings.`;
 
       const qResponse = await openai.chat.completions.create({
         model: "gpt-4-turbo",
         messages: [
-          { role: "system", content: "You generate due diligence questions." },
+          { role: "system", content: "You generate due dataroom questions." },
           { role: "user", content: qPrompt },
         ],
         max_tokens: 500,
@@ -1643,7 +1643,7 @@ exports.generateProcessAI = async (req, res) => {
       }
     }
 
-    const execPrompt = `You are a due diligence expert. Below are summaries from different sections:\n\n${sectionSummaries.join(
+    const execPrompt = `You are a due dataroom expert. Below are summaries from different sections:\n\n${sectionSummaries.join(
       "\n\n",
     )}\n\nGenerate a concise executive summary (max 1000 characters) that captures the key insights.`;
 
@@ -1652,7 +1652,7 @@ exports.generateProcessAI = async (req, res) => {
       messages: [
         {
           role: "system",
-          content: "You generate executive due diligence summaries.",
+          content: "You generate executive due dataroom summaries.",
         },
         { role: "user", content: execPrompt },
       ],
@@ -1770,7 +1770,7 @@ exports.generateProcessAI = async (req, res) => {
 };
 
 async function sendApprovalEmail({ email, companyName, uniqcode }) {
-  const subject = `Due Diligence Summary Ready for Approval - Capavate`;
+  const subject = `Dataroom Summary Ready for Approval - Capavate`;
   const approvalLink = `https://capavate.com/approvalpage/${uniqcode}`;
 
   const transporter = nodemailer.createTransport({
@@ -1804,13 +1804,13 @@ async function sendApprovalEmail({ email, companyName, uniqcode }) {
               companyName || "User"
             },</h2>
             <p style="font-size:14px; color:#111; margin-bottom:10px;">
-              Your Due Diligence document summaries are ready for review.
+              Your Dataroom document summaries are ready for review.
             </p>
             <p style="font-size:14px; color:#111; margin-bottom:10px;">
               Please click the button below to view and approve:
             </p>
             <div style="margin:20px 0;">
-              <a href="${approvalLink}" style="display:inline-block; padding:12px 24px; background-color:#1e3a8a; color:#fff; text-decoration:none; border-radius:6px;">
+              <a href="${approvalLink}" style="display:inline-block; padding:12px 24px; background-color:#FF3E41; color:#fff; text-decoration:none; border-radius:6px;">
                 View Approval Docs
               </a>
             </div>
