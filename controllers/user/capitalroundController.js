@@ -1884,7 +1884,9 @@ async function handleCommonStockCalculation(params, updateFlag = false) {
             email: inv.email || "",
             phone: inv.phone || "",
           },
-          shares: parseFloat(inv.shares) || 0,
+          shares: parseFloat(inv.new_shares) || 0,
+          total_shares: parseFloat(inv.total_shares) || 0,
+          new_shares: 0,
           investor_type: inv.investor_type,
           investment: parseFloat(inv.investment_amount || 0),
           share_price: parseFloat(inv.share_price || 0),
@@ -2526,22 +2528,24 @@ async function handleCommonStockCalculation(params, updateFlag = false) {
 
   // ==================== HELPER FUNCTION FOR WARRANT ITEM ====================
   const buildWarrantItem = (warrant, totalShares, valuation, cur) => {
-    const ownership = warrant.shares / totalShares;
-    const rawPercentage = ownership * 100;
     let investorType = "warrant";
     if (warrant.investor_type === "warrant not exercised") {
       investorType = "warrant not exercised";
     }
-    const isPreviousWarrant = warrant.is_previous === true;
-    const isCurrentWarrant = warrant.is_previous === false;
+    var extsh = warrant.shares;
+    if (warrant.is_previous === true) {
+      var extsh = warrant.total_shares;
+    }
+    const ownership = extsh / totalShares;
+    const rawPercentage = ownership * 100;
     return {
       type: "investor",
       name: warrant.name,
       investor_details: warrant.investor_details,
-      shares: warrant.shares,
-      new_shares: warrant.shares,
-      existing_shares: 0,
-      total: warrant.shares,
+      shares: extsh,
+      new_shares: warrant.new_shares,
+      existing_shares: extsh,
+      total: warrant.total_shares,
       email: warrant.investor_details?.email || "",
       phone: warrant.investor_details?.phone || "",
       percentage_raw: rawPercentage,
@@ -2551,9 +2555,9 @@ async function handleCommonStockCalculation(params, updateFlag = false) {
       investment: warrant.investment,
       investment_amount: warrant.investment,
       share_price: warrant.share_price,
-      is_previous: isPreviousWarrant,
+      is_previous: false,
       is_warrant: true,
-      is_new_investment: isCurrentWarrant,
+      is_new_investment: true,
       is_converted: false,
       investor_type: investorType,
       share_class_type: warrant.share_class_type,
@@ -3775,7 +3779,7 @@ async function insertWarrantEntry(
        share_class_type, instrument_type, round_name, round_id_ref)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
-
+    console.log(inv);
     const values = [
       warrant.id,
       roundId,
@@ -3786,7 +3790,7 @@ async function insertWarrantEntry(
       investorLastName || "",
       investorEmail || "",
       investorPhone || "",
-      parseFloat(calculation.potentialShares),
+      0,
       parseFloat(calculation.potentialShares),
       parseFloat(calculation.potentialShares),
       0,
@@ -4571,6 +4575,7 @@ async function saveCapTableData(
                 });
               }
             }
+            // 3. Previous Investors — PRE (from items array where is_previous = true)
           }
 
           // ==================== SAVE POST-MONEY DATA ====================
@@ -5071,6 +5076,8 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
             phone: inv.phone || "",
           },
           shares: parseFloat(inv.shares) || 0,
+          total_shares: parseFloat(inv.total_shares) || 0,
+          new_shares: parseFloat(inv.new_shares) || 0,
           investor_type: inv.investor_type,
           investment: parseFloat(inv.investment_amount || 0),
           share_price: parseFloat(inv.share_price || 0),
@@ -5692,22 +5699,24 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
   conversionDetails.forEach((conv, idx) => {});
 
   const buildWarrantItem = (warrant, totalShares, valuation, cur) => {
-    const ownership = warrant.shares / totalShares;
-    const rawPercentage = ownership * 100;
     let investorType = "warrant";
     if (warrant.investor_type === "warrant not exercised") {
       investorType = "warrant not exercised";
     }
-    const isPreviousWarrant = warrant.is_previous === true;
-    const isCurrentWarrant = warrant.is_previous === false;
+    var extsh = warrant.shares;
+    if (warrant.is_previous === true) {
+      var extsh = warrant.total_shares;
+    }
+    const ownership = extsh / totalShares;
+    const rawPercentage = ownership * 100;
     return {
       type: "investor",
       name: warrant.name,
       investor_details: warrant.investor_details,
-      shares: warrant.shares,
-      new_shares: warrant.shares,
-      existing_shares: 0,
-      total: warrant.shares,
+      shares: extsh,
+      new_shares: warrant.new_shares,
+      existing_shares: extsh,
+      total: warrant.total_shares,
       email: warrant.investor_details?.email || "",
       phone: warrant.investor_details?.phone || "",
       percentage_raw: rawPercentage,
@@ -5717,9 +5726,9 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
       investment: warrant.investment,
       investment_amount: warrant.investment,
       share_price: warrant.share_price,
-      is_previous: isPreviousWarrant,
+      is_previous: false,
       is_warrant: true,
-      is_new_investment: isCurrentWarrant,
+      is_new_investment: true,
       is_converted: false,
       investor_type: investorType,
       share_class_type: warrant.share_class_type,
@@ -7050,7 +7059,9 @@ async function handleSafeCalculation(params) {
             email: inv.email || "",
             phone: inv.phone || "",
           },
-          shares: parseFloat(inv.shares) || 0,
+          shares: parseFloat(inv.total_shares) || 0,
+          total_shares: parseFloat(inv.total_shares) || 0,
+          new_shares: 0,
           investor_type: inv.investor_type,
           investment: parseFloat(inv.investment_amount || 0),
           share_price: parseFloat(inv.share_price || 0),
@@ -7442,23 +7453,25 @@ async function handleSafeCalculation(params) {
   };
 
   const buildWarrantItem = (warrant, totalShares, valuation, cur) => {
-    const ownership = warrant.shares / totalShares;
-    const rawPercentage = ownership * 100;
-    const exactValue = (rawPercentage * valuation) / 100;
     let investorType = "warrant";
     if (warrant.investor_type === "warrant not exercised") {
       investorType = "warrant not exercised";
     }
-    const isPreviousWarrant = warrant.is_previous === true;
-    const isCurrentWarrant = warrant.is_previous === false;
+    var extsh = warrant.shares;
+    if (warrant.is_previous === true) {
+      var extsh = warrant.total_shares;
+    }
+    const ownership = extsh / totalShares;
+    const rawPercentage = ownership * 100;
+    const exactValue = (rawPercentage * valuation) / 100;
     return {
       type: "investor",
       name: warrant.name,
       investor_details: warrant.investor_details,
-      shares: warrant.shares,
-      new_shares: warrant.shares,
-      existing_shares: 0,
-      total: warrant.shares,
+      shares: extsh,
+      new_shares: warrant.new_shares,
+      existing_shares: extsh,
+      total: warrant.total_shares,
       email: warrant.investor_details?.email || "",
       phone: warrant.investor_details?.phone || "",
       percentage_raw: rawPercentage,
@@ -7469,9 +7482,9 @@ async function handleSafeCalculation(params) {
       investment: warrant.investment,
       investment_amount: warrant.investment,
       share_price: warrant.share_price,
-      is_previous: isPreviousWarrant,
+      is_previous: false,
       is_warrant: true,
-      is_new_investment: isCurrentWarrant,
+      is_new_investment: true,
       is_converted: false,
       investor_type: investorType,
       share_class_type: warrant.share_class_type,
@@ -7588,47 +7601,41 @@ async function handleSafeCalculation(params) {
         : null,
 
       // Previous Investors (NOT new investors)
-      previous_investors: (() => {
-        const prevInvestors = prevItems.filter(
-          (item) =>
-            item.type === "investor" &&
-            item.is_previous === true &&
-            !item.is_converted,
-        );
-
-        if (prevInvestors.length === 0 && previousInvestorsList.length === 0) {
-          return null;
-        }
-
-        const totalPrevShares =
-          previousInvestorsTotalShares > 0
-            ? previousInvestorsTotalShares
-            : prevInvestors.reduce((sum, inv) => sum + (inv.shares || 0), 0);
-
-        return {
-          name: "Previous Investors",
-          total_shares: totalPrevShares,
-          percentage_raw: (totalPrevShares / preMoneyTotalShares) * 100,
-          percentage:
-            ((totalPrevShares / preMoneyTotalShares) * 100).toFixed(4) + "%",
-          total_value:
-            ((totalPrevShares / preMoneyTotalShares) * 100 * preMoneyVal) / 100,
-          items: (prevInvestors.length > 0
-            ? prevInvestors
-            : previousInvestorsList
-          ).map((inv) => {
-            const ownership = (inv.shares || 0) / preMoneyTotalShares;
-            const rawPercentage = ownership * 100;
-            return {
-              ...inv,
-              percentage_raw: rawPercentage,
-              percentage: rawPercentage.toFixed(4) + "%",
-              value: (rawPercentage * preMoneyVal) / 100,
-            };
-          }),
-          is_grouped: false,
-        };
-      })(),
+      previous_investors:
+        previousInvestorsList.length > 0
+          ? {
+              name: "Previous Investors",
+              total_shares: previousInvestorsTotalShares,
+              percentage_raw:
+                (previousInvestorsTotalShares / preMoneyTotalShares) * 100,
+              percentage:
+                (
+                  (previousInvestorsTotalShares / preMoneyTotalShares) *
+                  100
+                ).toFixed(4) + "%",
+              total_value:
+                ((previousInvestorsTotalShares / preMoneyTotalShares) *
+                  100 *
+                  preMoneyVal) /
+                100,
+              total_value_formatted: `${currency} ${(((previousInvestorsTotalShares / preMoneyTotalShares) * 100 * preMoneyVal) / 100).toFixed(2)}`,
+              items: previousInvestorsList.map((inv) => {
+                const ownership = inv.shares / preMoneyTotalShares;
+                const rawPercentage = ownership * 100;
+                const exactValue = (rawPercentage * preMoneyVal) / 100;
+                return {
+                  ...inv,
+                  percentage_raw: rawPercentage,
+                  percentage: rawPercentage.toFixed(4) + "%",
+                  percentage_formatted: rawPercentage.toFixed(4) + "%",
+                  value: exactValue,
+                  value_formatted: `${currency} ${exactValue.toFixed(2)}`,
+                  investor_type: "previous", // ✅ FORCE to 'previous'
+                };
+              }),
+              is_grouped: false,
+            }
+          : null,
 
       // Previous Warrants (NOT current round warrants)
       warrants: (() => {
@@ -7757,6 +7764,12 @@ async function handleSafeCalculation(params) {
               return {
                 type: "investor",
                 name: w.name,
+                // ✅ ADD: contact fields
+                first_name: w.investor_details?.firstName || w.first_name || "",
+                last_name: w.investor_details?.lastName || w.last_name || "",
+                email: w.investor_details?.email || w.email || "",
+                phone: w.investor_details?.phone || w.phone || "",
+                investor_details: w.investor_details || {},
                 shares: w.shares,
                 existing_shares: w.shares,
                 total: w.shares,
@@ -7766,6 +7779,12 @@ async function handleSafeCalculation(params) {
                 is_warrant: true,
                 is_previous: true,
                 investor_type: w.investor_type || "warrant",
+                share_class_type: w.share_class_type,
+                instrument_type: w.instrument_type,
+                round_name: w.round_name,
+                round_id: w.round_id,
+                round_id_ref: w.round_id_ref,
+                warrant_id: w.warrant_id,
               };
             })
           : []),
@@ -8448,72 +8467,72 @@ async function handleConvertibleNoteCalculation(params) {
         r.instrumentType === "Convertible Note",
     );
 
-    for (const prevRound of allPreviousInvestorRounds) {
-      const roundInvestors = await new Promise((resolve, reject) => {
-        db.query(
-          `SELECT * FROM round_investors 
-           WHERE round_id = ? AND company_id = ? AND cap_table_type = 'post' 
-           AND (investor_type = 'current' OR investor_type = 'converted' or investor_type = 'previous' or investor_type = 'warrant' or investor_type = 'warrant not exercised')
-           ORDER BY id ASC`,
-          [prevRound.id, company_id],
-          (err, results) => {
-            if (err) reject(err);
-            else resolve(results || []);
+    const roundInvestors = await new Promise((resolve, reject) => {
+      db.query(
+        `SELECT ri.*, w.id as warrant_id 
+           FROM round_investors ri
+           LEFT JOIN warrants w ON w.id = ri.warrant_id
+           WHERE ri.round_id = ? AND ri.company_id = ? AND ri.cap_table_type = 'post' 
+           AND (ri.investor_type = 'current' OR ri.investor_type = 'converted' or ri.investor_type = 'previous' or ri.investor_type = 'warrant' or ri.investor_type = 'warrant not exercised')
+           ORDER BY ri.id ASC`,
+        [round.id, company_id],
+        (err, results) => {
+          if (err) reject(err);
+          else resolve(results || []);
+        },
+      );
+    });
+    roundInvestors.forEach((inv) => {
+      if (
+        inv.investor_type === "warrant" ||
+        inv.investor_type === "warrant not exercised"
+      ) {
+        previousWarrantsList.push({
+          type: "warrant",
+          name: `${inv.first_name || ""} ${inv.last_name || ""}`.trim(),
+          investor_details: {
+            firstName: inv.first_name || "",
+            lastName: inv.last_name || "",
+            email: inv.email || "",
+            phone: inv.phone || "",
           },
-        );
-      });
-
-      roundInvestors.forEach((inv) => {
-        if (
-          inv.investor_type === "warrant" ||
-          inv.investor_type === "warrant not exercised"
-        ) {
-          previousWarrantsList.push({
-            type: "warrant",
-            name: `${inv.first_name || ""} ${inv.last_name || ""}`.trim(),
-            investor_details: {
-              firstName: inv.first_name || "",
-              lastName: inv.last_name || "",
-              email: inv.email || "",
-              phone: inv.phone || "",
-            },
-            shares: parseFloat(inv.shares) || 0,
-            investor_type: inv.investor_type,
-            investment: parseFloat(inv.investment_amount || 0),
-            share_price: parseFloat(inv.share_price || 0),
-            share_class_type: inv.share_class_type,
-            instrument_type: inv.instrument_type,
-            round_name: inv.round_name,
-            round_id: prevRound.id,
-            warrant_id: inv.warrant_id,
-            round_id_ref: inv.round_id_ref,
-            is_previous: true,
-          });
-        } else {
-          previousInvestorsList.push({
-            type: "investor",
-            name: `${inv.first_name || ""} ${inv.last_name || ""}`.trim(),
-            investor_details: {
-              firstName: inv.first_name || "",
-              lastName: inv.last_name || "",
-              email: inv.email || "",
-              phone: inv.phone || "",
-            },
-            shares: parseFloat(inv.shares) || 0,
-            investor_type: inv.investor_type,
-            investment: parseFloat(inv.investment_amount || 0),
-            share_price: parseFloat(inv.share_price || 0),
-            share_class_type: inv.share_class_type,
-            instrument_type: inv.instrument_type,
-            round_name: inv.round_name,
-            round_id: prevRound.id,
-            is_previous: true,
-            warrant_id: inv.warrant_id,
-            round_id_ref: inv.round_id_ref,
-          });
-        }
-      });
-    }
+          shares: parseFloat(inv.total_shares) || 0,
+          total_shares: parseFloat(inv.total_shares) || 0,
+          new_shares: 0,
+          investor_type: inv.investor_type,
+          investment: parseFloat(inv.investment_amount || 0),
+          share_price: parseFloat(inv.share_price || 0),
+          share_class_type: inv.share_class_type,
+          instrument_type: inv.instrument_type,
+          round_name: inv.round_name,
+          round_id: round.id,
+          warrant_id: inv.warrant_id,
+          is_previous: true,
+          round_id_ref: inv.round_id_ref,
+        });
+      } else {
+        previousInvestorsList.push({
+          type: "investor",
+          name: `${inv.first_name || ""} ${inv.last_name || ""}`.trim(),
+          investor_details: {
+            firstName: inv.first_name || "",
+            lastName: inv.last_name || "",
+            email: inv.email || "",
+            phone: inv.phone || "",
+          },
+          shares: parseFloat(inv.shares) || 0,
+          investor_type: inv.investor_type,
+          investment: parseFloat(inv.investment_amount || 0),
+          share_price: parseFloat(inv.share_price || 0),
+          share_class_type: inv.share_class_type,
+          instrument_type: inv.instrument_type,
+          round_name: inv.round_name,
+          round_id: round.id,
+          round_id_ref: inv.round_id_ref,
+          is_previous: true,
+        });
+      }
+    });
 
     previousInvestorsTotalShares = previousInvestorsList.reduce(
       (sum, inv) => sum + (inv.shares || 0),
@@ -8889,9 +8908,6 @@ async function handleConvertibleNoteCalculation(params) {
   };
 
   const buildWarrantItem = (warrant, totalShares, valuation, cur) => {
-    const ownership = warrant.shares / totalShares;
-    const rawPercentage = ownership * 100;
-    const exactValue = (rawPercentage * valuation) / 100;
     let investorType = "warrant";
     if (warrant.investor_type === "warrant not exercised") {
       investorType = "warrant not exercised";
@@ -8899,15 +8915,21 @@ async function handleConvertibleNoteCalculation(params) {
     // ✅ Determine if warrant is from previous round or current round
     const isPreviousWarrant = warrant.is_previous === true;
     const isCurrentWarrant = warrant.is_previous === false;
-
+    var extsh = warrant.shares;
+    if (warrant.is_previous === true) {
+      var extsh = warrant.total_shares;
+    }
+    const ownership = extsh / totalShares;
+    const rawPercentage = ownership * 100;
+    const exactValue = (rawPercentage * valuation) / 100;
     return {
       type: "investor",
       name: warrant.name,
       investor_details: warrant.investor_details,
-      shares: warrant.shares,
-      new_shares: 0,
-      existing_shares: warrant.shares,
-      total: warrant.shares,
+      shares: extsh,
+      new_shares: warrant.new_shares,
+      existing_shares: extsh,
+      total: warrant.total_shares,
       email: warrant.investor_details?.email || "",
       phone: warrant.investor_details?.phone || "",
       percentage_raw: rawPercentage,
@@ -9039,47 +9061,41 @@ async function handleConvertibleNoteCalculation(params) {
         : null,
 
       // Previous Investors (NOT new investors)
-      previous_investors: (() => {
-        const prevInvestors = prevItems.filter(
-          (item) =>
-            item.type === "investor" &&
-            item.is_previous === true &&
-            !item.is_converted,
-        );
-
-        if (prevInvestors.length === 0 && previousInvestorsList.length === 0) {
-          return null;
-        }
-
-        const totalPrevShares =
-          previousInvestorsTotalShares > 0
-            ? previousInvestorsTotalShares
-            : prevInvestors.reduce((sum, inv) => sum + (inv.shares || 0), 0);
-
-        return {
-          name: "Previous Investors",
-          total_shares: totalPrevShares,
-          percentage_raw: (totalPrevShares / preMoneyTotalShares) * 100,
-          percentage:
-            ((totalPrevShares / preMoneyTotalShares) * 100).toFixed(4) + "%",
-          total_value:
-            ((totalPrevShares / preMoneyTotalShares) * 100 * preMoneyVal) / 100,
-          items: (prevInvestors.length > 0
-            ? prevInvestors
-            : previousInvestorsList
-          ).map((inv) => {
-            const ownership = (inv.shares || 0) / preMoneyTotalShares;
-            const rawPercentage = ownership * 100;
-            return {
-              ...inv,
-              percentage_raw: rawPercentage,
-              percentage: rawPercentage.toFixed(4) + "%",
-              value: (rawPercentage * preMoneyVal) / 100,
-            };
-          }),
-          is_grouped: false,
-        };
-      })(),
+      previous_investors:
+        previousInvestorsList.length > 0
+          ? {
+              name: "Previous Investors",
+              total_shares: previousInvestorsTotalShares,
+              percentage_raw:
+                (previousInvestorsTotalShares / preMoneyTotalShares) * 100,
+              percentage:
+                (
+                  (previousInvestorsTotalShares / preMoneyTotalShares) *
+                  100
+                ).toFixed(4) + "%",
+              total_value:
+                ((previousInvestorsTotalShares / preMoneyTotalShares) *
+                  100 *
+                  preMoneyVal) /
+                100,
+              total_value_formatted: `${currency} ${(((previousInvestorsTotalShares / preMoneyTotalShares) * 100 * preMoneyVal) / 100).toFixed(2)}`,
+              items: previousInvestorsList.map((inv) => {
+                const ownership = inv.shares / preMoneyTotalShares;
+                const rawPercentage = ownership * 100;
+                const exactValue = (rawPercentage * preMoneyVal) / 100;
+                return {
+                  ...inv,
+                  percentage_raw: rawPercentage,
+                  percentage: rawPercentage.toFixed(4) + "%",
+                  percentage_formatted: rawPercentage.toFixed(4) + "%",
+                  value: exactValue,
+                  value_formatted: `${currency} ${exactValue.toFixed(2)}`,
+                  investor_type: "previous", // ✅ FORCE to 'previous'
+                };
+              }),
+              is_grouped: false,
+            }
+          : null,
 
       // Previous Warrants (NOT current round warrants)
       warrants: (() => {
@@ -9211,6 +9227,10 @@ async function handleConvertibleNoteCalculation(params) {
               return {
                 type: "investor",
                 name: w.name,
+                first_name: w.investor_details?.firstName || w.first_name || "",
+                last_name: w.investor_details?.lastName || w.last_name || "",
+                email: w.investor_details?.email || w.email || "",
+                phone: w.investor_details?.phone || w.phone || "",
                 shares: w.shares,
                 existing_shares: w.shares,
                 total: w.shares,
@@ -11747,14 +11767,11 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
                                         (i) => i.investor_type === "converted",
                                       );
 
-                                      // ✅ WARRANT FIX: shares NULL ho sakta hai, fallback use karo
+                                      // ✅ WARRANT FIX: total_shares DB column use karo
                                       const preWarrantShares =
                                         preValidWarrants.reduce(
                                           (s, i) =>
-                                            s +
-                                            (toNumber(i.shares) ||
-                                              toNumber(i.new_shares) ||
-                                              toNumber(i.total_shares)),
+                                            s + toNumber(i.total_shares),
                                           0,
                                         );
                                       const preWarrantValue =
@@ -11831,7 +11848,7 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
                                           toNumber(i.value);
                                       });
 
-                                      // ✅ WARRANT FIX: Group warrants with shares fallback
+                                      // ✅ WARRANT FIX: Group warrants — DB columns directly
                                       const preWarrantGroups = {};
                                       preValidWarrants.forEach((i) => {
                                         const key = i.warrant_id
@@ -11844,16 +11861,26 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
                                               i.round_name || "Warrant",
                                             round_id_ref: i.round_id_ref,
                                             items: [],
-                                            total_shares: 0,
+                                            total_existing_shares: 0, // DB: shares
+                                            total_new_shares: 0, // DB: new_shares
+                                            total_shares: 0, // DB: total_shares
                                             total_value: 0,
                                             investor_type: i.investor_type,
                                           };
                                         }
                                         preWarrantGroups[key].items.push(i);
-                                        // ✅ WARRANT FIX: shares NULL fallback
+                                        // ✅ WARRANT FIX: DB columns directly
+                                        preWarrantGroups[
+                                          key
+                                        ].total_existing_shares += toNumber(
+                                          i.shares,
+                                        );
+                                        preWarrantGroups[
+                                          key
+                                        ].total_new_shares += toNumber(
+                                          i.new_shares,
+                                        );
                                         preWarrantGroups[key].total_shares +=
-                                          toNumber(i.shares) ||
-                                          toNumber(i.new_shares) ||
                                           toNumber(i.total_shares);
                                         preWarrantGroups[key].total_value +=
                                           toNumber(i.value);
@@ -12048,25 +12075,19 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
                                                 `${warrant.first_name || ""} ${warrant.last_name || ""}`.trim();
                                             }
 
-                                            // ✅ WARRANT FIX: round_id === round_id_ref check for pre-money warrants
-                                            const isCurrentRoundWarrant =
-                                              warrant.round_id ===
-                                              warrant.round_id_ref;
-
                                             return {
                                               type: "investor",
                                               name: displayName,
-                                              label: "1 warrant",
+                                              label: `${group.items.length} warrant${group.items.length > 1 ? "s" : ""}`,
+                                              round_id_ref: group.round_id_ref,
+                                              share_class_type:
+                                                group.investor_type,
+                                              // ✅ WARRANT FIX: DB columns directly
                                               shares: group.total_shares,
-                                              // ✅ WARRANT FIX: same round → new, diff round → existing
-                                              new_shares: isCurrentRoundWarrant
-                                                ? group.total_shares
-                                                : 0,
                                               existing_shares:
-                                                isCurrentRoundWarrant
-                                                  ? 0
-                                                  : group.total_shares,
-                                              total: group.total_shares,
+                                                group.total_existing_shares,
+                                              new_shares:
+                                                group.total_new_shares,
                                               total_shares: group.total_shares,
                                               warrant_shares:
                                                 group.total_shares,
@@ -12090,18 +12111,24 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
                                                 group.investor_type,
                                               is_warrant: true,
                                               is_new_investment:
-                                                isCurrentRoundWarrant,
+                                                group.total_new_shares > 0,
+                                              is_previous:
+                                                group.total_existing_shares >
+                                                  0 &&
+                                                group.total_new_shares === 0,
                                               warrant_id: group.warrant_id,
                                               investor_details: group.items.map(
                                                 (i) => {
-                                                  // ✅ WARRANT FIX: shares NULL fallback
-                                                  const iShares =
-                                                    toNumber(i.shares) ||
-                                                    toNumber(i.new_shares) ||
-                                                    toNumber(i.total_shares);
-                                                  const iIsCurrentRound =
-                                                    i.round_id ===
-                                                    i.round_id_ref;
+                                                  // ✅ WARRANT FIX: DB columns directly — same as post-money
+                                                  const iExisting = toNumber(
+                                                    i.shares,
+                                                  );
+                                                  const iNew = toNumber(
+                                                    i.new_shares,
+                                                  );
+                                                  const iTotal = toNumber(
+                                                    i.total_shares,
+                                                  );
                                                   return {
                                                     type: "investor",
                                                     investor_type:
@@ -12111,32 +12138,31 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
                                                       "Warrant Holder",
                                                     email: i.email || "",
                                                     phone: i.phone || "",
-                                                    shares: iShares,
-                                                    existing_shares:
-                                                      iIsCurrentRound
-                                                        ? 0
-                                                        : iShares,
-                                                    new_shares: iIsCurrentRound
-                                                      ? iShares
-                                                      : 0,
-                                                    total_shares: iShares,
-                                                    warrant_shares: iShares,
+                                                    shares: iTotal,
+                                                    existing_shares: iExisting,
+                                                    new_shares: iNew,
+                                                    total_shares: iTotal,
+                                                    warrant_shares: iTotal,
                                                     shares_formatted:
-                                                      formatNumber(iShares),
+                                                      formatNumber(iTotal),
                                                     percentage:
                                                       calculatePercentage(
-                                                        iShares,
+                                                        iTotal,
                                                         preTotalShares,
                                                       ),
                                                     percentage_formatted:
                                                       calculatePercentage(
-                                                        iShares,
+                                                        iTotal,
                                                         preTotalShares,
                                                       ).toFixed(4) + "%",
                                                     value: toNumber(i.value),
                                                     value_formatted:
                                                       formatMoney(i.value),
                                                     is_warrant: true,
+                                                    is_new_investment: iNew > 0,
+                                                    is_previous:
+                                                      iExisting > 0 &&
+                                                      iNew === 0,
                                                     warrant_id: i.warrant_id,
                                                     investment_amount: toNumber(
                                                       i.investment_amount,
@@ -12144,6 +12170,47 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
                                                     share_price: toNumber(
                                                       i.share_price,
                                                     ),
+                                                    share_class_type:
+                                                      i.share_class_type,
+                                                    instrument_type:
+                                                      i.instrument_type,
+                                                    round_name: i.round_name,
+                                                    round_id_ref:
+                                                      i.round_id_ref,
+                                                    investor_details:
+                                                      parseDetails(
+                                                        i.investor_details,
+                                                      ),
+                                                    potential_shares: toNumber(
+                                                      i.potential_shares,
+                                                    ),
+                                                    conversion_price: toNumber(
+                                                      i.conversion_price,
+                                                    ),
+                                                    discount_rate: toNumber(
+                                                      i.discount_rate,
+                                                    ),
+                                                    valuation_cap: toNumber(
+                                                      i.valuation_cap,
+                                                    ),
+                                                    interest_rate: toNumber(
+                                                      i.interest_rate,
+                                                    ),
+                                                    years: toNumber(i.years),
+                                                    interest_accrued: toNumber(
+                                                      i.interest_accrued,
+                                                    ),
+                                                    total_conversion_amount:
+                                                      toNumber(
+                                                        i.total_conversion_amount,
+                                                      ) ||
+                                                      toNumber(
+                                                        i.investment_amount,
+                                                      ),
+                                                    maturity_date:
+                                                      i.maturity_date || null,
+                                                    is_pending:
+                                                      i.is_pending || false,
                                                   };
                                                 },
                                               ),
@@ -12301,19 +12368,24 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
                                               0,
                                             );
 
-                                          // ✅ WARRANT FIX: shares NULL fallback
+                                          // ✅ WARRANT FIX: total_shares DB column use karo
                                           const postWarrantShares =
                                             validPostWarrants.reduce(
                                               (s, i) =>
-                                                s +
-                                                (toNumber(i.shares) ||
-                                                  toNumber(i.new_shares) ||
-                                                  toNumber(i.total_shares)),
+                                                s + toNumber(i.total_shares),
                                               0,
                                             );
                                           const postWarrantValue =
                                             validPostWarrants.reduce(
                                               (s, i) => s + toNumber(i.value),
+                                              0,
+                                            );
+
+                                          // ✅ WARRANT FIX: new_shares DB column use karo
+                                          const postWarrantNewShares =
+                                            validPostWarrants.reduce(
+                                              (s, i) =>
+                                                s + toNumber(i.new_shares),
                                               0,
                                             );
 
@@ -12336,26 +12408,12 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
                                             postCurrShares +
                                             postWarrantShares;
 
-                                          // ✅ WARRANT FIX: warrant same round → new shares, diff round → not new
-                                          const postWarrantNewShares =
-                                            validPostWarrants.reduce((s, i) => {
-                                              const iShares =
-                                                toNumber(i.shares) ||
-                                                toNumber(i.new_shares) ||
-                                                toNumber(i.total_shares);
-                                              const isCurrentRound =
-                                                i.round_id === i.round_id_ref;
-                                              return (
-                                                s +
-                                                (isCurrentRound ? iShares : 0)
-                                              );
-                                            }, 0);
-
+                                          // ✅ WARRANT FIX: DB new_shares column
                                           const postTotalNewShares =
                                             postPoolNew +
                                             postConvShares +
                                             postCurrShares +
-                                            postWarrantNewShares; // ✅ WARRANT FIX: only same-round warrant new shares
+                                            postWarrantNewShares;
 
                                           const postTotalValue =
                                             postTotalFounderValue +
@@ -12435,7 +12493,7 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
                                               toNumber(i.value);
                                           });
 
-                                          // ✅ WARRANT FIX: Group warrants with shares fallback
+                                          // ✅ WARRANT FIX: Group warrants — DB columns directly
                                           const postWarrantGroups = {};
                                           validPostWarrants.forEach((i) => {
                                             const key = i.warrant_id
@@ -12448,7 +12506,9 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
                                                   i.round_name || "Warrant",
                                                 round_id_ref: i.round_id_ref,
                                                 items: [],
-                                                total_shares: 0,
+                                                total_existing_shares: 0, // DB: shares
+                                                total_new_shares: 0, // DB: new_shares
+                                                total_shares: 0, // DB: total_shares
                                                 total_value: 0,
                                                 investor_type: i.investor_type,
                                               };
@@ -12456,13 +12516,22 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
                                             postWarrantGroups[key].items.push(
                                               i,
                                             );
-                                            // ✅ WARRANT FIX: shares NULL fallback
+                                            // ✅ WARRANT FIX: DB columns directly
                                             postWarrantGroups[
                                               key
-                                            ].total_shares +=
-                                              toNumber(i.shares) ||
-                                              toNumber(i.new_shares) ||
-                                              toNumber(i.total_shares);
+                                            ].total_existing_shares += toNumber(
+                                              i.shares,
+                                            );
+                                            postWarrantGroups[
+                                              key
+                                            ].total_new_shares += toNumber(
+                                              i.new_shares,
+                                            );
+                                            postWarrantGroups[
+                                              key
+                                            ].total_shares += toNumber(
+                                              i.total_shares,
+                                            );
                                             postWarrantGroups[
                                               key
                                             ].total_value += toNumber(i.value);
@@ -12497,30 +12566,31 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
 
                                             let existingShares = 0;
                                             let newShares = 0;
+                                            let groupTotalShares = 0;
 
                                             if (isPrevious) {
                                               existingShares =
                                                 group.total_shares;
                                               newShares = 0;
+                                              groupTotalShares =
+                                                group.total_shares;
                                             } else if (
                                               isCurrent ||
                                               isConverted
                                             ) {
                                               existingShares = 0;
                                               newShares = group.total_shares;
+                                              groupTotalShares =
+                                                group.total_shares;
                                             } else if (isWarrant) {
-                                              // ✅ WARRANT FIX: round_id === round_id_ref → same round → new shares
-                                              const isCurrentRoundWarrant =
-                                                group.items?.[0]?.round_id ===
-                                                group.items?.[0]?.round_id_ref;
-                                              if (isCurrentRoundWarrant) {
-                                                existingShares = 0;
-                                                newShares = group.total_shares;
-                                              } else {
-                                                existingShares =
-                                                  group.total_shares;
-                                                newShares = 0;
-                                              }
+                                              // ✅ WARRANT FIX: DB columns directly — no round_id condition
+                                              existingShares =
+                                                group.total_existing_shares ||
+                                                0;
+                                              newShares =
+                                                group.total_new_shares || 0;
+                                              groupTotalShares =
+                                                group.total_shares || 0;
                                             }
 
                                             return {
@@ -12531,24 +12601,22 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
                                               round_id_ref: group.round_id_ref,
                                               share_class_type:
                                                 group.share_class_type,
-                                              shares: group.total_shares,
+                                              shares: groupTotalShares,
                                               existing_shares: existingShares,
                                               new_shares: newShares,
-                                              total_shares: group.total_shares,
-                                              // ✅ WARRANT FIX: warrant_shares added
+                                              total_shares: groupTotalShares,
                                               warrant_shares: isWarrant
-                                                ? group.total_shares
+                                                ? groupTotalShares
                                                 : 0,
-                                              shares_formatted: formatNumber(
-                                                group.total_shares,
-                                              ),
+                                              shares_formatted:
+                                                formatNumber(groupTotalShares),
                                               percentage: calculatePercentage(
-                                                group.total_shares,
+                                                groupTotalShares,
                                                 totalShares,
                                               ),
                                               percentage_formatted:
                                                 calculatePercentage(
-                                                  group.total_shares,
+                                                  groupTotalShares,
                                                   totalShares,
                                                 ).toFixed(4) + "%",
                                               value: group.total_value,
@@ -12561,11 +12629,10 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
                                               is_warrant: isWarrant,
                                               investor_details: group.items.map(
                                                 (i) => {
-                                                  // ✅ WARRANT FIX: shares NULL fallback
-                                                  const itemShares =
-                                                    toNumber(i.shares) ||
-                                                    toNumber(i.new_shares) ||
-                                                    toNumber(i.total_shares);
+                                                  let itemExistingShares = 0;
+                                                  let itemNewShares = 0;
+                                                  let itemTotalShares = 0;
+
                                                   const itemIsWarrant =
                                                     i.investor_type ===
                                                       "warrant" ||
@@ -12581,33 +12648,34 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
                                                     i.investor_type ===
                                                     "converted";
 
-                                                  let itemExistingShares = 0;
-                                                  let itemNewShares = 0;
-
                                                   if (itemIsPrevious) {
                                                     itemExistingShares =
-                                                      itemShares;
+                                                      toNumber(i.shares);
                                                     itemNewShares = 0;
+                                                    itemTotalShares = toNumber(
+                                                      i.shares,
+                                                    );
                                                   } else if (
                                                     itemIsCurrent ||
                                                     itemIsConverted
                                                   ) {
                                                     itemExistingShares = 0;
-                                                    itemNewShares = itemShares;
+                                                    itemNewShares = toNumber(
+                                                      i.shares,
+                                                    );
+                                                    itemTotalShares = toNumber(
+                                                      i.shares,
+                                                    );
                                                   } else if (itemIsWarrant) {
-                                                    // ✅ WARRANT FIX: round_id === round_id_ref check
-                                                    const isCurrentRoundWarrant =
-                                                      i.round_id ===
-                                                      i.round_id_ref;
-                                                    if (isCurrentRoundWarrant) {
-                                                      itemExistingShares = 0;
-                                                      itemNewShares =
-                                                        itemShares;
-                                                    } else {
-                                                      itemExistingShares =
-                                                        itemShares;
-                                                      itemNewShares = 0;
-                                                    }
+                                                    // ✅ WARRANT FIX: DB columns directly
+                                                    itemExistingShares =
+                                                      toNumber(i.shares);
+                                                    itemNewShares = toNumber(
+                                                      i.new_shares,
+                                                    );
+                                                    itemTotalShares = toNumber(
+                                                      i.total_shares,
+                                                    );
                                                   }
 
                                                   return {
@@ -12619,26 +12687,28 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
                                                       "Investor",
                                                     email: i.email || "",
                                                     phone: i.phone || "",
-                                                    shares: itemShares,
+                                                    shares: itemTotalShares,
                                                     existing_shares:
                                                       itemExistingShares,
                                                     new_shares: itemNewShares,
-                                                    total_shares: itemShares,
-                                                    // ✅ WARRANT FIX: warrant_shares added
+                                                    total_shares:
+                                                      itemTotalShares,
                                                     warrant_shares:
                                                       itemIsWarrant
-                                                        ? itemShares
+                                                        ? itemTotalShares
                                                         : 0,
                                                     shares_formatted:
-                                                      formatNumber(itemShares),
+                                                      formatNumber(
+                                                        itemTotalShares,
+                                                      ),
                                                     percentage:
                                                       calculatePercentage(
-                                                        itemShares,
+                                                        itemTotalShares,
                                                         totalShares,
                                                       ),
                                                     percentage_formatted:
                                                       calculatePercentage(
-                                                        itemShares,
+                                                        itemTotalShares,
                                                         totalShares,
                                                       ).toFixed(4) + "%",
                                                     value: toNumber(i.value),
@@ -12840,7 +12910,6 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
                                               total_value_formatted:
                                                 formatMoney(postTotalValue),
                                               total_percentage: "100.00%",
-                                              // ✅ WARRANT FIX: total_warrant_shares added for frontend footer
                                               total_warrant_shares:
                                                 postWarrantShares,
                                             },
