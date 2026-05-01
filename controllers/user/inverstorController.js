@@ -4053,6 +4053,9 @@ exports.deleteround = async (req, res) => {
       ]);
     await db
       .promise()
+      .query("DELETE FROM warrants WHERE roundrecord_id = ?", [id]);
+    await db
+      .promise()
       .query("DELETE FROM round_conversions WHERE round_id = ?", [id]);
     await db
       .promise()

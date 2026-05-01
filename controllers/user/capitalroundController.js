@@ -2377,6 +2377,8 @@ async function handleCommonStockCalculation(params, updateFlag = false) {
           baseInvestor,
           updatedSharePrice,
           currentRound?.roundsize,
+          postMoneyValuation,
+          totalPostShares,
         );
         totalWarrantShares += result.warrantShares;
         totalWarrantValue += result.warrantValue;
@@ -2489,6 +2491,8 @@ async function handleCommonStockCalculation(params, updateFlag = false) {
         baseInvestor,
         conversionPrice, // ✅ Use conversion price instead of sharePrice
         investmentAmount, // ✅ Pass investment amount
+        postMoneyValuation,
+        totalPostShares,
       );
 
       totalWarrantShares += result.warrantShares;
@@ -3582,22 +3586,41 @@ async function isWarrantExpired(warrant) {
   return isExpired;
 }
 // Function to calculate warrant values based on investor data
-async function calculateWarrantFromInvestorData(warrant, inv, share_price) {
+async function calculateWarrantFromInvestorData(
+  warrant,
+  inv,
+  share_price,
+  postvalue,
+  prevalue,
+  checkround,
+  totalpostshare,
+) {
   let potentialShares = 0;
   let adjustedPrice = 0;
   let finalValue = 0;
   let calculationMethod = "";
-  console.log(inv);
-  console.log(share_price);
+
   // ✅ USE DATA FROM inv OBJECT
-  const investmentAmount = parseFloat(inv.investment) || parseFloat(inv.amount); // 120,000
+  const investmentAmount =
+    parseFloat(inv.investment) || parseFloat(inv.amount) || 0; // 120,000
   const conversionPrice =
-    parseFloat(inv.conversion_price) || parseFloat(inv.share_price); // 8.64
+    parseFloat(inv.conversion_price) || parseFloat(inv.share_price) || 0; // 8.64
   const convertedShares = parseFloat(inv.shares) || 0; // 13,888.89
 
   const coveragePercentage =
     parseFloat(warrant.warrant_coverage_percentage_main) || 0; // 20
   const coverageDecimal = coveragePercentage / 100; // 0.2
+
+  // ✅ Determine which valuation to use
+  const valuationValue = checkround ? postvalue : prevalue;
+  const totalShares = checkround
+    ? totalpostshare
+    : parseFloat(inv.total_shares) || 0;
+
+  console.log("=== calculateWarrantFromInvestorData Debug ===");
+  console.log("Checkround (true=post, false=pre):", checkround);
+  console.log("Valuation Value:", valuationValue);
+  console.log("Total Shares:", totalShares);
 
   if (warrant.warrantType === "percentage") {
     const discountPercentage =
@@ -3608,20 +3631,26 @@ async function calculateWarrantFromInvestorData(warrant, inv, share_price) {
     adjustedPrice = conversionPrice * discountDecimal; // 8.64 × 0.85 = 7.344
 
     // ✅ Step 2: Potential Shares = (Investment Amount / Adjusted Price) × Coverage%
-    // 120,000 / 7.344 = 16,340 × 20% = 3,268 shares
     const totalSharesAtDiscountedPrice = investmentAmount / adjustedPrice;
-    potentialShares = totalSharesAtDiscountedPrice * coverageDecimal; // 3,268 ✅
+    potentialShares = totalSharesAtDiscountedPrice * coverageDecimal;
 
-    // ✅ Step 3: Final Value (Currency) = Potential Shares × Adjusted Price
-    // 3,268 × 7.344 = 24,000
-    finalValue = potentialShares * share_price; // 24,000 ✅
+    // ✅ Step 3: Final Value (Currency) = (Potential Shares / Total Shares) × Valuation
+    const ownership = potentialShares / totalShares;
+    const rawPercentage = ownership * 100;
+    finalValue = (rawPercentage * valuationValue) / 100;
 
     calculationMethod = "percentage_with_discount";
 
     console.log(`Percentage Warrant:
-      - potentialShares: ${potentialShares} (3,268)
-      - adjustedPrice: ${adjustedPrice}
-      - finalValue: ${finalValue} (24,000) ✅`);
+      - Investment Amount: ${investmentAmount}
+      - Conversion Price: ${conversionPrice}
+      - Discount: ${discountPercentage}%
+      - Adjusted Price: ${adjustedPrice}
+      - Total Shares at Discounted Price: ${totalSharesAtDiscountedPrice}
+      - Coverage: ${coveragePercentage}%
+      - Potential Shares: ${potentialShares}
+      - Ownership %: ${rawPercentage}%
+      - Final Value (based on valuation): ${finalValue} ✅`);
   } else if (warrant.warrantType === "fixed") {
     const fixedWarrantPrice = parseFloat(warrant.warrant_fixed_shares) || 0; // 9
 
@@ -3629,26 +3658,30 @@ async function calculateWarrantFromInvestorData(warrant, inv, share_price) {
     adjustedPrice = fixedWarrantPrice; // 9
 
     // ✅ Step 2: Potential Shares = (Investment Amount / Fixed Price) × Coverage%
-    // 120,000 / 9 = 13,333 × 20% = 2,667 shares
     const totalSharesAtFixedPrice = investmentAmount / adjustedPrice;
-    potentialShares = totalSharesAtFixedPrice * coverageDecimal; // 2,667 ✅
+    potentialShares = totalSharesAtFixedPrice * coverageDecimal;
 
-    // ✅ Step 3: Final Value (Currency) = Potential Shares × Adjusted Price
-    // 2,667 × 9 = 24,000
-    finalValue = potentialShares * share_price; // 24,000 ✅
+    // ✅ Step 3: Final Value (Currency) = (Potential Shares / Total Shares) × Valuation
+    const ownership = potentialShares / totalShares;
+    const rawPercentage = ownership * 100;
+    finalValue = (rawPercentage * valuationValue) / 100;
 
     calculationMethod = "fixed_price";
 
     console.log(`Fixed Warrant:
-      - potentialShares: ${potentialShares} (2,667)
-      - adjustedPrice: ${adjustedPrice}
-      - finalValue: ${finalValue} (24,000) ✅`);
+      - Investment Amount: ${investmentAmount}
+      - Fixed Price: ${fixedWarrantPrice}
+      - Total Shares at Fixed Price: ${totalSharesAtFixedPrice}
+      - Coverage: ${coveragePercentage}%
+      - Potential Shares: ${potentialShares}
+      - Ownership %: ${rawPercentage}%
+      - Final Value (based on valuation): ${finalValue} ✅`);
   }
 
   return {
-    potentialShares, // 3,268 (percentage) or 2,667 (fixed) - SHARES ✅
-    adjustedPrice, // 7.344 (percentage) or 9 (fixed) - PRICE PER SHARE
-    finalValue, // 24,000 (BOTH) - CURRENCY VALUE ✅
+    potentialShares, // Number of warrant shares
+    adjustedPrice, // Price per share
+    finalValue, // Currency value based on valuation ✅
     calculationMethod,
     existingShares: convertedShares,
     sharePrice: conversionPrice,
@@ -3658,6 +3691,7 @@ async function calculateWarrantFromInvestorData(warrant, inv, share_price) {
     fixedPrice: warrant.warrant_fixed_shares || 0,
     investmentAmount,
     conversionPrice,
+    valuationUsed: valuationValue,
   };
 }
 async function insertNewInvestorDirect(connection, roundId, companyId, inv) {
@@ -3709,6 +3743,10 @@ async function insertWarrantExercised(
   companyId,
   inv,
   sharePrice,
+  postvalue,
+  prevalue,
+  checkround,
+  totalpostshare,
 ) {
   // ✅ inv object mein already percentage aur value calculated hai
   const warrantData = await checkInvestorWarrant(connection, roundId, inv);
@@ -3725,6 +3763,10 @@ async function insertWarrantExercised(
           warrant,
           inv,
           sharePrice,
+          postvalue,
+          prevalue,
+          checkround,
+          totalpostshare,
         );
 
         // Insert warrant as separate entry
@@ -3919,6 +3961,10 @@ async function insertWarrantExercisedConverted(
   type, // 'pre' or 'post'
   inv,
   shareprice,
+  postvalue,
+  prevalue,
+  checkround,
+  totalpostshare,
 ) {
   // ✅ inv object mein already percentage aur value calculated hai
   if (type === "post") {
@@ -3952,6 +3998,10 @@ async function insertWarrantExercisedConverted(
                 warrant,
                 inv,
                 shareprice,
+                postvalue,
+                prevalue,
+                checkround,
+                totalpostshare,
               );
 
               // Insert warrant as separate entry
@@ -4807,6 +4857,10 @@ async function saveCapTableData(
                 companyId,
                 inv,
                 sharePrice,
+                postMoneyValuation,
+                preMoneyValuation,
+                checkround,
+                postMoneyTotalShares,
               );
             }
           }
@@ -4820,6 +4874,10 @@ async function saveCapTableData(
                 "post",
                 conv,
                 sharePrice,
+                postMoneyValuation,
+                preMoneyValuation,
+                checkround,
+                postMoneyTotalShares,
               );
             }
           }
@@ -5483,6 +5541,8 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
             baseInvestor,
             seriesASharePrice,
             currentRound?.roundsize,
+            postMoneyValuation,
+            totalPostShares,
           );
           totalWarrantShares += result.warrantShares;
           warrantCalculationResults.push(result);
@@ -5594,6 +5654,8 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
           baseInvestor,
           conversionPrice, // ✅ Use conversion price instead of sharePrice
           investmentAmount, // ✅ Pass investment amount
+          postMoneyValuation,
+          totalPostShares,
         );
 
         totalWarrantShares += result.warrantShares;
@@ -6514,6 +6576,8 @@ async function calculateWarrantSharesForOptionPool(
   baseInvestor,
   sharePriceValue,
   investmentAmount = "",
+  postMoney,
+  totalpostshare,
 ) {
   let warrantShares = 0;
   let warrantPrice = 0;
@@ -6538,20 +6602,22 @@ async function calculateWarrantSharesForOptionPool(
     warrantPrice = sharePriceValue * discountDecimal; // 8.64 × 0.85 = 7.344
 
     // ✅ Step 2: Warrant Shares = (Investment Amount / Discounted Price) × Coverage%
-    // 120,000 / 7.344 = 16,340 × 20% = 3,267.97 shares
     const totalSharesAtDiscountedPrice = investmentAmount / warrantPrice;
-    warrantShares = totalSharesAtDiscountedPrice * coverageDecimal; // 3,267.97 ✅
+    warrantShares = totalSharesAtDiscountedPrice * coverageDecimal; // 3,267.97
 
-    // ✅ Step 3: Warrant Value (Currency) = Warrant Shares × Warrant Price
-    // 3,267.97 × 7.344 = $24,000
-    warrantValue = warrantShares * sharePriceValue; // 24,000 ✅
+    // ✅ Step 3: Warrant Value = (Warrant Shares / Total Post Shares) × Post Money Valuation
+    // Using the same formula as other investors
+    const ownership = warrantShares / totalpostshare;
+    const rawPercentage = ownership * 100;
+    warrantValue = (rawPercentage * postMoney) / 100;
 
     console.log(`Percentage Warrant:
       - Discounted Warrant Price: ${warrantPrice}
       - Total Shares at Discounted Price: ${totalSharesAtDiscountedPrice}
       - Coverage: ${coveragePercentage}%
-      - WARRANT SHARES: ${warrantShares} (3,268) ✅
-      - WARRANT VALUE (CURRENCY): ${warrantValue} (24,000) ✅`);
+      - WARRANT SHARES: ${warrantShares} ✅
+      - OWNERSHIP %: ${rawPercentage}%
+      - WARRANT VALUE (CURRENCY): ${warrantValue} ✅`);
   } else if (warrant.warrantType === "fixed") {
     const fixedWarrantPrice = parseFloat(warrant.warrant_fixed_shares) || 0;
 
@@ -6559,26 +6625,28 @@ async function calculateWarrantSharesForOptionPool(
     warrantPrice = fixedWarrantPrice; // 9
 
     // ✅ Step 2: Warrant Shares = (Investment Amount / Fixed Price) × Coverage%
-    // 120,000 / 9 = 13,333 × 20% = 2,667 shares
     const totalSharesAtFixedPrice = investmentAmount / warrantPrice;
-    warrantShares = totalSharesAtFixedPrice * coverageDecimal; // 2,667 ✅
+    warrantShares = totalSharesAtFixedPrice * coverageDecimal; // 2,667
 
-    // ✅ Step 3: Warrant Value (Currency) = Warrant Shares × Warrant Price
-    // 2,667 × 9 = $24,000
-    warrantValue = warrantShares * sharePriceValue; // 24,000 ✅
+    // ✅ Step 3: Warrant Value = (Warrant Shares / Total Post Shares) × Post Money Valuation
+    // Using the same formula as other investors
+    const ownership = warrantShares / totalpostshare;
+    const rawPercentage = ownership * 100;
+    warrantValue = (rawPercentage * postMoney) / 100;
 
     console.log(`Fixed Warrant:
       - Fixed Warrant Price: ${warrantPrice}
       - Total Shares at Fixed Price: ${totalSharesAtFixedPrice}
       - Coverage: ${coveragePercentage}%
-      - WARRANT SHARES: ${warrantShares} (2,667) ✅
-      - WARRANT VALUE (CURRENCY): ${warrantValue} (24,000) ✅`);
+      - WARRANT SHARES: ${warrantShares} ✅
+      - OWNERSHIP %: ${rawPercentage}%
+      - WARRANT VALUE (CURRENCY): ${warrantValue} ✅`);
   }
 
   return {
-    warrantShares: warrantShares, // 3,268 (percentage) or 2,667 (fixed)
-    warrantPrice: warrantPrice, // 7.344 (percentage) or 9 (fixed)
-    warrantValue: warrantValue, // 24,000 (BOTH) ✅
+    warrantShares: warrantShares,
+    warrantPrice: warrantPrice,
+    warrantValue: warrantValue,
     warrantId: warrant.id,
     warrantType: warrant.warrantType,
   };
@@ -6871,7 +6939,7 @@ async function handleSafeCalculation(params) {
       parsedInstrumentData = instrumentData;
     }
   }
-
+  console.log(total_shares_before, "total_shares_before");
   // ==================== EXTRACT SAFE TERMS ====================
   const discountRate = parseFloat(parsedInstrumentData.discountRate) || 0;
   const valuationCap = parseFloat(parsedInstrumentData.valuationCap) || 0;
@@ -7139,11 +7207,14 @@ async function handleSafeCalculation(params) {
       (round0Shares / (1 - optionPoolPercent / 100)) *
       (optionPoolPercent / 100);
     optionPoolShares = optionPoolSharesRaw;
-    preMoneyTotalShares =
-      round0Shares + optionPoolShares + previousWarrantsTotalShares;
+    // preMoneyTotalShares =
+    //   round0Shares + optionPoolShares + previousWarrantsTotalShares;
+    preMoneyTotalShares = round0Shares + optionPoolShares;
   } else {
     optionPoolShares = 0;
-    preMoneyTotalShares = totalPreMoneyShares + previousWarrantsTotalShares;
+    preMoneyTotalShares = totalPreMoneyShares;
+    // optionPoolShares = 0;
+    // preMoneyTotalShares = totalPreMoneyShares + previousWarrantsTotalShares;
   }
 
   // ==================== STEP 2: SHARE PRICE ====================
@@ -7440,6 +7511,7 @@ async function handleSafeCalculation(params) {
     } else if (inv.investor_type === "warrant not exercised") {
       investorType = "warrant not exercised";
     }
+
     return {
       type: "investor",
       name: inv.name,
@@ -7482,6 +7554,7 @@ async function handleSafeCalculation(params) {
     const ownership = extsh / totalShares;
     const rawPercentage = ownership * 100;
     const exactValue = (rawPercentage * valuation) / 100;
+    console.log(totalShares);
     return {
       type: "investor",
       name: warrant.name,
@@ -8576,11 +8649,13 @@ async function handleConvertibleNoteCalculation(params) {
       (round0Shares / (1 - optionPoolPercent / 100)) *
       (optionPoolPercent / 100);
     optionPoolShares = optionPoolSharesRaw;
-    preMoneyTotalShares =
-      round0Shares + optionPoolShares + previousWarrantsTotalShares;
+    // preMoneyTotalShares =
+    //   round0Shares + optionPoolShares + previousWarrantsTotalShares;
+    preMoneyTotalShares = round0Shares + optionPoolShares;
   } else {
     optionPoolShares = 0;
-    preMoneyTotalShares = totalPreMoneyShares + previousWarrantsTotalShares;
+    //preMoneyTotalShares = totalPreMoneyShares + previousWarrantsTotalShares;
+    preMoneyTotalShares = totalPreMoneyShares;
   }
 
   // ==================== STEP 2: SHARE PRICE ====================
