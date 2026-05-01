@@ -1,0 +1,380 @@
+{
+  "timestamp": "2026-04-04T08:38:58.349Z",
+  "sessionId": null,
+  "step": "getConnection_START",
+  "data": {},
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.360Z",
+  "sessionId": null,
+  "step": "getConnection_SUCCESS",
+  "data": {
+    "threadId": 307
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.363Z",
+  "sessionId": null,
+  "step": "beginTransaction_SUCCESS",
+  "data": {},
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.364Z",
+  "sessionId": null,
+  "step": "delete_START",
+  "data": {
+    "tables": [
+      "round_founders",
+      "round_investors",
+      "round_option_pools",
+      "round_conversions",
+      "round_cap_table_items"
+    ]
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.366Z",
+  "sessionId": null,
+  "step": "delete_SUCCESS_round_founders",
+  "data": {
+    "roundId": 1073
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.368Z",
+  "sessionId": null,
+  "step": "delete_SUCCESS_round_investors",
+  "data": {
+    "roundId": 1073
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.369Z",
+  "sessionId": null,
+  "step": "delete_SUCCESS_round_option_pools",
+  "data": {
+    "roundId": 1073
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.371Z",
+  "sessionId": null,
+  "step": "delete_SUCCESS_round_conversions",
+  "data": {
+    "roundId": 1073
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.372Z",
+  "sessionId": null,
+  "step": "delete_SUCCESS_round_cap_table_items",
+  "data": {
+    "roundId": 1073
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.373Z",
+  "sessionId": null,
+  "step": "delete_COMPLETE",
+  "data": {},
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.374Z",
+  "sessionId": null,
+  "step": "preMoney_START",
+  "data": {},
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.374Z",
+  "sessionId": null,
+  "step": "preFounders_START",
+  "data": {
+    "count": 1
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.376Z",
+  "sessionId": null,
+  "step": "preFounders_COMPLETE",
+  "data": {
+    "count": 1
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.376Z",
+  "sessionId": null,
+  "step": "preOptionPool_START",
+  "data": {},
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.378Z",
+  "sessionId": null,
+  "step": "preOptionPool_COMPLETE",
+  "data": {},
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.379Z",
+  "sessionId": null,
+  "step": "prePending_START",
+  "data": {
+    "count": 0
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.379Z",
+  "sessionId": null,
+  "step": "prePending_COMPLETE",
+  "data": {
+    "count": 0
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.380Z",
+  "sessionId": null,
+  "step": "preWarrants_START",
+  "data": {
+    "count": 0
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.380Z",
+  "sessionId": null,
+  "step": "preWarrants_COMPLETE",
+  "data": {
+    "count": 0
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.381Z",
+  "sessionId": null,
+  "step": "preMoney_COMPLETE",
+  "data": {},
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.381Z",
+  "sessionId": null,
+  "step": "postMoney_START",
+  "data": {
+    "hasFounders": true,
+    "foundersCount": 1,
+    "hasOptionPool": true,
+    "hasPreviousInvestors": false,
+    "previousInvestorsCount": 0,
+    "hasInvestors": true,
+    "investorsCount": 0,
+    "hasConverted": false,
+    "itemsCount": 4
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.382Z",
+  "sessionId": null,
+  "step": "postFounders_START",
+  "data": {
+    "count": 1
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.383Z",
+  "sessionId": null,
+  "step": "postFounders_COMPLETE",
+  "data": {
+    "count": 1
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.383Z",
+  "sessionId": null,
+  "step": "postOptionPool_START",
+  "data": {},
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.384Z",
+  "sessionId": null,
+  "step": "postOptionPool_COMPLETE",
+  "data": {},
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.385Z",
+  "sessionId": null,
+  "step": "postNewInvestors_START",
+  "data": {
+    "count": 0
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.385Z",
+  "sessionId": null,
+  "step": "postNewInvestors_COMPLETE",
+  "data": {
+    "count": 0
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.386Z",
+  "sessionId": null,
+  "step": "postPending_START",
+  "data": {
+    "count": 1
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.388Z",
+  "sessionId": null,
+  "step": "postPending_COMPLETE",
+  "data": {
+    "count": 1
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.389Z",
+  "sessionId": null,
+  "step": "postWarrants_START",
+  "data": {
+    "count": 1
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.390Z",
+  "sessionId": null,
+  "step": "postWarrants_COMPLETE",
+  "data": {
+    "count": 1
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.390Z",
+  "sessionId": null,
+  "step": "postMoney_COMPLETE",
+  "data": {},
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.391Z",
+  "sessionId": null,
+  "step": "flattenedPre_START",
+  "data": {
+    "count": 2
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.392Z",
+  "sessionId": null,
+  "step": "flattenedPre_COMPLETE",
+  "data": {
+    "count": 2
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.393Z",
+  "sessionId": null,
+  "step": "flattenedPost_START",
+  "data": {
+    "count": 4
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.396Z",
+  "sessionId": null,
+  "step": "flattenedPost_COMPLETE",
+  "data": {
+    "count": 4
+  },
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.396Z",
+  "sessionId": null,
+  "step": "commit_START",
+  "data": {},
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.398Z",
+  "sessionId": null,
+  "step": "commit_SUCCESS",
+  "data": {},
+  "error": null,
+  "success": true
+},
+{
+  "timestamp": "2026-04-04T08:38:58.399Z",
+  "sessionId": null,
+  "step": "saveCapTableData_COMPLETE",
+  "data": {
+    "success": true
+  },
+  "error": null,
+  "success": true
+},
