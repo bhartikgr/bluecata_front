@@ -3621,7 +3621,7 @@ async function calculateWarrantFromInvestorData(
   console.log("Checkround (true=post, false=pre):", checkround);
   console.log("Valuation Value:", valuationValue);
   console.log("Total Shares:", totalShares);
-
+  let rawPercentage = 0;
   if (warrant.warrantType === "percentage") {
     const discountPercentage =
       parseFloat(warrant.warrant_coverage_percentage) || 0; // 15
@@ -3636,7 +3636,7 @@ async function calculateWarrantFromInvestorData(
 
     // ✅ Step 3: Final Value (Currency) = (Potential Shares / Total Shares) × Valuation
     const ownership = potentialShares / totalShares;
-    const rawPercentage = ownership * 100;
+    rawPercentage = ownership * 100;
     finalValue = (rawPercentage * valuationValue) / 100;
 
     calculationMethod = "percentage_with_discount";
@@ -3663,7 +3663,7 @@ async function calculateWarrantFromInvestorData(
 
     // ✅ Step 3: Final Value (Currency) = (Potential Shares / Total Shares) × Valuation
     const ownership = potentialShares / totalShares;
-    const rawPercentage = ownership * 100;
+    rawPercentage = ownership * 100;
     finalValue = (rawPercentage * valuationValue) / 100;
 
     calculationMethod = "fixed_price";
@@ -3692,6 +3692,7 @@ async function calculateWarrantFromInvestorData(
     investmentAmount,
     conversionPrice,
     valuationUsed: valuationValue,
+    ownership: rawPercentage,
   };
 }
 async function insertNewInvestorDirect(connection, roundId, companyId, inv) {
@@ -3792,8 +3793,7 @@ async function insertWarrantEntry(
   calculation,
 ) {
   return new Promise((resolve, reject) => {
-    const percentage_numeric =
-      parseFloat(warrant.warrant_coverage_percentage_main) || 0;
+    const percentage_numeric = parseFloat(calculation.ownership) || 0;
     const percentage_formatted = `${percentage_numeric}%`;
     const value = calculation.finalValue;
 
@@ -6939,7 +6939,6 @@ async function handleSafeCalculation(params) {
       parsedInstrumentData = instrumentData;
     }
   }
-  console.log(total_shares_before, "total_shares_before");
   // ==================== EXTRACT SAFE TERMS ====================
   const discountRate = parseFloat(parsedInstrumentData.discountRate) || 0;
   const valuationCap = parseFloat(parsedInstrumentData.valuationCap) || 0;
@@ -7554,7 +7553,6 @@ async function handleSafeCalculation(params) {
     const ownership = extsh / totalShares;
     const rawPercentage = ownership * 100;
     const exactValue = (rawPercentage * valuation) / 100;
-    console.log(totalShares);
     return {
       type: "investor",
       name: warrant.name,
