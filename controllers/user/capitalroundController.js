@@ -17455,7 +17455,10 @@ exports.getRoundwarrant = (req, res) => {
   FROM round_investors
   LEFT JOIN warrants ON warrants.id = round_investors.warrant_id
   LEFT JOIN (
-    SELECT warrant_id, main_shares, warrant_share
+    SELECT 
+      warrant_id, 
+      MAX(main_shares) as main_shares, 
+      MAX(warrant_share) as warrant_share
     FROM warrant_conversion_share_record
     WHERE company_id = ?
     GROUP BY warrant_id
