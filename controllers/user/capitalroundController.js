@@ -5494,6 +5494,7 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
   let postMoneyValuation = preMoneyVal + roundSizeVal;
 
   if (hasInvestmentRoundBefore && previousRounds.length > 0) {
+    console.log("1");
     preMoneyTotalSharesCalc = totalPreMoneyShares;
     const seriesASharePrice = preMoneyVal / preMoneyTotalSharesCalc;
 
@@ -5716,6 +5717,7 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
     total_shares_befores = preMoneyTotalSharesCalc;
     postMoneyValuation = totalPostShares * seriesASharePrice;
   } else if (isPreviousRoundRound0 && previousRounds.length > 0) {
+    console.log("2");
     const totalSharesWithConverted = round0Shares + totalConvertedShares;
 
     const optionPoolSharesRaw =
@@ -5740,6 +5742,7 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
     total_option_pool = optionPoolShares;
     total_shares_befores = preMoneyTotalSharesCalc;
   } else if (previousRounds.length > 0) {
+    console.log("3");
     const optionPoolSharesRaw =
       (round0Shares / (1 - preMoneyPoolPercent / 100)) *
       (preMoneyPoolPercent / 100);
@@ -5763,6 +5766,7 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
     total_option_pool = optionPoolShares;
     total_shares_befores = total_shares_before;
   } else {
+    console.log("4");
     const optionPoolSharesRaw =
       (round0Shares / (1 - preMoneyPoolPercent / 100)) *
       (preMoneyPoolPercent / 100);
@@ -5785,6 +5789,8 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
     previous_investors_total = 0;
     total_option_pool = optionPoolShares;
     total_shares_befores = round0Shares;
+    console.log(newInvestorShares, "newInvestorShares");
+    console.log(updatedSharePrice, "updatedSharePrice");
   }
 
   // ==================== EMPLOYEE OPTION POOL CONSOLE ====================
@@ -6552,7 +6558,7 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
         preMoneyVal,
         postMoneyValuation,
         true,
-        sharePrice,
+        updatedSharePrice,
       );
     } else {
       await saveCapTableData(
@@ -6566,7 +6572,7 @@ async function handlePreferredEquityCalculation(params, updateFlag = false) {
         preMoneyVal,
         postMoneyValuation,
         false,
-        sharePrice,
+        updatedSharePrice,
       );
     }
 
