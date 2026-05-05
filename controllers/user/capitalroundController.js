@@ -17498,33 +17498,47 @@ exports.getRoundwarrant = (req, res) => {
   }
 
   const query = `SELECT 
-    round_investors.*,
-    warrants.warrant_coverage_percentage,
-    warrants.warrant_fixed_shares,
-    warrants.warrantType,
-    warrants.warrant_coverage_percentage_main,
-    warrants.issued_date,
-    warrants.expiration_date,
-    wcsr.main_shares,
-    wcsr.warrant_share
-  FROM round_investors
-  LEFT JOIN warrants ON warrants.id = round_investors.warrant_id
-  LEFT JOIN (
-    SELECT 
-      warrant_id, 
-      MAX(main_shares) as main_shares, 
-      MAX(warrant_share) as warrant_share
-    FROM warrant_conversion_share_record
-    WHERE company_id = ?
-    GROUP BY warrant_id
-  ) wcsr ON wcsr.warrant_id = warrants.id
-  WHERE round_investors.company_id = ? 
-    AND round_investors.round_id = ? 
-    AND round_investors.investor_type = 'warrant' 
-    AND round_investors.cap_table_type = 'post'
-  ORDER BY round_investors.id DESC`;
+  wcsr.*,
+  ri.id AS round_investor_id,
+  ri.round_id AS investor_round_id,
+  ri.company_id,
+  ri.warrant_id,
+  ri.investor_type,
+  ri.first_name,
+  ri.last_name,
+  ri.email,
+  ri.phone,
+  ri.shares,
+  ri.new_shares,
+  ri.total_shares,
+  ri.investment_amount,
+  ri.share_price,
+  ri.percentage_numeric,
+  ri.percentage_formatted,
+  ri.value,
+  ri.is_new_investment,
+  ri.investor_details,
+  ri.share_class_type,
+  ri.instrument_type,
+  ri.round_name,
+  ri.round_id_ref,
+  w.warrant_coverage_percentage,
+  w.warrant_fixed_shares,
+  w.warrantType,
+  w.warrant_coverage_percentage_main,
+  w.issued_date,
+  w.expiration_date
+FROM warrant_conversion_share_record wcsr
+LEFT JOIN round_investors ri 
+  ON ri.id = wcsr.round_investor_id
+  AND ri.company_id = wcsr.company_id
+LEFT JOIN warrants w 
+  ON w.id = ri.warrant_id
+WHERE wcsr.company_id = ? 
+  AND wcsr.round_id <= ?
+ORDER BY wcsr.id DESC;`;
 
-  db.query(query, [company_id, company_id, round_id], (err, results) => {
+  db.query(query, [company_id, round_id], (err, results) => {
     if (err) {
       return res.status(500).json({
         success: false,
