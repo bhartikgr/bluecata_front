@@ -11733,7 +11733,8 @@ exports.getRoundCapTableSingleRecord = (req, res) => {
           return shares * price;
         } else {
           // Percentage: shares × strike price × (1 - discount%)
-          return shares * price * (1 - discount / 100);
+          // return shares * price * (1 - discount / 100);
+          return shares * price;
         }
       };
 
