@@ -17498,26 +17498,31 @@ exports.getRoundwarrant = (req, res) => {
   }
 
   const query = `SELECT 
-  round_investors.*,
-  warrants.warrant_coverage_percentage,
-  warrants.warrant_fixed_shares,
-  warrants.warrantType,
-  warrants.warrant_coverage_percentage_main,
-  warrants.issued_date,
-  warrants.expiration_date,
-  wcsr.main_shares,
-  wcsr.warrant_share
-FROM round_investors
-LEFT JOIN warrants 
-  ON warrants.id = round_investors.warrant_id
-LEFT JOIN warrant_conversion_share_record wcsr 
-  ON wcsr.round_investor_id = round_investors.id
-  AND wcsr.company_id = ?
-WHERE round_investors.company_id = ? 
-  AND round_investors.round_id = ? 
-  AND round_investors.investor_type = 'warrant' 
-  AND round_investors.cap_table_type = 'post'
-ORDER BY round_investors.id DESC`;
+    round_investors.*,
+    warrants.warrant_coverage_percentage,
+    warrants.warrant_fixed_shares,
+    warrants.warrantType,
+    warrants.warrant_coverage_percentage_main,
+    warrants.issued_date,
+    warrants.expiration_date,
+    wcsr.main_shares,
+    wcsr.warrant_share
+  FROM round_investors
+  LEFT JOIN warrants ON warrants.id = round_investors.warrant_id
+  LEFT JOIN (
+    SELECT 
+      warrant_id, 
+      MAX(main_shares) as main_shares, 
+      MAX(warrant_share) as warrant_share
+    FROM warrant_conversion_share_record
+    WHERE company_id = ?
+    GROUP BY warrant_id
+  ) wcsr ON wcsr.warrant_id = warrants.id
+  WHERE round_investors.company_id = ? 
+    AND round_investors.round_id = ? 
+    AND round_investors.investor_type = 'warrant' 
+    AND round_investors.cap_table_type = 'post'
+  ORDER BY round_investors.id DESC`;
 
   db.query(query, [company_id, company_id, round_id], (err, results) => {
     if (err) {
