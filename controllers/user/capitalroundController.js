@@ -2238,15 +2238,223 @@ async function handleCommonStockCalculation(params, updateFlag = false) {
 
   if (hasInvestmentRoundBefore && previousRounds.length > 0) {
     preMoneyTotalSharesCalc = totalPreMoneyShares;
-    const seriesASharePrice = preMoneyVal / preMoneyTotalSharesCalc;
 
+    // ✅ FIX: Calculate founders + seed shares (excluding option pool)
+    const foundersAndSeedShares = round0Shares + previousInvestorsTotalShares;
+
+    // ✅ FIX: Series A ownership percentage (from investment / post-money)
+    const postMoneyValuationTemp = preMoneyVal + roundSizeVal;
+    const seriesAOwnershipPercent =
+      (roundSizeVal / postMoneyValuationTemp) * 100;
+
+    // ✅ FIX: Founders + Seed ownership percentage
+    const foundersAndSeedOwnershipPercent =
+      100 - postMoneyPoolTarget - seriesAOwnershipPercent;
+
+    // ✅ FIX: Total post-money shares (Email formula)
+    const totalPostSharesCalc =
+      foundersAndSeedShares / (foundersAndSeedOwnershipPercent / 100);
+
+    // ✅ FIX: Total new shares in Series A
+    const totalNewShares = totalPostSharesCalc - preMoneyTotalSharesCalc;
+
+    // ✅ FIX: Target option pool shares
+    const targetOptionShares =
+      (postMoneyPoolTarget / 100) * totalPostSharesCalc;
+
+    // ✅ FIX: New option pool shares
+    newOptionShares = Math.max(
+      0,
+      targetOptionShares - existingOptionPoolShares,
+    );
+
+    // ✅ FIX: New Series A investor shares
+    newInvestorShares = totalNewShares - newOptionShares;
+
+    // ✅ FIX: Share price
+    const sharesForPrice = preMoneyTotalSharesCalc + newOptionShares;
+    updatedSharePrice = preMoneyVal / sharesForPrice;
+    // ✅ FIX: Total post shares
+    totalPostShares = totalPostSharesCalc;
+
+    // Current Round Warrants
+    try {
+      const currentRoundWarrants = await new Promise((resolve, reject) => {
+        db.query(
+          `SELECT w.* 
+        FROM warrants w
+        WHERE w.roundrecord_id = ? 
+          AND w.company_id = ?
+          AND (w.expiration_date IS NULL OR w.expiration_date >= CURDATE())`,
+          [id, company_id],
+          (err, results) => {
+            if (err) reject(err);
+            else resolve(results || []);
+          },
+        );
+      });
+
+      if (currentRoundWarrants && currentRoundWarrants.length > 0) {
+        for (const warrant of currentRoundWarrants) {
+          const baseInvestor = {
+            shares: newInvestorShares,
+            convertedShares: newInvestorShares,
+          };
+          const result = await calculateWarrantSharesForOptionPool(
+            warrant,
+            baseInvestor,
+            seriesASharePrice,
+            currentRound?.roundsize,
+            postMoneyValuation,
+            totalPostShares,
+          );
+          totalWarrantShares += result.warrantShares;
+          warrantCalculationResults.push(result);
+        }
+      }
+    } catch (error) {
+      console.error("❌ Error fetching current round warrants:", error);
+    }
+
+    // Previous Round Warrants Calculation
+    const warrantsByRound = {};
+    for (const warrant of previousWarrantsList) {
+      const originalRoundId = warrant.round_id;
+      if (!warrantsByRound[originalRoundId]) {
+        warrantsByRound[originalRoundId] = {
+          round_id: originalRoundId,
+          warrants: [],
+          convertedSharesForRound: 0,
+        };
+      }
+      warrantsByRound[originalRoundId].warrants.push(warrant);
+    }
+
+    for (const conv of conversionDetails) {
+      const originalRoundId = conv.original_round_id;
+      if (warrantsByRound[originalRoundId]) {
+        warrantsByRound[originalRoundId].convertedSharesForRound =
+          conv.convertedShares;
+      }
+    }
+
+    for (const roundId in warrantsByRound) {
+      const roundData = warrantsByRound[roundId];
+      const convertedSharesForThisRound = roundData.convertedSharesForRound;
+
+      if (convertedSharesForThisRound === 0) {
+        continue;
+      }
+
+      const originalRound = previousRounds.find((r) => r.id == roundId);
+
+      let warrantSharePrice = seriesASharePrice;
+
+      if (originalRound) {
+        if (
+          originalRound.share_price &&
+          parseFloat(originalRound.share_price) > 0
+        ) {
+          warrantSharePrice = parseFloat(originalRound.share_price);
+        } else if (
+          originalRound.conversion_price &&
+          parseFloat(originalRound.conversion_price) > 0
+        ) {
+          warrantSharePrice = parseFloat(originalRound.conversion_price);
+        } else if (originalRound.post_money_cap_table) {
+          try {
+            const postCapTable =
+              typeof originalRound.post_money_cap_table === "string"
+                ? JSON.parse(originalRound.post_money_cap_table)
+                : originalRound.post_money_cap_table;
+            if (
+              postCapTable.share_price &&
+              parseFloat(postCapTable.share_price) > 0
+            ) {
+              warrantSharePrice = parseFloat(postCapTable.share_price);
+            }
+          } catch (e) {}
+        }
+      }
+
+      const completeWarrants = await new Promise((resolve, reject) => {
+        const warrantIds = roundData.warrants.map((w) => w.warrant_id);
+        db.query(
+          `SELECT w.* 
+         FROM warrants w
+         WHERE w.id IN (?) 
+           AND w.company_id = ?
+           AND (w.expiration_date IS NULL OR w.expiration_date >= CURDATE())`,
+          [warrantIds, company_id],
+          (err, results) => {
+            if (err) reject(err);
+            else resolve(results || []);
+          },
+        );
+      });
+
+      for (const warrant of completeWarrants) {
+        // Find the conversion detail that matches this round
+        const matchingConversion = conversionDetails.find(
+          (conv) => conv.original_round_id == roundId,
+        );
+
+        if (!matchingConversion) continue;
+
+        // ✅ Use conversion price from the converted instrument instead of share price
+        const conversionPrice = matchingConversion.conversion_price;
+        const investmentAmount = matchingConversion.investment;
+        const convertedShares = convertedSharesForThisRound;
+
+        const baseInvestor = {
+          shares: convertedShares,
+          convertedShares: convertedShares,
+          conversion_price: conversionPrice, // ✅ Pass conversion price
+          investment_amount: investmentAmount, // ✅ Pass investment amount
+        };
+
+        const result = await calculateWarrantSharesForOptionPool(
+          warrant,
+          baseInvestor,
+          conversionPrice, // ✅ Use conversion price instead of sharePrice
+          investmentAmount, // ✅ Pass investment amount
+          postMoneyValuation,
+          totalPostShares,
+        );
+
+        totalWarrantShares += result.warrantShares;
+        totalWarrantValue += result.warrantValue;
+        convertedWarrantResults.push({
+          warrant_id: warrant.id,
+          original_round_id: parseInt(roundId),
+          converted_shares_base: convertedSharesForThisRound,
+          conversion_price_used: conversionPrice,
+          investment_amount: investmentAmount,
+          warrant_shares: result.warrantShares,
+          warrant_price: result.warrantPrice,
+          warrant_value: result.warrantValue,
+          warrant_type: warrant.warrantType,
+          coverage_percentage: warrant.warrant_coverage_percentage_main,
+          discount_percentage: warrant.warrant_coverage_percentage,
+        });
+      }
+    }
+
+    totalPostShares = totalPostShares + totalWarrantShares;
+    console.log(totalPostShares, "totalPostShares");
+    // Keep existing variables
+    previous_investors_total = previousInvestorsTotalShares;
+    total_option_pool = existingOptionPoolShares + newOptionShares;
+    total_shares_befores = preMoneyTotalSharesCalc;
+
+    // For conversionDetails (if any)
     let convertedSharesTotal = 0;
     let convertedInvestmentTotal = 0;
     const convertedInvestors = [];
 
     for (const conv of conversionDetails) {
       const discountedPrice =
-        seriesASharePrice * (1 - conv.discount_rate / 100);
+        updatedSharePrice * (1 - conv.discount_rate / 100);
       const capPrice =
         conv.valuation_cap > 0
           ? conv.valuation_cap / preMoneyTotalSharesCalc
@@ -2255,7 +2463,7 @@ async function handleCommonStockCalculation(params, updateFlag = false) {
       const principalPlusInterest =
         conv.principal_plus_interest || conv.investment;
       const convertedShares = principalPlusInterest / conversionPrice;
-      const valueAtSeriesA = convertedShares * seriesASharePrice;
+      const valueAtSeriesA = convertedShares * updatedSharePrice;
       const moic = (valueAtSeriesA / conv.investment).toFixed(2) + "X";
 
       convertedSharesTotal += convertedShares;
@@ -2270,31 +2478,6 @@ async function handleCommonStockCalculation(params, updateFlag = false) {
     }
 
     totalConvertedShares = convertedSharesTotal;
-    const newInvestorSharesBeforeOption = roundSizeVal / seriesASharePrice;
-
-    const totalSharesBeforeOption =
-      round0Shares +
-      previousInvestorsTotalShares +
-      totalConvertedShares +
-      newInvestorSharesBeforeOption +
-      totalWarrantShares;
-    const targetOptionPercent = postMoneyPoolTarget / 100;
-    const totalSharesAfterOption =
-      totalSharesBeforeOption / (1 - targetOptionPercent);
-    const targetTotalOptionShares =
-      totalSharesAfterOption * targetOptionPercent;
-
-    newOptionShares = Math.max(
-      0,
-      targetTotalOptionShares - existingOptionPoolShares,
-    );
-
-    totalPostShares = totalSharesAfterOption;
-    newInvestorShares = newInvestorSharesBeforeOption;
-    updatedSharePrice = seriesASharePrice;
-    previous_investors_total = previousInvestorsTotalShares;
-    total_option_pool = existingOptionPoolShares + newOptionShares;
-    total_shares_befores = preMoneyTotalSharesCalc;
   } else if (isPreviousRoundRound0 && previousRounds.length > 0) {
     const totalSharesWithConverted = round0Shares + totalConvertedShares;
 
@@ -2337,8 +2520,14 @@ async function handleCommonStockCalculation(params, updateFlag = false) {
 
     preMoneyTotalSharesCalc =
       round0Shares + optionPoolShares + totalConvertedShares;
+    console.log(round0Shares, "round0Shares");
+    console.log(optionPoolShares, "optionPoolShares");
+    console.log(totalConvertedShares, "totalConvertedShares");
     const investorPostMoneyOwnership =
       (roundSizeVal / postMoneyValuation) * 100;
+    console.log(investorPostMoneyOwnership, "investorPostMoneyOwnership");
+    console.log(roundSizeVal, "roundSizeVal");
+    console.log(postMoneyValuation, "postMoneyValuations");
     totalPostShares =
       preMoneyTotalSharesCalc / (1 - investorPostMoneyOwnership / 100);
     newInvestorShares = totalPostShares - preMoneyTotalSharesCalc;
@@ -2347,171 +2536,49 @@ async function handleCommonStockCalculation(params, updateFlag = false) {
     previous_investors_total = 0;
     total_option_pool = optionPoolShares;
     total_shares_befores = round0Shares;
-  }
 
-  // Current Round Warrants
-  try {
-    const currentRoundWarrants = await new Promise((resolve, reject) => {
-      db.query(
-        `SELECT w.* 
+    // Current Round Warrants
+    try {
+      const currentRoundWarrants = await new Promise((resolve, reject) => {
+        db.query(
+          `SELECT w.* 
         FROM warrants w
         WHERE w.roundrecord_id = ? 
           AND w.company_id = ?
           AND (w.expiration_date IS NULL OR w.expiration_date >= CURDATE())`,
-        [id, company_id],
-        (err, results) => {
-          if (err) reject(err);
-          else resolve(results || []);
-        },
-      );
-    });
-
-    if (currentRoundWarrants && currentRoundWarrants.length > 0) {
-      for (const warrant of currentRoundWarrants) {
-        const baseInvestor = {
-          shares: newInvestorShares,
-          convertedShares: newInvestorShares,
-        };
-        const result = await calculateWarrantSharesForOptionPool(
-          warrant,
-          baseInvestor,
-          updatedSharePrice,
-          currentRound?.roundsize,
-          postMoneyValuation,
-          totalPostShares,
+          [id, company_id],
+          (err, results) => {
+            if (err) reject(err);
+            else resolve(results || []);
+          },
         );
-        totalWarrantShares += result.warrantShares;
-        totalWarrantValue += result.warrantValue;
-        warrantCalculationResults.push(result);
-      }
-    }
-  } catch (error) {
-    console.error("❌ Error fetching current round warrants:", error);
-  }
-
-  // Previous Round Warrants Calculation
-  const warrantsByRound = {};
-  for (const warrant of previousWarrantsList) {
-    const originalRoundId = warrant.round_id;
-    if (!warrantsByRound[originalRoundId]) {
-      warrantsByRound[originalRoundId] = {
-        round_id: originalRoundId,
-        warrants: [],
-        convertedSharesForRound: 0,
-      };
-    }
-    warrantsByRound[originalRoundId].warrants.push(warrant);
-  }
-
-  for (const conv of conversionDetails) {
-    const originalRoundId = conv.original_round_id;
-    if (warrantsByRound[originalRoundId]) {
-      warrantsByRound[originalRoundId].convertedSharesForRound =
-        conv.convertedShares;
-    }
-  }
-
-  for (const roundId in warrantsByRound) {
-    const roundData = warrantsByRound[roundId];
-    const convertedSharesForThisRound = roundData.convertedSharesForRound;
-
-    if (convertedSharesForThisRound === 0) {
-      continue;
-    }
-
-    const originalRound = previousRounds.find((r) => r.id == roundId);
-
-    let warrantSharePrice = updatedSharePrice;
-
-    if (originalRound) {
-      if (
-        originalRound.share_price &&
-        parseFloat(originalRound.share_price) > 0
-      ) {
-        warrantSharePrice = parseFloat(originalRound.share_price);
-      } else if (
-        originalRound.conversion_price &&
-        parseFloat(originalRound.conversion_price) > 0
-      ) {
-        warrantSharePrice = parseFloat(originalRound.conversion_price);
-      } else if (originalRound.post_money_cap_table) {
-        try {
-          const postCapTable =
-            typeof originalRound.post_money_cap_table === "string"
-              ? JSON.parse(originalRound.post_money_cap_table)
-              : originalRound.post_money_cap_table;
-          if (
-            postCapTable.share_price &&
-            parseFloat(postCapTable.share_price) > 0
-          ) {
-            warrantSharePrice = parseFloat(postCapTable.share_price);
-          }
-        } catch (e) {}
-      }
-    }
-
-    const completeWarrants = await new Promise((resolve, reject) => {
-      const warrantIds = roundData.warrants.map((w) => w.warrant_id);
-      db.query(
-        `SELECT w.* 
-         FROM warrants w
-         WHERE w.id IN (?) 
-           AND w.company_id = ?
-           AND (w.expiration_date IS NULL OR w.expiration_date >= CURDATE())`,
-        [warrantIds, company_id],
-        (err, results) => {
-          if (err) reject(err);
-          else resolve(results || []);
-        },
-      );
-    });
-
-    for (const warrant of completeWarrants) {
-      // Find the conversion detail that matches this round
-      const matchingConversion = conversionDetails.find(
-        (conv) => conv.original_round_id == roundId,
-      );
-
-      if (!matchingConversion) continue;
-
-      // ✅ Use conversion price from the converted instrument instead of share price
-      const conversionPrice = matchingConversion.conversion_price;
-      const investmentAmount = matchingConversion.investment;
-      const convertedShares = convertedSharesForThisRound;
-
-      const baseInvestor = {
-        shares: convertedShares,
-        convertedShares: convertedShares,
-        conversion_price: conversionPrice, // ✅ Pass conversion price
-        investment_amount: investmentAmount, // ✅ Pass investment amount
-      };
-
-      const result = await calculateWarrantSharesForOptionPool(
-        warrant,
-        baseInvestor,
-        conversionPrice, // ✅ Use conversion price instead of sharePrice
-        investmentAmount, // ✅ Pass investment amount
-        postMoneyValuation,
-        totalPostShares,
-      );
-
-      totalWarrantShares += result.warrantShares;
-      totalWarrantValue += result.warrantValue;
-      convertedWarrantResults.push({
-        warrant_id: warrant.id,
-        original_round_id: parseInt(roundId),
-        converted_shares_base: convertedSharesForThisRound,
-        conversion_price_used: conversionPrice,
-        investment_amount: investmentAmount,
-        warrant_shares: result.warrantShares,
-        warrant_price: result.warrantPrice,
-        warrant_value: result.warrantValue,
-        warrant_type: warrant.warrantType,
-        coverage_percentage: warrant.warrant_coverage_percentage_main,
-        discount_percentage: warrant.warrant_coverage_percentage,
       });
+
+      if (currentRoundWarrants && currentRoundWarrants.length > 0) {
+        for (const warrant of currentRoundWarrants) {
+          const baseInvestor = {
+            shares: newInvestorShares,
+            convertedShares: newInvestorShares,
+          };
+          const result = await calculateWarrantSharesForOptionPool(
+            warrant,
+            baseInvestor,
+            updatedSharePrice,
+            currentRound?.roundsize,
+            postMoneyValuation,
+            totalPostShares,
+          );
+          totalWarrantShares += result.warrantShares;
+          totalWarrantValue += result.warrantValue;
+          warrantCalculationResults.push(result);
+        }
+      }
+    } catch (error) {
+      console.error("❌ Error fetching current round warrants:", error);
     }
+    totalPostShares = totalPostShares + totalWarrantShares;
   }
+
   // ==================== UPDATE MOIC FOR CONVERSION DETAILS ====================
   conversionDetails.forEach((conv) => {
     const ownership = conv.convertedShares / totalPostShares;
@@ -2853,6 +2920,7 @@ async function handleCommonStockCalculation(params, updateFlag = false) {
   };
 
   // ==================== POST-MONEY CAP TABLE ====================
+  console.log(postMoneyValuation, "postMoneyValuation");
   const postMoneyCapTable = {
     total_shares: totalPostShares,
     pending_instruments: previousPendingSafes,
@@ -3616,11 +3684,6 @@ async function calculateWarrantFromInvestorData(
     ? totalpostshare
     : parseFloat(inv.total_shares) || 0;
 
-  console.log(share_price, "share_price");
-  console.log(inv);
-  console.log(totalpostshare);
-  console.log(convertedShares, "convertedShares");
-  console.log(conversionPrice, "conversionPrice");
   let rawPercentage = 0;
   if (warrant.warrantType === "percentage") {
     const discountPercentage =
@@ -3643,7 +3706,7 @@ async function calculateWarrantFromInvestorData(
     const ownership = potentialShares / totalShares;
     rawPercentage = ownership * 100;
     finalValue = (rawPercentage * valuationValue) / 100;
-
+    console.log(finalValue, "ll");
     calculationMethod = "percentage_with_discount";
   } else if (warrant.warrantType === "fixed") {
     const fixedWarrantPrice = parseFloat(warrant.warrant_fixed_shares) || 0; // 9
@@ -6674,8 +6737,6 @@ async function calculateWarrantSharesForOptionPool(
   const coverageDecimal = coveragePercentage / 100;
   const sharess =
     parseFloat(baseInvestor.shares) || parseFloat(baseInvestor.convertedShares);
-
-  console.log(baseInvestor, "baseInvestor");
 
   if (warrant.warrantType === "percentage") {
     const discountPercentage =
@@ -16757,6 +16818,7 @@ exports.getPreviousRoundForAutoFill = (req, res) => {
     // CASE 2: PREVIOUS ROUND FOUND
     // ============================================
     const previousRound = results[0];
+
     const totalShares = parseFloat(previousRound.total_shares_after) || 0;
     const previousInstrumentType = previousRound.instrumentType;
     const previousOptionShares =
@@ -16771,7 +16833,8 @@ exports.getPreviousRoundForAutoFill = (req, res) => {
         COUNT(*) as round_count
       FROM roundrecord 
       WHERE company_id = ? 
-        ${current_round_id ? "AND id < ?" : ""}
+        ${current_round_id ? "AND id < ?" : ""} ORDER BY id DESC 
+    LIMIT 1
     `;
 
     const poolParams = current_round_id
@@ -16801,8 +16864,9 @@ exports.getPreviousRoundForAutoFill = (req, res) => {
         cumulativeOptionPoolShares > 0 &&
         totalShares > 0
       ) {
-        previousPostMoneyPool =
-          (cumulativeOptionPoolShares / totalShares) * 100;
+        previousPostMoneyPool = dbPreMoneyPool;
+        // previousPostMoneyPool =
+        // (cumulativeOptionPoolShares / totalShares) * 100;
         calculationMethod = "Calculated from cumulative shares";
       } else if (dbPostMoneyPool === 0 && dbPreMoneyPool > 0) {
         previousPostMoneyPool = dbPreMoneyPool;
@@ -16872,7 +16936,7 @@ exports.getPreviousRoundForAutoFill = (req, res) => {
             ? `Previous round (${previousRound.nameOfRound}) had ${previousPostMoneyPool.toFixed(2)}% post-money pool. AUTOFILLING ${existingOptionPoolPercent}% for pre-money pool.`
             : `Previous round had 0% post-money pool. AUTOFILLING 0% for pre-money pool.`,
       };
-
+      console.log(responseData);
       return res.status(200).json({
         success: true,
         data: responseData,
