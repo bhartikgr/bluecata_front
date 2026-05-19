@@ -12,17 +12,19 @@ import type { Express, Request, Response } from "express";
 import { randomBytes } from "node:crypto";
 import { emitMutation } from "./lib/eventBus";
 import { getUserContext } from "./lib/userContext";
+import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 
 // ---------------------------------------------------------------------------
 // DEF-041/028: COMPANY_NAME_MAP — maps companyId to display name
 // ---------------------------------------------------------------------------
-const COMPANY_NAME_MAP: Record<string, string> = {
+// Patch v4: demo seed only when demo gate is on.
+const COMPANY_NAME_MAP: Record<string, string> = DEMO_SEED_ENABLED ? {
   co_novapay: "NovaPay AI",
   co_arboreal: "Arboreal",
   co_quanta: "Quanta Robotics",
   co_helia: "Helia",
   co_tideline: "Tideline",
-};
+} : {};
 
 /** Derives a companyId from a roundId for channelId construction. */
 function roundIdToCompanyId(roundId: string): string {
@@ -76,6 +78,8 @@ interface QAMessage {
 const historyStore = new Map<string, HistoryEvent[]>();
 
 function seedHistory(companyId: string): HistoryEvent[] {
+  // Patch v4: defaults only populated when demo gate on.
+  if (!DEMO_SEED_ENABLED) return [];
   const defaults: Record<string, HistoryEvent[]> = {
     co_novapay: [
       {
@@ -131,6 +135,7 @@ function seedHistory(companyId: string): HistoryEvent[] {
 const coSoftCircleStore = new Map<string, CoSoftCircleMember[]>();
 
 function seedCoSoftCircle(roundId: string): CoSoftCircleMember[] {
+  if (!DEMO_SEED_ENABLED) return [];
   const defaults: Record<string, CoSoftCircleMember[]> = {
     rnd_novapay_seed: [
       {
@@ -176,6 +181,7 @@ function seedCoSoftCircle(roundId: string): CoSoftCircleMember[] {
 const qaMessagesStore = new Map<string, QAMessage[]>();
 
 function seedQaMessages(roundId: string): QAMessage[] {
+  if (!DEMO_SEED_ENABLED) return [];
   const defaults: Record<string, QAMessage[]> = {
     rnd_novapay_seed: [
       {

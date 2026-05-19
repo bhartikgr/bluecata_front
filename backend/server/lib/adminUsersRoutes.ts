@@ -18,8 +18,9 @@ import * as crypto from "node:crypto";
 import { rawDb } from "../db/connection";
 import { emitMutation } from "./eventBus";
 import { hashPassword } from "./auth";
+import { DEMO_SEED_ENABLED } from "./demoGate";
 
-const SEED_USERS = [
+const _seedUsers = [
   { id: "u_maya",  email: "maya@novapay.ai",  name: "Maya Chen",     role: "founder",  status: "active", tenant: "NovaPay AI",     mfa: true,  lastLogin: "2026-04-22T08:14:00Z" },
   { id: "u_dev",   email: "dev@novapay.ai",   name: "Devon Reyes",   role: "founder",  status: "active", tenant: "NovaPay AI",     mfa: true,  lastLogin: "2026-04-22T07:42:00Z" },
   { id: "u_sara",  email: "sara@boldvc.com",  name: "Sara Park",     role: "investor", status: "active", tenant: "Bold VC",        mfa: true,  lastLogin: "2026-04-22T08:01:00Z" },
@@ -28,7 +29,9 @@ const SEED_USERS = [
   { id: "u_lapsed", email: "lp@lapsed-fund.example", name: "LP (Lapsed)", role: "investor", status: "suspended", tenant: "Lapsed Fund", mfa: false, lastLogin: "2025-12-01T00:00:00Z" },
   { id: "u_admin", email: "ops@capavate.com", name: "Capavate Ops",  role: "admin",    status: "active", tenant: "Capavate",       mfa: true,  lastLogin: "2026-04-22T08:18:00Z" },
 ];
-type AdminUser = typeof SEED_USERS[number];
+// Patch v4: SEED_USERS only populated when demo gate on; production starts empty.
+const SEED_USERS = DEMO_SEED_ENABLED ? _seedUsers : [];
+type AdminUser = typeof _seedUsers[number];
 const userMap = new Map<string, AdminUser>(SEED_USERS.map(u => [u.id, { ...u }]));
 
 const auditTrail: Array<{ ts: string; actor: string; action: string; targetId: string; meta?: Record<string, unknown> }> = [];

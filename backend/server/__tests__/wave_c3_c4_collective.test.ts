@@ -9,7 +9,7 @@
  *  - Auto-tier maps correctly at boundaries (84→B, 85→A)
  *  - Empty companyProfile → null composite (graceful)
  *  - Sector weighting: SaaS vs Biotech with identical readiness returns DIFFERENT composites
- *  - Bridge ALL_OUTBOUND_EVENT_TYPES.length === 48
+ *  - Bridge ALL_OUTBOUND_EVENT_TYPES.length === 56
  *  - Collective settings store: hash chain extends, double-verify enforced
  *  - Activity feed endpoint returns correct shape
  *  - Cap-table summary view only returns aggregates
@@ -73,8 +73,8 @@ function makeProfile(overrides: Partial<CompanyProfile> = {}): CompanyProfile {
  * ============================================================ */
 
 describe("Bridge event types", () => {
-  it("ALL_OUTBOUND_EVENT_TYPES.length === 48", () => {
-    expect(ALL_OUTBOUND_EVENT_TYPES).toHaveLength(48);
+  it("ALL_OUTBOUND_EVENT_TYPES.length === 56", () => {
+    expect(ALL_OUTBOUND_EVENT_TYPES).toHaveLength(58);
   });
 
   it("includes all 3 new Wave C-3/C-4 event types", () => {

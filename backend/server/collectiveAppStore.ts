@@ -40,6 +40,24 @@ export function clearApplications(): void {
   applications.length = 0;
 }
 
+/** Patch v10 — expose for admin approval pipeline. */
+export function listApplications(filter?: { status?: CollectiveAppStatus }): StoredApplication[] {
+  if (!filter?.status) return applications.slice();
+  return applications.filter((a) => a.status === filter.status);
+}
+
+export function getApplicationById(id: string): StoredApplication | null {
+  return applications.find((a) => a.id === id) ?? null;
+}
+
+export function setApplicationStatus(id: string, status: CollectiveAppStatus): StoredApplication | null {
+  const a = applications.find((x) => x.id === id);
+  if (!a) return null;
+  a.status = status;
+  a.reviewedAt = new Date().toISOString();
+  return a;
+}
+
 /* ---------- Eligibility ---------- */
 export type EligibilityResult = {
   eligible: boolean;
@@ -96,6 +114,14 @@ export function registerCollectiveAppRoutes(app: Express): void {
     const userId = req.userContext?.userId;
     if (!userId || !req.userContext?.isAuthed) {
       return res.status(401).json({ error: "NOT_AUTHED", message: "Sign in to apply." });
+    }
+    // Patch v9 (P0-4): explicitly reject body-supplied investorId/userId that
+    // doesn't match the session. Stops attackers from submitting applications
+    // attributed to another user even if the eligibility gate would also catch
+    // it downstream.
+    const bodyInvestorId = (req.body && (req.body.investorId ?? req.body.userId)) as string | undefined;
+    if (typeof bodyInvestorId === "string" && bodyInvestorId !== userId) {
+      return res.status(400).json({ error: "investorId_must_match_session" });
     }
     const elig = isEligibleForCollective(userId);
     if (!elig.eligible) {

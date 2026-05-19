@@ -39,6 +39,9 @@ import {
   SEED_INVESTOR_PROFILE,
 } from "../client/src/lib/profile/seed";
 import { BridgeOutbound } from "./lib/bridgeOutbound";
+// V2 (Patch v8): legacy Sprint-29 profile store used as fallback when this
+// store has no entry for a companyId (founder PATCH path writes there).
+import { getCompanyProfile as getLegacyCompanyProfile } from "./companyProfileStore";
 
 /* ---------------- Stores ---------------- */
 const companyProfiles = new Map<string, CompanyProfile>();
@@ -188,7 +191,29 @@ export function registerProfileRoutes(app: Express): void {
   app.get("/api/companies/:id/profile", (req, res) => {
     const id = req.params.id;
     const p = companyProfiles.get(id);
-    if (!p) return res.status(404).json({ message: "Company profile not found" });
+    if (!p) {
+      // V2 (Patch v8): fall back to the Sprint 29 companyProfileStore so a
+      // founder edit (which writes to that store) is visible to investors
+      // hitting this endpoint. Phase 1 B2 root cause: profile drift between
+      // the two stores. The adapter normalizes the alt-shape to the minimum
+      // fields this endpoint emits; deeper fields default to safe values.
+      const legacy = getLegacyCompanyProfile(id) as any;
+      if (legacy && (legacy.description || legacy.tagline)) {
+        return res.json({
+          id,
+          companyId: id,
+          description: legacy.description ?? "",
+          tagline: legacy.tagline ?? "",
+          sector: legacy.sector ?? null,
+          stage: legacy.stage ?? null,
+          logoUrl: legacy.logoUrl ?? null,
+          version: legacy.version ?? 0,
+          updatedAt: legacy.updatedAt ?? null,
+          source: "companyProfileStore",
+        });
+      }
+      return res.status(404).json({ message: "Company profile not found" });
+    }
     const role = String(req.query.as ?? "founder");
     const score = computeMaReadinessScore(p.ma);
     if (role === "investor" || role === "viewer") {
@@ -435,3 +460,12 @@ export function registerProfileRoutes(app: Express): void {
 
 /* Export accessors so other server modules + tests can introspect. */
 export const _testAccess = { companyProfiles, investorProfiles, outbox, auditEntries };
+
+/* V7 (Patch v8): Public scoped reader replacing _testAccess.companyProfiles.get(id)
+ * for production callers (routes.ts). Returns the in-memory profileStore entry,
+ * or null if not present. Callers should fall back to companyProfileStore.getCompanyProfile
+ * for legacy entries (see GET /api/companies/:id/profile fallback).
+ */
+export function getCompanyProfileSnapshot(companyId: string): unknown | null {
+  return companyProfiles.get(companyId) ?? null;
+}

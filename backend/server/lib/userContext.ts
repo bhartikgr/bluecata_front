@@ -11,18 +11,20 @@
  * The HTTP shell exposes this via `GET /api/auth/me`. Test harnesses can
  * also call `getUserContext(req)` directly.
  *
- * KL-04 FIX:
- *  - registerPersona() — invitationId/roundId/companyId optional (signup ke waqt nahi hote)
- *  - getUserContextForId() — DB se user load karta hai agar in-memory mein nahi mila
- *  - name column support for real signup users
- *
  * SANDBOX-SAFE: pure server code. No browser APIs.
+ *
+ * PATCH v3 — Per-company data scoping:
+ *   - buildFounderCompanies(userId) now passes userId to getCompaniesForFounder().
+ *   - getActiveCompanyId(userId) called with the persona's userId.
+ *   - New users get ZERO companies — no NovaPay/Arboreal leakage.
  */
 import type { Request } from "express";
 import { getCompaniesForFounder, getActiveCompanyId, type FounderCompanyMembership } from "../multiCompanyStore";
 import { getMembership } from "../membershipStore";
 import { incomingInvitations, currentInvestor as DEMO_INVESTOR } from "../mockData";
-import { rawDb } from "../db/connection";
+// Patch v6 — persist credentials via userCredentialsStore so login works across restarts.
+import { storeCredential, lookupByEmail } from "../userCredentialsStore";
+
 /* ---------- Public types ---------- */
 
 export type InvestorState =
@@ -78,7 +80,7 @@ export interface FounderCompany {
 
 export interface UserContext {
   userId: string;
-  identity: { email: string; name: string; screenName?: string; firstName?: string; displayName?: string };
+  identity: { email: string; name: string; screenName?: string };
   founder: { companies: FounderCompany[]; activeCompanyId: string | null };
   investor: {
     invitedRounds: InvitedRound[];
@@ -108,7 +110,7 @@ interface PersonaSeed {
   hasInvitations: boolean;
 }
 
-/** Runtime-registered personas (from token redemption + signup). Keyed by userId. */
+/** Runtime-registered personas (from token redemption). Keyed by userId. */
 const RUNTIME_PERSONAS: Record<string, PersonaSeed & { password?: string; invitedRoundIds?: string[] }> = {};
 /** Runtime invitation seeds for redeemed users. */
 const RUNTIME_INVITATIONS: Record<string, Array<{ invitationId: string; roundId: string; companyId: string }>> = {};
@@ -166,12 +168,33 @@ const PERSONAS: Record<string, PersonaSeed> = {
     isAdmin: true,
     hasInvitations: false,
   },
+  // Patch v6 — TEST PARTNER sandbox personas (DEMO_SEED_ENABLED only).
+  // Production never loads these because seedTestPartnerSandbox() is gated.
+  u_avi_managing: {
+    userId: "u_avi_managing",
+    email: "avi.managing@test-partner.example",
+    name: "Avi Managing",
+    isFounder: false,
+    isInvestor: false,
+    isAdmin: false,
+    hasInvitations: false,
+  },
+  u_avi_viewer: {
+    userId: "u_avi_viewer",
+    email: "avi.viewer@test-partner.example",
+    name: "Avi Viewer",
+    isFounder: false,
+    isInvestor: false,
+    isAdmin: false,
+    hasInvitations: false,
+  },
 };
 
 /* ---------- Entitlement helpers ---------- */
 
-function buildFounderCompanies(): FounderCompany[] {
-  return getCompaniesForFounder().map((c: FounderCompanyMembership) => ({
+// PATCH v3: Pass userId to getCompaniesForFounder so each user gets their OWN companies.
+function buildFounderCompanies(userId: string): FounderCompany[] {
+  return getCompaniesForFounder(userId).map((c: FounderCompanyMembership) => ({
     companyId: c.companyId,
     companyName: c.companyName,
     legalName: c.legalName,
@@ -193,7 +216,7 @@ function buildInvitedRounds(persona: PersonaSeed): InvitedRound[] {
       invitationId: ri.invitationId,
       roundId: ri.roundId,
       companyId: ri.companyId,
-      companyName: ri.companyId,
+      companyName: ri.companyId, // simplified — no company name store yet
       roundName: "Invited Round",
       state: "pending",
       receivedAt: new Date().toISOString(),
@@ -226,6 +249,8 @@ function buildCapTablePositions(persona: PersonaSeed): CapTablePosition[] {
 
 function buildCollectiveOverlay(persona: PersonaSeed): UserContext["collective"] {
   if (!persona.isInvestor) {
+    // Founders use multiCompanyStore.collective per-company; the user-level
+    // collective overlay is for investor-side logic only here.
     return { status: "none", role: null, expiresAt: null };
   }
   const m = getMembership(persona.userId);
@@ -269,6 +294,8 @@ export function computeInvestorState(args: {
  *   4. null — no identity found
  */
 export function resolvePersonaId(req: Request): string | null {
+  // Sprint 27 — accept both the prefixed __Host- cookie (required in production
+  // sandbox) and the legacy cap_uid name (HTTP dev fallback).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const cookies = (req as any).cookies ?? {};
   const cookieId = (cookies["__Host-cap_uid"] ?? cookies["cap_uid"]) as string | undefined;
@@ -280,10 +307,26 @@ export function resolvePersonaId(req: Request): string | null {
 /**
  * resolvePersonaIdWithFallback — returns a persona id, falling back to
  * demo personas based on ?as= role query param. Used by getUserContext().
+ *
+ * PRODUCTION (Sprint-fix May 14 2026):
+ *   When NODE_ENV === "production" OR DISABLE_DEV_BYPASS === "1", the
+ *   fallback is DISABLED — returns null so that getUserContext() yields an
+ *   unauthenticated context. Anonymous visitors will no longer impersonate
+ *   demo persona u_aisha_patel.
+ *
+ * SANDBOX / LOCAL DEV:
+ *   When NOT in production AND DISABLE_DEV_BYPASS !== "1", the legacy
+ *   fallback still applies so existing fixtures + tests pass.
  */
-function resolvePersonaIdWithFallback(req: Request): string {
+function resolvePersonaIdWithFallback(req: Request): string | null {
   const explicit = resolvePersonaId(req);
   if (explicit) return explicit;
+  // Hard gate — NO anonymous fallback in production. This is THE fix
+  // for the QA-report root cause #1 (anonymous = Aisha Patel).
+  const isProd = process.env.NODE_ENV === "production";
+  const bypassDisabled = process.env.DISABLE_DEV_BYPASS === "1";
+  if (isProd || bypassDisabled) return null;
+  // Sandbox-only fallback (kept for tests + local browse-without-login UX).
   const role = String(req.query.as ?? "investor");
   if (role === "founder") return "u_maya_chen";
   if (role === "admin") return "u_admin";
@@ -293,103 +336,136 @@ function resolvePersonaIdWithFallback(req: Request): string {
 /* ---------- Public API ---------- */
 
 /**
- * KL-04 FIX: invitationId, roundId, companyId ab optional hain.
- * Signup ke waqt ye fields nahi hote — sirf redeem ke waqt hote hain.
+ * Sprint-fix May 14 2026 — register a NEW founder user from /api/auth/signup.
+ * Persists the founder in RUNTIME_PERSONAS and returns the new userId.
+ *
+ * Behavior:
+ *   • Looks up by email — if a persona exists, returns the existing id
+ *     (caller decides whether to 409 or just sign them in).
+ *   • Otherwise creates a new RUNTIME_PERSONA row with isFounder=true.
+ *   • Stores password for /api/auth/login.
+ *   • NO mock data injected — the new user starts with zero companies.
+ *     The founder must complete the New Company flow next.
  */
+export function registerFounderUser(args: {
+  email: string;
+  name: string;
+  password: string;
+}): { userId: string; alreadyExisted: boolean } {
+  const normalizedEmail = args.email.trim().toLowerCase();
+  const existingId =
+    Object.values(PERSONAS).find((p) => p.email.toLowerCase() === normalizedEmail)?.userId ??
+    Object.values(RUNTIME_PERSONAS).find((p) => p.email.toLowerCase() === normalizedEmail)?.userId;
+  if (existingId) return { userId: existingId, alreadyExisted: true };
+  const userId = `u_founder_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  RUNTIME_PERSONAS[userId] = {
+    userId,
+    email: normalizedEmail,
+    name: args.name.trim(),
+    isFounder: true,
+    isInvestor: false,
+    isAdmin: false,
+    hasInvitations: false,
+  };
+  RUNTIME_PASSWORDS[userId] = args.password;
+  // Patch v6 — also persist via userCredentialsStore (bcrypt-hashed, survives restart).
+  try {
+    storeCredential({
+      userId,
+      email: normalizedEmail,
+      name: args.name.trim(),
+      password: args.password,
+    });
+  } catch (err) {
+    // Non-fatal; in-memory path still works for the current process.
+    // eslint-disable-next-line no-console
+    console.warn("[userContext] storeCredential failed (non-fatal):", (err as Error).message);
+  }
+  return { userId, alreadyExisted: false };
+}
+
+/**
+ * Sprint-fix May 14 2026 — verify password for /api/auth/login.
+ * Returns the userId on match, null otherwise. Production should swap
+ * this for scrypt/argon2; in the sandbox we keep plain-text equality.
+ */
+export function verifyPassword(email: string, password: string): string | null {
+  const normalized = email.trim().toLowerCase();
+  // Path 1 — in-process RUNTIME_PASSWORDS (plaintext, same-session).
+  for (const p of Object.values({ ...PERSONAS, ...RUNTIME_PERSONAS })) {
+    if (p.email.toLowerCase() === normalized) {
+      const stored = RUNTIME_PASSWORDS[p.userId];
+      if (stored && stored === password) return p.userId;
+    }
+  }
+  // Patch v6 — fall back to persisted userCredentialsStore (bcrypt) so login
+  // works after a server restart. Hydrate RUNTIME_PERSONAS on hit so
+  // getUserContextForId() returns the founder's real identity.
+  try {
+    const cred = lookupByEmail(normalized);
+    if (cred && cred.verifyPassword(password)) {
+      const uid = cred.userId;
+      if (!PERSONAS[uid] && !RUNTIME_PERSONAS[uid]) {
+        RUNTIME_PERSONAS[uid] = {
+          userId: uid,
+          email: normalized,
+          name: cred.name ?? normalized,
+          isFounder: true,
+          isInvestor: false,
+          isAdmin: false,
+          hasInvitations: false,
+        };
+      }
+      RUNTIME_PASSWORDS[uid] = password;
+      return uid;
+    }
+  } catch {
+    // Non-fatal; in-memory path was the only check.
+  }
+  return null;
+}
+
 export function registerPersona(args: {
   email: string;
   name: string;
   password: string;
-  invitationId?: string | undefined;
-  roundId?: string | undefined;
-  companyId?: string | undefined;
+  invitationId: string;
+  roundId: string;
+  companyId: string;
 }): string {
   // Check if this email is already a known persona
   const existingId = Object.values(PERSONAS).find(p => p.email === args.email)?.userId
     ?? Object.values(RUNTIME_PERSONAS).find(p => p.email === args.email)?.userId;
-
   if (existingId) {
-    // Already exists — add invitation if present
-    if (args.invitationId && args.roundId && args.companyId) {
-      if (!RUNTIME_INVITATIONS[existingId]) RUNTIME_INVITATIONS[existingId] = [];
-      const already = RUNTIME_INVITATIONS[existingId].some(i => i.invitationId === args.invitationId);
-      if (!already) {
-        RUNTIME_INVITATIONS[existingId].push({
-          invitationId: args.invitationId,
-          roundId: args.roundId,
-          companyId: args.companyId,
-        });
-      }
-    }
+    // Already exists — just add invitation seed if not present
+    if (!RUNTIME_INVITATIONS[existingId]) RUNTIME_INVITATIONS[existingId] = [];
+    const already = RUNTIME_INVITATIONS[existingId].some(i => i.invitationId === args.invitationId);
+    if (!already) RUNTIME_INVITATIONS[existingId].push({ invitationId: args.invitationId, roundId: args.roundId, companyId: args.companyId });
     RUNTIME_PASSWORDS[existingId] = args.password;
     return existingId;
   }
-
-  // Create new runtime persona
-  // signup = founder (no invitationId), redeem = investor (has invitationId)
-  const isInvitation = !!args.invitationId;
-  const userId = isInvitation ? `u_redeemed_${Date.now()}` : `u_signup_${Date.now()}`;
-
+  // Create new
+  const userId = `u_redeemed_${Date.now()}`;
   RUNTIME_PERSONAS[userId] = {
     userId,
     email: args.email,
     name: args.name,
-    isFounder: !isInvitation,
-    isInvestor: isInvitation,
+    isFounder: false,
+    isInvestor: true,
     isAdmin: false,
-    hasInvitations: isInvitation,
+    hasInvitations: true,
   };
-
-  if (args.invitationId && args.roundId && args.companyId) {
-    RUNTIME_INVITATIONS[userId] = [{
-      invitationId: args.invitationId,
-      roundId: args.roundId,
-      companyId: args.companyId,
-    }];
-  }
-
+  RUNTIME_INVITATIONS[userId] = [{ invitationId: args.invitationId, roundId: args.roundId, companyId: args.companyId }];
   RUNTIME_PASSWORDS[userId] = args.password;
   return userId;
 }
 
-/**
- * KL-04 FIX: agar PERSONAS/RUNTIME_PERSONAS mein nahi mila toh
- * DB se load karo — real signup users ke liye.
- */
 export function getUserContextForId(userId: string): UserContext {
-  let persona = PERSONAS[userId] ?? RUNTIME_PERSONAS[userId];
-
-  // DB se load karo agar in-memory mein nahi mila
-  if (!persona) {
-    try {
-      
-      const row = rawDb().prepare(
-        `SELECT id, email, name, role FROM auth_users WHERE id = ? LIMIT 1`
-      ).get(userId) as { id: string; email: string; name: string; role: string } | undefined;
-
-      if (row) {
-        const displayName = row.name || row.email.split("@")[0];
-        persona = {
-          userId: row.id,
-          email: row.email,
-          name: displayName,
-          isFounder: row.role === "founder",
-          isInvestor: row.role === "investor",
-          isAdmin: row.role === "admin",
-          hasInvitations: false,
-        };
-        // Cache karo taaki baar baar DB hit na ho
-        RUNTIME_PERSONAS[userId] = persona;
-      }
-    } catch (e) {
-      console.error("[userContext] DB load failed for userId:", userId, e);
-    }
-  }
-
+  const persona = PERSONAS[userId] ?? RUNTIME_PERSONAS[userId];
   if (!persona) {
     return {
       userId,
-      identity: { email: "", name: "", firstName: "", displayName: "" },
+      identity: { email: "", name: "" },
       founder: { companies: [], activeCompanyId: null },
       investor: { invitedRounds: [], capTablePositions: [], state: "NONE" },
       collective: { status: "none", role: null, expiresAt: null },
@@ -398,9 +474,10 @@ export function getUserContextForId(userId: string): UserContext {
     };
   }
 
-  const founderCompanies = persona.isFounder ? buildFounderCompanies() : [];
+  // PATCH v3: pass userId so each founder gets their OWN companies
+  const founderCompanies = persona.isFounder ? buildFounderCompanies(persona.userId) : [];
   const activeCompanyId = persona.isFounder
-    ? (founderCompanies.find((c) => c.companyId === getActiveCompanyId())?.companyId ?? founderCompanies[0]?.companyId ?? null)
+    ? (founderCompanies.find((c) => c.companyId === getActiveCompanyId(persona.userId))?.companyId ?? founderCompanies[0]?.companyId ?? null)
     : null;
 
   const invitedRounds = buildInvitedRounds(persona);
@@ -413,17 +490,10 @@ export function getUserContextForId(userId: string): UserContext {
     collectiveStatus: collective.status,
   });
 
-  // Demo investor identity overlay
-  const rawIdentity = persona.userId === DEMO_INVESTOR.id
+  // Use demo investor identity overlay for u_aisha_patel where we have richer mock fields.
+  const identity = persona.userId === DEMO_INVESTOR.id
     ? { email: DEMO_INVESTOR.email, name: DEMO_INVESTOR.legalName, screenName: DEMO_INVESTOR.visibility.screenName }
     : { email: persona.email, name: persona.name, screenName: persona.screenName };
-
-  // KL-04: firstName aur displayName add karo — header mein naam dikhne ke liye
-  const identity = {
-    ...rawIdentity,
-    firstName: rawIdentity.name?.split(" ")[0] ?? "",
-    displayName: rawIdentity.name ?? "",
-  };
 
   return {
     userId: persona.userId,
@@ -436,9 +506,35 @@ export function getUserContextForId(userId: string): UserContext {
   };
 }
 
-export async function getUserContext(req: Request): Promise<UserContext> {
+/**
+ * getUserContext — PRIMARY identity resolver.
+ *
+ * PRODUCTION: returns an UNAUTHENTICATED context (isAuthed=false) when no
+ * session cookie is present. Callers (middleware) gate accordingly.
+ *
+ * SANDBOX: falls back to the demo persona implied by ?as= for the
+ * unchanged demo-browse experience.
+ */
+export function getUserContext(req: Request): UserContext {
   const id = resolvePersonaIdWithFallback(req);
+  if (!id) {
+    return {
+      userId: "",
+      identity: { email: "", name: "" },
+      founder: { companies: [], activeCompanyId: null },
+      investor: { invitedRounds: [], capTablePositions: [], state: "NONE" },
+      collective: { status: "none", role: null, expiresAt: null },
+      isAdmin: false,
+      isAuthed: false,
+    };
+  }
   return getUserContextForId(id);
+}
+
+// Legacy async signature kept for back-compat with callers that
+// `await getUserContext(req)`.
+export async function getUserContextAsync(req: Request): Promise<UserContext> {
+  return getUserContext(req);
 }
 
 export function listPersonas(): string[] {

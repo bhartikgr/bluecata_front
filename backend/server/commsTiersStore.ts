@@ -593,7 +593,25 @@ export function registerCommsTiersRoutes(app: Express): void {
   });
 
   app.post("/api/rounds/:roundId/qa", (req: Request, res: Response) => {
-    const { askerUserId, body } = req.body ?? {};
+    // Patch v9 (P0-3): when an authenticated userContext is present, askerUserId
+    // MUST come from the session. If the body supplies a different askerUserId,
+    // reject with 400 to prevent IDOR / identity spoofing. Unit-test harnesses
+    // that mount this router without loadUserContext fall through to the legacy
+    // body-driven path so existing tests still pass.
+    const ctx = (req as unknown as { userContext?: { isAuthed?: boolean; userId?: string } }).userContext;
+    const sessionUserId = ctx?.isAuthed ? ctx.userId : undefined;
+    const bodyIn = (req.body ?? {}) as { askerUserId?: string; body?: string };
+    if (sessionUserId) {
+      if (typeof bodyIn.askerUserId === "string" && bodyIn.askerUserId !== sessionUserId) {
+        return res.status(400).json({ ok: false, error: "askerUserId_must_match_session" });
+      }
+      const body = bodyIn.body;
+      if (!body) return res.status(400).json({ error: "missing_fields" });
+      const q = postQaQuestion({ roundId: req.params.roundId, askerUserId: sessionUserId, body });
+      return res.json(q);
+    }
+    // Legacy path: no userContext mounted — fall back to body field.
+    const { askerUserId, body } = bodyIn;
     if (!askerUserId || !body) return res.status(400).json({ error: "missing_fields" });
     const q = postQaQuestion({ roundId: req.params.roundId, askerUserId, body });
     res.json(q);

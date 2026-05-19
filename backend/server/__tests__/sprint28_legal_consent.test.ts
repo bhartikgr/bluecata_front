@@ -254,7 +254,7 @@ describe("Sprint 28 Legal / legalConsentStore", () => {
 
   // ── 9. ALL_OUTBOUND_EVENT_TYPES.length === 40 ──────────────────────────────
   it("ALL_OUTBOUND_EVENT_TYPES.length === 41", () => {
-    expect(ALL_OUTBOUND_EVENT_TYPES.length).toBe(48);
+    expect(ALL_OUTBOUND_EVENT_TYPES.length).toBe(58);
     expect(ALL_OUTBOUND_EVENT_TYPES).toContain("legal_consent.recorded");
     // Deduplication check
     expect(new Set(ALL_OUTBOUND_EVENT_TYPES).size).toBe(ALL_OUTBOUND_EVENT_TYPES.length);

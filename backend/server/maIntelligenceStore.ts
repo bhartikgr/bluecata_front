@@ -21,6 +21,7 @@ import {
   type MaInitiativePayload,
 } from "@shared/schema";
 import { emitSync } from "./sprint10Telemetry";
+import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 
 /* ----------------- deterministic acquirer-fit math ----------------- */
 
@@ -136,7 +137,9 @@ const COMPANY_FEATURES: Record<string, {
 };
 
 export function getMaIntelligenceFor(companyId: string, asOfIso = new Date().toISOString()): MaIntelligence {
-  const f = COMPANY_FEATURES[companyId] ?? COMPANY_FEATURES.co_novapay;
+  // Patch v4: drop the NovaPay default fallback. When demo is off, return null-like
+  // baseline so the function does not leak NovaPay buyers to fresh users.
+  const f = COMPANY_FEATURES[companyId] ?? (DEMO_SEED_ENABLED ? COMPANY_FEATURES.co_novapay : { sector: "", pmf: 0, tech: 0, mgmt: 0, growth: 0, share: 0, lowChurn: 0, buyers: [] });
   const acquirerFitScore = computeAcquirerFitScore({ pmf: f.pmf, tech: f.tech, mgmt: f.mgmt, growth: f.growth, share: f.share, lowChurn: f.lowChurn });
   // M&A score weights deal-readiness signals (mgmt + lowChurn + tech)
   const maScore = Math.round((f.mgmt * 0.4 + f.lowChurn * 0.4 + f.tech * 0.2) * 100);

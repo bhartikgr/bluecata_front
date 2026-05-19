@@ -1,59 +1,47 @@
 /**
  * Sprint 15 D1/D5 — auth route shell.
- * KL-04 FIX: signup ab real user create karta hai auth_users table mein.
- * login bhi DB se check karta hai, in-memory personas ke saath bhi kaam karta hai.
+ *
+ * Endpoints:
+ *   GET  /api/auth/me                  — returns full UserContext
+ *   POST /api/auth/login               — accepts { email, password? }; resolves persona by email
+ *   POST /api/auth/signup              — founder-only signup (stub: returns the founder persona ctx)
+ *   POST /api/auth/forgot              — password reset stub (returns ok)
+ *   GET  /api/auth/redeem/preview      — preview an invitation token (does not consume)
+ *   POST /api/auth/redeem              — consume an invitation token, set password, return UserContext
+ *
+ * The redemption endpoints are *aliases* over the existing Sprint 7
+ * `/api/invitations/check` and `/api/invitations/redeem` semantics — they
+ * delegate to the same in-memory invitation store via shared helpers.
+ *
+ * SANDBOX-SAFE — pure server.
  */
 import type { Express, Request, Response } from "express";
-import { createHash, randomBytes } from "node:crypto";
-import { getUserContext, getUserContextForId, listPersonas, registerPersona } from "./userContext";
+import { getUserContext, getUserContextForId, listPersonas, registerPersona, registerFounderUser, verifyPassword } from "./userContext";
 import { setSessionCookie } from "./sessionCookie";
-import { rawDb } from "../db/connection";
+import { DEMO_SEED_ENABLED } from "./demoGate";
 
-/* ---------- email -> persona resolution (sandbox demo personas) ---------- */
-const EMAIL_TO_PERSONA: Record<string, string> = {
+/* ---------- email -> persona resolution ---------- */
+// Patch v4: demo-persona email maps only when demo seed is enabled.
+const EMAIL_TO_PERSONA: Record<string, string> = DEMO_SEED_ENABLED ? {
   "maya@novapay.ai": "u_maya_chen",
   "aisha@greenwood.capital": "u_aisha_patel",
   "lp@lapsed-fund.example": "u_lapsed_lp",
   "newinvestor@example.com": "u_no_position",
   "admin@capavate.io": "u_admin",
-};
+} : {};
 
-const MOCK_PASSWORDS: Record<string, string> = {
+/**
+ * Mock password store. In production this would be bcrypt hashes in DB.
+ * For demo, every known investor uses "password123" as their password.
+ * The admin uses "adminpass".
+ */
+const MOCK_PASSWORDS: Record<string, string> = DEMO_SEED_ENABLED ? {
   "u_maya_chen": "password123",
   "u_aisha_patel": "password123",
   "u_lapsed_lp": "password123",
   "u_no_position": "password123",
   "u_admin": "adminpass",
-};
-
-/* ---------- simple password hashing (sha256 — dev only) ---------- */
-function hashPassword(password: string): string {
-  return createHash("sha256").update(password).digest("hex");
-}
-
-function newUserId(): string {
-  return `u_${randomBytes(8).toString("hex")}`;
-}
-
-/* ---------- DB helpers ---------- */
-function dbGetUserByEmail(email: string): { id: string; password_hash: string; role: string; name: string } | null {
-  try {
-    const row = rawDb().prepare(
-      `SELECT id, password_hash, role, name FROM auth_users WHERE email = ? LIMIT 1`
-    ).get(email) as { id: string; password_hash: string; role: string; name: string } | undefined;
-    return row ?? null;
-  } catch {
-    return null;
-  }
-}
-
-function dbCreateUser(id: string, email: string, name: string, passwordHash: string): void {
-  const now = new Date().toISOString();
-  rawDb().prepare(
-    `INSERT INTO auth_users (id, email, password_hash, password_algo, role, status, name, created_at, welcome_ack)
-     VALUES (?, ?, ?, 'sha256_dev', 'founder', 'active', ?, ?, 0)`
-  ).run(id, email, passwordHash, name, now);
-}
+} : {};
 
 function personaIdFromLogin(body: { email?: string; userId?: string } | null): string | null {
   if (!body) return null;
@@ -66,21 +54,30 @@ export function registerAuthShellRoutes(app: Express, redemption: {
   preview: (token: string) => RedemptionPreview;
   redeem: (token: string) => RedemptionResult;
 }): void {
-
   // ---------- /api/auth/me ----------
   app.get("/api/auth/me", async (req: Request, res: Response) => {
     const ctx = await getUserContext(req);
     res.json(ctx);
   });
 
-  // ---------- /api/dev/admin-bypass ----------
+  // ---------- /api/dev/admin-bypass (preview-only) ----------
+  // Sprint 27 hotfix: one-shot GET endpoint that signs the user in as admin
+  // and 302-redirects to the admin dashboard. No form, no JS dependency,
+  // immune to browser caching of the JS bundle. Disabled when DISABLE_DEV_BYPASS=1
+  // or NODE_ENV !== "production" cutover; intended only for the *.pplx.app
+  // preview sandbox. Self-removable by setting the env var at production launch.
   app.get("/api/dev/admin-bypass", async (req: Request, res: Response) => {
-    if (process.env.DISABLE_DEV_BYPASS === "1") {
+    // Sprint-fix May 14 2026 — hard-disabled in production regardless of env var.
+    if (process.env.NODE_ENV === "production" || process.env.DISABLE_DEV_BYPASS === "1") {
       return res.status(404).json({ ok: false, error: "NOT_FOUND" });
     }
     const adminId = "u_admin";
     setSessionCookie(res, adminId);
     const hashTarget = typeof req.query.next === "string" ? req.query.next : "#/admin/dashboard";
+    // Compute the SPA redirect from the Referer URL. The Referer is the page
+    // the user clicked from, which lives at the SPA's index.html (proxied or
+    // direct). We strip its hash + query and append our own hash target. This
+    // works without inline scripts (CSP-safe) by issuing a real 302.
     const referer = (req.headers.referer as string | undefined) ?? "";
     let redirectUrl: string;
     if (referer) {
@@ -99,12 +96,28 @@ export function registerAuthShellRoutes(app: Express, redemption: {
   });
 
   // ---------- /api/auth/login ----------
+  // Sprint-fix May 14 2026 — supports BOTH canonical demo personas
+  // (MOCK_PASSWORDS) AND newly-registered founders (verifyPassword).
   app.post("/api/auth/login", async (req: Request, res: Response) => {
     const body = (req.body ?? {}) as { email?: string; password?: string; userId?: string };
-    const email = (body.email ?? "").trim().toLowerCase();
     const providedPw = body.password ?? "";
 
-    if (!providedPw) {
+    // Path 1: canonical demo persona lookup (Maya, Aisha, Admin).
+    const canonicalId = personaIdFromLogin(body);
+    if (canonicalId) {
+      if (!providedPw) {
+        return res.status(401).json({
+          ok: false,
+          error: "MISSING_PASSWORD",
+          message: "Email and password are required.",
+        });
+      }
+      if (MOCK_PASSWORDS[canonicalId] === providedPw) {
+        setSessionCookie(res, canonicalId);
+        const ctx = getUserContextForId(canonicalId);
+        return res.json({ ok: true, ctx });
+      }
+      // Known user but wrong password
       return res.status(401).json({
         ok: false,
         error: "WRONG_PORTAL_OR_NO_ACCOUNT",
@@ -112,52 +125,29 @@ export function registerAuthShellRoutes(app: Express, redemption: {
       });
     }
 
-    // Pehle demo personas check karo
-    const personaId = personaIdFromLogin(body);
-    if (personaId) {
-      const expectedPw = MOCK_PASSWORDS[personaId];
-      if (providedPw !== expectedPw) {
-        return res.status(401).json({
-          ok: false,
-          error: "WRONG_PORTAL_OR_NO_ACCOUNT",
-          message: "Email or password is incorrect.",
-        });
-      }
-      setSessionCookie(res, personaId);
-      const ctx = getUserContextForId(personaId);
-      return res.json({ ok: true, ctx });
-    }
-
-    // DB mein real user check karo
-    if (email) {
-      const dbUser = dbGetUserByEmail(email);
-      if (dbUser) {
-        const hash = hashPassword(providedPw);
-        if (hash !== dbUser.password_hash) {
-          return res.status(401).json({
-            ok: false,
-            error: "WRONG_PORTAL_OR_NO_ACCOUNT",
-            message: "Email or password is incorrect.",
-          });
-        }
-        setSessionCookie(res, dbUser.id);
-        const ctx = getUserContextForId(dbUser.id);
+    // Path 2: runtime-registered founder lookup (signups since server start).
+    if (body.email && providedPw) {
+      const runtimeId = verifyPassword(body.email, providedPw);
+      if (runtimeId) {
+        setSessionCookie(res, runtimeId);
+        const ctx = getUserContextForId(runtimeId);
         return res.json({ ok: true, ctx });
       }
     }
 
+    // No match in either store (unknown email or wrong password).
     return res.status(401).json({
       ok: false,
       error: "WRONG_PORTAL_OR_NO_ACCOUNT",
-      message: "We couldn't find an account for that email. If you're an investor, check your email for the secure invitation link.",
+      message: "Email or password is incorrect.",
     });
   });
 
   // ---------- /api/auth/signup (founder-only) ----------
-  // KL-04 FIX: real user DB mein save hota hai — Maya Chen nahi milti
+  // Sprint 24: validate body, reject duplicates with 409, require minimum
+  // password length, and reject investor portal signups with a clear 403.
   app.post("/api/auth/signup", async (req: Request, res: Response) => {
     const body = (req.body ?? {}) as { email?: string; name?: string; password?: string; portal?: string };
-
     if (body.portal === "investor") {
       return res.status(403).json({
         ok: false,
@@ -165,11 +155,9 @@ export function registerAuthShellRoutes(app: Express, redemption: {
         message: "Investors join Capavate by invitation only. Check your email for the secure invitation link.",
       });
     }
-
     const email = (body.email ?? "").trim().toLowerCase();
     const name = (body.name ?? "").trim();
     const password = body.password ?? "";
-
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return res.status(400).json({ ok: false, error: "INVALID_EMAIL", message: "Enter a valid email address." });
     }
@@ -179,8 +167,6 @@ export function registerAuthShellRoutes(app: Express, redemption: {
     if (password.length < 8) {
       return res.status(400).json({ ok: false, error: "WEAK_PASSWORD", message: "Choose a password of at least 8 characters." });
     }
-
-    // Demo persona email se signup block karo
     if (EMAIL_TO_PERSONA[email]) {
       return res.status(409).json({
         ok: false,
@@ -188,56 +174,18 @@ export function registerAuthShellRoutes(app: Express, redemption: {
         message: "An account with that email already exists. Sign in instead.",
       });
     }
-
-    // DB mein duplicate check karo
-    const existing = dbGetUserByEmail(email);
-    if (existing) {
+    // Sprint-fix May 14 2026 — PERSIST the new founder. No more Maya Chen.
+    const { userId, alreadyExisted } = registerFounderUser({ email, name, password });
+    if (alreadyExisted) {
       return res.status(409).json({
         ok: false,
         error: "EMAIL_IN_USE",
         message: "An account with that email already exists. Sign in instead.",
       });
     }
-
-    // ── KL-04: Real user DB mein save karo ──
-    const userId = newUserId();
-    const passwordHash = hashPassword(password);
-    try {
-      dbCreateUser(userId, email, name, passwordHash);
-      console.log(`[auth] New user created: ${userId} (${email})`);
-    } catch (e) {
-      console.error("[auth] DB user creation failed:", e);
-      return res.status(500).json({ ok: false, error: "SERVER_ERROR", message: "Account creation failed. Please try again." });
-    }
-
-    // Session set karo aur real user ka context return karo
     setSessionCookie(res, userId);
-
-    // registerPersona taaki getUserContextForId kaam kare
-    registerPersona({
-      email,
-      name,
-      password,
-      invitationId: undefined,
-      roundId: undefined,
-      companyId: undefined,
-    });
-
     const ctx = getUserContextForId(userId);
-      res.json({ 
-        ok: true, 
-        ctx: { 
-          ...ctx, 
-          isAuthed: true,
-          identity: {
-            ...ctx.identity,
-            email,
-            name,
-            firstName: name.split(" ")[0],
-            displayName: name,
-          }
-        } 
-      });
+    return res.json({ ok: true, ctx });
   });
 
   // ---------- /api/auth/forgot ----------
@@ -268,6 +216,7 @@ export function registerAuthShellRoutes(app: Express, redemption: {
     if (!body.agreedToTerms)
       return res.status(400).json({ ok: false, error: "TERMS_NOT_ACCEPTED" });
 
+    // Preview the token first to get inviteeEmail before consuming
     const preview = redemption.preview(body.token);
     if (!preview.ok) {
       const httpCode = preview.reason === "expired" ? 410 : preview.reason === "already_redeemed" ? 409 : 404;
@@ -280,6 +229,8 @@ export function registerAuthShellRoutes(app: Express, redemption: {
       return res.status(httpCode).json({ ok: false, error: r.reason ?? "INVALID_TOKEN" });
     }
 
+    // Defect 12 + 15 + 83: create or look up real persona seeded from inviteeEmail.
+    // This ensures the redeemed investor gets their own identity, not u_no_position.
     const inviteeEmail = preview.invitation.inviteeEmail;
     const inviteeName = preview.invitation.inviteeName;
     const personaId = registerPersona({
@@ -291,7 +242,9 @@ export function registerAuthShellRoutes(app: Express, redemption: {
       companyId: r.companyId,
     });
 
+    // Set session cookie so subsequent requests pick up the real persona
     setSessionCookie(res, personaId);
+
     const ctx = getUserContextForId(personaId);
     return res.json({
       ok: true,
@@ -304,7 +257,7 @@ export function registerAuthShellRoutes(app: Express, redemption: {
   });
 }
 
-/* ---------- redemption result types ---------- */
+/* ---------- redemption result types (passed in by routes.ts) ---------- */
 export type RedemptionPreview =
   | { ok: true; invitation: { roundId: string; companyId: string; companyName: string; inviteeEmail: string; inviteeName: string; expiresAt: string; roundLabel?: string; founderName?: string } }
   | { ok: false; reason: "not_found" | "revoked" | "already_redeemed" | "expired" };

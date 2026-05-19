@@ -1,172 +1,121 @@
 /**
- * Sprint 17 D1 — DB connection layer.
+ * Database connection layer — Patch v6.
  *
- * Reads `DATABASE_URL` from the environment.
- *   - If set + Postgres-style URL: Production mode with PostgreSQL
- *   - Otherwise: SQLite in-memory (sandbox mode)
+ * Resolves to one of two backends at runtime, lazily:
+ *   1. DATABASE_URL=postgres://…   → drizzle(postgres-js)  (Avi's production target)
+ *   2. unset / file: / :memory:    → drizzle(better-sqlite3) with inline migrations
+ *                                    (sandbox & dev — preserves Patch v4 behavior)
  *
- * The DB layer is additive: existing in-memory `Map`-backed stores are
- * preserved. A migration helper `seedFromMaps()` mirrors a Map into the
- * sync_* tables so the same data is queryable via SQL when tests or
- * cross-cohort verifications need ACID semantics.
+ * Both paths expose the SAME exported surface so the rest of the codebase
+ * doesn't care which is active:
+ *   - getDb()         → drizzle instance (typed against shared/schema)
+ *   - rawDb()         → raw better-sqlite3 handle (SQLite only; throws on PG)
+ *   - closeDb()       → async cleanup
+ *   - resetDbForTests() → tears down so tests can re-init
+ *
+ * Why lazy? `import postgres from "postgres"` at module top-level would
+ * crash the dev sandbox if the package isn't installed. We require()
+ * inside the branch so SQLite-only dev never touches it.
  */
-import * as schema from "./schema";
-import Database from "better-sqlite3";
-import { drizzle as drizzleSqlite } from "drizzle-orm/better-sqlite3"
+import * as schema from "../../shared/schema";
+import { createRequire } from "node:module";
+const _require = createRequire(import.meta.url);
 
-// Type declarations for both database drivers
-let _db: any = null;
-let _raw: any = null;
-let _initialized = false;
+// --- shared module state -------------------------------------------------
 
-// PostgreSQL imports (only when needed)
-let postgres: any;
-let drizzlePg: any;
+let _drizzleDb: any = null;
+let _rawSqlite: any = null;
+let _pgClient: any = null;
+let _driver: "postgres" | "sqlite" | null = null;
 
-/**
- * Initialize SQLite synchronously (for immediate use in stores)
- */
-function initSqliteSync(): any {
-  if (_raw) return _raw;
-  
-  const url = process.env.DATABASE_URL;
-  
-  // Dynamic import for better-sqlite3 (CommonJS)
-  
-  const path = url && url.startsWith("file:") ? url.slice(5) : ":memory:";
-  _raw = new Database(path);
-  _raw.pragma("journal_mode = WAL");
-  
-  // Apply migrations synchronously
-  applyInlineMigrationsSync(_raw);
-  
-  console.log("[db] ✅ SQLite connected (sync)");
-  return _raw;
+function _isPostgresUrl(u: string | undefined): u is string {
+  return !!u && /^postgres(ql)?:\/\//i.test(u);
 }
 
-/**
- * Initialize Drizzle ORM over SQLite (async, for getDb)
- */
-async function initSqliteAsync(): Promise<any> {
-  if (_db) return _db;
-  
-  const url = process.env.DATABASE_URL;
-  
-  // Ensure raw connection exists
-  if (!_raw) {
-    initSqliteSync();
-  }
-  
-  const { drizzle } = await import('drizzle-orm/better-sqlite3');
-  _db = drizzle(_raw, { schema });
-  
-  return _db;
-}
+// --- public API ----------------------------------------------------------
 
-/**
- * Get database connection — automatically detects Postgres vs SQLite
- */
-export async function getDb(): Promise<any> {
-  if (_db) return _db;
-  
+export function getDb(): any {
+  if (_drizzleDb) return _drizzleDb;
+
   const url = process.env.DATABASE_URL;
-  
-  // PRODUCTION MODE: PostgreSQL
-  if (url && /^postgres(ql)?:\/\//i.test(url)) {
-    console.log("[db] Initializing PostgreSQL connection...");
-    
-    // Dynamically import Postgres drivers (only when needed)
-    if (!postgres) {
-      postgres = await import('postgres');
-      drizzlePg = await import('drizzle-orm/postgres-js');
+
+  if (_isPostgresUrl(url)) {
+    // Postgres production path. Lazy-load to avoid crashing dev when the
+    // package isn't installed.
+    let postgres: any;
+    let pgDrizzle: any;
+    try {
+      postgres = _require("postgres");
+      pgDrizzle = _require("drizzle-orm/postgres-js").drizzle;
+    } catch (err) {
+      throw new Error(
+        "DATABASE_URL is set to a Postgres URL but the 'postgres' package " +
+        "is not installed. Run `npm install postgres @types/pg` or unset DATABASE_URL " +
+        "to fall back to in-process SQLite. Underlying error: " + (err as Error).message
+      );
     }
-    
-    const client = postgres.default(url);
-    _db = drizzlePg.drizzle(client, { schema });
+    console.log("[db] Connecting to PostgreSQL...");
+    _pgClient = postgres(url, { max: 10, idle_timeout: 30, connect_timeout: 10 });
+    _drizzleDb = pgDrizzle(_pgClient, { schema });
+    _driver = "postgres";
     console.log("[db] ✅ PostgreSQL connected");
-    return _db;
+    return _drizzleDb;
   }
-  
-  // SANDBOX MODE: SQLite
-  console.log("[db] Initializing SQLite connection (sandbox mode)...");
-  return await initSqliteAsync();
+
+  // SQLite path (sandbox + dev + test). Reuses the inline-migrations
+  // logic from the reference Patch v4 build so the 24 sync_* tables +
+  // auth tables exist immediately.
+  const Database = _require("better-sqlite3");
+  const sqliteDrizzle = _require("drizzle-orm/better-sqlite3").drizzle;
+
+  const path = url && url.startsWith("file:") ? url.slice(5) : ":memory:";
+  _rawSqlite = new Database(path);
+  _rawSqlite.pragma("journal_mode = WAL");
+  _drizzleDb = sqliteDrizzle(_rawSqlite, { schema });
+  applyInlineMigrations(_rawSqlite);
+  _driver = "sqlite";
+  return _drizzleDb;
 }
 
-/**
- * Raw database connection (synchronous — for SQLite-specific operations)
- * This is the FIX: returns the raw SQLite database synchronously
- */
 export function rawDb(): any {
-  const url = process.env.DATABASE_URL;
-  
-  // If PostgreSQL mode, return null (stores should handle this)
-  if (url && /^postgres(ql)?:\/\//i.test(url)) {
-    console.warn("[db] rawDb() called in PostgreSQL mode — returning null");
-    return null;
+  if (_driver === "postgres") {
+    throw new Error("rawDb() is not supported on the Postgres backend. Use getDb() with Drizzle queries.");
   }
-  
-  // Initialize SQLite synchronously if not already
-  if (!_raw) {
-    initSqliteSync();
-  }
-  
-  return _raw;
+  if (!_rawSqlite) getDb();
+  return _rawSqlite;
 }
 
-/**
- * Check if database is ready (synchronous check)
- */
-export function isDbReady(): boolean {
-  return _raw !== null;
-}
-
-/**
- * Reset database connection (for testing)
- */
-export async function resetDbForTests(): Promise<void> {
-  if (_raw) {
-    try { _raw.close(); } catch { /* noop */ }
+export async function closeDb(): Promise<void> {
+  if (_pgClient) {
+    try { await _pgClient.end(); } catch { /* noop */ }
+    _pgClient = null;
   }
-  _db = null;
-  _raw = null;
-  _initialized = false;
+  if (_rawSqlite) {
+    try { _rawSqlite.close(); } catch { /* noop */ }
+    _rawSqlite = null;
+  }
+  _drizzleDb = null;
+  _driver = null;
 }
 
-/**
- * Inline migration runner — synchronous version (for SQLite)
- */
-function applyInlineMigrationsSync(db: any): void {
+export function resetDbForTests(): void {
+  if (_rawSqlite) {
+    try { _rawSqlite.close(); } catch { /* noop */ }
+  }
+  _rawSqlite = null;
+  _drizzleDb = null;
+  _pgClient = null;
+  _driver = null;
+}
+
+// --- inline SQLite migrations (Patch v4 parity) --------------------------
+
+function applyInlineMigrations(db: any) {
   const stmts = buildCreateTableStatements();
   const tx = db.transaction(() => {
-    for (const sql of stmts) {
-      try {
-        db.exec(sql);
-      } catch (e: any) {
-        // Table might already exist — ignore error
-        if (!e.message?.includes('already exists')) {
-          console.warn("[db] Migration warning:", e.message);
-        }
-      }
-    }
+    for (const sql of stmts) db.exec(sql);
   });
   tx();
-  console.log("[db] ✅ SQLite migrations applied");
-}
-
-/**
- * Async migration runner (for PostgreSQL compatibility)
- */
-async function applyInlineMigrations(db: any) {
-  // For PostgreSQL, we don't run inline migrations
-  // They should be run via drizzle-kit migrate
-  const url = process.env.DATABASE_URL;
-  if (url && /^postgres(ql)?:\/\//i.test(url)) {
-    console.log("[db] PostgreSQL mode — migrations must be run via drizzle-kit");
-    return;
-  }
-  
-  // For SQLite, use sync version
-  applyInlineMigrationsSync(db);
 }
 
 function buildCreateTableStatements(): string[] {

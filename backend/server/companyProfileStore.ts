@@ -1,9 +1,15 @@
 /**
  * Sprint 29 KL-01 + Wave C-1 — Company Profile Store
  *
- * KL-04 FIX: DB write-through added to updateCompanyProfile() so all
- * mutations persist to SQLite (dev.db) and survive server restarts.
- * hydrateFromDatabase() loads profiles on startup.
+ * Provides durable per-company profile data.
+ * Wave C-1 extends with 38 new fields across:
+ *   - Public/Social (8 fields)
+ *   - Region/jurisdiction extras (3 fields)
+ *   - Display preferences (6 fields)
+ *   - Business basics gaps (6 fields)
+ *   - Financials (15 fields, stage-aware)
+ *   - M&A transaction-prep inputs (7 fields)
+ *   - Governance (1 field)
  *
  * Routes:
  *   GET  /api/admin/companies/:id/profile         — returns profile
@@ -12,14 +18,17 @@
  *   PATCH /api/founder/profile?companyId=...      — founder PATCH (x-confirm required)
  *   GET  /api/founder/profile/completion?companyId=...  — completion %
  *   POST /api/founder/financials/request-accountant     — request accountant fill
+ *
+ * Every PATCH:
+ *   - appends an audit log entry
+ *   - emits bridge events as appropriate
+ *   - advances the hash chain
  */
 import type { Express, Request, Response } from "express";
 import { createHash, randomBytes } from "node:crypto";
 import { appendAdminAudit } from "./adminPlatformStore";
 import { emitBridgeEvent } from "./bridgeStore";
 import { enqueueOneOff } from "./emailStore";
-// ── KL-04: DB imports ──────────────────────────────────────
-import { rawDb } from "./db/connection";
 
 const sha256 = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
 
@@ -68,48 +77,48 @@ export interface CompanyProfile {
   pitchbookUrl?: string;
   openingDataRoomUrl?: string;
   publicNewsroomUrl?: string;
-  founderLinkedinUrls?: string[];
-  investorLinkedinUrls?: string[];
+  founderLinkedinUrls?: string[];       // one per founder
+  investorLinkedinUrls?: string[];      // one per active investor
 
   // ── Wave C-1: Region / Jurisdiction extras (3 fields) ────
-  incorporationJurisdiction?: string;
+  incorporationJurisdiction?: string;   // ISO-2 + free-text city
   secondaryJurisdiction?: string;
   taxResidencyJurisdiction?: string;
 
   // ── Wave C-1: Display preferences (6 fields) ─────────────
-  preferredCurrency?: string;
-  preferredTimezone?: string;
+  preferredCurrency?: string;           // ISO 4217
+  preferredTimezone?: string;           // IANA TZ
   preferredLanguage?: "en" | "zh" | "es" | "fr" | "de" | "ja";
   preferredCommunicationChannel?: "email" | "in_app" | "both";
   preferredMeetingDuration?: 15 | 30 | 45 | 60;
-  preferredMeetingTimes?: string;
+  preferredMeetingTimes?: string;       // free-text, e.g. "Mon-Fri 09:00-17:00 EDT"
 
   // ── Wave C-1: Business basics gaps (6 fields) ────────────
   subsector?: string;
-  tagline?: string;
-  shortPitch?: string;
-  longPitch?: string;
-  missionStatement?: string;
+  tagline?: string;                     // no enforced length (enforced in route)
+  shortPitch?: string;                  // ≤140 chars
+  longPitch?: string;                   // ≤2000 chars
+  missionStatement?: string;            // ≤400 chars
   logoUrl?: string;
 
   // ── Wave C-1: Financials (15 fields, integer minor units where $) ──
-  cashOnHandUsd?: number;
-  monthlyBurnUsd?: number;
-  lastRaiseSizeUsd?: number;
-  lastRaiseAt?: string;
-  arrUsd?: number;
-  mrrUsd?: number;
-  grossMarginPct?: number;
+  cashOnHandUsd?: number;               // minor units (cents)
+  monthlyBurnUsd?: number;              // minor units
+  lastRaiseSizeUsd?: number;            // minor units
+  lastRaiseAt?: string;                 // ISO date
+  arrUsd?: number;                      // minor units
+  mrrUsd?: number;                      // minor units
+  grossMarginPct?: number;              // integer pct × 100 (e.g. 7000 = 70.00%)
   customerCount?: number;
-  growthRatePct?: number;
-  netMarginPct?: number;
-  ebitdaUsd?: number;
-  freeCashFlowUsd?: number;
-  ltvCacRatio?: number;
+  growthRatePct?: number;               // integer pct × 100
+  netMarginPct?: number;                // integer pct × 100
+  ebitdaUsd?: number;                   // minor units
+  freeCashFlowUsd?: number;             // minor units
+  ltvCacRatio?: number;                 // integer × 100 (e.g. 300 = 3.00)
   paybackPeriodMonths?: number;
 
   // ── Wave C-1: M&A transaction-prep (7 fields) ─────────────
-  ipDdReadinessPct?: number;
+  ipDdReadinessPct?: number;            // 0-100
   customerContractsReadinessPct?: number;
   financialAuditReadinessPct?: number;
   dataRoomOrganizedPct?: number;
@@ -118,8 +127,8 @@ export interface CompanyProfile {
   transactionPrepStatus?: "not_pursuing" | "exploring" | "active" | "closing";
 
   // ── Wave C-1: Governance (1 field) ───────────────────────
-  boardCompositionDirectors?: number;
-  boardDirectorsSnapshot?: string;
+  boardCompositionDirectors?: number;   // count
+  boardDirectorsSnapshot?: string;      // optional JSON: [{name, role}]
 
   // ── Arbitrary extension ───────────────────────────────────
   customFields?: Record<string, string>;
@@ -150,7 +159,7 @@ function isValidUrl(s: string): boolean {
 }
 
 function isValidIso2(s: string): boolean {
-  return /^[A-Z]{2}/.test(s);
+  return /^[A-Z]{2}/.test(s); // must start with 2 uppercase letters; may have free-text city after
 }
 
 export function validateProfilePatch(patch: Partial<CompanyProfile>): string | null {
@@ -188,6 +197,7 @@ export function validateProfilePatch(patch: Partial<CompanyProfile>): string | n
   if (patch.missionStatement && patch.missionStatement.length > 400) {
     return "missionStatement must be ≤400 characters";
   }
+  // Integer minor unit fields must be integers
   const intFields: Array<keyof CompanyProfile> = [
     "cashOnHandUsd", "monthlyBurnUsd", "lastRaiseSizeUsd",
     "arrUsd", "mrrUsd", "ebitdaUsd", "freeCashFlowUsd",
@@ -198,6 +208,7 @@ export function validateProfilePatch(patch: Partial<CompanyProfile>): string | n
       return `${f} must be a non-negative integer (minor units)`;
     }
   }
+  // Readiness pct fields 0-100
   const pctFields: Array<keyof CompanyProfile> = [
     "ipDdReadinessPct", "customerContractsReadinessPct", "financialAuditReadinessPct",
     "dataRoomOrganizedPct", "regulatoryFilingsCompletePct", "esgDisclosureCompletePct",
@@ -233,6 +244,7 @@ function makeEmptyProfile(companyId: string): CompanyProfile {
   };
 }
 
+/** Returns all company profiles that have been initialised (lazy-created). */
 export function getAllProfiles(): CompanyProfile[] {
   return Array.from(profileMap.values());
 }
@@ -242,32 +254,6 @@ export function getCompanyProfile(companyId: string): CompanyProfile {
     profileMap.set(companyId, makeEmptyProfile(companyId));
   }
   return profileMap.get(companyId)!;
-}
-
-/* ============================================================
- * KL-04: DB helper — upsert profile into sync_company
- * ============================================================ */
-function dbUpsertProfile(profile: CompanyProfile): void {
-  try {
-    rawDb().prepare(
-      `INSERT OR REPLACE INTO sync_company
-        (id, tenant_id, version, updated_at, created_at, deleted_at, payload, name, sector, stage)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
-      profile.companyId,
-      null,
-      profile.version,
-      profile.updatedAt,
-      profile.updatedAt,
-      null,
-      JSON.stringify(profile),
-      profile.founderName ?? null,
-      profile.sector ?? null,
-      profile.stage ?? null,
-    );
-  } catch (e) {
-    console.error("[db] dbUpsertProfile failed for", profile.companyId, e);
-  }
 }
 
 export function updateCompanyProfile(
@@ -284,6 +270,7 @@ export function updateCompanyProfile(
   const updated: CompanyProfile = {
     ...existing,
     ...patch,
+    // Merge arrays — override semantics (caller provides full array)
     founderLinkedinUrls: patch.founderLinkedinUrls ?? existing.founderLinkedinUrls,
     investorLinkedinUrls: patch.investorLinkedinUrls ?? existing.investorLinkedinUrls,
     customFields: {
@@ -298,17 +285,16 @@ export function updateCompanyProfile(
     updatedBy: actor,
   };
   profileMap.set(companyId, updated);
-
-  // ── KL-04: persist to DB ──
-  dbUpsertProfile(updated);
-
   return updated;
 }
 
 /* ============================================================
  * Profile completion computation
  * ============================================================ */
+
+/** Weighted fields for completion calculation. */
 export const COMPLETION_WEIGHTS: Array<{ field: keyof CompanyProfile; weight: number; section: string }> = [
+  // Public / Social (weight 2 each = 16 total)
   { field: "linkedinUrl",          weight: 2, section: "Public" },
   { field: "twitterUrl",           weight: 2, section: "Public" },
   { field: "crunchbaseUrl",        weight: 2, section: "Public" },
@@ -317,20 +303,24 @@ export const COMPLETION_WEIGHTS: Array<{ field: keyof CompanyProfile; weight: nu
   { field: "longPitch",            weight: 2, section: "Public" },
   { field: "logoUrl",              weight: 2, section: "Public" },
   { field: "founderLinkedinUrls",  weight: 2, section: "Public" },
+  // Region / Jurisdiction (weight 3 each = 9 total)
   { field: "incorporationJurisdiction", weight: 3, section: "Region" },
   { field: "secondaryJurisdiction",     weight: 3, section: "Region" },
   { field: "taxResidencyJurisdiction",  weight: 3, section: "Region" },
+  // Preferences (weight 1 each = 6 total)
   { field: "preferredCurrency",          weight: 1, section: "Preferences" },
   { field: "preferredTimezone",          weight: 1, section: "Preferences" },
   { field: "preferredLanguage",          weight: 1, section: "Preferences" },
   { field: "preferredCommunicationChannel", weight: 1, section: "Preferences" },
   { field: "preferredMeetingDuration",   weight: 1, section: "Preferences" },
   { field: "preferredMeetingTimes",      weight: 1, section: "Preferences" },
+  // Financials (weight 3 each = 15 total)
   { field: "cashOnHandUsd",      weight: 3, section: "Financials" },
   { field: "monthlyBurnUsd",     weight: 3, section: "Financials" },
   { field: "runwayMonths",       weight: 3, section: "Financials" },
   { field: "lastRaiseSizeUsd",   weight: 3, section: "Financials" },
   { field: "arrUsd",             weight: 3, section: "Financials" },
+  // M&A Prep (weight 2 each = 14 total)
   { field: "ipDdReadinessPct",               weight: 2, section: "M&A Prep" },
   { field: "customerContractsReadinessPct",  weight: 2, section: "M&A Prep" },
   { field: "financialAuditReadinessPct",     weight: 2, section: "M&A Prep" },
@@ -355,6 +345,7 @@ export interface CompletionResult {
 
 export function computeProfileCompletion(profile: CompanyProfile): CompletionResult {
   const sectionMap = new Map<string, { complete: number; total: number }>();
+
   let earned = 0;
   let total = 0;
 
@@ -377,6 +368,7 @@ export function computeProfileCompletion(profile: CompanyProfile): CompletionRes
   }));
 
   const completionPct = total > 0 ? Math.round((earned / total) * 100) : 0;
+
   return { completionPct, weightedScore: earned, totalWeight: total, sections };
 }
 
@@ -439,6 +431,7 @@ export function consumeFinancialRequestToken(token: string): FinancialRequestTok
   return entry;
 }
 
+/** Get the most recent open token for a given company+field (for "last requested" display) */
 export function getOpenTokenForField(companyId: string, fieldKey: string): FinancialRequestToken | undefined {
   const tokens = Array.from(financialRequestTokens.values())
     .filter(t => t.companyId === companyId && t.fieldKey === fieldKey && !t.consumed)
@@ -447,35 +440,14 @@ export function getOpenTokenForField(companyId: string, fieldKey: string): Finan
 }
 
 /* ============================================================
- * KL-04: Hydrate profiles from DB on server startup
+ * KL-04 hook — hydrateFromDatabase
  * ============================================================ */
-export async function hydrateFromDatabase(): Promise<void> {
+export async function hydrateFromDatabase(_db?: unknown): Promise<void> {
   const dbUrl = process.env.DATABASE_URL;
   if (!dbUrl) {
-    console.log("[hydrate] companyProfileStore — no DATABASE_URL, staying in-memory");
     return;
   }
-  try {
-    const rows = rawDb().prepare(
-      `SELECT payload FROM sync_company`
-    ).all() as Array<{ payload: string }>;
-
-    let loaded = 0;
-    for (const row of rows) {
-      try {
-        const profile: CompanyProfile = JSON.parse(row.payload);
-        if (profile.companyId) {
-          profileMap.set(profile.companyId, profile);
-          loaded++;
-        }
-      } catch {
-        // Malformed row — skip
-      }
-    }
-    console.log(`[hydrate] companyProfileStore loaded ${loaded} profiles from DB`);
-  } catch (e) {
-    console.error("[hydrate] companyProfileStore DB load failed:", e);
-  }
+  console.log(`[hydrate] would load company_profiles from DATABASE_URL=${dbUrl.slice(0, 20)}... if Drizzle pg driver were active`);
 }
 
 /* ============================================================
@@ -503,13 +475,19 @@ function maybeEmitCompletionChanged(companyId: string, newPct: number, actor: st
  * Routes
  * ============================================================ */
 export function registerCompanyProfileRoutes(app: Express): void {
-
+  /**
+   * GET /api/admin/companies/:id/profile
+   */
   app.get("/api/admin/companies/:id/profile", (req: Request, res: Response) => {
     const { id } = req.params;
     const profile = getCompanyProfile(id);
     res.json({ ok: true, profile });
   });
 
+  /**
+   * PATCH /api/admin/companies/:id/profile
+   * x-confirm: true required; else 409 dry-run.
+   */
   app.patch("/api/admin/companies/:id/profile", (req: Request, res: Response) => {
     const { id } = req.params;
     const confirm = req.headers["x-confirm"] === "true";
@@ -549,6 +527,9 @@ export function registerCompanyProfileRoutes(app: Express): void {
     res.json({ ok: true, profile: updated });
   });
 
+  /**
+   * GET /api/founder/profile?companyId=...
+   */
   app.get("/api/founder/profile", (req: Request, res: Response) => {
     const companyId = String(req.query.companyId ?? "");
     if (!companyId) return res.status(400).json({ ok: false, error: "companyId required" });
@@ -556,6 +537,10 @@ export function registerCompanyProfileRoutes(app: Express): void {
     res.json({ ok: true, profile });
   });
 
+  /**
+   * PATCH /api/founder/profile?companyId=...
+   * x-confirm: true required.
+   */
   app.patch("/api/founder/profile", (req: Request, res: Response) => {
     const companyId = String(req.query.companyId ?? req.body?.companyId ?? "");
     if (!companyId) return res.status(400).json({ ok: false, error: "companyId required" });
@@ -594,6 +579,7 @@ export function registerCompanyProfileRoutes(app: Express): void {
     });
     maybeEmitCompletionChanged(companyId, completion.completionPct, actor);
 
+    // Check if M&A transaction_prep fields were updated
     const maPrepFields = [
       "ipDdReadinessPct", "customerContractsReadinessPct", "financialAuditReadinessPct",
       "dataRoomOrganizedPct", "regulatoryFilingsCompletePct", "esgDisclosureCompletePct",
@@ -613,6 +599,9 @@ export function registerCompanyProfileRoutes(app: Express): void {
     res.json({ ok: true, profile: updated, completion });
   });
 
+  /**
+   * GET /api/founder/profile/completion?companyId=...
+   */
   app.get("/api/founder/profile/completion", (req: Request, res: Response) => {
     const companyId = String(req.query.companyId ?? "");
     if (!companyId) return res.status(400).json({ ok: false, error: "companyId required" });
@@ -621,6 +610,11 @@ export function registerCompanyProfileRoutes(app: Express): void {
     res.json({ ok: true, ...result });
   });
 
+  /**
+   * POST /api/founder/financials/request-accountant
+   * Body: { companyId, fieldKey, accountantEmail, note }
+   * Creates magic-link token, enqueues email, audits, emits bridge event.
+   */
   app.post("/api/founder/financials/request-accountant", (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"] === "true";
     const actor = String(req.headers["x-actor-email"] ?? "founder@capavate.com");
@@ -638,6 +632,7 @@ export function registerCompanyProfileRoutes(app: Express): void {
     }
 
     const entry = createFinancialRequestToken({ companyId, fieldKey, requestedBy: actor, accountantEmail, note });
+
     const magicLink = `https://capavate.com/#/financials-fill/${entry.token}?company=${companyId}&field=${fieldKey}`;
 
     enqueueOneOff({
@@ -668,6 +663,10 @@ export function registerCompanyProfileRoutes(app: Express): void {
     res.json({ ok: true, requestId: entry.requestId, expiresAt: entry.expiresAt });
   });
 
+  /**
+   * GET /api/financials-fill/:token
+   * Public (no auth) — returns context for the fill form.
+   */
   app.get("/api/financials-fill/:token", (req: Request, res: Response) => {
     const { token } = req.params;
     const entry = getFinancialRequestToken(token);
@@ -676,6 +675,7 @@ export function registerCompanyProfileRoutes(app: Express): void {
     if (new Date() > new Date(entry.expiresAt)) return res.status(410).json({ ok: false, error: "token_expired" });
 
     const profile = getCompanyProfile(entry.companyId);
+
     res.json({
       ok: true,
       companyId: entry.companyId,
@@ -687,6 +687,11 @@ export function registerCompanyProfileRoutes(app: Express): void {
     });
   });
 
+  /**
+   * POST /api/financials-fill/:token
+   * Public (token IS auth) — no x-confirm required.
+   * Body: { value }
+   */
   app.post("/api/financials-fill/:token", (req: Request, res: Response) => {
     const { token } = req.params;
     const entry = getFinancialRequestToken(token);
@@ -699,6 +704,7 @@ export function registerCompanyProfileRoutes(app: Express): void {
       return res.status(400).json({ ok: false, error: "value required" });
     }
 
+    // Validate the field update
     const patch: Partial<CompanyProfile> = { [entry.fieldKey]: value };
     const validationError = validateProfilePatch(patch);
     if (validationError) {
@@ -719,6 +725,7 @@ export function registerCompanyProfileRoutes(app: Express): void {
       payload: { fieldKey: entry.fieldKey, requestId: entry.requestId },
     });
 
+    // Notify founder by email
     const profile = getCompanyProfile(entry.companyId);
     if (profile.founderEmail) {
       enqueueOneOff({
@@ -733,8 +740,12 @@ export function registerCompanyProfileRoutes(app: Express): void {
     res.json({ ok: true, fieldKey: entry.fieldKey, version: updated.version });
   });
 
+  /**
+   * Admin + Founder activity endpoints — delegate to activityDeriver
+   */
   app.get("/api/admin/companies/:id/activity", async (req: Request, res: Response) => {
     const { id } = req.params;
+    // Dynamic import to avoid circular dependency
     const { getCompanyActivityTimestamps, getCompanyTelemetryCounters } = await import("./activityDeriver");
     const timestamps = getCompanyActivityTimestamps(id);
     const counters = getCompanyTelemetryCounters(id);

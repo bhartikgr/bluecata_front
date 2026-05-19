@@ -8,10 +8,18 @@
  *   POST /api/founder/investor-crm                        — create contact
  *   PATCH /api/founder/investor-crm/:id                   — update stage / notes / tasks
  *   POST /api/founder/investor-crm/broadcast              — segmented broadcast (filters: stage / region / etc.)
+ *   GET  /api/founder/crm/contacts                        — alias for investor-crm (scoped to active company)
+ *
+ * Sprint-fix May 14 2026:
+ *   - All endpoints now call requireAuth — anonymous users receive 401.
+ *   - companyId defaults to the authenticated founder's activeCompanyId (not hardcoded "co_novapay").
+ *   - Added hydrateFounderCrmFromDatabase() stub.
  */
 import type { Express, Request, Response } from "express";
 import { randomBytes } from "node:crypto";
 import { emitSync } from "./sprint10Telemetry";
+import { requireAuth } from "./lib/authMiddleware";
+import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 
 export type FounderCrmContact = {
   id: string;
@@ -33,7 +41,8 @@ export type FounderCrmContact = {
   series: string;
 };
 
-const contacts: FounderCrmContact[] = [
+// Patch v4: gated demo seed.
+const contacts: FounderCrmContact[] = DEMO_SEED_ENABLED ? [
   {
     id: "fcrm_1", companyId: "co_novapay", investorId: "u_aisha_patel",
     name: "Aisha Patel", firmName: "Forge Ventures", email: "aisha@forge.vc", region: "US",
@@ -44,7 +53,16 @@ const contacts: FounderCrmContact[] = [
     tasks: [{ id: "tsk_1", text: "Quarterly catch-up call", due: "2026-06-15", status: "open" }],
     series: "Pre-Seed SAFE",
   },
-  
+  {
+    id: "fcrm_2", companyId: "co_novapay", investorId: "u_hydra",
+    name: "Marcus Lee", firmName: "Hydra Capital", email: "marcus@hydra.com", region: "SG",
+    stage: "invested", ownership: { sharesUsd: 1_500_000, pct: 0.118 },
+    softCircleHistory: [{ ts: "2025-01-15T09:00:00Z", amountUsd: 1_500_000, type: "definite" }],
+    maSignals: 1, threadIds: ["th_hydra"], notes: "Series Seed lead. Watching for Series A.",
+    notesUpdatedAt: "2026-04-29T15:00:00Z",
+    tasks: [],
+    series: "Series Seed",
+  },
   {
     id: "fcrm_3", companyId: "co_novapay", investorId: "u_anchor",
     name: "Yuki Tanaka", firmName: "Anchor Growth", email: "yuki@anchor.io", region: "JP",
@@ -73,18 +91,35 @@ const contacts: FounderCrmContact[] = [
     notes: "Met at Sifted London. Has Series A budget for fintech.",
     notesUpdatedAt: "2026-03-10T08:00:00Z", tasks: [], series: "—",
   },
-];
+] : [];
+
+/** Resolve companyId from request: use authenticated founder's activeCompanyId first, then query param. */
+function resolveCompanyId(req: Request): string {
+  const ctxCompanyId = (req as any).userContext?.founder?.activeCompanyId;
+  if (ctxCompanyId) return ctxCompanyId;
+  const q = typeof req.query.companyId === "string" ? req.query.companyId : null;
+  return q ?? "co_novapay"; // fallback for sandbox dev only
+}
 
 export function registerFounderCrmRoutes(app: Express): void {
-  app.get("/api/founder/investor-crm", (req, res) => {
-    const companyId = String(req.query.companyId ?? "co_novapay");
+  // GET /api/founder/investor-crm — list contacts (per authenticated founder's company)
+  app.get("/api/founder/investor-crm", requireAuth, (req: Request, res: Response) => {
+    const companyId = resolveCompanyId(req);
     res.json(contacts.filter((c) => c.companyId === companyId));
   });
 
-  app.post("/api/founder/investor-crm", (req, res) => {
+  // GET /api/founder/crm/contacts — alias for investor-crm (fixes the "tone" crash)
+  app.get("/api/founder/crm/contacts", requireAuth, (req: Request, res: Response) => {
+    const companyId = resolveCompanyId(req);
+    res.json(contacts.filter((c) => c.companyId === companyId));
+  });
+
+  // POST /api/founder/investor-crm — create contact
+  app.post("/api/founder/investor-crm", requireAuth, (req: Request, res: Response) => {
+    const companyId = resolveCompanyId(req);
     const c: FounderCrmContact = {
       id: `fcrm_${randomBytes(3).toString("hex")}`,
-      companyId: req.body?.companyId ?? "co_novapay",
+      companyId: req.body?.companyId ?? companyId,
       investorId: req.body?.investorId ?? `u_${randomBytes(3).toString("hex")}`,
       name: req.body?.name ?? "New contact",
       firmName: req.body?.firmName ?? "—",
@@ -101,7 +136,8 @@ export function registerFounderCrmRoutes(app: Express): void {
     res.json(c);
   });
 
-  app.patch("/api/founder/investor-crm/:id", (req, res) => {
+  // PATCH /api/founder/investor-crm/:id — update stage / notes / tasks
+  app.patch("/api/founder/investor-crm/:id", requireAuth, (req: Request, res: Response) => {
     const c = contacts.find((x) => x.id === req.params.id);
     if (!c) return res.status(404).json({ error: "not_found" });
     if (typeof req.body?.stage === "string") c.stage = req.body.stage;
@@ -112,9 +148,10 @@ export function registerFounderCrmRoutes(app: Express): void {
     res.json(c);
   });
 
-  app.post("/api/founder/investor-crm/broadcast", (req, res) => {
-    const { filter, message, companyId } = req.body ?? {};
-    const compId = companyId ?? "co_novapay";
+  // POST /api/founder/investor-crm/broadcast — segmented broadcast
+  app.post("/api/founder/investor-crm/broadcast", requireAuth, (req: Request, res: Response) => {
+    const { filter, message } = req.body ?? {};
+    const compId = resolveCompanyId(req);
     let targets = contacts.filter((c) => c.companyId === compId);
     if (filter?.stage)  targets = targets.filter((c) => c.stage === filter.stage);
     if (filter?.region) targets = targets.filter((c) => c.region === filter.region);
@@ -131,3 +168,25 @@ export function registerFounderCrmRoutes(app: Express): void {
 }
 
 export const _testAccessFounderCrm = { contacts };
+
+/* V10 (Patch v8): Public scoped reader replacing _testAccessFounderCrm.contacts
+ * filtering by callers. Returns all contacts scoped to the given companyId.
+ * Production routes should use this instead of reaching into _testAccessFounderCrm.
+ */
+export function listContactsForCompany(companyId: string): FounderCrmContact[] {
+  if (!companyId) return [];
+  return contacts.filter((c) => c.companyId === companyId);
+}
+
+/**
+ * hydrateFounderCrmFromDatabase — Sprint 29 KL-04 pattern.
+ * No-op in sandbox. Avi wires Drizzle SELECT here once Postgres is live.
+ */
+export async function hydrateFounderCrmFromDatabase(_db?: unknown): Promise<void> {
+  if (!process.env.DATABASE_URL) {
+    console.log("[hydrate] founderCrmStore — no DATABASE_URL set, in-memory only");
+    return;
+  }
+  // TODO Avi: add Drizzle SELECT here when Postgres is wired
+  console.log("[hydrate] founderCrmStore — DATABASE_URL set but DB queries not wired yet");
+}

@@ -9,6 +9,8 @@ import { serveStatic } from "./static";
 import { createServer } from "node:http";
 import { startBridgeWorker } from "./bridgeWorker";
 import { hydrateAllStores } from "./lib/hydrateStores";
+// Sprint-fix May 14 2026 — wire the catch-all route guard AFTER registerRoutes.
+import { applyRouteGuards } from "./lib/applyRouteGuards";
 
 const app = express();
 const httpServer = createServer(app);
@@ -103,7 +105,25 @@ app.use((req, res, next) => {
   // KL-04: Hydrate in-memory stores from DB on startup (no-op in sandbox)
   await hydrateAllStores();
 
+  // Patch v9 (P0-11): apply catch-all route guards BEFORE registerRoutes
+  // so the middleware actually intercepts requests. Express middleware runs
+  // in registration order — when registered AFTER routes, an `app.use("/api")`
+  // middleware only runs for unmatched paths, which means matched admin/
+  // founder/investor routes bypass the guard. Mounting BEFORE registerRoutes
+  // ensures requireAdmin/requireAuth run before every /api/* handler.
+  applyRouteGuards(app);
+
   await registerRoutes(httpServer, app);
+
+  // Patch v9 (BUG-11): JSON 404 middleware for unmatched /api/* routes.
+  // Must be registered AFTER all route handlers but BEFORE the Vite/static
+  // catch-all so dead admin endpoints return JSON 404 instead of SPA HTML.
+  app.use("/api", (req: Request, res: Response, next: NextFunction) => {
+    if (res.headersSent) return next();
+    res.status(404)
+      .type("application/json")
+      .json({ error: "not_found", path: req.path });
+  });
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
@@ -133,20 +153,24 @@ app.use((req, res, next) => {
   // this serves both the API and the client.
   // It is the only port that is not firewalled.
   const port = parseInt(process.env.PORT || "5000", 10);
-httpServer.listen(
-  {
-    port,
-    host: "localhost",
-    // reusePort: true,  // ❌ Windows pe yeh hatao
-  },
-  () => {
-    log(`serving on port ${port}`);
- 
-    if (process.env.BRIDGE_WORKER_ENABLED !== "false") {
-      startBridgeWorker();
-    } else {
-      log("bridge worker disabled via BRIDGE_WORKER_ENABLED=false", "bridge-worker");
-    }
-  },
-);
+  // Patch v9 (PT-FIX-3): bind on 0.0.0.0 so IPv4 clients (Linux fetch, supertest,
+  // partner E2E harness) can reach the server. Previously bound to "localhost"
+  // which on some hosts resolves to ::1 only, breaking IPv4 callers.
+  httpServer.listen(
+    {
+      port,
+      host: "0.0.0.0",
+      // reusePort: true,  // ❌ Windows pe yeh hatao
+    },
+    () => {
+      log(`serving on port ${port}`);
+
+      if (process.env.BRIDGE_WORKER_ENABLED !== "false") {
+        startBridgeWorker();
+      } else {
+        log("bridge worker disabled via BRIDGE_WORKER_ENABLED=false", "bridge-worker");
+      }
+    },
+  );
 })();
+

@@ -57,7 +57,7 @@ beforeEach(() => {
  * ============================================================ */
 describe("Bridge event types", () => {
   it("ALL_OUTBOUND_EVENT_TYPES has exactly 45 entries", () => {
-    expect(ALL_OUTBOUND_EVENT_TYPES.length).toBe(48);
+    expect(ALL_OUTBOUND_EVENT_TYPES.length).toBe(58);
   });
 
   it("includes all 4 new Wave C-1 event types", () => {

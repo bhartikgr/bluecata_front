@@ -8,6 +8,7 @@
 import type { Express, Request, Response } from "express";
 import { randomBytes } from "node:crypto";
 import { sendMail } from "./emailTransport";
+import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 
 export type DeliveryStatus = "queued" | "sent" | "delivered" | "opened" | "clicked" | "bounced" | "complained";
 
@@ -276,7 +277,10 @@ function seedDemo() {
   if (outbox[5]) { outbox[5].status = "bounced"; outbox[5].bouncedAt = new Date().toISOString(); outbox[5].error = "550 mailbox not found"; }
 }
 
-seedDemo();
+// Patch v4: only seed demo emails when demo gate is on.
+if (DEMO_SEED_ENABLED) {
+  seedDemo();
+}
 
 export function registerEmailRoutes(app: Express): void {
   app.get("/api/admin/email/templates", (_req: Request, res: Response) => {
@@ -358,3 +362,23 @@ export function registerEmailRoutes(app: Express): void {
 }
 
 export const _testEmail = { renderTemplate, findTemplate, outbox, templates, reset: () => { outbox.length = 0; } };
+
+/* V9 (Patch v8): Public scoped readers to replace private _testEmail.outbox
+ * reach-ins from emailCampaignStore and other production callers.
+ */
+export function listOutbox(): OutboxEmail[] {
+  return outbox.slice();
+}
+
+export function findOutboxItem(id: string): OutboxEmail | null {
+  return outbox.find((x) => x.id === id) ?? null;
+}
+
+export function countOutboxByStatus(): { queued: number; sent: number; delivered: number; bounced: number } {
+  return {
+    queued: outbox.filter((e) => e.status === "queued").length,
+    sent: outbox.filter((e) => e.status === "sent").length,
+    delivered: outbox.filter((e) => e.status === "delivered").length,
+    bounced: outbox.filter((e) => e.status === "bounced").length,
+  };
+}

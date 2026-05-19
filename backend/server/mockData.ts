@@ -1,9 +1,11 @@
+import { DEMO_SEED_ENABLED } from "./lib/demoGate";
+
 /**
  * Mock data for the Sprint 1 preview. In production this is replaced by
  * Postgres + Drizzle queries (R200 §6).
  */
 
-export const companies = [
+const _seed_companies = [
   {
     id: "co_novapay",
     tenantId: "tn_novapay",
@@ -50,7 +52,7 @@ export const companies = [
  *   • strike / expiry / fmv      — for warrants (intrinsic value derives from FMV − strike)
  *   • optionStatus               — granted | exercised | cancelled (for option pool sub-breakdown)
  */
-export const securities = [
+const _seed_securities = [
   {
     id: "sec_1",
     companyId: "co_novapay",
@@ -278,7 +280,7 @@ export const securities = [
  *   • scenarios      — saved "what-if" pre-money sensitivity scenarios for the round
  *   • termSheetUrl   — linked NVCA-style term-sheet draft
  */
-export const rounds = [
+const _seed_rounds = [
   /* NovaPay AI — historical foundation round (Round 0) */
   {
     id: "rnd_novapay_foundation",
@@ -517,7 +519,7 @@ export const rounds = [
   },
 ];
 
-export const roundInvitations = [
+const _seed_roundInvitations = [
   {
     id: "inv_1",
     roundId: "rnd_novapay_seed",
@@ -600,7 +602,7 @@ export const roundInvitations = [
   },
 ];
 
-export const softCircles = [
+const _seed_softCircles = [
   {
     id: "sc_1",
     roundId: "rnd_novapay_seed",
@@ -640,7 +642,7 @@ export const softCircles = [
 ];
 
 /* CRM contacts on the founder side */
-export const crmInvestors = [
+const _seed_crmInvestors = [
   { id: "cr_1", name: "Hydra Capital", contact: "Aisha Rahman", email: "partner@hydracapital.com", stage: "Seed–Series A", checkSize: "$1M–$3M", status: "active",   notes: "Lead seed; loves agentic AI." },
   { id: "cr_2", name: "Forge Ventures",   contact: "Tom Bauer",      email: "deal@forgeventures.vc", stage: "Pre-Seed",      checkSize: "$250k–$1M", status: "active",   notes: "Wrote our first SAFE." },
   { id: "cr_3", name: "Anchor Growth",    contact: "Sarah Knox",     email: "sarah@anchorgrowth.com", stage: "Series A–B",    checkSize: "$5M–$15M", status: "active",   notes: "Series A lead candidate." },
@@ -652,7 +654,7 @@ export const crmInvestors = [
 ];
 
 /* Investor-side: incoming invitations seen by the demo investor (Aisha Rahman). */
-export const incomingInvitations = [
+const _seed_incomingInvitations = [
   {
     id: "in_1",
     company: { id: "co_novapay", name: "NovaPay AI", sector: "Fintech / AI Payments" },
@@ -726,28 +728,28 @@ export const incomingInvitations = [
 ];
 
 /* Investor-side soft circles (the investor's own commitments) */
-export const investorSoftCircles = [
+const _seed_investorSoftCircles = [
   { id: "isc_1", company: "NovaPay AI",      round: "Seed Extension", amount: 1_500_000, status: "committed", createdAt: "2026-04-19" },
   { id: "isc_2", company: "Quanta Robotics", round: "Series A",       amount:   500_000, status: "confirmed", createdAt: "2026-03-15" },
   { id: "isc_3", company: "Arboreal Health", round: "Pre-Seed",       amount:   100_000, status: "intent",    createdAt: "2026-05-05" },
 ];
 
 /* Investor portfolio + watchlist */
-export const portfolio = [
+const _seed_portfolio = [
   { id: "pf_1", company: "NovaPay AI",      stage: "Seed",     ownership: 6.82, invested: 1_500_000, currentMark: 2_140_000, irr: 28.5, mood: "up" },
   { id: "pf_2", company: "Quanta Robotics", stage: "Series A", ownership: 1.25, invested:   500_000, currentMark:   620_000, irr: 18.2, mood: "up" },
   { id: "pf_3", company: "Beacon Compute",  stage: "Series B", ownership: 0.42, invested:   250_000, currentMark:   240_000, irr: -1.4, mood: "flat" },
   { id: "pf_4", company: "Tideline Pay",    stage: "Seed",     ownership: 2.10, invested:   400_000, currentMark:   720_000, irr: 41.2, mood: "up" },
 ];
 
-export const watchlist = [
+const _seed_watchlist = [
   { id: "wl_1", company: "Arboreal Health", sector: "Digital Health", stage: "Pre-Seed", note: "Closing in 14 days." },
   { id: "wl_2", company: "Lattice BioFoundry", sector: "Biotech",   stage: "Series B", note: "Pass — too late stage." },
   { id: "wl_3", company: "Helia AI",          sector: "AI Infra",   stage: "Seed",     note: "Founder intro pending." },
 ];
 
 /* Discover companies */
-export const discover = [
+const _seed_discover = [
   { id: "dc_1", company: "Helia AI",       sector: "AI Infrastructure",   stage: "Seed",     hq: "London",       traction: "$1.2M ARR, 38% MoM",  raising: "$5M",  match: 92 },
   { id: "dc_2", company: "Tideline Pay",   sector: "Fintech",             stage: "Series A", hq: "São Paulo",    traction: "$8M ARR, 24% MoM",   raising: "$15M", match: 88 },
   { id: "dc_3", company: "Beacon Compute", sector: "Dev Infra",           stage: "Series B", hq: "Berlin",       traction: "$22M ARR",            raising: "$40M", match: 76 },
@@ -757,7 +759,7 @@ export const discover = [
 ];
 
 /* Dataroom files (5 of 11 categories populated) */
-export const dataroomFiles = [
+const _seed_dataroomFiles = [
   { id: "df_1", companyId: "co_novapay", category: "mgmt",        name: "Founders bios + cap.pdf",       sizeBytes:  814_336, mime: "application/pdf",   uploadedAt: "2026-04-12T10:00:00Z", uploadedBy: "Maya Chen"     },
   { id: "df_2", companyId: "co_novapay", category: "mgmt",        name: "Team org chart 2026.png",       sizeBytes:  221_440, mime: "image/png",          uploadedAt: "2026-04-12T10:02:00Z", uploadedBy: "Maya Chen"     },
   { id: "df_3", companyId: "co_novapay", category: "product",     name: "NovaPay product roadmap.pdf",   sizeBytes: 1_204_512, mime: "application/pdf",   uploadedAt: "2026-04-14T10:00:00Z", uploadedBy: "Daniel Okafor" },
@@ -771,14 +773,14 @@ export const dataroomFiles = [
 ];
 
 /* Reports */
-export const reports = [
+const _seed_reports = [
   { id: "rep_1", title: "Q1 2026 Investor Update", period: "Q1 2026", status: "sent",    sentAt: "2026-04-12", recipients: 42 },
   { id: "rep_2", title: "March 2026 KPI snapshot", period: "Mar 2026", status: "sent",    sentAt: "2026-04-02", recipients: 42 },
   { id: "rep_3", title: "Q2 2026 Investor Update — DRAFT", period: "Q2 2026", status: "draft", sentAt: null,    recipients: 0  },
 ];
 
 /* Activity log */
-export const activity = [
+const _seed_activity = [
   { id: "ac_1",  ts: "2026-05-08T09:14:00Z", actor: "Maya Chen",     action: "uploaded", target: "Q1 2026 Investor Update.pdf"   },
   { id: "ac_2",  ts: "2026-05-08T08:42:00Z", actor: "Hydra Capital", action: "viewed",   target: "Architecture diagram.png"      },
   { id: "ac_3",  ts: "2026-05-07T17:02:00Z", actor: "Forge Ventures",action: "soft-circled $750k", target: "Seed Extension"        },
@@ -790,7 +792,7 @@ export const activity = [
 ];
 
 /* Notifications (6) */
-export const notifications = [
+const _seed_notifications = [
   { id: "n_1", ts: "2026-05-08T09:14:00Z", title: "Hydra Capital opened Architecture diagram", kind: "view"    },
   { id: "n_2", ts: "2026-05-07T17:02:00Z", title: "Forge Ventures soft-circled $750k", kind: "soft_circle"      },
   { id: "n_3", ts: "2026-05-07T11:00:00Z", title: "Northstar Angels invitation expires in 7 days", kind: "warn" },
@@ -811,7 +813,7 @@ export const notifications = [
  *
  * In production, these are replaced by SES-delivered, single-shot tokens.
  */
-export const demoInvitationTokens: Array<{
+const _seed_demoInvitationTokens: Array<{
   id: string;
   rawToken: string;
   roundId: string;
@@ -858,7 +860,7 @@ export const demoInvitationTokens: Array<{
  * Each entry is the investor's view of a single company on which they hold
  * a position. Math is internally consistent: invested * marker = currentValue.
  */
-export const investorPortfolio = [
+const _seed_investorPortfolio = [
   {
     id: "ip_1",
     companyId: "co_novapay",
@@ -959,7 +961,7 @@ export const investorPortfolio = [
 /**
  * Cross-portfolio activity feed for the investor dashboard.
  */
-export const investorActivity = [
+const _seed_investorActivity = [
   {
     id: "ia_1",
     ts: "2026-05-08T09:14:00Z",
@@ -1032,7 +1034,7 @@ export const investorActivity = [
  * at the route layer (rounds / dataroom / softCircles / termSheet are
  * blanked unless the requester has access).
  */
-export const companyDetailsExtra: Record<string, {
+const _seed_companyDetailsExtra: Record<string, {
   headliner: string;
   founderBios: Array<{ name: string; role: string; bio: string; visible: boolean }>;
   problem: string;
@@ -1179,7 +1181,7 @@ export const companyDetailsExtra: Record<string, {
  * Sprint 7 — current investor identity (mock). In production, derived from Auth0.
  * The dashboard, profile, and access-checks all key off this.
  */
-export const currentInvestor = {
+const _seed_currentInvestor = {
   id: "u_aisha_patel",
   legalName: "Aisha Patel",
   email: "aisha@greenwood.capital",
@@ -1193,3 +1195,44 @@ export const currentInvestor = {
   // Companies whose round detail / dataroom / term sheet THIS investor can see.
   invitedCompanies: ["co_novapay", "co_arboreal", "co_quanta"],
 };
+
+
+// ---- Patch v4: demo seed gating ----
+// When DEMO_SEED_ENABLED is false (production, or dev without
+// ENABLE_DEMO_SEED=1), every exported value is an empty shape.
+// The TypeScript types stay identical so all importers compile.
+export const companies: typeof _seed_companies = DEMO_SEED_ENABLED ? _seed_companies : ([] as typeof _seed_companies);
+export const securities: typeof _seed_securities = DEMO_SEED_ENABLED ? _seed_securities : ([] as typeof _seed_securities);
+export const rounds: typeof _seed_rounds = DEMO_SEED_ENABLED ? _seed_rounds : ([] as typeof _seed_rounds);
+export const roundInvitations: typeof _seed_roundInvitations = DEMO_SEED_ENABLED ? _seed_roundInvitations : ([] as typeof _seed_roundInvitations);
+export const softCircles: typeof _seed_softCircles = DEMO_SEED_ENABLED ? _seed_softCircles : ([] as typeof _seed_softCircles);
+export const crmInvestors: typeof _seed_crmInvestors = DEMO_SEED_ENABLED ? _seed_crmInvestors : ([] as typeof _seed_crmInvestors);
+export const incomingInvitations: typeof _seed_incomingInvitations = DEMO_SEED_ENABLED ? _seed_incomingInvitations : ([] as typeof _seed_incomingInvitations);
+export const investorSoftCircles: typeof _seed_investorSoftCircles = DEMO_SEED_ENABLED ? _seed_investorSoftCircles : ([] as typeof _seed_investorSoftCircles);
+export const portfolio: typeof _seed_portfolio = DEMO_SEED_ENABLED ? _seed_portfolio : ([] as typeof _seed_portfolio);
+export const watchlist: typeof _seed_watchlist = DEMO_SEED_ENABLED ? _seed_watchlist : ([] as typeof _seed_watchlist);
+export const discover: typeof _seed_discover = DEMO_SEED_ENABLED ? _seed_discover : ([] as typeof _seed_discover);
+export const dataroomFiles: typeof _seed_dataroomFiles = DEMO_SEED_ENABLED ? _seed_dataroomFiles : ([] as typeof _seed_dataroomFiles);
+export const reports: typeof _seed_reports = DEMO_SEED_ENABLED ? _seed_reports : ([] as typeof _seed_reports);
+export const activity: typeof _seed_activity = DEMO_SEED_ENABLED ? _seed_activity : ([] as typeof _seed_activity);
+export const notifications: typeof _seed_notifications = DEMO_SEED_ENABLED ? _seed_notifications : ([] as typeof _seed_notifications);
+export const demoInvitationTokens: typeof _seed_demoInvitationTokens = DEMO_SEED_ENABLED ? _seed_demoInvitationTokens : ([] as typeof _seed_demoInvitationTokens);
+export const investorPortfolio: typeof _seed_investorPortfolio = DEMO_SEED_ENABLED ? _seed_investorPortfolio : ([] as typeof _seed_investorPortfolio);
+export const investorActivity: typeof _seed_investorActivity = DEMO_SEED_ENABLED ? _seed_investorActivity : ([] as typeof _seed_investorActivity);
+export const companyDetailsExtra: typeof _seed_companyDetailsExtra = DEMO_SEED_ENABLED ? _seed_companyDetailsExtra : ({} as typeof _seed_companyDetailsExtra);
+// currentInvestor keeps non-null shape when gated to avoid breaking importers;
+// empty strings + empty array signal "no demo identity".
+const _empty_currentInvestor: typeof _seed_currentInvestor = {
+  id: "",
+  legalName: "",
+  email: "",
+  entityName: "",
+  visibility: {
+    screenName: "",
+    screenNameSet: false,
+    visibleToCoMembers: false,
+    visibleToCollectiveNetwork: false,
+  },
+  invitedCompanies: [],
+};
+export const currentInvestor: typeof _seed_currentInvestor = DEMO_SEED_ENABLED ? _seed_currentInvestor : _empty_currentInvestor;

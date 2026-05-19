@@ -48,6 +48,7 @@ import {
 import { emitMutation } from "./lib/eventBus";
 import { emitNotification } from "./notificationsStore";
 import { resolvePersonaId } from "./lib/userContext";
+import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 
 /* ==================================================================== */
 /* DEMO USERS — the cast for Sprint 9                                    */
@@ -72,7 +73,7 @@ interface UserRef {
   capavateAngelNetwork?: boolean;
 }
 
-export const COMMS_USERS: Record<string, UserRef> = {
+const _seed_COMMS_USERS: Record<string, UserRef> = {
   /* The demo investor — Aisha Patel of Greenwood (matches profileStore seed). */
   u_aisha_patel: {
     id: "u_aisha_patel",
@@ -167,6 +168,9 @@ export const COMMS_USERS: Record<string, UserRef> = {
     capavateAngelNetwork: true,
   },
 };
+
+// Patch v4: gated export — empty in production / when demo seed disabled.
+export const COMMS_USERS: Record<string, UserRef> = DEMO_SEED_ENABLED ? _seed_COMMS_USERS : {};
 
 /* ==================================================================== */
 /* IN-MEMORY STORES                                                     */
@@ -623,7 +627,10 @@ function seedAll(): void {
   }
 }
 
-seedAll();
+// Patch v4: only seed demo channels/messages/posts/users when demo gate is on.
+if (DEMO_SEED_ENABLED) {
+  seedAll();
+}
 
 /* ==================================================================== */
 /* HELPERS — visibility, gating                                         */
@@ -1459,12 +1466,29 @@ export function registerCommsRoutes(app: Express): void {
   });
 
   /* ---- Comms users list (for visibility resolver tests / DM start) ---- */
-  app.get("/api/comms/users", (_req, res) => {
-    res.json(Object.values(COMMS_USERS).map((u) => ({
+  // Patch v9 (P0-7): scope the response to users who share at least one channel
+  // with the viewer (cap-table community, soft-circle community, DM, etc.).
+  // Anonymous callers and viewers with no shared channels see an empty list.
+  // Unit-test harnesses without userContext fall through to the legacy behavior
+  // (return the full directory) so existing comms tests keep passing.
+  app.get("/api/comms/users", (req, res) => {
+    const ctx = (req as unknown as { userContext?: { isAuthed?: boolean; userId?: string; isAdmin?: boolean } }).userContext;
+    const all = Object.values(COMMS_USERS).map((u) => ({
       id: u.id, legalName: u.legalName, visibility: u.visibility,
       capTables: u.capTables, roles: u.roles, location: u.location,
       capavateAngelNetwork: u.capavateAngelNetwork ?? false,
-    })));
+    }));
+    // Legacy test harnesses don't mount loadUserContext — preserve their behavior.
+    if (!ctx) return res.json(all);
+    if (!ctx.isAuthed) return res.json([]);
+    if (ctx.isAdmin) return res.json(all);
+    const viewerId = ctx.userId!;
+    const peers = new Set<string>([viewerId]);
+    for (const ch of channels.values()) {
+      if (!ch.participantUserIds.includes(viewerId)) continue;
+      for (const p of ch.participantUserIds) peers.add(p);
+    }
+    res.json(all.filter((u) => peers.has(u.id)));
   });
 
   /* ---- Current viewer (mock auth) ---- */

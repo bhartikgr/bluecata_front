@@ -65,7 +65,7 @@ export function clearFounderCollectiveStore(): void {
 
 const nominationSchema = z.object({
   companyId: z.string().min(1),
-  founderId: z.string().min(1).default("u_maya_chen"),
+  founderId: z.string().min(1),
   vouchingInvestorId: z.string().min(1),
   pitchSummary: z.string().min(20).max(2000),
   deckLink: z.string().url().optional(),
@@ -75,7 +75,7 @@ const nominationSchema = z.object({
 
 const applicationSchema = z.object({
   companyId: z.string().min(1),
-  founderId: z.string().min(1).default("u_maya_chen"),
+  founderId: z.string().min(1),
   pitchDeckFilename: z.string().min(1),
   tractionMrr: z.number().nonnegative(),
   tractionUsers: z.number().nonnegative(),

@@ -94,7 +94,7 @@ describe("Sprint 12 / Bridge — outbound + inbound catalogs", () => {
     // Sprint 28 Wave 6 — added notification_campaign.created/scheduled/sent/canceled → 33
     // Sprint 28 Wave 7 — added email_campaign.created/scheduled/sent/canceled/test_sent → 38
     // Sprint 29 KL-01 — added company_profile.updated → 41
-    expect(ALL_OUTBOUND_EVENT_TYPES.length).toBe(48) // Sprint 29 KL-01 added company_profile.updated;
+    expect(ALL_OUTBOUND_EVENT_TYPES.length).toBe(58) // Sprint 29 KL-01 added company_profile.updated;
     expect(ALL_OUTBOUND_EVENT_TYPES).toContain("subscription.updated");
     expect(ALL_OUTBOUND_EVENT_TYPES).toContain("pricing_model.updated");
     expect(ALL_OUTBOUND_EVENT_TYPES).toContain("pricing_model.published");

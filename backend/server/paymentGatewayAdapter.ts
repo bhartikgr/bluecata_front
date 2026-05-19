@@ -20,8 +20,11 @@ import type { Express, Request, Response } from "express";
 import { createHash, randomBytes } from "node:crypto";
 import { chargeOrIdempotent, type PaymentEntry } from "./paymentStore";
 import { createInvoice, refundInvoice, markInvoicePaid, getInvoice, type Invoice } from "./invoiceStore";
-import { getSubscription, updateSubscription } from "./subscriptionsStore";
+import { getSubscription, updateSubscription, createSubscriptionForNewCompany } from "./subscriptionsStore";
 import { appendAdminAudit } from "./adminPlatformStore";
+// Patch v6 — free-plan activation needs a company + user context.
+import { getUserContext } from "./lib/userContext";
+import { addCompanyForFounder, getCompaniesForFounder, getActiveCompanyId, setActiveCompanyId, type FounderCompanyMembership } from "./multiCompanyStore";
 
 /* ---------- Types ---------- */
 
@@ -203,11 +206,90 @@ export function registerPaymentGatewayRoutes(app: Express): void {
   });
 
   /**
+   * POST /api/founder/subscription/activate-free  — Patch v6
+   * Brand-new authenticated founder activates the Founder Free plan.
+   * - If the founder has no company, auto-creates a personal sandbox company.
+   * - If a subscription does not exist for that company, creates one (plan=founder_free).
+   * - Updates the subscription status to 'active' (free tier requires no payment).
+   * Idempotent: a subsequent call returns the same active subscription.
+   */
+  app.post("/api/founder/subscription/activate-free", async (req: Request, res: Response) => {
+    const ctx = await getUserContext(req);
+    if (!ctx.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
+
+    // V3 (Patch v8): respect body `companyId` so multi-company founders can
+    // activate a specific company. Falls back to active company when absent.
+    // Also enforces ownership: the founder must own the requested companyId.
+    const bodyCompanyId = typeof (req.body as { companyId?: unknown })?.companyId === "string"
+      ? (req.body as { companyId: string }).companyId
+      : null;
+
+    // 1) Ensure the founder has a company.
+    let companies = getCompaniesForFounder(ctx.userId);
+    let companyId: string | null = bodyCompanyId
+      ? (companies.some((c) => c.companyId === bodyCompanyId) ? bodyCompanyId : null)
+      : getActiveCompanyId(ctx.userId);
+    if (bodyCompanyId && companyId === null) {
+      return res.status(403).json({ ok: false, error: "not_founder_of_company", companyId: bodyCompanyId });
+    }
+    if (!companies.length || !companyId) {
+      const newId = `co_${randomBytes(6).toString("hex")}`;
+      const founderName = (ctx.identity?.name ?? "My Company").trim() || "My Company";
+      const newCompany: FounderCompanyMembership = {
+        companyId: newId,
+        companyName: `${founderName}'s Workspace`,
+        legalName: `${founderName}'s Workspace, Inc.`,
+        logoUrl: null,
+        role: "founder",
+        lastActiveAt: new Date().toISOString(),
+        kpi: {
+          capTableHolders: 0, activeRoundsCount: 0, raisedThisYearUsd: 0,
+          dataroomFiles: 0, pendingSoftCircles: 0, ownershipPct: 1.0,
+        },
+        collective: { status: "none" },
+        billing: { plan: "Founder Free", monthlyUsd: 0, nextBillingDate: "—", cardLast4: null, invoiceCount: 0 },
+        sector: "",
+        stage: "",
+        hq: "",
+      };
+      addCompanyForFounder(ctx.userId, newCompany);
+      setActiveCompanyId(ctx.userId, newId);
+      companyId = newId;
+    }
+
+    if (!companyId) {
+      return res.status(500).json({ ok: false, error: "failed_to_provision_company" });
+    }
+
+    // 2) Ensure a subscription exists for this company.
+    let sub = getSubscription(companyId);
+    if (!sub) {
+      const created = createSubscriptionForNewCompany(companyId, {
+        plan: "founder_free",
+        actor: `founder:${ctx.userId}`,
+      });
+      sub = created.subscription;
+    }
+
+    // 3) Activate (free tier doesn't require payment).
+    const upd = updateSubscription(
+      companyId,
+      { status: "active", plan: "founder_free" },
+      `founder:${ctx.userId}`,
+    );
+    if (!upd.ok) {
+      return res.status(500).json({ ok: false, error: upd.error });
+    }
+
+    return res.json({ ok: true, companyId, subscription: upd.subscription });
+  });
+
+  /**
    * POST /api/founder/subscription/charge
    * Founder triggers a subscription charge. Body: { pricingModelId, paymentMethod: { tokenized, cardLast4 } }
    */
   app.post("/api/founder/subscription/charge", (req: Request, res: Response) => {
-    const companyId = String(req.headers["x-company-id"] ?? req.body?.companyId ?? "co_novapay");
+    const companyId = String(req.headers["x-company-id"] ?? req.body?.companyId ?? "");
     const { pricingModelId, paymentMethod } = req.body ?? {};
 
     const sub = getSubscription(companyId);
@@ -247,7 +329,7 @@ export function registerPaymentGatewayRoutes(app: Express): void {
    * Returns the subscription for the founder's active company.
    */
   app.get("/api/founder/subscription", (req: Request, res: Response) => {
-    const companyId = String(req.query.companyId ?? req.headers["x-company-id"] ?? "co_novapay");
+    const companyId = String(req.query.companyId ?? req.headers["x-company-id"] ?? "");
     const sub = getSubscription(companyId);
     if (!sub) return res.status(404).json({ ok: false, error: "not_found" });
     res.json({ ok: true, subscription: sub });
@@ -259,7 +341,7 @@ export function registerPaymentGatewayRoutes(app: Express): void {
    * Allowed changes: status (cancel_at_period_end only from this endpoint).
    */
   app.patch("/api/founder/subscription", (req: Request, res: Response) => {
-    const companyId = String(req.headers["x-company-id"] ?? req.body?.companyId ?? "co_novapay");
+    const companyId = String(req.headers["x-company-id"] ?? req.body?.companyId ?? "");
     const { status } = req.body ?? {};
 
     // From founder side only cancel_at_period_end is allowed via this endpoint
@@ -283,7 +365,7 @@ export function registerPaymentGatewayRoutes(app: Express): void {
    * Double-confirm: requires x-confirm: true header.
    */
   app.post("/api/founder/subscription/resume", (req: Request, res: Response) => {
-    const companyId = String(req.headers["x-company-id"] ?? req.body?.companyId ?? "co_novapay");
+    const companyId = String(req.headers["x-company-id"] ?? req.body?.companyId ?? "");
     const sub = getSubscription(companyId);
     if (!sub) return res.status(404).json({ ok: false, error: "subscription_not_found" });
     if (sub.status !== "cancel_at_period_end") {
@@ -302,7 +384,7 @@ export function registerPaymentGatewayRoutes(app: Express): void {
    * Updates the card on file. Requires Luhn-valid card.
    */
   app.patch("/api/founder/subscription/payment-method", (req: Request, res: Response) => {
-    const companyId = String(req.headers["x-company-id"] ?? req.body?.companyId ?? "co_novapay");
+    const companyId = String(req.headers["x-company-id"] ?? req.body?.companyId ?? "");
     const { cardLast4, cardholderName, tokenized } = req.body ?? {};
     if (!cardLast4 || cardLast4.length !== 4 || !/^\d{4}$/.test(cardLast4)) {
       return res.status(400).json({ ok: false, error: "invalid_card_last4" });

@@ -16,6 +16,8 @@
  *   GET  /api/founder/access-check?investorId=...&companyId=...
  */
 import type { Express, Request, Response } from "express";
+import { DEMO_SEED_ENABLED } from "./lib/demoGate";
+import { getLedger } from "./captableCommitStore";
 
 type MembershipStatus = {
   userId: string;
@@ -29,7 +31,8 @@ type MembershipStatus = {
 };
 
 // Demo: a small set of mock investor users with diverse states.
-const MOCK_MEMBERSHIP: Record<string, MembershipStatus> = {
+// Patch v4: only populated when demo gate is on.
+const MOCK_MEMBERSHIP: Record<string, MembershipStatus> = DEMO_SEED_ENABLED ? {
   u_aisha_patel: {
     userId: "u_aisha_patel",
     isCollectiveMember: true,
@@ -65,7 +68,80 @@ const MOCK_MEMBERSHIP: Record<string, MembershipStatus> = {
     capTablePositions: [],
     canApplyToCollective: false,
   },
-};
+} : {};
+
+/**
+ * V4 (Patch v8) — Derive cap-table positions from the canonical ledger.
+ *
+ * Previously, MOCK_MEMBERSHIP was the single source of truth for whether an
+ * investor was "on the cap table" of a company. Commits to captableCommitStore
+ * were never reflected in entitlement gates. This function reads the ledger
+ * for `committed` entries belonging to `userId` and exposes them as
+ * `capTablePositions`, with a small in-memory index keyed by
+ * (investorId, companyId) keyed off the ledger length to avoid scanning.
+ *
+ * IMPORTANT: this does NOT touch packages/cap-table-engine* math. It only
+ * reads getLedger() and projects committed entries.
+ */
+let _ledgerIndexLen = -1;
+let _ledgerIndex: Map<string, Map<string, { companyId: string; ownershipPct: number; companyName: string }>> = new Map();
+
+function rebuildLedgerIndexIfStale(): void {
+  const ledger = getLedger();
+  if (ledger.length === _ledgerIndexLen) return;
+  const idx = new Map<string, Map<string, { companyId: string; ownershipPct: number; companyName: string }>>();
+  for (const e of ledger) {
+    if (e.state !== "committed") continue;
+    let perUser = idx.get(e.investorId);
+    if (!perUser) { perUser = new Map(); idx.set(e.investorId, perUser); }
+    // ownershipPct is unknown from ledger alone; use 0 as a sentinel — gates only
+    // care about presence/absence. UI surfaces should compute pct from the engine.
+    perUser.set(e.companyId, { companyId: e.companyId, ownershipPct: 0, companyName: e.companyId });
+  }
+  _ledgerIndex = idx;
+  _ledgerIndexLen = ledger.length;
+}
+
+function derivedPositionsFor(userId: string): Array<{ companyId: string; companyName: string; ownershipPct: number }> {
+  rebuildLedgerIndexIfStale();
+  const per = _ledgerIndex.get(userId);
+  if (!per) return [];
+  return Array.from(per.values()).map((p) => ({
+    companyId: p.companyId,
+    companyName: p.companyName,
+    ownershipPct: p.ownershipPct,
+  }));
+}
+
+/**
+ * Merge MOCK_MEMBERSHIP seed (for tests/dev) with ledger-derived positions
+ * (for runtime cap-table commits). Ledger wins on companyId conflict.
+ */
+function mergedMembership(userId: string): MembershipStatus | null {
+  const seed = MOCK_MEMBERSHIP[userId] ?? null;
+  const derived = derivedPositionsFor(userId);
+  if (!seed && derived.length === 0) return null;
+  const base: MembershipStatus = seed ?? {
+    userId,
+    isCollectiveMember: false,
+    memberSince: null,
+    expiresAt: null,
+    lapsed: false,
+    reason: derived.length > 0 ? `Active member on cap table for ${derived.length} compan${derived.length === 1 ? "y" : "ies"}.` : "No cap-table positions.",
+    capTablePositions: [],
+    canApplyToCollective: derived.length > 0,
+  };
+  if (derived.length === 0) return base;
+  const seen = new Set(base.capTablePositions.map((p) => p.companyId));
+  const merged = base.capTablePositions.slice();
+  for (const p of derived) {
+    if (!seen.has(p.companyId)) {
+      merged.push(p);
+      seen.add(p.companyId);
+    }
+  }
+  return { ...base, capTablePositions: merged, canApplyToCollective: base.canApplyToCollective || merged.length > 0 };
+}
 
 export function isCollectiveMember(userId: string, asOf: Date = new Date()): boolean {
   const m = MOCK_MEMBERSHIP[userId];
@@ -76,14 +152,36 @@ export function isCollectiveMember(userId: string, asOf: Date = new Date()): boo
 }
 
 export function getMembership(userId: string): MembershipStatus | null {
-  return MOCK_MEMBERSHIP[userId] ?? null;
+  return mergedMembership(userId);
 }
 
 export function isOnCapTable(userId: string, companyId?: string): boolean {
-  const m = MOCK_MEMBERSHIP[userId];
+  const m = mergedMembership(userId);
   if (!m) return false;
   if (!companyId) return m.capTablePositions.length > 0;
   return m.capTablePositions.some((p) => p.companyId === companyId);
+}
+
+/**
+ * V4 — Public API used by routes/entitlement gates. Returns all
+ * users currently on a company's cap table (derived from the ledger
+ * plus the seed map).
+ */
+export function listMembersForCompany(companyId: string): Array<{ userId: string; companyId: string; ownershipPct: number }> {
+  const out: Array<{ userId: string; companyId: string; ownershipPct: number }> = [];
+  // Seed fixtures
+  for (const [uid, m] of Object.entries(MOCK_MEMBERSHIP)) {
+    const pos = m.capTablePositions.find((p) => p.companyId === companyId);
+    if (pos) out.push({ userId: uid, companyId, ownershipPct: pos.ownershipPct });
+  }
+  // Ledger commits
+  rebuildLedgerIndexIfStale();
+  for (const [uid, per] of _ledgerIndex.entries()) {
+    if (out.some((r) => r.userId === uid)) continue;
+    const pos = per.get(companyId);
+    if (pos) out.push({ userId: uid, companyId, ownershipPct: pos.ownershipPct });
+  }
+  return out;
 }
 
 /**

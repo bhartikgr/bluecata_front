@@ -133,7 +133,7 @@ describe("Wave 7 / Bridge — ALL_OUTBOUND_EVENT_TYPES count = 38", () => {
   });
 
   it("total count is 41 (Sprint 29 KL-01 added company_profile.updated)", () => {
-    expect(ALL_OUTBOUND_EVENT_TYPES.length).toBe(48);
+    expect(ALL_OUTBOUND_EVENT_TYPES.length).toBe(58);
   });
 });
 

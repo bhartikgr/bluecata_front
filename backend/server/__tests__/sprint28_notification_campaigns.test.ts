@@ -118,7 +118,7 @@ beforeEach(() => {
 describe("Sprint 28 Wave 6 / Bridge — ALL_OUTBOUND_EVENT_TYPES count", () => {
   it("declares 33 outbound event types after Wave 6 additions", () => {
     // Sprint 29 KL-01 added company_profile.updated → now 41
-    expect(ALL_OUTBOUND_EVENT_TYPES.length).toBe(48); // Sprint 29 KL-01 added company_profile.updated
+    expect(ALL_OUTBOUND_EVENT_TYPES.length).toBe(58); // Sprint 29 KL-01 added company_profile.updated
     expect(ALL_OUTBOUND_EVENT_TYPES).toContain("notification_campaign.created");
     expect(ALL_OUTBOUND_EVENT_TYPES).toContain("notification_campaign.scheduled");
     expect(ALL_OUTBOUND_EVENT_TYPES).toContain("notification_campaign.sent");

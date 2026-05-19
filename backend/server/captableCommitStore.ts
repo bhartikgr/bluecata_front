@@ -103,6 +103,23 @@ export function clearFundedQueue(): void { fundedQueue.length = 0; }
 export function setComplianceHold(on: boolean): void { complianceHold = on; }
 export function getComplianceHold(): boolean { return complianceHold; }
 export function getLedger(): ReadonlyArray<LedgerEntry> { return ledger; }
+
+/**
+ * V4 (Patch v8) — Public read APIs used by membershipStore to derive
+ * entitlements. These do NOT touch packages/cap-table-engine* math; they
+ * project the immutable ledger into views the entitlement layer needs.
+ */
+export function listCommitsForUser(userId: string, companyId?: string): ReadonlyArray<LedgerEntry> {
+  return ledger.filter((e) =>
+    e.state === "committed" &&
+    e.investorId === userId &&
+    (!companyId || e.companyId === companyId)
+  );
+}
+
+export function listMembersForCompany(companyId: string): ReadonlyArray<LedgerEntry> {
+  return ledger.filter((e) => e.state === "committed" && e.companyId === companyId);
+}
 export function clearLedger(): void {
   ledger.length = 0;
   lastHash = "GENESIS";

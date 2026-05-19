@@ -13,6 +13,7 @@
 import type { Express, Request, Response } from "express";
 import { randomBytes } from "node:crypto";
 import { getUserContext, getUserContextForId, resolvePersonaId } from "./lib/userContext";
+import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 
 /* ---------------------------------------------------------------------------
  * Seed data — co-members per portfolio company
@@ -42,7 +43,8 @@ type CoMember = {
   _privacyOff?: boolean;
 };
 
-const CO_MEMBERS_BY_COMPANY: Record<string, CoMember[]> = {
+// Patch v4: demo seed only when demo gate is on.
+const CO_MEMBERS_BY_COMPANY: Record<string, CoMember[]> = DEMO_SEED_ENABLED ? {
   co_novapay: [
     {
       memberId: "m_novapay_1",
@@ -155,7 +157,7 @@ const CO_MEMBERS_BY_COMPANY: Record<string, CoMember[]> = {
       _privacyOff: true,
     },
   ],
-};
+} : {};
 
 /** Helper — apply viewerId privacy filter: members who have coMembersOff set
  *  to true are anonymised regardless of screenNameOnly (belt-and-suspenders).

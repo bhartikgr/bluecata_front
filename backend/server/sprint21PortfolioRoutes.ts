@@ -24,6 +24,7 @@ import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { emitNotification, type NotificationKind } from "./notificationsStore";
 import { emitMutation } from "./lib/eventBus";
+import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 import { getReports } from "./reportsStore";
 
 /* ------------------------------------------------------------------ */
@@ -81,14 +82,15 @@ const promoteSchema = z.object({
  * environment we use a well-known mapping.
  */
 function founderUserIdForCompany(companyId: string): string {
-  const MAP: Record<string, string> = {
+  // Patch v4: demo founder mapping only when demo gate is on; production returns empty.
+  const MAP: Record<string, string> = DEMO_SEED_ENABLED ? {
     co_novapay: "u_maya_chen",
     co_arboreal: "u_maya_chen",
     co_quanta: "u_maya_chen",
     co_beacon: "u_maya_chen",
     co_tideline: "u_maya_chen",
-  };
-  return MAP[companyId] ?? "u_maya_chen";
+  } : {};
+  return MAP[companyId] ?? "";
 }
 
 /* ------------------------------------------------------------------ */

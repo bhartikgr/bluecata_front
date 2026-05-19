@@ -126,6 +126,10 @@ export function checkEntitlement(
       if (!ctx.isAuthed) return { ok: false, code: "NOT_AUTHED" };
       const cid = ctxArgs.companyId;
       if (!cid) return { ok: false, code: "NOT_ON_CAP_TABLE" };
+      // V4 (Patch v8): ctx.investor.capTablePositions is now derived from
+      // membershipStore.getMembership(), which itself merges seeded fixtures
+      // with live captableCommitStore commits. A cap-table commit therefore
+      // immediately unlocks this entitlement on the next request.
       const onIt = ctx.investor.capTablePositions.some((p) => p.companyId === cid);
       return onIt ? { ok: true } : { ok: false, code: "NOT_ON_CAP_TABLE", detail: { companyId: cid } };
     }

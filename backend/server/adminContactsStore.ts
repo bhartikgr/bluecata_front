@@ -10,20 +10,13 @@
  * Hash chain per contact provides tamper-evident revision history.
  * Every mutation requires header `x-confirm: true` (double-verify-before-apply).
  * Every mutation calls appendAdminAudit and emits a bridge event.
- *
- * KL-04 FIX: DB write-through added to createContact(), updateContact(),
- * and seedContacts() so all mutations persist to SQLite (dev.db) and
- * survive server restarts. hydrateFromDatabase() loads contacts on startup.
  */
 
 import type { Express, Request, Response } from "express";
 import { createHash, randomBytes } from "node:crypto";
 import { appendAdminAudit } from "./adminPlatformStore";
 import { emitBridgeEvent } from "./bridgeStore";
-// ── KL-04: DB imports ──────────────────────────────────────
-import { getDb, rawDb } from "./db/connection";
-import { syncPcrmContact } from "./db/schema";
-import { eq } from "drizzle-orm";
+import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 
 /* ============================================================
  * Type definitions
@@ -39,6 +32,31 @@ export type ContactType =
   | "partner_org";
 export type VerificationStatus = "unverified" | "pending" | "verified" | "rejected";
 export type ContactStatus = "active" | "inactive" | "suspended" | "archived";
+
+// Patch v6 — Partner CRM tier ladder + partner_type enums
+export type PartnerTier = "catalyst" | "builder" | "amplifier" | "nexus" | "founding_member";
+export const TIER_RANK: Record<PartnerTier, number> = {
+  catalyst: 1,
+  builder: 2,
+  amplifier: 3,
+  nexus: 4,
+  founding_member: 5,
+};
+export const TIER_SEAT_LIMITS: Record<PartnerTier, number> = {
+  catalyst: 2,
+  builder: 10,
+  amplifier: 25,
+  nexus: 9999,
+  founding_member: 9999,
+};
+export type PartnerType =
+  | "angel_network"
+  | "accelerator"
+  | "incubator"
+  | "accounting"
+  | "law"
+  | "investment_bank"
+  | "professional_services";
 
 export interface AdminContact {
   id: string;                             // ac_<kind>_<random>
@@ -80,6 +98,18 @@ export interface AdminContact {
   version: number;
   prevRevisionHash: string;
   revisionHash: string;
+  // Patch v6 — partner identity fields (consortium_partner kind only; null otherwise)
+  tier?: PartnerTier | null;
+  tierSince?: string | null;
+  foundingMember?: boolean;
+  partnerType?: PartnerType | null;
+  regionCode?: string | null;
+  preferredPayoutCurrency?: string | null;
+  configJson?: string | null;
+
+  // Patch v5 — marks rows created by the demo-seed function so they can be
+  // filtered out in production regardless of DEMO_SEED_ENABLED state.
+  isSeed?: boolean;
 }
 
 export interface ContactRevision {
@@ -153,63 +183,6 @@ export function verifyChain(contactId: string): { ok: boolean; brokenAtVersion?:
 }
 
 /* ============================================================
- * KL-04: DB helper — upsert a contact row into sync_pcrm_contact
- * ============================================================ */
-
-function dbUpsertContact(contact: AdminContact): void {
-  try {
-    rawDb().prepare(
-      `INSERT OR REPLACE INTO sync_pcrm_contact
-        (id, tenant_id, version, updated_at, created_at, deleted_at, payload, owner_id, email)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
-      contact.id,
-      null,
-      contact.version,
-      contact.updatedAt,
-      contact.createdAt,
-      null,
-      JSON.stringify(contact),
-      contact.createdBy,
-      contact.email,
-    );
-  } catch (e) {
-    console.error("[db] dbUpsertContact failed for", contact.id, e);
-  }
-}
-
-/* ============================================================
- * KL-04: Hydrate contacts from DB on server startup
- * ============================================================ */
-
-export async function hydrateFromDatabase(): Promise<void> {
-  const dbUrl = process.env.DATABASE_URL;
-  if (!dbUrl) {
-    console.log("[hydrate] adminContactsStore — no DATABASE_URL, staying in-memory");
-    return;
-  }
-  try {
-    const rows = rawDb().prepare(
-      `SELECT payload FROM sync_pcrm_contact`
-    ).all() as Array<{ payload: string }>;
-    let loaded = 0;
-    for (const row of rows) {
-      try {
-        const contact: AdminContact = JSON.parse(row.payload);
-        contacts.set(contact.id, contact);
-        loaded++;
-      } catch {
-        // Malformed row — skip
-      }
-    }
-    console.log(`[hydrate] adminContactsStore loaded ${loaded} contacts from DB`);
-    if (loaded > 0) seeded = true; // Don't re-seed if we loaded from DB
-  } catch (e) {
-    console.error("[hydrate] adminContactsStore DB load failed, falling back to seed:", e);
-  }
-}
-
-/* ============================================================
  * Mutation helpers (internal — apply after confirmation check)
  * ============================================================ */
 
@@ -239,9 +212,6 @@ export function createContact(
   appendRevision(contact, "contact.created");
   appendAdminAudit(actor, `contact:${id}`, "contact.created", { legalName: contact.legalName, kind: contact.kind, email: contact.email });
   emitBridgeEvent({ eventType: "contact.created", aggregateId: id, aggregateKind: "investor", payload: { legalName: contact.legalName, kind: contact.kind } });
-
-  // ── KL-04: persist to DB ──
-  dbUpsertContact(contact);
 
   return contact;
 }
@@ -274,9 +244,6 @@ export function updateContact(
   contacts.set(id, updated);
   appendRevision(updated, action);
   appendAdminAudit(actor, `contact:${id}`, action, { version: updated.version, changes: Object.keys(patch) });
-
-  // ── KL-04: persist to DB ──
-  dbUpsertContact(updated);
 
   return updated;
 }
@@ -397,7 +364,8 @@ function computeDiff(existing: AdminContact, patch: Partial<AdminContact>): Reco
 let seeded = false;
 
 export function getAllContacts(): AdminContact[] {
-  if (!seeded) seedContacts();
+  // Patch v4: only seed contacts when demo gate is on.
+  if (!seeded && DEMO_SEED_ENABLED) seedContacts();
   return Array.from(contacts.values());
 }
 
@@ -923,7 +891,7 @@ export function seedContacts(): void {
     },
   ];
 
-  // Seed all contacts — persist to DB via dbUpsertContact
+  // Seed all contacts and emit contact.seeded audit
   for (const data of [...investors, ...founders, ...partners]) {
     const id = newId(data.kind);
     const now = new Date().toISOString();
@@ -937,6 +905,7 @@ export function seedContacts(): void {
       version: 1,
       prevRevisionHash,
       revisionHash: "",
+      isSeed: true, // Patch v5 — stamp every seeded row for prod filtering.
     };
     contact.revisionHash = computeRevisionHash(contact);
 
@@ -948,9 +917,6 @@ export function seedContacts(): void {
       type: contact.type,
       seedNote: "Initial canonical seed contact for empty deployment",
     });
-
-    // ── KL-04: persist seed contacts to DB ──
-    dbUpsertContact(contact);
   }
 }
 
@@ -959,7 +925,7 @@ export function seedContacts(): void {
  * ============================================================ */
 
 export function registerAdminContactsRoutes(app: Express): void {
-  seedContacts();
+  if (DEMO_SEED_ENABLED) seedContacts();
 
   // ── GET /api/admin/contacts/stats ──────────────────────────
   // IMPORTANT: this must be registered BEFORE /:id routes

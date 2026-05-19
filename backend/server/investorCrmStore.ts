@@ -205,14 +205,18 @@ const contacts = new Map<string, InvestorCrmContact>([
 /* Handler helpers                                                     */
 /* ------------------------------------------------------------------ */
 
+// PATCH v3: listContacts no longer has an "anonymous" catch-all — returns ONLY the user's contacts
 function listContacts(investorId: string): InvestorCrmContact[] {
-  return [...contacts.values()].filter(
-    (c) => c.investorId === investorId || investorId === "anonymous",
-  );
+  if (!investorId || investorId === "anonymous") return [];
+  return [...contacts.values()].filter((c) => c.investorId === investorId);
 }
 
-function requireAuth(req: Request): string {
-  return (req.headers["x-user-id"] as string) ?? "anonymous";
+// PATCH v3: resolveInvestorId uses strict persona resolution (no dev fallback).
+// This ensures routes return 401 when no explicit auth is present, even in test envs.
+import { resolvePersonaId } from "./lib/userContext";
+function resolveInvestorId(req: Request): string | null {
+  // Use strict resolution (no fallback to demo persona)
+  return resolvePersonaId(req);
 }
 
 /* ------------------------------------------------------------------ */
@@ -227,10 +231,8 @@ export function registerInvestorCrmRoutes(app: Express): void {
    * Body: { recipientIds: string[], body: string, mode: "dm" | "post" }
    */
   app.post("/api/investor/crm/broadcast", (req: Request, res: Response) => {
-    const investorId = requireAuth(req);
-    if (investorId === "anonymous") {
-      return res.status(401).json({ error: "Authentication required" });
-    }
+    const investorId = resolveInvestorId(req);
+    if (!investorId) return res.status(401).json({ error: "Authentication required" });
     const { recipientIds, body: msgBody, mode } = req.body ?? {};
     if (!msgBody || typeof msgBody !== "string" || !msgBody.trim()) {
       return res.status(400).json({ error: "body is required" });
@@ -264,12 +266,20 @@ export function registerInvestorCrmRoutes(app: Express): void {
   /* =================== LEGACY alias routes (Sprint 20 backwards compat) =================== */
 
   app.get("/api/investor/crm/contacts", (req: Request, res: Response) => {
-    const investorId = requireAuth(req);
+    const investorId = resolveInvestorId(req);
+    // PATCH v3: in production require auth; in non-prod allow anonymous but return EMPTY list
+    if (!investorId) {
+      if (process.env.NODE_ENV === "production") {
+        return res.status(401).json({ error: "Authentication required" });
+      }
+      return res.json({ contacts: [] });
+    }
     return res.json({ contacts: listContacts(investorId) });
   });
 
   app.post("/api/investor/crm/contacts", (req: Request, res: Response) => {
-    const investorId = requireAuth(req);
+    const investorId = resolveInvestorId(req);
+    if (!investorId) return res.status(401).json({ error: "Authentication required" });
     const {
       companyId = "",
       companyName = "",
@@ -417,13 +427,21 @@ export function registerInvestorCrmRoutes(app: Express): void {
 
   // GET /api/investor/crm — list all contacts as array (not nested)
   app.get("/api/investor/crm", (req: Request, res: Response) => {
-    const investorId = requireAuth(req);
+    const investorId = resolveInvestorId(req);
+    // PATCH v3: in production require auth; in non-prod allow anonymous but return EMPTY list
+    if (!investorId) {
+      if (process.env.NODE_ENV === "production") {
+        return res.status(401).json({ error: "Authentication required" });
+      }
+      return res.json([]);
+    }
     return res.json(listContacts(investorId));
   });
 
   // POST /api/investor/crm — create contact
   app.post("/api/investor/crm", (req: Request, res: Response) => {
-    const investorId = requireAuth(req);
+    const investorId = resolveInvestorId(req);
+    if (!investorId) return res.status(401).json({ error: "Authentication required" });
     const {
       name = "",
       role = "",

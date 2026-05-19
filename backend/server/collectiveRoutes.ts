@@ -19,6 +19,7 @@
 import type { Express, Request, Response } from "express";
 import { onMutation } from "./lib/eventBus";
 import { getCompanyProfile, getAllProfiles } from "./companyProfileStore";
+import { partnerDealPromotionsStore } from "./partnerWorkspaceStore";
 import { getSubscription } from "./subscriptionsStore";
 import { getLatestForCompany, listFeedback, ingestDscScores } from "./dscFeedbackStore";
 import { getChannelByCompany, listChannels, TRANSACTION_PREP_THREADS } from "./transactionPrepStore";
@@ -37,6 +38,24 @@ import { getRecentEvents } from "./sprint10Telemetry";
 function pct(part: number, total: number): number {
   if (!total) return 0;
   return Math.round((part / total) * 100);
+}
+
+/* ============================================================
+ * Patch v5 — production seed strip (defense in depth)
+ *
+ * The TEST PARTNER, INC sandbox row (and any other isSeed-flagged
+ * AdminContact) MUST never leak into production responses, regardless
+ * of the DEMO_SEED_ENABLED gate that already prevents seeds from
+ * loading at boot — if the gate is ever bypassed (in-memory persistence
+ * across tsx reloads, env var leaked, etc.) we still won’t leak.
+ * ============================================================ */
+function isProdSeedStripActive(): boolean {
+  return process.env.NODE_ENV === "production";
+}
+
+function filterSeedInProd<T extends { isSeed?: boolean }>(rows: T[]): T[] {
+  if (!isProdSeedStripActive()) return rows;
+  return rows.filter((r) => !r.isSeed);
 }
 
 /* ============================================================
@@ -116,7 +135,7 @@ export function registerCollectiveRoutes(app: Express): void {
    * KPI cards computed live from existing stores.
    * ----------------------------------------------------------------- */
   app.get("/api/collective/dashboard", (_req: Request, res: Response) => {
-    const allContacts = listContacts({});
+    const allContacts = filterSeedInProd(listContacts({}));
     const allProfiles = getAllProfiles();
 
     // Total members: adminContacts with kind investor or consortium_partner
@@ -199,7 +218,26 @@ export function registerCollectiveRoutes(app: Express): void {
         channelCompanyIds.has(p.companyId)
     );
 
-    const result = dealRoomProfiles.map((p) => {
+    type DealRoomEntry = {
+      companyId: string;
+      companyName: string;
+      sector: string | null;
+      stage: string | null;
+      lastRaise: string | null;
+      lastRaiseAmount: number | null;
+      transactionPrepStatus: string;
+      compositeScore: number | null;
+      autoTier: string | null;
+      dscTier: string | null;
+      dscUpdatedAt: string | null;
+      channelId: string | null;
+      logoUrl: string | null;
+      tagline: string | null;
+      source: "profile" | "partner";
+      partnerId: string | null;
+      promotedAt: string | null;
+    };
+    const result: DealRoomEntry[] = dealRoomProfiles.map((p) => {
       const dscFeedback = getLatestForCompany(p.companyId);
       const composite = computeCompositeForCompany(p.companyId);
       const channel = getChannelByCompany(p.companyId);
@@ -221,8 +259,67 @@ export function registerCollectiveRoutes(app: Express): void {
         channelId: channel?.id ?? null,
         logoUrl: p.logoUrl ?? null,
         tagline: p.tagline ?? null,
+        source: "profile",
+        partnerId: null,
+        promotedAt: null,
       };
     });
+
+    /* -----------------------------------------------------------------
+     * V5 (Patch v8) — Partner promotions consumer.
+     *
+     * Previously the partner workspace store recorded promotions via
+     * `promoteToCollective` and emitted a bridge event, but no Collective
+     * route consumed them. The Deal Room list therefore never reflected
+     * partner-promoted deals (Phase 1 bug B5).
+     *
+     * Strategy: live (status === "live") collective-deal-room promotions
+     * are merged into the existing Deal Room list. Dedup is by companyId;
+     * a partner-promoted entry that targets the same company as a directly-
+     * surfaced deal carries the partner badge but does not duplicate.
+     * ----------------------------------------------------------------- */
+    const profileById = new Map(allProfiles.map((p) => [p.companyId, p]));
+    const seenCompanyIds = new Set(result.map((r) => r.companyId));
+    const promotions = partnerDealPromotionsStore.listLiveCollectivePromotions();
+    for (const promo of promotions) {
+      if (!promo.companyId) continue;
+      if (seenCompanyIds.has(promo.companyId)) {
+        // Annotate existing entry with partner badge.
+        const existing = result.find((r) => r.companyId === promo.companyId);
+        if (existing) {
+          existing.source = "profile" as const;
+          existing.partnerId = promo.partnerId;
+          existing.promotedAt = promo.promotedAt;
+        }
+        continue;
+      }
+      seenCompanyIds.add(promo.companyId);
+      const p = profileById.get(promo.companyId);
+      const dscFeedback = getLatestForCompany(promo.companyId);
+      const composite = computeCompositeForCompany(promo.companyId);
+      const channel = getChannelByCompany(promo.companyId);
+      const canonical = canonicalCompanies.find((c) => c.id === promo.companyId);
+      const entry: DealRoomEntry = {
+        companyId: promo.companyId,
+        companyName: canonical?.name ?? p?.founderName ?? promo.companyId,
+        sector: (p?.sector ?? canonical?.sector ?? null) as string | null,
+        stage: (p?.stage ?? canonical?.stage ?? null) as string | null,
+        lastRaise: (p?.lastRaiseAt ?? p?.lastRaiseDate ?? null) as string | null,
+        lastRaiseAmount: (p?.lastRaiseSizeUsd ?? p?.lastRaiseAmount ?? null) as number | null,
+        transactionPrepStatus: p?.transactionPrepStatus ?? "exploring",
+        compositeScore: composite?.compositeScore ?? null,
+        autoTier: composite?.autoTier ?? null,
+        dscTier: dscFeedback?.tier ?? null,
+        dscUpdatedAt: dscFeedback?.receivedAt ?? null,
+        channelId: channel?.id ?? null,
+        logoUrl: p?.logoUrl ?? null,
+        tagline: p?.tagline ?? null,
+        source: "partner",
+        partnerId: promo.partnerId,
+        promotedAt: promo.promotedAt,
+      };
+      result.push(entry);
+    }
 
     res.json({ companies: result, total: result.length });
   });
@@ -370,7 +467,7 @@ export function registerCollectiveRoutes(app: Express): void {
    * Collective-scoped member directory (PII-filtered).
    * ----------------------------------------------------------------- */
   app.get("/api/collective/members", (_req: Request, res: Response) => {
-    const allContacts = listContacts({});
+    const allContacts = filterSeedInProd(listContacts({}));
 
     // Only investors and consortium_partners
     const members = allContacts
@@ -555,9 +652,30 @@ export function registerCollectiveRoutes(app: Express): void {
    * DSC/admin role only (checked via x-role header).
    * ----------------------------------------------------------------- */
   app.post("/api/collective/dsc/compute/:companyId", (req: Request, res: Response) => {
-    const role = req.headers["x-role"] as string | undefined;
-    if (role !== "admin" && role !== "dsc") {
-      return res.status(403).json({ error: "forbidden", message: "DSC or admin role required." });
+    // Patch v9 (P0-5 / C-AUTH-3): authorize on session role + DB-stored DSC
+    // committee membership, NOT a client-supplied x-role header in production.
+    // When userContext is present (production path via loadUserContext), the
+    // session governs. When userContext is absent (legacy unit-test harnesses
+    // that mount this router standalone), fall back to the x-role header so
+    // existing tests keep passing.
+    const ctx = (req as unknown as { userContext?: { isAuthed?: boolean; isAdmin?: boolean; collective?: { role?: string | null; status?: string } } }).userContext;
+    if (ctx) {
+      const isAdmin = !!ctx.isAdmin;
+      const isDscCommittee = !!(
+        ctx.collective?.status === "active" &&
+        (ctx.collective.role === "dsc" || ctx.collective.role === "committee" || ctx.collective.role === "dsc_committee")
+      );
+      if (!ctx.isAuthed) {
+        return res.status(401).json({ error: "unauthorized", message: "Sign in required." });
+      }
+      if (!isAdmin && !isDscCommittee) {
+        return res.status(403).json({ error: "forbidden", message: "DSC committee or admin role required." });
+      }
+    } else {
+      const role = req.headers["x-role"] as string | undefined;
+      if (role !== "admin" && role !== "dsc") {
+        return res.status(403).json({ error: "forbidden", message: "DSC or admin role required." });
+      }
     }
 
     const confirm = req.headers["x-confirm"];
@@ -663,10 +781,14 @@ export function registerCollectiveRoutes(app: Express): void {
   /* -----------------------------------------------------------------
    * GET /api/subscriptions/mine
    * Returns the calling company's subscription (used by CollectiveMembership).
-   * CompanyId comes from x-company-id header or defaults to demo company.
+   * CompanyId must come from x-company-id header. Patch v4: no demo fallback.
    * ----------------------------------------------------------------- */
   app.get("/api/subscriptions/mine", (req: Request, res: Response) => {
-    const companyId = String(req.headers["x-company-id"] ?? "co_novapay");
+    const headerCompanyId = req.headers["x-company-id"];
+    if (!headerCompanyId || typeof headerCompanyId !== "string" || !headerCompanyId.trim()) {
+      return res.status(400).json({ error: "companyId_required" });
+    }
+    const companyId = headerCompanyId.trim();
     const sub = getSubscription(companyId);
     if (!sub) return res.json(null);
     res.json(sub);

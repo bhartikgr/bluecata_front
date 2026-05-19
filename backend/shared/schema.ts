@@ -732,3 +732,33 @@ export type SyncEnvelope<T> = {
   trace?: TraceStep[];
   schemaVersion: "1.0";
 };
+
+/* -----------------------------------------------------------------
+ * Patch 1 — User credentials persistence (Avi fix #2)
+ *
+ * Stores hashed passwords for founder accounts so login works after
+ * a server restart (without relying on in-memory RUNTIME_PASSWORDS).
+ *
+ * DDL (Postgres equivalent for production):
+ *   CREATE TABLE IF NOT EXISTS "user_credentials" (
+ *     "user_id"       TEXT PRIMARY KEY,
+ *     "email"         TEXT NOT NULL,
+ *     "name"          TEXT,
+ *     "password_hash" TEXT NOT NULL,
+ *     "created_at"    TEXT,
+ *     "updated_at"    TEXT
+ *   );
+ *   CREATE UNIQUE INDEX IF NOT EXISTS "user_credentials_email_idx"
+ *     ON "user_credentials"("email");
+ *
+ * TODO (Avi): after adding this to your schema, run:
+ *   npx drizzle-kit push
+ * ----------------------------------------------------------------- */
+export const userCredentials = sqliteTable("user_credentials", {
+  userId: text("user_id").primaryKey(),
+  email: text("email").notNull(),
+  name: text("name"),
+  passwordHash: text("password_hash").notNull(),
+  createdAt: text("created_at"),
+  updatedAt: text("updated_at"),
+});

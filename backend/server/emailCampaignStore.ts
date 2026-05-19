@@ -905,7 +905,8 @@ import {
   patchConfig as patchTransportConfig,
   testConnection as testTransportConnection,
 } from "./emailTransport";
-import { _testEmail } from "./emailStore";
+// V9 (Patch v8): replaced private _testEmail.outbox reach-ins with public accessors.
+import { _testEmail, listOutbox, findOutboxItem, countOutboxByStatus } from "./emailStore";
 
 export function registerEmailTransportRoutes(app: Express): void {
   // ── GET /api/admin/email/transport/config ───────────────────
@@ -954,7 +955,7 @@ export function registerEmailTransportRoutes(app: Express): void {
   app.get("/api/admin/email/transport/outbox", (req: Request, res: Response) => {
     const { status, template, recipient, cursor, limit: limitQ } = req.query as Record<string, string>;
     const limit = Math.min(parseInt(limitQ ?? "50", 10), 200);
-    let items = [..._testEmail.outbox];
+    let items = listOutbox();
 
     if (status) items = items.filter((e) => e.status === status);
     if (template) items = items.filter((e) => e.templateSlug === template);
@@ -974,20 +975,14 @@ export function registerEmailTransportRoutes(app: Express): void {
       total: items.length,
       items: page,
       nextCursor,
-      stats: {
-        queued: _testEmail.outbox.filter((e) => e.status === "queued").length,
-        sent: _testEmail.outbox.filter((e) => e.status === "sent").length,
-        delivered: _testEmail.outbox.filter((e) => e.status === "delivered").length,
-        bounced: _testEmail.outbox.filter((e) => e.status === "bounced").length,
-      },
+      stats: countOutboxByStatus(),
     });
   });
 
   // ── POST /api/admin/email/transport/outbox/:id/retry ────────
   app.post("/api/admin/email/transport/outbox/:id/retry", (req: Request, res: Response) => {
-    const { default: emailStoreModule } = { default: null };
     const confirm = req.headers["x-confirm"];
-    const item = _testEmail.outbox.find((x) => x.id === req.params.id);
+    const item = findOutboxItem(req.params.id);
     if (!item) return res.status(404).json({ error: "not_found" });
 
     if (confirm !== "true") {
@@ -1008,7 +1003,7 @@ export function registerEmailTransportRoutes(app: Express): void {
   // ── POST /api/admin/email/transport/outbox/:id/cancel ───────
   app.post("/api/admin/email/transport/outbox/:id/cancel", (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"];
-    const item = _testEmail.outbox.find((x) => x.id === req.params.id);
+    const item = findOutboxItem(req.params.id);
     if (!item) return res.status(404).json({ error: "not_found" });
 
     if (confirm !== "true") {

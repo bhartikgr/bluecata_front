@@ -12,25 +12,81 @@
 import type { Express, Request, Response } from "express";
 import { createHash, randomBytes } from "node:crypto";
 import { companies, rounds, softCircles, dataroomFiles, reports } from "./mockData";
+import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 import { ALL_OUTBOUND_EVENT_TYPES, getOutbox } from "./bridgeStore";
 import { ALL_NOTIFICATION_KINDS } from "./notificationsStore";
+// Patch v10 (BUG-3 / BUG-6) — real KPI aggregation from canonical stores.
+import { listSubscriptions } from "./subscriptionsStore";
+import { getLedger } from "./captableCommitStore";
+import { listActive as listActiveCollectiveMembers } from "./collectiveMembershipStore";
+import { getRecentEvents } from "./sprint10Telemetry";
+
+/**
+ * Patch v10 — Live activity feed allowlist.
+ *
+ * Event types in this set are surfaced into the admin dashboard activity
+ * feed in real time (not just the static demo seed). Previously these flowed
+ * through the bridge / telemetry envelope but the admin dashboard's
+ * `/api/admin/dashboard/activity` endpoint only returned the hard-coded
+ * `activityFeed` seed — so promotion/cap-table/application events never
+ * showed up live.
+ */
+const LIVE_ACTIVITY_ALLOWLIST = new Set<string>([
+  "partner.deal.promoted_to_collective",
+  "partner.deal.referred_to_capavate",
+  "cap_table.mutated",
+  "captable.mutated", // alias used by some emitters
+  "collective_application_submitted",
+  "collective.member.updated",
+  "round.closed",
+  "soft_circle.submitted",
+  "investor_report.published",
+]);
 
 const sha256 = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
 
 /* ------------ Dashboard KPIs ------------ */
+/**
+ * Patch v10 (BUG-3) — derive KPIs from canonical stores instead of hardcoded
+ * constants. We still synthesise a few demo-only fields (queue lengths,
+ * sample IRRs) that have no canonical source yet, but the headline counts
+ * (companies, MRR, investors, regions, funnels) all read from real stores.
+ */
 function computeKpis() {
-  const totalCompanies = Math.max(companies.length, 8);
-  const totalInvestors = 142;
-  const totalCommittedSoftCircle = 28_500_000;
-  const totalFunded = 16_200_000;
+  // Active companies: canonical companies array (multi-company tenant inventory).
+  const totalCompanies = companies.length;
+
+  // Active investors: distinct userIds with at least one committed cap-table entry.
+  const ledger = getLedger();
+  const investorIds = new Set<string>();
+  for (const e of ledger) {
+    if (e.state === "committed") investorIds.add(e.investorId);
+  }
+  const totalInvestors = investorIds.size;
+
+  // Soft-circle pipeline: sum of softCircle amounts.
+  const totalCommittedSoftCircle = softCircles.reduce(
+    (sum: number, s: { amount?: number }) => sum + (s.amount ?? 0),
+    0,
+  );
+
+  // Funded: sum of round.amountRaised across all rounds.
+  const totalFunded = rounds.reduce(
+    (sum: number, r: { amountRaised?: number }) => sum + (r.amountRaised ?? 0),
+    0,
+  );
+
+  // Synthetic growth/churn/NRR — no canonical source yet.
   const momGrowthPct = 11.4;
   const churnPct = 2.1;
   const nrr = 1.18;
+
+  const outbox = getOutbox();
   const queues = {
-    eligibilityRecompute: 3,
-    emailQueue: 2,
-    bridgeOutbox: getOutbox().filter(e => e.status === "queued").length,
-    deadLetter: getOutbox().filter(e => e.status === "dead_letter").length,
+    eligibilityRecompute: 0,
+    emailQueue: 0,
+    bridgeOutbox: outbox.filter(e => e.status === "queued").length,
+    deadLetter: outbox.filter(e => e.status === "dead_letter").length,
   };
   const health = {
     capTableReconcile: { runs: 318, success: 316, successRatePct: 99.37 },
@@ -63,25 +119,48 @@ function computeKpis() {
     { id: "u_moss_dawn", name: "Moss & Dawn", activity: 19, committed: 1_750_000 },
     { id: "u_lapsed_lp", name: "Cascadia LP (lapsed)", activity: 4, committed: 800_000 },
   ];
-  const regions = [
-    { code: "US", companies: 6, raised: 9_400_000 },
-    { code: "CA", companies: 1, raised: 600_000 },
-    { code: "UK", companies: 2, raised: 1_800_000 },
-    { code: "EU", companies: 2, raised: 1_200_000 },
-    { code: "IN", companies: 2, raised: 900_000 },
-    { code: "JP", companies: 1, raised: 550_000 },
-    { code: "HK", companies: 1, raised: 450_000 },
-    { code: "CN", companies: 1, raised: 300_000 },
-    { code: "AU", companies: 1, raised: 200_000 },
-  ];
+  // Regions: derived from `companies[].region` (when present); falls back to a
+  // global "GLOBAL" bucket so we never return an empty array.
+  const regionAcc = new Map<string, { companies: number; raised: number }>();
+  for (const c of companies) {
+    const code = (c as { region?: string }).region ?? "GLOBAL";
+    const cur = regionAcc.get(code) ?? { companies: 0, raised: 0 };
+    cur.companies += 1;
+    cur.raised += rounds
+      .filter((r: { companyId?: string; amountRaised?: number }) => r.companyId === c.id)
+      .reduce((s: number, r: { amountRaised?: number }) => s + (r.amountRaised ?? 0), 0);
+    regionAcc.set(code, cur);
+  }
+  const regions = Array.from(regionAcc.entries()).map(([code, v]) => ({ code, ...v }));
+
+  // MRR/ARR: sum of `annualAmountMinor` across active subscriptions, in dollars.
+  const subs = listSubscriptions();
+  const activeSubs = subs.filter((s) => s.status === "active" || s.status === "trialing");
+  const arrUsd = Math.round(activeSubs.reduce((sum, s) => sum + (s.annualAmountMinor ?? 0), 0) / 100);
+  const mrrUsd = Math.round(arrUsd / 12);
+
   return {
-    summary: { totalCompanies, totalInvestors, totalCommittedSoftCircle, totalFunded, momGrowthPct, churnPct, nrr },
+    summary: {
+      totalCompanies,
+      totalInvestors,
+      totalCommittedSoftCircle,
+      totalFunded,
+      mrrUsd,
+      arrUsd,
+      momGrowthPct,
+      churnPct,
+      nrr,
+    },
     queues,
     health,
     funnels,
     topCompanies,
     topInvestors,
     regions,
+    // Patch v10 — collective-side counts for cross-surface dashboards.
+    collective: {
+      activeMembers: listActiveCollectiveMembers().length,
+    },
   };
 }
 
@@ -269,7 +348,10 @@ function seedAudit() {
   ];
   for (const [a,e,t,p] of seed) appendAudit(a,e,t,p);
 }
-seedAudit();
+// Patch v4: seed audit only when demo gate is on.
+if (DEMO_SEED_ENABLED) {
+  seedAudit();
+}
 
 /* ------------ Reconciliation ------------ */
 interface ReconRun { id: string; ts: string; companyId: string; roundId: string; engineMain: { totalShares: string; ownership: number }; engineRef: { totalShares: string; ownership: number }; diff: { sharesDelta: string; ownershipDelta: number; ok: boolean }; actor: string; }
@@ -426,12 +508,28 @@ export function registerAdminPlatformRoutes(app: Express): void {
           { id: "col_act_1", ts: new Date(Date.now() - 3 * 60_000).toISOString(),  actor: "u_admin",       entity: "app_421",  kind: "application.approved",       text: "Approved Sasha Reyes (Cascade Group) — Standard" },
           { id: "col_act_2", ts: new Date(Date.now() - 9 * 60_000).toISOString(),  actor: "u_aisha_patel", entity: "synd_07",   kind: "syndicate.commitment",        text: "Aisha committed $250K to Helia Series A syndicate" },
           { id: "col_act_3", ts: new Date(Date.now() - 24 * 60_000).toISOString(), actor: "u_admin",       entity: "member_lap", kind: "membership.renewal_reminder", text: "Renewal reminders sent: 5 members (T-30 days)" },
-          { id: "col_act_4", ts: new Date(Date.now() - 48 * 60_000).toISOString(), actor: "u_partner_dt",  entity: "deal_94",   kind: "dealroom.shared",            text: "DT Legal shared 'Quanta SPV memo' with 18 members" },
+          // Partner-related synthetic activity was removed (Final Partner CRM patch — zero partner mocks in production paths).
           { id: "col_act_5", ts: new Date(Date.now() - 92 * 60_000).toISOString(), actor: "u_keith_sato",  entity: "app_417",   kind: "application.kyc_uploaded",    text: "Keith Sato submitted refreshed KYC docs" },
         ],
       });
     }
-    res.json({ items: activityFeed.slice(0, 20) });
+    // Patch v10 — merge live telemetry events for the allowlisted kinds with
+    // the static demo seed so promoted-to-collective, cap-table-mutated and
+    // application-submitted events appear in the admin dashboard activity feed.
+    const live = getRecentEvents(50)
+      .filter((e) => LIVE_ACTIVITY_ALLOWLIST.has(e.eventType))
+      .map((e, i) => ({
+        id: `live_${e.eventId ?? i}`,
+        ts: e.occurredAt,
+        actor: e.actor?.userId ?? "u_system",
+        entity: e.aggregateId,
+        kind: e.eventType,
+        text: `${e.eventType} on ${e.aggregateKind}:${e.aggregateId}`,
+      }));
+    const merged = [...live, ...activityFeed]
+      .sort((a, b) => (a.ts < b.ts ? 1 : -1))
+      .slice(0, 30);
+    res.json({ items: merged });
   });
 
   /* ====== Companies detail ====== */
@@ -517,23 +615,19 @@ export function registerAdminPlatformRoutes(app: Express): void {
   });
 
   /* ====== Users & Auth ====== */
-  app.get("/api/admin/users", (_req: Request, res: Response) => {
-    res.json({ items: users.map(u => ({ ...u, sessions: u.sessions.length, loginHistory: u.loginHistory.length })) });
-  });
+  // Patch v9 (BUG-1): the canonical GET /api/admin/users and PATCH
+  // /api/admin/users/:id live in lib/adminUsersRoutes.ts and are registered
+  // later in server/routes.ts. The duplicate registrations here used to fire
+  // first (Express picks the earlier registration), serving stale fixture data
+  // with a different shape than the canonical store. They have been removed.
+  // GET /api/admin/users/:id and POST /api/admin/users/:id/sessions/revoke are
+  // kept here because adminUsersRoutes.ts does NOT register them — they would
+  // otherwise 404 via the new JSON 404 middleware.
   app.get("/api/admin/users/:id", (req: Request, res: Response) => {
     const u = users.find(x => x.id === req.params.id);
     if (!u) return res.status(404).json({ error: "not_found" });
     const userAudit = auditLog.filter(a => a.actor === u.id);
     res.json({ ...u, audit: userAudit });
-  });
-  app.patch("/api/admin/users/:id", (req: Request, res: Response) => {
-    const u = users.find(x => x.id === req.params.id);
-    if (!u) return res.status(404).json({ error: "not_found" });
-    const { roles, mfaEnabled, suspended } = req.body ?? {};
-    if (Array.isArray(roles)) u.roles = roles as AdminRole[];
-    if (typeof mfaEnabled === "boolean") u.mfaEnabled = mfaEnabled;
-    if (typeof suspended === "boolean") u.suspended = suspended;
-    res.json(u);
   });
   app.post("/api/admin/users/:id/sessions/revoke", (req: Request, res: Response) => {
     const u = users.find(x => x.id === req.params.id);

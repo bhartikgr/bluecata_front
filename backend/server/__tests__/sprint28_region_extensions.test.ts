@@ -781,7 +781,7 @@ describe("Sprint 28 Wave 5 — Region Extension Store", () => {
     expect(ALL_OUTBOUND_EVENT_TYPES).toContain("region.gone_live");
     expect(ALL_OUTBOUND_EVENT_TYPES).toContain("region.rejected");
     // Sprint 28 Wave 6 added 4 notification_campaign.* events → 33 total
-    expect(ALL_OUTBOUND_EVENT_TYPES).toHaveLength(48) // Sprint 29 KL-01 added company_profile.updated;
+    expect(ALL_OUTBOUND_EVENT_TYPES).toHaveLength(58) // Sprint 29 KL-01 added company_profile.updated;
   });
 
   /* ----------------------------------------------------------

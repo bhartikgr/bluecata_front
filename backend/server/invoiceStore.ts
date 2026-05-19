@@ -476,7 +476,7 @@ export function registerInvoiceRoutes(app: Express): void {
    * Returns invoices for the founder's active company. Scoped — cannot see others.
    */
   app.get("/api/founder/invoices", (req: Request, res: Response) => {
-    const companyId = String(req.query.companyId ?? req.headers["x-company-id"] ?? "co_novapay");
+    const companyId = String(req.query.companyId ?? req.headers["x-company-id"] ?? "");
     const invoices = listInvoicesForCompany(companyId);
     res.json({ ok: true, invoices, total: invoices.length });
   });
@@ -486,7 +486,7 @@ export function registerInvoiceRoutes(app: Express): void {
    * Must belong to the requesting company.
    */
   app.get("/api/founder/invoices/:id", (req: Request, res: Response) => {
-    const companyId = String(req.query.companyId ?? req.headers["x-company-id"] ?? "co_novapay");
+    const companyId = String(req.query.companyId ?? req.headers["x-company-id"] ?? "");
     const inv = getInvoice(req.params.id);
     if (!inv) return res.status(404).json({ ok: false, error: "not_found" });
     if (inv.companyId !== companyId) return res.status(403).json({ ok: false, error: "forbidden" });
@@ -498,7 +498,7 @@ export function registerInvoiceRoutes(app: Express): void {
    * Scoped download — must belong to requesting company.
    */
   app.get("/api/founder/invoices/:id/pdf", (req: Request, res: Response) => {
-    const companyId = String(req.query.companyId ?? req.headers["x-company-id"] ?? "co_novapay");
+    const companyId = String(req.query.companyId ?? req.headers["x-company-id"] ?? "");
     const inv = getInvoice(req.params.id);
     if (!inv) return res.status(404).json({ ok: false, error: "not_found" });
     if (inv.companyId !== companyId) return res.status(403).json({ ok: false, error: "forbidden" });
@@ -515,7 +515,7 @@ export function registerInvoiceRoutes(app: Express): void {
    * Responds immediately; email delivery is async via emailTransport.
    */
   app.post("/api/founder/invoices/:id/email", (req: Request, res: Response): void => {
-    const companyId = String(req.body?.companyId ?? req.headers["x-company-id"] ?? "co_novapay");
+    const companyId = String(req.body?.companyId ?? req.headers["x-company-id"] ?? "");
     const inv = getInvoice(req.params.id);
     if (!inv) { res.status(404).json({ ok: false, error: "not_found" }); return; }
     if (inv.companyId !== companyId) { res.status(403).json({ ok: false, error: "forbidden" }); return; }

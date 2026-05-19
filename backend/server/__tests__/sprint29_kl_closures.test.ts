@@ -634,7 +634,7 @@ describe("CSV Roster Importer — HTTP endpoints", () => {
  * ============================================================ */
 describe("Sprint 29 Bridge — ALL_OUTBOUND_EVENT_TYPES count", () => {
   it("length is 41 after adding company_profile.updated", () => {
-    expect(ALL_OUTBOUND_EVENT_TYPES.length).toBe(48);
+    expect(ALL_OUTBOUND_EVENT_TYPES.length).toBe(58);
   });
 
   it("contains company_profile.updated", () => {

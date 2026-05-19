@@ -31,6 +31,7 @@
 import type { Express, Request, Response } from "express";
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { emitMutation } from "./lib/eventBus";
+import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 
 const HMAC_SECRET = process.env.BRIDGE_HMAC_SECRET ?? "capavate-collective-bridge-shared-secret";
 const SCHEMA_VERSION = "1.0";
@@ -96,7 +97,19 @@ export type OutboundEventType =
   | "collective.member.updated"
   | "collective.deal_room.opened"
   // Wave C-4 — DSC scoring engine
-  | "dsc.score.recomputed";
+  | "dsc.score.recomputed"
+  // Foundation — Partner CRM + SPV/Fund record-keeping
+  | "partner.onboarded"
+  | "partner.tier_changed"
+  | "partner.attribution_created"
+  | "partner.attribution_revoked"
+  | "partner.team_member_added"
+  | "partner.team_member_removed"
+  | "partner.spv_recorded"
+  | "partner.fund_commitment_pledged"
+  // Final Partner CRM — promote / refer flow
+  | "partner.deal.promoted_to_collective"
+  | "partner.deal.referred_to_capavate";
 
 export type InboundEventType =
   | "dsc.scores"
@@ -217,6 +230,18 @@ export const ALL_OUTBOUND_EVENT_TYPES: OutboundEventType[] = [
   "collective.deal_room.opened",
   // Wave C-4 — DSC scoring engine
   "dsc.score.recomputed",
+  // Foundation — Partner CRM + SPV/Fund record-keeping
+  "partner.onboarded",
+  "partner.tier_changed",
+  "partner.attribution_created",
+  "partner.attribution_revoked",
+  "partner.team_member_added",
+  "partner.team_member_removed",
+  "partner.spv_recorded",
+  "partner.fund_commitment_pledged",
+  // Final Partner CRM — promote / refer flow
+  "partner.deal.promoted_to_collective",
+  "partner.deal.referred_to_capavate",
 ];
 
 export const ALL_INBOUND_EVENT_TYPES: InboundEventType[] = [
@@ -501,7 +526,10 @@ export function seedDemoEvents(): void {
 }
 
 export function registerBridgeRoutes(app: Express): void {
-  seedDemoEvents();
+  // Patch v4: demo bridge events only when demo gate on.
+  if (DEMO_SEED_ENABLED) {
+    seedDemoEvents();
+  }
 
   // Mock Collective receiver — accepts envelopes, validates HMAC, idempotency.
   const seenIds = new Set<string>();

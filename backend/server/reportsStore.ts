@@ -16,9 +16,19 @@
  *   POST /api/founder/reports2/:id/read                 — record a read-receipt
  *   POST /api/founder/reports2/:id/comments             — add comment to a section
  */
+/**
+ * PATCH v3: POST /api/founder/reports2 now requires companyId and verifies ownership.
+ * Removed ?? "co_novapay" fallback. Unauthenticated requests get 401.
+ */
 import type { Express, Request, Response } from "express";
 import { randomBytes } from "node:crypto";
 import { emitSync } from "./sprint10Telemetry";
+import { getUserContext } from "./lib/userContext";
+import { DEMO_SEED_ENABLED } from "./lib/demoGate";
+// Patch v10 — F9 investor-update fanout
+import { listMembersForCompany } from "./membershipStore";
+import { emitNotification } from "./notificationsStore";
+import { emitBridgeEvent } from "./bridgeStore";
 
 export type ReportTemplate = "monthly_kpi" | "quarterly_update" | "annual" | "round_close" | "adhoc";
 
@@ -60,7 +70,8 @@ export type Report = {
   };
 };
 
-const reports: Report[] = [
+// Patch v4: gated demo seed.
+const reports: Report[] = DEMO_SEED_ENABLED ? [
   {
     id: "rpt_apr_2026",
     companyId: "co_novapay",
@@ -79,7 +90,7 @@ const reports: Report[] = [
     ],
     schedule: { cron: "0 9 1 * *", cadence: "monthly", nextSendAt: "2026-06-01T09:00:00Z", enabled: true },
   },
-];
+] : [];
 
 function defaultSections(template: ReportTemplate): ReportSection[] {
   const baseKinds: ReportSection["kind"][] = ["highlights", "kpis", "financials", "asks", "risks", "roadmap", "hiring", "press"];
@@ -119,11 +130,18 @@ export function registerReportsRoutes(app: Express): void {
   });
 
   app.post("/api/founder/reports2", (req, res) => {
+    const ctx = getUserContext(req);
+    if (!ctx.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
     const { companyId, template, title, period } = req.body ?? {};
     if (!template || !title) return res.status(400).json({ error: "template + title required" });
+    // PATCH v3: companyId is required; no ?? "co_novapay" fallback
+    if (!companyId) return res.status(400).json({ error: "companyId required" });
+    // Verify ownership
+    const ownsCompany = ctx.isAdmin || ctx.founder.companies.some((c) => c.companyId === companyId);
+    if (!ownsCompany) return res.status(403).json({ ok: false, error: "FOUNDER_WRONG_COMPANY" });
     const r: Report = {
       id: `rpt_${randomBytes(4).toString("hex")}`,
-      companyId: companyId ?? "co_novapay",
+      companyId,
       template,
       title,
       period: period ?? new Date().toISOString().slice(0, 7),
@@ -134,7 +152,8 @@ export function registerReportsRoutes(app: Express): void {
       sections: defaultSections(template),
       readReceipts: [],
       schedule: null,
-      metricsSnapshot: { raisedToDateUsd: 11_050_000, capTableHolders: 14, softCirclePipelineUsd: 2_650_000, activeRounds: 2 },
+      // PATCH v3: new companies start at zero metrics; NovaPay values kept for demo only
+      metricsSnapshot: { raisedToDateUsd: 0, capTableHolders: 0, softCirclePipelineUsd: 0, activeRounds: 0 },
     };
     reports.push(r);
     res.json(r);
@@ -147,13 +166,49 @@ export function registerReportsRoutes(app: Express): void {
   });
 
   app.post("/api/founder/reports2/:id/send", (req, res) => {
+    const ctx = getUserContext(req);
+    if (!ctx.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
     const r = reports.find((x) => x.id === req.params.id);
     if (!r) return res.status(404).json({ error: "not_found" });
-    const recipients: string[] = Array.isArray(req.body?.recipients) ? req.body.recipients : [];
+    // Patch v10 — verify caller owns the company before sending
+    const ownsCompany = ctx.isAdmin || ctx.founder.companies.some((c) => c.companyId === r.companyId);
+    if (!ownsCompany) return res.status(403).json({ ok: false, error: "FOUNDER_WRONG_COMPANY" });
+
+    // Recipient list: explicit body.recipients OR everyone on the cap table.
+    const bodyRecipients: string[] = Array.isArray(req.body?.recipients) ? req.body.recipients : [];
+    let recipients = bodyRecipients;
+    if (recipients.length === 0) {
+      // Patch v10 (B-F9) — default to cap-table membership truth.
+      recipients = listMembersForCompany(r.companyId).map((m) => m.userId);
+    }
     r.recipients = recipients;
     r.recipientsCount = recipients.length;
     r.status = "sent";
     r.sentAt = new Date().toISOString();
+
+    // Patch v10 — Fanout: emit in-app notification + bridge event for every recipient.
+    let delivered = 0;
+    for (const userId of recipients) {
+      try {
+        emitNotification({
+          userId,
+          kind: "investor_report.published",
+          title: `Investor update: ${r.title}`,
+          body: `New ${r.template.replace(/_/g, " ")} update from your portfolio company.`,
+          link: `/investor/reports/${r.id}`,
+        });
+        delivered++;
+      } catch { /* non-fatal */ }
+    }
+    try {
+      emitBridgeEvent({
+        eventType: "audit_log.appended",
+        aggregateId: r.id,
+        aggregateKind: "company",
+        payload: { kind: "investor_update_sent", reportId: r.id, companyId: r.companyId, recipients, deliveredCount: delivered },
+      });
+    } catch { /* non-fatal */ }
+
     const env = emitSync({
       eventType: "report_sent",
       aggregateId: r.id,
@@ -161,7 +216,80 @@ export function registerReportsRoutes(app: Express): void {
       payload: { reportId: r.id, template: r.template, recipientsCount: r.recipientsCount, companyId: r.companyId },
       req,
     });
-    res.json({ ok: true, report: r, telemetry: env });
+    res.json({ ok: true, report: r, recipientCount: recipients.length, delivered, telemetry: env });
+  });
+
+  /**
+   * Patch v10 (B-F9) — NEW: POST /api/founder/reports2/send
+   *
+   * One-shot create+send: persists a new investor update for the given
+   * companyId and immediately fans it out to every investor on the cap
+   * table. This is the client-expected endpoint that previously 404'd.
+   *
+   * Body: { companyId, subject, body, attachments? }
+   */
+  app.post("/api/founder/reports2/send", (req, res) => {
+    const ctx = getUserContext(req);
+    if (!ctx.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
+    const { companyId, subject, body, attachments } = req.body ?? {};
+    if (!companyId || typeof companyId !== "string") return res.status(400).json({ ok: false, error: "companyId required" });
+    if (!subject || typeof subject !== "string") return res.status(400).json({ ok: false, error: "subject required" });
+    const ownsCompany = ctx.isAdmin || ctx.founder.companies.some((c) => c.companyId === companyId);
+    if (!ownsCompany) return res.status(403).json({ ok: false, error: "FOUNDER_WRONG_COMPANY" });
+
+    // Persist a minimal Report shape using the same `reports` array.
+    const r: Report = {
+      id: `rpt_${randomBytes(4).toString("hex")}`,
+      companyId,
+      template: "adhoc",
+      title: String(subject),
+      period: new Date().toISOString().slice(0, 7),
+      status: "sent",
+      sentAt: new Date().toISOString(),
+      recipients: [],
+      recipientsCount: 0,
+      sections: [
+        {
+          id: `sec_body_${randomBytes(3).toString("hex")}`,
+          kind: "highlights",
+          title: "Update",
+          body: typeof body === "string" ? body : "",
+          comments: [],
+        },
+      ],
+      readReceipts: [],
+      schedule: null,
+      metricsSnapshot: { raisedToDateUsd: 0, capTableHolders: 0, softCirclePipelineUsd: 0, activeRounds: 0 },
+    };
+    reports.push(r);
+
+    const recipients = listMembersForCompany(companyId).map((m) => m.userId);
+    r.recipients = recipients;
+    r.recipientsCount = recipients.length;
+
+    let delivered = 0;
+    for (const userId of recipients) {
+      try {
+        emitNotification({
+          userId,
+          kind: "investor_report.published",
+          title: `Investor update: ${r.title}`,
+          body: typeof body === "string" ? body.slice(0, 240) : "New investor update from your portfolio company.",
+          link: `/investor/reports/${r.id}`,
+        });
+        delivered++;
+      } catch { /* non-fatal */ }
+    }
+    try {
+      emitBridgeEvent({
+        eventType: "audit_log.appended",
+        aggregateId: r.id,
+        aggregateKind: "company",
+        payload: { kind: "investor_update_sent", reportId: r.id, companyId, recipients, deliveredCount: delivered, attachments: attachments ?? [] },
+      });
+    } catch { /* non-fatal */ }
+
+    res.status(201).json({ ok: true, updateId: r.id, recipientCount: recipients.length, delivered });
   });
 
   app.post("/api/founder/reports2/:id/schedule", (req, res) => {
