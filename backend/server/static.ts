@@ -1,20 +1,19 @@
 /**
  * Capavate — static + SPA fallback
  *
- * CRITICAL fix vs previous version: /api/* paths must NEVER be served the
- * SPA index.html. Otherwise unknown API endpoints return 200 HTML, the
- * React client tries to .map() over HTML, and the SPA crashes with
- * "Cannot read properties of undefined (reading 'tone')".
- *
- * The fix below adds an explicit 404 JSON handler for /api/* BEFORE the
- * catch-all SPA fallback.
+ * Fixed for Node ESM: __dirname replaced with import.meta.url
  */
 import express from 'express';
-import type { Express, Request, Response, NextFunction } from 'express';
+import type { Express, Request, Response } from 'express';
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 export function serveStatic(app: Express) {
+  // ESM-compatible __dirname
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+
   const distPath = path.resolve(__dirname, "public");
   if (!fs.existsSync(distPath)) {
     throw new Error(
@@ -24,9 +23,8 @@ export function serveStatic(app: Express) {
 
   app.use(express.static(distPath));
 
-  // 1. Hard 404 for any unhandled /api/* path. Stops the SPA fallback from
-  //    swallowing them and returning 200 text/html for missing endpoints.
-  app.use("/api/{*path}", (req: Request, res: Response) => {
+  // 1. Hard 404 for any unhandled /api/* path
+  app.use("/api/*", (req: Request, res: Response) => {
     res.status(404).json({
       ok: false,
       error: "API_ROUTE_NOT_FOUND",
@@ -36,7 +34,7 @@ export function serveStatic(app: Express) {
   });
 
   // 2. SPA fallback ONLY for non-/api routes.
-  app.use("/{*path}", (_req: Request, res: Response) => {
+  app.use("/*", (_req: Request, res: Response) => {
     res.sendFile(path.resolve(distPath, "index.html"));
   });
 }
