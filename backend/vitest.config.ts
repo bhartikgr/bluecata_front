@@ -1,0 +1,38 @@
+import { defineConfig } from "vitest/config";
+import path from "node:path";
+
+/**
+ * Root vitest config — runs ALL tests across:
+ *  - packages/cap-table-engine
+ *  - packages/cap-table-engine-ref
+ *  - packages/telemetry
+ *  - packages/gating
+ *  - client/src/lib (client-side schema + sync logic — pure TS)
+ *
+ * Per Sprint 8 mandate (146 -> 158+ tests): the client/src/lib tests for the
+ * new profile schema modules are wired here. Existing per-package configs
+ * remain untouched.
+ */
+export default defineConfig({
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "client/src"),
+      "@shared": path.resolve(__dirname, "shared"),
+      "@assets": path.resolve(__dirname, "attached_assets"),
+      "@capavate/cap-table-engine": path.resolve(__dirname, "packages/cap-table-engine/src/index.ts"),
+      "@capavate/cap-table-engine-ref": path.resolve(__dirname, "packages/cap-table-engine-ref/src/index.ts"),
+      "@capavate/telemetry": path.resolve(__dirname, "packages/telemetry/src/index.ts"),
+      "@capavate/math-fns": path.resolve(__dirname, "packages/math-fns/src/index.ts"),
+      "@capavate/math-fns-ref": path.resolve(__dirname, "packages/math-fns-ref/src/index.ts"),
+    },
+  },
+  test: {
+    include: [
+      "packages/*/test/**/*.test.ts",
+      "client/src/**/*.test.ts",
+      "shared/**/*.test.ts",
+      "server/**/*.test.ts",
+    ],
+    reporters: ["default"],
+  },
+});
