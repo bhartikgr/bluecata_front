@@ -69,7 +69,7 @@ export default function LearnSection() {
                 <span className="learn__card-term">one-time investment</span>
               </div>
               <a
-                href="https://capavate.com/user/register"
+                href="https://capavate.com/#/onboarding"
                 className="btn btn--primary text-white"
               >
                 Apply Now →

@@ -1,6 +1,8 @@
 /**
  * Sprint 28 Billing — Invoice store (production-shape).
  *
+ * Patch v12 Day 2 Wave 2 (audit §3.12) — HYBRID DB-BACKED.
+ *
  * Every company interaction with billing produces an Invoice record:
  *   - Subscription charge (subscription → paid invoice)
  *   - Refund          (paid invoice → refund invoice with negative amount)
@@ -10,17 +12,30 @@
  *   - Money in INTEGER MINOR UNITS + ISO 4217 currency code — never floats.
  *   - Tamper-evident: SHA-256 hash chain on every state change.
  *   - Invoice numbers are monotonic: CAP-{YEAR}-{6-digit-zero-padded-seq}.
+ *     Counter is sourced from `MAX(invoice_number)` for that year INSIDE the
+ *     create transaction, eliminating the v11 race where two parallel issuers
+ *     could allocate the same number.
  *   - Tax line item always present (0 if no tax engine configured).
  *   - Bridge event emitted for every customer-facing state change.
  *   - Refunds create a NEW invoice with negative totalMinor + link to original.
  *   - PDF endpoint returns minimal but correct application/pdf bytes.
+ *
+ * v12 NOTES:
+ *   - In-memory `invoiceMap`, `companyInvoices`, `yearCounters` are KEPT as
+ *     hot-read caches. Every write goes through `persistInvoice` first, then
+ *     the cache. On startup, `hydrateInvoiceStore` repopulates the caches
+ *     from the DB.
+ *   - `_testInvoices.reset()` truncates the DB and clears the caches in one
+ *     atomic step so tests behave identically to v11.
  */
 import type { Express, Request, Response } from "express";
 import { createHash, randomBytes } from "node:crypto";
+import { and, eq, sql, isNull, like, desc } from "drizzle-orm";
 import { HashChain, registerChain } from "./lib/hashChain";
-import { emitBridgeEvent } from "./bridgeStore";
 import { appendAdminAudit } from "./adminPlatformStore";
 import { sendMail } from "./emailTransport";
+import { getDb } from "./db/connection";
+import { invoices as invoicesTable } from "../shared/schema";
 
 /* ---------- Types ---------- */
 
@@ -78,12 +93,12 @@ export function configureInvoiceStore(opts: {
   bridgeEmitter = opts.bridge;
 }
 
-/* ---------- Storage ---------- */
+/* ---------- Storage (hybrid: in-memory caches + DB write-through) ---------- */
 
 const invoiceMap = new Map<string, Invoice>();
 const companyInvoices = new Map<string, string[]>(); // companyId → invoice ids
 
-// Monotonic counter for invoice numbers, per year
+// Per-year monotonic counter cache. DB is source of truth via MAX(invoice_number).
 const yearCounters = new Map<number, number>();
 
 export const invoiceChain = registerChain(new HashChain<{
@@ -92,11 +107,10 @@ export const invoiceChain = registerChain(new HashChain<{
 
 /* ---------- Helpers ---------- */
 
-function nextInvoiceNumber(): string {
-  const year = new Date().getFullYear();
-  const count = (yearCounters.get(year) ?? 0) + 1;
-  yearCounters.set(year, count);
-  return `CAP-${year}-${String(count).padStart(6, "0")}`;
+function tenantForCompany(companyId: string): string {
+  if (!companyId) return "tenant_unknown";
+  if (companyId.startsWith("tenant_")) return companyId;
+  return `tenant_co_${companyId}`;
 }
 
 function sha256(s: string): string {
@@ -112,6 +126,116 @@ function computeHash(prevHash: string, invoice: Partial<Invoice>): string {
     totalMinor: invoice.totalMinor,
     updatedAt: invoice.updatedAt,
   })}`);
+}
+
+function rowToInvoice(r: any): Invoice {
+  const lineItems: InvoiceLineItem[] = r.lineItemsJson
+    ? JSON.parse(r.lineItemsJson)
+    : [];
+  return {
+    id: r.id,
+    invoiceNumber: r.invoiceNumber,
+    companyId: r.companyId,
+    subscriptionId: r.subscriptionId ?? "",
+    planLabel: r.planLabel,
+    periodStart: r.periodStart,
+    periodEnd: r.periodEnd,
+    amountMinor: r.amountMinor,
+    currency: r.currency,
+    taxMinor: r.taxMinor,
+    totalMinor: r.totalMinor,
+    status: r.status as InvoiceStatus,
+    paymentEntryId: r.paymentEntryId ?? undefined,
+    relatedInvoiceId: r.relatedInvoiceId ?? undefined,
+    issuedAt: r.issuedAt,
+    paidAt: r.paidAt ?? undefined,
+    refundedAt: r.refundedAt ?? undefined,
+    voidedAt: r.voidedAt ?? undefined,
+    lineItems,
+    cardLast4: r.cardLast4 ?? undefined,
+    hash: r.revisionHash,
+    prevHash: r.prevRevisionHash,
+    version: r.version,
+    updatedAt: r.updatedAt ?? r.issuedAt,
+    updatedBy: r.updatedBy ?? "system",
+  };
+}
+
+function persistInvoice(tx: any, invoice: Invoice): void {
+  tx.insert(invoicesTable)
+    .values({
+      id: invoice.id,
+      invoiceNumber: invoice.invoiceNumber,
+      tenantId: tenantForCompany(invoice.companyId),
+      companyId: invoice.companyId,
+      subscriptionId: invoice.subscriptionId,
+      planLabel: invoice.planLabel,
+      periodStart: invoice.periodStart,
+      periodEnd: invoice.periodEnd,
+      amountMinor: invoice.amountMinor,
+      currency: invoice.currency,
+      taxMinor: invoice.taxMinor,
+      totalMinor: invoice.totalMinor,
+      status: invoice.status,
+      paymentEntryId: invoice.paymentEntryId ?? null,
+      relatedInvoiceId: invoice.relatedInvoiceId ?? null,
+      issuedAt: invoice.issuedAt,
+      paidAt: invoice.paidAt ?? null,
+      refundedAt: invoice.refundedAt ?? null,
+      voidedAt: invoice.voidedAt ?? null,
+      cardLast4: invoice.cardLast4 ?? null,
+      lineItemsJson: JSON.stringify(invoice.lineItems),
+      version: invoice.version,
+      prevRevisionHash: invoice.prevHash,
+      revisionHash: invoice.hash,
+      updatedAt: invoice.updatedAt,
+      updatedBy: invoice.updatedBy,
+      deletedAt: null,
+    })
+    .onConflictDoUpdate({
+      target: invoicesTable.id,
+      set: {
+        status: invoice.status,
+        paymentEntryId: invoice.paymentEntryId ?? null,
+        paidAt: invoice.paidAt ?? null,
+        refundedAt: invoice.refundedAt ?? null,
+        voidedAt: invoice.voidedAt ?? null,
+        cardLast4: invoice.cardLast4 ?? null,
+        version: invoice.version,
+        prevRevisionHash: invoice.prevHash,
+        revisionHash: invoice.hash,
+        updatedAt: invoice.updatedAt,
+        updatedBy: invoice.updatedBy,
+      },
+    })
+    .run();
+}
+
+/**
+ * Returns the next monotonic invoice number for the given year, reading the
+ * current MAX(invoice_number) from the DB inside the transaction. This is
+ * race-safe: two parallel createInvoice calls both see each other's writes
+ * because the transaction holds a row-lock on the invoices table (better-sqlite3
+ * uses serialised writes; pg uses BEGIN IMMEDIATE).
+ */
+function nextInvoiceNumberInTx(tx: any, year: number): string {
+  const prefix = `CAP-${year}-`;
+  const row = tx
+    .select({ invoiceNumber: invoicesTable.invoiceNumber })
+    .from(invoicesTable)
+    .where(like(invoicesTable.invoiceNumber, `${prefix}%`))
+    .orderBy(desc(invoicesTable.invoiceNumber))
+    .limit(1)
+    .all() as Array<{ invoiceNumber: string }>;
+  let maxSeq = 0;
+  if (row.length > 0) {
+    const tail = row[0].invoiceNumber.slice(prefix.length);
+    const parsed = parseInt(tail, 10);
+    if (Number.isFinite(parsed)) maxSeq = parsed;
+  }
+  const next = maxSeq + 1;
+  yearCounters.set(year, next);
+  return `${prefix}${String(next).padStart(6, "0")}`;
 }
 
 /* ---------- Create / mutate ---------- */
@@ -148,57 +272,71 @@ export function createInvoice(input: CreateInvoiceInput): Invoice {
     lineItems.push({ label: "Tax", amountMinor: taxMinor });
   }
 
-  const partial: Partial<Invoice> = {
-    id,
-    invoiceNumber: nextInvoiceNumber(),
-    companyId: input.companyId,
-    subscriptionId: input.subscriptionId,
-    planLabel: input.planLabel,
-    periodStart: input.periodStart,
-    periodEnd: input.periodEnd,
-    amountMinor: input.amountMinor,
-    currency: input.currency,
-    taxMinor,
-    totalMinor,
-    status: input.paymentEntryId ? "paid" : "issued",
-    paymentEntryId: input.paymentEntryId,
-    relatedInvoiceId: input.relatedInvoiceId,
-    issuedAt: now,
-    paidAt: input.paymentEntryId ? now : undefined,
-    lineItems,
-    cardLast4: input.cardLast4,
-    prevHash,
-    version: 1,
-    updatedAt: now,
-    updatedBy: actor,
-  };
+  let invoice: Invoice | null = null;
 
-  const hash = computeHash(prevHash, partial);
-  const invoice: Invoice = { ...partial, hash } as Invoice;
+  const db = getDb();
+  db.transaction((tx: any) => {
+    // Monotonic allocation INSIDE the tx — race-safe.
+    const year = new Date(now).getFullYear();
+    const invoiceNumber = nextInvoiceNumberInTx(tx, year);
 
-  invoiceMap.set(id, invoice);
+    const partial: Invoice = {
+      id,
+      invoiceNumber,
+      companyId: input.companyId,
+      subscriptionId: input.subscriptionId,
+      planLabel: input.planLabel,
+      periodStart: input.periodStart,
+      periodEnd: input.periodEnd,
+      amountMinor: input.amountMinor,
+      currency: input.currency,
+      taxMinor,
+      totalMinor,
+      status: input.paymentEntryId ? "paid" : "issued",
+      paymentEntryId: input.paymentEntryId,
+      relatedInvoiceId: input.relatedInvoiceId,
+      issuedAt: now,
+      paidAt: input.paymentEntryId ? now : undefined,
+      lineItems,
+      cardLast4: input.cardLast4,
+      prevHash,
+      version: 1,
+      updatedAt: now,
+      updatedBy: actor,
+      hash: "",
+    };
+    partial.hash = computeHash(prevHash, partial);
+    persistInvoice(tx, partial);
+    invoice = partial;
+  });
+
+  if (!invoice) throw new Error("createInvoice: transaction yielded no invoice");
+  const inv: Invoice = invoice;
+
+  // Cache update
+  invoiceMap.set(inv.id, inv);
   const list = companyInvoices.get(input.companyId) ?? [];
-  list.push(id);
+  list.push(inv.id);
   companyInvoices.set(input.companyId, list);
 
   invoiceChain.append({
-    id, invoiceNumber: invoice.invoiceNumber, companyId: invoice.companyId,
-    status: invoice.status, totalMinor, ts: now,
+    id: inv.id, invoiceNumber: inv.invoiceNumber, companyId: inv.companyId,
+    status: inv.status, totalMinor, ts: now,
   });
 
-  const eventType = invoice.status === "paid" ? "invoice.paid" : "invoice.issued";
+  const eventType = inv.status === "paid" ? "invoice.paid" : "invoice.issued";
   auditAppender({
     actor,
     action: eventType,
-    target: `invoice:${id}`,
-    payload: { invoiceNumber: invoice.invoiceNumber, totalMinor, currency: invoice.currency, companyId: invoice.companyId },
+    target: `invoice:${inv.id}`,
+    payload: { invoiceNumber: inv.invoiceNumber, totalMinor, currency: inv.currency, companyId: inv.companyId },
   });
-  bridgeEmitter(eventType, invoice.companyId, {
-    invoiceId: id, invoiceNumber: invoice.invoiceNumber, totalMinor,
-    currency: invoice.currency, status: invoice.status,
+  bridgeEmitter(eventType, inv.companyId, {
+    invoiceId: inv.id, invoiceNumber: inv.invoiceNumber, totalMinor,
+    currency: inv.currency, status: inv.status,
   });
 
-  return invoice;
+  return inv;
 }
 
 function transitionInvoice(
@@ -222,6 +360,12 @@ function transitionInvoice(
     hash: "",
   };
   updated.hash = computeHash(current.hash, updated);
+
+  const db = getDb();
+  db.transaction((tx: any) => {
+    persistInvoice(tx, updated);
+  });
+
   invoiceMap.set(id, updated);
 
   invoiceChain.append({
@@ -283,7 +427,7 @@ export function refundInvoice(originalInvoiceId: string, amountMinor: number, re
   });
 }
 
-/* ---------- Reads ---------- */
+/* ---------- Reads (from cache; cache always mirrors DB) ---------- */
 
 export function getInvoice(id: string): Invoice | null {
   return invoiceMap.get(id) ?? null;
@@ -306,6 +450,43 @@ export function listInvoicesForCompany(companyId: string): Invoice[] {
     .sort((a, b) => b!.issuedAt.localeCompare(a!.issuedAt)) as Invoice[];
 }
 
+/* ---------- Hydration ---------- */
+
+export async function hydrateInvoiceStore(): Promise<void> {
+  try {
+    const db = getDb();
+    // CROSS-TENANT (admin) — billing dashboard reads platform-wide.
+    const rows = db
+      .select()
+      .from(invoicesTable)
+      .where(isNull(invoicesTable.deletedAt))
+      .all() as any[];
+
+    invoiceMap.clear();
+    companyInvoices.clear();
+    yearCounters.clear();
+
+    for (const r of rows) {
+      const inv = rowToInvoice(r);
+      invoiceMap.set(inv.id, inv);
+      const list = companyInvoices.get(inv.companyId) ?? [];
+      list.push(inv.id);
+      companyInvoices.set(inv.companyId, list);
+      // Re-establish year counter from the persisted invoice numbers.
+      const m = inv.invoiceNumber.match(/^CAP-(\d{4})-(\d{6})$/);
+      if (m) {
+        const year = parseInt(m[1], 10);
+        const seq = parseInt(m[2], 10);
+        const prev = yearCounters.get(year) ?? 0;
+        if (seq > prev) yearCounters.set(year, seq);
+      }
+    }
+    console.log(`[invoiceStore.hydrate] loaded ${rows.length} invoices`);
+  } catch (err) {
+    console.warn("[invoiceStore.hydrate] DB read failed:", (err as Error).message);
+  }
+}
+
 /* ---------- PDF generation ---------- */
 
 function formatMoney(amountMinor: number, currency: string): string {
@@ -319,12 +500,7 @@ function formatMoney(amountMinor: number, currency: string): string {
   }
 }
 
-/**
- * Generates a minimal PDF as raw bytes using a hand-crafted PDF structure.
- * No external dependency required.
- */
 export function generateInvoicePdf(invoice: Invoice): Buffer {
-  // Build a minimal valid PDF with invoice data
   const companyName = `Company ${invoice.companyId}`;
   const lines = [
     `CAPAVATE INVOICE`,
@@ -353,7 +529,6 @@ export function generateInvoicePdf(invoice: Invoice): Buffer {
 
   const text = lines.join("\n");
 
-  // Build a minimal valid PDF 1.4
   const bodyLines: string[] = [];
   bodyLines.push("%PDF-1.4");
   bodyLines.push("1 0 obj");
@@ -363,12 +538,10 @@ export function generateInvoicePdf(invoice: Invoice): Buffer {
   bodyLines.push("<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
   bodyLines.push("endobj");
 
-  // Font resource
   bodyLines.push("4 0 obj");
   bodyLines.push("<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>");
   bodyLines.push("endobj");
 
-  // Build page content stream
   const escapedLines = text.split("\n").map(l =>
     l.replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)")
   );
@@ -386,16 +559,12 @@ export function generateInvoicePdf(invoice: Invoice): Buffer {
   bodyLines.push("endstream");
   bodyLines.push("endobj");
 
-  // Page
   bodyLines.push("3 0 obj");
   bodyLines.push("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 5 0 R /Resources << /Font << /F1 4 0 R >> >> >>");
   bodyLines.push("endobj");
 
-  // xref + trailer
   const body = bodyLines.join("\n");
-  // Offset calculation for xref
   const offsets: number[] = [];
-  let pos = 0;
   const objRegex = /\d+ 0 obj/g;
   let m: RegExpExecArray | null;
   while ((m = objRegex.exec(body)) !== null) {
@@ -418,10 +587,6 @@ export function generateInvoicePdf(invoice: Invoice): Buffer {
 /* ---------- Routes ---------- */
 
 export function registerInvoiceRoutes(app: Express): void {
-  /**
-   * GET /api/admin/invoices
-   * List all invoices platform-wide. Query params: ?status=&companyId=
-   */
   app.get("/api/admin/invoices", (req: Request, res: Response) => {
     const status = req.query.status ? String(req.query.status) as InvoiceStatus : undefined;
     const companyId = req.query.companyId ? String(req.query.companyId) : undefined;
@@ -429,19 +594,12 @@ export function registerInvoiceRoutes(app: Express): void {
     res.json({ ok: true, invoices, total: invoices.length });
   });
 
-  /**
-   * GET /api/admin/invoices/:id
-   */
   app.get("/api/admin/invoices/:id", (req: Request, res: Response) => {
     const inv = getInvoice(req.params.id);
     if (!inv) return res.status(404).json({ ok: false, error: "not_found" });
     res.json({ ok: true, invoice: inv });
   });
 
-  /**
-   * GET /api/admin/invoices/:id/pdf
-   * Streams a PDF. Content-Disposition: attachment.
-   */
   app.get("/api/admin/invoices/:id/pdf", (req: Request, res: Response) => {
     const inv = getInvoice(req.params.id);
     if (!inv) return res.status(404).json({ ok: false, error: "not_found" });
@@ -452,10 +610,6 @@ export function registerInvoiceRoutes(app: Express): void {
     res.send(pdf);
   });
 
-  /**
-   * POST /api/admin/invoices/:id/refund
-   * Admin-only refund. Body: { amountMinor, reason }.
-   */
   app.post("/api/admin/invoices/:id/refund", (req: Request, res: Response) => {
     const inv = getInvoice(req.params.id);
     if (!inv) return res.status(404).json({ ok: false, error: "not_found" });
@@ -471,20 +625,12 @@ export function registerInvoiceRoutes(app: Express): void {
     }
   });
 
-  /**
-   * GET /api/founder/invoices
-   * Returns invoices for the founder's active company. Scoped — cannot see others.
-   */
   app.get("/api/founder/invoices", (req: Request, res: Response) => {
     const companyId = String(req.query.companyId ?? req.headers["x-company-id"] ?? "");
     const invoices = listInvoicesForCompany(companyId);
     res.json({ ok: true, invoices, total: invoices.length });
   });
 
-  /**
-   * GET /api/founder/invoices/:id
-   * Must belong to the requesting company.
-   */
   app.get("/api/founder/invoices/:id", (req: Request, res: Response) => {
     const companyId = String(req.query.companyId ?? req.headers["x-company-id"] ?? "");
     const inv = getInvoice(req.params.id);
@@ -493,10 +639,6 @@ export function registerInvoiceRoutes(app: Express): void {
     res.json({ ok: true, invoice: inv });
   });
 
-  /**
-   * GET /api/founder/invoices/:id/pdf
-   * Scoped download — must belong to requesting company.
-   */
   app.get("/api/founder/invoices/:id/pdf", (req: Request, res: Response) => {
     const companyId = String(req.query.companyId ?? req.headers["x-company-id"] ?? "");
     const inv = getInvoice(req.params.id);
@@ -509,11 +651,6 @@ export function registerInvoiceRoutes(app: Express): void {
     res.send(pdf);
   });
 
-  /**
-   * POST /api/founder/invoices/:id/email
-   * Enqueues an outbox email with the invoice details to the founder.
-   * Responds immediately; email delivery is async via emailTransport.
-   */
   app.post("/api/founder/invoices/:id/email", (req: Request, res: Response): void => {
     const companyId = String(req.body?.companyId ?? req.headers["x-company-id"] ?? "");
     const inv = getInvoice(req.params.id);
@@ -524,7 +661,6 @@ export function registerInvoiceRoutes(app: Express): void {
     const fmtMoney = (minor: number, currency: string) =>
       new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 2 }).format(minor / 100);
 
-    // Fire-and-forget via emailTransport
     sendMail({
       to: toEmail,
       subject: `Your Capavate invoice ${inv.invoiceNumber}`,
@@ -545,14 +681,13 @@ export function registerInvoiceRoutes(app: Express): void {
       idempotencyKey: `invoice-email-${inv.id}-${Date.now()}`,
     }).catch((err: Error) => console.error("[invoiceStore] email delivery error:", err.message));
 
-    // Audit log
     appendAdminAudit(`founder:${companyId}`, `invoice:${inv.id}`, "invoice.emailed_to_founder", { to: toEmail });
 
     res.json({ ok: true, invoiceId: inv.id, queued: true, to: toEmail });
   });
 }
 
-/* ---------- Testing exports ---------- */
+/* ---------- Testing exports (contract preserved) ---------- */
 export const _testInvoices = {
   invoiceMap,
   companyInvoices,
@@ -562,5 +697,13 @@ export const _testInvoices = {
     companyInvoices.clear();
     yearCounters.clear();
     invoiceChain.__clear();
+    try {
+      const db = getDb();
+      db.transaction((tx: any) => {
+        tx.delete(invoicesTable).run();
+      });
+    } catch (err) {
+      console.warn("[_testInvoices.reset] DB truncate failed:", (err as Error).message);
+    }
   },
 };

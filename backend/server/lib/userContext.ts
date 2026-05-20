@@ -24,6 +24,11 @@ import { getMembership } from "../membershipStore";
 import { incomingInvitations, currentInvestor as DEMO_INVESTOR } from "../mockData";
 // Patch v6 — persist credentials via userCredentialsStore so login works across restarts.
 import { storeCredential, lookupByEmail } from "../userCredentialsStore";
+// Patch v12 (DB-10) — INSERT users row BEFORE user_credentials so the FK
+// ordering is correct (when foreign key enforcement is turned on the row
+// already exists). This also lets `users.email` participate in admin lookups.
+import { getDb } from "../db/connection";
+import { users as usersTable } from "../../shared/schema";
 
 /* ---------- Public types ---------- */
 
@@ -368,6 +373,36 @@ export function registerFounderUser(args: {
     hasInvitations: false,
   };
   RUNTIME_PASSWORDS[userId] = args.password;
+  // Patch v12 (DB-10) — INSERT users row FIRST, then user_credentials.
+  // Both are written through Drizzle so they hit the same SQLite/Postgres
+  // backend that hydrate*Store reads back at boot.
+  try {
+    const db = getDb();
+    // CROSS-TENANT (admin) — signup happens before tenant resolution; the
+    // user's home tenant is the company they create next (multiCompanyStore
+    // upserts user_prefs.active_tenant_id on first addCompanyForFounder).
+    db.insert(usersTable)
+      .values({
+        id: userId,
+        // No tenant yet — placeholder pointing at the user's own id so the
+        // NOT NULL column is satisfied. multiCompanyStore.addCompanyForFounder
+        // will set user_prefs.active_tenant_id when the founder creates their
+        // first company.
+        tenantId: `tenant_user_${userId}`,
+        email: normalizedEmail,
+        name: args.name.trim(),
+        role: "founder",
+        avatarUrl: null,
+        isDemo: 0,
+        deletedAt: null,
+      })
+      .onConflictDoNothing({ target: usersTable.id })
+      .run();
+  } catch (err) {
+    // Non-fatal but log loudly — the audit_log/multi-tenant paths depend on
+    // this row existing for new signups.
+    console.warn("[userContext] users INSERT failed (non-fatal):", (err as Error).message);
+  }
   // Patch v6 — also persist via userCredentialsStore (bcrypt-hashed, survives restart).
   try {
     storeCredential({

@@ -1,27 +1,28 @@
 /**
  * Sprint 28 Wave 3 — Subscriptions store (production-shape).
+ * Patch v12 Phase C — DB-backed hybrid migration.
  *
- * Source of truth for company subscription state. Production-ready properties:
- *   - One record per companyId.
- *   - Money in INTEGER MINOR UNITS (cents) + ISO 4217 currency code — never
- *     floating-point.
- *   - Status enum aligned with the standard billing lifecycle (Stripe-compatible).
- *   - Every mutation produces an audit entry + a bridge event so the Collective
- *     stays in sync and the Audit Log retains the full history.
- *   - Tamper-evident: each subscription carries a `version` integer that
- *     increments on every change and a `revisionHash` chained to the previous
- *     revision (SHA-256 of canonical body || prevHash).
+ * Subscription state lives in the `subscriptions` table (current row per
+ * companyId) and `subscriptions_history` (one row per revision, append-only
+ * hash-chain). The in-memory `store` and `history` Maps remain as READ caches;
+ * every write goes through a Drizzle transaction first, then the Maps are
+ * updated synchronously. Hydration on boot rebuilds the Maps from the DB.
  *
- * Seed data is derived from the canonical FOUNDER_COMPANIES + companies store
- * (Capavate's existing tenant inventory). Subscription numbers are taken
- * directly from those records \u2014 NO invented mock customers. The store is the
- * single integration point that Wave 8 (Pricing & Billing) and the Stripe / Avi
- * payment-gateway adapter will write through.
+ * Money is in INTEGER MINOR UNITS (cents) + ISO 4217 currency — never floats.
+ * Each row carries a `version` integer and `revisionHash` chained to the
+ * previous revision (SHA-256 of canonical body || prevHash). The transaction
+ * is the concurrency boundary that keeps the chain consistent (DB-6).
  */
 import type { Express, Request, Response } from "express";
 import { createHash } from "node:crypto";
+import { and, eq, isNull, asc } from "drizzle-orm";
 import { companies } from "./mockData";
 import { emitBridgeEvent } from "./bridgeStore";
+import { getDb } from "./db/connection";
+import {
+  subscriptions as subscriptionsTable,
+  subscriptionsHistory as subscriptionsHistoryTable,
+} from "../shared/schema";
 
 /* ---------- Schema ---------- */
 
@@ -85,27 +86,12 @@ export function configureSubscriptionsStore(opts: {
 
 export const PLAN_PRICES: Record<Plan, { annualMinor: number; currency: string; label: string }> = {
   founder_free:       { annualMinor:        0, currency: "USD", label: "Founder Free" },
-  founder_pro:        { annualMinor:   298_800, currency: "USD", label: "Founder Pro" },        // $2,988/yr (= $249/mo \u00d7 12)
+  founder_pro:        { annualMinor:   298_800, currency: "USD", label: "Founder Pro" },        // $2,988/yr (= $249/mo × 12)
   founder_scale:      { annualMinor:   900_000, currency: "USD", label: "Founder Scale" },      // $9,000/yr
   founder_enterprise: { annualMinor: 2_400_000, currency: "USD", label: "Founder Enterprise" }, // $24,000/yr
 };
 
 /* ---------- Seed ---------- */
-
-/**
- * Map the canonical FOUNDER_COMPANIES.billing.plan strings ("Founder Pro" etc.)
- * to our typed enum. New companies that don't exist in FOUNDER_COMPANIES yet
- * default to a 14-day trial on Founder Pro.
- */
-function planFromLabel(label: string | undefined): Plan {
-  switch (label) {
-    case "Founder Free":       return "founder_free";
-    case "Founder Pro":        return "founder_pro";
-    case "Founder Scale":      return "founder_scale";
-    case "Founder Enterprise": return "founder_enterprise";
-    default:                   return "founder_pro";
-  }
-}
 
 function hashRevision(prevHash: string, body: unknown): string {
   return createHash("sha256").update(prevHash).update(JSON.stringify(body)).digest("hex");
@@ -177,7 +163,61 @@ function seedFromCanonicalCompanies(): void {
     history.set(cid, [rec]);
     prev = rec.revisionHash;
   }
+  // Best-effort DB write-through so the seed survives a restart on
+  // ENABLE_DEMO_SEED + persistent SQLite. Idempotent via onConflictDoNothing.
+  try {
+    persistSeedToDb();
+  } catch (err) {
+    console.warn("[subscriptionsStore] seed persist failed (non-fatal):", (err as Error).message);
+  }
 }
+
+function persistSeedToDb(): void {
+  const db = getDb();
+  // CROSS-TENANT (admin) — module-load seed runs once per process; tenant
+  // scoping is enforced by the per-company id key. The rows themselves are
+  // tenant-anchored via `companies.tenant_id` in the companies table.
+  for (const rec of Array.from(store.values())) {
+    try {
+      db.insert(subscriptionsTable)
+        .values({
+          companyId: rec.companyId,
+          status: rec.status,
+          plan: rec.plan,
+          annualAmountMinor: rec.annualAmountMinor,
+          currency: rec.currency,
+          renewsOn: rec.renewsOn,
+          cardLast4: rec.cardLast4,
+          invoicesCount: rec.invoicesCount,
+          pastDueMinor: rec.pastDueMinor ?? null,
+          trialEndsOn: rec.trialEndsOn ?? null,
+          version: rec.version,
+          prevRevisionHash: rec.prevRevisionHash,
+          revisionHash: rec.revisionHash,
+          updatedAt: rec.updatedAt,
+          updatedBy: rec.updatedBy,
+          deletedAt: null,
+        })
+        .onConflictDoNothing({ target: subscriptionsTable.companyId })
+        .run();
+      // Also seed the history table with the genesis row.
+      db.insert(subscriptionsHistoryTable)
+        .values({
+          id: `subh_seed_${rec.companyId}`,
+          companyId: rec.companyId,
+          snapshotJson: JSON.stringify(rec),
+          version: rec.version,
+          revisionHash: rec.revisionHash,
+          prevRevisionHash: rec.prevRevisionHash,
+          recordedAt: rec.updatedAt,
+          recordedBy: rec.updatedBy,
+        })
+        .onConflictDoNothing({ target: subscriptionsHistoryTable.id })
+        .run();
+    } catch { /* tolerated — seed DB may not be ready in some contexts */ }
+  }
+}
+
 seedFromCanonicalCompanies();
 
 /* ---------- Reads ---------- */
@@ -200,6 +240,26 @@ export type UpdateSubscriptionInput = Partial<Pick<Subscription,
   "status" | "plan" | "renewsOn" | "cardLast4" | "invoicesCount" | "pastDueMinor" | "trialEndsOn"
 >>;
 
+function rowToSubscription(row: any): Subscription {
+  return {
+    companyId: row.companyId,
+    status: row.status as SubscriptionStatus,
+    plan: row.plan as Plan,
+    annualAmountMinor: row.annualAmountMinor,
+    currency: row.currency,
+    renewsOn: row.renewsOn,
+    cardLast4: row.cardLast4 ?? null,
+    invoicesCount: row.invoicesCount ?? 0,
+    pastDueMinor: row.pastDueMinor ?? undefined,
+    trialEndsOn: row.trialEndsOn ?? undefined,
+    version: row.version,
+    revisionHash: row.revisionHash,
+    prevRevisionHash: row.prevRevisionHash,
+    updatedAt: row.updatedAt,
+    updatedBy: row.updatedBy,
+  };
+}
+
 export function updateSubscription(
   companyId: string,
   changes: UpdateSubscriptionInput,
@@ -218,7 +278,7 @@ export function updateSubscription(
     currency: planPrice.currency,
     version: current.version + 1,
     prevRevisionHash: current.revisionHash,
-    revisionHash: "", // will be computed below
+    revisionHash: "", // computed below
     updatedAt: new Date().toISOString(),
     updatedBy: actor,
   };
@@ -238,6 +298,73 @@ export function updateSubscription(
     updatedBy: next.updatedBy,
   });
 
+  // DB-6: wrap in a transaction so the (history INSERT + subscriptions UPDATE)
+  // succeed or fail atomically. better-sqlite3's transaction is BEGIN IMMEDIATE
+  // by default, serializing concurrent writers on the hash chain.
+  try {
+    const db = getDb();
+    db.transaction((tx: any) => {
+      // 1) Append the new revision to history.
+      tx.insert(subscriptionsHistoryTable)
+        .values({
+          id: `subh_${companyId}_${next.version}_${Math.random().toString(36).slice(2, 8)}`,
+          companyId,
+          snapshotJson: JSON.stringify(next),
+          version: next.version,
+          revisionHash: next.revisionHash,
+          prevRevisionHash: next.prevRevisionHash,
+          recordedAt: next.updatedAt,
+          recordedBy: actor,
+        })
+        .run();
+      // 2) Upsert the current-state row.
+      tx.insert(subscriptionsTable)
+        .values({
+          companyId,
+          status: next.status,
+          plan: next.plan,
+          annualAmountMinor: next.annualAmountMinor,
+          currency: next.currency,
+          renewsOn: next.renewsOn,
+          cardLast4: next.cardLast4,
+          invoicesCount: next.invoicesCount,
+          pastDueMinor: next.pastDueMinor ?? null,
+          trialEndsOn: next.trialEndsOn ?? null,
+          version: next.version,
+          prevRevisionHash: next.prevRevisionHash,
+          revisionHash: next.revisionHash,
+          updatedAt: next.updatedAt,
+          updatedBy: actor,
+          deletedAt: null,
+        })
+        .onConflictDoUpdate({
+          target: subscriptionsTable.companyId,
+          set: {
+            status: next.status,
+            plan: next.plan,
+            annualAmountMinor: next.annualAmountMinor,
+            currency: next.currency,
+            renewsOn: next.renewsOn,
+            cardLast4: next.cardLast4,
+            invoicesCount: next.invoicesCount,
+            pastDueMinor: next.pastDueMinor ?? null,
+            trialEndsOn: next.trialEndsOn ?? null,
+            version: next.version,
+            prevRevisionHash: next.prevRevisionHash,
+            revisionHash: next.revisionHash,
+            updatedAt: next.updatedAt,
+            updatedBy: actor,
+            deletedAt: null,
+          },
+        })
+        .run();
+    });
+  } catch (err) {
+    console.error("[subscriptionsStore.updateSubscription] DB write failed:", (err as Error).message);
+    return { ok: false, error: "db_write_failed" };
+  }
+
+  // After committed DB write, update Maps.
   store.set(companyId, next);
   const h = history.get(companyId) ?? [];
   h.push(next);
@@ -274,11 +401,27 @@ export function createSubscriptionForNewCompany(
   const actor = options.actor ?? "system:new_company";
   const plan = options.plan ?? "founder_pro";
 
-  // Idempotent check
+  // Idempotent check (Map first, then DB).
   const existing = store.get(companyId);
   if (existing) {
     return { ok: true, subscription: existing, created: false };
   }
+  // DB-side idempotent check: another process may have inserted already.
+  try {
+    const db = getDb();
+    const rows = db
+      .select()
+      .from(subscriptionsTable)
+      .where(and(eq(subscriptionsTable.companyId, companyId), isNull(subscriptionsTable.deletedAt)))
+      .limit(1)
+      .all() as any[];
+    if (rows.length > 0) {
+      const rec = rowToSubscription(rows[0]);
+      store.set(companyId, rec);
+      if (!history.has(companyId)) history.set(companyId, [rec]);
+      return { ok: true, subscription: rec, created: false };
+    }
+  } catch { /* fallthrough to create */ }
 
   const price = PLAN_PRICES[plan];
   const renewsOn = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -305,6 +448,55 @@ export function createSubscriptionForNewCompany(
   const revisionHash = hashRevision(prev, body);
   const record: Subscription = { ...body, revisionHash };
 
+  // DB-6: transaction for atomic (history + subscriptions) writes.
+  try {
+    const db = getDb();
+    db.transaction((tx: any) => {
+      tx.insert(subscriptionsTable)
+        .values({
+          companyId: record.companyId,
+          status: record.status,
+          plan: record.plan,
+          annualAmountMinor: record.annualAmountMinor,
+          currency: record.currency,
+          renewsOn: record.renewsOn,
+          cardLast4: record.cardLast4,
+          invoicesCount: record.invoicesCount,
+          pastDueMinor: null,
+          trialEndsOn: null,
+          version: record.version,
+          prevRevisionHash: record.prevRevisionHash,
+          revisionHash: record.revisionHash,
+          updatedAt: record.updatedAt,
+          updatedBy: record.updatedBy,
+          deletedAt: null,
+        })
+        .onConflictDoNothing({ target: subscriptionsTable.companyId })
+        .run();
+      tx.insert(subscriptionsHistoryTable)
+        .values({
+          id: `subh_create_${record.companyId}`,
+          companyId: record.companyId,
+          snapshotJson: JSON.stringify(record),
+          version: record.version,
+          revisionHash: record.revisionHash,
+          prevRevisionHash: record.prevRevisionHash,
+          recordedAt: record.updatedAt,
+          recordedBy: record.updatedBy,
+        })
+        .onConflictDoNothing({ target: subscriptionsHistoryTable.id })
+        .run();
+    });
+  } catch (err) {
+    console.error(
+      "[subscriptionsStore.createSubscriptionForNewCompany] DB write failed:",
+      (err as Error).message,
+    );
+    // Fall through: still mirror in Maps so the rest of the request handler
+    // (which depends on getSubscription) does not 500. The next mutation will
+    // attempt to persist again.
+  }
+
   store.set(companyId, record);
   history.set(companyId, [record]);
 
@@ -325,6 +517,31 @@ export function createSubscriptionForNewCompany(
   return { ok: true, subscription: record, created: true };
 }
 
+/**
+ * Soft-cancel a subscription. Sets `deleted_at` on the subscriptions row but
+ * keeps the history chain intact. The Map cache stays so verifyChain and
+ * historical reads keep working.
+ */
+export function cancelSubscription(companyId: string, actor: string): boolean {
+  const current = store.get(companyId);
+  if (!current) return false;
+  try {
+    const db = getDb();
+    db.transaction((tx: any) => {
+      tx.update(subscriptionsTable)
+        .set({ status: "cancelled", deletedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), updatedBy: actor })
+        .where(eq(subscriptionsTable.companyId, companyId))
+        .run();
+    });
+  } catch (err) {
+    console.error("[subscriptionsStore.cancelSubscription] DB write failed:", (err as Error).message);
+    return false;
+  }
+  // Maps: keep the row but flip status so callers see "cancelled".
+  store.set(companyId, { ...current, status: "cancelled" });
+  return true;
+}
+
 /* ---------- Chain verification (audit / SOC2) ---------- */
 
 export function verifyChain(companyId: string): { ok: boolean; brokenAt?: number; length: number } {
@@ -337,42 +554,72 @@ export function verifyChain(companyId: string): { ok: boolean; brokenAt?: number
   return { ok: true, length: h.length };
 }
 
+/* ---------- Hydration ---------- */
+
+/**
+ * Hydrate the in-memory `store` + `history` Maps from the DB tables. Called by
+ * server/lib/hydrateStores.ts at boot (after userCredentials, before
+ * multiCompanyStore — see DB-4 ordering).
+ *
+ * History is sorted by `version ASC` so the in-memory array order matches the
+ * canonical hash-chain order.
+ */
+export async function hydrateSubscriptionsStore(): Promise<void> {
+  const db = getDb();
+  // CROSS-TENANT (admin) — every subscription is keyed by its companyId; the
+  // tenant scoping is enforced by the companies table's tenant_id. We need
+  // every subscription regardless of which tenant called hydrate.
+  const subs = (await db
+    .select()
+    .from(subscriptionsTable)
+    .where(isNull(subscriptionsTable.deletedAt))) as any[];
+
+  store.clear();
+  for (const row of subs) {
+    const rec = rowToSubscription(row);
+    store.set(rec.companyId, rec);
+  }
+
+  // Hydrate history sorted by version ASC.
+  const histRows = (await db
+    .select()
+    .from(subscriptionsHistoryTable)
+    .orderBy(asc(subscriptionsHistoryTable.version))) as any[];
+
+  history.clear();
+  for (const h of histRows) {
+    // Snapshot stored as JSON.
+    try {
+      const snap = JSON.parse(h.snapshotJson) as Subscription;
+      const list = history.get(h.companyId) ?? [];
+      list.push(snap);
+      history.set(h.companyId, list);
+    } catch {
+      // Defensive: a malformed snapshot must not abort hydration.
+      console.warn("[subscriptionsStore.hydrate] failed to parse history snapshot for", h.companyId);
+    }
+  }
+}
+
 /* ---------- Routes ---------- */
 
 export function registerSubscriptionRoutes(app: Express): void {
-  /**
-   * GET /api/admin/subscriptions
-   * Returns all subscriptions. Admin-only \u2014 caller must be authed as admin.
-   */
   app.get("/api/admin/subscriptions", (_req: Request, res: Response) => {
     res.json({ subscriptions: listSubscriptions() });
   });
 
-  /**
-   * GET /api/admin/subscriptions/:companyId
-   * Returns the current subscription record for one company.
-   */
   app.get("/api/admin/subscriptions/:companyId", (req: Request, res: Response) => {
     const s = getSubscription(req.params.companyId);
     if (!s) return res.status(404).json({ ok: false, error: "not_found" });
     res.json({ ok: true, subscription: s });
   });
 
-  /**
-   * GET /api/admin/subscriptions/:companyId/history
-   * Returns the full revision history (for audit / M&A diligence).
-   */
   app.get("/api/admin/subscriptions/:companyId/history", (req: Request, res: Response) => {
     const h = getSubscriptionHistory(req.params.companyId);
     const chain = verifyChain(req.params.companyId);
     res.json({ ok: true, history: h, chain });
   });
 
-  /**
-   * PATCH /api/admin/subscriptions/:companyId
-   * Admin-only mutation. Body: UpdateSubscriptionInput.
-   * Audited + bridge-emitted automatically.
-   */
   app.patch("/api/admin/subscriptions/:companyId", (req: Request, res: Response) => {
     const actor = (req.headers["x-actor-email"] as string | undefined) ?? "admin@capavate.com";
     const result = updateSubscription(req.params.companyId, req.body ?? {}, actor);

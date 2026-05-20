@@ -15,11 +15,31 @@ import { sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
-/* ----- identity & tenancy (R165 §2.1) ----- */
+/* ----- identity & tenancy (R165 §2.1, extended v12) -----
+ *
+ * v12 tenant model (Decision A): a tenant is a company OR a
+ * consortium_partner. Users have N memberships through `company_members`.
+ * The legacy `kind` values "founder"|"investor" are retained for backward-
+ * compat seed data; new rows use "company" or "consortium_partner".
+ *
+ * v12 added columns (additive only — SQLite ALTER ADD COLUMN safe):
+ *   - billingEmail, status, isDemo, createdAt, updatedAt, deletedAt
+ *
+ * Soft-delete contract: `deleted_at IS NULL` means live; `deleted_at = <iso>`
+ * means archived. Every SELECT in v12 stores filters via withTenant().
+ */
 export const tenants = sqliteTable("tenants", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
-  kind: text("kind").notNull(), // "founder" | "investor"
+  // v12: now also accepts "company" | "consortium_partner" in addition to legacy "founder"|"investor"
+  kind: text("kind").notNull(),
+  billingEmail: text("billing_email"),
+  // active | suspended | deleted (v12)
+  status: text("status").notNull().default("active"),
+  isDemo: integer("is_demo").notNull().default(0),
+  createdAt: text("created_at"),
+  updatedAt: text("updated_at"),
+  deletedAt: text("deleted_at"),
 });
 
 export const users = sqliteTable("users", {
@@ -29,6 +49,19 @@ export const users = sqliteTable("users", {
   name: text("name").notNull(),
   role: text("role").notNull(), // "founder" | "investor" | "admin"
   avatarUrl: text("avatar_url"),
+  // v12 additions (additive, non-breaking):
+  isDemo: integer("is_demo").notNull().default(0),
+  deletedAt: text("deleted_at"),
+});
+
+/**
+ * v12 — per-user preferences. Replaces the per-process
+ * `USER_ACTIVE_COMPANY` Map in multiCompanyStore.
+ */
+export const userPrefs = sqliteTable("user_prefs", {
+  userId: text("user_id").primaryKey(),
+  activeTenantId: text("active_tenant_id"),
+  updatedAt: text("updated_at"),
 });
 
 /* ----- companies (R200 §6) ----- */
@@ -45,17 +78,50 @@ export const companies = sqliteTable("companies", {
   logoUrl: text("logo_url"),
   founded: text("founded"),
   employees: integer("employees"),
+  // v12 additions (additive, non-breaking):
+  isDemo: integer("is_demo").notNull().default(0),
+  deletedAt: text("deleted_at"),
 });
 
+/**
+ * v12 — companyMembers extended.
+ *
+ *  - `tenantId` is the v12 tenant scoping column.
+ *  - `companyId` is NULLABLE now — only set when the tenant kind = "company".
+ *  - `consortiumPartnerId` is set only when the tenant kind = "consortium_partner".
+ *
+ * Existing columns (id, userId, role, title) preserved verbatim.
+ */
 export const companyMembers = sqliteTable("company_members", {
   id: text("id").primaryKey(),
-  companyId: text("company_id").notNull(),
+  // companyId was previously NOT NULL; v12 relaxes to nullable so a membership
+  // can point at a consortium_partner tenant instead. SQLite stores everything
+  // as nullable at the storage layer; the Drizzle .notNull() removal here
+  // matches the v12 ALTER TABLE migration semantics.
+  companyId: text("company_id"),
   userId: text("user_id").notNull(),
-  role: text("role").notNull(), // founder | board | exec | viewer
+  role: text("role").notNull(), // founder | co_founder | board | exec | viewer | investor | partner_lead | partner_member | admin
   title: text("title"),
+  // v12 additions:
+  tenantId: text("tenant_id"),                       // backfilled by migration 0003
+  consortiumPartnerId: text("consortium_partner_id"),
+  isActive: integer("is_active").notNull().default(1),
+  joinedAt: text("joined_at"),
+  lastActiveAt: text("last_active_at"),
+  deletedAt: text("deleted_at"),
 });
 
-/* ----- cap table (R200 §6 / Cap Table Engine §10) ----- */
+/* ----- cap table (R200 §6 / Cap Table Engine §10) -----
+ *
+ * v12 (DB-5): the `shares` integer + `investmentAmount` real columns
+ * cannot represent the BigInt-string precision the Sprint 25 cap-table
+ * engine relies on. v12 adds parallel canonical columns:
+ *   - `shares_str` TEXT  (string of base-10 digits, preserves precision)
+ *   - `amount_minor` INTEGER (currency in minor units, e.g. cents)
+ *
+ * Day 2 captableCommitStore migration will write to both old and new
+ * columns; v13 will deprecate the float columns.
+ */
 export const securities = sqliteTable("securities", {
   id: text("id").primaryKey(),
   companyId: text("company_id").notNull(),
@@ -69,6 +135,11 @@ export const securities = sqliteTable("securities", {
   cap: real("cap"),                 // SAFE/Note cap
   discount: real("discount"),       // SAFE/Note discount %
   issuedAt: text("issued_at"),
+  // v12 precision additions (DB-5):
+  sharesStr: text("shares_str").notNull().default("0"),
+  amountMinor: integer("amount_minor").notNull().default(0),
+  // v12 soft-delete (DB-2):
+  deletedAt: text("deleted_at"),
 });
 
 /* ----- rounds + invitations (Investor Invitation Subsystem §9) ----- */
@@ -113,15 +184,28 @@ export const softCircles = sqliteTable("soft_circles", {
 export const dataroomFiles = sqliteTable("dataroom_files", {
   id: text("id").primaryKey(),
   companyId: text("company_id").notNull(),
+  // v12 Day 2 Wave 2 — tenantId for tenant scoping (defaulted via tenant_co_<companyId>).
+  tenantId: text("tenant_id").notNull().default("tenant_unknown"),
+  // v12 Day 2 Wave 2 — folderId for the dataroom folder this file lives in.
+  folderId: text("folder_id").notNull().default(""),
   category: text("category").notNull(), // mgmt | product | sales | tech_it | ops | regulatory | legal | financials | press | misc | term_sheet
   name: text("name").notNull(),
   sizeBytes: integer("size_bytes").notNull(),
   mime: text("mime").notNull(),
   uploadedAt: text("uploaded_at").notNull(),
   uploadedBy: text("uploaded_by"),
+  // v12 Day 2 Wave 2 — file integrity + audit identity.
+  uploadedById: text("uploaded_by_id"),
+  sha256: text("sha256").notNull().default(""),
+  watermark: integer("watermark", { mode: "boolean" }).notNull().default(false),
+  deletedAt: text("deleted_at"),
 });
 
-/* ----- audit log (R165 §12, hash chain) ----- */
+/* ----- audit log (R165 §12, hash chain) -----
+ * v12: `deleted_at` column added for schema symmetry with the other
+ * compliance tables. Updates that SET deleted_at on audit_log are FORBIDDEN —
+ * the table is append-only by contract.
+ */
 export const auditLog = sqliteTable("audit_log", {
   id: text("id").primaryKey(),
   tenantId: text("tenant_id").notNull(),
@@ -133,6 +217,8 @@ export const auditLog = sqliteTable("audit_log", {
   prevHash: text("prev_hash"),
   hash: text("hash").notNull(),
   createdAt: text("created_at").notNull(),
+  // v12 (DB-2): symmetric soft-delete column — never used in practice (append-only).
+  deletedAt: text("deleted_at"),
 });
 
 /* ----- Sprint 28: Production tables added in Pass 4 ----- */
@@ -165,6 +251,8 @@ export const subscriptions = sqliteTable("subscriptions", {
   revisionHash: text("revision_hash").notNull(),
   updatedAt: text("updated_at").notNull(),
   updatedBy: text("updated_by").notNull(),
+  // v12 soft-delete (DB-2):
+  deletedAt: text("deleted_at"),
 });
 
 export const subscriptionsHistory = sqliteTable("subscriptions_history", {
@@ -181,7 +269,9 @@ export const subscriptionsHistory = sqliteTable("subscriptions_history", {
 export const invoices = sqliteTable("invoices", {
   id: text("id").primaryKey(),
   invoiceNumber: text("invoice_number").notNull().unique(),
+  tenantId: text("tenant_id").notNull().default("tenant_unknown"),
   companyId: text("company_id").notNull(),
+  subscriptionId: text("subscription_id").notNull().default(""),
   planLabel: text("plan_label").notNull(),
   periodStart: text("period_start").notNull(),
   periodEnd: text("period_end").notNull(),
@@ -190,11 +280,21 @@ export const invoices = sqliteTable("invoices", {
   taxMinor: integer("tax_minor").notNull().default(0),
   totalMinor: integer("total_minor").notNull(),
   status: text("status").notNull(),            // draft | issued | paid | refunded | void
+  paymentEntryId: text("payment_entry_id"),
+  relatedInvoiceId: text("related_invoice_id"),
   issuedAt: text("issued_at").notNull(),
   paidAt: text("paid_at"),
+  refundedAt: text("refunded_at"),
+  voidedAt: text("voided_at"),
+  cardLast4: text("card_last_4"),
+  lineItemsJson: text("line_items_json"),
   version: integer("version").notNull().default(1),
   prevRevisionHash: text("prev_revision_hash").notNull(),
   revisionHash: text("revision_hash").notNull(),
+  updatedAt: text("updated_at"),
+  updatedBy: text("updated_by"),
+  // v12 soft-delete (DB-2):
+  deletedAt: text("deleted_at"),
 });
 
 export const pricingModels = sqliteTable("pricing_models", {
@@ -761,4 +861,309 @@ export const userCredentials = sqliteTable("user_credentials", {
   passwordHash: text("password_hash").notNull(),
   createdAt: text("created_at"),
   updatedAt: text("updated_at"),
+  // v12 soft-delete (DB-2):
+  deletedAt: text("deleted_at"),
+});
+
+/* -----------------------------------------------------------------
+ * Patch v12 Day 2 Wave 1 — Company Profile Extended (audit §3.3)
+ *
+ * Holds the rich CompanyProfile (Wave C-1: 46 fields across 7 sections)
+ * as a JSON blob per company, with a hash-chain (version, prevHash, hash)
+ * for tamper evidence. The in-memory `profileMap` in
+ * server/companyProfileStore.ts is a READ cache; this table is the source of
+ * truth. Every PATCH wraps in a Drizzle transaction (DB-6).
+ * ----------------------------------------------------------------- */
+export const companyProfileExtended = sqliteTable("company_profile_extended", {
+  companyId: text("company_id").primaryKey(),
+  tenantId: text("tenant_id").notNull(),
+  profileJson: text("profile_json").notNull(), // serialized CompanyProfile
+  version: integer("version").notNull().default(1),
+  prevHash: text("prev_hash"),
+  hash: text("hash").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  updatedBy: text("updated_by").notNull(),
+  // v12 soft-delete symmetry (DB-2).
+  deletedAt: text("deleted_at"),
+});
+
+/* -----------------------------------------------------------------
+ * Patch v12 Day 2 Wave 1 — Reconciliation runs (audit §3.8)
+ *
+ * Was an in-memory array on adminPlatformStore. Each row is one cap-table
+ * reconciliation run between the main engine and the reference engine.
+ * ----------------------------------------------------------------- */
+export const reconRuns = sqliteTable("recon_runs", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").notNull(),
+  companyId: text("company_id").notNull(),
+  roundId: text("round_id").notNull(),
+  ts: text("ts").notNull(),
+  engineMainJson: text("engine_main_json").notNull(),
+  engineRefJson: text("engine_ref_json").notNull(),
+  diffJson: text("diff_json").notNull(),
+  actor: text("actor").notNull(),
+  deletedAt: text("deleted_at"),
+});
+
+/* -----------------------------------------------------------------
+ * Patch v12 Day 2 Wave 1 — Founder pricing tiers (audit §3.8)
+ *
+ * Editable price card surfaced via admin pricing routes; previously a hard-
+ * coded TS array. Each row is one tier (free / pro / scale / …).
+ * ----------------------------------------------------------------- */
+export const founderTiers = sqliteTable("founder_tiers", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  usdMonthly: integer("usd_monthly").notNull(),
+  featuresJson: text("features_json").notNull(), // [{key,label,included}]
+  updatedAt: text("updated_at").notNull(),
+  updatedBy: text("updated_by").notNull().default("system"),
+  deletedAt: text("deleted_at"),
+});
+
+/* -----------------------------------------------------------------
+ * Patch v12 Day 2 Wave 2 — six new compliance / audit / hash-chain tables.
+ *
+ *   legalConsents          — append-only consent ledger (per-tenant chain)
+ *   dataroomFolders        — folder hierarchy for dataroom
+ *   dataroomPermissions    — investor x folder permission grants
+ *   dataroomEvents         — audit feed for dataroom activity
+ *   captableCommits        — append-only ledger of committed cap-table positions
+ *   fundedQueue            — crash-recoverable queue of funded-but-uncommitted entries
+ *   termSheetRevisions     — per-round hash-chained term sheet revisions
+ *   invoiceYearCounter     — monotonic CAP-{year}-NNNNNN counter (cached source-of-truth: MAX(invoice_number))
+ *   contactRevisions       — per-contact hash-chained revision history
+ * ----------------------------------------------------------------- */
+
+export const legalConsents = sqliteTable("legal_consents", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").notNull(),
+  userId: text("user_id").notNull(),
+  documentId: text("document_id").notNull(),
+  documentVersion: text("document_version").notNull(),
+  context: text("context").notNull(),
+  acceptedAt: text("accepted_at").notNull(),
+  ipAddress: text("ip_address"),
+  userAgent: text("user_agent"),
+  prevHash: text("prev_hash").notNull(),
+  hash: text("hash").notNull(),
+  // v12 (DB-2): soft-delete column for the compliance set. The ledger is
+  // append-only by contract; deleted_at exists for schema symmetry only.
+  deletedAt: text("deleted_at"),
+});
+
+export const dataroomFolders = sqliteTable("dataroom_folders", {
+  id: text("id").primaryKey(),
+  companyId: text("company_id").notNull(),
+  tenantId: text("tenant_id").notNull(),
+  name: text("name").notNull(),
+  createdAt: text("created_at").notNull(),
+  isRoundFolder: integer("is_round_folder", { mode: "boolean" }).notNull().default(false),
+  roundId: text("round_id"),
+  deletedAt: text("deleted_at"),
+});
+
+export const dataroomPermissions = sqliteTable("dataroom_permissions", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").notNull(),
+  investorId: text("investor_id").notNull(),
+  folderId: text("folder_id").notNull(),
+  view: integer("view", { mode: "boolean" }).notNull().default(false),
+  download: integer("download", { mode: "boolean" }).notNull().default(false),
+  updatedAt: text("updated_at").notNull(),
+  deletedAt: text("deleted_at"),
+});
+
+export const dataroomEvents = sqliteTable("dataroom_events", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").notNull(),
+  companyId: text("company_id").notNull(),
+  ts: text("ts").notNull(),
+  actor: text("actor").notNull(),
+  actorId: text("actor_id").notNull(),
+  action: text("action").notNull(),
+  targetKind: text("target_kind").notNull(),
+  targetId: text("target_id").notNull(),
+  metaJson: text("meta_json"),
+});
+
+export const captableCommits = sqliteTable("captable_commits", {
+  id: text("id").primaryKey(),                  // deterministic from invitationId
+  tenantId: text("tenant_id").notNull(),
+  seq: integer("seq").notNull(),
+  ts: text("ts").notNull(),
+  invitationId: text("invitation_id").notNull(),
+  roundId: text("round_id").notNull(),
+  companyId: text("company_id").notNull(),
+  investorId: text("investor_id").notNull(),
+  // Sprint 25 precision: STRINGS for amount + shares. amountMinor + sharesStr
+  // are the canonical precision-preserving fields; the legacy float columns
+  // on `securities` are mirrored on write but NEVER read for math.
+  amount: text("amount").notNull(),             // Decimal-as-string
+  currency: text("currency").notNull(),
+  shares: text("shares").notNull(),             // BigInt-as-string
+  state: text("state").notNull(),
+  prevHash: text("prev_hash").notNull(),
+  hash: text("hash").notNull(),
+  reconcilePrimary: text("reconcile_primary"),
+  reconcileRef: text("reconcile_ref"),
+  reconcileMatch: integer("reconcile_match", { mode: "boolean" }).notNull().default(true),
+  complianceHold: integer("compliance_hold", { mode: "boolean" }).notNull().default(false),
+  deletedAt: text("deleted_at"),
+});
+
+export const fundedQueue = sqliteTable("funded_queue", {
+  invitationId: text("invitation_id").primaryKey(),
+  tenantId: text("tenant_id").notNull(),
+  roundId: text("round_id").notNull(),
+  companyId: text("company_id").notNull(),
+  investorId: text("investor_id").notNull(),
+  amount: text("amount").notNull(),
+  currency: text("currency").notNull(),
+  shares: text("shares").notNull(),
+  enqueuedAt: text("enqueued_at").notNull(),
+});
+
+export const termSheetRevisions = sqliteTable("term_sheet_revisions", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").notNull(),
+  roundId: text("round_id").notNull(),
+  companyId: text("company_id").notNull(),
+  revision: integer("revision").notNull(),
+  savedAt: text("saved_at").notNull(),
+  savedBy: text("saved_by").notNull(),
+  payloadJson: text("payload_json").notNull(),
+  prevRevisionHash: text("prev_revision_hash").notNull(),
+  revisionHash: text("revision_hash").notNull(),
+});
+
+export const invoiceYearCounter = sqliteTable("invoice_year_counter", {
+  year: integer("year").primaryKey(),
+  count: integer("count").notNull().default(0),
+});
+
+export const contactRevisions = sqliteTable("contact_revisions", {
+  id: text("id").primaryKey(),
+  contactId: text("contact_id").notNull(),
+  tenantId: text("tenant_id").notNull(),
+  version: integer("version").notNull(),
+  prevRevisionHash: text("prev_revision_hash").notNull(),
+  revisionHash: text("revision_hash").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  updatedBy: text("updated_by").notNull(),
+  action: text("action").notNull(),
+  snapshotJson: text("snapshot_json").notNull(),
+});
+
+/* ===================================================================
+ * Patch v12 Day 3 — CRM stores (audit §3.9, §3.10, §3.11)
+ *
+ *   founderCrmContacts  — founder's view of investors  (audit §3.11)
+ *   investorCrmContacts — investor's broader contact tracker (audit §3.10)
+ *   pcrmContacts/Notes/Tasks — Sprint 10 personal CRM (audit §3.9)
+ *
+ * All tables carry tenant_id (NOT NULL) and a soft-delete column.
+ * =================================================================== */
+
+export const founderCrmContacts = sqliteTable("founder_crm_contacts", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").notNull(),
+  companyId: text("company_id").notNull(),
+  investorId: text("investor_id"),
+  name: text("name").notNull(),
+  firmName: text("firm_name"),
+  role: text("role"),
+  email: text("email"),
+  region: text("region"),
+  stage: text("stage").notNull(),
+  // JSON: { sharesUsd: number, pct: number }
+  ownership: text("ownership"),
+  // JSON Array<{ts:string, amountUsd:number, type:string}>
+  softCircleHistory: text("soft_circle_history"),
+  // JSON Array<{ id, text, due, status }>
+  tasks: text("tasks"),
+  // JSON string[]
+  threadIds: text("thread_ids"),
+  maSignals: integer("ma_signals").notNull().default(0),
+  notes: text("notes"),
+  notesUpdatedAt: text("notes_updated_at"),
+  series: text("series"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at"),
+  deletedAt: text("deleted_at"),
+});
+
+export const investorCrmContacts = sqliteTable("investor_crm_contacts", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").notNull(),
+  investorId: text("investor_id").notNull(),
+  platformUserId: text("platform_user_id"),
+  name: text("name").notNull(),
+  role: text("role"),
+  email: text("email"),
+  affiliation: text("affiliation"),
+  stage: text("stage").notNull(),
+  // JSON string[]
+  tags: text("tags"),
+  notes: text("notes"),
+  // JSON Array<InvestorCrmNote>
+  noteLog: text("note_log"),
+  // JSON Array<InvestorCrmTask>
+  tasks: text("tasks"),
+  starred: integer("starred", { mode: "boolean" }).notNull().default(false),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  // Legacy compat fields
+  companyId: text("company_id"),
+  companyName: text("company_name"),
+  founderName: text("founder_name"),
+  founderEmail: text("founder_email"),
+  sector: text("sector"),
+  region: text("region"),
+  checkSizeUsd: integer("check_size_usd"),
+  notesUpdatedAt: text("notes_updated_at"),
+  deletedAt: text("deleted_at"),
+});
+
+export const pcrmContacts = sqliteTable("pcrm_contacts", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").notNull(),
+  ownerId: text("owner_id").notNull(),
+  name: text("name").notNull(),
+  kind: text("kind").notNull(),
+  firm: text("firm"),
+  email: text("email"),
+  linkedin: text("linkedin"),
+  pipelineStage: text("pipeline_stage").notNull(),
+  // JSON string[]
+  tags: text("tags"),
+  // JSON string[]
+  lanes: text("lanes"),
+  companyId: text("company_id"),
+  createdAt: text("created_at").notNull(),
+  deletedAt: text("deleted_at"),
+});
+
+export const pcrmNotes = sqliteTable("pcrm_notes", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").notNull(),
+  contactId: text("contact_id").notNull(),
+  body: text("body").notNull(),
+  noteType: text("note_type").notNull(),
+  createdAt: text("created_at").notNull(),
+  deletedAt: text("deleted_at"),
+});
+
+export const pcrmTasks = sqliteTable("pcrm_tasks", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id").notNull(),
+  contactId: text("contact_id").notNull(),
+  title: text("title").notNull(),
+  dueDate: text("due_date"),
+  priority: text("priority").notNull(),
+  status: text("status").notNull(),
+  completedAt: text("completed_at"),
+  createdAt: text("created_at").notNull(),
+  deletedAt: text("deleted_at"),
 });

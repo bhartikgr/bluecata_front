@@ -23,10 +23,25 @@
  *   POST   /api/investor/crm/contacts/:id/notes → alias
  *   POST   /api/investor/crm/contacts/:id/tasks → alias
  *   PATCH  /api/investor/crm/contacts/:id/tasks/:taskId → alias
+ *
+ * Patch v12 Day 3 (audit §3.10) — DB-BACKED hybrid.
+ *   - `contacts = new Map<string, InvestorCrmContact>()` remains as a hot
+ *     cache; the `investor_crm_contacts` table is authoritative.
+ *   - Each mutation writes through inside `getDb().transaction((tx) => { ... })`.
+ *     No trailing `()` — Drizzle invokes the callback for us.
+ *   - notes/tasks/tags are stored as JSON columns for v1 (simplest migration);
+ *     splitting them into child tables is a v13 optimisation.
+ *   - Per-investor tenant: `tenant_inv_<investorId>` — each investor's
+ *     personal CRM is its own tenant, scoped via withTenant() at hydrate time.
+ *   - Demo seed contacts are written-through on first boot so subsequent
+ *     restarts without ENABLE_DEMO_SEED still return them.
  */
 import type { Express, Request, Response } from "express";
 import { randomBytes } from "node:crypto";
+import { eq, isNull } from "drizzle-orm";
 import { emitMutation } from "./lib/eventBus";
+import { getDb } from "./db/connection";
+import { investorCrmContacts as investorCrmContactsTable } from "../shared/schema";
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
@@ -105,6 +120,118 @@ function uid() {
 
 function now() {
   return new Date().toISOString();
+}
+
+/** Tenant id for an investor's personal CRM. */
+function tenantForInvestor(investorId: string): string {
+  return `tenant_inv_${investorId}`;
+}
+
+function rowToContact(r: any): InvestorCrmContact {
+  const parse = <T,>(s: any, fallback: T): T => {
+    if (!s || typeof s !== "string") return fallback;
+    try { return JSON.parse(s) as T; } catch { return fallback; }
+  };
+  return {
+    id: r.id,
+    investorId: r.investorId,
+    platformUserId: r.platformUserId ?? undefined,
+    name: r.name,
+    role: r.role ?? "",
+    email: r.email ?? "",
+    affiliation: r.affiliation ?? "",
+    stage: r.stage as InvestorCrmStage,
+    tags: parse(r.tags, [] as string[]),
+    notes: r.notes ?? "",
+    noteLog: parse(r.noteLog, [] as InvestorCrmNote[]),
+    tasks: parse(r.tasks, [] as InvestorCrmTask[]),
+    starred: Boolean(r.starred),
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt,
+    companyId: r.companyId ?? undefined,
+    companyName: r.companyName ?? undefined,
+    founderName: r.founderName ?? undefined,
+    founderEmail: r.founderEmail ?? undefined,
+    sector: r.sector ?? undefined,
+    region: r.region ?? undefined,
+    checkSizeUsd: typeof r.checkSizeUsd === "number" ? r.checkSizeUsd : undefined,
+    notesUpdatedAt: r.notesUpdatedAt ?? undefined,
+  };
+}
+
+function contactToRow(c: InvestorCrmContact) {
+  return {
+    id: c.id,
+    tenantId: tenantForInvestor(c.investorId),
+    investorId: c.investorId,
+    platformUserId: c.platformUserId ?? null,
+    name: c.name,
+    role: c.role,
+    email: c.email,
+    affiliation: c.affiliation,
+    stage: c.stage,
+    tags: JSON.stringify(c.tags ?? []),
+    notes: c.notes,
+    noteLog: JSON.stringify(c.noteLog ?? []),
+    tasks: JSON.stringify(c.tasks ?? []),
+    starred: c.starred,
+    createdAt: c.createdAt,
+    updatedAt: c.updatedAt,
+    companyId: c.companyId ?? null,
+    companyName: c.companyName ?? null,
+    founderName: c.founderName ?? null,
+    founderEmail: c.founderEmail ?? null,
+    sector: c.sector ?? null,
+    region: c.region ?? null,
+    checkSizeUsd: typeof c.checkSizeUsd === "number" ? c.checkSizeUsd : null,
+    notesUpdatedAt: c.notesUpdatedAt ?? null,
+    deletedAt: null as string | null,
+  };
+}
+
+/** Persist a contact (insert-or-update). Errors are logged, not thrown. */
+function persistContact(c: InvestorCrmContact): void {
+  try {
+    const db = getDb();
+    // Patch v12 Day 3: write-through. No trailing `()` — Drizzle invokes
+    // the callback for us. BEGIN IMMEDIATE serialises concurrent writers
+    // on the same (id) row.
+    db.transaction((tx: any) => {
+      const existing = tx
+        .select({ id: investorCrmContactsTable.id })
+        .from(investorCrmContactsTable)
+        .where(eq(investorCrmContactsTable.id, c.id))
+        .limit(1)
+        .all() as any[];
+      const row = contactToRow(c);
+      if (existing.length === 0) {
+        tx.insert(investorCrmContactsTable).values(row).run();
+      } else {
+        const { id: _id, createdAt: _ca, ...patch } = row;
+        tx.update(investorCrmContactsTable)
+          .set(patch)
+          .where(eq(investorCrmContactsTable.id, c.id))
+          .run();
+      }
+    });
+  } catch (err) {
+    console.error("[investorCrmStore] DB write failed:", (err as Error).message);
+  }
+}
+
+/** Soft-delete a contact. */
+function softDeleteContact(id: string): void {
+  try {
+    const db = getDb();
+    db.transaction((tx: any) => {
+      tx.update(investorCrmContactsTable)
+        .set({ deletedAt: now() })
+        .where(eq(investorCrmContactsTable.id, id))
+        .run();
+    });
+  } catch (err) {
+    console.error("[investorCrmStore softDelete] failed:", (err as Error).message);
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -220,6 +347,56 @@ function resolveInvestorId(req: Request): string | null {
 }
 
 /* ------------------------------------------------------------------ */
+/* Hydration                                                           */
+/* ------------------------------------------------------------------ */
+
+/** Write seed contacts to DB on first boot. Idempotent (INSERT-or-skip). */
+function seedDemoContactsIntoDb(): void {
+  try {
+    const db = getDb();
+    db.transaction((tx: any) => {
+      for (const c of Array.from(contacts.values())) {
+        const existing = tx
+          .select({ id: investorCrmContactsTable.id })
+          .from(investorCrmContactsTable)
+          .where(eq(investorCrmContactsTable.id, c.id))
+          .limit(1)
+          .all() as any[];
+        if (existing.length === 0) {
+          tx.insert(investorCrmContactsTable).values(contactToRow(c)).run();
+        }
+      }
+    });
+  } catch (err) {
+    console.warn("[investorCrmStore] demo seed write-through failed:", (err as Error).message);
+  }
+}
+
+export async function hydrateInvestorCrmStore(): Promise<void> {
+  try {
+    const db = getDb();
+    seedDemoContactsIntoDb();
+    // CROSS-TENANT (admin) — hydration replays every investor's contacts.
+    // Each row's investorId scopes it; routes filter per-request.
+    const rows = db
+      .select()
+      .from(investorCrmContactsTable)
+      .where(isNull(investorCrmContactsTable.deletedAt))
+      .all() as any[];
+    contacts.clear();
+    for (const r of rows) {
+      const c = rowToContact(r);
+      contacts.set(c.id, c);
+    }
+    if (rows.length > 0) {
+      console.log(`[hydrate] investorCrmStore: ${rows.length} contacts restored`);
+    }
+  } catch (err) {
+    console.warn("[hydrate] investorCrmStore: DB read failed:", (err as Error).message);
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* Registration                                                        */
 /* ------------------------------------------------------------------ */
 
@@ -328,6 +505,7 @@ export function registerInvestorCrmRoutes(app: Express): void {
     };
 
     contacts.set(contact.id, contact);
+    persistContact(contact);
     emitMutation({ aggregate: "investor_crm", id: contact.id, change: "create" });
     return res.status(201).json({ ok: true, contact });
   });
@@ -339,6 +517,7 @@ export function registerInvestorCrmRoutes(app: Express): void {
     const updates = buildContactUpdates(req.body, existing);
     const updated = { ...existing, ...updates };
     contacts.set(id, updated);
+    persistContact(updated);
     emitMutation({ aggregate: "investor_crm", id, change: "update" });
     return res.json({ ok: true, contact: updated });
   });
@@ -347,6 +526,7 @@ export function registerInvestorCrmRoutes(app: Express): void {
     const { id } = req.params;
     if (!contacts.has(id)) return res.status(404).json({ error: "Contact not found" });
     contacts.delete(id);
+    softDeleteContact(id);
     emitMutation({ aggregate: "investor_crm", id, change: "delete" });
     return res.json({ ok: true, deleted: id });
   });
@@ -371,6 +551,7 @@ export function registerInvestorCrmRoutes(app: Express): void {
       updatedAt: now(),
     };
     contacts.set(id, updated);
+    persistContact(updated);
     emitMutation({ aggregate: "investor_crm", id, change: "update" });
     return res.json({ ok: true, note });
   });
@@ -395,6 +576,7 @@ export function registerInvestorCrmRoutes(app: Express): void {
       updatedAt: now(),
     };
     contacts.set(id, updated);
+    persistContact(updated);
     emitMutation({ aggregate: "investor_crm", id, change: "update" });
     return res.json({ ok: true, task });
   });
@@ -419,6 +601,7 @@ export function registerInvestorCrmRoutes(app: Express): void {
     });
     const updated = { ...existing, tasks, updatedAt: now() };
     contacts.set(id, updated);
+    persistContact(updated);
     emitMutation({ aggregate: "investor_crm", id, change: "update" });
     return res.json({ ok: true, task: tasks[taskIdx] });
   });
@@ -482,6 +665,7 @@ export function registerInvestorCrmRoutes(app: Express): void {
     };
 
     contacts.set(contact.id, contact);
+    persistContact(contact);
     emitMutation({ aggregate: "investor_crm", id: contact.id, change: "create" });
     return res.status(201).json(contact);
   });
@@ -494,6 +678,7 @@ export function registerInvestorCrmRoutes(app: Express): void {
     const updates = buildContactUpdates(req.body, existing);
     const updated = { ...existing, ...updates };
     contacts.set(id, updated);
+    persistContact(updated);
     emitMutation({ aggregate: "investor_crm", id, change: "update" });
     return res.json(updated);
   });
@@ -503,6 +688,7 @@ export function registerInvestorCrmRoutes(app: Express): void {
     const { id } = req.params;
     if (!contacts.has(id)) return res.status(404).json({ error: "Contact not found" });
     contacts.delete(id);
+    softDeleteContact(id);
     emitMutation({ aggregate: "investor_crm", id, change: "delete" });
     return res.json({ ok: true, deleted: id });
   });
@@ -525,6 +711,7 @@ export function registerInvestorCrmRoutes(app: Express): void {
       updatedAt: now(),
     };
     contacts.set(id, updated);
+    persistContact(updated);
     emitMutation({ aggregate: "investor_crm", id, change: "update" });
     return res.json({ ok: true, note });
   });
@@ -549,6 +736,7 @@ export function registerInvestorCrmRoutes(app: Express): void {
       updatedAt: now(),
     };
     contacts.set(id, updated);
+    persistContact(updated);
     emitMutation({ aggregate: "investor_crm", id, change: "update" });
     return res.json({ ok: true, task });
   });
@@ -572,6 +760,7 @@ export function registerInvestorCrmRoutes(app: Express): void {
     });
     const updated = { ...existing, tasks, updatedAt: now() };
     contacts.set(id, updated);
+    persistContact(updated);
     emitMutation({ aggregate: "investor_crm", id, change: "update" });
     return res.json({ ok: true, task: tasks[taskIdx] });
   });
@@ -605,3 +794,17 @@ function buildContactUpdates(body: any, existing: InvestorCrmContact): Partial<I
   }
   return updates;
 }
+
+/** Test helper — reset the in-memory + DB store. */
+export const _testInvestorCrm = {
+  reset: () => {
+    contacts.clear();
+    try {
+      const db = getDb();
+      db.delete(investorCrmContactsTable).run();
+    } catch (err) {
+      console.warn("[_testInvestorCrm.reset] DB reset failed:", (err as Error).message);
+    }
+  },
+  get contacts() { return contacts; },
+};

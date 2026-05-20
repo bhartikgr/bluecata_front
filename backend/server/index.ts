@@ -11,6 +11,10 @@ import { startBridgeWorker } from "./bridgeWorker";
 import { hydrateAllStores } from "./lib/hydrateStores";
 // Sprint-fix May 14 2026 — wire the catch-all route guard AFTER registerRoutes.
 import { applyRouteGuards } from "./lib/applyRouteGuards";
+// v12 Phase A.6 — demo seed gate (non-prod only).
+import { DEMO_SEED_ENABLED } from "./lib/demoGate";
+import { seedDemoData } from "./lib/seedDemoData";
+import { getDb } from "./db/connection";
 
 const app = express();
 const httpServer = createServer(app);
@@ -104,6 +108,21 @@ app.use((req, res, next) => {
 (async () => {
   // KL-04: Hydrate in-memory stores from DB on startup (no-op in sandbox)
   await hydrateAllStores();
+
+  // v12 Phase A.6 — seed demo personas (Maya / Aisha / Daniel + NovaPay /
+  // Arboreal / Kelvin + Keiretsu Canada) BEHIND the demo gate. Production
+  // never seeds. Every row carries is_demo=1 so v13 can purge cleanly.
+  // Idempotent: re-runs are no-ops via onConflictDoNothing.
+  if (DEMO_SEED_ENABLED) {
+    try {
+      const summary = await seedDemoData(getDb());
+      // eslint-disable-next-line no-console
+      console.log("[v12 demo-seed]", summary);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[v12 demo-seed] failed", err);
+    }
+  }
 
   // Patch v9 (P0-11): apply catch-all route guards BEFORE registerRoutes
   // so the middleware actually intercepts requests. Express middleware runs

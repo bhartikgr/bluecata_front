@@ -1,6 +1,25 @@
 /**
  * Sprint 29 KL-03 — Durable Map helper.
  *
+ * @deprecated DO NOT ADOPT IN NEW CODE.
+ *
+ * This was a Sprint 29 attempt at a transparent Map-to-DB write-through. It
+ * was never finished: `writeThrough` and `deleteThrough` below are still
+ * `console.log` stubs that print "would upsert if Drizzle pg driver were
+ * active" but never actually write. Furthermore, the intended target is a
+ * single key-value `sync_inbox_state` blob table — not the real schema
+ * tables. That defeats the whole purpose of having a typed Drizzle schema.
+ *
+ * Patch v12 (May 19, 2026) deliberately bypassed this helper in favour of
+ * writing each store directly against its real Drizzle schema table via
+ * `getDb()`. See `/home/user/workspace/audit_findings/phase5_db_persistence/
+ * DB_PERSISTENCE_AUDIT.md` Section 6 (DB-2) for the architectural rationale.
+ *
+ * This file is retained ONLY because some legacy code may import the type.
+ * Do not extend it. Do not adopt it. If you need persistence in a new
+ * store, follow the v12 pattern: import `getDb` from `./db/connection`
+ * and write directly against the schema table.
+ *
  * A Map-compatible wrapper that, when DATABASE_URL is set, writes through
  * to a backing store (Postgres `sync_inbox_state` table via Drizzle).
  * When DATABASE_URL is absent (sandbox), it stays in-memory but is annotated

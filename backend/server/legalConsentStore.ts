@@ -1,21 +1,40 @@
 /**
  * Sprint 28 Legal — Append-only consent ledger.
  *
- * Hash-chained, audited, bridged. Every consent record is immutable once
- * written. Idempotent re-submission of the same (userId, docId, version)
- * returns the existing record without extending the chain.
+ * Patch v12 Day 2 Wave 2 (audit §3.13) — DB-BACKED.
  *
- * Endpoints:
- *   POST /api/legal/consent           — record consent for authenticated user
- *   GET  /api/legal/consent/mine      — calling user's own consent trail
- *   GET  /api/admin/legal/consents    — paginated admin read-only view (admin only)
+ * The append-only ledger is now persisted to the `legal_consents` table.
+ * No in-memory `ledger: LegalConsent[]` Map remains. Every `recordConsent`
+ * call opens a `getDb().transaction(...)` that:
+ *
+ *   1. SELECTs the current chainTip for the tenant (deterministic by
+ *      `ORDER BY accepted_at DESC, id DESC LIMIT 1`).
+ *   2. Checks idempotency — if a row already exists for
+ *      (tenantId, userId, documentId, documentVersion) we return it without
+ *      extending the chain.
+ *   3. Computes the new SHA-256 hash linking to prevHash.
+ *   4. INSERTs the row.
+ *
+ * Reads are SELECT against the DB with `withTenant`-style filtering. The
+ * test-only `_testLegalConsent.reset()` truncates the table for isolation.
+ *
+ * Hydration: lightweight — the boot-time hydrator only verifies the schema
+ * is reachable; no in-memory Map needs filling.
+ *
+ * Endpoints (unchanged):
+ *   POST /api/legal/consent
+ *   GET  /api/legal/consent/mine
+ *   GET  /api/admin/legal/consents
  */
 import type { Express, Request, Response } from "express";
 import { createHash, randomBytes } from "node:crypto";
+import { and, eq, isNull, desc, asc } from "drizzle-orm";
 import { resolvePersonaId } from "./lib/userContext";
 import { appendAdminAudit } from "./adminPlatformStore";
 import { emitBridgeEvent } from "./bridgeStore";
 import { LEGAL_VERSION } from "../client/src/lib/legalDocs";
+import { getDb } from "./db/connection";
+import { legalConsents as legalConsentsTable } from "../shared/schema";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -45,8 +64,6 @@ export interface LegalConsent {
   hash: string;
 }
 
-// ─── In-memory store ──────────────────────────────────────────────────────────
-
 const VALID_DOC_IDS: LegalDocId[] = [
   "privacy",
   "terms",
@@ -62,9 +79,16 @@ const VALID_CONTEXTS: ConsentContext[] = [
   "settings_update",
 ];
 
-/** Append-only ledger — never modify entries after creation. */
-const ledger: LegalConsent[] = [];
-let chainTip = "0".repeat(64);
+/**
+ * Single platform tenant for legal consents.
+ *
+ * Capavate legal documents are platform-wide (the Privacy/ToS bind every
+ * user to Capavate, not to any specific company tenant). All consents
+ * therefore chain into one tenant. v13 may split this if region-specific
+ * legal terms diverge — the schema is already tenant-scoped, so a future
+ * split is a config change, not a schema change.
+ */
+const DEFAULT_TENANT_ID = "tenant_platform";
 
 function sha256(s: string): string {
   return createHash("sha256").update(s, "utf8").digest("hex");
@@ -73,6 +97,21 @@ function sha256(s: string): string {
 function buildHash(prevHash: string, id: string, userId: string, documentId: string, documentVersion: string, acceptedAt: string): string {
   const snapshot = `${prevHash}|${id}|${userId}|${documentId}|${documentVersion}|${acceptedAt}`;
   return sha256(snapshot);
+}
+
+function rowToConsent(r: any): LegalConsent {
+  return {
+    id: r.id,
+    userId: r.userId,
+    documentId: r.documentId as LegalDocId,
+    documentVersion: r.documentVersion,
+    context: r.context as ConsentContext,
+    acceptedAt: r.acceptedAt,
+    ipAddress: r.ipAddress ?? null,
+    userAgent: r.userAgent ?? null,
+    prevHash: r.prevHash,
+    hash: r.hash,
+  };
 }
 
 // ─── Core store operations ────────────────────────────────────────────────────
@@ -84,53 +123,160 @@ export function recordConsent(args: {
   context: ConsentContext;
   ipAddress: string | null;
   userAgent: string | null;
+  tenantId?: string;
 }): { consent: LegalConsent; isNew: boolean } {
-  // Idempotency check: same (userId, docId, version) → return existing
-  const existing = ledger.find(
-    (e) =>
-      e.userId === args.userId &&
-      e.documentId === args.documentId &&
-      e.documentVersion === LEGAL_VERSION,
-  );
-  if (existing) return { consent: existing, isNew: false };
+  const tenantId = args.tenantId ?? DEFAULT_TENANT_ID;
 
-  const id = `lc_${randomBytes(8).toString("hex")}`;
-  const acceptedAt = new Date().toISOString();
-  const prevHash = chainTip;
-  const hash = buildHash(prevHash, id, args.userId, args.documentId, LEGAL_VERSION, acceptedAt);
+  let result: { consent: LegalConsent; isNew: boolean } | null = null;
 
-  const entry: LegalConsent = {
-    id,
-    userId: args.userId,
-    documentId: args.documentId,
-    documentVersion: LEGAL_VERSION,
-    context: args.context,
-    acceptedAt,
-    ipAddress: args.ipAddress,
-    userAgent: args.userAgent,
-    prevHash,
-    hash,
-  };
+  try {
+    const db = getDb();
+    // Patch v12 Day 2 Wave 2 — DB-6: BEGIN IMMEDIATE serialises concurrent
+    // appenders on the per-tenant hash chain. Idempotency check + chainTip
+    // read + INSERT all happen inside the same transaction so two parallel
+    // posts of the same (userId, docId, version) can never both insert.
+    // NOTE: no trailing `()` — Drizzle invokes the callback for us.
+    db.transaction((tx: any) => {
+      // 1. Idempotency check — same tenant+user+doc+version => existing
+      const existingRows = tx
+        .select()
+        .from(legalConsentsTable)
+        .where(and(
+          eq(legalConsentsTable.tenantId, tenantId),
+          eq(legalConsentsTable.userId, args.userId),
+          eq(legalConsentsTable.documentId, args.documentId),
+          eq(legalConsentsTable.documentVersion, LEGAL_VERSION),
+          isNull(legalConsentsTable.deletedAt),
+        ))
+        .limit(1)
+        .all() as any[];
 
-  ledger.push(entry);
-  chainTip = hash;
+      if (existingRows.length > 0) {
+        result = { consent: rowToConsent(existingRows[0]), isNew: false };
+        return;
+      }
 
-  return { consent: entry, isNew: true };
+      // 2. Per-tenant chain tip
+      // CROSS-TENANT (admin) — the chainTip read is intentionally scoped to a
+      // SINGLE tenantId (the new row's own); we ignore deleted_at because the
+      // consent ledger is append-only by contract.
+      const tipRow = tx
+        .select({ hash: legalConsentsTable.hash, acceptedAt: legalConsentsTable.acceptedAt })
+        .from(legalConsentsTable)
+        .where(eq(legalConsentsTable.tenantId, tenantId))
+        .orderBy(desc(legalConsentsTable.acceptedAt), desc(legalConsentsTable.id))
+        .limit(1)
+        .all() as Array<{ hash: string }>;
+      const prevHash = tipRow[0]?.hash ?? "0".repeat(64);
+
+      // 3. Compute id + hash
+      const id = `lc_${randomBytes(8).toString("hex")}`;
+      const acceptedAt = new Date().toISOString();
+      const hash = buildHash(prevHash, id, args.userId, args.documentId, LEGAL_VERSION, acceptedAt);
+
+      // 4. INSERT
+      tx.insert(legalConsentsTable)
+        .values({
+          id,
+          tenantId,
+          userId: args.userId,
+          documentId: args.documentId,
+          documentVersion: LEGAL_VERSION,
+          context: args.context,
+          acceptedAt,
+          ipAddress: args.ipAddress,
+          userAgent: args.userAgent,
+          prevHash,
+          hash,
+          deletedAt: null,
+        })
+        .run();
+
+      const consent: LegalConsent = {
+        id,
+        userId: args.userId,
+        documentId: args.documentId,
+        documentVersion: LEGAL_VERSION,
+        context: args.context,
+        acceptedAt,
+        ipAddress: args.ipAddress,
+        userAgent: args.userAgent,
+        prevHash,
+        hash,
+      };
+      result = { consent, isNew: true };
+    });
+  } catch (err) {
+    // We surface the failure loudly. There is no graceful in-memory fallback —
+    // a consent that is not in the durable ledger MUST NOT be treated as recorded
+    // by the route layer. The route handler will translate this into a 500.
+    console.error("[legalConsentStore.recordConsent] DB write failed:", (err as Error).message);
+    throw err;
+  }
+
+  if (!result) {
+    throw new Error("legalConsentStore.recordConsent: transaction yielded no result");
+  }
+  return result;
 }
 
-export function getConsentsForUser(userId: string): LegalConsent[] {
-  return ledger.filter((e) => e.userId === userId);
+/**
+ * Returns all consents for a user. Reads directly from the DB and filters
+ * out soft-deleted rows. `tenantId` is optional — when omitted the platform
+ * tenant is used (current v12 behavior since all consents share one tenant).
+ */
+export function getConsentsForUser(userId: string, tenantId?: string): LegalConsent[] {
+  const tid = tenantId ?? DEFAULT_TENANT_ID;
+  try {
+    const db = getDb();
+    const rows = db
+      .select()
+      .from(legalConsentsTable)
+      .where(and(
+        eq(legalConsentsTable.tenantId, tid),
+        eq(legalConsentsTable.userId, userId),
+        isNull(legalConsentsTable.deletedAt),
+      ))
+      .orderBy(asc(legalConsentsTable.acceptedAt))
+      .all() as any[];
+    return rows.map(rowToConsent);
+  } catch (err) {
+    console.warn("[legalConsentStore.getConsentsForUser] DB read failed:", (err as Error).message);
+    return [];
+  }
 }
 
+/**
+ * Returns all consents across all users. Used by the admin paginated view.
+ * Cross-tenant by design (admin platform read).
+ */
 export function getAllConsents(): LegalConsent[] {
-  return [...ledger];
+  try {
+    const db = getDb();
+    // CROSS-TENANT (admin) — admin dashboard intentionally reads every tenant.
+    const rows = db
+      .select()
+      .from(legalConsentsTable)
+      .where(isNull(legalConsentsTable.deletedAt))
+      .orderBy(asc(legalConsentsTable.acceptedAt), asc(legalConsentsTable.id))
+      .all() as any[];
+    return rows.map(rowToConsent);
+  } catch (err) {
+    console.warn("[legalConsentStore.getAllConsents] DB read failed:", (err as Error).message);
+    return [];
+  }
 }
 
-/** Verify the append-only hash chain. Returns { ok, brokenAt }. */
+/**
+ * Verify the append-only hash chain across the entire platform tenant.
+ * Returns { ok, brokenAt } — brokenAt is the index of the first inconsistent
+ * row (0-based) or -1 if the chain is valid.
+ */
 export function verifyChain(): { ok: boolean; brokenAt: number } {
+  const all = getAllConsents();
   let prev = "0".repeat(64);
-  for (let i = 0; i < ledger.length; i++) {
-    const e = ledger[i];
+  for (let i = 0; i < all.length; i++) {
+    const e = all[i];
     if (e.prevHash !== prev) return { ok: false, brokenAt: i };
     const expected = buildHash(prev, e.id, e.userId, e.documentId, e.documentVersion, e.acceptedAt);
     if (e.hash !== expected) return { ok: false, brokenAt: i };
@@ -139,13 +285,43 @@ export function verifyChain(): { ok: boolean; brokenAt: number } {
   return { ok: true, brokenAt: -1 };
 }
 
+/**
+ * Hydrator — required by hydrateStores.HYDRATE_ORDER. Since we read on
+ * demand there is no Map to populate; we just confirm the schema is
+ * reachable and emit a diagnostic on the live-row count so operators can
+ * spot empty DBs immediately.
+ */
+export async function hydrateLegalConsentStore(): Promise<void> {
+  try {
+    const db = getDb();
+    const rows = db
+      .select({ id: legalConsentsTable.id })
+      .from(legalConsentsTable)
+      .where(isNull(legalConsentsTable.deletedAt))
+      .all() as any[];
+    if (rows.length > 0) {
+      console.log(`[hydrate] legalConsentStore: ${rows.length} live consents in ledger`);
+    }
+  } catch (err) {
+    console.warn("[hydrate] legalConsentStore: DB read failed:", (err as Error).message);
+  }
+}
+
 /** Test helper — reset the ledger. */
 export const _testLegalConsent = {
   reset: () => {
-    ledger.length = 0;
-    chainTip = "0".repeat(64);
+    try {
+      const db = getDb();
+      // Test-only DELETE; production has no caller for this helper. Wrap in
+      // raw .run() so it bypasses Drizzle's where requirement.
+      db.delete(legalConsentsTable).run();
+    } catch (err) {
+      console.warn("[legalConsentStore._testLegalConsent.reset] DB reset failed:", (err as Error).message);
+    }
   },
-  ledger,
+  // Maintained for backward-compatibility with v11 tests that expected to
+  // read the in-memory array. Returns a fresh snapshot.
+  get ledger() { return getAllConsents(); },
   verifyChain,
 };
 
@@ -181,16 +357,22 @@ export function registerLegalConsentRoutes(app: Express): void {
 
     const recorded: string[] = [];
     for (const docId of documentIds as LegalDocId[]) {
-      const { consent, isNew } = recordConsent({
-        userId,
-        documentId: docId,
-        context: context as ConsentContext,
-        ipAddress,
-        userAgent,
-      });
+      let outcome: { consent: LegalConsent; isNew: boolean };
+      try {
+        outcome = recordConsent({
+          userId,
+          documentId: docId,
+          context: context as ConsentContext,
+          ipAddress,
+          userAgent,
+        });
+      } catch (err) {
+        return res.status(500).json({ ok: false, error: "consent_ledger_unavailable", message: (err as Error).message });
+      }
+      const { consent, isNew } = outcome;
 
       if (isNew) {
-        // Audit log
+        // Audit log — lands in audit_log via Wave 1 DB-backed appendAdminAudit.
         appendAdminAudit(userId, `consent:${consent.id}`, "legal_consent.recorded", {
           consentId: consent.id,
           userId,

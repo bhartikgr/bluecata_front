@@ -169,13 +169,26 @@ describe("Sprint 26 — termSheetStore direct API", () => {
     }
   });
 
-  it("4. verifyChain detects tampering", () => {
+  it("4. verifyChain detects tampering", async () => {
     saveTermSheet({ payload: validPayload() as never, savedBy: "u_test" });
     saveTermSheet({ payload: validPayload() as never, savedBy: "u_test" });
     expect(verifyChain("rnd_test").ok).toBe(true);
-    // Tamper with revision 1's payload
-    const xs = getRevisions("rnd_test");
-    (xs[0].payload as { templateName: string }).templateName = "tampered";
+    // Patch v12 — store is DB-backed. Tamper directly at the DB level (the
+    // only way to alter persisted state); JS-side mutation of the deserialised
+    // payload returned by getRevisions() is a no-op by design.
+    const { getDb } = await import("../db/connection");
+    const { termSheetRevisions } = await import("../../shared/schema");
+    const { and, eq } = await import("drizzle-orm");
+    const db = getDb();
+    const row = (db.select().from(termSheetRevisions)
+      .where(and(eq(termSheetRevisions.roundId, "rnd_test"), eq(termSheetRevisions.revision, 1)))
+      .limit(1).all() as any[])[0];
+    const tampered = JSON.parse(row.payloadJson);
+    tampered.templateName = "tampered";
+    db.update(termSheetRevisions)
+      .set({ payloadJson: JSON.stringify(tampered) })
+      .where(eq(termSheetRevisions.id, row.id))
+      .run();
     const v = verifyChain("rnd_test");
     expect(v.ok).toBe(false);
     expect(v.brokenAt).toBe(1);

@@ -11,6 +11,7 @@
  */
 import type { Express, Request, Response } from "express";
 import { createHash, randomBytes } from "node:crypto";
+import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import { companies, rounds, softCircles, dataroomFiles, reports } from "./mockData";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 import { ALL_OUTBOUND_EVENT_TYPES, getOutbox } from "./bridgeStore";
@@ -20,6 +21,14 @@ import { listSubscriptions } from "./subscriptionsStore";
 import { getLedger } from "./captableCommitStore";
 import { listActive as listActiveCollectiveMembers } from "./collectiveMembershipStore";
 import { getRecentEvents } from "./sprint10Telemetry";
+// Patch v12 Day 2 Wave 1 — audit_log + recon_runs + founder_tiers DB-backed.
+import { getDb } from "./db/connection";
+import {
+  auditLog as auditLogTable,
+  reconRuns as reconRunsTable,
+  founderTiers as founderTiersTable,
+  platformConfig as platformConfigTable,
+} from "../shared/schema";
 
 /**
  * Patch v10 — Live activity feed allowlist.
@@ -310,28 +319,152 @@ const users: AdminUser[] = [
   },
 ];
 
-/* ------------ Audit log w/ tamper-evident chain ------------ */
-interface AuditEntry { id: string; ts: string; actor: string; entity: string; eventType: string; payload: Record<string, unknown>; priorHash: string; hash: string; }
+/* ------------ Audit log w/ tamper-evident chain ------------
+ *
+ * Patch v12 Day 2 Wave 1 — audit_log is now DB-backed.
+ *
+ * The in-memory `auditLog: AuditEntry[]` array remains as a READ MIRROR. It
+ * preserves:
+ *   - the legacy `_testAdmin.auditLog` test access (length = 0 reset works)
+ *   - `getAuditLog()` returning the same in-process array reference
+ *   - synchronous appends (better-sqlite3 transactions are synchronous)
+ *
+ * Schema column-name mapping (per the audit §3.8 brief):
+ *   store field   <-> schema column (shared/schema.ts auditLog)
+ *   --------------    ----------------------------------------
+ *   actor         <-> actor_id
+ *   entity        <-> target           (packed as "<kind>:<id>" when applicable)
+ *   eventType     <-> action
+ *   payload       <-> payload_json     (JSON.stringify on write, parse on hydrate)
+ *   priorHash     <-> prev_hash
+ *   hash          <-> hash
+ *   ts            <-> created_at
+ *
+ * Hash chain is tenant-scoped: each tenant has its own SHA-256 chain. The
+ * chain tip is read inside the SAME transaction that inserts the new row —
+ * better-sqlite3's BEGIN IMMEDIATE serializes writers, so two parallel inserts
+ * for the same tenant will never race on the chain head (DB-6).
+ */
+interface AuditEntry {
+  id: string;
+  ts: string;
+  actor: string;
+  entity: string;
+  eventType: string;
+  payload: Record<string, unknown>;
+  priorHash: string;
+  hash: string;
+  tenantId: string;
+}
 const auditLog: AuditEntry[] = [];
-let auditPrior = "0".repeat(64);
-export function appendAdminAudit(actor: string, entity: string, eventType: string, payload: Record<string, unknown>) {
-  return appendAudit(actor, entity, eventType, payload);
+
+/** Cap on the in-memory mirror; hydrator loads the most recent N rows. */
+const AUDIT_MIRROR_LIMIT = 5000;
+
+/** Default per-tenant resolver — derive from the entity string if possible. */
+function resolveTenantId(entity: string, explicit?: string): string {
+  if (explicit && explicit.length > 0) return explicit;
+  // entity like "co_<id>" or "company:co_<id>" or "contact:<id>" etc.
+  // Match co_<id> as the most reliable signal of a company tenant.
+  const m = entity.match(/co_([a-z0-9_]+)/i);
+  if (m) return `tenant_co_${m[1]}`;
+  // Any other entity (platform / users / partners / campaigns) routes to the
+  // platform tenant so the chain is still consistent.
+  return "tenant_platform";
 }
 
 export function getAuditLog(): AuditEntry[] {
   return auditLog;
 }
 
-function appendAudit(actor: string, entity: string, eventType: string, payload: Record<string, unknown>) {
+/**
+ * Append a new audit entry. Tenant-scoped, hash-chained, DB-backed.
+ *
+ * Signature is backward-compatible: existing 4-arg callers (actor, entity,
+ * eventType, payload) keep working; new callers may pass an explicit tenantId.
+ */
+export function appendAdminAudit(
+  actor: string,
+  entity: string,
+  eventType: string,
+  payload: Record<string, unknown>,
+  tenantId?: string,
+): AuditEntry {
+  return appendAudit(actor, entity, eventType, payload, tenantId);
+}
+
+function appendAudit(
+  actor: string,
+  entity: string,
+  eventType: string,
+  payload: Record<string, unknown>,
+  explicitTenantId?: string,
+): AuditEntry {
   const id = `al_${randomBytes(6).toString("hex")}`;
   const ts = new Date().toISOString();
-  const body = `${auditPrior}|${id}|${eventType}|${entity}|${ts}|${JSON.stringify(payload)}`;
-  const hash = sha256(body);
-  const e: AuditEntry = { id, ts, actor, entity, eventType, payload, priorHash: auditPrior, hash };
-  auditLog.push(e);
-  auditPrior = hash;
-  return e;
+  const tenantId = resolveTenantId(entity, explicitTenantId);
+  const payloadStr = JSON.stringify(payload);
+
+  // DB-6: a single BEGIN IMMEDIATE transaction reads the per-tenant chain tip
+  // and inserts the new row. Concurrent inserts for the same tenant are
+  // serialized by sqlite, so two appends can never compute the same prevHash.
+  let finalEntry: AuditEntry | null = null;
+  try {
+    const db = getDb();
+    db.transaction((tx: any) => {
+      // CROSS-TENANT (admin) — the chain-tip read is intentionally scoped to a
+      // SINGLE tenantId (the entry's own), but bypasses any soft-delete filter
+      // because audit_log is append-only and `deleted_at` must never participate
+      // in chain math even though the column exists for schema symmetry.
+      const tipRow = tx
+        .select({ hash: auditLogTable.hash })
+        .from(auditLogTable)
+        .where(eq(auditLogTable.tenantId, tenantId))
+        .orderBy(desc(auditLogTable.createdAt))
+        .limit(1)
+        .all() as Array<{ hash: string }>;
+      const prevHash = tipRow[0]?.hash ?? "0".repeat(64);
+      const body = `${prevHash}|${id}|${eventType}|${entity}|${ts}|${payloadStr}`;
+      const hash = sha256(body);
+
+      tx.insert(auditLogTable)
+        .values({
+          id,
+          tenantId,
+          actorId: actor,
+          action: eventType,
+          target: entity, // packed entity is acceptable per audit §3.8 (no target_id column).
+          targetId: null,
+          payloadJson: payloadStr,
+          prevHash,
+          hash,
+          createdAt: ts,
+          deletedAt: null,
+        })
+        .run();
+
+      finalEntry = { id, ts, actor, entity, eventType, payload, priorHash: prevHash, hash, tenantId };
+    });
+  } catch (err) {
+    // If the DB write fails we still surface an entry to keep callers
+    // resilient (route may have already optimistically returned 200). The
+    // chain ends up only in-memory for this entry, which is logged loudly.
+    console.error("[adminPlatformStore.appendAudit] DB write failed:", (err as Error).message);
+    const prevHash = "0".repeat(64);
+    const body = `${prevHash}|${id}|${eventType}|${entity}|${ts}|${payloadStr}`;
+    const hash = sha256(body);
+    finalEntry = { id, ts, actor, entity, eventType, payload, priorHash: prevHash, hash, tenantId };
+  }
+
+  // Mirror into the in-memory cache. Cap the mirror size so it never grows
+  // unbounded under heavy write load.
+  auditLog.push(finalEntry!);
+  if (auditLog.length > AUDIT_MIRROR_LIMIT) {
+    auditLog.splice(0, auditLog.length - AUDIT_MIRROR_LIMIT);
+  }
+  return finalEntry!;
 }
+
 function seedAudit() {
   if (auditLog.length > 0) return;
   const seed: Array<[string,string,string,Record<string,unknown>]> = [
@@ -351,6 +484,131 @@ function seedAudit() {
 // Patch v4: seed audit only when demo gate is on.
 if (DEMO_SEED_ENABLED) {
   seedAudit();
+}
+
+/* ============================================================
+ * Patch v12 Day 2 Wave 1 — hydrator + lifecycle policy persistence
+ * ============================================================ */
+
+export async function hydrateAdminPlatformStore(): Promise<void> {
+  // 1) Audit log mirror — load most recent N rows ordered by created_at ASC
+  //    so the in-memory array preserves insert order (priorHash links work).
+  try {
+    const db = getDb();
+    // CROSS-TENANT (admin) — the admin dashboard needs the global audit feed;
+    // tenant scoping is enforced when callers filter the array by tenantId.
+    const rows = (await db
+      .select({
+        id: auditLogTable.id,
+        tenantId: auditLogTable.tenantId,
+        actorId: auditLogTable.actorId,
+        action: auditLogTable.action,
+        target: auditLogTable.target,
+        payloadJson: auditLogTable.payloadJson,
+        prevHash: auditLogTable.prevHash,
+        hash: auditLogTable.hash,
+        createdAt: auditLogTable.createdAt,
+      })
+      .from(auditLogTable)
+      .where(isNull(auditLogTable.deletedAt))
+      .orderBy(asc(auditLogTable.createdAt))) as any[];
+
+    // Replace the in-memory mirror with the DB state (capped at the limit).
+    auditLog.length = 0;
+    const tail = rows.length > AUDIT_MIRROR_LIMIT ? rows.slice(-AUDIT_MIRROR_LIMIT) : rows;
+    for (const r of tail) {
+      let parsed: Record<string, unknown> = {};
+      try { parsed = r.payloadJson ? JSON.parse(r.payloadJson) : {}; } catch { /* leave empty */ }
+      auditLog.push({
+        id: r.id,
+        ts: r.createdAt,
+        actor: r.actorId ?? "",
+        entity: r.target ?? "",
+        eventType: r.action,
+        payload: parsed,
+        priorHash: r.prevHash ?? "0".repeat(64),
+        hash: r.hash,
+        tenantId: r.tenantId,
+      });
+    }
+  } catch (err) {
+    console.warn("[adminPlatformStore.hydrate] audit_log load failed:", (err as Error).message);
+  }
+
+  // 2) Reconciliation runs — read all live rows into the in-memory array.
+  try {
+    const db = getDb();
+    const rows = (await db
+      .select()
+      .from(reconRunsTable)
+      .where(isNull(reconRunsTable.deletedAt))
+      .orderBy(asc(reconRunsTable.ts))) as any[];
+    if (rows.length > 0) {
+      reconRuns.length = 0;
+      for (const r of rows) {
+        try {
+          reconRuns.push({
+            id: r.id,
+            ts: r.ts,
+            companyId: r.companyId,
+            roundId: r.roundId,
+            engineMain: JSON.parse(r.engineMainJson),
+            engineRef: JSON.parse(r.engineRefJson),
+            diff: JSON.parse(r.diffJson),
+            actor: r.actor,
+          });
+        } catch {
+          /* skip malformed row */
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("[adminPlatformStore.hydrate] recon_runs load failed:", (err as Error).message);
+  }
+
+  // 3) Founder tiers — replace seed if DB has rows.
+  try {
+    const db = getDb();
+    const rows = (await db
+      .select()
+      .from(founderTiersTable)
+      .where(isNull(founderTiersTable.deletedAt))) as any[];
+    if (rows.length > 0) {
+      founderTiers.length = 0;
+      for (const r of rows) {
+        try {
+          founderTiers.push({
+            id: r.id,
+            name: r.name,
+            usdMonthly: r.usdMonthly,
+            features: JSON.parse(r.featuresJson),
+          });
+        } catch { /* skip malformed row */ }
+      }
+    }
+  } catch (err) {
+    console.warn("[adminPlatformStore.hydrate] founder_tiers load failed:", (err as Error).message);
+  }
+
+  // 4) Lifecycle policies — platform_config[key="lifecycle_policies"].
+  try {
+    const db = getDb();
+    const rows = (await db
+      .select()
+      .from(platformConfigTable)
+      .where(eq(platformConfigTable.key, "lifecycle_policies"))) as any[];
+    if (rows.length > 0 && rows[0].value) {
+      try {
+        const parsed = JSON.parse(rows[0].value) as Partial<LifecyclePolicies>;
+        for (const k of Object.keys(_lifecyclePolicies) as Array<keyof LifecyclePolicies>) {
+          const v = (parsed as any)[k];
+          if (typeof v === "number" && v > 0) _lifecyclePolicies[k] = v;
+        }
+      } catch { /* malformed config row; keep defaults */ }
+    }
+  } catch (err) {
+    console.warn("[adminPlatformStore.hydrate] platform_config load failed:", (err as Error).message);
+  }
 }
 
 /* ------------ Reconciliation ------------ */
@@ -472,11 +730,42 @@ export function setLifecyclePolicies(patch: Partial<LifecyclePolicies>): Lifecyc
       _lifecyclePolicies[key] = patch[key] as number;
     }
   }
-  // In production, Avinay will upsert to platform_config table:
-  // await db.insert(platformConfig).values({ key: 'lifecycle_policies', value: JSON.stringify(_lifecyclePolicies), ... })
-  //   .onConflictDoUpdate(...);
-  if (process.env.DATABASE_URL) {
-    console.log('[hydrate] would persist lifecycle_policies to platform_config table if Drizzle pg driver were active');
+  // Patch v12 Day 2 Wave 1 — write-through to platform_config (audit §3.8).
+  // Stores the full policy bag JSON-encoded under key='lifecycle_policies' with
+  // a versioned hash chain (DB-6) just like every other v12 mutator. The chain
+  // here is per-key (only one row per key, so really just a version counter).
+  try {
+    const db = getDb();
+    const now = new Date().toISOString();
+    const value = JSON.stringify(_lifecyclePolicies);
+    db.transaction((tx: any) => {
+      const tipRow = tx
+        .select({ hash: platformConfigTable.hash, version: platformConfigTable.version })
+        .from(platformConfigTable)
+        .where(eq(platformConfigTable.key, "lifecycle_policies"))
+        .limit(1)
+        .all() as Array<{ hash: string; version: number }>;
+      const prevHash = tipRow[0]?.hash ?? "0".repeat(64);
+      const nextVersion = (tipRow[0]?.version ?? 0) + 1;
+      const hash = sha256(`${prevHash}|lifecycle_policies|${nextVersion}|${now}|${value}`);
+      tx.insert(platformConfigTable)
+        .values({
+          key: "lifecycle_policies",
+          value,
+          version: nextVersion,
+          prevHash,
+          hash,
+          updatedAt: now,
+          updatedBy: "admin",
+        })
+        .onConflictDoUpdate({
+          target: platformConfigTable.key,
+          set: { value, version: nextVersion, prevHash, hash, updatedAt: now, updatedBy: "admin" },
+        })
+        .run();
+    });
+  } catch (err) {
+    console.error("[adminPlatformStore.setLifecyclePolicies] DB write failed:", (err as Error).message);
   }
   return { ..._lifecyclePolicies };
 }
@@ -687,6 +976,26 @@ export function registerAdminPlatformRoutes(app: Express): void {
   app.post("/api/admin/reconciliation/run", (req: Request, res: Response) => {
     const { companyId, roundId } = req.body ?? {};
     const e: ReconRun = { id: `rec_${randomBytes(4).toString("hex")}`, ts: new Date().toISOString(), companyId: companyId ?? "co_novapay", roundId: roundId ?? "rnd_novapay_seed", engineMain: { totalShares: "12500000", ownership: 1.0 }, engineRef: { totalShares: "12500000", ownership: 1.0 }, diff: { sharesDelta: "0", ownershipDelta: 0, ok: true }, actor: "u_admin" };
+    // Patch v12 Day 2 Wave 1 — write-through to recon_runs table.
+    try {
+      const db = getDb();
+      db.transaction((tx: any) => {
+        tx.insert(reconRunsTable).values({
+          id: e.id,
+          tenantId: `tenant_co_${e.companyId}`,
+          companyId: e.companyId,
+          roundId: e.roundId,
+          ts: e.ts,
+          engineMainJson: JSON.stringify(e.engineMain),
+          engineRefJson: JSON.stringify(e.engineRef),
+          diffJson: JSON.stringify(e.diff),
+          actor: e.actor,
+          deletedAt: null,
+        }).run();
+      });
+    } catch (err) {
+      console.error("[adminPlatformStore.reconciliation/run] DB write failed:", (err as Error).message);
+    }
     reconRuns.push(e);
     res.json(e);
   });

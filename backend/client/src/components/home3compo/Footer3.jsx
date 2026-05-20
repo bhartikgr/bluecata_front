@@ -132,7 +132,7 @@ export default function Footer3() {
                     {openFooterDropdown && (
                       <div className="dropdown__menu dropdown__menu--footer dropdown__menu--up">
                         <a
-                          href="https://capavate.com#/onboarding"
+                          href="https://capavate.com/#/onboarding"
                           className="dropdown__item text-black"
                         >
                           <span className="dropdown__icon">📊</span>
@@ -141,7 +141,7 @@ export default function Footer3() {
                           </div>
                         </a>
                         <a
-                          href="https://capavate.com/user/login"
+                          href="https://capavate.com/#/onboarding"
                           className="dropdown__item text-black"
                         >
                           <span className="dropdown__icon">🏢</span>
@@ -154,7 +154,7 @@ export default function Footer3() {
                   </div>
                 </li>
                 <li>
-                  <a href="https://capavate.com/user/register">Register</a>
+                  <a href="https://capavate.com/#/onboarding">Register</a>
                 </li>
               </ul>
             </div>

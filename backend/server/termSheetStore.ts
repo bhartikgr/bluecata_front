@@ -1,6 +1,8 @@
 /**
  * Sprint 26 — Term-Sheet revision store + credentialed save endpoint.
  *
+ * Patch v12 Day 2 Wave 2 (audit §3.14) — DB-BACKED.
+ *
  * "Save using the highest credentials" requirements:
  *
  *   1. Authentication required — every write must carry a valid session cookie
@@ -15,8 +17,10 @@
  *      `savedBy` (session user id), and the full payload. The chain is
  *      independently verifiable via `verifyChain()`.
  *
- *   4. Sandbox-safe — pure in-memory store; no Web Storage APIs. In production
- *      this swaps to Postgres with the same schema.
+ *   4. v12 DB-BACKED — revisions persist to `term_sheet_revisions`. The
+ *      in-memory `revisionsByRound` Map is removed. Each save opens
+ *      `db.transaction(...)` that reads the chainTip for the round,
+ *      computes the next revision number + hash, and inserts atomically.
  *
  *   5. Signed records are LOCKED — once a revision has `signature` set, any
  *      further save against the same `roundId` is rejected with 409.
@@ -26,13 +30,14 @@
  * numbers or coerce them.
  */
 import type { Express, Request, Response } from "express";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { and, eq, asc, desc } from "drizzle-orm";
 import { readSessionCookie } from "./lib/sessionCookie.js";
+import { getDb } from "./db/connection";
+import { termSheetRevisions as termSheetRevisionsTable } from "../shared/schema";
 
 /**
  * SectionDraft on the wire — mirrors the client's SectionDraft shape.
- * `description` is a structured object (5 fields, all optional except the
- * top two) carrying the investor-grade clause notes.
  */
 export interface ServerClauseDescription {
   whatItMeans: string;
@@ -81,22 +86,73 @@ export interface TermSheetRevision {
   revisionHash: string;        // sha256 of prevHash || canonicalBody
 }
 
-/** Per-roundId revision chain. Sorted ascending by revision number. */
-const revisionsByRound: Map<string, TermSheetRevision[]> = new Map();
-
-export function clearTermSheetStore(): void { revisionsByRound.clear(); }
-export function getRevisions(roundId: string): ReadonlyArray<TermSheetRevision> {
-  return revisionsByRound.get(roundId) ?? [];
+function tenantForCompany(companyId: string): string {
+  if (!companyId) return "tenant_unknown";
+  if (companyId.startsWith("tenant_")) return companyId;
+  return `tenant_co_${companyId}`;
 }
+
+function rowToRevision(r: any): TermSheetRevision {
+  return {
+    revision: r.revision,
+    roundId: r.roundId,
+    companyId: r.companyId,
+    savedAt: r.savedAt,
+    savedBy: r.savedBy,
+    payload: JSON.parse(r.payloadJson) as SaveTermSheetPayload,
+    prevRevisionHash: r.prevRevisionHash,
+    revisionHash: r.revisionHash,
+  };
+}
+
+/** Test-only reset — truncates the term_sheet_revisions table. */
+export function clearTermSheetStore(): void {
+  try {
+    const db = getDb();
+    db.transaction((tx: any) => {
+      tx.delete(termSheetRevisionsTable).run();
+    });
+  } catch (err) {
+    console.warn("[termSheetStore.clearTermSheetStore] DB delete failed:", (err as Error).message);
+  }
+}
+
+export function getRevisions(roundId: string): ReadonlyArray<TermSheetRevision> {
+  try {
+    const db = getDb();
+    const rows = db
+      .select()
+      .from(termSheetRevisionsTable)
+      .where(eq(termSheetRevisionsTable.roundId, roundId))
+      .orderBy(asc(termSheetRevisionsTable.revision))
+      .all() as any[];
+    return rows.map(rowToRevision);
+  } catch (err) {
+    console.warn("[termSheetStore.getRevisions] DB read failed:", (err as Error).message);
+    return [];
+  }
+}
+
 export function getLatestRevision(roundId: string): TermSheetRevision | undefined {
-  const xs = revisionsByRound.get(roundId);
-  return xs && xs.length > 0 ? xs[xs.length - 1] : undefined;
+  try {
+    const db = getDb();
+    const rows = db
+      .select()
+      .from(termSheetRevisionsTable)
+      .where(eq(termSheetRevisionsTable.roundId, roundId))
+      .orderBy(desc(termSheetRevisionsTable.revision))
+      .limit(1)
+      .all() as any[];
+    return rows.length > 0 ? rowToRevision(rows[0]) : undefined;
+  } catch (err) {
+    console.warn("[termSheetStore.getLatestRevision] DB read failed:", (err as Error).message);
+    return undefined;
+  }
 }
 
 /**
  * Canonicalise the payload for hashing — stable JSON, sorted keys at every
- * level, no whitespace. Two payloads with identical content always produce
- * identical canonical strings regardless of property insertion order.
+ * level, no whitespace.
  */
 function canonicalise(payload: SaveTermSheetPayload, meta: { savedAt: string; savedBy: string; revision: number }): string {
   function sort(v: unknown): unknown {
@@ -126,32 +182,79 @@ export function saveTermSheet(args: { payload: SaveTermSheetPayload; savedBy: st
   if (!payload.companyId) return { ok: false, error: "missing_company_id" };
   if (!Array.isArray(payload.sections)) return { ok: false, error: "missing_sections" };
 
-  // Reject saves against an already-signed term sheet (immutable once locked).
-  const existing = revisionsByRound.get(payload.roundId) ?? [];
-  const latest = existing.length > 0 ? existing[existing.length - 1] : undefined;
-  if (latest && latest.payload.status === "signed") {
-    return { ok: false, error: "termsheet_locked", message: "This term sheet is signed and locked. Saves are no longer accepted." };
+  let result: SaveResult | null = null;
+
+  try {
+    const db = getDb();
+    // Patch v12 Day 2 Wave 2 — DB-7: chainTip + lock-check + INSERT all atomic.
+    // Two parallel saves on the same round can never both succeed at revision N.
+    db.transaction((tx: any) => {
+      // Per-round chain tip.
+      const tipRow = tx
+        .select({
+          revision: termSheetRevisionsTable.revision,
+          revisionHash: termSheetRevisionsTable.revisionHash,
+          payloadJson: termSheetRevisionsTable.payloadJson,
+        })
+        .from(termSheetRevisionsTable)
+        .where(eq(termSheetRevisionsTable.roundId, payload.roundId))
+        .orderBy(desc(termSheetRevisionsTable.revision))
+        .limit(1)
+        .all() as Array<{ revision: number; revisionHash: string; payloadJson: string }>;
+
+      if (tipRow.length > 0) {
+        const latestPayload = JSON.parse(tipRow[0].payloadJson) as SaveTermSheetPayload;
+        if (latestPayload.status === "signed") {
+          result = {
+            ok: false,
+            error: "termsheet_locked",
+            message: "This term sheet is signed and locked. Saves are no longer accepted.",
+          };
+          return;
+        }
+      }
+
+      const revisionNumber = (tipRow[0]?.revision ?? 0) + 1;
+      const prevHash = tipRow[0]?.revisionHash ?? "GENESIS";
+      const savedAt = new Date().toISOString();
+      const canonical = canonicalise(payload, { savedAt, savedBy, revision: revisionNumber });
+      const revisionHash = computeRevisionHash(prevHash, canonical);
+      const id = `tsr_${randomBytes(8).toString("hex")}`;
+
+      tx.insert(termSheetRevisionsTable)
+        .values({
+          id,
+          tenantId: tenantForCompany(payload.companyId),
+          roundId: payload.roundId,
+          companyId: payload.companyId,
+          revision: revisionNumber,
+          savedAt,
+          savedBy,
+          payloadJson: JSON.stringify(payload),
+          prevRevisionHash: prevHash,
+          revisionHash,
+        })
+        .run();
+
+      const revision: TermSheetRevision = {
+        revision: revisionNumber,
+        roundId: payload.roundId,
+        companyId: payload.companyId,
+        savedAt,
+        savedBy,
+        payload,
+        prevRevisionHash: prevHash,
+        revisionHash,
+      };
+      result = { ok: true, revision };
+    });
+  } catch (err) {
+    console.error("[termSheetStore.saveTermSheet] DB write failed:", (err as Error).message);
+    return { ok: false, error: "db_write_failed", message: (err as Error).message };
   }
 
-  const revisionNumber = existing.length + 1;
-  const savedAt = new Date().toISOString();
-  const prevHash = latest ? latest.revisionHash : "GENESIS";
-  const canonical = canonicalise(payload, { savedAt, savedBy, revision: revisionNumber });
-  const revisionHash = computeRevisionHash(prevHash, canonical);
-
-  const revision: TermSheetRevision = {
-    revision: revisionNumber,
-    roundId: payload.roundId,
-    companyId: payload.companyId,
-    savedAt,
-    savedBy,
-    payload,
-    prevRevisionHash: prevHash,
-    revisionHash,
-  };
-  existing.push(revision);
-  revisionsByRound.set(payload.roundId, existing);
-  return { ok: true, revision };
+  if (!result) return { ok: false, error: "transaction_yielded_no_result" };
+  return result;
 }
 
 /**
@@ -159,7 +262,7 @@ export function saveTermSheet(args: { payload: SaveTermSheetPayload; savedBy: st
  * Recomputes every hash from GENESIS forward and ensures each matches.
  */
 export function verifyChain(roundId: string): { ok: boolean; brokenAt?: number } {
-  const xs = revisionsByRound.get(roundId) ?? [];
+  const xs = getRevisions(roundId);
   let prev = "GENESIS";
   for (let i = 0; i < xs.length; i++) {
     const r = xs[i];
@@ -172,15 +275,22 @@ export function verifyChain(roundId: string): { ok: boolean; brokenAt?: number }
   return { ok: true };
 }
 
+/** Lightweight hydrator — verifies schema is reachable. */
+export async function hydrateTermSheetStore(): Promise<void> {
+  try {
+    const db = getDb();
+    const rows = db.select({ id: termSheetRevisionsTable.id }).from(termSheetRevisionsTable).all() as any[];
+    console.log(`[termSheetStore.hydrate] revisions=${rows.length}`);
+  } catch (err) {
+    console.warn("[termSheetStore.hydrate] DB read failed:", (err as Error).message);
+  }
+}
+
 /* --------------------------------------------------------------------- */
 /*  Routes                                                                 */
 /* --------------------------------------------------------------------- */
 
 function requireAuth(req: Request, res: Response, allowQueryFallback = false): { userId: string } | null {
-  // Session cookie set by /api/auth/login. Without it, write paths are 401.
-  // Sprint 27: accepts both __Host-cap_uid (prod) and cap_uid (dev) via helper.
-  // For READ-only endpoints, allow ?userId=... fallback so cookieless GETs (e.g.
-  // the sandbox preview where cookies are stripped) can still resolve identity.
   let userId: string | undefined = readSessionCookie(req)
     ?? (req.headers["x-user-id"] as string | undefined);
   if (!userId && allowQueryFallback && typeof req.query.userId === "string") {
@@ -194,16 +304,6 @@ function requireAuth(req: Request, res: Response, allowQueryFallback = false): {
 }
 
 export function registerTermSheetRoutes(app: Express): void {
-  /**
-   * POST /api/founder/term-sheets
-   *
-   * Body: SaveTermSheetPayload
-   * Auth: session cookie required (cap_uid)
-   *
-   * On success: returns the new revision record.
-   * On unauthenticated: 401 unauthorized.
-   * On already-signed roundId: 409 termsheet_locked.
-   */
   app.post("/api/founder/term-sheets", (req: Request, res: Response) => {
     const auth = requireAuth(req, res);
     if (!auth) return;
@@ -216,11 +316,6 @@ export function registerTermSheetRoutes(app: Express): void {
     return res.json({ ok: true, revision: r.revision });
   });
 
-  /**
-   * GET /api/founder/term-sheets/:roundId
-   * Returns the latest revision (or 404 if none).
-   * Auth: session cookie required.
-   */
   app.get("/api/founder/term-sheets/:roundId", (req: Request, res: Response) => {
     const auth = requireAuth(req, res, true);
     if (!auth) return;
@@ -230,11 +325,6 @@ export function registerTermSheetRoutes(app: Express): void {
     return res.json({ ok: true, revision: latest, chainVerified: verifyChain(roundId).ok });
   });
 
-  /**
-   * GET /api/founder/term-sheets/:roundId/history
-   * Returns the full revision history for a round (ascending by revision).
-   * Auth: session cookie required.
-   */
   app.get("/api/founder/term-sheets/:roundId/history", (req: Request, res: Response) => {
     const auth = requireAuth(req, res, true);
     if (!auth) return;

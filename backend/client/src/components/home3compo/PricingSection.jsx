@@ -123,7 +123,7 @@ export default function PricingSection() {
             </div>
             <div className="pricing__card-actions">
               <a
-                href="https://capavate.com/user/register"
+                href="https://capavate.com/#/onboarding"
                 className="btn btn--primary btn--lg text-white"
               >
                 Register Your Company

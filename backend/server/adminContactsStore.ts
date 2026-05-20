@@ -14,9 +14,169 @@
 
 import type { Express, Request, Response } from "express";
 import { createHash, randomBytes } from "node:crypto";
+import { and, eq, isNull } from "drizzle-orm";
 import { appendAdminAudit } from "./adminPlatformStore";
 import { emitBridgeEvent } from "./bridgeStore";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
+import { getDb } from "./db/connection";
+import {
+  contacts as contactsTable,
+  contactRevisions as contactRevisionsTable,
+} from "../shared/schema";
+
+// Patch v12 Day 2 Wave 2 — adminContactsStore is HIGH-CARE hybrid:
+//   - Source of truth = SQLite `contacts` + `contact_revisions` tables.
+//   - In-memory Maps (`contacts`, `revisions`) remain as a hot cache; every
+//     mutation does write-through to DB and then updates the cache, so the
+//     `_testContacts.getContacts()/getRevisions()` accessors observed by 8
+//     existing test files continue to function unchanged.
+//   - Tenant for platform-level admin CRM = "tenant_platform".
+//   - All writes go through `db.transaction((tx) => { ... })` — Drizzle invokes
+//     the callback for us, NO trailing `()`.
+const ADMIN_CONTACTS_TENANT = "tenant_platform";
+
+/* DB row <-> AdminContact serialisation -------------------------------- */
+
+// Fields stored in dedicated columns on the `contacts` table.
+// Everything else lives in metadata_json so we don't drop richness.
+function extractMetadata(c: AdminContact): string {
+  const meta = {
+    type: c.type,
+    hqCity: c.hqCity,
+    hqCountry: c.hqCountry,
+    aumMinor: c.aumMinor,
+    aumCurrency: c.aumCurrency,
+    checkSizeMinMinor: c.checkSizeMinMinor,
+    checkSizeMaxMinor: c.checkSizeMaxMinor,
+    industries: c.industries,
+    stages: c.stages,
+    companyIds: c.companyIds,
+    partnerWeight: c.partnerWeight,
+    partnerSince: c.partnerSince,
+    website: c.website,
+    linkedinUrl: c.linkedinUrl,
+    tags: c.tags,
+    notes: c.notes,
+    tier: c.tier ?? null,
+    tierSince: c.tierSince ?? null,
+    foundingMember: c.foundingMember ?? false,
+    partnerType: c.partnerType ?? null,
+    regionCode: c.regionCode ?? null,
+    preferredPayoutCurrency: c.preferredPayoutCurrency ?? null,
+    configJson: c.configJson ?? null,
+    isSeed: c.isSeed ?? false,
+  };
+  return JSON.stringify(meta);
+}
+
+function rowToContact(row: any): AdminContact {
+  const meta = row.metadataJson ? JSON.parse(row.metadataJson) : {};
+  return {
+    id: row.id,
+    kind: row.kind as ContactKind,
+    legalName: row.legalName,
+    displayName: row.displayName ?? row.legalName,
+    email: row.email ?? "",
+    type: (meta.type ?? "institutional") as ContactType,
+    status: row.status as ContactStatus,
+    verification: row.verification as VerificationStatus,
+    hqCity: meta.hqCity ?? "",
+    hqCountry: meta.hqCountry ?? "US",
+    region: row.region ?? "US",
+    aumMinor: meta.aumMinor ?? null,
+    aumCurrency: meta.aumCurrency ?? "USD",
+    checkSizeMinMinor: meta.checkSizeMinMinor ?? null,
+    checkSizeMaxMinor: meta.checkSizeMaxMinor ?? null,
+    industries: meta.industries ?? [],
+    stages: meta.stages ?? [],
+    companyIds: meta.companyIds ?? [],
+    partnerWeight: meta.partnerWeight ?? null,
+    partnerSince: meta.partnerSince ?? null,
+    phone: row.phone ?? null,
+    website: meta.website ?? null,
+    linkedinUrl: meta.linkedinUrl ?? null,
+    tags: meta.tags ?? [],
+    notes: meta.notes ?? "",
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    createdBy: row.createdBy,
+    updatedBy: row.updatedBy,
+    version: row.version,
+    prevRevisionHash: row.prevRevisionHash,
+    revisionHash: row.revisionHash,
+    tier: meta.tier ?? null,
+    tierSince: meta.tierSince ?? null,
+    foundingMember: meta.foundingMember ?? false,
+    partnerType: meta.partnerType ?? null,
+    regionCode: meta.regionCode ?? null,
+    preferredPayoutCurrency: meta.preferredPayoutCurrency ?? null,
+    configJson: meta.configJson ?? null,
+    isSeed: meta.isSeed ?? false,
+  };
+}
+
+function persistContact(tx: any, c: AdminContact): void {
+  tx.insert(contactsTable)
+    .values({
+      id: c.id,
+      kind: c.kind,
+      legalName: c.legalName,
+      displayName: c.displayName,
+      email: c.email,
+      phone: c.phone,
+      region: c.region,
+      status: c.status,
+      verification: c.verification,
+      metadataJson: extractMetadata(c),
+      createdAt: c.createdAt,
+      updatedAt: c.updatedAt,
+      createdBy: c.createdBy,
+      updatedBy: c.updatedBy,
+      version: c.version,
+      prevRevisionHash: c.prevRevisionHash,
+      revisionHash: c.revisionHash,
+      // tenantId + deletedAt are NOT in the Drizzle schema definition for
+      // `contacts` (added via ALTER TABLE in v12 connection.ts). They get
+      // the column DEFAULTs ('tenant_platform' / NULL) on insert.
+    } as any)
+    .onConflictDoUpdate({
+      target: contactsTable.id,
+      set: {
+        legalName: c.legalName,
+        displayName: c.displayName,
+        email: c.email,
+        phone: c.phone,
+        region: c.region,
+        status: c.status,
+        verification: c.verification,
+        metadataJson: extractMetadata(c),
+        updatedAt: c.updatedAt,
+        updatedBy: c.updatedBy,
+        version: c.version,
+        prevRevisionHash: c.prevRevisionHash,
+        revisionHash: c.revisionHash,
+      },
+    })
+    .run();
+}
+
+function persistRevision(tx: any, rev: ContactRevision): void {
+  tx.insert(contactRevisionsTable)
+    .values({
+      id: `crev_${rev.contactId}_${rev.version}`,
+      contactId: rev.contactId,
+      tenantId: ADMIN_CONTACTS_TENANT,
+      version: rev.version,
+      prevRevisionHash: rev.prevRevisionHash,
+      revisionHash: rev.revisionHash,
+      updatedAt: rev.updatedAt,
+      updatedBy: rev.updatedBy,
+      action: rev.action,
+      snapshotJson: JSON.stringify(rev.snapshot),
+    })
+    .onConflictDoNothing()
+    .run();
+}
 
 /* ============================================================
  * Type definitions
@@ -208,8 +368,20 @@ export function createContact(
 
   contact.revisionHash = computeRevisionHash(contact);
 
-  contacts.set(id, contact);
-  appendRevision(contact, "contact.created");
+  // v12 hybrid: persist to DB first, then update in-memory cache.
+  const db = getDb();
+  db.transaction((tx: any) => {
+    persistContact(tx, contact);
+    const rev: ContactRevision = buildRevision(contact, "contact.created");
+    persistRevision(tx, rev);
+    // Update caches inside the tx callback so they only become visible after
+    // the tx commits (better-sqlite3 transactions are synchronous).
+    contacts.set(id, contact);
+    const arr = revisions.get(id) ?? [];
+    arr.push(rev);
+    revisions.set(id, arr);
+  });
+
   appendAdminAudit(actor, `contact:${id}`, "contact.created", { legalName: contact.legalName, kind: contact.kind, email: contact.email });
   emitBridgeEvent({ eventType: "contact.created", aggregateId: id, aggregateKind: "investor", payload: { legalName: contact.legalName, kind: contact.kind } });
 
@@ -241,15 +413,25 @@ export function updateContact(
 
   updated.revisionHash = computeRevisionHash(updated);
 
-  contacts.set(id, updated);
-  appendRevision(updated, action);
+  // v12 hybrid: persist to DB first, then update in-memory cache.
+  const db = getDb();
+  db.transaction((tx: any) => {
+    persistContact(tx, updated);
+    const rev = buildRevision(updated, action);
+    persistRevision(tx, rev);
+    contacts.set(id, updated);
+    const arr = revisions.get(id) ?? [];
+    arr.push(rev);
+    revisions.set(id, arr);
+  });
+
   appendAdminAudit(actor, `contact:${id}`, action, { version: updated.version, changes: Object.keys(patch) });
 
   return updated;
 }
 
-function appendRevision(contact: AdminContact, action: string): void {
-  const rev: ContactRevision = {
+function buildRevision(contact: AdminContact, action: string): ContactRevision {
+  return {
     contactId: contact.id,
     version: contact.version,
     prevRevisionHash: contact.prevRevisionHash,
@@ -259,6 +441,12 @@ function appendRevision(contact: AdminContact, action: string): void {
     action,
     snapshot: { ...contact },
   };
+}
+
+/** @deprecated kept for any straggling internal callers; new code calls
+ *  buildRevision + persistRevision inside a tx. */
+function appendRevision(contact: AdminContact, action: string): void {
+  const rev = buildRevision(contact, action);
   const arr = revisions.get(contact.id) ?? [];
   arr.push(rev);
   revisions.set(contact.id, arr);
@@ -891,7 +1079,9 @@ export function seedContacts(): void {
     },
   ];
 
-  // Seed all contacts and emit contact.seeded audit
+  // Seed all contacts and emit contact.seeded audit.
+  // v12 hybrid: each seeded row is persisted to DB inside a tx + cache update.
+  const db = getDb();
   for (const data of [...investors, ...founders, ...partners]) {
     const id = newId(data.kind);
     const now = new Date().toISOString();
@@ -909,8 +1099,16 @@ export function seedContacts(): void {
     };
     contact.revisionHash = computeRevisionHash(contact);
 
-    contacts.set(id, contact);
-    appendRevision(contact, "contact.seeded");
+    db.transaction((tx: any) => {
+      persistContact(tx, contact);
+      const rev = buildRevision(contact, "contact.seeded");
+      persistRevision(tx, rev);
+      contacts.set(id, contact);
+      const arr = revisions.get(id) ?? [];
+      arr.push(rev);
+      revisions.set(id, arr);
+    });
+
     appendAdminAudit(SEED_ACTOR, `contact:${id}`, "contact.seeded", {
       legalName: contact.legalName,
       kind: contact.kind,
@@ -1194,11 +1392,90 @@ export function registerAdminContactsRoutes(app: Express): void {
  * Test helpers (exported for test isolation)
  * ============================================================ */
 
+/* ============================================================
+ * v12 Hydrator — repopulate in-memory caches from DB on startup.
+ *
+ * Read order:
+ *   1) `contacts` rows where deleted_at IS NULL
+ *   2) For each contact, all `contact_revisions` ordered by version ASC
+ *
+ * If the DB read fails (sandbox with no schema yet, mid-migration) we keep
+ * caches as-is and log a warning so the server can still boot.
+ * ============================================================ */
+export async function hydrateAdminContactsStore(): Promise<void> {
+  try {
+    const db = getDb();
+    // CROSS-TENANT (admin) — admin CRM is platform-wide; we deliberately load
+    // all tenants here. The `contacts` Drizzle schema definition does NOT yet
+    // include the v12-added `deleted_at` / `tenant_id` columns, so we filter
+    // soft-deletes via a raw column predicate by casting and reading them off
+    // the result rows instead. For now: read everything; rows soft-deleted
+    // via DELETE-IF-NULL semantics will simply appear with deleted_at set in
+    // the underlying row (we never set it from this file).
+    const rows = db.select().from(contactsTable).all() as any[];
+
+    contacts.clear();
+    revisions.clear();
+
+    for (const r of rows) {
+      // Skip soft-deleted rows when the column exists on the row object.
+      if (r.deleted_at != null && r.deleted_at !== "") continue;
+      const c = rowToContact(r);
+      contacts.set(c.id, c);
+    }
+
+    const revRows = db.select().from(contactRevisionsTable).all() as any[];
+    revRows.sort((a, b) => {
+      if (a.contactId !== b.contactId) return a.contactId.localeCompare(b.contactId);
+      return a.version - b.version;
+    });
+    for (const r of revRows) {
+      const rev: ContactRevision = {
+        contactId: r.contactId,
+        version: r.version,
+        prevRevisionHash: r.prevRevisionHash,
+        revisionHash: r.revisionHash,
+        updatedAt: r.updatedAt,
+        updatedBy: r.updatedBy,
+        action: r.action,
+        snapshot: JSON.parse(r.snapshotJson) as AdminContact,
+      };
+      const arr = revisions.get(rev.contactId) ?? [];
+      arr.push(rev);
+      revisions.set(rev.contactId, arr);
+    }
+
+    // If we found any persisted contacts, mark seeded so seedContacts() is a
+    // no-op on next call (avoids double-seeding after a restart).
+    if (contacts.size > 0) {
+      seeded = true;
+    }
+
+    if (rows.length > 0) {
+      console.log(`[hydrate] adminContactsStore: loaded ${contacts.size} contacts, ${revRows.length} revisions`);
+    }
+  } catch (err) {
+    console.warn("[hydrate] adminContactsStore: DB read failed:", (err as Error).message);
+  }
+}
+
 export const _testContacts = {
   reset(): void {
     contacts.clear();
     revisions.clear();
     seeded = false;
+    // v12 hybrid: also truncate the DB tables so test isolation matches the
+    // in-memory reset semantics. Wrapped in try/catch because the DB may not
+    // be available in unit-test contexts that bypass hydrate.
+    try {
+      const db = getDb();
+      db.transaction((tx: any) => {
+        tx.delete(contactRevisionsTable).run();
+        tx.delete(contactsTable).run();
+      });
+    } catch (err) {
+      // swallow — sandbox / pre-migration test envs
+    }
   },
   getContacts(): Map<string, AdminContact> {
     return contacts;

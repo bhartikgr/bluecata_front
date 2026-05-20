@@ -146,7 +146,7 @@ export default function Header3() {
                   </div>
                 </a>
                 <a
-                  href="/user/login"
+                  href="#/onboarding"
                   className="dropdown__item"
                 >
                   <span className="dropdown__icon">🏢</span>
@@ -159,7 +159,7 @@ export default function Header3() {
             </div>
 
             <a
-              href="/user/register"
+              href="#/onboarding"
               className="btn btn--primary btn--sm text-white"
             >
               Register Your Company
@@ -215,9 +215,9 @@ export default function Header3() {
               }}
             />
             <a href="#/onboarding">Investor Sign In</a>
-            <a href="/user/login">Company Sign In</a>
+            <a href="#/onboarding">Company Sign In</a>
             <a
-              href="/user/register"
+              href="#/onboarding"
               className="btn btn--primary text-white"
             >
               Register Your Company

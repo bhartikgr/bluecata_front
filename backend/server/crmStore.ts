@@ -22,9 +22,18 @@
  *
  * Telemetry events match `capavate_collective_sync_schema.md §9` shape:
  *   crm_contact_added, crm_note_added, crm_task_completed, crm_pipeline_moved.
+ *
+ * Patch v12 Day 3 (audit §3.9) — DB-BACKED hybrid.
+ *   - `contactsByUser`, `notes`, `tasks` are now READ CACHES; the DB tables
+ *     `pcrm_contacts`, `pcrm_notes`, `pcrm_tasks` are authoritative.
+ *   - Every mutation writes through inside `getDb().transaction((tx) => { ... })`.
+ *     No trailing `()` — Drizzle invokes the callback for us.
+ *   - Tenant id: `tenant_inv_<ownerId>` (the investor's personal CRM tenant).
+ *   - `hydrateCrmStore()` rebuilds all three caches from the DB on boot.
  */
 import type { Express, Request, Response } from "express";
 import { randomBytes } from "node:crypto";
+import { eq, isNull } from "drizzle-orm";
 import {
   pcrmContactSchema,
   pcrmNoteSchema,
@@ -34,9 +43,15 @@ import {
   type PcrmTask,
   type PcrmPipelineStage,
 } from "@shared/schema";
+import {
+  pcrmContacts as pcrmContactsTable,
+  pcrmNotes as pcrmNotesTable,
+  pcrmTasks as pcrmTasksTable,
+} from "@shared/schema";
 import { emitSync } from "./sprint10Telemetry";
 import { getUserContext } from "./lib/userContext";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
+import { getDb } from "./db/connection";
 
 type StoredContact = PcrmContact & { id: string; createdAt: string; ownerId: string };
 type StoredNote    = PcrmNote    & { id: string; createdAt: string };
@@ -49,6 +64,196 @@ const tasks:    StoredTask[]    = [];
 
 function newId(prefix: string): string {
   return `${prefix}_${randomBytes(6).toString("hex")}`;
+}
+
+/** Tenant id for the personal CRM of an investor user. */
+function tenantForOwner(ownerId: string): string {
+  return `tenant_inv_${ownerId}`;
+}
+
+/* ---------- DB row mappers ---------- */
+
+function contactToRow(c: StoredContact) {
+  return {
+    id: c.id,
+    tenantId: tenantForOwner(c.ownerId),
+    ownerId: c.ownerId,
+    name: c.name,
+    kind: c.kind,
+    firm: c.firm ?? null,
+    email: c.email ?? null,
+    linkedin: c.linkedin ?? null,
+    pipelineStage: c.pipelineStage,
+    tags: JSON.stringify(c.tags ?? []),
+    lanes: JSON.stringify(c.lanes ?? []),
+    companyId: c.companyId ?? null,
+    createdAt: c.createdAt,
+    deletedAt: null as string | null,
+  };
+}
+
+function rowToContact(r: any): StoredContact {
+  const parse = <T,>(s: any, fallback: T): T => {
+    if (!s || typeof s !== "string") return fallback;
+    try { return JSON.parse(s) as T; } catch { return fallback; }
+  };
+  return {
+    id: r.id,
+    ownerId: r.ownerId,
+    name: r.name,
+    kind: r.kind as PcrmContact["kind"],
+    firm: r.firm ?? undefined,
+    email: r.email ?? undefined,
+    linkedin: r.linkedin ?? undefined,
+    pipelineStage: r.pipelineStage as PcrmPipelineStage,
+    tags: parse(r.tags, [] as string[]),
+    lanes: parse(r.lanes, [] as any[]),
+    companyId: r.companyId ?? undefined,
+    createdAt: r.createdAt,
+  };
+}
+
+function noteToRow(n: StoredNote, ownerId: string) {
+  return {
+    id: n.id,
+    tenantId: tenantForOwner(ownerId),
+    contactId: n.contactId,
+    body: n.body,
+    noteType: n.noteType,
+    createdAt: n.createdAt,
+    deletedAt: null as string | null,
+  };
+}
+
+function rowToNote(r: any): StoredNote {
+  return {
+    id: r.id,
+    contactId: r.contactId,
+    body: r.body,
+    noteType: r.noteType,
+    createdAt: r.createdAt,
+  };
+}
+
+function taskToRow(t: StoredTask, ownerId: string) {
+  return {
+    id: t.id,
+    tenantId: tenantForOwner(ownerId),
+    contactId: t.contactId,
+    title: t.title,
+    dueDate: t.dueDate ?? null,
+    priority: t.priority,
+    status: t.status,
+    completedAt: t.completedAt ?? null,
+    createdAt: t.createdAt,
+    deletedAt: null as string | null,
+  };
+}
+
+function rowToTask(r: any): StoredTask {
+  return {
+    id: r.id,
+    contactId: r.contactId,
+    title: r.title,
+    dueDate: r.dueDate ?? undefined,
+    priority: r.priority,
+    status: r.status,
+    completedAt: r.completedAt ?? undefined,
+    createdAt: r.createdAt,
+  };
+}
+
+/* ---------- write-through helpers ---------- */
+
+function persistContact(c: StoredContact): void {
+  try {
+    const db = getDb();
+    db.transaction((tx: any) => {
+      const existing = tx
+        .select({ id: pcrmContactsTable.id })
+        .from(pcrmContactsTable)
+        .where(eq(pcrmContactsTable.id, c.id))
+        .limit(1)
+        .all() as any[];
+      const row = contactToRow(c);
+      if (existing.length === 0) {
+        tx.insert(pcrmContactsTable).values(row).run();
+      } else {
+        const { id: _id, createdAt: _ca, ...patch } = row;
+        tx.update(pcrmContactsTable)
+          .set(patch)
+          .where(eq(pcrmContactsTable.id, c.id))
+          .run();
+      }
+    });
+  } catch (err) {
+    console.error("[crmStore persistContact] DB write failed:", (err as Error).message);
+  }
+}
+
+function persistNote(n: StoredNote, ownerId: string): void {
+  try {
+    const db = getDb();
+    db.transaction((tx: any) => {
+      tx.insert(pcrmNotesTable).values(noteToRow(n, ownerId)).run();
+    });
+  } catch (err) {
+    console.error("[crmStore persistNote] DB write failed:", (err as Error).message);
+  }
+}
+
+function persistTask(t: StoredTask, ownerId: string): void {
+  try {
+    const db = getDb();
+    db.transaction((tx: any) => {
+      const existing = tx
+        .select({ id: pcrmTasksTable.id })
+        .from(pcrmTasksTable)
+        .where(eq(pcrmTasksTable.id, t.id))
+        .limit(1)
+        .all() as any[];
+      const row = taskToRow(t, ownerId);
+      if (existing.length === 0) {
+        tx.insert(pcrmTasksTable).values(row).run();
+      } else {
+        const { id: _id, createdAt: _ca, ...patch } = row;
+        tx.update(pcrmTasksTable)
+          .set(patch)
+          .where(eq(pcrmTasksTable.id, t.id))
+          .run();
+      }
+    });
+  } catch (err) {
+    console.error("[crmStore persistTask] DB write failed:", (err as Error).message);
+  }
+}
+
+function softDeleteContactRow(id: string): void {
+  try {
+    const db = getDb();
+    db.transaction((tx: any) => {
+      tx.update(pcrmContactsTable)
+        .set({ deletedAt: new Date().toISOString() })
+        .where(eq(pcrmContactsTable.id, id))
+        .run();
+    });
+  } catch (err) {
+    console.error("[crmStore softDeleteContact] failed:", (err as Error).message);
+  }
+}
+
+function softDeleteTaskRow(id: string): void {
+  try {
+    const db = getDb();
+    db.transaction((tx: any) => {
+      tx.update(pcrmTasksTable)
+        .set({ deletedAt: new Date().toISOString() })
+        .where(eq(pcrmTasksTable.id, id))
+        .run();
+    });
+  } catch (err) {
+    console.error("[crmStore softDeleteTask] failed:", (err as Error).message);
+  }
 }
 
 /**
@@ -78,10 +283,16 @@ function seedDemoContacts(): void {
   ];
   const aiContacts: StoredContact[] = seed.map((c) => ({ ...c, id: newId("ct"), createdAt: new Date().toISOString() }));
   contactsByUser.set("u_aisha_patel", aiContacts);
+  // Write-through to DB
+  for (const c of aiContacts) persistContact(c);
   // A starter note + task on Maya
   const maya = aiContacts[0];
-  notes.push({ id: newId("nt"), createdAt: new Date().toISOString(), contactId: maya.id, body: "Diligence call on cross-border rails. Asking about Adyen pipeline.", noteType: "call" });
-  tasks.push({ id: newId("tk"), createdAt: new Date().toISOString(), contactId: maya.id, title: "Send Q1 board deck", priority: "high", status: "todo", dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10) });
+  const seedNote: StoredNote = { id: newId("nt"), createdAt: new Date().toISOString(), contactId: maya.id, body: "Diligence call on cross-border rails. Asking about Adyen pipeline.", noteType: "call" };
+  notes.push(seedNote);
+  persistNote(seedNote, "u_aisha_patel");
+  const seedTask: StoredTask = { id: newId("tk"), createdAt: new Date().toISOString(), contactId: maya.id, title: "Send Q1 board deck", priority: "high", status: "todo", dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10) };
+  tasks.push(seedTask);
+  persistTask(seedTask, "u_aisha_patel");
 }
 
 /** @deprecated — only for backward-compat with tests that call getAllContacts() */
@@ -94,6 +305,15 @@ export function getTasks(contactId?: string): StoredTask[] { return contactId ? 
 
 export function clearCrm(): void {
   contactsByUser.clear(); notes.length = 0; tasks.length = 0; demoSeeded = false;
+  // Patch v12 Day 3: also truncate the DB tables (used by tests for isolation).
+  try {
+    const db = getDb();
+    db.delete(pcrmContactsTable).run();
+    db.delete(pcrmNotesTable).run();
+    db.delete(pcrmTasksTable).run();
+  } catch (err) {
+    console.warn("[crmStore.clearCrm] DB truncate failed:", (err as Error).message);
+  }
 }
 
 /**
@@ -106,6 +326,7 @@ export function addContact(input: PcrmContact, ownerId: string = "u_aisha_patel"
   const userContacts = contactsByUser.get(ownerId) ?? [];
   userContacts.push(c);
   contactsByUser.set(ownerId, userContacts);
+  persistContact(c);
   return c;
 }
 
@@ -134,7 +355,56 @@ export function movePipeline(id: string, ownerIdOrTo: string, toOrUndef?: PcrmPi
   if (!c) return { ok: false, error: "contact_not_found" };
   const from = c.pipelineStage;
   c.pipelineStage = to;
+  persistContact(c);
   return { ok: true, from, to, contact: c };
+}
+
+/* ---------- Hydration ---------- */
+
+export async function hydrateCrmStore(): Promise<void> {
+  try {
+    const db = getDb();
+    // CROSS-TENANT (admin) — hydration replays every owner's pcrm into caches.
+    const cRows = db
+      .select()
+      .from(pcrmContactsTable)
+      .where(isNull(pcrmContactsTable.deletedAt))
+      .all() as any[];
+    contactsByUser.clear();
+    for (const r of cRows) {
+      const c = rowToContact(r);
+      const arr = contactsByUser.get(c.ownerId) ?? [];
+      arr.push(c);
+      contactsByUser.set(c.ownerId, arr);
+    }
+    const nRows = db
+      .select()
+      .from(pcrmNotesTable)
+      .where(isNull(pcrmNotesTable.deletedAt))
+      .all() as any[];
+    notes.length = 0;
+    for (const r of nRows) notes.push(rowToNote(r));
+    const tRows = db
+      .select()
+      .from(pcrmTasksTable)
+      .where(isNull(pcrmTasksTable.deletedAt))
+      .all() as any[];
+    tasks.length = 0;
+    for (const r of tRows) tasks.push(rowToTask(r));
+    // Demo seed (only if DB empty AND demo gate on AND user_aisha_patel not present).
+    if (DEMO_SEED_ENABLED && !contactsByUser.has("u_aisha_patel")) {
+      seedDemoContacts();
+    } else if (contactsByUser.has("u_aisha_patel")) {
+      // Mark seeded so we don't double-seed via lazy path.
+      demoSeeded = true;
+    }
+    const total = cRows.length + nRows.length + tRows.length;
+    if (total > 0) {
+      console.log(`[hydrate] crmStore: ${cRows.length} contacts, ${nRows.length} notes, ${tRows.length} tasks restored`);
+    }
+  } catch (err) {
+    console.warn("[hydrate] crmStore: DB read failed:", (err as Error).message);
+  }
 }
 
 export function registerCrmRoutes(app: Express): void {
@@ -172,6 +442,7 @@ export function registerCrmRoutes(app: Express): void {
     if (!parsed.success) return res.status(400).json({ error: "validation_failed", issues: parsed.error.format() });
     const oldStage = c.pipelineStage;
     Object.assign(c, parsed.data);
+    persistContact(c);
     let env;
     if (parsed.data.pipelineStage && parsed.data.pipelineStage !== oldStage) {
       env = emitSync({
@@ -192,6 +463,7 @@ export function registerCrmRoutes(app: Express): void {
     const idx = userContacts.findIndex((c) => c.id === req.params.id);
     if (idx === -1) return res.status(404).json({ error: "contact_not_found" });
     const [c] = userContacts.splice(idx, 1);
+    softDeleteContactRow(c.id);
     res.json({ ok: true, removed: c });
   });
 
@@ -206,6 +478,10 @@ export function registerCrmRoutes(app: Express): void {
     if (!parsed.success) return res.status(400).json({ error: "validation_failed", issues: parsed.error.format() });
     const n: StoredNote = { ...parsed.data, id: newId("nt"), createdAt: new Date().toISOString() };
     notes.push(n);
+    // Use the requester's ownerId for tenant; fall back to "u_aisha_patel" for legacy clients.
+    const ctx = getUserContext(req);
+    const ownerId = ctx.isAuthed ? ctx.userId : "u_aisha_patel";
+    persistNote(n, ownerId);
     const env = emitSync({
       eventType: "crm_note_added",
       aggregateId: n.contactId,
@@ -227,6 +503,9 @@ export function registerCrmRoutes(app: Express): void {
     if (!parsed.success) return res.status(400).json({ error: "validation_failed", issues: parsed.error.format() });
     const t: StoredTask = { ...parsed.data, id: newId("tk"), createdAt: new Date().toISOString() };
     tasks.push(t);
+    const ctx = getUserContext(req);
+    const ownerId = ctx.isAuthed ? ctx.userId : "u_aisha_patel";
+    persistTask(t, ownerId);
     res.json({ ok: true, task: t });
   });
 
@@ -237,6 +516,9 @@ export function registerCrmRoutes(app: Express): void {
     if (status) t.status = status;
     if (completedAt) t.completedAt = completedAt;
     else if (status === "done" && !t.completedAt) t.completedAt = new Date().toISOString();
+    const ctx = getUserContext(req);
+    const ownerId = ctx.isAuthed ? ctx.userId : "u_aisha_patel";
+    persistTask(t, ownerId);
     let env;
     if (status === "done") {
       env = emitSync({
@@ -254,6 +536,15 @@ export function registerCrmRoutes(app: Express): void {
     const idx = tasks.findIndex((t) => t.id === req.params.id);
     if (idx === -1) return res.status(404).json({ error: "task_not_found" });
     const [t] = tasks.splice(idx, 1);
+    softDeleteTaskRow(t.id);
     res.json({ ok: true, removed: t });
   });
 }
+
+/** Test helper — exposed for v12 persistence tests. */
+export const _testCrm = {
+  reset: clearCrm,
+  get contactsByUser() { return contactsByUser; },
+  get notes() { return notes; },
+  get tasks() { return tasks; },
+};
