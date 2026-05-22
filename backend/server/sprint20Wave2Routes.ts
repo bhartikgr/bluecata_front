@@ -108,7 +108,7 @@ export function registerSprint20Wave2Routes(app: Express): void {
    * Field name is `targetUserId` (consistent with commsStore dmStartSchema).
    */
   app.post("/api/comms/dm/start", (req: Request, res: Response) => {
-    const callerId = (req.headers["x-user-id"] as string) ?? "anonymous";
+    const callerId = (req as any).userContext?.userId ?? null; /* v14 */ if (!callerId) return res.status(401).json({ ok: false, error: "missing_identity" });
     const { targetUserId } = req.body ?? {};
     if (!targetUserId || typeof targetUserId !== "string") {
       return res.status(400).json({ error: "targetUserId is required" });
@@ -125,7 +125,7 @@ export function registerSprint20Wave2Routes(app: Express): void {
    * Mutes all future posts from the given author for the authenticated user.
    */
   app.post("/api/comms/posts/:id/mute-author", (req: Request, res: Response) => {
-    const callerId = (req.headers["x-user-id"] as string) ?? "anonymous";
+    const callerId = (req as any).userContext?.userId ?? null; /* v14 */ if (!callerId) return res.status(401).json({ ok: false, error: "missing_identity" });
     const { authorId } = req.body ?? {};
     if (!authorId) {
       return res.status(400).json({ error: "authorId is required" });
@@ -141,7 +141,7 @@ export function registerSprint20Wave2Routes(app: Express): void {
    */
   app.post("/api/comms/posts/:id/report", (req: Request, res: Response) => {
     const { id: postId } = req.params;
-    const callerId = (req.headers["x-user-id"] as string) ?? "anonymous";
+    const callerId = (req as any).userContext?.userId ?? null; /* v14 */ if (!callerId) return res.status(401).json({ ok: false, error: "missing_identity" });
     const { reason = "unspecified" } = req.body ?? {};
 
     if (!reportedPosts.has(postId)) reportedPosts.set(postId, []);

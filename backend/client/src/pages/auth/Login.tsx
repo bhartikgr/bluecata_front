@@ -28,6 +28,7 @@
  */
 import { useState, useMemo, useEffect } from "react";
 import { Link, useLocation } from "wouter";
+import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -80,6 +81,44 @@ export default function Login() {
     if (rawPortal === "admin") navigate("/admin/login");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rawPortal]);
+
+  // B-V13-1 fix (Avi's Issue 1): if the user is already authenticated, an
+  // immediate visit to /auth/login should NOT show the login form again.
+  // Probe GET /api/auth/me; on `isAuthed=true` redirect into the right portal.
+  // honours ?returnTo=... if the user landed here via RequireAuth.
+  const meProbe = useQuery<{ isAuthed: boolean; isAdmin?: boolean; founder?: { companies: unknown[] }; investor?: { state?: string } }>({
+    queryKey: ["/api/auth/me", "login-redirect-probe"],
+    queryFn: async () => {
+      try {
+        const res = await apiRequest("GET", "/api/auth/me");
+        if (!res.ok) return { isAuthed: false };
+        return res.json();
+      } catch {
+        return { isAuthed: false };
+      }
+    },
+    staleTime: 0,
+    retry: false,
+  });
+  useEffect(() => {
+    const me = meProbe.data;
+    if (!me?.isAuthed) return;
+    const returnTo = query.get("returnTo");
+    if (returnTo && returnTo.startsWith("/") && !returnTo.startsWith("//")) {
+      navigate(returnTo);
+      return;
+    }
+    // Admins never enter through the public login page.
+    if (me.isAdmin) { navigate("/admin/dashboard"); return; }
+    const hasCompany = ((me.founder?.companies?.length) ?? 0) > 0;
+    const isInvestor = me.investor?.state !== undefined && me.investor.state !== "NONE";
+    if (hasCompany) { navigate("/founder/dashboard"); return; }
+    if (isInvestor) { navigate("/investor/dashboard"); return; }
+    // Authenticated user with no founder/investor state — send to founder dashboard
+    // which renders the empty-state company creation prompt (matches B-V11-1).
+    navigate("/founder/dashboard");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [meProbe.data]);
   const initialPortal: Portal = rawPortal === "investor" ? "investor" : "founder";
   const demoMode = query.get("demo") === "1";
 
@@ -185,9 +224,12 @@ export default function Login() {
       return;
     }
     if (portal === "founder" && !isFounder && !isInvestor) {
-      // Brand-new founder with no companies yet → company creation wizard.
+      // B-V11-1 fix: brand-new founder with no companies lands on the founder
+      // dashboard (which renders the empty-state company-creation prompt).
+      // Previously navigated to /auth/signup which redirected to /select-company
+      // which redirected back to /auth/signup, producing an infinite loop.
       setRole("founder");
-      navigate("/auth/signup");
+      navigate("/founder/dashboard");
       return;
     }
 
@@ -268,7 +310,7 @@ export default function Login() {
       <div
         role="tablist"
         aria-label="Choose portal"
-        className="grid grid-cols-3 gap-1 mb-6 bg-muted/40 rounded-md p-1"
+        className="grid grid-cols-2 gap-1 mb-6 bg-muted/40 rounded-md p-1"
         data-testid="portal-tabs"
       >
         {(Object.keys(PORTAL_META) as Portal[]).map((p) => {

@@ -51,6 +51,7 @@ import {
   dataroomEvents as dataroomEventsTable,
 } from "../shared/schema";
 import { appendAdminAudit } from "./adminPlatformStore";
+import { log } from "./lib/logger";
 
 export type Folder = {
   id: string;
@@ -157,7 +158,7 @@ function persistFolder(f: Folder): void {
         .run();
     });
   } catch (err) {
-    console.warn("[dataroomStore.persistFolder] DB write failed:", (err as Error).message);
+    log.warn("[dataroomStore.persistFolder] DB write failed:", (err as Error).message);
   }
 }
 
@@ -187,7 +188,7 @@ function persistFile(f: DRFile): void {
         .run();
     });
   } catch (err) {
-    console.warn("[dataroomStore.persistFile] DB write failed:", (err as Error).message);
+    log.warn("[dataroomStore.persistFile] DB write failed:", (err as Error).message);
   }
 }
 
@@ -234,7 +235,7 @@ function persistPermission(p: Permission, tenantId: string): void {
       }
     });
   } catch (err) {
-    console.warn("[dataroomStore.persistPermission] DB write failed:", (err as Error).message);
+    log.warn("[dataroomStore.persistPermission] DB write failed:", (err as Error).message);
   }
 }
 
@@ -260,7 +261,7 @@ function persistEvent(e: DREvent): void {
         .run();
     });
   } catch (err) {
-    console.warn("[dataroomStore.persistEvent] DB write failed:", (err as Error).message);
+    log.warn("[dataroomStore.persistEvent] DB write failed:", (err as Error).message);
   }
 }
 
@@ -279,7 +280,7 @@ function logEvent(e: Omit<DREvent, "id" | "ts">): DREvent {
       tenantForCompany(ev.companyId),
     );
   } catch (err) {
-    console.warn("[dataroomStore.logEvent] appendAdminAudit failed:", (err as Error).message);
+    log.warn("[dataroomStore.logEvent] appendAdminAudit failed:", (err as Error).message);
   }
   return ev;
 }
@@ -417,7 +418,7 @@ export async function hydrateDataroomStore(): Promise<void> {
       }
     }
   } catch (err) {
-    console.warn("[dataroomStore.hydrate] DB read failed:", (err as Error).message);
+    log.warn("[dataroomStore.hydrate] DB read failed:", (err as Error).message);
   }
 }
 

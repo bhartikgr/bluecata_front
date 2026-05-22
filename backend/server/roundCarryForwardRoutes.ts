@@ -234,7 +234,7 @@ export function registerRoundCarryForwardRoutes(app: Express): void {
       }
 
       const actor =
-        ctx?.identity.email ?? (req.headers["x-actor-email"] as string | undefined) ?? `founder:${companyId}`;
+        ctx?.identity.email ?? `founder:${companyId}`; /* v14 — no x-actor-email header */
 
       const entry = appendCarryForwardAuditEntry({
         roundId,

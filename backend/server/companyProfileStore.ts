@@ -32,6 +32,7 @@ import { emitBridgeEvent } from "./bridgeStore";
 import { enqueueOneOff } from "./emailStore";
 import { getDb } from "./db/connection";
 import { companyProfileExtended } from "../shared/schema";
+import { log } from "./lib/logger";
 
 const sha256 = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
 
@@ -350,7 +351,7 @@ export function updateCompanyProfile(
     // resilient against transient sqlite "database is locked" or test-runner
     // double-init issues we log + still update the cache so callers see the
     // intended state. Production fix path: surface this back to the route.
-    console.error(
+    log.error(
       "[companyProfileStore.updateCompanyProfile] DB write failed:",
       (err as Error).message,
     );
@@ -394,7 +395,7 @@ export async function hydrateCompanyProfileStore(): Promise<void> {
       .from(companyProfileExtended)
       .where(isNull(companyProfileExtended.deletedAt))) as any;
   } catch (err) {
-    console.warn(
+    log.warn(
       "[companyProfileStore.hydrate] DB read failed (continuing with empty cache):",
       (err as Error).message,
     );
@@ -417,7 +418,7 @@ export async function hydrateCompanyProfileStore(): Promise<void> {
       };
       profileMap.set(r.companyId, restored);
     } catch {
-      console.warn(
+      log.warn(
         "[companyProfileStore.hydrate] malformed profile_json for company",
         r.companyId,
       );
@@ -584,7 +585,7 @@ export async function hydrateFromDatabase(_db?: unknown): Promise<void> {
   if (!dbUrl) {
     return;
   }
-  console.log(`[hydrate] would load company_profiles from DATABASE_URL=${dbUrl.slice(0, 20)}... if Drizzle pg driver were active`);
+  log.info(`[hydrate] would load company_profiles from DATABASE_URL=${dbUrl.slice(0, 20)}... if Drizzle pg driver were active`);
 }
 
 /* ============================================================
@@ -628,7 +629,7 @@ export function registerCompanyProfileRoutes(app: Express): void {
   app.patch("/api/admin/companies/:id/profile", (req: Request, res: Response) => {
     const { id } = req.params;
     const confirm = req.headers["x-confirm"] === "true";
-    const actor = String(req.headers["x-actor-email"] ?? "admin@capavate.com");
+    const actor = String((req as any).userContext?.identity?.email ?? (req as any).userContext?.userId ?? ""); /* v14 */ if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
 
     const { companyId: _cid, version: _v, prevHash: _ph, hash: _h, updatedAt: _ua, updatedBy: _ub, ...patch } = req.body ?? {};
 
@@ -683,7 +684,7 @@ export function registerCompanyProfileRoutes(app: Express): void {
     if (!companyId) return res.status(400).json({ ok: false, error: "companyId required" });
 
     const confirm = req.headers["x-confirm"] === "true";
-    const actor = String(req.headers["x-actor-email"] ?? "founder@capavate.com");
+    const actor = String((req as any).userContext?.identity?.email ?? (req as any).userContext?.userId ?? ""); /* v14 */ if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
 
     const { companyId: _cid, version: _v, prevHash: _ph, hash: _h, updatedAt: _ua, updatedBy: _ub, ...patch } = req.body ?? {};
 
@@ -754,7 +755,7 @@ export function registerCompanyProfileRoutes(app: Express): void {
    */
   app.post("/api/founder/financials/request-accountant", (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"] === "true";
-    const actor = String(req.headers["x-actor-email"] ?? "founder@capavate.com");
+    const actor = String((req as any).userContext?.identity?.email ?? (req as any).userContext?.userId ?? ""); /* v14 */ if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
 
     const { companyId, fieldKey, accountantEmail, note = "" } = req.body ?? {};
 

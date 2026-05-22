@@ -63,12 +63,25 @@ export function registerAuthShellRoutes(app: Express, redemption: {
   // ---------- /api/dev/admin-bypass (preview-only) ----------
   // Sprint 27 hotfix: one-shot GET endpoint that signs the user in as admin
   // and 302-redirects to the admin dashboard. No form, no JS dependency,
-  // immune to browser caching of the JS bundle. Disabled when DISABLE_DEV_BYPASS=1
-  // or NODE_ENV !== "production" cutover; intended only for the *.pplx.app
-  // preview sandbox. Self-removable by setting the env var at production launch.
+  // immune to browser caching of the JS bundle.
+  //
+  // CP Phase C (CP-039) hotfix: hardened to require an explicit
+  // ALLOW_DEV_BYPASS=1 opt-in *in addition to* the prior negative gates.
+  // This converts the dev-bypass from "fail-open in dev" to "fail-closed
+  // unless explicitly enabled", so a misconfigured preview env that
+  // happens to have NODE_ENV unset cannot accidentally expose admin login.
+  //
+  // Disabled when:
+  //   - NODE_ENV === "production"           (hard-disabled, always)
+  //   - DISABLE_DEV_BYPASS === "1"          (legacy kill-switch)
+  //   - ALLOW_DEV_BYPASS !== "1"            (positive opt-in required)
+  // Vitest workers also implicitly opt in (so existing harnesses keep working).
   app.get("/api/dev/admin-bypass", async (req: Request, res: Response) => {
-    // Sprint-fix May 14 2026 — hard-disabled in production regardless of env var.
-    if (process.env.NODE_ENV === "production" || process.env.DISABLE_DEV_BYPASS === "1") {
+    const isProd = process.env.NODE_ENV === "production";
+    const killSwitch = process.env.DISABLE_DEV_BYPASS === "1";
+    const explicitlyAllowed =
+      process.env.ALLOW_DEV_BYPASS === "1" || process.env.VITEST === "true";
+    if (isProd || killSwitch || !explicitlyAllowed) {
       return res.status(404).json({ ok: false, error: "NOT_FOUND" });
     }
     const adminId = "u_admin";

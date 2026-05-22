@@ -574,7 +574,8 @@ export function registerEmailCampaignRoutes(app: Express): void {
   // ── POST /api/admin/email-campaigns ─────────────────────────
   app.post("/api/admin/email-campaigns", (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"];
-    const actor = String(req.headers["x-actor"] ?? "u_admin");
+    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const body = req.body ?? {};
 
     const valid = validateCampaignBody(body);
@@ -665,7 +666,8 @@ export function registerEmailCampaignRoutes(app: Express): void {
   // ── PATCH /api/admin/email-campaigns/:id ────────────────────
   app.patch("/api/admin/email-campaigns/:id", (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"];
-    const actor = String(req.headers["x-actor"] ?? "u_admin");
+    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const c = campaigns.get(req.params.id);
     if (!c) return res.status(404).json({ ok: false, error: "not_found" });
     if (
@@ -708,7 +710,8 @@ export function registerEmailCampaignRoutes(app: Express): void {
   // ── POST /api/admin/email-campaigns/:id/test-send ───────────
   app.post("/api/admin/email-campaigns/:id/test-send", (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"];
-    const actor = String(req.headers["x-actor"] ?? "u_admin");
+    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const c = campaigns.get(req.params.id);
     if (!c) return res.status(404).json({ ok: false, error: "not_found" });
 
@@ -771,7 +774,8 @@ export function registerEmailCampaignRoutes(app: Express): void {
   // ── POST /api/admin/email-campaigns/:id/schedule ────────────
   app.post("/api/admin/email-campaigns/:id/schedule", (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"];
-    const actor = String(req.headers["x-actor"] ?? "u_admin");
+    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const c = campaigns.get(req.params.id);
     if (!c) return res.status(404).json({ ok: false, error: "not_found" });
     if (c.status !== "draft") {
@@ -823,7 +827,8 @@ export function registerEmailCampaignRoutes(app: Express): void {
   // ── POST /api/admin/email-campaigns/:id/send ─────────────────
   app.post("/api/admin/email-campaigns/:id/send", async (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"];
-    const actor = String(req.headers["x-actor"] ?? "u_admin");
+    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const c = campaigns.get(req.params.id);
     if (!c) return res.status(404).json({ ok: false, error: "not_found" });
     if (c.status !== "draft" && c.status !== "scheduled") {
@@ -861,7 +866,8 @@ export function registerEmailCampaignRoutes(app: Express): void {
   // ── POST /api/admin/email-campaigns/:id/cancel ───────────────
   app.post("/api/admin/email-campaigns/:id/cancel", (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"];
-    const actor = String(req.headers["x-actor"] ?? "u_admin");
+    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const c = campaigns.get(req.params.id);
     if (!c) return res.status(404).json({ ok: false, error: "not_found" });
     if (c.status !== "draft" && c.status !== "scheduled") {
@@ -917,7 +923,8 @@ export function registerEmailTransportRoutes(app: Express): void {
   // ── PATCH /api/admin/email/transport/config ─────────────────
   app.patch("/api/admin/email/transport/config", (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"];
-    const actor = String(req.headers["x-actor"] ?? "u_admin");
+    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const patch = req.body ?? {};
 
     // Env-only fields — reject if passed

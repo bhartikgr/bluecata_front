@@ -25,6 +25,7 @@ const PUBLIC_API_PREFIXES = [
   "/api/auth/redeem",
   "/api/auth/redeem/preview",
   "/api/healthz",
+  "/api/health",                   // v19 Phase C — enhanced healthcheck (public)
   "/api/regions",                  // canonical region list \u2014 safe to expose
   "/api/dev/admin-bypass",         // self-gates via env var
 ];

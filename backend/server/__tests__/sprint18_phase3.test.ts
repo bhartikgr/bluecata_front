@@ -16,6 +16,7 @@
  * on an ephemeral port, no live network.
  */
 import { describe, it, expect } from "vitest";
+import { installV14TestIdentity } from "./_v14TestIdentity"; /* v14 Tier-1 Fix 1 — restores u_admin default identity for legacy tests */
 import express, { type Express } from "express";
 import http from "node:http";
 import { registerCommsRoutes } from "../commsStore";
@@ -23,6 +24,7 @@ import { registerCommsRoutes } from "../commsStore";
 function buildApp(): Express {
   const app = express();
   app.use(express.json());
+  installV14TestIdentity(app);
   registerCommsRoutes(app);
   return app;
 }
@@ -443,7 +445,8 @@ describe("Sprint 18 Phase 3 — supporting endpoints", () => {
   it("GET /api/comms/dev/outbox returns recent outbox events", async () => {
     const app = buildApp();
     // Trigger an outbox emission via a like.
-    const list = await call(app, "GET", "/api/comms/posts?sort=newest");
+    // v14 — actorId required so the viewer can see network posts.
+    const list = await call(app, "GET", "/api/comms/posts?sort=newest", { actorId: "u_aisha_patel" });
     const postId = list.body[0].id;
     await call(app, "POST", `/api/comms/posts/${postId}/like`, {
       body: {},

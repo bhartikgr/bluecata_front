@@ -11,6 +11,7 @@
  */
 
 import { drainOutbox } from "./bridgeStore";
+import { log } from "./lib/logger";
 
 let workerInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -28,21 +29,21 @@ async function defaultDeliver(_env: unknown, _hmac: string): Promise<{ ok: boole
 /** Start the worker. Safe to call multiple times — only one interval runs at a time. */
 export function startBridgeWorker(): void {
   if (workerInterval !== null) {
-    console.log("[bridge-worker] already running, skipping start");
+    log.info("[bridge-worker] already running, skipping start");
     return;
   }
-  console.log(`[bridge-worker] starting — drain interval ${DRAIN_INTERVAL_MS}ms`);
+  log.info(`[bridge-worker] starting — drain interval ${DRAIN_INTERVAL_MS}ms`);
   workerInterval = setInterval(async () => {
     try {
       const result = await drainOutbox(defaultDeliver);
       if (result.delivered > 0 || result.deadLettered > 0) {
-        console.log(
+        log.info(
           `[bridge-worker] drained ${result.delivered} events` +
           (result.deadLettered > 0 ? `, ${result.deadLettered} dead-lettered` : ""),
         );
       }
     } catch (err) {
-      console.error("[bridge-worker] drain error:", err);
+      log.error("[bridge-worker] drain error:", err);
     }
   }, DRAIN_INTERVAL_MS);
 }
@@ -52,7 +53,7 @@ export function stopBridgeWorker(): void {
   if (workerInterval !== null) {
     clearInterval(workerInterval);
     workerInterval = null;
-    console.log("[bridge-worker] stopped");
+    log.info("[bridge-worker] stopped");
   }
 }
 

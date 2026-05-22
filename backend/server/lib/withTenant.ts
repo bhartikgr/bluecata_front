@@ -60,6 +60,7 @@ import type { SQL, SQLWrapper } from "drizzle-orm";
 import { and, eq, isNull } from "drizzle-orm";
 import { getDb } from "../db/connection";
 import { userPrefs } from "../../shared/schema";
+import { log } from "./logger";
 
 /* -------------------------------------------------------------------------
  * resolveSessionUserId — local copy so we don't take a circular dep on
@@ -129,8 +130,7 @@ export function withTenant<T>(
     // pass one. We don't add a tenant filter (compiles a query that may leak)
     // — but we DO add a guard log so the audit reviewer can spot it.
     if (opts.tenantId === undefined && !opts.skipTenant) {
-      // eslint-disable-next-line no-console
-      console.warn(
+      log.warn(
         "[withTenant] called without tenantId and without skipTenant. " +
         "This query is NOT tenant-scoped. If intentional, pass { skipTenant: true } " +
         "and add a CROSS-TENANT justification comment at the call site.",
@@ -181,8 +181,7 @@ export function getCurrentTenantId(req: Request): string | null {
     return row?.activeTenantId ?? null;
   } catch (err) {
     // user_prefs not yet migrated, or DB issue. Don't crash request handling.
-    // eslint-disable-next-line no-console
-    console.warn("[withTenant.getCurrentTenantId] read failed:", (err as Error).message);
+    log.warn("[withTenant.getCurrentTenantId] read failed:", (err as Error).message);
     return null;
   }
 }

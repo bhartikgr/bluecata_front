@@ -15,6 +15,7 @@
  *  10. PDF endpoint returns 200, application/pdf, Content-Disposition: attachment
  */
 import { describe, it, expect, beforeEach } from "vitest";
+import { installV14TestIdentity } from "./_v14TestIdentity"; /* v14 Tier-1 Fix 1 — restores u_admin default identity for legacy tests */
 import express from "express";
 import http from "node:http";
 
@@ -99,6 +100,7 @@ async function req(
 function makeInvoiceApp() {
   const app = express();
   app.use(express.json());
+  installV14TestIdentity(app);
   registerInvoiceRoutes(app);
   return app;
 }
@@ -114,6 +116,7 @@ function makeGatewayApp() {
 function makeSubscriptionApp() {
   const app = express();
   app.use(express.json());
+  installV14TestIdentity(app); /* v14 Tier-1 Fix 1 */
   registerSubscriptionRoutes(app);
   return app;
 }
@@ -121,6 +124,7 @@ function makeSubscriptionApp() {
 function makeFullApp() {
   const app = express();
   app.use(express.json());
+  installV14TestIdentity(app); /* v14 Tier-1 Fix 1 */
   registerInvoiceRoutes(app);
   registerPaymentGatewayRoutes(app);
   registerSubscriptionRoutes(app);

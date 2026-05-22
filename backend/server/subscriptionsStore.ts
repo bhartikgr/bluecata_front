@@ -23,6 +23,7 @@ import {
   subscriptions as subscriptionsTable,
   subscriptionsHistory as subscriptionsHistoryTable,
 } from "../shared/schema";
+import { log } from "./lib/logger";
 
 /* ---------- Schema ---------- */
 
@@ -168,7 +169,7 @@ function seedFromCanonicalCompanies(): void {
   try {
     persistSeedToDb();
   } catch (err) {
-    console.warn("[subscriptionsStore] seed persist failed (non-fatal):", (err as Error).message);
+    log.warn("[subscriptionsStore] seed persist failed (non-fatal):", (err as Error).message);
   }
 }
 
@@ -360,7 +361,7 @@ export function updateSubscription(
         .run();
     });
   } catch (err) {
-    console.error("[subscriptionsStore.updateSubscription] DB write failed:", (err as Error).message);
+    log.error("[subscriptionsStore.updateSubscription] DB write failed:", (err as Error).message);
     return { ok: false, error: "db_write_failed" };
   }
 
@@ -488,7 +489,7 @@ export function createSubscriptionForNewCompany(
         .run();
     });
   } catch (err) {
-    console.error(
+    log.error(
       "[subscriptionsStore.createSubscriptionForNewCompany] DB write failed:",
       (err as Error).message,
     );
@@ -534,7 +535,7 @@ export function cancelSubscription(companyId: string, actor: string): boolean {
         .run();
     });
   } catch (err) {
-    console.error("[subscriptionsStore.cancelSubscription] DB write failed:", (err as Error).message);
+    log.error("[subscriptionsStore.cancelSubscription] DB write failed:", (err as Error).message);
     return false;
   }
   // Maps: keep the row but flip status so callers see "cancelled".
@@ -596,7 +597,7 @@ export async function hydrateSubscriptionsStore(): Promise<void> {
       history.set(h.companyId, list);
     } catch {
       // Defensive: a malformed snapshot must not abort hydration.
-      console.warn("[subscriptionsStore.hydrate] failed to parse history snapshot for", h.companyId);
+      log.warn("[subscriptionsStore.hydrate] failed to parse history snapshot for", h.companyId);
     }
   }
 }
@@ -621,7 +622,7 @@ export function registerSubscriptionRoutes(app: Express): void {
   });
 
   app.patch("/api/admin/subscriptions/:companyId", (req: Request, res: Response) => {
-    const actor = (req.headers["x-actor-email"] as string | undefined) ?? "admin@capavate.com";
+    const actor = String((req as any).userContext?.identity?.email ?? (req as any).userContext?.userId ?? ""); /* v14 */ if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const result = updateSubscription(req.params.companyId, req.body ?? {}, actor);
     if (!result.ok) return res.status(404).json(result);
     res.json(result);

@@ -36,6 +36,7 @@ import { appendAdminAudit } from "./adminPlatformStore";
 import { sendMail } from "./emailTransport";
 import { getDb } from "./db/connection";
 import { invoices as invoicesTable } from "../shared/schema";
+import { log } from "./lib/logger";
 
 /* ---------- Types ---------- */
 
@@ -481,9 +482,9 @@ export async function hydrateInvoiceStore(): Promise<void> {
         if (seq > prev) yearCounters.set(year, seq);
       }
     }
-    console.log(`[invoiceStore.hydrate] loaded ${rows.length} invoices`);
+    log.info(`[invoiceStore.hydrate] loaded ${rows.length} invoices`);
   } catch (err) {
-    console.warn("[invoiceStore.hydrate] DB read failed:", (err as Error).message);
+    log.warn("[invoiceStore.hydrate] DB read failed:", (err as Error).message);
   }
 }
 
@@ -616,7 +617,7 @@ export function registerInvoiceRoutes(app: Express): void {
     if (inv.status !== "paid") return res.status(400).json({ ok: false, error: "invoice_not_paid" });
     const amountMinor = Number(req.body?.amountMinor ?? inv.totalMinor);
     const reason = String(req.body?.reason ?? "admin_refund");
-    const actor = String(req.headers["x-actor-email"] ?? "admin@capavate.com");
+    const actor = String((req as any).userContext?.identity?.email ?? (req as any).userContext?.userId ?? ""); /* v14 */ if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     try {
       const refundInv = refundInvoice(inv.id, amountMinor, reason, actor);
       res.json({ ok: true, refundInvoice: refundInv, originalInvoice: getInvoice(inv.id) });
@@ -626,13 +627,13 @@ export function registerInvoiceRoutes(app: Express): void {
   });
 
   app.get("/api/founder/invoices", (req: Request, res: Response) => {
-    const companyId = String(req.query.companyId ?? req.headers["x-company-id"] ?? "");
+    const companyId = String(req.query.companyId ?? (req as any).userContext?.founder?.activeCompanyId ?? ""); /* v14 */
     const invoices = listInvoicesForCompany(companyId);
     res.json({ ok: true, invoices, total: invoices.length });
   });
 
   app.get("/api/founder/invoices/:id", (req: Request, res: Response) => {
-    const companyId = String(req.query.companyId ?? req.headers["x-company-id"] ?? "");
+    const companyId = String(req.query.companyId ?? (req as any).userContext?.founder?.activeCompanyId ?? ""); /* v14 */
     const inv = getInvoice(req.params.id);
     if (!inv) return res.status(404).json({ ok: false, error: "not_found" });
     if (inv.companyId !== companyId) return res.status(403).json({ ok: false, error: "forbidden" });
@@ -640,7 +641,7 @@ export function registerInvoiceRoutes(app: Express): void {
   });
 
   app.get("/api/founder/invoices/:id/pdf", (req: Request, res: Response) => {
-    const companyId = String(req.query.companyId ?? req.headers["x-company-id"] ?? "");
+    const companyId = String(req.query.companyId ?? (req as any).userContext?.founder?.activeCompanyId ?? ""); /* v14 */
     const inv = getInvoice(req.params.id);
     if (!inv) return res.status(404).json({ ok: false, error: "not_found" });
     if (inv.companyId !== companyId) return res.status(403).json({ ok: false, error: "forbidden" });
@@ -652,7 +653,7 @@ export function registerInvoiceRoutes(app: Express): void {
   });
 
   app.post("/api/founder/invoices/:id/email", (req: Request, res: Response): void => {
-    const companyId = String(req.body?.companyId ?? req.headers["x-company-id"] ?? "");
+    const companyId = String(req.body?.companyId ?? (req as any).userContext?.founder?.activeCompanyId ?? ""); /* v14 */
     const inv = getInvoice(req.params.id);
     if (!inv) { res.status(404).json({ ok: false, error: "not_found" }); return; }
     if (inv.companyId !== companyId) { res.status(403).json({ ok: false, error: "forbidden" }); return; }
@@ -679,7 +680,7 @@ export function registerInvoiceRoutes(app: Express): void {
       `,
       text: `Invoice ${inv.invoiceNumber}\nPlan: ${inv.planLabel}\nPeriod: ${inv.periodStart} – ${inv.periodEnd}\nTotal: ${fmtMoney(inv.totalMinor, inv.currency)}\nStatus: ${inv.status}`,
       idempotencyKey: `invoice-email-${inv.id}-${Date.now()}`,
-    }).catch((err: Error) => console.error("[invoiceStore] email delivery error:", err.message));
+    }).catch((err: Error) => log.error("[invoiceStore] email delivery error:", err.message));
 
     appendAdminAudit(`founder:${companyId}`, `invoice:${inv.id}`, "invoice.emailed_to_founder", { to: toEmail });
 
@@ -703,7 +704,7 @@ export const _testInvoices = {
         tx.delete(invoicesTable).run();
       });
     } catch (err) {
-      console.warn("[_testInvoices.reset] DB truncate failed:", (err as Error).message);
+      log.warn("[_testInvoices.reset] DB truncate failed:", (err as Error).message);
     }
   },
 };

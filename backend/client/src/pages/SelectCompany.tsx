@@ -66,7 +66,10 @@ export default function SelectCompany() {
   useEffect(() => {
     if (isLoading || !ctx) return;
     if (companies.length === 0) {
-      navigate("/auth/signup");
+      // B-V11-1 fix: send 0-company founders to the founder dashboard's empty
+      // state (company creation prompt). Previously navigated to /auth/signup
+      // which then routed back here, producing an infinite redirect loop.
+      navigate("/founder/dashboard");
       return;
     }
     if (companies.length === 1 && !activate.isPending) {

@@ -26,6 +26,7 @@
  */
 
 import { describe, it, expect, beforeEach } from "vitest";
+import { installV14TestIdentity } from "./_v14TestIdentity"; /* v14 Tier-1 Fix 1 — restores u_admin default identity for legacy tests */
 import express, { type Express } from "express";
 import http from "node:http";
 import { registerCommsRoutes, _commsTest } from "../commsStore";
@@ -33,6 +34,7 @@ import { registerCommsRoutes, _commsTest } from "../commsStore";
 function buildApp(): Express {
   const app = express();
   app.use(express.json());
+  installV14TestIdentity(app);
   registerCommsRoutes(app);
   return app;
 }
@@ -349,7 +351,8 @@ describe("Sprint 19: POST /api/comms/posts with cap_table visibility", () => {
   it("creates a post routed to the cap-table channel", async () => {
     const app = buildApp();
     const res = await call(app, "POST", "/api/comms/posts", {
-      body: { body: "Cap table only post", visibility: "cap_table", authorKind: "user" },
+      // v14 — cap_table visibility requires companyId; was previously inferred from a "co_novapay" fallback.
+      body: { body: "Cap table only post", visibility: "cap_table", authorKind: "user", companyId: "co_novapay" },
       actorId: "u_maya_chen",
     });
     expect(res.status).toBe(200);

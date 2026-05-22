@@ -78,6 +78,11 @@ function call(method: string, path: string, body?: unknown): Promise<CallRespons
       headers["content-type"] = "application/json";
       headers["content-length"] = String(Buffer.byteLength(data));
     }
+    // v15: cap-table HTTP surface is now auth-gated (P0-1/P0-2/P0-3). The
+    // admin persona bypasses the founder.ofCompany ownership check, which is
+    // exactly the semantics these legacy sprint-25 tests assume (they target
+    // synthetic companies like "co_a" not in any persona's founder roster).
+    headers["x-user-id"] = "u_admin";
     const req = http.request({ hostname: "127.0.0.1", port, path, method, headers }, (res) => {
       let raw = "";
       res.on("data", (c) => (raw += c));
@@ -125,7 +130,8 @@ describe("GET /api/founder/captable/funded-queue", () => {
   it("3. filters by roundId", async () => {
     enqueueFunded({ invitationId: "in_1", roundId: "rnd_seed", companyId: "co_a", investorId: "u_a", amount: "100000", currency: "USD", shares: "5000" });
     enqueueFunded({ invitationId: "in_2", roundId: "rnd_series_a", companyId: "co_a", investorId: "u_b", amount: "500000", currency: "USD", shares: "25000" });
-    const r = await call("GET", "/api/founder/captable/funded-queue?roundId=rnd_seed");
+    // v15: funded-queue now requires companyId (auth + founder.ofCompany).
+    const r = await call("GET", "/api/founder/captable/funded-queue?companyId=co_a&roundId=rnd_seed");
     const body = r.body as { entries: unknown[]; count: number };
     expect(body.count).toBe(1);
     expect(body.entries.length).toBe(1);
@@ -133,7 +139,7 @@ describe("GET /api/founder/captable/funded-queue", () => {
 
   it("4. returns count field", async () => {
     enqueueFunded({ invitationId: "in_1", roundId: "rnd_seed", companyId: "co_a", investorId: "u_a", amount: "100000", currency: "USD", shares: "5000" });
-    const r = await call("GET", "/api/founder/captable/funded-queue");
+    const r = await call("GET", "/api/founder/captable/funded-queue?companyId=co_a");
     expect((r.body as { count: number }).count).toBe(1);
   });
 });

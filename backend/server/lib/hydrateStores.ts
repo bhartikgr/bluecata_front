@@ -45,6 +45,37 @@ import { hydrateAdminContactsStore as realHydrateAdminContacts } from "../adminC
 import { hydrateFounderCrmStore as realHydrateFounderCrm } from "../founderCrmStore";
 import { hydrateInvestorCrmStore as realHydrateInvestorCrm } from "../investorCrmStore";
 import { hydrateCrmStore as realHydrateCrm } from "../crmStore";
+// Patch v13 — Avi's Issues 3/4/5 newly DB-backed stores.
+import { hydrateRoundsStore as realHydrateRounds } from "../roundsStore";
+import { hydrateReportsStore as realHydrateReports } from "../reportsStore";
+import { hydrateNetworkPostsStore as realHydrateNetworkPosts } from "../networkPostsStore";
+// v15 P0-4..P0-11 — invitation + soft-circle DB-backed stores.
+import { hydrateRoundInvitationsStore as realHydrateRoundInvitations } from "../roundInvitationsStore";
+import { hydrateSoftCircleStore as realHydrateSoftCircle } from "../softCircleStore";
+// v16 Fix 6 — Collective waitlist DB-backed store.
+import { hydrateCollectiveWaitlistStore as realHydrateCollectiveWaitlist } from "../collectiveWaitlistStore";
+// v16 Addendum A/B — DSC feedback (DB-migrated) and DSC votes (new foundation).
+import { hydrateDscFeedbackStore as realHydrateDscFeedback } from "../dscFeedbackStore";
+import { hydrateDscVoteStore as realHydrateDscVotes } from "../dscVoteStore";
+// v17 Phase A — chapter scoping. chaptersStore is DB-only (no in-memory hydrator needed).
+// v17 Phase B — 8 Collective stores migrated to hybrid Map+DB pattern.
+import { hydrateCollectiveAppStore as realHydrateCollectiveApp } from "../collectiveAppStore";
+import { hydrateCollectiveMembershipStore as realHydrateCollectiveMembership } from "../collectiveMembershipStore";
+import { hydrateFounderCollectiveApplyStore as realHydrateFounderCollectiveApply } from "../founderCollectiveApplyStore";
+import { hydrateSprint21PortfolioStore as realHydrateSprint21Portfolio } from "../sprint21PortfolioRoutes";
+import { hydrateAdminDscStore as realHydrateAdminDsc } from "../adminDscRoutes";
+import { hydrateCollectiveSettingsStore as realHydrateCollectiveSettings } from "../collectiveSettingsStore";
+import { hydrateCommsCollectiveStore as realHydrateCommsCollective } from "../commsStore";
+import { hydratePartnerWorkspaceCollectiveStore as realHydratePartnerCollective } from "../partnerWorkspaceStore";
+// v19 Phase B — Messaging + Partner Workspace remaining DB-backed slices.
+import { hydrateMessagingStore as realHydrateMessaging } from "../messagingStore";
+import { hydratePartnerWorkspaceV19Store as realHydratePartnerV19 } from "../partnerWorkspaceV19Store";
+// CP Phase A — DB-backed SPV/Fund store + one-time CRM hash-chain stitcher.
+import { hydrateSpvFundStore as realHydrateSpvFund } from "../spvFundStore";
+import { stitchPartnerCrmChain } from "./partnerCrmChainStitch";
+// CP Phase B — consortium apply DB-backed hydrator.
+import { hydrateConsortiumApplyStore as realHydrateConsortiumApply } from "../consortiumApplyStore";
+import { log } from "./logger";
 
 const STORES = [
   "subscriptionsStore",
@@ -114,6 +145,74 @@ const HYDRATE_ORDER: Array<{ name: string; fn: () => Promise<void> }> = [
   { name: "founderCrmStore",     fn: realHydrateFounderCrm },
   { name: "investorCrmStore",    fn: realHydrateInvestorCrm },
   { name: "crmStore",            fn: realHydrateCrm },
+  // Patch v13 — Avi's Issues 3/4/5. Order:
+  //   roundsStore        — references company IDs (after multiCompany).
+  //                         Slotted after multiCompany but · anywhere after
+  //                         it is fine; placed here to keep grouping.
+  //   reportsStore       — references company IDs.
+  //   networkPostsStore  — platform-wide feed, independent.
+  { name: "roundsStore",         fn: realHydrateRounds },
+  { name: "reportsStore",        fn: realHydrateReports },
+  { name: "networkPostsStore",   fn: realHydrateNetworkPosts },
+  // v15 — invitations + soft-circles ride after roundsStore so the
+  // round IDs they reference are already in memory.
+  { name: "roundInvitationsStore", fn: realHydrateRoundInvitations },
+  { name: "softCircleStore",       fn: realHydrateSoftCircle },
+  // v16 Fix 6 — waitlist after softCircles, before DSC stores.
+  { name: "collectiveWaitlistStore", fn: realHydrateCollectiveWaitlist },
+  // v16 Addendum A — dscFeedback DB-backed (hybrid Map+DB, write-through).
+  { name: "dscFeedbackStore",      fn: realHydrateDscFeedback },
+  // v16 Addendum B — dsc_votes hash-chained foundation store.
+  { name: "dscVoteStore",          fn: realHydrateDscVotes },
+  // v17 Phase B — 8 Collective stores. Sequential order matters:
+  //   collectiveAppStore         — applications to be a chapter member.
+  //   collectiveMembershipStore  — active memberships (depends on apps).
+  //   founderCollectiveApply     — founder-side nominations + applications.
+  //   sprint21Portfolio          — investor portfolio nominations (hash-chained).
+  //   adminDscRoutes             — DSC roles + pipeline (hash-chained for roles).
+  //   collectiveSettingsStore    — per-chapter settings (hash-chained, upsert).
+  //   commsCollective            — Collective-visibility channel posts.
+  //   partnerWorkspaceCollective — partner deal promotions (Collective slice).
+  { name: "collectiveAppStore",          fn: realHydrateCollectiveApp },
+  { name: "collectiveMembershipStore",   fn: realHydrateCollectiveMembership },
+  { name: "founderCollectiveApplyStore", fn: realHydrateFounderCollectiveApply },
+  { name: "sprint21PortfolioStore",      fn: realHydrateSprint21Portfolio },
+  { name: "adminDscStore",               fn: realHydrateAdminDsc },
+  { name: "collectiveSettingsStore",     fn: realHydrateCollectiveSettings },
+  { name: "commsCollectiveStore",        fn: realHydrateCommsCollective },
+  { name: "partnerWorkspaceCollective",  fn: realHydratePartnerCollective },
+  // v19 Phase B — Messaging DB migration (remaining slices). Messaging tables
+  // hydrate AFTER auth/user-credentials (which is first) and AFTER the
+  // Collective stores (which establish chapter context) but BEFORE
+  // notifications/SSE (kept as legacy stubs further down). Sequential by
+  // brief contract.
+  { name: "messagingStore",              fn: realHydrateMessaging },
+  // v19 Phase B — Partner workspace remaining slices. Hydrates AFTER
+  // companies (multiCompanyStore is up early) and AFTER tenants because
+  // the rows reference company_id and tenant scopes. Placed at end of the
+  // v17 Phase B Collective slice block so partner_workspace tables are all
+  // resident before any read traffic hits the routes.
+  { name: "partnerWorkspaceV19Store",    fn: realHydratePartnerV19 },
+  // CP Phase A (CP-028) — DB-backed SPV/Fund store. Hydrates after the
+  // partner workspace so partner ids are known. Failure does not block boot.
+  { name: "spvFundStore",                fn: realHydrateSpvFund },
+  // CP Phase B (CP-001..005) — Consortium apply applications + partner
+  // organizations row hydration. Hydrates AFTER spvFundStore so partner
+  // identities are warm; safe to fail (boot continues).
+  { name: "consortiumApplyStore",        fn: realHydrateConsortiumApply },
+  // CP Phase A (CP-008) — One-time CRM hash-chain stitcher. Marked idempotent
+  // via _migrations_applied; subsequent boots are a no-op.
+  {
+    name: "partnerCrmChainStitch",
+    fn: async () => {
+      try {
+        stitchPartnerCrmChain();
+      } catch (e) {
+        // Already logged inside the module — swallow so boot proceeds.
+        void e;
+      }
+    },
+  },
 ];
 
 /** Stub hydrate factory — used for stores not yet migrated to DB-backed hybrid. */
@@ -124,7 +223,7 @@ function makeHydrate(storeName: string) {
       return; // sandbox no-op
     }
     // Production stub: log the activation message. Avi will add the query bodies.
-    console.log(
+    log.info(
       `[hydrate] would load ${storeName} from DATABASE_URL=${dbUrl.slice(0, 20)}... if Drizzle pg driver were active`,
     );
   };
@@ -157,13 +256,19 @@ export const hydrateAdminPlatformStore = realHydrateAdminPlatform;
 export const hydrateFounderCrmStore = realHydrateFounderCrm;
 export const hydrateMembershipStore = makeHydrate("membershipStore");
 export const hydrateDataroomStore = realHydrateDataroom;
-export const hydrateReportsStore = makeHydrate("reportsStore");
+// Patch v13 (Avi's Issue 4): real DB-backed hydrator replaces stub.
+export const hydrateReportsStore = realHydrateReports;
 export const hydrateCaptableCommitStore = realHydrateCaptableCommit;
 export const hydrateTermSheetStore = realHydrateTermSheet;
 // Patch v12 Day 3: real DB-backed hydrators replace stubs.
 export const hydrateInvestorCrmStore = realHydrateInvestorCrm;
 export const hydrateCrmStore = realHydrateCrm;
+// Patch v13 (Avi's Issue 5): real DB-backed hydrator for network posts. commsStore stays stubbed.
+export const hydrateNetworkPostsStore = realHydrateNetworkPosts;
 export const hydrateCommsStore = makeHydrate("commsStore");
+// v19 Phase B — messaging + partner workspace V19 real DB-backed hydrators.
+export const hydrateMessagingStore = realHydrateMessaging;
+export const hydratePartnerWorkspaceV19Store = realHydratePartnerV19;
 export const hydrateNotificationsStore = makeHydrate("notificationsStore");
 
 /**
@@ -175,8 +280,42 @@ export const hydrateNotificationsStore = makeHydrate("notificationsStore");
  * After the v12 sequence completes, the legacy stub stores are walked (still
  * no-ops in sandbox, console-log in prod). They will migrate in Day 2+.
  */
+/* v19 Phase C — expose hydrate progress for /api/health. Single mutable
+ * record updated as hydrateAllStores walks HYDRATE_ORDER. */
+export interface HydrateProgress {
+  state: "pending" | "in_progress" | "ok" | "partial" | "failed";
+  total: number;
+  succeeded: number;
+  failed: number;
+  failedNames: string[];
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+const _hydrateProgress: HydrateProgress = {
+  state: "pending",
+  total: 0,
+  succeeded: 0,
+  failed: 0,
+  failedNames: [],
+  startedAt: null,
+  finishedAt: null,
+};
+
+/** Read the live hydration progress snapshot. */
+export function getHydrateProgress(): HydrateProgress {
+  return { ..._hydrateProgress, failedNames: [..._hydrateProgress.failedNames] };
+}
+
 export async function hydrateAllStores(_db?: unknown): Promise<void> {
   const dbUrl = process.env.DATABASE_URL;
+  _hydrateProgress.state = "in_progress";
+  _hydrateProgress.total = HYDRATE_ORDER.length;
+  _hydrateProgress.succeeded = 0;
+  _hydrateProgress.failed = 0;
+  _hydrateProgress.failedNames = [];
+  _hydrateProgress.startedAt = new Date().toISOString();
+  _hydrateProgress.finishedAt = null;
 
   // v12 Phase E: sequential `for...of HYDRATE_ORDER` over the migrated stores.
   // Runs in BOTH sandbox (SQLite via connection.ts) and prod (Postgres when
@@ -185,23 +324,33 @@ export async function hydrateAllStores(_db?: unknown): Promise<void> {
   for (const { name, fn } of HYDRATE_ORDER) {
     try {
       await fn();
-      console.log(`[hydrate] v12 store hydrated: ${name}`);
+      _hydrateProgress.succeeded += 1;
+      log.info(`[hydrate] v12 store hydrated: ${name}`);
     } catch (err) {
-      console.warn(`[hydrate] v12 store ${name} failed to hydrate:`, (err as Error).message);
+      _hydrateProgress.failed += 1;
+      _hydrateProgress.failedNames.push(name);
+      log.warn(`[hydrate] v12 store ${name} failed to hydrate:`, (err as Error).message);
     }
   }
+  _hydrateProgress.finishedAt = new Date().toISOString();
+  _hydrateProgress.state =
+    _hydrateProgress.failed === 0
+      ? "ok"
+      : _hydrateProgress.succeeded > 0
+        ? "partial"
+        : "failed";
 
   if (!dbUrl) {
-    console.log("[hydrate] DATABASE_URL not set — non-v12 stores remain in-memory (sandbox mode)");
+    log.info("[hydrate] DATABASE_URL not set — non-v12 stores remain in-memory (sandbox mode)");
     return;
   }
 
-  console.log(`[hydrate] DATABASE_URL detected — running stub hydrators for ${STORES.length} non-v12 stores...`);
+  log.info(`[hydrate] DATABASE_URL detected — running stub hydrators for ${STORES.length} non-v12 stores...`);
   // Preserve the legacy log message — Sprint 29 KL test asserts on it.
   for (const name of STORES) {
-    console.log(
+    log.info(
       `[hydrate] would load ${name} from DATABASE_URL=${dbUrl.slice(0, 20)}... if Drizzle pg driver were active`,
     );
   }
-  console.log("[hydrate] all stores hydration complete (v12 sequence + legacy stubs)");
+  log.info("[hydrate] all stores hydration complete (v12 sequence + legacy stubs)");
 }

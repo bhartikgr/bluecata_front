@@ -22,6 +22,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { installV14TestIdentity } from "./_v14TestIdentity"; /* v14 Tier-1 Fix 1 — restores u_admin default identity for legacy tests */
 import express, { type Express } from "express";
 import http from "node:http";
 import { registerCommsRoutes } from "../commsStore";
@@ -39,6 +40,7 @@ let port: number;
 beforeAll(async () => {
   app = express();
   app.use(express.json());
+  installV14TestIdentity(app, { defaultIdentity: false });
   registerCommsRoutes(app);
   registerNotificationsRoutes(app);
   registerSprint21Routes(app);

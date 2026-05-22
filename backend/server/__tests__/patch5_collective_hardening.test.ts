@@ -21,6 +21,7 @@ import express, { type Express } from "express";
 import http from "node:http";
 import { registerRoutes } from "../routes";
 import { createContact } from "../adminContactsStore";
+import * as collectiveMembershipStore from "../collectiveMembershipStore"; /* v14 Tier-1 Fix 3 */
 
 let app: Express;
 let server: http.Server;
@@ -31,6 +32,11 @@ beforeAll(async () => {
   app.use(express.json());
   server = http.createServer(app);
   await registerRoutes(server, app);
+  // v14 Tier-1 Fix 3: activate the demo personas as Collective members so
+  // they pass requireCollectiveMember on /api/collective/{members,companies,
+  // soft-circles,companies/:id,activity}.
+  collectiveMembershipStore.activate("u_aisha_patel", "u_admin");
+  collectiveMembershipStore.activate("u_avi_managing", "u_admin");
   await new Promise<void>((resolve) => {
     server.listen(0, () => {
       port = (server.address() as { port: number }).port;

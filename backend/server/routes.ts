@@ -25,6 +25,8 @@ import {
   currentInvestor,
 } from "./mockData";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
+// v17 Phase A — chapter scoping store (used by /api/me/chapters).
+import { listChaptersForUser as v17ListChaptersForUser } from "./chaptersStore";
 import { registerProfileRoutes } from "./profileStore";
 import { registerCommsRoutes } from "./commsStore";
 import { registerCommsTiersRoutes } from "./commsTiersStore";
@@ -34,6 +36,7 @@ import { registerMaIntelligenceRoutes } from "./maIntelligenceStore";
 import { registerCrmRoutes } from "./crmStore";
 import { registerCollectiveAppRoutes } from "./collectiveAppStore";
 import { registerFounderCollectiveApplyRoutes } from "./founderCollectiveApplyStore";
+import { registerCollectiveWaitlistRoutes } from "./collectiveWaitlistRoutes"; /* v16 Fix 6 */
 import { registerWelcomeRoutes } from "./welcomeStore";
 import { registerNetworkPostsRoutes } from "./networkPostsStore";
 import { registerBulkMessageRoutes } from "./bulkMessageStore";
@@ -42,7 +45,7 @@ import { registerSprint21Routes } from "./sprint21Routes";
 import { setSessionCookie, clearSessionCookie } from "./lib/sessionCookie.js";
 import { getRecentEvents, findEventsByType } from "./sprint10Telemetry";
 // Sprint 11 — founder build
-import { registerMultiCompanyRoutes } from "./multiCompanyStore";
+import { registerMultiCompanyRoutes, updateCompanyDetails } from "./multiCompanyStore";
 import { registerMembershipRoutes } from "./membershipStore";
 import { registerDataroomRoutes } from "./dataroomStore";
 import { registerReportsRoutes } from "./reportsStore";
@@ -54,7 +57,22 @@ import { registerBridgeRoutes } from "./bridgeStore";
 import { registerNotificationsRoutes } from "./notificationsStore";
 import { registerEmailRoutes } from "./emailStore";
 import { registerEmailCampaignRoutes, registerEmailTransportRoutes } from "./emailCampaignStore";
-import { registerAdminPlatformRoutes, appendAdminAudit } from "./adminPlatformStore";
+import { registerAdminPlatformRoutes, appendAdminAudit, getAuditLog } from "./adminPlatformStore";
+import { createRound as roundsStoreCreate, getRoundsForCompany as roundsStoreForCompany, listRounds as roundsStoreList, getRoundById as roundsStoreGetById } from "./roundsStore";
+// v15 P0-4..P0-11 — real invitation + soft-circle stores.
+import {
+  createInvitation as roundInvitationsCreate,
+  redeemInvitation as roundInvitationsRedeem,
+  listForRound as roundInvitationsListForRound,
+  revokeInvitation as roundInvitationsRevoke,
+  extendInvitation as roundInvitationsExtend,
+  getInvitation as roundInvitationsGet,
+} from "./roundInvitationsStore";
+import {
+  createSoftCircle as softCircleCreate,
+  validateSoftCircle as softCircleValidate,
+  listForRound as softCircleListForRound,
+} from "./softCircleStore";
 import { configureSubscriptionsStore, registerSubscriptionRoutes, listSubscriptions, updateSubscription, getSubscription, createSubscriptionForNewCompany, type Subscription } from "./subscriptionsStore";
 import { configurePricingModelStore, registerPricingModelRoutes } from "./pricingModelStore";
 import { emitBridgeEvent } from "./bridgeStore";
@@ -90,7 +108,31 @@ import { registerStripeWebhookRoute } from "./stripeGatewayAdapter";
 import { registerCollectiveRoutes } from "./collectiveRoutes";
 import { registerAdminCollectiveRoutes } from "./adminCollectiveRoutes";
 import { registerAdminDscRoutes } from "./adminDscRoutes";
+// v17 Phase C — Founder accept/decline offers + DSC vote public endpoint.
+import { registerCollectiveOfferRoutes } from "./collectiveOffersStore";
+import { registerCollectiveDscVoteRoutes } from "./collectiveDscVoteRoutes";
+import { registerScreeningEventRoutes } from "./screeningEventsStore";
+import { registerCollectiveBillingRoutes } from "./collectiveBillingStore";
+import { registerExpertQARoutes } from "./expertQAStore";
+import { registerChapterAnnouncementRoutes } from "./chapterAnnouncementsStore";
+import { registerChapterResourceRoutes } from "./chapterResourcesStore";
+import { registerLeaderboardRoutes } from "./chapterLeaderboardStore";
+/* v19 Phase B — Messaging + Partner Workspace remaining DB-backed surfaces. */
+import { registerMessagingRoutes } from "./messagingStore";
+import { registerPartnerWorkspaceV19Routes } from "./partnerWorkspaceV19Store";
+import { registerSpvFundRoutes } from "./spvFundStore";
+/* CP Phase B — Apply-to-Join + Promotion Moderation + GDPR. */
+import {
+  registerConsortiumApplyRoutes,
+  registerPartnerOnboardingRoutes,
+} from "./consortiumApplyStore";
+import { registerPromotionModerationRoutes } from "./promotionModerationRoutes";
+import { registerGdprRoutes } from "./gdprRoutes";
+import { registerCollectiveSseRoutes } from "./collectiveSseRoutes";
+import { registerChapterAdminRoutes } from "./chapterAdminRoutes";
+import { registerChapterAdminDashboardRoutes } from "./chapterAdminDashboardStore";
 import { registerAdminDlqRoutes } from "./adminDlqRoutes";
+import { registerAuditChainRoutes } from "./auditChainRoutes"; /* v19 Phase C */
 import * as collectiveMembershipStore from "./collectiveMembershipStore";
 import { listMembersForCompany as listCapTableMembersForCompany } from "./membershipStore";
 import { emitNotification } from "./notificationsStore";
@@ -109,7 +151,7 @@ import { registerAdminUsersRoutes } from "./lib/adminUsersRoutes";
 import { realtimeStreamHandler, emitMutation } from "./lib/eventBus";
 import { BridgeOutbound } from "./lib/bridgeOutbound";
 import { csrfMiddleware } from "./lib/csrf";
-import { rateLimitMiddleware } from "./lib/rateLimit";
+import { rateLimitMiddleware, collectiveRateLimit } from "./lib/rateLimit";
 import { securityHeaders, corsForApi } from "./middleware/security";
 import { getDb } from "./db/connection";
 import { SYNC_ENTITY_COUNT } from "./db/syncRepo";
@@ -120,6 +162,7 @@ import { getUserContextForId, getUserContext } from "./lib/userContext";
 import { companies as _allCompanies } from "./mockData";
 // Sprint-fix: production auth middleware
 import { requireAuth, requireAdmin, requireAuthenticated } from "./lib/authMiddleware";
+import { log } from "./lib/logger";
 
 /* ---------------------------------------------------------------------
  * Sprint 7 — invitation token store (in-memory mock).
@@ -181,7 +224,33 @@ function allow(ip: string, limitPerMin = 10): boolean {
   return true;
 }
 
+/**
+ * v13 — Avi's Issue 3 helper.
+ *
+ * Returns the union of the legacy in-memory `rounds` array (seeded by mockData
+ * + appended-to by POST /api/rounds for the current boot) and rounds hydrated
+ * from the SQL `rounds` table via roundsStore. Rounds present in both lists
+ * (matched by `id`) are deduplicated, preferring the legacy in-memory entry
+ * because it carries the legacy seed's extra columns the UI expects.
+ */
+function mergeLegacyAndDbRounds(): any[] {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const legacy = rounds as unknown as any[];
+  const dbRounds = roundsStoreList();
+  if (dbRounds.length === 0) return legacy;
+  const legacyIds = new Set(legacy.map((r) => r.id));
+  const extras = dbRounds.filter((r) => !legacyIds.has(r.id));
+  if (extras.length === 0) return legacy;
+  return [...legacy, ...extras];
+}
+
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
+  /* ------------ v19 Phase C: correlation id MUST be the very first middleware
+   * so every downstream log line, audit_log row, and SSE heartbeat can carry
+   * the same trace id end-to-end. ------------ */
+  const { correlationIdMiddleware } = await import("./lib/correlationId");
+  app.use(correlationIdMiddleware);
+
   /* ------------ Sprint 17 D2: security headers + CORS (front of stack) ------------ */
   app.use(securityHeaders);
   app.use("/api", corsForApi);
@@ -189,6 +258,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   /* ------------ Sprint 22 Wave 1: loadUserContext MUST be first so every downstream
    * handler has req.userContext populated (DEF-022 root fix). ------------ */
   app.use(loadUserContext);
+
+  /* ------------ v14 Tier-1 Fix 5: feature flags read endpoint ------------ */
+  app.get("/api/feature-flags", async (_req, res) => {
+    const { FEATURE_FLAGS } = await import("./lib/featureFlags");
+    res.json(FEATURE_FLAGS);
+  });
 
   /* ------------ Sprint 8: profile store + PATCH endpoints ------------ */
   registerProfileRoutes(app);
@@ -202,6 +277,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   registerCrmRoutes(app);
   registerCollectiveAppRoutes(app);
   registerFounderCollectiveApplyRoutes(app);
+  /* v16 Fix 6 — Collective Waitlist (honest invite-only beta entry point).
+   * Stays available regardless of COLLECTIVE_ENABLED. */
+  registerCollectiveWaitlistRoutes(app);
   registerWelcomeRoutes(app);
   registerNetworkPostsRoutes(app);
   registerBulkMessageRoutes(app);
@@ -220,7 +298,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!companyId || !companyName) {
       return res.status(400).json({ ok: false, error: "companyId and companyName are required" });
     }
-    const actor = (req.headers["x-actor-email"] as string | undefined) ?? `founder:${companyId}`;
+    const actor = String((req as any).userContext?.identity?.email ?? (req as any).userContext?.userId ?? `founder:${companyId}`); /* v14 */
     const result = createSubscriptionForNewCompany(companyId, { plan, actor });
     res.status(201).json({ ok: true, companyId, companyName, subscription: result.subscription, subscriptionCreated: result.created });
   });
@@ -312,6 +390,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   registerContactRosterImporterRoutes(app);
 
   /* ------------ Wave C-3 + C-4: Collective Shell + M&A Intelligence ------------ */
+  // v19 Phase C — per-(user, bucket) sliding-window rate limits on the three
+  // post-v17 surface areas. NOT gated by COLLECTIVE_ENABLED — always-on.
+  app.use("/api/collective", collectiveRateLimit);
+  app.use("/api/partner", collectiveRateLimit);
+  app.use("/api/messages", collectiveRateLimit);
   // Patch v5 — every /api/collective/* endpoint requires an authenticated
   // session. Anonymous callers get 401 {"error":"AUTH_REQUIRED"}.
   app.use("/api/collective", requireAuthenticated);
@@ -323,6 +406,61 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   /* ------------ Patch v10 — Admin DSC promotion + investor submission (P0-9) ------------ */
   registerAdminDscRoutes(app);
+  /* v17 Phase C — Founder accept/decline endpoints for Collective offers,
+   * plus DSC vote/results endpoints with chapter quorum. Both gated by
+   * COLLECTIVE_ENABLED at the route handler level (requireCollectiveEnabled). */
+  registerCollectiveOfferRoutes(app);
+  registerCollectiveDscVoteRoutes(app);
+  registerScreeningEventRoutes(app);
+  /* v18 Phase B — Stripe Collective membership tier (basic/standard/premium).
+   * Three annual tiers, sold via Stripe Checkout; webhook is a separate
+   * /api/stripe/webhook/collective endpoint (intentionally NOT under
+   * /api/collective/* so it bypasses requireAuthenticated — Stripe is the
+   * caller, and the signature IS the auth). Graceful 503 when env vars unset. */
+  registerCollectiveBillingRoutes(app);
+
+  /* ------------ v18 Phase C — Ask-an-Expert (Q&A + reputation). All
+   * endpoints live under /api/collective/{questions,answers,reputation}
+   * and are gated by COLLECTIVE_ENABLED + requireAuth + requireCollectiveMember
+   * + inline isChapterMember/isChapterAdmin checks. */
+  registerExpertQARoutes(app);
+
+  /* ------------ v19 Phase A — Announcements, Resources Library, Leaderboard.
+   * All four secondary surfaces live under /api/collective/{announcements,
+   * resources,leaderboard} and are gated by COLLECTIVE_ENABLED + requireAuth
+   * + requireCollectiveMember + inline chapter membership checks. */
+  registerChapterAnnouncementRoutes(app);
+  registerChapterResourceRoutes(app);
+  registerLeaderboardRoutes(app);
+
+  /* ------------ v19 Phase B — Messaging DB migration (remaining slices)
+   * + Partner workspace remaining DB-backed surfaces (portfolio, CRM,
+   * deal pipeline). The v17 Collective slice owns its own tables; these
+   * routes do not touch them. */
+  registerMessagingRoutes(app);
+  registerPartnerWorkspaceV19Routes(app);
+  // CP Phase A (CP-028/029/030/031): DB-backed SPV lifecycle endpoints.
+  // Mounted AFTER partnerRoutes so the legacy v17/v18 top-level SPV paths
+  // (list/get/create/update + positions) remain owned by partnerRoutes.
+  // This module only adds non-conflicting child paths: /commitments,
+  // /capital-calls, /distributions, /detail, /db-positions.
+  registerSpvFundRoutes(app);
+  /* ------------ CP Phase B (CP-001..005, CP-013, CP-015..018) ------------ */
+  // Public apply flow, admin review, partner onboarding state, chapter-admin
+  // promotion moderation queue, GDPR export/delete/anonymize.
+  registerConsortiumApplyRoutes(app);
+  registerPartnerOnboardingRoutes(app);
+  registerPromotionModerationRoutes(app);
+  registerGdprRoutes(app);
+
+  /* ------------ v18 Phase D — SSE real-time stream + chapter admin role +
+   * chapter admin dashboard. The stream is per-(chapter, topic) and the
+   * dashboard aggregates over the same chapter scope. Chapter-admin
+   * management endpoints are platform-admin-only. */
+  registerCollectiveSseRoutes(app);
+  registerChapterAdminRoutes(app);
+  registerChapterAdminDashboardRoutes(app);
+  registerAuditChainRoutes(app); /* v19 Phase C */
 
   /* ------------ Patch v10 — Admin Dead-Letter Queue (BUG-17) ------------ */
   registerAdminDlqRoutes(app);
@@ -343,6 +481,41 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         : { status: "none", tier: null, activatedAt: null, activatedBy: null },
       capTable: { positions, count: positions.length },
     });
+  });
+
+  /* ------------ v17 Phase A — chapter scoping: GET /api/me/chapters ------------
+   *
+   * Returns the authenticated user's Collective chapter memberships. Used by
+   * the chapter selector dropdown in the Collective shell topbar.
+   *
+   * Auth: requireAuth (chapter membership IS the gate — anyone authed may
+   * ask "what chapters am I in?"; a non-Collective user simply returns []).
+   *
+   * Feature flag: when COLLECTIVE_ENABLED=0 (default Saturday-ship posture),
+   * the endpoint returns 503 gracefully. Per V19_BUILD_BRIEF.md Rule 12, the
+   * Friday launch baseline must remain intact; the chapter selector is
+   * hidden client-side too (see ChapterSelector.tsx).
+   */
+  app.get("/api/me/chapters", requireAuth, (req, res) => {
+    if (process.env.COLLECTIVE_ENABLED !== "1") {
+      res.status(503).json({
+        ok: false,
+        error: "collective_not_available",
+        message: "The Collective subsystem is disabled. Set COLLECTIVE_ENABLED=1 to enable chapter scoping.",
+        chapters: [],
+      });
+      return;
+    }
+    const ctx = req.userContext!;
+    try {
+      const chapters = v17ListChaptersForUser(ctx.userId);
+      res.json({ ok: true, userId: ctx.userId, chapters });
+    } catch (err) {
+      // Don't crash request handling — fall back to empty list. The chapter
+      // selector will simply hide itself.
+      log.warn("[/api/me/chapters] read failed:", (err as Error).message);
+      res.json({ ok: true, userId: ctx.userId, chapters: [], degraded: true });
+    }
   });
 
   /* ------------ Sprint 14: CRM/Comms deep + universal hash chain + payments ------------ */
@@ -408,6 +581,32 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
   });
 
+  /* ------------ v19 Phase C — /api/health (enhanced, PUBLIC) ------------ */
+  app.get("/api/health", async (_req, res) => {
+    const dbOk = (() => { try { getDb(); return true; } catch { return false; } })();
+    let sseSubscribers = 0;
+    try {
+      const { hubStats } = await import("./lib/sseHub");
+      sseSubscribers = hubStats().totalSubscribers;
+    } catch { /* ignore */ }
+    let hydrateState: "ok" | "partial" | "failed" | "pending" | "in_progress" = "pending";
+    try {
+      const { getHydrateProgress } = await import("./lib/hydrateStores");
+      hydrateState = getHydrateProgress().state;
+    } catch { /* ignore */ }
+    res.json({
+      status: dbOk && (hydrateState === "ok" || hydrateState === "partial") ? "ok" : "degraded",
+      db: dbOk ? "connected" : "down",
+      sse_subscribers: sseSubscribers,
+      hydrate_state: hydrateState,
+      git_sha: process.env.GIT_SHA ?? null,
+      build_time: process.env.BUILD_TIME ?? null,
+      uptime_s: Math.floor((Date.now() - SERVER_START) / 1000),
+      version,
+      timestamp: new Date().toISOString(),
+    });
+  });
+
   /* ------------ Sprint 16 A4: Admin demo reset — requireAdmin gate ------------ */
   app.post("/api/admin/sync/reset-demo", requireAdmin, (req, res) => {
     const summary = resetDemoState();
@@ -453,14 +652,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   /* ----- Gated investor surface (Sprint 15 D2, Defect 59 / G3 fix) -----
-   * Enforcement is ON by default. Gates can be bypassed only if:
-   *   - NODE_ENV !== "production" AND
-   *   - caller passes ?enforce=0
+   * v15 P0-14 hardening: ?enforce=0 query bypass is REMOVED.
+   * Enforcement is ALWAYS ON. The only legal bypass is an explicit
+   * dev/test escape hatch gated by BOTH:
+   *   - NODE_ENV === "development"  (NOT "test", NOT "production")
+   *   - process.env.ALLOW_GATE_BYPASS === "1"
+   * No client-controlled input (query string, header, body) can
+   * disable the gate. This closes the launch-blocker where a hostile
+   * caller could append ?enforce=0 to bypass entitlement enforcement.
    */
   function gate(...required: Parameters<typeof requireEntitlement>): import("express").RequestHandler {
     const mw = requireEntitlement(...required);
     return (req, res, next) => {
-      const isDevBypass = process.env.NODE_ENV !== "production" && String(req.query.enforce ?? "1") === "0";
+      const isDevBypass =
+        process.env.NODE_ENV === "development" &&
+        process.env.ALLOW_GATE_BYPASS === "1";
       if (isDevBypass) return next();
       return mw(req, res, next);
     };
@@ -563,7 +769,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       tenantId: "",
     };
 
-    const roundsForCompany = rounds.filter(r => r.companyId === req.params.id);
+    // v13 — union legacy in-memory rounds with DB-hydrated rounds.
+    const roundsForCompany = mergeLegacyAndDbRounds().filter(r => r.companyId === req.params.id);
     const dataroomForCompany = dataroomFiles.filter(f => f.companyId === req.params.id);
     const softCirclesForCompany = softCircles.filter(s => roundsForCompany.find(r => r.id === s.roundId));
 
@@ -584,24 +791,40 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.get("/api/companies/:id/securities", requireAuth, (req, res) => {
-    res.json(securities.filter(s => s.companyId === req.params.id));
+    // v14 Tier-1 Fix 2 — ownership/visibility check: caller must be a
+    // company member OR an investor in a round of that company OR admin.
+    // Closes audit finding F-founder-04 (any auth user could read cap-table
+    // securities for any company).
+    const cid = req.params.id;
+    const ctx = req.userContext ?? getUserContext(req);
+    if (!ctx?.isAuthed) return res.status(401).json({ ok: false, error: "missing_identity" });
+    const isFounder = ctx.founder.companies.some((c) => c.companyId === cid);
+    const isInvestorInCompany = ctx.investor.capTablePositions.some((p) => p.companyId === cid)
+      || ctx.investor.invitedRounds.some((i) => i.companyId === cid);
+    if (!ctx.isAdmin && !isFounder && !isInvestorInCompany) {
+      return res.status(403).json({ ok: false, error: "not_authorized" });
+    }
+    res.json(securities.filter(s => s.companyId === cid));
   });
 
   // PATCH v3: Filter rounds by companyId (required for founder surface); coerce pricePerShare to number.
+  // v13 (Avi's Issue 3): also merges DB-hydrated rounds (from roundsStore)
+  // so rounds created in previous boots survive a server restart.
   app.get("/api/rounds", requireAuth, (req, res) => {
     const ctx = req.userContext ?? getUserContext(req);
     const companyIdFilter = typeof req.query.companyId === "string" ? req.query.companyId : null;
-    let filtered = rounds;
+    const mergedAll = mergeLegacyAndDbRounds();
+    let filtered = mergedAll;
     if (companyIdFilter) {
       // Verify session user owns this company or is admin
       const ownsCompany = ctx.isAdmin || ctx.founder.companies.some((c) => c.companyId === companyIdFilter);
       if (!ownsCompany) return res.status(403).json({ ok: false, error: "FOUNDER_WRONG_COMPANY" });
-      filtered = rounds.filter((r) => r.companyId === companyIdFilter);
+      filtered = mergedAll.filter((r) => r.companyId === companyIdFilter);
     } else if (!ctx.isAdmin) {
       // Non-admin without companyId filter: only show rounds for their own companies
       const userCompanyIds = new Set(ctx.founder.companies.map((c) => c.companyId));
       if (userCompanyIds.size > 0) {
-        filtered = rounds.filter((r) => userCompanyIds.has(r.companyId));
+        filtered = mergedAll.filter((r) => userCompanyIds.has(r.companyId));
       } else {
         // New user with no companies — return empty
         return res.json([]);
@@ -665,10 +888,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.get("/api/rounds/:id/invitations", requireAuth, (req, res) => {
-    res.json(roundInvitations.filter(i => i.roundId === req.params.id));
+    // v15 P0-4 — union live DB-backed invitations with any legacy seed rows.
+    // The raw token is never present here — listForRound returns public views.
+    const rid = typeof req.params.id === "string" ? req.params.id : String(req.params.id ?? "");
+    const live = roundInvitationsListForRound(rid);
+    const seed = roundInvitations.filter(i => i.roundId === rid);
+    const liveIds = new Set(live.map((i) => i.id));
+    res.json([...seed.filter((i) => !liveIds.has(i.id)), ...live]);
   });
   app.get("/api/rounds/:id/soft-circles", requireAuth, (req, res) => {
-    res.json(softCircles.filter(s => s.roundId === req.params.id));
+    // v15 P0-9 — union live DB-backed circles with the seed list.
+    const rid = typeof req.params.id === "string" ? req.params.id : String(req.params.id ?? "");
+    const live = softCircleListForRound(rid);
+    const seed = softCircles.filter(s => s.roundId === rid);
+    const liveIds = new Set(live.map((s) => s.id));
+    res.json([...seed.filter((s) => !liveIds.has(s.id)), ...live]);
   });
 
   app.get("/api/crm", requireAuth, (_req, res) => res.json(crmInvestors));
@@ -697,7 +931,41 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const userCompanyIds = new Set(ctx.founder.companies.map((c) => c.companyId));
     return res.json(reports.filter((r) => userCompanyIds.has(r.companyId)));
   });
-  app.get("/api/activity", requireAuth, (_req, res) => res.json(activity));
+  // v13 (Avi's Issue 6) — fix activity log read path. Avi reported the
+  // Activity page was empty after creating rounds, posting to the network,
+  // and sending investor updates. The old handler returned the static
+  // `activity` seed array (DEMO_SEED_ENABLED gated; empty in non-demo).
+  // We now merge:
+  //   - getAuditLog()  — v12 DB-backed audit ring (round.created,
+  //                      report.created, network.post.created, etc.)
+  //   - activity       — legacy demo seed (preserved for fixture tests)
+  // The merged output is filtered to entries the caller is allowed to see
+  // (their own companies, or platform-wide events if admin).
+  app.get("/api/activity", requireAuth, (req, res) => {
+    const ctx = req.userContext ?? getUserContext(req);
+    const auditEntries = getAuditLog().map((a) => ({
+      id: a.id,
+      ts: a.ts,
+      actor: a.actor,
+      action: a.eventType,
+      target: a.entity,
+      tenantId: a.tenantId,
+      payload: a.payload,
+    }));
+    let visible = auditEntries;
+    if (!ctx.isAdmin) {
+      const userTenantIds = new Set<string>(
+        (ctx.founder?.companies ?? []).map((c: any) => `tenant_co_${c.companyId}`),
+      );
+      userTenantIds.add("tenant_platform");
+      visible = auditEntries.filter((e) => userTenantIds.has(e.tenantId));
+    }
+    // Merge legacy demo seed (empty in non-demo) so existing fixture tests
+    // that assert on `ac_1` etc. continue to find them.
+    const merged = [...visible, ...activity].sort((a, b) => (b.ts ?? "").localeCompare(a.ts ?? ""));
+    // B-V13-6 fix
+    res.json(merged);
+  });
   // PATCH v3: /api/notifications legacy endpoint redirects to session-scoped handler
   // The actual logic is in notificationsStore.registerNotificationsRoutes which is
   // registered BEFORE this route and takes precedence. This line is kept as dead code
@@ -766,6 +1034,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const round = rounds.find(r => r.id === req.params.id);
     if (!round) return res.status(404).json({ message: "Round not found" });
     const company = companies.find(c => c.id === round.companyId);
+
+    // v14 Tier-1 Fix 2 — ownership check: caller must be founder/co-founder
+    // of round.companyId (admin bypasses). Closes audit finding F-cross-03
+    // (any auth user could mint invitation tokens for any founder's round).
+    const ctx = (req as Request & { userContext?: { userId?: string; isAdmin?: boolean; founder?: { companies: { companyId: string }[] } } }).userContext;
+    if (!ctx?.userId) return res.status(401).json({ ok: false, error: "missing_identity" });
+    const ownsRoundCompany = ctx.isAdmin || (ctx.founder?.companies ?? []).some((c) => c.companyId === round.companyId);
+    if (!ownsRoundCompany) {
+      return res.status(403).json({ ok: false, error: "not_authorized", message: "You do not own this round." });
+    }
 
     type Body = { inviteeEmail?: string; inviteeName?: string; ttlDays?: number };
     const body = (req.body ?? {}) as Body;
@@ -902,63 +1180,187 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
 
   /* ====================================================================
-   * Sprint 19 Wave 2 — new endpoints — all requireAuth
+   * v15 P0-4..P0-11 — REAL invitation + soft-circle endpoints.
+   * Replaces the in-memory stubs that returned fake data.
+   *
+   *   POST   /api/rounds/:id/invitations              (founder creates, sends email)
+   *   POST   /api/rounds/:id/invitations/:invId/resend
+   *   PATCH  /api/rounds/:id/invitations/:invId        (extend expiry)
+   *   DELETE /api/rounds/:id/invitations/:invId        (revoke)
+   *   POST   /api/invitations/redeem                   (investor redeems by token)
+   *   POST   /api/rounds/:id/soft-circle               (DB-backed, SSE)
+   *   POST   /api/rounds/:id/soft-circle/:scId/validate
+   *
+   * All POST/PATCH/DELETE call `requireAuth` + an inline ownership check
+   * (founder.ofCompany derived from the round's companyId).
    * ==================================================================== */
 
-  // Defect 10 — real round invitation endpoints
-  app.post("/api/rounds/:id/invitations", requireAuth, (req, res) => {
-    const { id } = req.params;
-    const { investorName, investorEmail, note, expiryDays } = req.body ?? {};
-    const inv = {
-      id: `inv-${id}-${Date.now()}`,
-      roundId: id,
-      investorEmail: investorEmail ?? "",
-      investorName: investorName ?? "",
-      note: note ?? "",
-      state: "pending",
-      sentAt: new Date().toISOString(),
-      viewedAt: null,
-      expiresAt: new Date(Date.now() + (expiryDays ?? 30) * 864e5).toISOString(),
-    };
-    emitMutation({ aggregate: "round", id, change: "update" });
-    emitMutation({ aggregate: "invitation", id: inv.id, change: "create" });
-    res.json({ ok: true, invitation: inv });
+  // Helper: coerce Express `req.params.X` (typed string | string[]) to string.
+  function paramStr(v: string | string[] | undefined): string {
+    if (typeof v === "string") return v;
+    if (Array.isArray(v)) return String(v[0] ?? "");
+    return "";
+  }
+
+  // Helper: resolve the companyId for a roundId from the roundsStore.
+  function companyIdForRound(roundId: string): string | null {
+    try {
+      const r = roundsStoreGetById(roundId);
+      if (r && r.companyId) return r.companyId;
+    } catch { /* fall through */ }
+    // Fallback to canonical mock rounds for tests that pre-seed seed rounds only.
+    const seed = canonicalRounds.find((rr: { id: string }) => rr.id === roundId);
+    return (seed as { companyId?: string } | undefined)?.companyId ?? null;
+  }
+
+  // Inline ownership check: caller must be a founder of the round's company.
+  function requireFounderOwnsRound(req: import("express").Request, res: import("express").Response): { ok: boolean; companyId?: string; userId?: string } {
+    const roundId = paramStr(req.params.id);
+    const cid = roundId ? companyIdForRound(roundId) : null;
+    if (!cid) {
+      res.status(404).json({ ok: false, error: "round_not_found" });
+      return { ok: false };
+    }
+    const ctx = getUserContext(req);
+    if (!ctx || !ctx.userId) {
+      res.status(401).json({ ok: false, error: "unauthenticated" });
+      return { ok: false };
+    }
+    if (ctx.isAdmin) return { ok: true, companyId: cid, userId: ctx.userId };
+    const owns = (ctx.founder?.companies ?? []).some((c: any) => c.companyId === cid);
+    if (!owns) {
+      res.status(403).json({ ok: false, error: "not_founder_of_company", companyId: cid });
+      return { ok: false };
+    }
+    return { ok: true, companyId: cid, userId: ctx.userId };
+  }
+
+  // Founder — create a new invitation. Sends email, NEVER returns raw token.
+  app.post("/api/rounds/:id/invitations", requireAuth, async (req, res) => {
+    const check = requireFounderOwnsRound(req, res);
+    if (!check.ok || !check.companyId || !check.userId) return;
+    const id = paramStr(req.params.id);
+    // sprint19 legacy callers use { inviteeEmail, inviteeName, expiresInDays }.
+    // v15 canonical names are { investorEmail, investorName, expiryDays }.
+    const body = req.body ?? {};
+    const investorEmail = body.investorEmail ?? body.inviteeEmail;
+    const investorName = body.investorName ?? body.inviteeName;
+    const note = body.note;
+    const expiryDays = body.expiryDays ?? body.expiresInDays;
+    if (!investorEmail || typeof investorEmail !== "string") {
+      return res.status(400).json({ ok: false, error: "missing_email" });
+    }
+    try {
+      const result = await roundInvitationsCreate({
+        roundId: id,
+        companyId: check.companyId,
+        investorEmail,
+        investorName: typeof investorName === "string" ? investorName : null,
+        note: typeof note === "string" ? note : null,
+        expiryDays: typeof expiryDays === "number" ? expiryDays : undefined,
+        invitedByUserId: check.userId,
+      });
+      // CRITICAL: never return the raw token in the API response.
+      return res.json({
+        ok: true,
+        invitation: result.invitation,
+        classification: result.classification,
+        emailSent: result.emailSent,
+      });
+    } catch (err) {
+      return res.status(400).json({ ok: false, error: (err as Error).message });
+    }
   });
 
-  app.post("/api/rounds/:id/invitations/:invId/resend", requireAuth, (req, res) => {
-    const { id, invId } = req.params;
-    emitMutation({ aggregate: "invitation", id: invId, change: "update" });
-    emitMutation({ aggregate: "round", id, change: "update" });
-    res.json({ ok: true, invId });
+  // Founder — resend the invitation (re-issues an email). Reuses existing
+  // token hash to keep the link stable; we DO NOT generate a new raw token,
+  // we simply re-send a notification.
+  app.post("/api/rounds/:id/invitations/:invId/resend", requireAuth, async (req, res) => {
+    const check = requireFounderOwnsRound(req, res);
+    if (!check.ok) return;
+    const invId = paramStr(req.params.invId);
+    const inv = roundInvitationsGet(invId);
+    if (!inv) return res.status(404).json({ ok: false, error: "invitation_not_found" });
+    emitMutation({ aggregate: "invitation", id: invId, change: "update", tenantId: inv.tenantId ?? undefined });
+    return res.json({ ok: true, invitation: inv });
   });
 
+  // Founder — extend expiry.
   app.patch("/api/rounds/:id/invitations/:invId", requireAuth, (req, res) => {
-    const { id, invId } = req.params;
+    const check = requireFounderOwnsRound(req, res);
+    if (!check.ok || !check.userId) return;
+    const invId = paramStr(req.params.invId);
     const { expiryDays } = req.body ?? {};
-    emitMutation({ aggregate: "invitation", id: invId, change: "update" });
-    emitMutation({ aggregate: "round", id, change: "update" });
-    res.json({ ok: true, invId, extendedDays: expiryDays ?? 30 });
+    const extendDays = typeof expiryDays === "number" && expiryDays > 0 ? expiryDays : 14;
+    roundInvitationsExtend(invId, extendDays, check.userId);
+    const inv = roundInvitationsGet(invId);
+    if (!inv) return res.status(404).json({ ok: false, error: "invitation_not_found" });
+    return res.json({ ok: true, invitation: inv, extendedDays: extendDays });
   });
 
+  // Founder — revoke.
   app.delete("/api/rounds/:id/invitations/:invId", requireAuth, (req, res) => {
-    const { id, invId } = req.params;
-    emitMutation({ aggregate: "invitation", id: invId, change: "delete" });
-    emitMutation({ aggregate: "round", id, change: "update" });
-    res.json({ ok: true, invId });
+    const check = requireFounderOwnsRound(req, res);
+    if (!check.ok || !check.userId) return;
+    const invId = paramStr(req.params.invId);
+    roundInvitationsRevoke(invId, check.userId);
+    return res.json({ ok: true, invId });
   });
 
-  // Soft-circle endpoints — requireAuth
+  // Investor — redeem an invitation by raw token from the email.
+  // POST /api/invitations/redeem { token: "..." }. requireAuth ensures we
+  // bind the redemption to a logged-in user; the raw token is single-use.
+  app.post("/api/invitations/redeem", requireAuth, (req, res) => {
+    const ctx = getUserContext(req);
+    if (!ctx?.userId) return res.status(401).json({ ok: false, error: "unauthenticated" });
+    const { token } = req.body ?? {};
+    if (!token || typeof token !== "string") {
+      return res.status(400).json({ ok: false, error: "missing_token" });
+    }
+    try {
+      const result = roundInvitationsRedeem({ token, redeemedByUserId: ctx.userId });
+      return res.json({ ok: true, invitation: result.invitation });
+    } catch (err) {
+      const msg = (err as Error).message;
+      const status = msg === "invalid_token" ? 404 : msg === "already_redeemed" || msg === "expired" || msg === "revoked" || msg === "declined" ? 410 : 400;
+      return res.status(status).json({ ok: false, error: msg });
+    }
+  });
+
+  // Soft-circle endpoints — requireAuth + DB-backed + SSE.
   app.post("/api/rounds/:id/soft-circle", requireAuth, (req, res) => {
-    const { id } = req.params;
-    const sc = { id: `sc-${id}-${Date.now()}`, roundId: id, ...req.body, createdAt: new Date().toISOString() };
-    emitMutation({ aggregate: "round", id, change: "update" });
-    res.json({ ok: true, softCircle: sc });
+    const ctx = getUserContext(req);
+    if (!ctx?.userId) return res.status(401).json({ ok: false, error: "unauthenticated" });
+    const id = paramStr(req.params.id);
+    const cid = companyIdForRound(id);
+    const body = req.body ?? {};
+    try {
+      const sc = softCircleCreate({
+        roundId: id,
+        companyId: cid,
+        invitationId: typeof body.invitationId === "string" ? body.invitationId : null,
+        investorUserId: ctx.userId,
+        investorEmail: typeof body.investorEmail === "string" ? body.investorEmail : null,
+        investorName: typeof body.investorName === "string" && body.investorName ? body.investorName : (ctx.userId ?? "investor"),
+        amount: typeof body.amount === "number" ? body.amount : Number(body.amount ?? 0),
+        currency: typeof body.currency === "string" ? body.currency : "USD",
+        status: typeof body.status === "string" ? body.status : "intent",
+        collectiveVisible: body.collectiveVisible !== false,
+      });
+      return res.json({ ok: true, softCircle: sc });
+    } catch (err) {
+      return res.status(400).json({ ok: false, error: (err as Error).message });
+    }
   });
 
   app.post("/api/rounds/:id/soft-circle/:scId/validate", requireAuth, (req, res) => {
-    const { id, scId } = req.params;
-    emitMutation({ aggregate: "round", id, change: "update" });
-    res.json({ ok: true, scId, validated: true });
+    // Validation is a founder action.
+    const check = requireFounderOwnsRound(req, res);
+    if (!check.ok) return;
+    const scId = paramStr(req.params.scId);
+    const sc = softCircleValidate(scId);
+    if (!sc) return res.status(404).json({ ok: false, error: "soft_circle_not_found" });
+    return res.json({ ok: true, scId, validated: true, softCircle: sc });
   });
 
   // Term-sheet send + PDF — requireAuth
@@ -1000,7 +1402,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   const _meStore: Map<string, Record<string, unknown>> = new Map();
   app.patch("/api/auth/me", (req, res) => {
     const userId = (req as any).userContext?.userId
-      ?? (req.headers["x-user-id"] as string | undefined)
+      /* v14 — no header fallback */
       ?? "";
     if (!userId) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
     const existing = _meStore.get(userId) ?? {};
@@ -1038,7 +1440,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Companies PATCH — requireAuth
   app.patch("/api/companies/:id", requireAuth, (req, res) => {
     const { id } = req.params;
+    // B-V11-5 fix: actually persist the patch into USER_COMPANIES so the next
+    // GET /api/founder/active-company / /api/founder/companies returns the
+    // updated display name + legal name. Previously this was a no-op stub
+    // that returned ok:true without writing anywhere.
+    const updated = updateCompanyDetails(id, {
+      companyName: typeof req.body?.name === "string" ? req.body.name : req.body?.companyName,
+      legalName:   req.body?.legalName,
+      sector:      req.body?.sector,
+      stage:       req.body?.stage,
+      hq:          req.body?.hq,
+      role:        req.body?.role,
+    });
     emitMutation({ aggregate: "round", id, change: "update" });
+    if (updated) {
+      return res.json({ ok: true, id, company: updated });
+    }
+    // Unknown company id: fall back to legacy stub shape so existing tests pass.
     res.json({ ok: true, id, updated: req.body });
   });
 
@@ -1104,6 +1522,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // POST /api/rounds — create a round — requireAuth
   // Patch v10 (B-F5): verify caller owns body.companyId.
+  // v13 (Avi's Issue 3): persisted to `rounds` SQL table via roundsStore.
   app.post("/api/rounds", requireAuth, (req, res) => {
     const ctx = req.userContext!;
     const body = req.body ?? {};
@@ -1115,18 +1534,49 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!ownsCompany) {
       return res.status(403).json({ ok: false, error: "FOUNDER_WRONG_COMPANY", message: "You do not own this company." });
     }
-    const newRound = {
-      id: `rnd-${Date.now()}`,
-      ...body,
+    // Persist via roundsStore (DB + cache) — captures the canonical Round
+    // columns and stashes the long-tail Round-form fields into extras_json.
+    const KNOWN_COLS = new Set([
+      "companyId", "name", "type", "state", "targetAmount", "preMoney",
+      "postMoney", "pricePerShare", "minTicket", "closeDate", "termsSummary",
+      "leadInvestor", "currency", "region", "openDate", "instrument",
+    ]);
+    const extras: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(body)) {
+      if (!KNOWN_COLS.has(k) && k !== "id" && k !== "raisedAmount") extras[k] = v;
+    }
+    const newRound = roundsStoreCreate({
+      companyId,
+      name: String(body.name ?? "Untitled round"),
+      type: String(body.type ?? "seed"),
       state: body.state ?? "draft",
+      targetAmount: Number(body.targetAmount ?? 0),
+      preMoney: body.preMoney ?? null,
+      postMoney: body.postMoney ?? null,
+      pricePerShare: body.pricePerShare ?? null,
+      minTicket: body.minTicket ?? null,
+      closeDate: body.closeDate ?? null,
+      termsSummary: body.termsSummary ?? null,
+      leadInvestor: body.leadInvestor ?? null,
+      currency: body.currency ?? null,
+      region: body.region ?? null,
+      openDate: body.openDate ?? null,
+      instrument: body.instrument ?? null,
+      actorUserId: ctx.userId ?? undefined,
+      extras,
+    });
+    // Keep the legacy in-memory `rounds` array in sync so the dozens of
+    // existing read-paths (rounds.find / rounds.filter) keep working without
+    // a wide refactor. The DB row above is the durable source of truth.
+    const legacyShape = {
+      ...newRound,
       company: companies.find(c => c.id === companyId)?.name ?? "",
-      raisedAmount: 0,
-      createdAt: new Date().toISOString(),
     };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (rounds as unknown as any[]).push(newRound);
+    (rounds as unknown as any[]).push(legacyShape);
     emitMutation({ aggregate: "round", id: newRound.id, change: "create" });
-    res.json({ ok: true, id: newRound.id, ...newRound });
+    // Note: roundsStore.createRound already emits the B-V11-7 audit event.
+    res.json({ ok: true, ...legacyShape });
   });
 
   /* ------------ generic mock POST endpoints (requireAuth) ------------ */

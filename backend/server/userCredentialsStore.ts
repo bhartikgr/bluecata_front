@@ -18,14 +18,18 @@
  * the dev backend, postgres is prod. There is no plaintext-adjacent file
  * fallback any longer.
  *
- * Password hashing: bcryptjs primary, SHA-256 fallback (legacy compat).
+ * Password hashing (CP-041): bcryptjs is now a hard runtime dependency.
+ * - Cost factor: 12 in production, 4 in tests (for speed).
+ * - Legacy `sha256:`-prefixed hashes are still accepted on login and
+ *   transparently upgraded to bcrypt on the first successful verification.
  */
 
 import { createHash } from "node:crypto";
-import { createRequire } from "node:module";
+import bcrypt from "bcryptjs";
 import { isNull, eq, sql } from "drizzle-orm";
 import { getDb } from "./db/connection";
 import { userCredentials } from "../shared/schema";
+import { log } from "./lib/logger";
 
 /* ------------------------------------------------------------------ */
 /* Types                                                                */
@@ -48,49 +52,99 @@ export interface CredentialHandle {
 }
 
 /* ------------------------------------------------------------------ */
-/* bcryptjs with graceful degradation                                   */
+/* bcryptjs hashing (CP-041)                                            */
 /* ------------------------------------------------------------------ */
 
-// Use a CJS require so the lazy fallback to SHA-256 keeps working even when
-// bcryptjs is not installed in some hypothetical sandboxed env.
-declare const require: NodeJS.Require | undefined;
-function _makeRequire(): NodeJS.Require {
-  if (typeof require === "function") return require;
-  try {
-    const url = (import.meta as { url?: string }).url ?? "";
-    if (url) return createRequire(url);
-  } catch { /* fall through */ }
-  return createRequire(process.cwd() + "/_");
+/**
+ * Bcrypt cost factor. Production = 12 (~250ms on modern hardware).
+ * Tests = 4 (~1ms) — keeps the vitest suite fast without sacrificing
+ *   coverage of the bcrypt code path.
+ */
+function bcryptCost(): number {
+  return process.env.NODE_ENV === "test" ? 4 : 12;
 }
-const _req = _makeRequire();
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let _bcrypt: any = null;
-try {
-  _bcrypt = _req("bcryptjs");
-} catch {
-  console.warn(
-    "[userCredentialsStore] bcryptjs not available — falling back to SHA-256 hashing. " +
-    "Add bcryptjs to package.json dependencies for production.",
+function _isLegacySha(hash: string): boolean {
+  return typeof hash === "string" && hash.startsWith("sha256:");
+}
+
+function _legacySha(plaintext: string): string {
+  return (
+    "sha256:" +
+    createHash("sha256")
+      .update("capavate-salt-v1:" + plaintext)
+      .digest("hex")
   );
 }
 
-function hashPassword(plaintext: string): string {
-  if (_bcrypt) {
-    return _bcrypt.hashSync(plaintext, 12);
-  }
-  return "sha256:" + createHash("sha256").update("capavate-salt-v1:" + plaintext).digest("hex");
+export function hashPassword(plaintext: string): string {
+  return bcrypt.hashSync(plaintext, bcryptCost());
 }
 
-function verifyHash(plaintext: string, hash: string): boolean {
-  if (_bcrypt && !hash.startsWith("sha256:")) {
-    try {
-      return _bcrypt.compareSync(plaintext, hash);
-    } catch {
-      return false;
-    }
+/**
+ * Verify a plaintext password against a stored hash.
+ * Accepts both bcrypt hashes ($2a$/$2b$/$2y$...) and legacy `sha256:` hashes.
+ * Callers that want to opportunistically upgrade legacy hashes should use
+ *   verifyAndMaybeUpgrade() instead.
+ */
+export function verifyHash(plaintext: string, hash: string): boolean {
+  if (_isLegacySha(hash)) {
+    return hash === _legacySha(plaintext);
   }
-  return hash === "sha256:" + createHash("sha256").update("capavate-salt-v1:" + plaintext).digest("hex");
+  try {
+    return bcrypt.compareSync(plaintext, hash);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Verify the password. If verification succeeded and the stored hash is the
+ * legacy `sha256:` format, rehash with bcrypt and persist. Returns whether
+ * the password matched. The upgrade is best-effort: a failed re-hash does
+ * not fail the login.
+ */
+function verifyAndMaybeUpgrade(
+  email: string,
+  plaintext: string,
+  storedHash: string,
+): boolean {
+  const ok = verifyHash(plaintext, storedHash);
+  if (!ok) return false;
+  if (!_isLegacySha(storedHash)) return true;
+
+  try {
+    const newHash = hashPassword(plaintext);
+    const now = new Date().toISOString();
+    const db = getDb();
+    // CROSS-TENANT (admin) — user_credentials is global identity.
+    db.transaction((tx: any) => {
+      tx.update(userCredentials)
+        .set({ passwordHash: newHash, updatedAt: now })
+        .where(
+          sql`lower(${userCredentials.email}) = ${email.toLowerCase()} AND ${userCredentials.deletedAt} IS NULL`,
+        )
+        .run();
+    });
+    // Refresh cache.
+    const cached = _memStore.get(email.toLowerCase());
+    if (cached) {
+      _memStore.set(email.toLowerCase(), { ...cached, passwordHash: newHash, updatedAt: now });
+    }
+    log.info({
+      route: "userCredentialsStore.upgrade",
+      message: "legacy_sha256_hash_upgraded_to_bcrypt",
+      email: email.toLowerCase(),
+    });
+  } catch (err) {
+    // Best-effort — do not fail login.
+    log.warn({
+      route: "userCredentialsStore.upgrade",
+      errorType: "hash_upgrade_failed",
+      message: (err as Error).message,
+    });
+  }
+  return true;
 }
 
 /* ------------------------------------------------------------------ */
@@ -228,13 +282,21 @@ export function storeCredential(args: {
             },
           });
       }) as Promise<void>).catch((err) => {
-        console.error("[userCredentialsStore] persist failed:", (err as Error).message);
+        log.error({
+          route: "userCredentialsStore.storeCredential",
+          errorType: "persist_failed",
+          message: (err as Error).message,
+        });
       });
     }
   } catch (err) {
     // Surface DB errors loudly — the old code swallowed these and left
     // credentials persisting only to /tmp (DB-1 silent catastrophe).
-    console.error("[userCredentialsStore] storeCredential DB write failed:", (err as Error).message);
+    log.error({
+      route: "userCredentialsStore.storeCredential",
+      errorType: "db_write_failed",
+      message: (err as Error).message,
+    });
     throw err;
   }
 
@@ -274,7 +336,11 @@ export function lookupByEmail(email: string): CredentialHandle | null {
         _userIdIndex.set(cred.userId, normalized);
       }
     } catch (err) {
-      console.warn("[userCredentialsStore.lookupByEmail] DB read failed:", (err as Error).message);
+      log.warn({
+        route: "userCredentialsStore.lookupByEmail",
+        errorType: "db_read_failed",
+        message: (err as Error).message,
+      });
     }
   }
   if (!cred) return null;
@@ -283,7 +349,8 @@ export function lookupByEmail(email: string): CredentialHandle | null {
   return {
     userId: captured.userId,
     name: captured.name,
-    verifyPassword: (plaintext: string) => verifyHash(plaintext, captured.passwordHash),
+    verifyPassword: (plaintext: string) =>
+      verifyAndMaybeUpgrade(captured.email, plaintext, captured.passwordHash),
   };
 }
 
@@ -317,7 +384,11 @@ export function lookupByUserId(userId: string): { email: string; name?: string }
       return { email: cred.email, name: cred.name };
     }
   } catch (err) {
-    console.warn("[userCredentialsStore.lookupByUserId] DB read failed:", (err as Error).message);
+    log.warn({
+      route: "userCredentialsStore.lookupByUserId",
+      errorType: "db_read_failed",
+      message: (err as Error).message,
+    });
   }
   return null;
 }
@@ -340,7 +411,11 @@ export function deleteCredential(userId: string): boolean {
       deleted = (r?.changes ?? r?.rowCount ?? 0) > 0;
     });
   } catch (err) {
-    console.error("[userCredentialsStore.deleteCredential] DB write failed:", (err as Error).message);
+    log.error({
+      route: "userCredentialsStore.deleteCredential",
+      errorType: "db_write_failed",
+      message: (err as Error).message,
+    });
     throw err;
   }
   if (email) _memStore.delete(email);

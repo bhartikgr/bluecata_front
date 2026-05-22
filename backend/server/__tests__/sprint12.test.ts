@@ -12,6 +12,7 @@
  * packages/cap-table-engine and are NOT modified.
  */
 import { describe, it, expect, beforeEach } from "vitest";
+import { installV14TestIdentity } from "./_v14TestIdentity"; /* v14 Tier-1 Fix 1 — restores u_admin default identity for legacy tests */
 import express from "express";
 import http from "node:http";
 
@@ -49,6 +50,7 @@ import { shouldShowToggle } from "../../client/src/components/CapCollectiveToggl
 function makeApp() {
   const app = express();
   app.use(express.json());
+  installV14TestIdentity(app);
   registerBridgeRoutes(app);
   registerNotificationsRoutes(app);
   registerEmailRoutes(app);

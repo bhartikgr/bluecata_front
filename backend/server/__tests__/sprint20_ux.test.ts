@@ -29,6 +29,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { installV14TestIdentity } from "./_v14TestIdentity"; /* v14 Tier-1 Fix 1 — restores u_admin default identity for legacy tests */
 import express, { type Express } from "express";
 import http from "node:http";
 import { registerSprint20Wave2Routes } from "../sprint20Wave2Routes";
@@ -45,6 +46,7 @@ beforeAll(
   async () => {
     app = express();
     app.use(express.json());
+  installV14TestIdentity(app);
     // multer handles its own content-type for multipart; no extra middleware needed
     registerSprint20Wave2Routes(app);
     server = http.createServer(app);
@@ -147,7 +149,7 @@ describe("Investor CRM — contact CRUD", () => {
     const { status, body } = await call(
       "PATCH",
       `/api/investor/crm/contacts/${contactId}`,
-      { body: { stage: "due_diligence" } },
+      { userId: "u_test_investor" /* v14 Tier-1 Fix 2 — owner identity required */, body: { stage: "due_diligence" } },
     );
     expect(status).toBe(200);
     expect(body.ok).toBe(true);
@@ -172,7 +174,7 @@ describe("Investor CRM — contact CRUD", () => {
     });
     const contactId: string = create.body.contact.id;
 
-    const { status, body } = await call("DELETE", `/api/investor/crm/contacts/${contactId}`);
+    const { status, body } = await call("DELETE", `/api/investor/crm/contacts/${contactId}`, { userId: "u_test_investor" } /* v14 Tier-1 Fix 2 */);
     expect(status).toBe(200);
     expect(body.ok).toBe(true);
     expect(body.deleted).toBe(contactId);
@@ -181,7 +183,7 @@ describe("Investor CRM — contact CRUD", () => {
     const { status: s2 } = await call(
       "PATCH",
       `/api/investor/crm/contacts/${contactId}`,
-      { body: { stage: "passed" } },
+      { userId: "u_test_investor" /* v14 Tier-1 Fix 2 */, body: { stage: "passed" } },
     );
     expect(s2).toBe(404);
   });

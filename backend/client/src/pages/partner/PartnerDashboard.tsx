@@ -18,13 +18,44 @@ interface DashboardSnapshot {
   empty: boolean;
 }
 
+/* v14 Tier-1 Fix 5 — feature-flag gate. Hides the partner workspace behind a
+ * preview banner when FEATURE_PARTNER_WORKSPACE_ENABLED=false. Default is
+ * enabled — the banner only renders on preview/staging deploys that opt out. */
+interface FeatureFlags {
+  PARTNER_WORKSPACE_ENABLED: boolean;
+  COLLECTIVE_ADMIN_APPROVAL_ENABLED: boolean;
+}
+
 export default function PartnerDashboard() {
   const role = useRequirePartnerRole();
+  const flagsQ = useQuery<FeatureFlags>({
+    queryKey: ["/api/feature-flags"],
+    queryFn: async () => (await apiRequest("GET", "/api/feature-flags")).json(),
+  });
   const q = useQuery<DashboardSnapshot>({
     queryKey: ["/api/partner/me/dashboard"],
-    enabled: role.ready,
+    enabled: role.ready && flagsQ.data?.PARTNER_WORKSPACE_ENABLED !== false,
     queryFn: async () => (await apiRequest("GET", "/api/partner/me/dashboard")).json(),
   });
+
+  if (flagsQ.data && flagsQ.data.PARTNER_WORKSPACE_ENABLED === false) {
+    return (
+      <div className="min-h-[60vh] flex items-center justify-center p-8" data-testid="partner-workspace-preview-banner">
+        <Card className="max-w-lg text-center">
+          <CardHeader>
+            <CardTitle>🚧 Preview / Coming Soon</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-slate-700">
+              The Partner Workspace is an invite-only beta. Reach out to{" "}
+              <a className="text-blue-600 underline" href="mailto:ops@capavate.com">ops@capavate.com</a>{" "}
+              to enable it for your organisation.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   if (!role.ready || !role.identity) return null;
   const data = q.data;

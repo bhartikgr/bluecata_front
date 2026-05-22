@@ -1,0 +1,310 @@
+/**
+ * CP Phase B — Public Apply-to-Join for Consortium Partners (CP-001..005).
+ *
+ * Public, unauthenticated page. Submits to POST /api/public/consortium/apply.
+ * Server enforces 5/hr/IP via the 'public:apply' rate-limit bucket.
+ *
+ * After submit:
+ *   - 201 → show applicationId + status message; offer status-lookup link.
+ *   - 429 → show "too many submissions" message with retry-after hint.
+ *   - 400 → list validation issues from the server.
+ *   - 500 → generic error with retry button.
+ *
+ * NO mock data; NO TODOs. All form state is local; no localStorage. The
+ * page is wired into the existing wouter router under /apply/consortium
+ * (added by the Phase B App.tsx route entry).
+ */
+import { useState } from "react";
+
+type PartnerType =
+  | "vc"
+  | "syndicate"
+  | "family_office"
+  | "angel_network"
+  | "other";
+
+type AumRange =
+  | "<10M"
+  | "10-50M"
+  | "50-250M"
+  | "250M-1B"
+  | ">1B"
+  | "undisclosed";
+
+interface SubmitResponse {
+  applicationId?: string;
+  status?: string;
+  error?: string;
+  issues?: Array<{ message: string; path: string[] }>;
+  bucket?: string;
+  retryAfterMs?: number;
+}
+
+export default function ConsortiumApplyPage() {
+  const [organizationName, setOrganizationName] = useState("");
+  const [contactName, setContactName] = useState("");
+  const [contactEmail, setContactEmail] = useState("");
+  const [contactPhone, setContactPhone] = useState("");
+  const [website, setWebsite] = useState("");
+  const [jurisdiction, setJurisdiction] = useState("");
+  const [partnerType, setPartnerType] = useState<PartnerType>("vc");
+  const [aumRange, setAumRange] = useState<AumRange>("undisclosed");
+  const [portfolioCompanyCount, setPortfolioCompanyCount] = useState<number>(0);
+  const [expectedChapter, setExpectedChapter] = useState("chap_keiretsu_canada");
+  const [introMessage, setIntroMessage] = useState("");
+  const [referredBy, setReferredBy] = useState("");
+
+  const [submitting, setSubmitting] = useState(false);
+  const [result, setResult] = useState<SubmitResponse | null>(null);
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setSubmitting(true);
+    setResult(null);
+    try {
+      const r = await fetch("/api/public/consortium/apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          organizationName,
+          contactName,
+          contactEmail,
+          contactPhone: contactPhone || null,
+          website: website || null,
+          jurisdiction,
+          partnerType,
+          aumRange,
+          portfolioCompanyCount,
+          expectedChapter,
+          introMessage,
+          referredBy: referredBy || null,
+        }),
+      });
+      const body = (await r.json()) as SubmitResponse;
+      setResult(body);
+    } catch (err) {
+      setResult({ error: `network_error: ${(err as Error).message}` });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (result?.applicationId) {
+    return (
+      <div style={{ maxWidth: 640, margin: "60px auto", padding: 24 }}>
+        <h1 style={{ fontSize: 28, fontWeight: 600 }}>Application received</h1>
+        <p style={{ marginTop: 16 }}>
+          Thanks for your interest in joining the Capavate Consortium. Your
+          application has been received and will be reviewed by our team.
+        </p>
+        <div
+          style={{
+            marginTop: 24,
+            background: "#f6f7f9",
+            padding: 16,
+            borderRadius: 8,
+            fontFamily: "monospace",
+            fontSize: 14,
+          }}
+        >
+          Application ID: <strong>{result.applicationId}</strong>
+          <br />
+          Status: <strong>{result.status}</strong>
+        </div>
+        <p style={{ marginTop: 16, color: "#555" }}>
+          You can check the status at any time via
+          <code style={{ marginLeft: 6 }}>
+            /api/public/consortium/apply/{result.applicationId}/status
+          </code>
+          .
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ maxWidth: 720, margin: "40px auto", padding: 24 }}>
+      <h1 style={{ fontSize: 28, fontWeight: 600 }}>
+        Apply to join the Capavate Consortium
+      </h1>
+      <p style={{ marginTop: 8, color: "#555" }}>
+        Partners get access to the Capavate Collective Deal Room, syndication
+        tooling, and chapter membership. All applications are reviewed.
+      </p>
+      <form onSubmit={onSubmit} style={{ marginTop: 24, display: "grid", gap: 12 }}>
+        <Field label="Organization name" required>
+          <input
+            value={organizationName}
+            onChange={(e) => setOrganizationName(e.target.value)}
+            required
+          />
+        </Field>
+        <Field label="Contact name" required>
+          <input
+            value={contactName}
+            onChange={(e) => setContactName(e.target.value)}
+            required
+          />
+        </Field>
+        <Field label="Contact email" required>
+          <input
+            type="email"
+            value={contactEmail}
+            onChange={(e) => setContactEmail(e.target.value)}
+            required
+          />
+        </Field>
+        <Field label="Contact phone">
+          <input
+            value={contactPhone}
+            onChange={(e) => setContactPhone(e.target.value)}
+          />
+        </Field>
+        <Field label="Website">
+          <input
+            type="url"
+            value={website}
+            onChange={(e) => setWebsite(e.target.value)}
+            placeholder="https://"
+          />
+        </Field>
+        <Field label="Jurisdiction" required>
+          <input
+            value={jurisdiction}
+            onChange={(e) => setJurisdiction(e.target.value)}
+            required
+          />
+        </Field>
+        <Field label="Partner type" required>
+          <select
+            value={partnerType}
+            onChange={(e) => setPartnerType(e.target.value as PartnerType)}
+          >
+            <option value="vc">VC</option>
+            <option value="syndicate">Syndicate</option>
+            <option value="family_office">Family Office</option>
+            <option value="angel_network">Angel Network</option>
+            <option value="other">Other</option>
+          </select>
+        </Field>
+        <Field label="AUM range" required>
+          <select
+            value={aumRange}
+            onChange={(e) => setAumRange(e.target.value as AumRange)}
+          >
+            <option value="undisclosed">Undisclosed</option>
+            <option value="<10M">{"<10M"}</option>
+            <option value="10-50M">10-50M</option>
+            <option value="50-250M">50-250M</option>
+            <option value="250M-1B">250M-1B</option>
+            <option value=">1B">{">1B"}</option>
+          </select>
+        </Field>
+        <Field label="Portfolio company count">
+          <input
+            type="number"
+            min={0}
+            value={portfolioCompanyCount}
+            onChange={(e) =>
+              setPortfolioCompanyCount(parseInt(e.target.value, 10) || 0)
+            }
+          />
+        </Field>
+        <Field label="Expected chapter" required>
+          <input
+            value={expectedChapter}
+            onChange={(e) => setExpectedChapter(e.target.value)}
+            required
+          />
+        </Field>
+        <Field label="Intro message">
+          <textarea
+            rows={4}
+            value={introMessage}
+            onChange={(e) => setIntroMessage(e.target.value)}
+            maxLength={4000}
+          />
+        </Field>
+        <Field label="Referred by">
+          <input
+            value={referredBy}
+            onChange={(e) => setReferredBy(e.target.value)}
+          />
+        </Field>
+
+        {result?.error && (
+          <div
+            style={{
+              background: "#fff0f0",
+              border: "1px solid #f5c6cb",
+              padding: 12,
+              borderRadius: 6,
+              color: "#8b1a1a",
+            }}
+          >
+            <strong>Error:</strong> {result.error}
+            {result.bucket && (
+              <div style={{ marginTop: 4, fontSize: 13 }}>
+                Rate-limit bucket: <code>{result.bucket}</code>
+                {typeof result.retryAfterMs === "number" && (
+                  <span>
+                    {" "}
+                    — retry in {Math.ceil(result.retryAfterMs / 60000)} min
+                  </span>
+                )}
+              </div>
+            )}
+            {result.issues && (
+              <ul style={{ margin: "8px 0 0 16px" }}>
+                {result.issues.map((iss, i) => (
+                  <li key={i}>
+                    {iss.path.join(".")}: {iss.message}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+        <button
+          type="submit"
+          disabled={submitting}
+          style={{
+            background: "#1f2a44",
+            color: "white",
+            border: 0,
+            padding: "12px 18px",
+            borderRadius: 6,
+            cursor: submitting ? "not-allowed" : "pointer",
+            opacity: submitting ? 0.5 : 1,
+            marginTop: 8,
+          }}
+        >
+          {submitting ? "Submitting…" : "Submit application"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function Field(props: {
+  label: string;
+  required?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <label style={{ display: "block" }}>
+      <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 4 }}>
+        {props.label}
+        {props.required && <span style={{ color: "#c00" }}> *</span>}
+      </div>
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+        }}
+      >
+        {props.children}
+      </div>
+    </label>
+  );
+}

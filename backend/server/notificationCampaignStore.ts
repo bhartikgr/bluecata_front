@@ -636,7 +636,8 @@ export function registerNotificationCampaignRoutes(app: Express): void {
   // ── POST /api/admin/notification-campaigns ─────────────────
   app.post("/api/admin/notification-campaigns", (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"];
-    const actor = String(req.headers["x-actor"] ?? "u_admin");
+    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const body = req.body ?? {};
 
     const valid = validateCampaignBody(body);
@@ -716,7 +717,8 @@ export function registerNotificationCampaignRoutes(app: Express): void {
   // ── PATCH /api/admin/notification-campaigns/:id ────────────
   app.patch("/api/admin/notification-campaigns/:id", (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"];
-    const actor = String(req.headers["x-actor"] ?? "u_admin");
+    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const c = campaigns.get(req.params.id);
     if (!c) return res.status(404).json({ ok: false, error: "not_found" });
     if (c.status === "sent" || c.status === "sending" || c.status === "canceled" || c.status === "failed") {
@@ -748,7 +750,8 @@ export function registerNotificationCampaignRoutes(app: Express): void {
   // ── POST /api/admin/notification-campaigns/:id/schedule ────
   app.post("/api/admin/notification-campaigns/:id/schedule", (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"];
-    const actor = String(req.headers["x-actor"] ?? "u_admin");
+    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const c = campaigns.get(req.params.id);
     if (!c) return res.status(404).json({ ok: false, error: "not_found" });
     if (c.status !== "draft") {
@@ -796,7 +799,8 @@ export function registerNotificationCampaignRoutes(app: Express): void {
   // ── POST /api/admin/notification-campaigns/:id/send ────────
   app.post("/api/admin/notification-campaigns/:id/send", async (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"];
-    const actor = String(req.headers["x-actor"] ?? "u_admin");
+    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const c = campaigns.get(req.params.id);
     if (!c) return res.status(404).json({ ok: false, error: "not_found" });
     if (c.status !== "draft" && c.status !== "scheduled") {
@@ -822,7 +826,8 @@ export function registerNotificationCampaignRoutes(app: Express): void {
   // ── POST /api/admin/notification-campaigns/:id/cancel ──────
   app.post("/api/admin/notification-campaigns/:id/cancel", (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"];
-    const actor = String(req.headers["x-actor"] ?? "u_admin");
+    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const c = campaigns.get(req.params.id);
     if (!c) return res.status(404).json({ ok: false, error: "not_found" });
     if (c.status !== "draft" && c.status !== "scheduled") {

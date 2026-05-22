@@ -34,6 +34,7 @@
  *   myMap.entries() / .keys() / .values() / .size
  */
 
+import { log } from "./lib/logger";
 export interface DurableMapOptions {
   /** Namespace prefix stored in the DB key. Defaults to "default". */
   namespace?: string;
@@ -63,7 +64,7 @@ export function durableMap<V>(namespace: string, _opts: DurableMapOptions = {}):
   const mode = isProduction() ? "durable" : "ephemeral";
 
   if (mode === "ephemeral") {
-    console.log(`[durable-map] ${namespace}: running in ephemeral (in-memory) mode — data will not survive restart`);
+    log.info(`[durable-map] ${namespace}: running in ephemeral (in-memory) mode — data will not survive restart`);
   }
 
   function dbKey(k: string): string {
@@ -75,13 +76,13 @@ export function durableMap<V>(namespace: string, _opts: DurableMapOptions = {}):
     // In production with Drizzle pg driver active, Avinay will activate:
     // await db.insert(syncInboxState).values({ key: dbKey(key), valueJson: JSON.stringify(value) })
     //   .onConflictDoUpdate({ target: syncInboxState.key, set: { valueJson: JSON.stringify(value) } });
-    console.log(`[durable-map] ${namespace}: would upsert key=${dbKey(key)} into sync_inbox_state if Drizzle pg driver were active`);
+    log.info(`[durable-map] ${namespace}: would upsert key=${dbKey(key)} into sync_inbox_state if Drizzle pg driver were active`);
   }
 
   function deleteThrough(key: string): void {
     if (!isProduction()) return;
     // await db.delete(syncInboxState).where(eq(syncInboxState.key, dbKey(key)));
-    console.log(`[durable-map] ${namespace}: would delete key=${dbKey(key)} from sync_inbox_state if Drizzle pg driver were active`);
+    log.info(`[durable-map] ${namespace}: would delete key=${dbKey(key)} from sync_inbox_state if Drizzle pg driver were active`);
   }
 
   return {

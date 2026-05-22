@@ -381,7 +381,12 @@ export default function FounderInvestorCRM() {
 
         <div className="grid gap-3">
           {filtered.map(c => {
-            const stageInfo = STAGES.find(s => s.key === c.stage)!;
+            // B-V11-2 fix: defensive fallback. If a legacy contact carries
+            // an invalid free-text "stage" value (e.g. "Seed-Series A" from
+            // a prior bug), STAGES.find returns undefined and `.tone` throws.
+            // Fall back to the "lead" tone so the page renders instead of
+            // crashing the whole CRM list.
+            const stageInfo = STAGES.find(s => s.key === c.stage) ?? STAGES[0];
             const checked = selectedIds.has(c.id);
             return (
               <Card key={c.id} data-testid={`card-crm-${c.id}`} className={checked ? "border-[hsl(184_98%_22%)]" : ""}>

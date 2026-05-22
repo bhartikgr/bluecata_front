@@ -37,7 +37,9 @@ import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 // activity timeline (/api/founder/companies/:id/activity) surfaces them.
 import { appendAdminAudit } from "./adminPlatformStore";
 import { getDb } from "./db/connection";
+import { withTenant, crossTenant } from "./lib/withTenant"; /* v14 Tier-1 Fix 4 — tenant scoping on writes */
 import { founderCrmContacts as founderCrmContactsTable } from "../shared/schema";
+import { log } from "./lib/logger";
 
 export type FounderCrmContact = {
   id: string;
@@ -182,10 +184,11 @@ function seedDemoContactsIntoDb(): void {
     const db = getDb();
     db.transaction((tx: any) => {
       for (const c of DEMO_SEED) {
+        // CROSS-TENANT (seed) — demo seeding writes across tenants on first boot.
         const existing = tx
           .select({ id: founderCrmContactsTable.id })
           .from(founderCrmContactsTable)
-          .where(eq(founderCrmContactsTable.id, c.id))
+          .where(crossTenant(eq(founderCrmContactsTable.id, c.id), founderCrmContactsTable))
           .limit(1)
           .all() as any[];
         if (existing.length === 0) {
@@ -194,28 +197,49 @@ function seedDemoContactsIntoDb(): void {
       }
     });
   } catch (err) {
-    console.warn("[founderCrmStore] demo seed write-through failed:", (err as Error).message);
+    log.warn("[founderCrmStore] demo seed write-through failed:", (err as Error).message);
   }
 }
 
-/** Resolve companyId from request: use authenticated founder's activeCompanyId first, then query param. */
-function resolveCompanyId(req: Request): string {
-  const ctxCompanyId = (req as any).userContext?.founder?.activeCompanyId;
+/**
+ * v14 — Resolve companyId from authenticated session.
+ *
+ * Order: 1) session.activeCompanyId, 2) explicit ?companyId= query (only
+ * when the founder owns it via userContext.founder.companies, or caller is
+ * admin), 3) returns null. Routes treat null as 400 missing_active_company.
+ * NEVER falls back to demo "co_novapay". Header values are NOT consulted.
+ */
+function resolveCompanyId(req: Request): string | null {
+  const ctx = (req as any).userContext;
+  const ctxCompanyId = ctx?.founder?.activeCompanyId as string | undefined;
   if (ctxCompanyId) return ctxCompanyId;
   const q = typeof req.query.companyId === "string" ? req.query.companyId : null;
-  return q ?? "co_novapay"; // fallback for sandbox dev only
+  if (q && Array.isArray(ctx?.founder?.companies)) {
+    const owns = ctx.founder.companies.some((c: { companyId: string }) => c.companyId === q);
+    if (owns || ctx?.isAdmin) return q;
+  }
+  return null;
+}
+
+function ensureCompanyId(req: Request, res: Response): string | null {
+  const id = resolveCompanyId(req);
+  if (!id) {
+    res.status(400).json({ ok: false, error: "missing_active_company" });
+    return null;
+  }
+  return id;
 }
 
 export function registerFounderCrmRoutes(app: Express): void {
   // GET /api/founder/investor-crm — list contacts (per authenticated founder's company)
   app.get("/api/founder/investor-crm", requireAuth, (req: Request, res: Response) => {
-    const companyId = resolveCompanyId(req);
+    const companyId = ensureCompanyId(req, res); if (!companyId) return;
     res.json(contacts.filter((c) => c.companyId === companyId));
   });
 
   // GET /api/founder/crm/contacts — alias for investor-crm (fixes the "tone" crash)
   app.get("/api/founder/crm/contacts", requireAuth, (req: Request, res: Response) => {
-    const companyId = resolveCompanyId(req);
+    const companyId = ensureCompanyId(req, res); if (!companyId) return;
     res.json(contacts.filter((c) => c.companyId === companyId));
   });
 
@@ -229,7 +253,7 @@ export function registerFounderCrmRoutes(app: Express): void {
 
   // POST /api/founder/investor-crm — create contact
   app.post("/api/founder/investor-crm", requireAuth, (req: Request, res: Response) => {
-    const companyId = resolveCompanyId(req);
+    const companyId = ensureCompanyId(req, res); if (!companyId) return;
     const c: FounderCrmContact = {
       id: `fcrm_${randomBytes(3).toString("hex")}`,
       companyId: req.body?.companyId ?? companyId,
@@ -255,7 +279,7 @@ export function registerFounderCrmRoutes(app: Express): void {
         tx.insert(founderCrmContactsTable).values(contactToRow(c)).run();
       });
     } catch (err) {
-      console.error("[founderCrmStore POST] DB write failed:", (err as Error).message);
+      log.error("[founderCrmStore POST] DB write failed:", (err as Error).message);
     }
     // B-V11-7 fix: emit a `crm.contact.created` audit entry so the company
     // activity timeline reflects investor-CRM growth.
@@ -278,8 +302,11 @@ export function registerFounderCrmRoutes(app: Express): void {
       c.tasks.push({ id: `tsk_${randomBytes(3).toString("hex")}`, text: req.body.task.text, due: req.body.task.due, status: "open" });
     }
     // Patch v12 Day 3: write-through update. No trailing `()`.
+    // v14 Tier-1 Fix 4: scope by tenantId so a forged :id from another tenant
+    // cannot be mutated even if it slips past the in-memory cache check.
     try {
       const db = getDb();
+      const tenantId = tenantForCompany(c.companyId);
       db.transaction((tx: any) => {
         tx.update(founderCrmContactsTable)
           .set({
@@ -289,11 +316,11 @@ export function registerFounderCrmRoutes(app: Express): void {
             tasks: JSON.stringify(c.tasks),
             updatedAt: new Date().toISOString(),
           })
-          .where(eq(founderCrmContactsTable.id, c.id))
+          .where(withTenant(eq(founderCrmContactsTable.id, c.id), { tenantId, table: founderCrmContactsTable }))
           .run();
       });
     } catch (err) {
-      console.error("[founderCrmStore PATCH] DB write failed:", (err as Error).message);
+      log.error("[founderCrmStore PATCH] DB write failed:", (err as Error).message);
     }
     // Audit the update so the activity timeline reflects stage moves too.
     appendAdminAudit(
@@ -308,7 +335,7 @@ export function registerFounderCrmRoutes(app: Express): void {
   // POST /api/founder/investor-crm/broadcast — segmented broadcast
   app.post("/api/founder/investor-crm/broadcast", requireAuth, (req: Request, res: Response) => {
     const { filter, message } = req.body ?? {};
-    const compId = resolveCompanyId(req);
+    const compId = ensureCompanyId(req, res); if (!compId) return;
     let targets = contacts.filter((c) => c.companyId === compId);
     if (filter?.stage)  targets = targets.filter((c) => c.stage === filter.stage);
     if (filter?.region) targets = targets.filter((c) => c.region === filter.region);
@@ -351,18 +378,18 @@ export async function hydrateFounderCrmStore(): Promise<void> {
     const rows = db
       .select()
       .from(founderCrmContactsTable)
-      // CROSS-TENANT (admin) — hydration replays every tenant's contacts into
-      // the in-memory cache. Each row carries its tenant_id, but the cache
-      // itself is filtered per-request by resolveCompanyId().
-      .where(isNull(founderCrmContactsTable.deletedAt))
+      // CROSS-TENANT (boot hydration) — justified because we read all rows then
+      // assign each to its owning tenant's cache. Each row carries its tenant_id,
+      // and the cache is filtered per-request by resolveCompanyId().
+      .where(crossTenant(isNull(founderCrmContactsTable.deletedAt), founderCrmContactsTable, { skipSoftDelete: true }))
       .all() as any[];
     contacts.length = 0;
     for (const r of rows) contacts.push(rowToContact(r));
     if (rows.length > 0) {
-      console.log(`[hydrate] founderCrmStore: ${rows.length} contacts restored`);
+      log.info(`[hydrate] founderCrmStore: ${rows.length} contacts restored`);
     }
   } catch (err) {
-    console.warn("[hydrate] founderCrmStore: DB read failed:", (err as Error).message);
+    log.warn("[hydrate] founderCrmStore: DB read failed:", (err as Error).message);
   }
 }
 

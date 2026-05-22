@@ -12,7 +12,7 @@ import {
   LayoutDashboard, Briefcase, Users, Building2, Circle, BarChart3,
   TrendingUp, ClipboardList, UserCircle, Activity, Settings, Menu, X,
   ArrowLeftRight, LogOut, Scale, UserPlus, FileText, ListTodo, FolderOpen,
-  PiggyBank,
+  PiggyBank, CalendarDays, Trophy,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -20,6 +20,9 @@ import { Separator } from "@/components/ui/separator";
 import { useLegalDrawer } from "@/lib/legalDrawer";
 import { useRole } from "@/lib/role";
 import { usePartnerMembership } from "@/lib/partner/usePartnerMembership";
+import { useQuery } from "@tanstack/react-query"; /* v16 Fix 6 — read COLLECTIVE_ENABLED */
+import { apiRequest } from "@/lib/queryClient"; /* v16 Fix 6 */
+import { ChapterSelector } from "@/components/ChapterSelector"; /* v17 Phase A — chapter scope dropdown in topbar */
 
 type NavItem = {
   href: string;
@@ -55,6 +58,16 @@ const NAV_GROUPS: NavGroup[] = [
       { href: "/collective/dsc/pipeline", label: "DSC Pipeline", icon: BarChart3, "data-testid": "nav-collective-dsc-pipeline" },
       { href: "/collective/dsc/scores", label: "Composite Scores", icon: TrendingUp, "data-testid": "nav-collective-dsc-scores" },
       { href: "/collective/dsc/prep", label: "Transaction Prep Tracker", icon: ClipboardList, "data-testid": "nav-collective-dsc-prep" },
+    ],
+  },
+  /* v19 Phase A — Events Calendar + Leaderboard. Placed in their own
+   * group so they get dedicated visibility without disrupting existing
+   * nav ordering. */
+  {
+    title: "CHAPTER LIFE",
+    items: [
+      { href: "/collective/calendar", label: "Calendar", icon: CalendarDays, "data-testid": "nav-collective-calendar" },
+      { href: "/collective/leaderboard", label: "Leaderboard", icon: Trophy, "data-testid": "nav-collective-leaderboard" },
     ],
   },
   {
@@ -121,9 +134,25 @@ function NavLink({ item }: { item: NavItem }) {
 function CollectiveSidebar({ onClose }: { onClose?: () => void }) {
   const { openDrawer } = useLegalDrawer();
   const partner = usePartnerMembership();
+  // v16 Fix 6 — honest invite-only beta: when COLLECTIVE_ENABLED is false,
+  // the full Collective nav is hidden and a single "Join the Waitlist" link
+  // is shown instead. The partner-workspace group still flows through its
+  // own gate.
+  const flagsQ = useQuery<{ COLLECTIVE_ENABLED?: boolean }>({
+    queryKey: ["/api/feature-flags"],
+    queryFn: async () => (await apiRequest("GET", "/api/feature-flags")).json(),
+  });
+  const collectiveOn = flagsQ.data?.COLLECTIVE_ENABLED === true;
+  const BETA_WAITLIST_GROUP: NavGroup = {
+    title: "BETA — INVITE-ONLY",
+    items: [
+      { href: "/collective/waitlist", label: "Join the Waitlist", icon: UserPlus, "data-testid": "nav-collective-waitlist" },
+    ],
+  };
+  const baseGroups: NavGroup[] = collectiveOn ? NAV_GROUPS : [BETA_WAITLIST_GROUP];
   const groups: NavGroup[] = partner.isPartner
-    ? [...NAV_GROUPS, PARTNER_WORKSPACE_GROUP]
-    : NAV_GROUPS;
+    ? [...baseGroups, PARTNER_WORKSPACE_GROUP]
+    : baseGroups;
 
   return (
     <div
@@ -242,6 +271,10 @@ function CollectiveTopbar({ onMenuClick }: { onMenuClick: () => void }) {
       </div>
 
       <div className="flex items-center gap-2">
+        {/* v17 Phase A — chapter selector. Renders null when COLLECTIVE_ENABLED!=1
+            or when the user has zero chapter memberships, so the topbar layout
+            matches the v16 Friday baseline by default. */}
+        <ChapterSelector data-testid="topbar-chapter-selector" />
         <Button
           variant="outline"
           size="sm"

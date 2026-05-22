@@ -77,7 +77,7 @@ export function registerPartnerRoutes(app: Express): void {
   app.post("/api/admin/partners", requireAdmin, (req: Request, res: Response) => {
     const { legalName, displayName, email, region, partnerType, tier } = req.body ?? {};
     if (!isString(legalName) || !isString(email)) return badRequest(res, "legalName + email required");
-    const actor = String((req.userContext?.userId) ?? "u_admin");
+    const actor = String((req.userContext?.userId) ?? ""); /* v14 */ if (!actor) return res.status(401).json({ error: "missing_identity" });
     const contact = createContact({
       kind: "consortium_partner",
       legalName,
@@ -126,7 +126,7 @@ export function registerPartnerRoutes(app: Express): void {
   });
 
   app.patch("/api/admin/partners/:id", requireAdmin, (req: Request, res: Response) => {
-    const actor = String((req.userContext?.userId) ?? "u_admin");
+    const actor = String((req.userContext?.userId) ?? ""); /* v14 */ if (!actor) return res.status(401).json({ error: "missing_identity" });
     try {
       const updated = updateContact(String(req.params.id), req.body ?? {}, actor, "partner.updated");
       res.json({ partner: updated });
@@ -142,7 +142,7 @@ export function registerPartnerRoutes(app: Express): void {
       return badRequest(res, "tier must be one of " + validTiers.join("|"));
     }
     if (!isString(rationale)) return badRequest(res, "rationale required (audit reason)");
-    const actor = String((req.userContext?.userId) ?? "u_admin");
+    const actor = String((req.userContext?.userId) ?? ""); /* v14 */ if (!actor) return res.status(401).json({ error: "missing_identity" });
     try {
       const updated = updateContact(String(req.params.id), { tier: tier as PartnerTier, tierSince: new Date().toISOString() } as Partial<Parameters<typeof updateContact>[1]>, actor, "partner.tier_changed");
       appendAdminAudit(actor, `partner:${String(req.params.id)}`, "partner.tier_changed", { newTier: tier, rationale });
@@ -160,7 +160,7 @@ export function registerPartnerRoutes(app: Express): void {
   });
 
   app.post("/api/admin/partners/:id/suspend", requireAdmin, (req: Request, res: Response) => {
-    const actor = String((req.userContext?.userId) ?? "u_admin");
+    const actor = String((req.userContext?.userId) ?? ""); /* v14 */ if (!actor) return res.status(401).json({ error: "missing_identity" });
     try {
       const updated = updateContact(String(req.params.id), { status: "suspended" }, actor, "partner.suspended");
       res.json({ partner: updated });
@@ -170,7 +170,7 @@ export function registerPartnerRoutes(app: Express): void {
   });
 
   app.post("/api/admin/partners/:id/archive", requireAdmin, (req: Request, res: Response) => {
-    const actor = String((req.userContext?.userId) ?? "u_admin");
+    const actor = String((req.userContext?.userId) ?? ""); /* v14 */ if (!actor) return res.status(401).json({ error: "missing_identity" });
     try {
       const updated = updateContact(String(req.params.id), { status: "archived" }, actor, "partner.archived");
       res.json({ partner: updated });
@@ -182,13 +182,13 @@ export function registerPartnerRoutes(app: Express): void {
   app.post("/api/admin/partners/:id/attributions", requireAdmin, (req: Request, res: Response) => {
     const { companyId, source, notes } = req.body ?? {};
     if (!isString(companyId)) return badRequest(res, "companyId required");
-    const actor = String((req.userContext?.userId) ?? "u_admin");
+    const actor = String((req.userContext?.userId) ?? ""); /* v14 */ if (!actor) return res.status(401).json({ error: "missing_identity" });
     const a = partnerAttributionStore.create(String(req.params.id), companyId, actor, source ?? "admin_manual", notes ?? null);
     res.status(201).json({ attribution: a });
   });
 
   app.delete("/api/admin/partners/:id/attributions/:companyId", requireAdmin, (req: Request, res: Response) => {
-    const actor = String((req.userContext?.userId) ?? "u_admin");
+    const actor = String((req.userContext?.userId) ?? ""); /* v14 */ if (!actor) return res.status(401).json({ error: "missing_identity" });
     try {
       const a = partnerAttributionStore.revoke(String(req.params.id), String(req.params.companyId), actor);
       res.json({ attribution: a });

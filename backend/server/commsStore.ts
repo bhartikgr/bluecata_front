@@ -46,9 +46,16 @@ import {
   resolveDisplayIdentity,
 } from "../client/src/lib/comms/visibility";
 import { emitMutation } from "./lib/eventBus";
+import { publish as ssePublish } from "./lib/sseHub";
 import { emitNotification } from "./notificationsStore";
 import { resolvePersonaId } from "./lib/userContext";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
+/* v17 Phase B — Collective-channel slice write-through to DB. */
+import { isNull } from "drizzle-orm";
+import { getDb } from "./db/connection";
+import { collectiveChannelPosts as collectiveChannelPostsTable } from "@shared/schema";
+import { DEFAULT_CHAPTER_ID, DEFAULT_CHAPTER_TENANT_ID } from "./lib/chapterDefaults";
+import { log } from "./lib/logger";
 
 /* ==================================================================== */
 /* DEMO USERS — the cast for Sprint 9                                    */
@@ -232,21 +239,16 @@ function emitOutbox(eventType: string, actorId: string, ip: string | undefined, 
 }
 
 /**
- * Sprint 22 Wave 1 — DEF-026 fix.
- * Priority: 1) req.userContext.userId (set by loadUserContext middleware)
- *           2) x-user-id header (test harness)
- *           3) x-actor-id header (legacy test support)
- *           4) cookie / userId query param via resolvePersonaId
- *           5) throws 401 — each route handler catches and returns 401.
+ * v14 (Tier-1 Fix 1) — identity strictly from session userContext or cap_uid
+ * cookie. Header identity (x-user-id / x-actor-id) is no longer consulted in
+ * production; the v14 lint test enforces this.
  */
 function actorOf(req: Request): { actorId: string; ip: string | undefined; ua: string | undefined } {
   const ctxUserId = (req as Request & { userContext?: { userId?: string } }).userContext?.userId;
-  const headerId = (req.headers["x-user-id"] as string | undefined)
-    ?? (req.headers["x-actor-id"] as string | undefined);
-  const cookieOrQuery = resolvePersonaId(req); // returns string | null
-  const actorId = ctxUserId ?? headerId ?? cookieOrQuery ?? null;
+  const cookieOrQuery = resolvePersonaId(req); // cookie or ?userId= only — no header identity
+  const actorId = ctxUserId ?? cookieOrQuery ?? null;
   if (!actorId) {
-    const err: Error & { status?: number } = new Error("Unauthenticated");
+    const err: Error & { status?: number } = new Error("missing_identity");
     err.status = 401;
     throw err;
   }
@@ -840,7 +842,9 @@ function projectPost(post: Post, viewerUserId: string): PostView {
     // Company-authored — render the company name (which is public).
     // DEF-032: Use COMPANY_NAME_MAP keyed by companyId instead of hardcoded "NovaPay AI".
     const ch = channels.get(post.channelId);
-    const postCompanyId = ch?.companyId ?? "co_novapay";
+    // v14 — no demo fallback; missing companyId yields empty string so the
+    // name lookup misses cleanly instead of impersonating NovaPay.
+    const postCompanyId = ch?.companyId ?? "";
     const COMPANY_NAME_MAP: Record<string, string> = {
       co_novapay: "NovaPay AI",
       co_arboreal: "Arboreal",
@@ -1119,11 +1123,17 @@ export function registerCommsRoutes(app: Express): void {
       const authorKind = parsed.data.authorKind ?? "user";
       // Sprint 19 E — cap_table visibility routes to cap-table channel.
       let channelId: string;
+      // v14 — cap_table / company posts MUST specify companyId. No "co_novapay" fallback.
+      if (parsed.data.visibility === "cap_table" || authorKind === "company") {
+        if (!parsed.data.companyId) {
+          return res.status(400).json({ message: "companyId required for cap_table or company posts" });
+        }
+      }
       if (parsed.data.visibility === "cap_table") {
-        channelId = capTableChannelId(parsed.data.companyId ?? "co_novapay");
+        channelId = capTableChannelId(parsed.data.companyId as string);
       } else {
         channelId = authorKind === "company"
-          ? companyFollowersChannelId(parsed.data.companyId ?? "co_novapay")
+          ? companyFollowersChannelId(parsed.data.companyId as string)
           : networkChannelId(actorId);
       }
       // Ensure the network channel exists for this user.
@@ -1158,6 +1168,63 @@ export function registerCommsRoutes(app: Express): void {
         status: isScheduled ? "scheduled" : "published",
       };
       posts.set(id, post);
+      // v13 (Avi's Issue 5) — write-through to DB so posts survive restart.
+      try {
+        // Lazy require to avoid circular import at module load.
+        const { persistNetworkPost } = require("./networkPostsStore");
+        persistNetworkPost({
+          id,
+          authorUserId: actorId,
+          authorKind,
+          body: post.body,
+          createdAt: post.createdAt,
+          visibility: parsed.data.visibility,
+          companyId: parsed.data.companyId ?? null,
+          mediaUrls: post.mediaUrls,
+          topics: post.topics,
+        }, actorId);
+      } catch (err) {
+        // Tolerated — keeps the route 200 if persistence layer fails.
+      }
+      // v17 Phase B — Collective slice: persist Collective-visible posts
+      // to the dedicated `collective_channel_posts` table so the Collective
+      // feed survives restart. Only `public_to_collective` posts go here.
+      if (parsed.data.visibility === "public_to_collective") {
+        try {
+          const db: any = getDb();
+          db.transaction((tx: any) => {
+            tx.insert(collectiveChannelPostsTable).values({
+              id,
+              tenantId: DEFAULT_CHAPTER_TENANT_ID,
+              chapterId: DEFAULT_CHAPTER_ID,
+              channelId,
+              authorUserId: actorId,
+              authorKind,
+              body: post.body,
+              visibility: "public_to_collective",
+              likedByJson: JSON.stringify(post.likedByUserIds ?? []),
+              commentsJson: JSON.stringify(post.comments ?? []),
+              commentCount: post.commentCount ?? 0,
+              shareCount: post.shareCount ?? 0,
+              topicsJson: post.topics ? JSON.stringify(post.topics) : null,
+              mediaUrlsJson: post.mediaUrls ? JSON.stringify(post.mediaUrls) : null,
+              createdAt: post.createdAt,
+            } as any).run();
+          });
+        } catch (err) {
+          log.warn("[commsStore.collectiveSlice] DB insert failed (memory only):", (err as Error).message);
+        }
+        // v18 Phase D — SSE fan-out (post-commit, outside the tx).
+        try {
+          ssePublish(DEFAULT_CHAPTER_ID, "comms", {
+            kind: "comms.post.created",
+            postId: id,
+            channelId,
+            authorUserId: actorId,
+            createdAt: post.createdAt,
+          });
+        } catch { /* non-fatal */ }
+      }
       emitOutbox("post.created", actorId, ip, ua, {
         postId: id, channelId, authorUserId: actorId, authorKind, companyId: parsed.data.companyId, visibility: parsed.data.visibility,
       });
@@ -1360,7 +1427,9 @@ export function registerCommsRoutes(app: Express): void {
     if (!p) return res.status(404).json({ message: "Not found" });
     if (p.authorKind !== "company")
       return res.status(400).json({ message: "Follow only valid for company posts" });
-    const companyId = (channels.get(p.channelId)?.companyId) ?? "co_novapay";
+    // v14 — fall back to the post's own channelId-derived companyId; never "co_novapay".
+    const companyId = channels.get(p.channelId)?.companyId ?? "";
+    if (!companyId) return res.status(400).json({ message: "post_missing_companyId" });
     p.followingCompanyIds = Array.from(new Set([...(p.followingCompanyIds ?? []), companyId]));
     emitOutbox("post.followed", actorId, ip, ua, { postId: p.id, userId: actorId, companyId });
     res.json({ ok: true, followingCompanyIds: p.followingCompanyIds });
@@ -1581,3 +1650,120 @@ export function registerCommsRoutes(app: Express): void {
 
 /* Test access helpers. */
 export const _commsTest = { channels, messages, posts, outbox, auditEntries, COMMS_USERS };
+
+/**
+ * v13 (Avi's Issue 5) — restorePostFromDb
+ *
+ * Called by networkPostsStore.hydrateNetworkPostsStore() on boot for every
+ * row found in `network_posts`. Re-inserts a minimal Post into the in-memory
+ * Map so the read API (/api/comms/posts) reflects DB state immediately after
+ * a server restart.
+ */
+export function restorePostFromDb(row: {
+  id: string;
+  authorUserId: string;
+  authorKind?: "user" | "company";
+  body: string;
+  createdAt: string;
+  visibility?: string;
+  companyId?: string | null;
+  mediaUrls?: string[];
+  topics?: string[];
+}): void {
+  if (posts.has(row.id)) return; // already present
+  const authorKind = (row.authorKind ?? "user") as "user" | "company";
+  const visibility = (row.visibility ?? "public") as Post["visibility"];
+  let channelId: string;
+  // v14 — DB rows must carry their own companyId. A missing value here is a
+  // data bug, not a recoverable case; we drop the post rather than silently
+  // alias it to NovaPay.
+  if ((visibility === "cap_table" || authorKind === "company") && !row.companyId) {
+    return; // skip restoring an orphaned post
+  }
+  if (visibility === "cap_table") {
+    channelId = capTableChannelId(row.companyId as string);
+  } else if (authorKind === "company") {
+    channelId = companyFollowersChannelId(row.companyId as string);
+  } else {
+    channelId = networkChannelId(row.authorUserId);
+  }
+  const post: Post = {
+    id: row.id,
+    channelId,
+    authorUserId: row.authorUserId,
+    authorKind,
+    body: row.body,
+    createdAt: row.createdAt,
+    visibility,
+    likedByUserIds: [],
+    commentCount: 0,
+    comments: [],
+    shareCount: 0,
+    mediaUrls: row.mediaUrls,
+    topics: row.topics,
+    status: "published",
+  };
+  posts.set(row.id, post);
+}
+
+/* ---------- v17 Phase B — Collective-channel hydrator ---------- */
+/**
+ * Restores `posts` Map entries for posts with `visibility =
+ * "public_to_collective"` from the `collective_channel_posts` table. Other
+ * post slices (cap_table / followers / network) remain in-memory; their
+ * persistence path runs through `networkPostsStore`.
+ */
+export async function hydrateCommsCollectiveStore(): Promise<void> {
+  try {
+    const db: any = getDb();
+    const rows = db
+      .select()
+      .from(collectiveChannelPostsTable)
+      .where(isNull((collectiveChannelPostsTable as any).deletedAt))
+      .all() as any[];
+    for (const r of rows) {
+      const id = r.id;
+      // Don't clobber an existing in-memory post (seeded data wins).
+      if (posts.has(id)) continue;
+      let likedBy: string[] = [];
+      let comments: any[] = [];
+      let topics: string[] | undefined;
+      let mediaUrls: string[] | undefined;
+      try { likedBy = JSON.parse(r.liked_by_json ?? r.likedByJson ?? "[]"); } catch { /* empty */ }
+      try { comments = JSON.parse(r.comments_json ?? r.commentsJson ?? "[]"); } catch { /* empty */ }
+      try {
+        const t = r.topics_json ?? r.topicsJson;
+        if (t) topics = JSON.parse(t);
+      } catch { /* empty */ }
+      try {
+        const m = r.media_urls_json ?? r.mediaUrlsJson;
+        if (m) mediaUrls = JSON.parse(m);
+      } catch { /* empty */ }
+      const post: Post = {
+        id,
+        channelId: r.channel_id ?? r.channelId,
+        authorUserId: r.author_user_id ?? r.authorUserId,
+        authorKind: (r.author_kind ?? r.authorKind ?? "user") as Post["authorKind"],
+        body: r.body,
+        createdAt: r.created_at ?? r.createdAt,
+        visibility: "public_to_collective",
+        likedByUserIds: likedBy,
+        commentCount: Number(r.comment_count ?? r.commentCount ?? 0),
+        comments,
+        shareCount: Number(r.share_count ?? r.shareCount ?? 0),
+        mediaUrls,
+        topics,
+        status: "published",
+      };
+      posts.set(id, post);
+    }
+    if (rows.length > 0) {
+      log.info(`[hydrate] commsStore (Collective slice): ${rows.length} posts restored`);
+    }
+  } catch (err) {
+    const msg = (err as Error).message ?? "";
+    if (!/no such table/i.test(msg)) {
+      log.warn("[hydrate] commsStore (Collective slice): DB read failed:", msg);
+    }
+  }
+}

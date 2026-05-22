@@ -23,6 +23,7 @@ import {
   contacts as contactsTable,
   contactRevisions as contactRevisionsTable,
 } from "../shared/schema";
+import { log } from "./lib/logger";
 
 // Patch v12 Day 2 Wave 2 — adminContactsStore is HIGH-CARE hybrid:
 //   - Source of truth = SQLite `contacts` + `contact_revisions` tables.
@@ -1142,7 +1143,8 @@ export function registerAdminContactsRoutes(app: Express): void {
   app.post("/api/admin/contacts", (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"];
     const body = req.body ?? {};
-    const actor = String(req.headers["x-actor"] ?? "u_admin");
+    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
 
     const { legalName, email, kind, type } = body;
     if (!legalName || !email || !kind || !type) {
@@ -1223,7 +1225,8 @@ export function registerAdminContactsRoutes(app: Express): void {
     if (!contact) return res.status(404).json({ ok: false, error: "not_found" });
 
     const patch = req.body ?? {};
-    const actor = String(req.headers["x-actor"] ?? "u_admin");
+    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
 
     // Strip immutable fields from patch
     const IMMUTABLE = ["id", "createdAt", "createdBy", "version", "prevRevisionHash", "revisionHash"];
@@ -1273,7 +1276,8 @@ export function registerAdminContactsRoutes(app: Express): void {
     const contact = contacts.get(req.params.id);
     if (!contact) return res.status(404).json({ ok: false, error: "not_found" });
 
-    const actor = String(req.headers["x-actor"] ?? "u_admin");
+    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
 
     if (confirm !== "true") {
       return res.status(409).json({
@@ -1304,7 +1308,8 @@ export function registerAdminContactsRoutes(app: Express): void {
     const contact = contacts.get(req.params.id);
     if (!contact) return res.status(404).json({ ok: false, error: "not_found" });
 
-    const actor = String(req.headers["x-actor"] ?? "u_admin");
+    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const { reason } = req.body ?? {};
 
     if (confirm !== "true") {
@@ -1336,7 +1341,8 @@ export function registerAdminContactsRoutes(app: Express): void {
     const contact = contacts.get(req.params.id);
     if (!contact) return res.status(404).json({ ok: false, error: "not_found" });
 
-    const actor = String(req.headers["x-actor"] ?? "u_admin");
+    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
 
     if (confirm !== "true") {
       return res.status(409).json({
@@ -1367,7 +1373,8 @@ export function registerAdminContactsRoutes(app: Express): void {
     const contact = contacts.get(req.params.id);
     if (!contact) return res.status(404).json({ ok: false, error: "not_found" });
 
-    const actor = String(req.headers["x-actor"] ?? "u_admin");
+    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
 
     if (confirm !== "true") {
       return res.status(409).json({
@@ -1452,10 +1459,10 @@ export async function hydrateAdminContactsStore(): Promise<void> {
     }
 
     if (rows.length > 0) {
-      console.log(`[hydrate] adminContactsStore: loaded ${contacts.size} contacts, ${revRows.length} revisions`);
+      log.info(`[hydrate] adminContactsStore: loaded ${contacts.size} contacts, ${revRows.length} revisions`);
     }
   } catch (err) {
-    console.warn("[hydrate] adminContactsStore: DB read failed:", (err as Error).message);
+    log.warn("[hydrate] adminContactsStore: DB read failed:", (err as Error).message);
   }
 }
 

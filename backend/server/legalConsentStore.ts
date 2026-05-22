@@ -35,6 +35,7 @@ import { emitBridgeEvent } from "./bridgeStore";
 import { LEGAL_VERSION } from "../client/src/lib/legalDocs";
 import { getDb } from "./db/connection";
 import { legalConsents as legalConsentsTable } from "../shared/schema";
+import { log } from "./lib/logger";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -210,7 +211,7 @@ export function recordConsent(args: {
     // We surface the failure loudly. There is no graceful in-memory fallback —
     // a consent that is not in the durable ledger MUST NOT be treated as recorded
     // by the route layer. The route handler will translate this into a 500.
-    console.error("[legalConsentStore.recordConsent] DB write failed:", (err as Error).message);
+    log.error("[legalConsentStore.recordConsent] DB write failed:", (err as Error).message);
     throw err;
   }
 
@@ -241,7 +242,7 @@ export function getConsentsForUser(userId: string, tenantId?: string): LegalCons
       .all() as any[];
     return rows.map(rowToConsent);
   } catch (err) {
-    console.warn("[legalConsentStore.getConsentsForUser] DB read failed:", (err as Error).message);
+    log.warn("[legalConsentStore.getConsentsForUser] DB read failed:", (err as Error).message);
     return [];
   }
 }
@@ -262,7 +263,7 @@ export function getAllConsents(): LegalConsent[] {
       .all() as any[];
     return rows.map(rowToConsent);
   } catch (err) {
-    console.warn("[legalConsentStore.getAllConsents] DB read failed:", (err as Error).message);
+    log.warn("[legalConsentStore.getAllConsents] DB read failed:", (err as Error).message);
     return [];
   }
 }
@@ -300,10 +301,10 @@ export async function hydrateLegalConsentStore(): Promise<void> {
       .where(isNull(legalConsentsTable.deletedAt))
       .all() as any[];
     if (rows.length > 0) {
-      console.log(`[hydrate] legalConsentStore: ${rows.length} live consents in ledger`);
+      log.info(`[hydrate] legalConsentStore: ${rows.length} live consents in ledger`);
     }
   } catch (err) {
-    console.warn("[hydrate] legalConsentStore: DB read failed:", (err as Error).message);
+    log.warn("[hydrate] legalConsentStore: DB read failed:", (err as Error).message);
   }
 }
 
@@ -316,7 +317,7 @@ export const _testLegalConsent = {
       // raw .run() so it bypasses Drizzle's where requirement.
       db.delete(legalConsentsTable).run();
     } catch (err) {
-      console.warn("[legalConsentStore._testLegalConsent.reset] DB reset failed:", (err as Error).message);
+      log.warn("[legalConsentStore._testLegalConsent.reset] DB reset failed:", (err as Error).message);
     }
   },
   // Maintained for backward-compatibility with v11 tests that expected to

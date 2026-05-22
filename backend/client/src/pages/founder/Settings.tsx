@@ -1,5 +1,5 @@
 import { asArray } from "@/lib/safeArray";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { PageBody, PageHeader } from "@/components/AppShell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -63,6 +63,19 @@ export default function Settings() {
   // Defect B-series — wire all buttons to real mutations instead of toast-only stubs.
   const [inviteEmail, setInviteEmail] = useState("");
 
+  // B-V11-5 fix: hold the Company tab inputs in controlled state so they
+  // (a) actually drive the PATCH payload and (b) re-sync when the active
+  // company changes. Previously the inputs used `defaultValue` only, so the
+  // mutation sent `company?.companyName` (the stale server value) and nothing
+  // else, and no user edit ever reached the server.
+  const [coDisplayName, setCoDisplayName] = useState("");
+  const [coLegalName,   setCoLegalName]   = useState("");
+  // Re-hydrate the form whenever the active company query resolves / switches.
+  useEffect(() => {
+    if (company?.companyName !== undefined) setCoDisplayName(company.companyName ?? "");
+    if (company?.legalName   !== undefined) setCoLegalName(company.legalName ?? "");
+  }, [company?.companyName, company?.legalName]);
+
   // Team members are sourced from the API; show empty state if none.
   type TeamMember = { id: string; name: string; email: string; role: string; joined: string };
   const teamQ = useQuery<{ members: TeamMember[] }>({
@@ -83,7 +96,11 @@ export default function Settings() {
   });
 
   const saveCompanyMut = useMutation({
-    mutationFn: async () => (await apiRequest("PATCH", `/api/companies/${companyId}`, { name: company?.companyName })).json(),
+    // B-V11-5 fix: send both display name and legal name from controlled state.
+    mutationFn: async () => (await apiRequest("PATCH", `/api/companies/${companyId}`, {
+      name: coDisplayName,
+      legalName: coLegalName,
+    })).json(),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/founder/companies"] }); queryClient.invalidateQueries({ queryKey: ["/api/founder/active-company"] }); toast({ title: "Company saved" }); },
     onError: () => toast({ title: "Save failed", variant: "destructive" }),
   });
@@ -124,10 +141,11 @@ export default function Settings() {
           <TabsList className="flex flex-wrap h-auto gap-1 justify-start" data-testid="tabs-settings">
             <TabsTrigger value="profile" data-testid="tab-profile"><User className="h-3.5 w-3.5 mr-1" /> Profile</TabsTrigger>
             <TabsTrigger value="company" data-testid="tab-company"><Building2 className="h-3.5 w-3.5 mr-1" /> Company</TabsTrigger>
-            <TabsTrigger value="team" data-testid="tab-team"><Users className="h-3.5 w-3.5 mr-1" /> Team</TabsTrigger>
+            {/* v13 (Avi's Issue 7) — Team / Billing / Notifications are not yet wired to durable writes; mark them so testers don't expect saves to persist. The Company tab IS durable (v11+v12 multiCompanyStore.updateCompanyDetails). B-V13-7 fix */}
+            <TabsTrigger value="team" data-testid="tab-team"><Users className="h-3.5 w-3.5 mr-1" /> Team <span className="ml-1 text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-800" data-testid="badge-team-soon">Coming soon</span></TabsTrigger>
             <TabsTrigger value="plan" data-testid="tab-plan"><CreditCard className="h-3.5 w-3.5 mr-1" /> Plan</TabsTrigger>
-            <TabsTrigger value="billing" data-testid="tab-billing"><Receipt className="h-3.5 w-3.5 mr-1" /> Billing</TabsTrigger>
-            <TabsTrigger value="notifications" data-testid="tab-notifications"><Bell className="h-3.5 w-3.5 mr-1" /> Notifications</TabsTrigger>
+            <TabsTrigger value="billing" data-testid="tab-billing"><Receipt className="h-3.5 w-3.5 mr-1" /> Billing <span className="ml-1 text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-800" data-testid="badge-billing-soon">Coming soon</span></TabsTrigger>
+            <TabsTrigger value="notifications" data-testid="tab-notifications"><Bell className="h-3.5 w-3.5 mr-1" /> Notifications <span className="ml-1 text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-800" data-testid="badge-notifications-soon">Coming soon</span></TabsTrigger>
             <TabsTrigger value="data" data-testid="tab-data"><Database className="h-3.5 w-3.5 mr-1" /> Data</TabsTrigger>
             <TabsTrigger value="privacy" data-testid="tab-privacy"><ShieldAlert className="h-3.5 w-3.5 mr-1" /> Privacy</TabsTrigger>
             {/* Wave C-1 — new tabs before Legal */}
@@ -204,8 +222,8 @@ export default function Settings() {
             <Card>
               <CardHeader><CardTitle className="text-base">Company details</CardTitle></CardHeader>
               <CardContent className="grid md:grid-cols-2 gap-4">
-                <div><Label>Display name</Label><Input className="mt-1" defaultValue={company?.companyName ?? ""} placeholder="e.g. Acme Inc." data-testid="input-co-name" /></div>
-                <div><Label>Legal name</Label><Input className="mt-1" defaultValue={company?.legalName ?? ""} data-testid="input-legal-name" /></div>
+                <div><Label>Display name</Label><Input className="mt-1" value={coDisplayName} onChange={(e) => setCoDisplayName(e.target.value)} placeholder="e.g. Acme Inc." data-testid="input-co-name" /></div>
+                <div><Label>Legal name</Label><Input className="mt-1" value={coLegalName} onChange={(e) => setCoLegalName(e.target.value)} data-testid="input-legal-name" /></div>
                 <div><Label>Default currency</Label><Input className="mt-1" defaultValue="USD" data-testid="input-currency" /></div>
                 <div><Label>Region of incorporation</Label><Input className="mt-1" defaultValue="US" data-testid="input-region" /></div>
                 <div className="md:col-span-2"><Label>Tagline</Label><Input className="mt-1" defaultValue="" placeholder="One-line value proposition" data-testid="input-tagline" /></div>

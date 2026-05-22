@@ -15,6 +15,7 @@ import { applyRouteGuards } from "./lib/applyRouteGuards";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 import { seedDemoData } from "./lib/seedDemoData";
 import { getDb } from "./db/connection";
+import { log as structuredLog } from "./lib/logger";
 
 const app = express();
 const httpServer = createServer(app);
@@ -76,7 +77,7 @@ export function log(message: string, source = "express") {
     hour12: true,
   });
 
-  console.log(`${formattedTime} [${source}] ${message}`);
+  structuredLog.info(`${formattedTime} [${source}] ${message}`);
 }
 
 app.use((req, res, next) => {
@@ -116,11 +117,18 @@ app.use((req, res, next) => {
   if (DEMO_SEED_ENABLED) {
     try {
       const summary = await seedDemoData(getDb());
-      // eslint-disable-next-line no-console
-      console.log("[v12 demo-seed]", summary);
+      structuredLog.info("[v12 demo-seed]", summary);
+
+      // v15 fix — re-hydrate stores AFTER seeding so the in-memory caches
+      // reflect the seeded DB rows. Without this, the boot order is:
+      //   1) hydrate (DB empty) → caches empty
+      //   2) seed (DB now has rows) → caches still empty
+      //   3) Maya logs in → 0 companies in response (bug)
+      // Re-running hydration here is idempotent and cheap.
+      await hydrateAllStores();
+      structuredLog.info("[v15 post-seed re-hydrate] complete");
     } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error("[v12 demo-seed] failed", err);
+      structuredLog.error("[v12 demo-seed] failed", err);
     }
   }
 
@@ -148,7 +156,7 @@ app.use((req, res, next) => {
     const status = err.status || err.statusCode || 500;
     const message = err.message || "Internal Server Error";
 
-    console.error("Internal Server Error:", err);
+    structuredLog.error("Internal Server Error:", err);
 
     if (res.headersSent) {
       return next(err);
@@ -178,7 +186,7 @@ app.use((req, res, next) => {
   httpServer.listen(
     {
       port,
-      host: "0.0.0.0",
+      host: "localhost",
       // reusePort: true,  // ❌ Windows pe yeh hatao
     },
     () => {

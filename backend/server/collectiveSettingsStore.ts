@@ -21,10 +21,15 @@
 import type { Express, Request, Response } from "express";
 import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
+import { isNull, eq } from "drizzle-orm";
 import { HashChain, registerChain } from "./lib/hashChain";
 import { withTrace } from "./lib/trace";
 import { emitBridgeEvent } from "./bridgeStore";
 import { appendAdminAudit } from "./adminPlatformStore";
+import { getDb } from "./db/connection"; /* v17 Phase B */
+import { collectiveSettingsTable } from "@shared/schema"; /* v17 Phase B */
+import { DEFAULT_CHAPTER_ID, DEFAULT_CHAPTER_TENANT_ID } from "./lib/chapterDefaults";
+import { log } from "./lib/logger";
 
 /* ============================================================
  * Type definitions
@@ -141,6 +146,48 @@ export function patchSettings(
     const hash = computeHash(updated, prevHash);
     const next: CollectiveSettings = { ...updated, hash };
 
+    // v17 Phase B — DB write-through (upsert by userId PK).
+    try {
+      const db: any = getDb();
+      db.transaction((tx: any) => {
+        // Try insert first; on conflict, update.
+        try {
+          tx.insert(collectiveSettingsTable).values({
+            userId,
+            tenantId: DEFAULT_CHAPTER_TENANT_ID,
+            chapterId: DEFAULT_CHAPTER_ID,
+            anonymityLevel: next.anonymityLevel,
+            notifyOnDscScore: next.notifyOnDscScore ? 1 : 0,
+            notifyOnDealRoomUpdate: next.notifyOnDealRoomUpdate ? 1 : 0,
+            dealRoomVisibility: next.dealRoomVisibility,
+            version: next.version,
+            prevHash: next.prevHash,
+            hash: next.hash,
+            updatedBy: actorUserId,
+            updatedAt: now,
+            createdAt: now,
+          } as any).run();
+        } catch (_e) {
+          tx.update(collectiveSettingsTable)
+            .set({
+              anonymityLevel: next.anonymityLevel,
+              notifyOnDscScore: next.notifyOnDscScore ? 1 : 0,
+              notifyOnDealRoomUpdate: next.notifyOnDealRoomUpdate ? 1 : 0,
+              dealRoomVisibility: next.dealRoomVisibility,
+              version: next.version,
+              prevHash: next.prevHash,
+              hash: next.hash,
+              updatedBy: actorUserId,
+              updatedAt: now,
+            } as any)
+            .where(eq((collectiveSettingsTable as any).userId, userId))
+            .run();
+        }
+      });
+    } catch (err) {
+      log.warn("[collectiveSettingsStore.patch] DB write failed (memory only):", (err as Error).message);
+    }
+
     settingsMap.set(userId, next);
     collectiveSettingsChain.append({ userId, version: nextVersion, ts: now });
 
@@ -177,6 +224,53 @@ export function __clearCollectiveSettings(): void {
   collectiveSettingsChain.__clear();
 }
 
+/* ---------- v17 Phase B — hydrator ---------- */
+export async function hydrateCollectiveSettingsStore(): Promise<void> {
+  settingsMap.clear();
+  collectiveSettingsChain.__clear();
+  try {
+    const db: any = getDb();
+    const rows = db
+      .select()
+      .from(collectiveSettingsTable)
+      .where(isNull((collectiveSettingsTable as any).deletedAt))
+      .all() as any[];
+    // Sort by version so the chain entries replay in order.
+    rows.sort((a: any, b: any) => Number(a.version ?? 0) - Number(b.version ?? 0));
+    for (const r of rows) {
+      const settings: CollectiveSettings = {
+        userId: r.user_id ?? r.userId,
+        anonymityLevel: (r.anonymity_level ?? r.anonymityLevel ?? "public") as AnonymityLevel,
+        notifyOnDscScore: Boolean(r.notify_on_dsc_score ?? r.notifyOnDscScore),
+        notifyOnDealRoomUpdate: Boolean(r.notify_on_deal_room_update ?? r.notifyOnDealRoomUpdate),
+        dealRoomVisibility: (r.deal_room_visibility ?? r.dealRoomVisibility ?? "visible") as DealRoomVisibility,
+        updatedAt: r.updated_at ?? r.updatedAt,
+        updatedBy: r.updated_by ?? r.updatedBy,
+        version: Number(r.version ?? 1),
+        prevHash: r.prev_hash ?? r.prevHash ?? "GENESIS",
+        hash: r.hash,
+      };
+      settingsMap.set(settings.userId, settings);
+      collectiveSettingsChain.append({
+        userId: settings.userId,
+        version: settings.version,
+        ts: settings.updatedAt,
+      });
+    }
+    if (rows.length > 0) {
+      log.info(`[hydrate] collectiveSettingsStore: ${rows.length} settings rows restored`);
+    }
+    void DEFAULT_CHAPTER_ID;
+    void DEFAULT_CHAPTER_TENANT_ID;
+    void randomBytes;
+  } catch (err) {
+    const msg = (err as Error).message ?? "";
+    if (!/no such table/i.test(msg)) {
+      log.warn("[hydrate] collectiveSettingsStore: DB read failed:", msg);
+    }
+  }
+}
+
 /* ============================================================
  * Routes
  * ============================================================ */
@@ -184,8 +278,10 @@ export function __clearCollectiveSettings(): void {
 export function registerCollectiveSettingsRoutes(app: Express): void {
   // GET /api/collective/settings/mine
   app.get("/api/collective/settings/mine", (req: Request, res: Response) => {
-    const userId = String(req.headers["x-user-id"] ?? "u_demo");
-    const settings = getOrCreateSettings(userId);
+    // v14 — identity from session; no x-user-id header / u_demo fallback.
+    const ctx = (req as Request & { userContext?: { userId?: string; isAuthed?: boolean } }).userContext;
+    if (!ctx?.userId || !ctx?.isAuthed) return res.status(401).json({ error: "missing_identity" });
+    const settings = getOrCreateSettings(ctx.userId);
     res.json(settings);
   });
 
@@ -196,8 +292,11 @@ export function registerCollectiveSettingsRoutes(app: Express): void {
       return res.status(428).json({ error: "double_verify_required", hint: 'Set header x-confirm: true' });
     }
 
-    const userId = String(req.headers["x-user-id"] ?? "u_demo");
-    const actorUserId = String(req.headers["x-actor-user-id"] ?? userId);
+    // v14 — identity from session; no x-user-id / x-actor-user-id headers.
+    const ctx = (req as Request & { userContext?: { userId?: string; isAuthed?: boolean } }).userContext;
+    if (!ctx?.userId || !ctx?.isAuthed) return res.status(401).json({ error: "missing_identity" });
+    const userId = ctx.userId;
+    const actorUserId = userId; // patch.actorUserId always equals session id
 
     const parsed = collectiveSettingsPatchSchema.safeParse(req.body);
     if (!parsed.success) {

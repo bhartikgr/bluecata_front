@@ -618,9 +618,13 @@ export function registerBridgeRoutes(app: Express): void {
     if (!ALL_OUTBOUND_EVENT_TYPES.includes(eventType)) {
       return res.status(400).json({ error: "invalid_event_type", allowed: ALL_OUTBOUND_EVENT_TYPES });
     }
+    // v14 — aggregateId must be supplied by the admin caller; no "co_novapay" fallback.
+    if (!aggregateId || typeof aggregateId !== "string") {
+      return res.status(400).json({ error: "aggregateId_required" });
+    }
     const e = emitBridgeEvent({
       eventType,
-      aggregateId: aggregateId ?? "co_novapay",
+      aggregateId,
       aggregateKind: aggregateKind ?? "company",
       payload: payload ?? {},
     });

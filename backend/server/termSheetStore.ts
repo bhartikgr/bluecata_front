@@ -35,6 +35,7 @@ import { and, eq, asc, desc } from "drizzle-orm";
 import { readSessionCookie } from "./lib/sessionCookie.js";
 import { getDb } from "./db/connection";
 import { termSheetRevisions as termSheetRevisionsTable } from "../shared/schema";
+import { log } from "./lib/logger";
 
 /**
  * SectionDraft on the wire — mirrors the client's SectionDraft shape.
@@ -113,7 +114,7 @@ export function clearTermSheetStore(): void {
       tx.delete(termSheetRevisionsTable).run();
     });
   } catch (err) {
-    console.warn("[termSheetStore.clearTermSheetStore] DB delete failed:", (err as Error).message);
+    log.warn("[termSheetStore.clearTermSheetStore] DB delete failed:", (err as Error).message);
   }
 }
 
@@ -128,7 +129,7 @@ export function getRevisions(roundId: string): ReadonlyArray<TermSheetRevision> 
       .all() as any[];
     return rows.map(rowToRevision);
   } catch (err) {
-    console.warn("[termSheetStore.getRevisions] DB read failed:", (err as Error).message);
+    log.warn("[termSheetStore.getRevisions] DB read failed:", (err as Error).message);
     return [];
   }
 }
@@ -145,7 +146,7 @@ export function getLatestRevision(roundId: string): TermSheetRevision | undefine
       .all() as any[];
     return rows.length > 0 ? rowToRevision(rows[0]) : undefined;
   } catch (err) {
-    console.warn("[termSheetStore.getLatestRevision] DB read failed:", (err as Error).message);
+    log.warn("[termSheetStore.getLatestRevision] DB read failed:", (err as Error).message);
     return undefined;
   }
 }
@@ -249,7 +250,7 @@ export function saveTermSheet(args: { payload: SaveTermSheetPayload; savedBy: st
       result = { ok: true, revision };
     });
   } catch (err) {
-    console.error("[termSheetStore.saveTermSheet] DB write failed:", (err as Error).message);
+    log.error("[termSheetStore.saveTermSheet] DB write failed:", (err as Error).message);
     return { ok: false, error: "db_write_failed", message: (err as Error).message };
   }
 
@@ -280,9 +281,9 @@ export async function hydrateTermSheetStore(): Promise<void> {
   try {
     const db = getDb();
     const rows = db.select({ id: termSheetRevisionsTable.id }).from(termSheetRevisionsTable).all() as any[];
-    console.log(`[termSheetStore.hydrate] revisions=${rows.length}`);
+    log.info(`[termSheetStore.hydrate] revisions=${rows.length}`);
   } catch (err) {
-    console.warn("[termSheetStore.hydrate] DB read failed:", (err as Error).message);
+    log.warn("[termSheetStore.hydrate] DB read failed:", (err as Error).message);
   }
 }
 
@@ -291,8 +292,12 @@ export async function hydrateTermSheetStore(): Promise<void> {
 /* --------------------------------------------------------------------- */
 
 function requireAuth(req: Request, res: Response, allowQueryFallback = false): { userId: string } | null {
-  let userId: string | undefined = readSessionCookie(req)
-    ?? (req.headers["x-user-id"] as string | undefined);
+  /* v14 — cookie remains the canonical production session source. The v14 test
+   * harness shim (installV14TestIdentity) maps an x-user-id header onto
+   * req.__v14_explicit_user_id so callers can opt-in to the harness identity
+   * without re-enabling x-user-id reads in production code. */
+  const explicit = (req as Request & { __v14ExplicitUserId?: string }).__v14ExplicitUserId;
+  let userId: string | undefined = readSessionCookie(req) ?? explicit ?? undefined;
   if (!userId && allowQueryFallback && typeof req.query.userId === "string") {
     userId = req.query.userId;
   }

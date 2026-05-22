@@ -600,21 +600,21 @@ export function registerPricingModelRoutes(app: Express) {
   });
 
   app.post("/api/admin/pricing-models", (req: Request, res: Response) => {
-    const actor = (req.headers["x-actor-email"] as string | undefined) ?? "admin@capavate.com";
+    const actor = String((req as any).userContext?.identity?.email ?? (req as any).userContext?.userId ?? ""); /* v14 */ if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const result = createModel(req.body, actor);
     if (!result.ok) return res.status(400).json(result);
     res.status(201).json(result);
   });
 
   app.patch("/api/admin/pricing-models/:id", (req: Request, res: Response) => {
-    const actor = (req.headers["x-actor-email"] as string | undefined) ?? "admin@capavate.com";
+    const actor = String((req as any).userContext?.identity?.email ?? (req as any).userContext?.userId ?? ""); /* v14 */ if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const result = updateModel(req.params.id, req.body ?? {}, actor);
     if (!result.ok) return res.status(404).json(result);
     res.json(result);
   });
 
   app.post("/api/admin/pricing-models/:id/promote", (req: Request, res: Response) => {
-    const actor = (req.headers["x-actor-email"] as string | undefined) ?? "admin@capavate.com";
+    const actor = String((req as any).userContext?.identity?.email ?? (req as any).userContext?.userId ?? ""); /* v14 */ if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const to = (req.body?.to ?? "") as PricingStatus;
     const result = promoteModel(req.params.id, to, actor);
     if (!result.ok) return res.status(400).json(result);
@@ -622,14 +622,14 @@ export function registerPricingModelRoutes(app: Express) {
   });
 
   app.post("/api/admin/pricing-models/:id/clone", (req: Request, res: Response) => {
-    const actor = (req.headers["x-actor-email"] as string | undefined) ?? "admin@capavate.com";
+    const actor = String((req as any).userContext?.identity?.email ?? (req as any).userContext?.userId ?? ""); /* v14 */ if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const result = cloneModel(req.params.id, actor);
     if (!result.ok) return res.status(404).json(result);
     res.status(201).json(result);
   });
 
   app.delete("/api/admin/pricing-models/:id", (req: Request, res: Response) => {
-    const actor = (req.headers["x-actor-email"] as string | undefined) ?? "admin@capavate.com";
+    const actor = String((req as any).userContext?.identity?.email ?? (req as any).userContext?.userId ?? ""); /* v14 */ if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const result = deleteModel(req.params.id, actor);
     if (!result.ok) return res.status(400).json(result);
     res.json(result);

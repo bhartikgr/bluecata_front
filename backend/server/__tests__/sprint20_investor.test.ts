@@ -48,6 +48,8 @@ let server: http.Server;
 let port: number;
 
 beforeAll(async () => {
+  // v16: enable Collective routes for these tests (they hit /api/collective/* endpoints)
+  process.env.COLLECTIVE_ENABLED = "1";
   app = express();
   app.use(express.json());
   server = http.createServer(app);

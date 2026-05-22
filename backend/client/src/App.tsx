@@ -110,6 +110,7 @@ import AdminLifecyclePolicies from "@/pages/admin/LifecyclePolicies";
 import AdminRegionsExtensions from "@/pages/admin/RegionsExtensions";
 import AdminRegionExtensionDetail from "@/pages/admin/RegionExtensionDetail";
 import AdminAuditLog from "@/pages/admin/AuditLog";
+import AuditChainVerifyPage from "@/pages/admin/AuditChainVerifyPage"; /* v19 Phase C */
 import AdminReconciliation from "@/pages/admin/Reconciliation";
 import AdminTelemetry from "@/pages/admin/Telemetry";
 // Sprint 12 — new admin + cross-role pages
@@ -127,6 +128,11 @@ import FounderBilling from "@/pages/founder/Billing";
 import AdminInvestorDetail from "@/pages/admin/InvestorDetail";
 import AdminSync from "@/pages/admin/Sync";
 import AdminMigration from "@/pages/admin/Migration";
+// CP Phase B — Apply flow + Admin queue + Onboarding + Privacy
+import ConsortiumApplyPage from "@/pages/public/ConsortiumApplyPage";
+import AdminConsortiumApplicationsPage from "@/pages/admin/ConsortiumApplicationsPage";
+import PartnerOnboardingChecklistPage from "@/pages/partner/OnboardingChecklistPage";
+import PrivacyPage from "@/pages/settings/PrivacyPage";
 import CollectivePreview from "@/pages/CollectivePreview";
 import { seedSprint3Telemetry } from "@/lib/sprint3Seed";
 import { useRealtimeSync } from "@/lib/realtimeSync";
@@ -145,6 +151,8 @@ import CollectiveTransactionPrep from "@/pages/collective/CollectiveTransactionP
 import CollectiveMembership from "@/pages/collective/CollectiveMembership";
 import CollectiveActivity from "@/pages/collective/CollectiveActivity";
 import CollectiveSettings from "@/pages/collective/CollectiveSettings";
+import EventsCalendarPage from "@/pages/collective/EventsCalendarPage";
+import LeaderboardPage from "@/pages/collective/LeaderboardPage";
 
 // Bootstrap demo telemetry once at app load
 seedSprint3Telemetry();
@@ -234,6 +242,8 @@ function AppRouter() {
         {/* ===== PUBLIC ROUTES — NO auth gate ===== */}
         <Route path="/" component={Home} />
         <Route path="/onboarding" component={Landing} />
+        {/* CP Phase B — Public consortium-partner application */}
+        <Route path="/apply/consortium" component={ConsortiumApplyPage} />
         <Route path="/login" component={Login} />
         <Route path="/signup" component={Signup} />
         <Route path="/forgot-password" component={Forgot} />
@@ -477,6 +487,14 @@ function AppRouter() {
         <Route path="/admin/audit-log">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminAuditLog /></RequireAuth>}
         </Route>
+        {/* CP Phase B — Admin queue for consortium-partner applications + promotion moderation */}
+        <Route path="/admin/consortium-applications">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminConsortiumApplicationsPage /></RequireAuth>}
+        </Route>
+        {/* v19 Phase C — Hash-chain audit verification UI */}
+        <Route path="/admin/audit-chain-verify">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AuditChainVerifyPage /></RequireAuth>}
+        </Route>
         <Route path="/admin/reconciliation">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminReconciliation /></RequireAuth>}
         </Route>
@@ -525,6 +543,16 @@ function AppRouter() {
           {() => <RequireAuth><CollectiveShell><CollectiveSettings /></CollectiveShell></RequireAuth>}
         </Route>
 
+        {/* v19 Phase A — Events Calendar (month view) + Leaderboard.
+         * Both pages are hidden client-side when COLLECTIVE_ENABLED is off
+         * (the components return null on the feature-flag check). */}
+        <Route path="/collective/calendar">
+          {() => <RequireAuth><CollectiveShell><EventsCalendarPage /></CollectiveShell></RequireAuth>}
+        </Route>
+        <Route path="/collective/leaderboard">
+          {() => <RequireAuth><CollectiveShell><LeaderboardPage /></CollectiveShell></RequireAuth>}
+        </Route>
+
         {/* Patch v6 — Partner workspace routes live inside the CollectiveShell
          * at /collective/partner/*. Server API stays at /api/partner/me/*;
          * requirePartnerAuth resolves partnerId from the session. */}
@@ -554,6 +582,14 @@ function AppRouter() {
         </Route>
         <Route path="/collective/partner/settings">
           {() => <RequireAuth><CollectiveShell><PartnerSettings /></CollectiveShell></RequireAuth>}
+        </Route>
+        {/* CP Phase B — Partner onboarding checklist */}
+        <Route path="/collective/partner/onboarding">
+          {() => <RequireAuth><CollectiveShell><PartnerOnboardingChecklistPage /></CollectiveShell></RequireAuth>}
+        </Route>
+        {/* CP Phase B — Per-user privacy / GDPR controls */}
+        <Route path="/settings/privacy">
+          {() => <RequireAuth><PrivacyPage /></RequireAuth>}
         </Route>
         <Route path="/collective/partner/spvs/:id">
           {() => <RequireAuth><CollectiveShell><PartnerSpvDetail /></CollectiveShell></RequireAuth>}

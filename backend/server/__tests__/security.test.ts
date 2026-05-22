@@ -15,6 +15,7 @@
  * 46 tests total (>= 44 mandate).
  */
 import { describe, expect, it, beforeEach } from "vitest";
+import { installV14TestIdentity } from "./_v14TestIdentity"; /* v14 Tier-1 Fix 1 — restores u_admin default identity for legacy tests */
 import express from "express";
 import request from "supertest";
 import { signJwt, verifyJwt, hashPassword, verifyPassword, passwordIsStrong, createSession, getSession, revokeSession } from "../lib/auth";
@@ -97,6 +98,7 @@ describe("CSRF middleware", () => {
     _resetRateLimitsForTests();
     app = express();
     app.use(express.json());
+  installV14TestIdentity(app);
     app.use("/api", csrfMiddleware);
     app.post("/api/x", (_req, res) => res.json({ ok: true }));
     app.get("/api/x", (_req, res) => res.json({ ok: true }));
@@ -182,6 +184,7 @@ describe("Rate limiter", () => {
     _resetRateLimitsForTests();
     app = express();
     app.use(express.json());
+    installV14TestIdentity(app, { defaultIdentity: false }); /* v14: maps x-user-id → userContext.userId so rate limit buckets isolate per user */
     app.use("/api", rateLimitMiddleware);
     app.get("/api/r", (_req, res) => res.json({ ok: true }));
     app.post("/api/w", (_req, res) => res.json({ ok: true }));

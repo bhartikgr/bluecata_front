@@ -72,7 +72,7 @@ export function registerSprint22Routes(app: Express): void {
     (req: Request, res: Response) => {
       // loadUserContext middleware already populated req.userContext.
       const ctx = req.userContext;
-      const userId = ctx?.userId ?? (req.headers["x-user-id"] as string | undefined);
+      const userId = ctx?.userId ?? null; /* v14 — no header fallback */
       if (!userId || !ctx?.isAuthed) {
         return res.status(401).json({ message: "Unauthorized" });
       }

@@ -52,7 +52,15 @@ import {
   userPrefs,
   companies,
   companyMembers,
+  chapters,
+  chapterMemberships,
+  chapterAnnouncements,
+  chapterResources,
+  chapterLeaderboardSnapshots,
 } from "../../shared/schema";
+import { createHash } from "node:crypto";
+import { spvFundStore } from "../spvFundStore";
+import { log, errorMeta } from "./logger";
 
 type Db = ReturnType<typeof GetDbFn>;
 
@@ -88,6 +96,10 @@ const DEMO_USERS = [
   { id: "u_maya_chen",     tenantId: "tenant_co_co_novapay",  email: "maya@novapay.example",   name: "Maya Chen",     role: "founder"  },
   { id: "u_aisha_patel",   tenantId: "tenant_cp_keiretsu_ca", email: "aisha@hydra.example",    name: "Aisha Patel",   role: "investor" },
   { id: "u_daniel_okafor", tenantId: "tenant_co_co_novapay",  email: "daniel@novapay.example", name: "Daniel Okafor", role: "founder"  },
+  /* v18 Phase D — designated chapter admins for the three non-keiretsu demo chapters. */
+  { id: "u_chadmin_toronto", tenantId: "tenant_chap_chap_toronto", email: "admin-toronto@capavate.example", name: "Rita Cho",         role: "investor" },
+  { id: "u_chadmin_nyc",     tenantId: "tenant_chap_chap_nyc",     email: "admin-nyc@capavate.example",     name: "Sam Ortega",       role: "investor" },
+  { id: "u_chadmin_sf",      tenantId: "tenant_chap_chap_sf",      email: "admin-sf@capavate.example",      name: "Priya Raghavan",   role: "investor" },
 ] as const;
 
 /** Company rows. Each in its own tenant_co_<id> tenant. */
@@ -115,6 +127,47 @@ const DEMO_USER_PREFS = [
 ] as const;
 
 /**
+ * v17 Phase A — Demo chapters.
+ *
+ * Per V19_BUILD_BRIEF.md §v17 Phase A: 4 demo chapters seeded with
+ * `chap_keiretsu_canada` as the default (Maya/Aisha/Daniel belong here
+ * for continuity with the v16 seed). Each chapter is its own tenant
+ * (`tenant_chap_<id>`) for top-level isolation via withTenant().
+ *
+ * The default chapter row is ALSO inserted by the inline-backfill in
+ * server/db/connection.ts::applyV12Backfill (so legacy non-demo deployments
+ * with pre-existing Collective rows have a valid backfill target). Both
+ * paths use the same id, so onConflictDoNothing makes them converge.
+ */
+const DEMO_CHAPTER_TENANTS = [
+  { id: "tenant_chap_chap_keiretsu_canada", name: "Capavate Collective — Keiretsu Forum Canada", kind: "consortium_partner", billingEmail: null },
+  { id: "tenant_chap_chap_toronto",         name: "Capavate Collective — Toronto",              kind: "consortium_partner", billingEmail: null },
+  { id: "tenant_chap_chap_nyc",             name: "Capavate Collective — New York City",        kind: "consortium_partner", billingEmail: null },
+  { id: "tenant_chap_chap_sf",              name: "Capavate Collective — San Francisco",        kind: "consortium_partner", billingEmail: null },
+] as const;
+
+const DEMO_CHAPTERS = [
+  { id: "chap_keiretsu_canada", tenantId: "tenant_chap_chap_keiretsu_canada", name: "Capavate Collective — Keiretsu Forum Canada", region: "NA-East", city: "Toronto",       partnerOrgId: "tenant_cp_keiretsu_ca" },
+  { id: "chap_toronto",         tenantId: "tenant_chap_chap_toronto",         name: "Capavate Collective — Toronto",              region: "NA-East", city: "Toronto",       partnerOrgId: null                     },
+  { id: "chap_nyc",             tenantId: "tenant_chap_chap_nyc",             name: "Capavate Collective — New York City",        region: "NA-East", city: "New York",      partnerOrgId: null                     },
+  { id: "chap_sf",              tenantId: "tenant_chap_chap_sf",              name: "Capavate Collective — San Francisco",        region: "NA-West", city: "San Francisco", partnerOrgId: null                     },
+] as const;
+
+/**
+ * Default chapter memberships for the canonical demo personas.
+ * Maya/Aisha/Daniel all start in chap_keiretsu_canada (continuity with v16).
+ */
+const DEMO_CHAPTER_MEMBERSHIPS = [
+  { id: "chmem_maya_keiretsu",    chapterId: "chap_keiretsu_canada", tenantId: "tenant_chap_chap_keiretsu_canada", userId: "u_maya_chen",     role: "member" },
+  { id: "chmem_aisha_keiretsu",   chapterId: "chap_keiretsu_canada", tenantId: "tenant_chap_chap_keiretsu_canada", userId: "u_aisha_patel",   role: "admin"  },
+  { id: "chmem_daniel_keiretsu",  chapterId: "chap_keiretsu_canada", tenantId: "tenant_chap_chap_keiretsu_canada", userId: "u_daniel_okafor", role: "member" },
+  /* v18 Phase D — one designated chapter_admin per remaining demo chapter. */
+  { id: "chmem_chadmin_toronto", chapterId: "chap_toronto", tenantId: "tenant_chap_chap_toronto", userId: "u_chadmin_toronto", role: "admin" },
+  { id: "chmem_chadmin_nyc",     chapterId: "chap_nyc",     tenantId: "tenant_chap_chap_nyc",     userId: "u_chadmin_nyc",     role: "admin" },
+  { id: "chmem_chadmin_sf",      chapterId: "chap_sf",      tenantId: "tenant_chap_chap_sf",      userId: "u_chadmin_sf",      role: "admin" },
+] as const;
+
+/**
  * Seed all demo personas + companies + memberships + prefs.
  *
  * Idempotent: every insert uses `onConflictDoNothing` on the primary key.
@@ -129,6 +182,11 @@ export async function seedDemoData(db: Db): Promise<{
   companiesInserted: number;
   membersInserted: number;
   userPrefsInserted: number;
+  chaptersInserted: number;
+  chapterMembershipsInserted: number;
+  announcementsInserted: number;
+  resourcesInserted: number;
+  leaderboardSnapshotsInserted: number;
 }> {
   const now = NOW();
   let tenantsInserted = 0;
@@ -136,6 +194,11 @@ export async function seedDemoData(db: Db): Promise<{
   let companiesInserted = 0;
   let membersInserted = 0;
   let userPrefsInserted = 0;
+  let chaptersInserted = 0;
+  let chapterMembershipsInserted = 0;
+  let announcementsInserted = 0;
+  let resourcesInserted = 0;
+  let leaderboardSnapshotsInserted = 0;
 
   // ---- tenants ----
   for (const t of DEMO_TENANTS) {
@@ -237,12 +300,439 @@ export async function seedDemoData(db: Db): Promise<{
     else if (typeof res?.rowCount === "number") userPrefsInserted += res.rowCount;
   }
 
+  // ---- v17 Phase A: chapter tenants (one tenant per chapter) ----
+  // CROSS-TENANT (admin) — justified because seedDemoData writes across
+  // multiple tenants in one boot pass (matches the rest of this file).
+  for (const t of DEMO_CHAPTER_TENANTS) {
+    const res: any = await db
+      .insert(tenants)
+      .values({
+        id: t.id,
+        name: t.name,
+        kind: t.kind,
+        billingEmail: t.billingEmail,
+        status: "active",
+        isDemo: 1,
+        createdAt: now,
+        updatedAt: now,
+        deletedAt: null,
+      })
+      .onConflictDoNothing({ target: tenants.id });
+    if (typeof res?.changes === "number") tenantsInserted += res.changes;
+    else if (typeof res?.rowCount === "number") tenantsInserted += res.rowCount;
+  }
+
+  // ---- v17 Phase A: chapters ----
+  for (const c of DEMO_CHAPTERS) {
+    const res: any = await db
+      .insert(chapters)
+      .values({
+        id: c.id,
+        tenantId: c.tenantId,
+        name: c.name,
+        region: c.region,
+        city: c.city,
+        status: "active",
+        adminUserId: null,
+        partnerOrgId: c.partnerOrgId,
+        membershipFeeAnnualMinor: 0,
+        founded: null,
+        createdAt: now,
+        updatedAt: now,
+        deletedAt: null,
+      })
+      .onConflictDoNothing({ target: chapters.id });
+    if (typeof res?.changes === "number") chaptersInserted += res.changes;
+    else if (typeof res?.rowCount === "number") chaptersInserted += res.rowCount;
+  }
+
+  // ---- v17 Phase A: chapter memberships (Maya/Aisha/Daniel → chap_keiretsu_canada) ----
+  for (const m of DEMO_CHAPTER_MEMBERSHIPS) {
+    const res: any = await db
+      .insert(chapterMemberships)
+      .values({
+        id: m.id,
+        tenantId: m.tenantId,
+        chapterId: m.chapterId,
+        userId: m.userId,
+        role: m.role,
+        status: "active",
+        joinedAt: now,
+        createdAt: now,
+        updatedAt: now,
+        deletedAt: null,
+      })
+      .onConflictDoNothing({ target: chapterMemberships.id });
+    if (typeof res?.changes === "number") chapterMembershipsInserted += res.changes;
+    else if (typeof res?.rowCount === "number") chapterMembershipsInserted += res.rowCount;
+  }
+
+  // ---- v19 Phase A: chapter announcements / resources / leaderboard ----
+  // Seed for every chapter so per-chapter UIs have data on cold boot.
+  // Hash chain is per (chapter, row); each row uses a deterministic
+  // sha256 over (prev_hash, payload-as-JSON) — same algorithm as the
+  // store at server/chapterAnnouncementsStore.ts.
+  const chainHash = (prev: string | null, payload: Record<string, unknown>): string => {
+    const h = createHash("sha256");
+    h.update(prev ?? "GENESIS");
+    h.update("|");
+    h.update(JSON.stringify(payload));
+    return h.digest("hex");
+  };
+
+  /* ----- Announcements ------------------------------------------ */
+  // chap_keiretsu_canada: 1 pinned, 1 expired (in the past), 1 high-priority
+  // active. Other 3 demo chapters: ≥1 active announcement each.
+  const past = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const futureExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+  const expiredAt = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString();
+
+  const DEMO_ANNOUNCEMENTS = [
+    {
+      id: "anc_seed_kf_pinned",
+      tenantId: "tenant_chap_chap_keiretsu_canada",
+      chapterId: "chap_keiretsu_canada",
+      authorUserId: "u_aisha_patel",
+      title: "Welcome to the Keiretsu Forum Canada chapter",
+      body: "Pinned post — bookmark this page. Our monthly screening calendar, partner network resources, and chapter governance docs all live in the Resources Library.",
+      pinned: 1,
+      priority: "normal",
+      audience: "all",
+      expiresAt: null,
+      createdAt: past,
+    },
+    {
+      id: "anc_seed_kf_expired",
+      tenantId: "tenant_chap_chap_keiretsu_canada",
+      chapterId: "chap_keiretsu_canada",
+      authorUserId: "u_aisha_patel",
+      title: "RSVP closing soon — March pitch night",
+      body: "This announcement is intentionally expired in the demo seed to validate the expiry filter on the list endpoint.",
+      pinned: 0,
+      priority: "normal",
+      audience: "members",
+      expiresAt: expiredAt,
+      createdAt: past,
+    },
+    {
+      id: "anc_seed_kf_urgent",
+      tenantId: "tenant_chap_chap_keiretsu_canada",
+      chapterId: "chap_keiretsu_canada",
+      authorUserId: "u_aisha_patel",
+      title: "Reminder: Q2 LP capital call due May 31",
+      body: "All Premium-tier members with active SPV commitments should review the capital call schedule in the SPV admin console. Reach out to the chapter admins with any questions.",
+      pinned: 0,
+      priority: "high",
+      audience: "members",
+      expiresAt: futureExpiry,
+      createdAt: now,
+    },
+    {
+      id: "anc_seed_toronto",
+      tenantId: "tenant_chap_chap_toronto",
+      chapterId: "chap_toronto",
+      authorUserId: "u_chadmin_toronto",
+      title: "Toronto chapter launches expert Q&A circle",
+      body: "We're opening a peer-driven Q&A surface for Toronto chapter members. Reputation tracking is now live.",
+      pinned: 1,
+      priority: "normal",
+      audience: "all",
+      expiresAt: null,
+      createdAt: now,
+    },
+    {
+      id: "anc_seed_nyc",
+      tenantId: "tenant_chap_chap_nyc",
+      chapterId: "chap_nyc",
+      authorUserId: "u_chadmin_nyc",
+      title: "NYC chapter — May screening events lineup",
+      body: "Five companies on the calendar for May. RSVP via the Events Calendar.",
+      pinned: 0,
+      priority: "normal",
+      audience: "all",
+      expiresAt: null,
+      createdAt: now,
+    },
+    {
+      id: "anc_seed_sf",
+      tenantId: "tenant_chap_chap_sf",
+      chapterId: "chap_sf",
+      authorUserId: "u_chadmin_sf",
+      title: "SF chapter — new resource library is live",
+      body: "Templates for SAFEs, term sheets, and pro-rata side letters now in the Resources Library.",
+      pinned: 0,
+      priority: "normal",
+      audience: "members",
+      expiresAt: null,
+      createdAt: now,
+    },
+  ] as const;
+
+  for (const a of DEMO_ANNOUNCEMENTS) {
+    const hash = chainHash(null, {
+      id: a.id,
+      tenantId: a.tenantId,
+      chapterId: a.chapterId,
+      authorUserId: a.authorUserId,
+      title: a.title,
+      action: "seed",
+    });
+    const res: any = await db
+      .insert(chapterAnnouncements)
+      .values({
+        id: a.id,
+        tenantId: a.tenantId,
+        chapterId: a.chapterId,
+        authorUserId: a.authorUserId,
+        title: a.title,
+        body: a.body,
+        pinned: a.pinned,
+        priority: a.priority,
+        audience: a.audience,
+        expiresAt: a.expiresAt,
+        prevHash: null,
+        currHash: hash,
+        createdAt: a.createdAt,
+        updatedAt: a.createdAt,
+        deletedAt: null,
+      })
+      .onConflictDoNothing({ target: chapterAnnouncements.id });
+    if (typeof res?.changes === "number") announcementsInserted += res.changes;
+    else if (typeof res?.rowCount === "number") announcementsInserted += res.rowCount;
+  }
+
+  /* ----- Resources ---------------------------------------------- */
+  const DEMO_RESOURCES = [
+    {
+      id: "res_seed_kf_safe_template",
+      tenantId: "tenant_chap_chap_keiretsu_canada",
+      chapterId: "chap_keiretsu_canada",
+      uploaderUserId: "u_aisha_patel",
+      title: "Standard SAFE template (post-money, 2024 edition)",
+      description: "Y Combinator post-money SAFE annotated with Canadian PSE-jurisdiction notes from the chapter's legal partner.",
+      resourceType: "template",
+      url: "https://www.ycombinator.com/documents/post-money-safe-discount-only.docx",
+      visibility: "members",
+      status: "active",
+      tags: ["safe", "templates", "legal"],
+    },
+    {
+      id: "res_seed_kf_due_diligence",
+      tenantId: "tenant_chap_chap_keiretsu_canada",
+      chapterId: "chap_keiretsu_canada",
+      uploaderUserId: "u_aisha_patel",
+      title: "Due diligence checklist — seed / pre-seed",
+      description: "Chapter-curated diligence checklist covering financial, legal, technical, and team risk dimensions.",
+      resourceType: "document",
+      url: "https://capavate.example/resources/dd-checklist.pdf",
+      visibility: "members",
+      status: "active",
+      tags: ["due-diligence", "checklist"],
+    },
+    {
+      id: "res_seed_kf_pending",
+      tenantId: "tenant_chap_chap_keiretsu_canada",
+      chapterId: "chap_keiretsu_canada",
+      uploaderUserId: "u_maya_chen",
+      title: "Founder fundraising playbook (member-submitted, pending review)",
+      description: "A founder-perspective fundraising playbook submitted by Maya. Awaiting chapter-admin approval — demonstrates the moderation flow.",
+      resourceType: "guide",
+      url: "https://capavate.example/resources/founder-fundraising-playbook.pdf",
+      visibility: "members",
+      status: "pending",
+      tags: ["fundraising", "founder"],
+    },
+    {
+      id: "res_seed_toronto_workshop",
+      tenantId: "tenant_chap_chap_toronto",
+      chapterId: "chap_toronto",
+      uploaderUserId: "u_chadmin_toronto",
+      title: "Pitch workshop recording — March 2026",
+      description: "Recording of the March Toronto chapter pitch workshop. 90 minutes covering deck structure and Q&A response patterns.",
+      resourceType: "video",
+      url: "https://capavate.example/recordings/toronto-pitch-workshop-2026-03.mp4",
+      visibility: "members",
+      status: "active",
+      tags: ["workshop", "pitch"],
+    },
+    {
+      id: "res_seed_nyc_term_sheet",
+      tenantId: "tenant_chap_chap_nyc",
+      chapterId: "chap_nyc",
+      uploaderUserId: "u_chadmin_nyc",
+      title: "NYC chapter standard term sheet",
+      description: "NYC chapter standard term sheet template used in syndicated rounds led by the chapter.",
+      resourceType: "template",
+      url: "https://capavate.example/resources/nyc-term-sheet.docx",
+      visibility: "members",
+      status: "active",
+      tags: ["term-sheet", "templates"],
+    },
+    {
+      id: "res_seed_sf_blog_link",
+      tenantId: "tenant_chap_chap_sf",
+      chapterId: "chap_sf",
+      uploaderUserId: "u_chadmin_sf",
+      title: "Pro-rata mechanics — Fred Wilson, AVC",
+      description: "External link to Fred Wilson's classic post on pro-rata mechanics for follow-on rounds.",
+      resourceType: "link",
+      url: "https://avc.com/2014/11/why-pro-rata-rights-matter/",
+      visibility: "public",
+      status: "active",
+      tags: ["pro-rata", "theory"],
+    },
+  ] as const;
+
+  for (const r of DEMO_RESOURCES) {
+    const hash = chainHash(null, {
+      id: r.id,
+      tenantId: r.tenantId,
+      chapterId: r.chapterId,
+      uploaderUserId: r.uploaderUserId,
+      title: r.title,
+      url: r.url,
+      status: r.status,
+      action: "seed",
+    });
+    const res: any = await db
+      .insert(chapterResources)
+      .values({
+        id: r.id,
+        tenantId: r.tenantId,
+        chapterId: r.chapterId,
+        uploaderUserId: r.uploaderUserId,
+        title: r.title,
+        description: r.description,
+        resourceType: r.resourceType,
+        url: r.url,
+        fileSizeBytes: null,
+        mimeType: null,
+        tags: JSON.stringify(r.tags),
+        visibility: r.visibility,
+        status: r.status,
+        rejectionReason: null,
+        flagReason: null,
+        flaggedByUserId: null,
+        flaggedAt: null,
+        downloadCount: 0,
+        prevHash: null,
+        currHash: hash,
+        createdAt: now,
+        updatedAt: now,
+        deletedAt: null,
+      })
+      .onConflictDoNothing({ target: chapterResources.id });
+    if (typeof res?.changes === "number") resourcesInserted += res.changes;
+    else if (typeof res?.rowCount === "number") resourcesInserted += res.rowCount;
+  }
+
+  /* ----- Leaderboard initial snapshots --------------------------- */
+  // One all-time snapshot per chapter so the LeaderboardPage renders
+  // immediately on cold boot. Entries are empty placeholders — the
+  // first GET against /api/collective/leaderboard recomputes from live
+  // data inside a sync tx.
+  const epoch = "1970-01-01T00:00:00.000Z";
+  const DEMO_LEADERBOARD_CHAPTERS: ReadonlyArray<{ chapterId: string; tenantId: string }> = [
+    { chapterId: "chap_keiretsu_canada", tenantId: "tenant_chap_chap_keiretsu_canada" },
+    { chapterId: "chap_toronto",         tenantId: "tenant_chap_chap_toronto"         },
+    { chapterId: "chap_nyc",             tenantId: "tenant_chap_chap_nyc"             },
+    { chapterId: "chap_sf",              tenantId: "tenant_chap_chap_sf"              },
+  ];
+  for (const c of DEMO_LEADERBOARD_CHAPTERS) {
+    const res: any = await db
+      .insert(chapterLeaderboardSnapshots)
+      .values({
+        id: `lbs_seed_${c.chapterId}_all`,
+        tenantId: c.tenantId,
+        chapterId: c.chapterId,
+        period: "all-time",
+        periodStart: epoch,
+        periodEnd: now,
+        data: "[]",
+        generatedAt: now,
+      })
+      .onConflictDoNothing({ target: chapterLeaderboardSnapshots.id });
+    if (typeof res?.changes === "number") leaderboardSnapshotsInserted += res.changes;
+    else if (typeof res?.rowCount === "number") leaderboardSnapshotsInserted += res.rowCount;
+  }
+
+  /* ----- CP Phase A — SPV demo seed ------------------------------
+   * Seeds 1 SPV for each demo chapter that has a partner_org_id wired
+   * up. In the v17/v19 demo dataset only `chap_keiretsu_canada` has
+   * `partnerOrgId = tenant_cp_keiretsu_ca`; the other chapters
+   * (chap_toronto / chap_nyc / chap_sf) carry `partnerOrgId: null`
+   * (they are standalone Capavate Collective chapters with no external
+   * partner organization). Those are skipped here so we don't fabricate
+   * a partner record that isn't reflected anywhere else in the seed.
+   *
+   * Idempotent: skip if any SPV with the demo name already exists for
+   * the partner. Best-effort: a failure here must not abort the rest
+   * of the demo seed (logged via the structured logger).
+   * --------------------------------------------------------------- */
+  const DEMO_SPV_SEED: ReadonlyArray<{
+    chapterId: string;
+    partnerId: string;
+    name: string;
+    leadCompanyId: string | null;
+    structureType: "spv" | "fund" | "syndicate";
+    status: "forming" | "fundraising" | "active" | "wound_down";
+    targetMinor: number;
+    gpUserId: string | null;
+    terms: Record<string, unknown>;
+  }> = [
+    {
+      chapterId: "chap_keiretsu_canada",
+      partnerId: "tenant_cp_keiretsu_ca",
+      name: "Keiretsu Canada NovaPay SPV 2026",
+      leadCompanyId: "co_novapay",
+      structureType: "spv",
+      status: "fundraising",
+      // $250,000 CAD target (cents): 250_000 * 100
+      targetMinor: 25_000_000,
+      gpUserId: "u_aisha_patel",
+      terms: {
+        currency: "CAD",
+        managementFeeBps: 200,    // 2.00%
+        carryBps: 2000,           // 20.00%
+        hurdleBps: 800,           // 8.00%
+        jurisdiction: "Ontario, Canada",
+      },
+    },
+  ];
+  for (const seed of DEMO_SPV_SEED) {
+    try {
+      const existing = spvFundStore.listByPartner(seed.partnerId);
+      if (existing.some((s) => s.name === seed.name)) continue;
+      spvFundStore.createSpv({
+        partnerId: seed.partnerId,
+        name: seed.name,
+        leadCompanyId: seed.leadCompanyId,
+        structureType: seed.structureType,
+        status: seed.status,
+        targetMinor: seed.targetMinor,
+        gpUserId: seed.gpUserId,
+        terms: seed.terms,
+      });
+    } catch (e) {
+      log.warn(errorMeta("seedDemoData.spvFund", e, {
+        chapterId: seed.chapterId,
+        partnerId: seed.partnerId,
+        name: seed.name,
+      }));
+    }
+  }
+
   return {
     tenantsInserted,
     usersInserted,
     companiesInserted,
     membersInserted,
     userPrefsInserted,
+    chaptersInserted,
+    chapterMembershipsInserted,
+    announcementsInserted,
+    resourcesInserted,
+    leaderboardSnapshotsInserted,
   };
 }
 
@@ -257,4 +747,7 @@ export const _demoSeedCatalog = Object.freeze({
   companies: DEMO_COMPANIES,
   members: DEMO_MEMBERS,
   userPrefs: DEMO_USER_PREFS,
+  chapterTenants: DEMO_CHAPTER_TENANTS,
+  chapters: DEMO_CHAPTERS,
+  chapterMemberships: DEMO_CHAPTER_MEMBERSHIPS,
 });

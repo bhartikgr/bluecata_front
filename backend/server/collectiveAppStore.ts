@@ -17,14 +17,20 @@
  */
 import type { Express, Request, Response } from "express";
 import { randomBytes } from "node:crypto";
+import { isNull, eq } from "drizzle-orm";
 import {
   collectiveApplicationSchema,
   type CollectiveApplication,
   type CollectiveAppStatus,
+  collectiveApps as collectiveAppsTable,
 } from "@shared/schema";
 import { investorPortfolio, currentInvestor } from "./mockData";
 import { emitSync } from "./sprint10Telemetry";
 import { getMembership } from "./membershipStore";
+import { requireCollectiveEnabled } from "./lib/featureFlags"; /* v16 Fix 6 */
+import { getDb } from "./db/connection"; /* v17 Phase B */
+import { DEFAULT_CHAPTER_ID, DEFAULT_CHAPTER_TENANT_ID } from "./lib/chapterDefaults";
+import { log } from "./lib/logger";
 
 type StoredApplication = CollectiveApplication & {
   id: string;
@@ -32,12 +38,51 @@ type StoredApplication = CollectiveApplication & {
   status: CollectiveAppStatus;
   submittedAt: string;
   reviewedAt?: string;
+  chapterId?: string;
+  tenantId?: string;
 };
 
 const applications: StoredApplication[] = [];
 
 export function clearApplications(): void {
   applications.length = 0;
+}
+
+/* ---------- v17 Phase B — Hybrid Map+DB: hydrate on boot ---------- */
+export async function hydrateCollectiveAppStore(): Promise<void> {
+  applications.length = 0;
+  try {
+    const db: any = getDb();
+    const rows = db
+      .select()
+      .from(collectiveAppsTable)
+      .where(isNull((collectiveAppsTable as any).deletedAt))
+      .all() as any[];
+    for (const r of rows) {
+      let payload: any = {};
+      try { payload = JSON.parse(r.payload_json ?? r.payloadJson ?? "{}"); } catch { /* empty */ }
+      const stored: StoredApplication = {
+        ...(payload as CollectiveApplication),
+        id: r.id,
+        userId: r.user_id ?? r.userId,
+        status: (r.status ?? "submitted") as CollectiveAppStatus,
+        submittedAt: r.submitted_at ?? r.submittedAt,
+        reviewedAt: r.reviewed_at ?? r.reviewedAt ?? undefined,
+        chapterId: r.chapter_id ?? r.chapterId,
+        tenantId: r.tenant_id ?? r.tenantId,
+      };
+      applications.push(stored);
+    }
+    if (rows.length > 0) {
+      log.info(`[hydrate] collectiveAppStore: ${rows.length} applications restored`);
+    }
+  } catch (err) {
+    const msg = (err as Error).message ?? "";
+    if (!/no such table/i.test(msg)) {
+      log.warn("[hydrate] collectiveAppStore: DB read failed:", msg);
+    }
+  }
+  void eq;
 }
 
 /** Patch v10 — expose for admin approval pipeline. */
@@ -53,8 +98,21 @@ export function getApplicationById(id: string): StoredApplication | null {
 export function setApplicationStatus(id: string, status: CollectiveAppStatus): StoredApplication | null {
   const a = applications.find((x) => x.id === id);
   if (!a) return null;
+  const reviewedAt = new Date().toISOString();
+  // v17 Phase B — DB write-through.
+  try {
+    const db: any = getDb();
+    db.transaction((tx: any) => {
+      tx.update(collectiveAppsTable)
+        .set({ status, reviewedAt, updatedAt: reviewedAt } as any)
+        .where(eq((collectiveAppsTable as any).id, id))
+        .run();
+    });
+  } catch (err) {
+    log.warn("[collectiveAppStore.setApplicationStatus] DB update failed (memory only):", (err as Error).message);
+  }
   a.status = status;
-  a.reviewedAt = new Date().toISOString();
+  a.reviewedAt = reviewedAt;
   return a;
 }
 
@@ -109,7 +167,7 @@ export function registerCollectiveAppRoutes(app: Express): void {
     res.json(isEligibleForCollective(userId));
   });
 
-  app.post("/api/collective/applications", (req: Request, res: Response) => {
+  app.post("/api/collective/applications", requireCollectiveEnabled, (req: Request, res: Response) => {
     // Defect 13 fix: read userId from authenticated session, not hardcoded.
     const userId = req.userContext?.userId;
     if (!userId || !req.userContext?.isAuthed) {
@@ -132,13 +190,36 @@ export function registerCollectiveAppRoutes(app: Express): void {
       return res.status(400).json({ error: "validation_failed", issues: parsed.error.format() });
     }
     const id = `app_${randomBytes(8).toString("hex")}`;
+    const submittedAt = new Date().toISOString();
+    const chapterId = DEFAULT_CHAPTER_ID;
+    const tenantId = DEFAULT_CHAPTER_TENANT_ID;
     const stored: StoredApplication = {
       ...parsed.data,
       id,
       userId,  // Defect 13: real userId from session
       status: "submitted",
-      submittedAt: new Date().toISOString(),
+      submittedAt,
+      chapterId,
+      tenantId,
     };
+    // v17 Phase B — DB write-through, transaction-wrapped.
+    try {
+      const db: any = getDb();
+      db.transaction((tx: any) => {
+        tx.insert(collectiveAppsTable).values({
+          id,
+          tenantId,
+          chapterId,
+          userId,
+          status: "submitted",
+          payloadJson: JSON.stringify(parsed.data),
+          submittedAt,
+          createdAt: submittedAt,
+        } as any).run();
+      });
+    } catch (err) {
+      log.warn("[collectiveAppStore.submit] DB insert failed (memory only):", (err as Error).message);
+    }
     applications.push(stored);
     const env = emitSync({
       eventType: "collective_application_submitted",

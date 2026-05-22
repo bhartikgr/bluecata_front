@@ -19,10 +19,15 @@
  * DEMO_SEED_ENABLED = true (production never seeds; defense in depth).
  */
 import { createHash, randomBytes } from "node:crypto";
+import { isNull, eq } from "drizzle-orm";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 import { appendAdminAudit } from "./adminPlatformStore";
 import { emitBridgeEvent } from "./bridgeStore";
 import { getById as getContactById, _registerSeedPartner, TIER_RANK, TIER_SEAT_LIMITS, type PartnerTier, type PartnerSubRole } from "./adminContactsStoreShim";
+import { getDb } from "./db/connection";
+import { partnerDealPromotions as partnerDealPromotionsTable } from "@shared/schema";
+import { DEFAULT_CHAPTER_ID, DEFAULT_CHAPTER_TENANT_ID } from "./lib/chapterDefaults";
+import { log } from "./lib/logger";
 
 /* ============================================================
  * Sub-role + tier types
@@ -315,6 +320,12 @@ export type PartnerDealPromotionStatus =
   | "rejected"
   | "withdrawn";
 
+export type PartnerDealModerationStatus =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "changes_requested";
+
 export interface PartnerDealPromotion {
   id: string;
   partnerId: string;
@@ -340,6 +351,11 @@ export interface PartnerDealPromotion {
   updatedAt: string;
   updatedBy: string;
   isSeed: boolean;
+  /** CP Phase B — chapter-admin moderation (CP-015..CP-018). */
+  moderationStatus: PartnerDealModerationStatus;
+  moderatedByUserId: string | null;
+  moderatedAt: string | null;
+  moderationNotes: string | null;
 }
 
 /* ============================================================
@@ -975,6 +991,23 @@ export const partnerSpvStore = {
     spv.revisionHash = computeRevisionHash(spv as unknown as Record<string, unknown>);
     spvs.push(spv);
     spvsHistory.push({ ...spv });
+    // CP-028: shadow-persist to the DB-backed spvFundStore so the row survives
+    //   process restart. Best-effort — failure does NOT block the legacy path.
+    try {
+      // Lazy require to break the circular dep at module-load time.
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const sf = require("./spvFundStore") as typeof import("./spvFundStore");
+      sf.spvFundStore.shadowPersistFromLegacy({
+        legacyId: spv.id,
+        partnerId,
+        name: spv.spvName,
+        leadCompanyId: spv.targetCompanyId,
+        gpUserId: actor,
+        targetMinor: spv.totalCommittedMinor,
+        formedAt: now,
+        status: spv.status,
+      });
+    } catch { /* swallow — legacy path keeps working */ }
     audit(actor, `partner:${partnerId}`, "partner.spv.recorded", { spvId: spv.id });
     emit("partner.spv_recorded", spv.id, { partnerId, spvId: spv.id, idempotencyKey: spv.id });
     return spv;
@@ -1041,6 +1074,18 @@ export const partnerSpvStore = {
     s.totalCommittedMinor += data.positionAmountMinor;
     s.updatedAt = now;
     s.updatedBy = actor;
+    // CP-028: shadow-persist position as a commitment in the DB-backed store.
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const sf = require("./spvFundStore") as typeof import("./spvFundStore");
+      sf.spvFundStore.shadowCommitmentFromLegacy({
+        legacyId: pos.id,
+        legacySpvId: spvId,
+        partnerId,
+        lpUserId: data.lpContactId,
+        amountMinor: data.positionAmountMinor,
+      });
+    } catch { /* swallow */ }
     audit(actor, `partner:${partnerId}`, "partner.spv.position_recorded", { spvId, positionId: pos.id });
     return pos;
   },
@@ -1266,8 +1311,10 @@ export const partnerDealPromotionsStore = {
       promotionType: data.promotionType,
       companyId: data.companyId ?? null,
       targetEmail: data.targetEmail ?? null,
-      // Collective Deal Room promotions go live immediately (additive surface).
-      // Capavate referrals are pending until admin reviews them.
+      // CP Phase B (CP-015): Collective Deal Room promotions are now
+      // status='live' as before BUT moderation_status='pending' — the row
+      // is only visible in chapter feeds once a chapter admin approves it.
+      // Capavate referrals remain pending end-to-end.
       status: data.promotionType === "collective_deal_room" ? "live" : "pending",
       promotedBy: actor,
       promotedAt: now,
@@ -1285,10 +1332,17 @@ export const partnerDealPromotionsStore = {
       updatedAt: now,
       updatedBy: actor,
       isSeed: false,
+      // CP Phase B — default moderation_status='pending'.
+      moderationStatus: "pending",
+      moderatedByUserId: null,
+      moderatedAt: null,
+      moderationNotes: null,
     };
     p.revisionHash = computeRevisionHash(p as unknown as Record<string, unknown>);
     dealPromotions.push(p);
     dealPromotionsHistory.push({ ...p });
+    // DB write-through (v17 Phase B) — synchronous; in-memory remains source of truth
+    persistDealPromotion(p, true);
     audit(actor, `partner:${partnerId}`, "partner.deal_promotion.created", {
       promotionId: p.id,
       pipelineDealId,
@@ -1333,6 +1387,7 @@ export const partnerDealPromotionsStore = {
     next.revisionHash = computeRevisionHash(next as unknown as Record<string, unknown>);
     Object.assign(p, next);
     dealPromotionsHistory.push({ ...next });
+    persistDealPromotion(p, false);
     audit(approver, `partner:${p.partnerId}`, "partner.deal_promotion.approved", {
       promotionId, promotionType: p.promotionType,
     });
@@ -1361,6 +1416,7 @@ export const partnerDealPromotionsStore = {
     next.revisionHash = computeRevisionHash(next as unknown as Record<string, unknown>);
     Object.assign(p, next);
     dealPromotionsHistory.push({ ...next });
+    persistDealPromotion(p, false);
     audit(actor, `partner:${p.partnerId}`, "partner.deal_promotion.withdrawn", { promotionId });
     return next;
   },
@@ -1386,6 +1442,7 @@ export const partnerDealPromotionsStore = {
     next.revisionHash = computeRevisionHash(next as unknown as Record<string, unknown>);
     Object.assign(p, next);
     dealPromotionsHistory.push({ ...next });
+    persistDealPromotion(p, false);
     audit(rejector, `partner:${p.partnerId}`, "partner.deal_promotion.rejected", {
       promotionId, reason,
     });
@@ -1410,13 +1467,62 @@ export const partnerDealPromotionsStore = {
 
   /** Live (non-withdrawn, non-rejected) Collective Deal Room promotions across
    *  all partners — used by GET /api/collective/dealroom/companies to merge
-   *  partner-promoted entries into the existing Deal Room list. */
+   *  partner-promoted entries into the existing Deal Room list.
+   *  CP Phase B: also requires moderation_status='approved' (CP-015). */
   listLiveCollectivePromotions(): PartnerDealPromotion[] {
     return dealPromotions.filter(
       (p) =>
         p.promotionType === "collective_deal_room" &&
-        p.status === "live",
+        p.status === "live" &&
+        p.moderationStatus === "approved",
     );
+  },
+
+  /** CP Phase B: list pending-moderation promotions for a chapter admin queue.
+   *  Filter is by current chapter_id stamp on the row. */
+  listPendingModeration(chapterId?: string): PartnerDealPromotion[] {
+    return dealPromotions.filter(
+      (p) =>
+        p.promotionType === "collective_deal_room" &&
+        (p.moderationStatus === "pending" ||
+          p.moderationStatus === "changes_requested"),
+    );
+  },
+
+  /** Internal helper for chapter-admin moderation transition. */
+  applyModeration(
+    promotionId: string,
+    nextStatus: PartnerDealModerationStatus,
+    actor: string,
+    notes?: string | null,
+  ): PartnerDealPromotion {
+    const p = dealPromotions.find((x) => x.id === promotionId);
+    if (!p) throw new Error("PROMOTION_NOT_FOUND");
+    if (p.promotionType !== "collective_deal_room") {
+      throw new Error("PROMOTION_NOT_MODERATABLE");
+    }
+    const now = new Date().toISOString();
+    const next = { ...p } as PartnerDealPromotion;
+    next.moderationStatus = nextStatus;
+    next.moderatedByUserId = actor;
+    next.moderatedAt = now;
+    next.moderationNotes = notes ?? null;
+    next.version = (p.version ?? 1) + 1;
+    next.prevRevisionHash = p.revisionHash;
+    next.updatedAt = now;
+    next.updatedBy = actor;
+    next.revisionHash = computeRevisionHash(
+      next as unknown as Record<string, unknown>,
+    );
+    // Mutate in place + history snapshot
+    Object.assign(p, next);
+    dealPromotionsHistory.push({ ...p });
+    persistDealPromotion(p, false);
+    audit(actor, `partner:${p.partnerId}`, "partner.promotion.moderated", {
+      promotionId: p.id,
+      nextStatus,
+    });
+    return p;
   },
 
   /** Capavate referrals queued for admin review. Admin-only consumer. */
@@ -1485,6 +1591,129 @@ export function seedTestPartnerSandbox(opts: { force?: boolean } = {}): void {
 /* ============================================================
  * Test-only inspection helpers (used by partner store unit tests)
  * ============================================================ */
+
+/* ============================================================
+ * DB write-through for partner_deal_promotions (v17 Phase B)
+ * ============================================================ */
+
+function toDbRow(p: PartnerDealPromotion): Record<string, unknown> {
+  return {
+    id: p.id,
+    tenantId: DEFAULT_CHAPTER_TENANT_ID,
+    chapterId: DEFAULT_CHAPTER_ID,
+    partnerId: p.partnerId,
+    pipelineDealId: p.pipelineDealId,
+    promotionType: p.promotionType,
+    companyId: p.companyId,
+    targetEmail: p.targetEmail,
+    status: p.status,
+    promotedBy: p.promotedBy,
+    promotedAt: p.promotedAt,
+    approvedAt: p.approvedAt,
+    approvedBy: p.approvedBy,
+    rejectedAt: p.rejectedAt,
+    rejectedBy: p.rejectedBy,
+    rejectedReason: p.rejectedReason,
+    withdrawnAt: p.withdrawnAt,
+    withdrawnBy: p.withdrawnBy,
+    notes: p.notes,
+    version: p.version,
+    prevHash: p.prevRevisionHash === GENESIS ? null : p.prevRevisionHash,
+    hash: p.revisionHash,
+    updatedAt: p.updatedAt,
+    updatedBy: p.updatedBy,
+    isSeed: p.isSeed ? 1 : 0,
+    createdAt: p.promotedAt,
+    // CP Phase B moderation columns (CP-015..CP-018).
+    moderationStatus: p.moderationStatus,
+    moderatedByUserId: p.moderatedByUserId,
+    moderatedAt: p.moderatedAt,
+    moderationNotes: p.moderationNotes,
+  };
+}
+
+function persistDealPromotion(p: PartnerDealPromotion, isInsert: boolean): void {
+  try {
+    const db: any = getDb();
+    db.transaction((tx: any) => {
+      const row = toDbRow(p);
+      if (isInsert) {
+        tx.insert(partnerDealPromotionsTable).values(row as any).run();
+      } else {
+        // Update existing row (status change via approve/withdraw/reject)
+        tx
+          .update(partnerDealPromotionsTable)
+          .set(row as any)
+          .where(eq(partnerDealPromotionsTable.id, p.id))
+          .run();
+      }
+    });
+  } catch (err) {
+    if (!/no such table/i.test(String(err))) {
+      log.warn("[partnerWorkspaceStore] DB write-through failed:", err);
+    }
+  }
+}
+
+/**
+ * Hydrate the Collective slice (partner_deal_promotions only) from DB.
+ * Other partner store tables (teamMembers, pipeline, etc.) remain in-memory
+ * and are deferred to v20.
+ */
+export async function hydratePartnerWorkspaceCollectiveStore(): Promise<void> {
+  try {
+    const db = getDb();
+    const rows: any[] = await db
+      .select()
+      .from(partnerDealPromotionsTable)
+      .where(isNull((partnerDealPromotionsTable as any).deletedAt))
+      .all();
+    dealPromotions.length = 0;
+    dealPromotionsHistory.length = 0;
+    for (const r of rows) {
+      const p: PartnerDealPromotion = {
+        id: r.id,
+        partnerId: r.partner_id ?? r.partnerId,
+        pipelineDealId: r.pipeline_deal_id ?? r.pipelineDealId,
+        promotionType: (r.promotion_type ?? r.promotionType) as PartnerDealPromotionType,
+        companyId: r.company_id ?? r.companyId ?? null,
+        targetEmail: r.target_email ?? r.targetEmail ?? null,
+        status: (r.status) as PartnerDealPromotionStatus,
+        promotedBy: r.promoted_by ?? r.promotedBy,
+        promotedAt: r.promoted_at ?? r.promotedAt,
+        approvedAt: r.approved_at ?? r.approvedAt ?? null,
+        approvedBy: r.approved_by ?? r.approvedBy ?? null,
+        rejectedAt: r.rejected_at ?? r.rejectedAt ?? null,
+        rejectedBy: r.rejected_by ?? r.rejectedBy ?? null,
+        rejectedReason: r.rejected_reason ?? r.rejectedReason ?? null,
+        withdrawnAt: r.withdrawn_at ?? r.withdrawnAt ?? null,
+        withdrawnBy: r.withdrawn_by ?? r.withdrawnBy ?? null,
+        notes: r.notes ?? null,
+        version: r.version ?? 1,
+        prevRevisionHash: (r.prev_hash ?? r.prevHash) ?? GENESIS,
+        revisionHash: r.hash,
+        updatedAt: r.updated_at ?? r.updatedAt,
+        updatedBy: r.updated_by ?? r.updatedBy,
+        isSeed: (r.is_seed ?? r.isSeed) === 1 || (r.is_seed ?? r.isSeed) === true,
+        // CP Phase B moderation columns. Fallback to 'pending' if absent
+        // (pre-0047 rows that the backfill stamps on next boot).
+        moderationStatus: (r.moderation_status ?? r.moderationStatus ?? "pending") as PartnerDealModerationStatus,
+        moderatedByUserId: r.moderated_by_user_id ?? r.moderatedByUserId ?? null,
+        moderatedAt: r.moderated_at ?? r.moderatedAt ?? null,
+        moderationNotes: r.moderation_notes ?? r.moderationNotes ?? null,
+      };
+      dealPromotions.push(p);
+      dealPromotionsHistory.push({ ...p });
+    }
+    if (rows.length > 0) {
+      log.info(`[partnerWorkspaceStore] hydrated ${rows.length} partner_deal_promotions row(s)`);
+    }
+  } catch (err) {
+    if (!/no such table/i.test(String(err))) {
+      log.warn("[partnerWorkspaceStore] hydrate failed:", err);
+    }
+  }
+}
 
 export const _testPartnerStore = {
   reset(): void {

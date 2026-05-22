@@ -30,6 +30,7 @@ import {
   setApplicationStatus,
 } from "./collectiveAppStore";
 import * as collectiveMembershipStore from "./collectiveMembershipStore";
+import { upsertActiveMembership, deactivateMembership } from "./membershipStore"; /* v16 F-coll-X3 dual-write */
 import { emitBridgeEvent } from "./bridgeStore";
 import { emitNotification } from "./notificationsStore";
 
@@ -52,9 +53,14 @@ export function registerAdminCollectiveRoutes(app: Express): void {
     const app1 = getApplicationById(id);
     if (!app1) return res.status(404).json({ ok: false, error: "APPLICATION_NOT_FOUND" });
 
-    const adminUserId = req.userContext?.userId ?? "u_admin";
+    const adminUserId = req.userContext?.userId ?? ""; /* v14 */ if (!adminUserId) return res.status(401).json({ error: "missing_identity" });
     const updated = setApplicationStatus(id, "accepted");
     const membership = collectiveMembershipStore.activate(app1.userId, adminUserId);
+    // v16 F-coll-X3 — dual-write: also update the overlay map that
+    // `buildCollectiveOverlay` / `gate("collective.active")` consults so a
+    // freshly-approved member is recognised by both `requireCollectiveMember`
+    // AND the entitlement gates.
+    try { upsertActiveMembership(app1.userId); } catch { /* non-fatal */ }
 
     // Bridge event so downstream consumers (Collective shell, entitlement
     // recompute jobs) pick up the activation without polling.
@@ -92,8 +98,10 @@ export function registerAdminCollectiveRoutes(app: Express): void {
     const app1 = getApplicationById(id);
     if (!app1) return res.status(404).json({ ok: false, error: "APPLICATION_NOT_FOUND" });
 
-    const adminUserId = req.userContext?.userId ?? "u_admin";
+    const adminUserId = req.userContext?.userId ?? ""; /* v14 */ if (!adminUserId) return res.status(401).json({ error: "missing_identity" });
     const updated = setApplicationStatus(id, "rejected");
+    // v16 F-coll-X3 — dual-write reject side too: clear overlay flag.
+    try { deactivateMembership(app1.userId); } catch { /* non-fatal */ }
 
     try {
       emitBridgeEvent({

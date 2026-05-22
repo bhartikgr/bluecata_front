@@ -140,7 +140,7 @@ export function registerTransactionPrepRoutes(app: Express): void {
 
   app.post("/api/founder/comms/transaction-prep/:id/archive", (req: Request, res: Response) => {
     const reason = (req.body?.reason as "not_pursuing" | "transaction_closed") ?? "not_pursuing";
-    const actor = String(req.headers["x-actor-user-id"] ?? "u_founder_demo");
+    const actor = String((req as any).userContext?.userId ?? ""); /* v14 */ if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const ch = archiveChannel(req.params.id, reason, actor);
     if (!ch) return res.status(404).json({ error: "not_found" });
     res.json(ch);

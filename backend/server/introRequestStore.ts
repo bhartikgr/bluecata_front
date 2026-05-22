@@ -132,7 +132,7 @@ export function registerIntroRequestRoutes(app: Express): void {
   app.post("/api/founder/crm/intro-requests", (req: Request, res: Response) => {
     const parsed = introRequestCreateSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: "validation", details: parsed.error.flatten() });
-    const actor = String(req.headers["x-actor-user-id"] ?? "u_founder_demo");
+    const actor = String((req as any).userContext?.userId ?? ""); /* v14 */ if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const created = createIntroRequest(parsed.data, actor);
     res.status(201).json(created);
   });
@@ -140,7 +140,7 @@ export function registerIntroRequestRoutes(app: Express): void {
   app.patch("/api/founder/crm/intro-requests/:id", (req: Request, res: Response) => {
     const parsed = introRequestPatchSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: "validation", details: parsed.error.flatten() });
-    const actor = String(req.headers["x-actor-user-id"] ?? "u_recipient_demo");
+    const actor = String((req as any).userContext?.userId ?? ""); /* v14 */ if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const updated = updateIntroRequest(req.params.id, parsed.data, actor);
     if (!updated) return res.status(404).json({ error: "not_found" });
     res.json(updated);

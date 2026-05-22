@@ -33,6 +33,7 @@ import {
 import { getSubscription, updateSubscription } from "./subscriptionsStore";
 import { markInvoicePaid, getInvoice } from "./invoiceStore";
 import { appendAdminAudit } from "./adminPlatformStore";
+import { log } from "./lib/logger";
 
 /* ============================================================
  * Mode detection
@@ -59,7 +60,7 @@ function getStripe(): any {
     });
     return _stripeInstance;
   } catch (e) {
-    console.error("[stripe] failed to initialise Stripe SDK — falling back to simulation:", e);
+    log.error("[stripe] failed to initialise Stripe SDK — falling back to simulation:", e);
     return null;
   }
 }
@@ -76,7 +77,7 @@ export async function chargeSubscriptionStripe(
 
   const stripe = getStripe();
   if (!stripe) {
-    console.warn("[stripe] SDK unavailable — falling back to simulation");
+    log.warn("[stripe] SDK unavailable — falling back to simulation");
     return simulateCharge(input);
   }
 
@@ -110,14 +111,14 @@ export async function chargeSubscriptionStripe(
     }
 
     if (paymentIntent.status !== "succeeded") {
-      console.warn(`[stripe] unexpected status ${paymentIntent.status} — falling back to simulation`);
+      log.warn(`[stripe] unexpected status ${paymentIntent.status} — falling back to simulation`);
       return simulateCharge(input);
     }
 
     // Fall through to simulation for invoice creation (simulation handles idempotency)
     return simulateCharge(input);
   } catch (err: any) {
-    console.error(`[stripe] charge error (${err?.code}) — falling back to simulation:`, err?.message);
+    log.error(`[stripe] charge error (${err?.code}) — falling back to simulation:`, err?.message);
     return simulateCharge(input);
   }
 }
@@ -173,7 +174,7 @@ function verifyStripeSignature(
 
   const now = Math.floor(Date.now() / 1000);
   if (Math.abs(now - timestamp) > WEBHOOK_TOLERANCE_SEC) {
-    console.warn("[stripe-webhook] timestamp outside tolerance window");
+    log.warn("[stripe-webhook] timestamp outside tolerance window");
     return false;
   }
 
@@ -215,7 +216,7 @@ export function registerStripeWebhookRoute(app: Express): void {
       }
     } else if (sigHeader && !webhookSecret) {
       // Signature present but no secret — warn and proceed in test mode
-      console.warn("[stripe-webhook] PAYMENT_GATEWAY_WEBHOOK_SECRET not set — skipping verification");
+      log.warn("[stripe-webhook] PAYMENT_GATEWAY_WEBHOOK_SECRET not set — skipping verification");
     }
 
     const event = req.body;
@@ -278,10 +279,10 @@ export function registerStripeWebhookRoute(app: Express): void {
         }
         default:
           // Unhandled event — log and return 200
-          console.log(`[stripe-webhook] unhandled event type: ${event.type}`);
+          log.info(`[stripe-webhook] unhandled event type: ${event.type}`);
       }
     } catch (err) {
-      console.error("[stripe-webhook] handler error:", err);
+      log.error("[stripe-webhook] handler error:", err);
       return res.status(500).json({ ok: false, error: "handler_error" });
     }
 

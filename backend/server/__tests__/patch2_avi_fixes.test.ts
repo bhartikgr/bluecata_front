@@ -14,6 +14,7 @@
  * All tests are self-contained; no shared mutable state bleed across test runs.
  */
 import { describe, it, expect, beforeAll } from "vitest";
+import { installV14TestIdentity } from "./_v14TestIdentity"; /* v14 Tier-1 Fix 1 — restores u_admin default identity for legacy tests */
 import express from "express";
 import http from "node:http";
 
@@ -39,6 +40,7 @@ import {
 async function buildApp() {
   const app = express();
   app.use(express.json());
+  installV14TestIdentity(app);
 
   // We need the full route stack for the POST /api/rounds and /api/founder/companies/new tests.
   // Import registerRoutes lazily to get the real wired app.

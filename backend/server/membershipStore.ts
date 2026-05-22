@@ -143,6 +143,66 @@ function mergedMembership(userId: string): MembershipStatus | null {
   return { ...base, capTablePositions: merged, canApplyToCollective: base.canApplyToCollective || merged.length > 0 };
 }
 
+/**
+ * v16 F-coll-X3 — dual-write helper for admin approval.
+ *
+ * `collectiveMembershipStore` (admin approval target) and this module's
+ * `MOCK_MEMBERSHIP` overlay (the source `buildCollectiveOverlay` /
+ * `gate("collective.active")` reads) used to diverge: admin approval wrote
+ * to ONE map, the entitlement gate read the OTHER. v16 unifies by having
+ * the admin approval call BOTH stores.
+ *
+ * This helper upserts a minimal active record so `getMembership(userId)`
+ * returns `isCollectiveMember: true`. It does NOT fabricate cap-table
+ * positions — those still flow from the ledger via `mergedMembership`.
+ */
+export function upsertActiveMembership(
+  userId: string,
+  opts?: { memberSince?: string; expiresAt?: string },
+): MembershipStatus {
+  const now = new Date().toISOString();
+  const existing = MOCK_MEMBERSHIP[userId];
+  const next: MembershipStatus = existing
+    ? {
+        ...existing,
+        isCollectiveMember: true,
+        memberSince: existing.memberSince ?? opts?.memberSince ?? now,
+        expiresAt: opts?.expiresAt ?? existing.expiresAt ?? null,
+        lapsed: false,
+        reason: "Activated by admin approval (v16 unified write).",
+        canApplyToCollective: true,
+      }
+    : {
+        userId,
+        isCollectiveMember: true,
+        memberSince: opts?.memberSince ?? now,
+        expiresAt: opts?.expiresAt ?? null,
+        lapsed: false,
+        reason: "Activated by admin approval (v16 unified write).",
+        capTablePositions: [],
+        canApplyToCollective: true,
+      };
+  MOCK_MEMBERSHIP[userId] = next;
+  return next;
+}
+
+/**
+ * v16 F-coll-X3 — companion deactivation helper for symmetric admin flows.
+ * Marks the membership as not-collective without dropping cap-table positions.
+ */
+export function deactivateMembership(userId: string): MembershipStatus | null {
+  const existing = MOCK_MEMBERSHIP[userId];
+  if (!existing) return null;
+  const next: MembershipStatus = {
+    ...existing,
+    isCollectiveMember: false,
+    lapsed: true,
+    reason: "Deactivated by admin (v16 unified write).",
+  };
+  MOCK_MEMBERSHIP[userId] = next;
+  return next;
+}
+
 export function isCollectiveMember(userId: string, asOf: Date = new Date()): boolean {
   const m = MOCK_MEMBERSHIP[userId];
   if (!m) return false;
@@ -192,7 +252,17 @@ export function listMembersForCompany(companyId: string): Array<{ userId: string
 export function strictGatingGuard(req: Request, res: Response, next: () => void): void {
   const role = String(req.query.as ?? "investor");
   if (role === "founder" || role === "admin") return next();
-  const userId = String(req.query.investorId ?? "u_aisha_patel");
+  // v14 Fix 2: identity comes from session (loadUserContext); query override
+  // only honored in non-prod environments for demo/QA harnesses.
+  const sessionUserId = (req as any).userContext?.userId as string | undefined;
+  const isProd = String(process.env.NODE_ENV ?? "").toLowerCase() === "production";
+  const userId = String(
+    sessionUserId ?? (isProd ? "" : (req.query.investorId ?? "")),
+  );
+  if (!userId) {
+    res.status(401).json({ error: "unauthenticated" });
+    return;
+  }
   if (!isOnCapTable(userId)) {
     res.status(403).json({
       error: "strict_gating_denied",
@@ -206,15 +276,23 @@ export function strictGatingGuard(req: Request, res: Response, next: () => void)
 
 export function registerMembershipRoutes(app: Express): void {
   app.get("/api/collective/membership-status", (req: Request, res: Response) => {
-    const userId = String(req.query.userId ?? "u_aisha_patel");
+    // v14 — default to caller's identity, never the demo investor persona.
+    const ctx = (req as Request & { userContext?: { userId?: string } }).userContext;
+    const queryUserId = typeof req.query.userId === "string" ? req.query.userId : null;
+    const userId = queryUserId ?? ctx?.userId ?? null;
+    if (!userId) return res.status(401).json({ error: "missing_identity" });
     const m = getMembership(userId);
     if (!m) return res.status(404).json({ error: "user_not_found" });
     res.json(m);
   });
 
   app.get("/api/founder/access-check", (req: Request, res: Response) => {
-    const userId = String(req.query.investorId ?? "u_aisha_patel");
-    const companyId = String(req.query.companyId ?? "co_novapay");
+    // v14 — require explicit params; no demo persona/company fallback.
+    const userId = typeof req.query.investorId === "string" ? req.query.investorId : "";
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId : "";
+    if (!userId || !companyId) {
+      return res.status(400).json({ error: "investorId_and_companyId_required" });
+    }
     const onTable = isOnCapTable(userId, companyId);
     res.json({
       userId,

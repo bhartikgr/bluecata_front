@@ -119,7 +119,7 @@ export function registerMilestoneBroadcastRoutes(app: Express): void {
   app.post("/api/founder/broadcasts", (req: Request, res: Response) => {
     const parsed = broadcastCreateSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: "validation", details: parsed.error.flatten() });
-    const actor = String(req.headers["x-actor-user-id"] ?? "u_founder_demo");
+    const actor = String((req as any).userContext?.userId ?? ""); /* v14 */ if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const bc = createBroadcast(parsed.data, actor);
     res.status(201).json(bc);
   });

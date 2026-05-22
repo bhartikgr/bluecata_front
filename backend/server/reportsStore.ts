@@ -18,10 +18,11 @@
  */
 /**
  * PATCH v3: POST /api/founder/reports2 now requires companyId and verifies ownership.
- * Removed ?? "co_novapay" fallback. Unauthenticated requests get 401.
+ * Removed the co_novapay default fallback. Unauthenticated requests get 401.
  */
 import type { Express, Request, Response } from "express";
 import { randomBytes } from "node:crypto";
+import { isNull } from "drizzle-orm";
 import { emitSync } from "./sprint10Telemetry";
 import { getUserContext } from "./lib/userContext";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
@@ -29,6 +30,112 @@ import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 import { listMembersForCompany } from "./membershipStore";
 import { emitNotification } from "./notificationsStore";
 import { emitBridgeEvent } from "./bridgeStore";
+// v13 (Avi's Issue 4) — DB write-through + hydrate
+import { getDb } from "./db/connection";
+import { reports as reportsTable } from "../shared/schema";
+import { appendAdminAudit } from "./adminPlatformStore";
+import { log } from "./lib/logger";
+
+// Tenant id for a company. Same canonical pattern as roundsStore /
+// adminPlatformStore / founderCrmStore.
+function tenantForCompany(companyId: string): string {
+  return `tenant_co_${companyId}`;
+}
+
+/**
+ * v13 — persistReportToDb (Avi's Issue 4)
+ *
+ * Writes a single in-memory Report into the `reports` SQL table. Wrapped in
+ * `getDb().transaction((tx) => {...})` per the hard-rule pattern (no
+ * trailing `()` — Drizzle invokes the callback). Failures are non-fatal so
+ * the route still returns 200 with the in-memory entity; the next boot will
+ * just be missing this row.
+ */
+function persistReportToDb(r: Report, actorUserId: string | undefined, now: string): void {
+  try {
+    const db = getDb();
+    db.transaction((tx: any) => {
+      tx.insert(reportsTable)
+        .values({
+          id: r.id,
+          tenantId: tenantForCompany(r.companyId),
+          companyId: r.companyId,
+          kind: r.template,
+          title: r.title,
+          period: r.period ?? null,
+          status: r.status,
+          contentJson: JSON.stringify({
+            sections: r.sections,
+            metricsSnapshot: r.metricsSnapshot,
+            schedule: r.schedule,
+            readReceipts: r.readReceipts,
+            recipientsCount: r.recipientsCount,
+          }),
+          deliveryTargetsJson: JSON.stringify(r.recipients ?? []),
+          generatedAt: now,
+          generatedBy: actorUserId ?? null,
+          sentAt: r.sentAt ?? null,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .run();
+    });
+  } catch (err) {
+    log.warn("[reportsStore.persistReportToDb] DB write failed (non-fatal):", (err as Error).message);
+  }
+}
+
+/**
+ * v13 — hydrateReportsStore (Avi's Issue 4)
+ *
+ * Rebuilds the in-memory `reports` array from `SELECT * FROM reports WHERE
+ * deleted_at IS NULL`. Called sequentially by hydrateAllStores() on boot.
+ * Tolerates first-boot "no such table".
+ */
+export async function hydrateReportsStore(): Promise<void> {
+  // Clear the array in place so legacy importers keep their reference.
+  reports.length = 0;
+  try {
+    const db = getDb();
+    // CROSS-TENANT (admin) — boot-time hydrate reads every live row in
+    // `reports`. Per-tenant filtering happens at the API layer (founder owns
+    // the company id) once the cache is populated.
+    const rows = db
+      .select()
+      .from(reportsTable)
+      .where(isNull(reportsTable.deletedAt))
+      .all() as any[];
+    for (const row of rows) {
+      let content: any = {};
+      try { content = JSON.parse((row.content_json ?? row.contentJson ?? "{}") as string); } catch { /* tolerated */ }
+      let recipients: string[] = [];
+      try {
+        const dt = row.delivery_targets_json ?? row.deliveryTargetsJson;
+        if (dt) recipients = JSON.parse(dt as string);
+      } catch { /* tolerated */ }
+      const r: Report = {
+        id: row.id,
+        companyId: row.company_id ?? row.companyId,
+        template: (row.kind ?? "adhoc") as ReportTemplate,
+        title: row.title,
+        period: row.period ?? "",
+        status: (row.status ?? "draft") as Report["status"],
+        sentAt: row.sent_at ?? row.sentAt ?? null,
+        recipients,
+        recipientsCount: typeof content.recipientsCount === "number" ? content.recipientsCount : recipients.length,
+        sections: Array.isArray(content.sections) ? content.sections : [],
+        readReceipts: Array.isArray(content.readReceipts) ? content.readReceipts : [],
+        schedule: content.schedule ?? null,
+        metricsSnapshot: content.metricsSnapshot ?? { raisedToDateUsd: 0, capTableHolders: 0, softCirclePipelineUsd: 0, activeRounds: 0 },
+      };
+      reports.push(r);
+    }
+  } catch (err) {
+    if (!/no such table/i.test((err as Error).message)) {
+      log.warn("[reportsStore.hydrate] failed (continuing):", (err as Error).message);
+    }
+  }
+}
 
 export type ReportTemplate = "monthly_kpi" | "quarterly_update" | "annual" | "round_close" | "adhoc";
 
@@ -125,7 +232,15 @@ function defaultSections(template: ReportTemplate): ReportSection[] {
 
 export function registerReportsRoutes(app: Express): void {
   app.get("/api/founder/reports2", (req, res) => {
-    const companyId = String(req.query.companyId ?? "co_novapay");
+    // v14 — identity from session, no "co_novapay" fallback.
+    const ctx = getUserContext(req);
+    if (!ctx.isAuthed) return res.status(401).json({ ok: false, error: "missing_identity" });
+    const queryCid = typeof req.query.companyId === "string" ? req.query.companyId : null;
+    const companyId = queryCid ?? ctx.founder.activeCompanyId;
+    if (!companyId) return res.status(400).json({ ok: false, error: "missing_active_company" });
+    if (!ctx.isAdmin && !ctx.founder.companies.some((c) => c.companyId === companyId)) {
+      return res.status(403).json({ ok: false, error: "FOUNDER_WRONG_COMPANY" });
+    }
     res.json(reports.filter((r) => r.companyId === companyId));
   });
 
@@ -156,6 +271,20 @@ export function registerReportsRoutes(app: Express): void {
       metricsSnapshot: { raisedToDateUsd: 0, capTableHolders: 0, softCirclePipelineUsd: 0, activeRounds: 0 },
     };
     reports.push(r);
+    // v13 (Avi's Issue 4) — write-through to DB so reports survive restart.
+    const now = new Date().toISOString();
+    persistReportToDb(r, ctx.userId, now);
+    try {
+      appendAdminAudit(
+        ctx.userId ?? "u_unknown",
+        `company:${companyId}`,
+        "report.created",
+        { reportId: r.id, template, title },
+        tenantForCompany(companyId),
+      );
+    } catch (err) {
+      log.warn("[reportsStore.create] audit append failed:", (err as Error).message);
+    }
     res.json(r);
   });
 
@@ -262,6 +391,20 @@ export function registerReportsRoutes(app: Express): void {
       metricsSnapshot: { raisedToDateUsd: 0, capTableHolders: 0, softCirclePipelineUsd: 0, activeRounds: 0 },
     };
     reports.push(r);
+    // v13 (Avi's Issue 4) — write-through to DB so reports survive restart.
+    const nowIso = new Date().toISOString();
+    persistReportToDb(r, ctx.userId, nowIso);
+    try {
+      appendAdminAudit(
+        ctx.userId ?? "u_unknown",
+        `company:${companyId}`,
+        "report.created",
+        { reportId: r.id, template: "adhoc", title: String(subject) },
+        tenantForCompany(companyId),
+      );
+    } catch (err) {
+      log.warn("[reportsStore.send] audit append failed:", (err as Error).message);
+    }
 
     const recipients = listMembersForCompany(companyId).map((m) => m.userId);
     r.recipients = recipients;

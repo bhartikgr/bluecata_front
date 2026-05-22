@@ -312,7 +312,7 @@ export function registerContactRosterImporterRoutes(app: Express): void {
         return res.status(400).json({ ok: false, error: "No file uploaded. Use multipart/form-data with field 'file'." });
       }
 
-      const actor = String(req.headers["x-actor-email"] ?? "admin@capavate.com");
+      const actor = String((req as any).userContext?.identity?.email ?? (req as any).userContext?.userId ?? ""); /* v14 */ if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
       const confirm = req.headers["x-confirm"] === "true";
 
       const csvText = req.file.buffer.toString("utf8");

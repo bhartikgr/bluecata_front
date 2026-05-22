@@ -31,6 +31,7 @@
  *   17.  Description fields persist round-trip through save
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { installV14TestIdentity } from "./_v14TestIdentity"; /* v14 Tier-1 Fix 1 — restores u_admin default identity for legacy tests */
 import express, { type Express } from "express";
 import http from "node:http";
 import { registerRoutes } from "../routes";
@@ -49,6 +50,7 @@ let port: number;
 beforeAll(async () => {
   app = express();
   app.use(express.json());
+  installV14TestIdentity(app, { defaultIdentity: false }); /* v14: opt-in identity only — anonymous tests must stay anonymous; x-user-id maps to userContext */
   // Inline cookie parser (mirrors server/index.ts Sprint 26 patch).
   app.use((req, _res, next) => {
     const r = req as express.Request & { cookies?: Record<string, string> };

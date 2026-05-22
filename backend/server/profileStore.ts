@@ -152,9 +152,15 @@ function emitOutbox(
 function nowIso(): string { return new Date().toISOString(); }
 
 function actorOf(req: Request): { actorId: string; ip: string | undefined } {
-  // Production: read the JWT subject from req.user (Auth0 middleware).
-  // Preview: trust ?actorId=... or default to the requested resource owner.
-  const actorId = String(req.query.actorId ?? req.headers["x-actor-id"] ?? "u_demo");
+  // v14 (Tier-1 Fix 1) — actor identity comes ONLY from session userContext.
+  // x-actor-id header and ?actorId= query are no longer trusted.
+  const ctx = (req as Request & { userContext?: { userId?: string } }).userContext;
+  const actorId = ctx?.userId;
+  if (!actorId) {
+    const err: Error & { status?: number } = new Error("missing_identity");
+    err.status = 401;
+    throw err;
+  }
   return { actorId, ip: req.ip };
 }
 
@@ -235,6 +241,12 @@ export function registerProfileRoutes(app: Express): void {
     const current = companyProfiles.get(id);
     if (!current) return res.status(404).json({ message: "Company profile not found" });
 
+    // v14 Tier-1 Fix 2 — ownership: founder of this company or admin only.
+    const ctxOwn = (req as Request & { userContext?: { userId?: string; isAdmin?: boolean; founder?: { companies: { companyId: string }[] } } }).userContext;
+    if (!ctxOwn?.userId) return res.status(401).json({ message: "missing_identity" });
+    const ownsCompany = ctxOwn.isAdmin || (ctxOwn.founder?.companies ?? []).some((c) => c.companyId === id);
+    if (!ownsCompany) return res.status(403).json({ message: "not_authorized" });
+
     const parsed = companyProfilePatchSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: "Invalid patch", issues: parsed.error.issues });
 
@@ -285,6 +297,12 @@ export function registerProfileRoutes(app: Express): void {
     const current = companyProfiles.get(id);
     if (!current) return res.status(404).json({ message: "Company profile not found" });
 
+    // v14 Tier-1 Fix 2 — ownership: founder of this company or admin only.
+    const ctxMa = (req as Request & { userContext?: { userId?: string; isAdmin?: boolean; founder?: { companies: { companyId: string }[] } } }).userContext;
+    if (!ctxMa?.userId) return res.status(401).json({ message: "missing_identity" });
+    const ownsCo = ctxMa.isAdmin || (ctxMa.founder?.companies ?? []).some((c) => c.companyId === id);
+    if (!ownsCo) return res.status(403).json({ message: "not_authorized" });
+
     const parsed = companyProfilePatchSchema.shape.ma.unwrap().partial().safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: "Invalid M&A patch", issues: parsed.error.issues });
 
@@ -318,6 +336,11 @@ export function registerProfileRoutes(app: Express): void {
     const id = req.params.id;
     const current = investorProfiles.get(id);
     if (!current) return res.status(404).json({ message: "Investor profile not found" });
+
+    // v14 Tier-1 Fix 2 — ownership: only the profile owner (or admin) may edit.
+    const ctxInv = (req as Request & { userContext?: { userId?: string; isAdmin?: boolean } }).userContext;
+    if (!ctxInv?.userId) return res.status(401).json({ message: "missing_identity" });
+    if (ctxInv.userId !== id && !ctxInv.isAdmin) return res.status(403).json({ message: "not_authorized" });
 
     const parsed = investorProfilePatchSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: "Invalid patch", issues: parsed.error.issues });
@@ -383,6 +406,11 @@ export function registerProfileRoutes(app: Express): void {
     const id = req.params.id;
     const current = investorProfiles.get(id);
     if (!current) return res.status(404).json({ message: "Investor profile not found" });
+
+    // v14 Tier-1 Fix 2 — ownership: only the profile owner (or admin) may edit privacy.
+    const ctxPv = (req as Request & { userContext?: { userId?: string; isAdmin?: boolean } }).userContext;
+    if (!ctxPv?.userId) return res.status(401).json({ message: "missing_identity" });
+    if (ctxPv.userId !== id && !ctxPv.isAdmin) return res.status(403).json({ message: "not_authorized" });
 
     const parsed = investorPrivacyPatchSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: "Invalid privacy patch", issues: parsed.error.issues });

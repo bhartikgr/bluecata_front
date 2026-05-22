@@ -289,7 +289,7 @@ export function registerPaymentGatewayRoutes(app: Express): void {
    * Founder triggers a subscription charge. Body: { pricingModelId, paymentMethod: { tokenized, cardLast4 } }
    */
   app.post("/api/founder/subscription/charge", (req: Request, res: Response) => {
-    const companyId = String(req.headers["x-company-id"] ?? req.body?.companyId ?? "");
+    const companyId = String(req.body?.companyId ?? (req as any).userContext?.founder?.activeCompanyId ?? ""); /* v14 */
     const { pricingModelId, paymentMethod } = req.body ?? {};
 
     const sub = getSubscription(companyId);
@@ -329,7 +329,7 @@ export function registerPaymentGatewayRoutes(app: Express): void {
    * Returns the subscription for the founder's active company.
    */
   app.get("/api/founder/subscription", (req: Request, res: Response) => {
-    const companyId = String(req.query.companyId ?? req.headers["x-company-id"] ?? "");
+    const companyId = String(req.query.companyId ?? (req as any).userContext?.founder?.activeCompanyId ?? ""); /* v14 */
     const sub = getSubscription(companyId);
     if (!sub) return res.status(404).json({ ok: false, error: "not_found" });
     res.json({ ok: true, subscription: sub });
@@ -341,7 +341,7 @@ export function registerPaymentGatewayRoutes(app: Express): void {
    * Allowed changes: status (cancel_at_period_end only from this endpoint).
    */
   app.patch("/api/founder/subscription", (req: Request, res: Response) => {
-    const companyId = String(req.headers["x-company-id"] ?? req.body?.companyId ?? "");
+    const companyId = String(req.body?.companyId ?? (req as any).userContext?.founder?.activeCompanyId ?? ""); /* v14 */
     const { status } = req.body ?? {};
 
     // From founder side only cancel_at_period_end is allowed via this endpoint
@@ -365,7 +365,7 @@ export function registerPaymentGatewayRoutes(app: Express): void {
    * Double-confirm: requires x-confirm: true header.
    */
   app.post("/api/founder/subscription/resume", (req: Request, res: Response) => {
-    const companyId = String(req.headers["x-company-id"] ?? req.body?.companyId ?? "");
+    const companyId = String(req.body?.companyId ?? (req as any).userContext?.founder?.activeCompanyId ?? ""); /* v14 */
     const sub = getSubscription(companyId);
     if (!sub) return res.status(404).json({ ok: false, error: "subscription_not_found" });
     if (sub.status !== "cancel_at_period_end") {
@@ -384,7 +384,7 @@ export function registerPaymentGatewayRoutes(app: Express): void {
    * Updates the card on file. Requires Luhn-valid card.
    */
   app.patch("/api/founder/subscription/payment-method", (req: Request, res: Response) => {
-    const companyId = String(req.headers["x-company-id"] ?? req.body?.companyId ?? "");
+    const companyId = String(req.body?.companyId ?? (req as any).userContext?.founder?.activeCompanyId ?? ""); /* v14 */
     const { cardLast4, cardholderName, tokenized } = req.body ?? {};
     if (!cardLast4 || cardLast4.length !== 4 || !/^\d{4}$/.test(cardLast4)) {
       return res.status(400).json({ ok: false, error: "invalid_card_last4" });

@@ -40,7 +40,7 @@ function audit(actor: string, action: string, targetId: string, meta?: Record<st
 }
 
 function actorIdFromReq(req: Request): string {
-  return (req.headers["x-user-id"] as string | undefined) || "u_admin";
+  return (req as any).userContext?.userId || ""; /* v14 — no header / u_admin fallback */
 }
 
 function listAll(): AdminUser[] {

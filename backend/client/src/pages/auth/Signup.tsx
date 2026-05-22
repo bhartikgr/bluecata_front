@@ -13,8 +13,9 @@
  *
  * SANDBOX-SAFE: no Web Storage APIs.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
+import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -53,6 +54,32 @@ export default function Signup() {
   const [, navigate] = useLocation();
   const { setRole } = useRole();
   const { toast } = useToast();
+
+  // B-V13-1 fix (Avi's Issue 1): if the user is already authenticated, do not
+  // show the signup form again — redirect to the appropriate dashboard.
+  const meProbe = useQuery<{ isAuthed: boolean; isAdmin?: boolean; founder?: { companies: unknown[] }; investor?: { state?: string } }>({
+    queryKey: ["/api/auth/me", "signup-redirect-probe"],
+    queryFn: async () => {
+      try {
+        const res = await apiRequest("GET", "/api/auth/me");
+        if (!res.ok) return { isAuthed: false };
+        return res.json();
+      } catch { return { isAuthed: false }; }
+    },
+    staleTime: 0,
+    retry: false,
+  });
+  useEffect(() => {
+    const me = meProbe.data;
+    if (!me?.isAuthed) return;
+    if (me.isAdmin) { navigate("/admin/dashboard"); return; }
+    const hasCompany = ((me.founder?.companies?.length) ?? 0) > 0;
+    const isInvestor = me.investor?.state !== undefined && me.investor.state !== "NONE";
+    if (hasCompany) { navigate("/founder/dashboard"); return; }
+    if (isInvestor)  { navigate("/investor/dashboard"); return; }
+    navigate("/founder/dashboard");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [meProbe.data]);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");

@@ -40,6 +40,7 @@
 import type { Express, Request, Response } from "express";
 import { randomBytes } from "node:crypto";
 import { and, eq, isNull } from "drizzle-orm";
+import { withTenant, crossTenant } from "./lib/withTenant"; /* v14 Tier-1 Fix 4 — tenant scoping on writes */
 import { getUserContext } from "./lib/userContext";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 import { createSubscriptionForNewCompany, getSubscription } from "./subscriptionsStore";
@@ -50,6 +51,7 @@ import {
   companyMembers as companyMembersTable,
   userPrefs as userPrefsTable,
 } from "../shared/schema";
+import { log } from "./lib/logger";
 
 export type FounderCompanyMembership = {
   companyId: string;
@@ -247,7 +249,7 @@ export function setActiveCompanyId(userIdOrCompanyId: string, companyId?: string
           .run();
       });
     } catch (err) {
-      console.warn("[multiCompanyStore.setActiveCompanyId] DB write failed (non-fatal):", (err as Error).message);
+      log.warn("[multiCompanyStore.setActiveCompanyId] DB write failed (non-fatal):", (err as Error).message);
     }
     USER_ACTIVE_COMPANY.set(userId, companyId);
     return true;
@@ -269,7 +271,7 @@ export function setActiveCompanyId(userIdOrCompanyId: string, companyId?: string
           .run();
       });
     } catch (err) {
-      console.warn("[multiCompanyStore.setActiveCompanyId] DB write failed (non-fatal):", (err as Error).message);
+      log.warn("[multiCompanyStore.setActiveCompanyId] DB write failed (non-fatal):", (err as Error).message);
     }
     USER_ACTIVE_COMPANY.set("u_maya_chen", id);
     return true;
@@ -369,7 +371,7 @@ export function addCompanyForFounder(userId: string, company: FounderCompanyMemb
       }
     });
   } catch (err) {
-    console.warn("[multiCompanyStore.addCompanyForFounder] DB write failed (non-fatal):", (err as Error).message);
+    log.warn("[multiCompanyStore.addCompanyForFounder] DB write failed (non-fatal):", (err as Error).message);
   }
 
   // Mirror into Maps after DB commit.
@@ -421,27 +423,33 @@ export function updateCompanyDetails(
       if (next.stage !== current.stage)             updates.stage = next.stage;
       if (next.hq !== current.hq)                   updates.hq = next.hq;
 
+      // v14 Tier-1 Fix 4 — scope the update by the company's tenantId so a
+      // forged companyId from another tenant cannot be mutated. The companyId
+      // lookup happened against USER_COMPANIES above, but the DB write must
+      // independently enforce the tenant boundary.
+      const tenantId = `tenant_co_${companyId}`;
       db.transaction((tx: any) => {
         if (Object.keys(updates).length > 0) {
           tx.update(companiesTable)
             .set(updates)
-            .where(and(eq(companiesTable.id, companyId), isNull(companiesTable.deletedAt)))
+            .where(withTenant(eq(companiesTable.id, companyId), { tenantId, table: companiesTable }))
             .run();
         }
         if (next.role !== current.role) {
           const dbRole = next.role === "co-founder" ? "co_founder" : next.role;
+          // and() returns SQL | undefined; assert non-null for the wrapper.
+          const cond = and(
+            eq(companyMembersTable.companyId, companyId),
+            eq(companyMembersTable.userId, userId),
+          )!;
           tx.update(companyMembersTable)
             .set({ role: dbRole })
-            .where(and(
-              eq(companyMembersTable.companyId, companyId),
-              eq(companyMembersTable.userId, userId),
-              isNull(companyMembersTable.deletedAt),
-            ))
+            .where(withTenant(cond, { tenantId, table: companyMembersTable }))
             .run();
         }
       });
     } catch (err) {
-      console.warn("[multiCompanyStore.updateCompanyDetails] DB write failed (non-fatal):", (err as Error).message);
+      log.warn("[multiCompanyStore.updateCompanyDetails] DB write failed (non-fatal):", (err as Error).message);
     }
 
     companies[idx] = next;
@@ -485,17 +493,18 @@ export function getMockUser() {
  */
 export async function hydrateMultiCompanyStore(): Promise<void> {
   const db = getDb();
-  // CROSS-TENANT (admin) — module-load hydration; tenant scoping is enforced
-  // by writes/reads at runtime via withTenant().
+  // CROSS-TENANT (boot hydration) — justified because we read all rows then
+  // assign each to its owning tenant's cache. Runtime writes/reads enforce
+  // tenant scoping via withTenant().
   const members = (await db
     .select()
     .from(companyMembersTable)
-    .where(isNull(companyMembersTable.deletedAt))) as any[];
+    .where(crossTenant(isNull(companyMembersTable.deletedAt), companyMembersTable, { skipSoftDelete: true }))) as any[];
 
   const companyRows = (await db
     .select()
     .from(companiesTable)
-    .where(isNull(companiesTable.deletedAt))) as any[];
+    .where(crossTenant(isNull(companiesTable.deletedAt), companiesTable, { skipSoftDelete: true }))) as any[];
   const companyById = new Map<string, any>();
   for (const c of companyRows) companyById.set(c.id, c);
 
@@ -634,8 +643,7 @@ export function registerMultiCompanyRoutes(app: Express): void {
     } catch (err) {
       // Non-fatal: log but don't block company creation. The company is still
       // usable; admin can backfill later. Telemetry will pick this up.
-      // eslint-disable-next-line no-console
-      console.warn("[multiCompanyStore] createSubscriptionForNewCompany failed:", err);
+      log.warn("[multiCompanyStore] createSubscriptionForNewCompany failed:", err);
     }
     res.status(201).json({ ok: true, companyId, company: mergeBillingFromSubscription(newCompany) });
   });

@@ -52,6 +52,7 @@ import { emitSync } from "./sprint10Telemetry";
 import { getUserContext } from "./lib/userContext";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 import { getDb } from "./db/connection";
+import { log } from "./lib/logger";
 
 type StoredContact = PcrmContact & { id: string; createdAt: string; ownerId: string };
 type StoredNote    = PcrmNote    & { id: string; createdAt: string };
@@ -187,7 +188,7 @@ function persistContact(c: StoredContact): void {
       }
     });
   } catch (err) {
-    console.error("[crmStore persistContact] DB write failed:", (err as Error).message);
+    log.error("[crmStore persistContact] DB write failed:", (err as Error).message);
   }
 }
 
@@ -198,7 +199,7 @@ function persistNote(n: StoredNote, ownerId: string): void {
       tx.insert(pcrmNotesTable).values(noteToRow(n, ownerId)).run();
     });
   } catch (err) {
-    console.error("[crmStore persistNote] DB write failed:", (err as Error).message);
+    log.error("[crmStore persistNote] DB write failed:", (err as Error).message);
   }
 }
 
@@ -224,7 +225,7 @@ function persistTask(t: StoredTask, ownerId: string): void {
       }
     });
   } catch (err) {
-    console.error("[crmStore persistTask] DB write failed:", (err as Error).message);
+    log.error("[crmStore persistTask] DB write failed:", (err as Error).message);
   }
 }
 
@@ -238,7 +239,7 @@ function softDeleteContactRow(id: string): void {
         .run();
     });
   } catch (err) {
-    console.error("[crmStore softDeleteContact] failed:", (err as Error).message);
+    log.error("[crmStore softDeleteContact] failed:", (err as Error).message);
   }
 }
 
@@ -252,7 +253,7 @@ function softDeleteTaskRow(id: string): void {
         .run();
     });
   } catch (err) {
-    console.error("[crmStore softDeleteTask] failed:", (err as Error).message);
+    log.error("[crmStore softDeleteTask] failed:", (err as Error).message);
   }
 }
 
@@ -312,7 +313,7 @@ export function clearCrm(): void {
     db.delete(pcrmNotesTable).run();
     db.delete(pcrmTasksTable).run();
   } catch (err) {
-    console.warn("[crmStore.clearCrm] DB truncate failed:", (err as Error).message);
+    log.warn("[crmStore.clearCrm] DB truncate failed:", (err as Error).message);
   }
 }
 
@@ -400,10 +401,10 @@ export async function hydrateCrmStore(): Promise<void> {
     }
     const total = cRows.length + nRows.length + tRows.length;
     if (total > 0) {
-      console.log(`[hydrate] crmStore: ${cRows.length} contacts, ${nRows.length} notes, ${tRows.length} tasks restored`);
+      log.info(`[hydrate] crmStore: ${cRows.length} contacts, ${nRows.length} notes, ${tRows.length} tasks restored`);
     }
   } catch (err) {
-    console.warn("[hydrate] crmStore: DB read failed:", (err as Error).message);
+    log.warn("[hydrate] crmStore: DB read failed:", (err as Error).message);
   }
 }
 

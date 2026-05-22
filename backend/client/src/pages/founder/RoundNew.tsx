@@ -20,6 +20,20 @@ import { useToast } from "@/hooks/use-toast";
 import { emit } from "@/lib/sprint3";
 import { GlossaryLink } from "@/components/Glossary";
 import { HelpTip, LabelWithTip, LearnMore } from "@/components/HelpTip";
+import RoundCarryForwardPanel from "@/components/RoundCarryForwardPanel";
+
+// Patch v11 B-V11-10 — map the wizard's instrument value to the carry-forward
+// engine's coarser roundType taxonomy. Returns null for instruments the engine
+// doesn't model (warrant / option_pool / foundation / common); the read-only
+// sidebar simply doesn't render in those cases.
+function instrumentToCarryForwardRoundType(
+  instrument: InstrumentValue,
+): "safe" | "note" | "priced_equity" | null {
+  if (instrument === "safe_post" || instrument === "safe_pre") return "safe";
+  if (instrument === "convertible_note") return "note";
+  if (instrument === "preferred") return "priced_equity";
+  return null;
+}
 
 /* Sprint 4 — Per-instrument Learn More content. Voice: short, plain, with one
  * worked example using realistic numbers and one founder-facing watch-out. */
@@ -309,6 +323,7 @@ export default function RoundNew() {
  })}
  </ol>
 
+ <div className="grid lg:grid-cols-[1fr_minmax(0,420px)] gap-5 items-start">
  <Card>
  <CardHeader><CardTitle className="text-base">Step {step}: {STEPS[step - 1].title}</CardTitle></CardHeader>
  <CardContent className="space-y-5">
@@ -642,6 +657,16 @@ export default function RoundNew() {
  </div>
  </CardContent>
  </Card>
+ {(step === 2 || step === 3) && companyId && instrumentToCarryForwardRoundType(form.instrument) && (
+ <div className="space-y-3" data-testid="carry-forward-sidebar">
+ <RoundCarryForwardPanel
+ companyId={companyId}
+ roundType={instrumentToCarryForwardRoundType(form.instrument)!}
+ roundId=""
+ />
+ </div>
+ )}
+ </div>
  </PageBody>
  </>
  );

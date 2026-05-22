@@ -16,6 +16,7 @@
  *   PM2 workers.
  */
 
+import { log } from "./lib/logger";
 export interface SessionData {
   userId?: string;
   role?: string;
@@ -99,13 +100,13 @@ class RedisSessionStore implements ISessionStore {
       });
       this.client.on("ready", () => {
         this.ready = true;
-        console.log("[session-store] Redis connected");
+        log.info("[session-store] Redis connected");
       });
       this.client.on("error", (err: Error) => {
-        console.error("[session-store] Redis error:", err.message);
+        log.error("[session-store] Redis error:", err.message);
       });
     } catch (e) {
-      console.error("[session-store] ioredis not available:", e);
+      log.error("[session-store] ioredis not available:", e);
     }
   }
 
@@ -119,7 +120,7 @@ class RedisSessionStore implements ISessionStore {
     // plugs into express-session natively. This sync adapter is for the contract.
     // Synchronous read is not feasible with ioredis; production will use
     // the connect-redis SessionStore adapter registered with express-session.
-    console.log(`[session-store] get ${sid} — use express-session + connect-redis in production`);
+    log.info(`[session-store] get ${sid} — use express-session + connect-redis in production`);
     return undefined;
   }
 
@@ -127,21 +128,21 @@ class RedisSessionStore implements ISessionStore {
     if (!this.ready) return;
     const ttlSeconds = Math.floor(maxAgeMs / 1000);
     this.client.setex(this.redisKey(sid), ttlSeconds, JSON.stringify(session)).catch((e: Error) => {
-      console.error("[session-store] set error:", e.message);
+      log.error("[session-store] set error:", e.message);
     });
   }
 
   destroy(sid: string): void {
     if (!this.ready) return;
     this.client.del(this.redisKey(sid)).catch((e: Error) => {
-      console.error("[session-store] destroy error:", e.message);
+      log.error("[session-store] destroy error:", e.message);
     });
   }
 
   touch(sid: string, _session?: SessionData): void {
     if (!this.ready) return;
     this.client.expire(this.redisKey(sid), 86_400).catch((e: Error) => {
-      console.error("[session-store] touch error:", e.message);
+      log.error("[session-store] touch error:", e.message);
     });
   }
 }
@@ -151,10 +152,10 @@ class RedisSessionStore implements ISessionStore {
  * ============================================================ */
 function createSessionStore(): ISessionStore {
   if (process.env.REDIS_URL) {
-    console.log("[session-store] REDIS_URL detected — using RedisSessionStore");
+    log.info("[session-store] REDIS_URL detected — using RedisSessionStore");
     return new RedisSessionStore();
   }
-  console.log("[session-store] no REDIS_URL — using InMemorySessionStore (ephemeral)");
+  log.info("[session-store] no REDIS_URL — using InMemorySessionStore (ephemeral)");
   return new InMemorySessionStore();
 }
 

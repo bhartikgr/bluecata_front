@@ -23,9 +23,25 @@
  *   - Shows a loading skeleton while the /api/auth/me query resolves.
  */
 import type { ReactNode } from "react";
-import { Redirect } from "wouter";
+import { Redirect, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
+
+// B-V13-2 fix (Avi's Issue 2): when an unauthenticated user lands on a
+// protected route (typically via a copy-pasted dashboard URL) we redirect to
+// the login page with `?returnTo=<original-path>` so login can hop the user
+// back to where they intended to go.
+function buildLoginRedirect(target: string, current: string): string {
+  // Only attach returnTo when the user is being sent to a public login URL
+  // (the dedicated /admin/login + /investor/login pages accept it too).
+  // Avoid loops by never re-attaching when already pointed at an auth page.
+  if (!current || current.startsWith("/auth") || current === "/login" || current === "/signup" ||
+      current === "/admin/login" || current === "/investor/login") {
+    return target;
+  }
+  const sep = target.includes("?") ? "&" : "?";
+  return `${target}${sep}returnTo=${encodeURIComponent(current)}`;
+}
 
 type Role = "admin" | "founder" | "investor";
 
@@ -57,6 +73,7 @@ function LoadingSkeleton() {
 }
 
 export function RequireAuth({ children, role, redirectTo = "/auth/login" }: RequireAuthProps) {
+  const [currentLocation] = useLocation();
   const { data, isLoading, isError } = useQuery<AuthMeResponse>({
     queryKey: ["/api/auth/me"],
     queryFn: async () => {
@@ -77,25 +94,25 @@ export function RequireAuth({ children, role, redirectTo = "/auth/login" }: Requ
   }
 
   if (isError || !data?.isAuthed) {
-    return <Redirect to={redirectTo} />;
+    return <Redirect to={buildLoginRedirect(redirectTo, currentLocation)} />;
   }
 
   // Role enforcement
   if (role === "admin" && !data.isAdmin) {
-    return <Redirect to={redirectTo} />;
+    return <Redirect to={buildLoginRedirect(redirectTo, currentLocation)} />;
   }
 
   if (role === "founder") {
     const hasCompany = (data.founder?.companies?.length ?? 0) > 0;
     if (!hasCompany) {
-      return <Redirect to={redirectTo} />;
+      return <Redirect to={buildLoginRedirect(redirectTo, currentLocation)} />;
     }
   }
 
   if (role === "investor") {
     const isInvestor = data.investor?.state !== undefined && data.investor.state !== "NONE";
     if (!isInvestor) {
-      return <Redirect to={redirectTo} />;
+      return <Redirect to={buildLoginRedirect(redirectTo, currentLocation)} />;
     }
   }
 

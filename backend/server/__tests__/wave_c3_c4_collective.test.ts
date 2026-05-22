@@ -37,6 +37,7 @@ import { registerAdminContactsRoutes } from "../adminContactsStore";
 import { __clearDscFeedback, ingestDscScores } from "../dscFeedbackStore";
 import { __clearTransactionPrep, createChannel } from "../transactionPrepStore";
 import { emitMutation } from "../lib/eventBus";
+import * as collectiveMembershipStore from "../collectiveMembershipStore"; /* v14 Tier-1 Fix 3 */
 
 /* ============================================================
  * Test app factory
@@ -45,6 +46,30 @@ import { emitMutation } from "../lib/eventBus";
 function makeApp() {
   const app = express();
   app.use(express.json());
+  // v14 Tier-1 Fix 3: inject a userContext so requireCollectiveMember +
+  // any session-aware handler can resolve identity. Honor an explicit
+  // x-user-id header (legacy test pattern) so per-test users still work.
+  // Each resolved userId is activated as a Collective member so the
+  // middleware passes.
+  app.use((req, _res, next) => {
+    const headerId = (req.headers["x-user-id"] as string | undefined) ?? "u_collective_test";
+    if (!collectiveMembershipStore.isActive(headerId)) {
+      collectiveMembershipStore.activate(headerId, "u_admin_test");
+    }
+    const role = String(req.headers["x-role"] ?? "");
+    (req as express.Request & { userContext?: unknown }).userContext = {
+      userId: headerId,
+      isAdmin: role === "admin",
+      isAuthed: true,
+      identity: { email: `${headerId}@example.com` },
+      collective: {
+        status: "active",
+        role: role === "dsc" ? "dsc" : null,
+        expiresAt: null,
+      },
+    };
+    next();
+  });
   registerCollectiveRoutes(app);
   registerCollectiveSettingsRoutes(app);
   registerAdminContactsRoutes(app);

@@ -29,7 +29,11 @@ import { getOutbox } from "./bridgeStore";
 import { computeCompositeForCompany, computeAllComposites, computeAutoTier } from "./dscScoringEngine";
 import { emitBridgeEvent } from "./bridgeStore";
 import { companies as canonicalCompanies, softCircles as canonicalSoftCircles, rounds as canonicalRounds } from "./mockData";
+// v15 P0-11 — Collective surface MUST read live soft circles from the
+// DB-backed softCircleStore (was previously reading only mockData).
+import { listForCollective as listSoftCirclesForCollective } from "./softCircleStore";
 import { getRecentEvents } from "./sprint10Telemetry";
+import { requireCollectiveMember } from "./lib/requireCollectiveMember"; /* v14 Tier-1 Fix 3 */
 
 /* ============================================================
  * Helper: safe division
@@ -134,7 +138,8 @@ export function registerCollectiveRoutes(app: Express): void {
    * GET /api/collective/dashboard
    * KPI cards computed live from existing stores.
    * ----------------------------------------------------------------- */
-  app.get("/api/collective/dashboard", (_req: Request, res: Response) => {
+  /* v16 F-coll-X4 — was unprotected; any authed user (or anonymous w/ session) could read. */
+  app.get("/api/collective/dashboard", requireCollectiveMember, (_req: Request, res: Response) => {
     const allContacts = filterSeedInProd(listContacts({}));
     const allProfiles = getAllProfiles();
 
@@ -201,7 +206,8 @@ export function registerCollectiveRoutes(app: Express): void {
    * GET /api/collective/dealroom/companies
    * Companies opted into M&A or with open transactionPrep channels.
    * ----------------------------------------------------------------- */
-  app.get("/api/collective/dealroom/companies", (_req: Request, res: Response) => {
+  /* v16 F-coll-X4 — was unprotected. */
+  app.get("/api/collective/dealroom/companies", requireCollectiveMember, (_req: Request, res: Response) => {
     const dealRoomStatuses = new Set(["exploring", "active", "closing"]);
     const allProfiles = getAllProfiles();
 
@@ -328,7 +334,7 @@ export function registerCollectiveRoutes(app: Express): void {
    * GET /api/collective/companies
    * All companies visible to the Collective.
    * ----------------------------------------------------------------- */
-  app.get("/api/collective/companies", (_req: Request, res: Response) => {
+  app.get("/api/collective/companies", requireCollectiveMember, (_req: Request, res: Response) => {
     const allProfiles = getAllProfiles();
 
     // Fall back to canonical companies if profileMap is sparse
@@ -389,7 +395,7 @@ export function registerCollectiveRoutes(app: Express): void {
    * GET /api/collective/companies/:id
    * Single company detail for Collective view.
    * ----------------------------------------------------------------- */
-  app.get("/api/collective/companies/:id", (req: Request, res: Response) => {
+  app.get("/api/collective/companies/:id", requireCollectiveMember, (req: Request, res: Response) => {
     const { id } = req.params;
     const profile = getCompanyProfile(id);
     const canonical = canonicalCompanies.find((c) => c.id === id);
@@ -466,7 +472,7 @@ export function registerCollectiveRoutes(app: Express): void {
    * GET /api/collective/members
    * Collective-scoped member directory (PII-filtered).
    * ----------------------------------------------------------------- */
-  app.get("/api/collective/members", (_req: Request, res: Response) => {
+  app.get("/api/collective/members", requireCollectiveMember, (_req: Request, res: Response) => {
     const allContacts = filterSeedInProd(listContacts({}));
 
     // Only investors and consortium_partners
@@ -499,11 +505,31 @@ export function registerCollectiveRoutes(app: Express): void {
    * GET /api/collective/soft-circles
    * Soft-circle aggregates per round (founder privacy: no per-investor amounts).
    * ----------------------------------------------------------------- */
-  app.get("/api/collective/soft-circles", (req: Request, res: Response) => {
+  app.get("/api/collective/soft-circles", requireCollectiveMember, (req: Request, res: Response) => {
     const roundId = req.query.roundId ? String(req.query.roundId) : undefined;
     const companyId = req.query.companyId ? String(req.query.companyId) : undefined;
 
-    let filtered = canonicalSoftCircles;
+    // v15 P0-11 — union live soft circles from softCircleStore with the
+    // canonical seed list so the Collective surface stops reading only
+    // mockData. Live rows take precedence on (id) collision.
+    const liveProjections = listSoftCirclesForCollective({ roundId, companyId });
+    const liveIds = new Set(liveProjections.map((p) => p.id));
+    type CombinedCircle = { id: string; roundId: string; amount: number; companyId?: string | null };
+    const liveCombined: CombinedCircle[] = liveProjections.map((p) => ({
+      id: p.id,
+      roundId: p.roundId,
+      amount: p.amount,
+      companyId: p.companyId,
+    }));
+    const seedCombined: CombinedCircle[] = canonicalSoftCircles
+      .filter((sc: { id: string }) => !liveIds.has(sc.id))
+      .map((sc: any) => ({
+        id: sc.id,
+        roundId: sc.roundId,
+        amount: sc.amount,
+        companyId: sc.companyId,
+      }));
+    let filtered: CombinedCircle[] = [...seedCombined, ...liveCombined];
     if (roundId) filtered = filtered.filter((sc) => sc.roundId === roundId);
     if (companyId) {
       // Find rounds for this company
@@ -551,7 +577,8 @@ export function registerCollectiveRoutes(app: Express): void {
    * GET /api/collective/dsc/pipeline
    * Kanban grouped by transactionPrepStatus.
    * ----------------------------------------------------------------- */
-  app.get("/api/collective/dsc/pipeline", (_req: Request, res: Response) => {
+  /* v16 F-coll-X4 — was unprotected. */
+  app.get("/api/collective/dsc/pipeline", requireCollectiveMember, (_req: Request, res: Response) => {
     const allProfiles = getAllProfiles();
 
     const statuses = ["not_pursuing", "exploring", "active", "closing", "closed"] as const;
@@ -605,7 +632,8 @@ export function registerCollectiveRoutes(app: Express): void {
    * GET /api/collective/dsc/scores
    * Latest DSC feedback per company as a sortable table.
    * ----------------------------------------------------------------- */
-  app.get("/api/collective/dsc/scores", (_req: Request, res: Response) => {
+  /* v16 F-coll-X4 — was unprotected. */
+  app.get("/api/collective/dsc/scores", requireCollectiveMember, (_req: Request, res: Response) => {
     // Get live composites for all companies
     const composites = computeAllComposites();
 
@@ -637,7 +665,8 @@ export function registerCollectiveRoutes(app: Express): void {
    * GET /api/collective/dsc/composite/:companyId
    * Live-computed composite without writing to dscFeedback.
    * ----------------------------------------------------------------- */
-  app.get("/api/collective/dsc/composite/:companyId", (req: Request, res: Response) => {
+  /* v16 F-coll-X4 — was unprotected. */
+  app.get("/api/collective/dsc/composite/:companyId", requireCollectiveMember, (req: Request, res: Response) => {
     const { companyId } = req.params;
     const composite = computeCompositeForCompany(companyId);
     if (!composite) {
@@ -730,7 +759,7 @@ export function registerCollectiveRoutes(app: Express): void {
         autoTier: composite.autoTier,
         sectorBenchmark: composite.sectorBenchmark,
         triggeredBy: "manual_compute",
-        actorUserId: String(req.headers["x-actor-user-id"] ?? "u_admin"),
+        actorUserId: String((req as any).userContext?.userId ?? ""), /* v14 */
       },
     });
 
@@ -741,7 +770,7 @@ export function registerCollectiveRoutes(app: Express): void {
    * GET /api/collective/activity
    * Activity feed: bridge outbox events filtered to Collective-relevant types.
    * ----------------------------------------------------------------- */
-  app.get("/api/collective/activity", (req: Request, res: Response) => {
+  app.get("/api/collective/activity", requireCollectiveMember, (req: Request, res: Response) => {
     const userId = req.query.userId ? String(req.query.userId) : undefined;
     const companyId = req.query.companyId ? String(req.query.companyId) : undefined;
     const limit = Math.min(100, parseInt(String(req.query.limit ?? "50"), 10));
@@ -780,16 +809,20 @@ export function registerCollectiveRoutes(app: Express): void {
 
   /* -----------------------------------------------------------------
    * GET /api/subscriptions/mine
-   * Returns the calling company's subscription (used by CollectiveMembership).
-   * CompanyId must come from x-company-id header. Patch v4: no demo fallback.
+   * v16 F-coll-X4 / F-coll-23 — was unprotected AND broken.
+   *   - Old code hardcoded `headerCompanyId = undefined`, returning 400 to
+   *     every caller.
+   *   - Now requires collective membership AND derives companyId from the
+   *     authenticated session's active tenant / active company.
+   * Returns the calling founder's active-company subscription.
    * ----------------------------------------------------------------- */
-  app.get("/api/subscriptions/mine", (req: Request, res: Response) => {
-    const headerCompanyId = req.headers["x-company-id"];
-    if (!headerCompanyId || typeof headerCompanyId !== "string" || !headerCompanyId.trim()) {
+  app.get("/api/subscriptions/mine", requireCollectiveMember, (req: Request, res: Response) => {
+    const ctx = (req as Request & { userContext?: { userId?: string; founder?: { activeCompanyId?: string | null } } }).userContext;
+    const companyId = ctx?.founder?.activeCompanyId ?? null;
+    if (!companyId || typeof companyId !== "string" || !companyId.trim()) {
       return res.status(400).json({ error: "companyId_required" });
     }
-    const companyId = headerCompanyId.trim();
-    const sub = getSubscription(companyId);
+    const sub = getSubscription(companyId.trim());
     if (!sub) return res.json(null);
     res.json(sub);
   });
@@ -798,7 +831,8 @@ export function registerCollectiveRoutes(app: Express): void {
    * GET /api/collective/dsc/prep
    * Transaction-prep tracker: all channels with thread status.
    * ----------------------------------------------------------------- */
-  app.get("/api/collective/dsc/prep", (_req: Request, res: Response) => {
+  /* v16 F-coll-X4 — was unprotected. */
+  app.get("/api/collective/dsc/prep", requireCollectiveMember, (_req: Request, res: Response) => {
     const allChannels = listChannels();
     const allProfiles = getAllProfiles();
 

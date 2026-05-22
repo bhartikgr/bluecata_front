@@ -19,6 +19,7 @@
  */
 import * as schema from "../../shared/schema";
 import { createRequire } from "node:module";
+import { log } from "../lib/logger";
 
 // Patch v11 (B-V11-3): dual-mode require. In tsx (ESM) dev, we need
 // `createRequire(import.meta.url)`. In the esbuild CJS production bundle,
@@ -71,11 +72,11 @@ export function getDb(): any {
         "to fall back to in-process SQLite. Underlying error: " + (err as Error).message
       );
     }
-    console.log("[db] Connecting to PostgreSQL...");
+    log.info("[db] Connecting to PostgreSQL...");
     _pgClient = postgres(url, { max: 10, idle_timeout: 30, connect_timeout: 10 });
     _drizzleDb = pgDrizzle(_pgClient, { schema });
     _driver = "postgres";
-    console.log("[db] ✅ PostgreSQL connected");
+    log.info("[db] ✅ PostgreSQL connected");
     return _drizzleDb;
   }
 
@@ -109,7 +110,7 @@ export function getDb(): any {
   } else {
     path = "./data.db";
   }
-  console.log(`[db] Opening SQLite at: ${path}`);
+  log.info(`[db] Opening SQLite at: ${path}`);
   _rawSqlite = new Database(path);
   _rawSqlite.pragma("journal_mode = WAL");
   _drizzleDb = sqliteDrizzle(_rawSqlite, { schema });
@@ -235,6 +236,69 @@ function applyV12AdditiveAlters(db: any) {
     ["invoices", "ALTER TABLE invoices ADD COLUMN line_items_json TEXT"],
     ["invoices", "ALTER TABLE invoices ADD COLUMN updated_at TEXT"],
     ["invoices", "ALTER TABLE invoices ADD COLUMN updated_by TEXT"],
+    // ---- v13 Avi's Issue 3 — rounds DB-backed (additive columns). ----
+    ["rounds", "ALTER TABLE rounds ADD COLUMN tenant_id TEXT"],
+    ["rounds", "ALTER TABLE rounds ADD COLUMN lead_investor TEXT"],
+    ["rounds", "ALTER TABLE rounds ADD COLUMN currency TEXT"],
+    ["rounds", "ALTER TABLE rounds ADD COLUMN region TEXT"],
+    ["rounds", "ALTER TABLE rounds ADD COLUMN open_date TEXT"],
+    ["rounds", "ALTER TABLE rounds ADD COLUMN instrument TEXT"],
+    ["rounds", "ALTER TABLE rounds ADD COLUMN extras_json TEXT"],
+    ["rounds", "ALTER TABLE rounds ADD COLUMN created_at TEXT"],
+    ["rounds", "ALTER TABLE rounds ADD COLUMN updated_at TEXT"],
+    ["rounds", "ALTER TABLE rounds ADD COLUMN created_by TEXT"],
+    ["rounds", "ALTER TABLE rounds ADD COLUMN deleted_at TEXT"],
+    // ---- v15 P0-4..P0-8 — round_invitations extensions. ----
+    ["round_invitations", "ALTER TABLE round_invitations ADD COLUMN tenant_id TEXT"],
+    ["round_invitations", "ALTER TABLE round_invitations ADD COLUMN company_id TEXT"],
+    ["round_invitations", "ALTER TABLE round_invitations ADD COLUMN classification TEXT"],
+    ["round_invitations", "ALTER TABLE round_invitations ADD COLUMN token_hash TEXT"],
+    ["round_invitations", "ALTER TABLE round_invitations ADD COLUMN invited_by_user_id TEXT"],
+    ["round_invitations", "ALTER TABLE round_invitations ADD COLUMN note TEXT"],
+    ["round_invitations", "ALTER TABLE round_invitations ADD COLUMN redeemed_at TEXT"],
+    ["round_invitations", "ALTER TABLE round_invitations ADD COLUMN redeemed_by_user_id TEXT"],
+    ["round_invitations", "ALTER TABLE round_invitations ADD COLUMN created_at TEXT"],
+    ["round_invitations", "ALTER TABLE round_invitations ADD COLUMN updated_at TEXT"],
+    ["round_invitations", "ALTER TABLE round_invitations ADD COLUMN deleted_at TEXT"],
+    // ---- v15 P0-9..P0-11 — soft_circles extensions. ----
+    ["soft_circles", "ALTER TABLE soft_circles ADD COLUMN tenant_id TEXT"],
+    ["soft_circles", "ALTER TABLE soft_circles ADD COLUMN company_id TEXT"],
+    ["soft_circles", "ALTER TABLE soft_circles ADD COLUMN investor_user_id TEXT"],
+    ["soft_circles", "ALTER TABLE soft_circles ADD COLUMN investor_email TEXT"],
+    ["soft_circles", "ALTER TABLE soft_circles ADD COLUMN amount_minor INTEGER NOT NULL DEFAULT 0"],
+    ["soft_circles", "ALTER TABLE soft_circles ADD COLUMN currency TEXT NOT NULL DEFAULT 'USD'"],
+    ["soft_circles", "ALTER TABLE soft_circles ADD COLUMN collective_visible INTEGER NOT NULL DEFAULT 1"],
+    ["soft_circles", "ALTER TABLE soft_circles ADD COLUMN updated_at TEXT"],
+    ["soft_circles", "ALTER TABLE soft_circles ADD COLUMN deleted_at TEXT"],
+    // ---- v17 Phase A — chapter_id additive columns on existing Collective tables. ----
+    // Nullable + no default; the 0021 backfill seeds existing rows to
+    // 'chap_keiretsu_canada' (the default chapter Maya/Aisha/Daniel belong to).
+    ["collective_waitlist", "ALTER TABLE collective_waitlist ADD COLUMN chapter_id TEXT"],
+    ["dsc_feedback",        "ALTER TABLE dsc_feedback        ADD COLUMN chapter_id TEXT"],
+    ["dsc_votes",           "ALTER TABLE dsc_votes           ADD COLUMN chapter_id TEXT"],
+    ["soft_circles",        "ALTER TABLE soft_circles        ADD COLUMN chapter_id TEXT"],
+    // ---- v17 Phase C — chapters.dsc_quorum_pct + investor_nominations state machine columns. ----
+    ["chapters",            "ALTER TABLE chapters ADD COLUMN dsc_quorum_pct INTEGER NOT NULL DEFAULT 50"],
+    ["investor_nominations", "ALTER TABLE investor_nominations ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'"],
+    ["investor_nominations", "ALTER TABLE investor_nominations ADD COLUMN decline_reason TEXT"],
+    ["investor_nominations", "ALTER TABLE investor_nominations ADD COLUMN decided_at TEXT"],
+    ["investor_nominations", "ALTER TABLE investor_nominations ADD COLUMN decided_by TEXT"],
+    ["investor_nominations", "ALTER TABLE investor_nominations ADD COLUMN round_id TEXT"],
+    // ---- CP Phase A — migration 0042 (partner_crm_contacts hash columns; CP-008). ----
+    ["partner_crm_contacts", "ALTER TABLE partner_crm_contacts ADD COLUMN prev_hash TEXT"],
+    ["partner_crm_contacts", "ALTER TABLE partner_crm_contacts ADD COLUMN curr_hash TEXT NOT NULL DEFAULT ''"],
+    // ---- CP Phase A — migration 0043 (partner_deal_pipeline.legacy_id; CP-019). ----
+    ["partner_deal_pipeline", "ALTER TABLE partner_deal_pipeline ADD COLUMN legacy_id TEXT"],
+    // ---- CP Phase B — migration 0047 (partner_deal_promotions moderation columns; CP-015). ----
+    ["partner_deal_promotions", "ALTER TABLE partner_deal_promotions ADD COLUMN moderation_status TEXT NOT NULL DEFAULT 'pending'"],
+    ["partner_deal_promotions", "ALTER TABLE partner_deal_promotions ADD COLUMN moderated_by_user_id TEXT"],
+    ["partner_deal_promotions", "ALTER TABLE partner_deal_promotions ADD COLUMN moderated_at TEXT"],
+    ["partner_deal_promotions", "ALTER TABLE partner_deal_promotions ADD COLUMN moderation_notes TEXT"],
+    // ---- CP Phase B — migration 0048 (users GDPR/CCPA columns; CP-013). ----
+    ["users", "ALTER TABLE users ADD COLUMN deletion_requested_at TEXT"],
+    ["users", "ALTER TABLE users ADD COLUMN deletion_token TEXT"],
+    ["users", "ALTER TABLE users ADD COLUMN anonymized_at TEXT"],
+    ["users", "ALTER TABLE users ADD COLUMN anonymized_by_user_id TEXT"],
   ];
   for (const [table, sql] of alters) {
     try {
@@ -244,7 +308,7 @@ function applyV12AdditiveAlters(db: any) {
       // SQLite: "duplicate column name: foo"
       // Postgres: "column ... of relation ... already exists"
       if (/duplicate column|already exists/i.test(msg)) continue;
-      console.warn(`[db] v12 ALTER on ${table} failed (continuing):`, msg);
+      log.warn(`[db] v12 ALTER on ${table} failed (continuing):`, msg);
     }
   }
 
@@ -281,6 +345,101 @@ function applyV12AdditiveAlters(db: any) {
     "CREATE INDEX IF NOT EXISTS idx_pcrm_contacts_tenant ON pcrm_contacts(tenant_id)",
     "CREATE INDEX IF NOT EXISTS idx_pcrm_notes_contact ON pcrm_notes(contact_id)",
     "CREATE INDEX IF NOT EXISTS idx_pcrm_tasks_contact ON pcrm_tasks(contact_id)",
+    // v13 indices — Avi's Issues 3/4/5.
+    "CREATE INDEX IF NOT EXISTS idx_rounds_company ON rounds(company_id)",
+    "CREATE INDEX IF NOT EXISTS idx_rounds_tenant ON rounds(tenant_id)",
+    "CREATE INDEX IF NOT EXISTS idx_reports_company ON reports(company_id)",
+    "CREATE INDEX IF NOT EXISTS idx_reports_tenant ON reports(tenant_id)",
+    "CREATE INDEX IF NOT EXISTS idx_network_posts_tenant ON network_posts(tenant_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_network_posts_author ON network_posts(author_user_id)",
+    // v17 Phase A — chapter scoping indices.
+    "CREATE INDEX IF NOT EXISTS idx_chapters_tenant ON chapters(tenant_id)",
+    "CREATE INDEX IF NOT EXISTS idx_chapters_status ON chapters(status)",
+    "CREATE INDEX IF NOT EXISTS idx_chapters_region ON chapters(region)",
+    "CREATE INDEX IF NOT EXISTS idx_chapter_memberships_tenant ON chapter_memberships(tenant_id)",
+    "CREATE INDEX IF NOT EXISTS idx_chapter_memberships_chapter ON chapter_memberships(chapter_id)",
+    "CREATE INDEX IF NOT EXISTS idx_chapter_memberships_user ON chapter_memberships(user_id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_chapter_memberships_chapter_user ON chapter_memberships(chapter_id, user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_collective_waitlist_chapter ON collective_waitlist(chapter_id)",
+    "CREATE INDEX IF NOT EXISTS idx_dsc_feedback_chapter ON dsc_feedback(chapter_id)",
+    "CREATE INDEX IF NOT EXISTS idx_dsc_votes_chapter ON dsc_votes(chapter_id)",
+    "CREATE INDEX IF NOT EXISTS idx_soft_circles_chapter ON soft_circles(chapter_id)",
+    // v17 Phase B — hot indices for the 8 migrated Collective stores.
+    "CREATE INDEX IF NOT EXISTS idx_collective_apps_tenant ON collective_apps(tenant_id)",
+    "CREATE INDEX IF NOT EXISTS idx_collective_apps_chapter ON collective_apps(chapter_id)",
+    "CREATE INDEX IF NOT EXISTS idx_collective_apps_user ON collective_apps(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_collective_apps_status ON collective_apps(status)",
+    "CREATE INDEX IF NOT EXISTS idx_collective_memberships_tenant ON collective_memberships(tenant_id)",
+    "CREATE INDEX IF NOT EXISTS idx_collective_memberships_chapter ON collective_memberships(chapter_id)",
+    "CREATE INDEX IF NOT EXISTS idx_collective_memberships_status ON collective_memberships(status)",
+    "CREATE INDEX IF NOT EXISTS idx_fcn_tenant ON founder_collective_nominations(tenant_id)",
+    "CREATE INDEX IF NOT EXISTS idx_fcn_chapter ON founder_collective_nominations(chapter_id)",
+    "CREATE INDEX IF NOT EXISTS idx_fcn_company ON founder_collective_nominations(company_id)",
+    "CREATE INDEX IF NOT EXISTS idx_fcn_founder ON founder_collective_nominations(founder_id)",
+    "CREATE INDEX IF NOT EXISTS idx_fcn_status ON founder_collective_nominations(status)",
+    "CREATE INDEX IF NOT EXISTS idx_fca_tenant ON founder_collective_applications(tenant_id)",
+    "CREATE INDEX IF NOT EXISTS idx_fca_chapter ON founder_collective_applications(chapter_id)",
+    "CREATE INDEX IF NOT EXISTS idx_fca_company ON founder_collective_applications(company_id)",
+    "CREATE INDEX IF NOT EXISTS idx_fca_founder ON founder_collective_applications(founder_id)",
+    "CREATE INDEX IF NOT EXISTS idx_fca_status ON founder_collective_applications(status)",
+    "CREATE INDEX IF NOT EXISTS idx_invnom_tenant ON investor_nominations(tenant_id)",
+    "CREATE INDEX IF NOT EXISTS idx_invnom_chapter ON investor_nominations(chapter_id)",
+    "CREATE INDEX IF NOT EXISTS idx_invnom_investor ON investor_nominations(investor_user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_invnom_company ON investor_nominations(company_id)",
+    /* v17 Phase C — hot indices for state-machine + cascade sweep. */
+    "CREATE INDEX IF NOT EXISTS idx_invnom_status ON investor_nominations(status)",
+    "CREATE INDEX IF NOT EXISTS idx_invnom_round ON investor_nominations(round_id)",
+    "CREATE INDEX IF NOT EXISTS idx_dsc_roles_tenant ON dsc_roles(tenant_id)",
+    "CREATE INDEX IF NOT EXISTS idx_dsc_roles_chapter ON dsc_roles(chapter_id)",
+    "CREATE INDEX IF NOT EXISTS idx_dsc_roles_user ON dsc_roles(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_dsc_roles_status ON dsc_roles(status)",
+    "CREATE INDEX IF NOT EXISTS idx_dsc_pipeline_tenant ON dsc_pipeline(tenant_id)",
+    "CREATE INDEX IF NOT EXISTS idx_dsc_pipeline_chapter ON dsc_pipeline(chapter_id)",
+    "CREATE INDEX IF NOT EXISTS idx_dsc_pipeline_company ON dsc_pipeline(company_id)",
+    "CREATE INDEX IF NOT EXISTS idx_dsc_pipeline_status ON dsc_pipeline(status)",
+    "CREATE INDEX IF NOT EXISTS idx_collective_settings_tenant ON collective_settings(tenant_id)",
+    "CREATE INDEX IF NOT EXISTS idx_collective_settings_chapter ON collective_settings(chapter_id)",
+    "CREATE INDEX IF NOT EXISTS idx_collective_channel_posts_tenant ON collective_channel_posts(tenant_id)",
+    "CREATE INDEX IF NOT EXISTS idx_collective_channel_posts_chapter ON collective_channel_posts(chapter_id)",
+    "CREATE INDEX IF NOT EXISTS idx_collective_channel_posts_channel ON collective_channel_posts(channel_id)",
+    "CREATE INDEX IF NOT EXISTS idx_collective_channel_posts_author ON collective_channel_posts(author_user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_collective_channel_posts_visibility ON collective_channel_posts(visibility)",
+    "CREATE INDEX IF NOT EXISTS idx_partner_deal_promotions_tenant ON partner_deal_promotions(tenant_id)",
+    "CREATE INDEX IF NOT EXISTS idx_partner_deal_promotions_chapter ON partner_deal_promotions(chapter_id)",
+    "CREATE INDEX IF NOT EXISTS idx_partner_deal_promotions_partner ON partner_deal_promotions(partner_id)",
+    "CREATE INDEX IF NOT EXISTS idx_partner_deal_promotions_pipeline ON partner_deal_promotions(pipeline_deal_id)",
+    "CREATE INDEX IF NOT EXISTS idx_partner_deal_promotions_company ON partner_deal_promotions(company_id)",
+    "CREATE INDEX IF NOT EXISTS idx_partner_deal_promotions_status ON partner_deal_promotions(status)",
+    // v18 Phase A — screening_events + screening_event_attendees indices.
+    "CREATE INDEX IF NOT EXISTS idx_screening_events_tenant ON screening_events(tenant_id)",
+    "CREATE INDEX IF NOT EXISTS idx_screening_events_chapter ON screening_events(chapter_id)",
+    "CREATE INDEX IF NOT EXISTS idx_screening_events_company ON screening_events(company_id)",
+    "CREATE INDEX IF NOT EXISTS idx_screening_events_round ON screening_events(round_id)",
+    "CREATE INDEX IF NOT EXISTS idx_screening_events_status ON screening_events(status)",
+    "CREATE INDEX IF NOT EXISTS idx_screening_events_scheduled ON screening_events(chapter_id, scheduled_for)",
+    "CREATE INDEX IF NOT EXISTS idx_screening_event_attendees_event ON screening_event_attendees(event_id)",
+    "CREATE INDEX IF NOT EXISTS idx_screening_event_attendees_user ON screening_event_attendees(user_id)",
+    /* ── v19 Phase C — perf hardening indexes (migration 0040 mirror).
+     *    Run after all ALTERs so chapter_id columns exist on dsc_votes etc. ── */
+    "CREATE INDEX IF NOT EXISTS idx_expert_questions_hot               ON expert_questions (tenant_id, chapter_id, status, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_expert_answers_question_upvote     ON expert_answers (question_id, upvote_count DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_screening_events_calendar          ON screening_events (tenant_id, chapter_id, scheduled_for)",
+    "CREATE INDEX IF NOT EXISTS idx_messages_thread_hot                ON messages (tenant_id, chapter_id, thread_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_collective_billing_user_chapter    ON collective_memberships_billing (tenant_id, user_id, chapter_id)",
+    "CREATE INDEX IF NOT EXISTS idx_chapter_announcements_hot          ON chapter_announcements (tenant_id, chapter_id, pinned, priority)",
+    "CREATE INDEX IF NOT EXISTS idx_chapter_resources_hot              ON chapter_resources (tenant_id, chapter_id, resource_type, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_message_threads_hot                ON message_threads (tenant_id, chapter_id, last_activity_at)",
+    "CREATE INDEX IF NOT EXISTS idx_partner_portfolio_hot              ON partner_portfolio_companies (tenant_id, partner_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_partner_deal_pipeline_hot          ON partner_deal_pipeline (tenant_id, partner_id, stage, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_partner_crm_hot                    ON partner_crm_contacts (tenant_id, partner_id, last_contact_at)",
+    "CREATE INDEX IF NOT EXISTS idx_collective_billing_events_chain    ON collective_billing_events (tenant_id, billing_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_audit_log_chain_walk               ON audit_log (tenant_id, created_at, id)",
+    "CREATE INDEX IF NOT EXISTS idx_dsc_votes_chain_walk               ON dsc_votes (chapter_id, created_at, id)",
+    "CREATE INDEX IF NOT EXISTS idx_chapter_announcements_chain_walk   ON chapter_announcements (chapter_id, created_at, id)",
+    "CREATE INDEX IF NOT EXISTS idx_chapter_resources_chain_walk       ON chapter_resources (chapter_id, created_at, id)",
+    "CREATE INDEX IF NOT EXISTS idx_messages_chain_walk                ON messages (chapter_id, created_at, id)",
+    "CREATE INDEX IF NOT EXISTS idx_screening_events_chain_walk        ON screening_events (chapter_id, created_at, id)",
+    "CREATE INDEX IF NOT EXISTS idx_expert_questions_chain_walk        ON expert_questions (chapter_id, created_at, id)",
   ];
   for (const sql of indices) {
     try { db.exec(sql); } catch { /* tolerated */ }
@@ -320,8 +479,85 @@ function applyV12Backfill(db: any) {
       WHERE tenant_id IS NULL AND company_id IS NOT NULL
     `);
     db.exec(`UPDATE company_members SET joined_at = COALESCE(joined_at, datetime('now')) WHERE joined_at IS NULL`);
+
+    // v17 Phase A — default chapter + chapter_id backfill. Idempotent.
+    // Creates the 'chap_keiretsu_canada' default chapter so legacy v16
+    // Collective rows (collective_waitlist, dsc_feedback, dsc_votes,
+    // soft_circles) can be tagged to it. Demo seeding adds the other
+    // 3 chapters (Toronto / NYC / SF) via server/lib/seedDemoData.ts.
+    db.exec(`
+      INSERT OR IGNORE INTO tenants (id, kind, name, billing_email, status, is_demo, created_at, updated_at, deleted_at)
+      VALUES (
+        'tenant_chap_chap_keiretsu_canada',
+        'consortium_partner',
+        'Capavate Collective — Keiretsu Forum Canada',
+        NULL,
+        'active',
+        0,
+        datetime('now'),
+        NULL,
+        NULL
+      )
+    `);
+    db.exec(`
+      INSERT OR IGNORE INTO chapters (
+        id, tenant_id, name, region, city, status,
+        admin_user_id, partner_org_id, membership_fee_annual_minor,
+        founded, created_at, updated_at, deleted_at
+      ) VALUES (
+        'chap_keiretsu_canada',
+        'tenant_chap_chap_keiretsu_canada',
+        'Capavate Collective — Keiretsu Forum Canada',
+        'NA-East',
+        'Toronto',
+        'active',
+        NULL,
+        'tenant_cp_keiretsu_ca',
+        0,
+        NULL,
+        datetime('now'),
+        NULL,
+        NULL
+      )
+    `);
+    db.exec(`UPDATE collective_waitlist SET chapter_id = 'chap_keiretsu_canada' WHERE chapter_id IS NULL`);
+    db.exec(`UPDATE dsc_feedback        SET chapter_id = 'chap_keiretsu_canada' WHERE chapter_id IS NULL`);
+    db.exec(`UPDATE dsc_votes           SET chapter_id = 'chap_keiretsu_canada' WHERE chapter_id IS NULL`);
+    db.exec(`UPDATE soft_circles        SET chapter_id = 'chap_keiretsu_canada' WHERE chapter_id IS NULL`);
+
+    /* CP Phase B — one-time backfill of existing approved-by-fiat
+     * partner_deal_promotions rows (status='live'). They were created
+     * by the legacy promote-to-collective path which bypassed
+     * moderation; mark them moderation_status='approved' with
+     * moderated_at=created_at so they remain visible in the deal room
+     * post-migration. Idempotent: only flips rows with NULL/empty
+     * moderation_status, and gated by a _migrations_applied marker so
+     * we don't re-stamp moderated_at on every boot.
+     */
+    try {
+      const row: any = db.prepare(
+        "SELECT key FROM _migrations_applied WHERE key = 'cp_b_promotion_moderation_backfill_v1'"
+      ).get();
+      if (!row) {
+        db.exec(
+          `UPDATE partner_deal_promotions
+             SET moderation_status = 'approved',
+                 moderated_at      = COALESCE(approved_at, created_at)
+             WHERE status = 'live' AND (moderation_status IS NULL OR moderation_status = '' OR moderation_status = 'pending')`
+        );
+        db.exec(
+          `INSERT OR IGNORE INTO _migrations_applied (key, applied_at, details)
+             VALUES ('cp_b_promotion_moderation_backfill_v1', datetime('now'), 'CP Phase B 0047 backfill')`
+        );
+      }
+    } catch (e) {
+      // Table may not exist on first boot — ignore.
+      if (!/no such table/i.test(String((e as Error).message))) {
+        log.warn("[db] CP-B promotion backfill failed (continuing):", (e as Error).message);
+      }
+    }
   } catch (err) {
-    console.warn("[db] v12 backfill encountered an issue (continuing):", (err as Error).message);
+    log.warn("[db] v12 backfill encountered an issue (continuing):", (err as Error).message);
   }
 }
 
@@ -749,6 +985,991 @@ function buildProductionTableStatements(): string[] {
       created_at TEXT NOT NULL,
       deleted_at TEXT
     );`,
+    // ---------- Patch v13 — Avi's Issues 3/4/5 ----------
+    `CREATE TABLE IF NOT EXISTS rounds (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT,
+      company_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL,
+      state TEXT NOT NULL,
+      target_amount REAL NOT NULL,
+      raised_amount REAL NOT NULL DEFAULT 0,
+      pre_money REAL,
+      post_money REAL,
+      price_per_share REAL,
+      min_ticket REAL,
+      close_date TEXT,
+      terms_summary TEXT,
+      lead_investor TEXT,
+      currency TEXT,
+      region TEXT,
+      open_date TEXT,
+      instrument TEXT,
+      extras_json TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      created_by TEXT,
+      deleted_at TEXT
+    );`,
+    `CREATE TABLE IF NOT EXISTS reports (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      company_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      title TEXT NOT NULL,
+      period TEXT,
+      status TEXT NOT NULL DEFAULT 'draft',
+      content_json TEXT NOT NULL,
+      delivery_targets_json TEXT,
+      generated_at TEXT,
+      generated_by TEXT,
+      sent_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT,
+      deleted_at TEXT
+    );`,
+    `CREATE TABLE IF NOT EXISTS network_posts (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      author_user_id TEXT NOT NULL,
+      audience TEXT NOT NULL DEFAULT 'all',
+      body TEXT NOT NULL,
+      content_json TEXT,
+      likes INTEGER NOT NULL DEFAULT 0,
+      comments INTEGER NOT NULL DEFAULT 0,
+      parent_post_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT,
+      deleted_at TEXT
+    );`,
+    // v15 P0-4..P0-8 — founder invitations: real persisted invitations with
+    // sha256-hashed tokens, 14-day expiry, single-use redeem. The base table
+    // already exists in the drizzle schema with a 6-column shape; this
+    // production statement defines the FULL v15 shape so :memory: SQLite test
+    // runs have every column ready. Extra columns are also added via additive
+    // ALTERs in applyV15AdditiveAlters to upgrade existing dev databases.
+    `CREATE TABLE IF NOT EXISTS round_invitations (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT,
+      round_id TEXT NOT NULL,
+      company_id TEXT,
+      investor_email TEXT NOT NULL,
+      investor_name TEXT,
+      state TEXT NOT NULL,
+      classification TEXT,           -- 'in_crm' | 'new_registration'
+      token_hash TEXT,               -- sha256(token), never the raw token
+      invited_by_user_id TEXT,
+      note TEXT,
+      sent_at TEXT,
+      viewed_at TEXT,
+      redeemed_at TEXT,
+      redeemed_by_user_id TEXT,
+      expires_at TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      deleted_at TEXT
+    );`,
+    // v15 P0-9..P0-11 — soft-circle persistence + SSE + Collective wiring.
+    `CREATE TABLE IF NOT EXISTS soft_circles (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT,
+      round_id TEXT NOT NULL,
+      company_id TEXT,
+      invitation_id TEXT,
+      investor_user_id TEXT,
+      investor_email TEXT,
+      investor_name TEXT NOT NULL,
+      amount REAL NOT NULL,
+      amount_minor INTEGER NOT NULL DEFAULT 0,
+      currency TEXT NOT NULL DEFAULT 'USD',
+      status TEXT NOT NULL,          -- intent | confirmed | committed | declined
+      collective_visible INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT,
+      deleted_at TEXT
+    );`,
+    // v15 P0-12 — per-tenant compliance holds replace the single global flag.
+    `CREATE TABLE IF NOT EXISTS compliance_holds (
+      tenant_id TEXT PRIMARY KEY NOT NULL,
+      on_flag INTEGER NOT NULL DEFAULT 0,
+      reason TEXT,
+      held_by TEXT,
+      held_at TEXT,
+      released_at TEXT,
+      updated_at TEXT
+    );`,
+    // v16 Fix 6 — Collective waitlist persistence.
+    `CREATE TABLE IF NOT EXISTS collective_waitlist (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      company_id TEXT,
+      payload TEXT NOT NULL,
+      chapter_hint TEXT,
+      status TEXT NOT NULL DEFAULT 'waitlist',
+      created_at TEXT NOT NULL,
+      reviewed_at TEXT,
+      reviewed_by TEXT,
+      deleted_at TEXT
+    );`,
+    // v16 Addendum A — DSC feedback DB migration.
+    `CREATE TABLE IF NOT EXISTS dsc_feedback (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      company_id TEXT NOT NULL,
+      submitter_user_id TEXT NOT NULL,
+      tier TEXT NOT NULL,
+      score_json TEXT,
+      notes TEXT,
+      submitted_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      deleted_at TEXT
+    );`,
+    // v16 Addendum B — DSC votes (hash-chained foundation).
+    `CREATE TABLE IF NOT EXISTS dsc_votes (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      company_id TEXT NOT NULL,
+      round_id TEXT,
+      voter_user_id TEXT NOT NULL,
+      vote TEXT NOT NULL,
+      conditions TEXT,
+      notes TEXT,
+      prev_hash TEXT,
+      hash TEXT NOT NULL,
+      cast_at TEXT NOT NULL,
+      superseded_at TEXT,
+      deleted_at TEXT
+    );`,
+    // v17 Phase A — chapters (load-bearing schema change).
+    // Each chapter is its own tenant (tenant_chap_<id>). See migration
+    // 0020_chapters.sql for the canonical source-of-truth.
+    `CREATE TABLE IF NOT EXISTS chapters (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      region TEXT NOT NULL,
+      city TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      admin_user_id TEXT,
+      partner_org_id TEXT,
+      membership_fee_annual_minor INTEGER DEFAULT 0,
+      dsc_quorum_pct INTEGER NOT NULL DEFAULT 50,
+      founded TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT,
+      deleted_at TEXT
+    );`,
+    // v17 Phase A — chapter_memberships.
+    // Per-user join rows. role: 'member'|'admin'. status: 'active'|'pending'|'revoked'.
+    `CREATE TABLE IF NOT EXISTS chapter_memberships (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      chapter_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'member',
+      status TEXT NOT NULL DEFAULT 'active',
+      joined_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT,
+      deleted_at TEXT
+    );`,
+    // ─────────────────────────────────────────────────────────────
+    // v17 Phase B — 8 Collective stores migrated to DB.
+    // Each table mirrors `shared/schema.ts` and has matching SQL in
+    // migrations/0022-0029. Idempotent CREATE TABLE IF NOT EXISTS so
+    // :memory: SQLite test runs have these ready for hydration on boot.
+    // ─────────────────────────────────────────────────────────────
+    // 1) collective_apps — investor membership applications.
+    `CREATE TABLE IF NOT EXISTS collective_apps (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      chapter_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'submitted',
+      payload_json TEXT NOT NULL,
+      submitted_at TEXT NOT NULL,
+      reviewed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT,
+      deleted_at TEXT
+    );`,
+    // 2) collective_memberships — active membership rows (one per user).
+    `CREATE TABLE IF NOT EXISTS collective_memberships (
+      user_id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      chapter_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      tier TEXT NOT NULL DEFAULT 'standard',
+      activated_at TEXT NOT NULL,
+      activated_by TEXT NOT NULL,
+      deactivated_at TEXT,
+      deactivated_by TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT,
+      deleted_at TEXT
+    );`,
+    // 3a) founder_collective_nominations — Path A (investor-vouched).
+    `CREATE TABLE IF NOT EXISTS founder_collective_nominations (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      chapter_id TEXT NOT NULL,
+      company_id TEXT NOT NULL,
+      founder_id TEXT NOT NULL,
+      vouching_investor_id TEXT NOT NULL,
+      pitch_summary TEXT NOT NULL,
+      deck_link TEXT,
+      supplementary_notes TEXT,
+      asks TEXT,
+      status TEXT NOT NULL DEFAULT 'pending_vouch',
+      submitted_at TEXT NOT NULL,
+      vouched_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT,
+      deleted_at TEXT
+    );`,
+    // 3b) founder_collective_applications — Path B (direct).
+    `CREATE TABLE IF NOT EXISTS founder_collective_applications (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      chapter_id TEXT NOT NULL,
+      company_id TEXT NOT NULL,
+      founder_id TEXT NOT NULL,
+      pitch_deck_filename TEXT NOT NULL,
+      traction_mrr INTEGER NOT NULL DEFAULT 0,
+      traction_users INTEGER NOT NULL DEFAULT 0,
+      traction_growth_pct INTEGER NOT NULL DEFAULT 0,
+      asks TEXT NOT NULL,
+      references_text TEXT NOT NULL DEFAULT '',
+      cover_letter TEXT NOT NULL,
+      fee_acknowledged INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'submitted',
+      submitted_at TEXT NOT NULL,
+      reviewed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT,
+      deleted_at TEXT
+    );`,
+    // 4) investor_nominations — sprint21Portfolio (hash-chained audit).
+    //    v17 Phase C — status/decline_reason/decided_*/round_id columns for accept/decline state machine + round cascade.
+    `CREATE TABLE IF NOT EXISTS investor_nominations (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      chapter_id TEXT NOT NULL,
+      investor_user_id TEXT NOT NULL,
+      company_id TEXT NOT NULL,
+      rationale TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      decline_reason TEXT,
+      decided_at TEXT,
+      decided_by TEXT,
+      round_id TEXT,
+      prev_hash TEXT,
+      hash TEXT NOT NULL,
+      submitted_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT,
+      deleted_at TEXT
+    );`,
+    // 5a) dsc_roles — adminDsc role assignments (hash-chained promote/demote).
+    `CREATE TABLE IF NOT EXISTS dsc_roles (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      chapter_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      prev_hash TEXT,
+      hash TEXT NOT NULL,
+      promoted_by TEXT NOT NULL,
+      promoted_at TEXT NOT NULL,
+      demoted_at TEXT,
+      demoted_by TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT,
+      deleted_at TEXT
+    );`,
+    // 5b) dsc_pipeline — adminDsc screening pipeline.
+    `CREATE TABLE IF NOT EXISTS dsc_pipeline (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      chapter_id TEXT NOT NULL,
+      company_id TEXT NOT NULL,
+      submitted_by TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      submitted_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT,
+      deleted_at TEXT
+    );`,
+    // 6) collective_settings — per-user settings (hash-chained).
+    `CREATE TABLE IF NOT EXISTS collective_settings (
+      user_id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      chapter_id TEXT NOT NULL,
+      anonymity_level TEXT NOT NULL DEFAULT 'public',
+      notify_on_dsc_score INTEGER NOT NULL DEFAULT 1,
+      notify_on_deal_room_update INTEGER NOT NULL DEFAULT 1,
+      deal_room_visibility TEXT NOT NULL DEFAULT 'visible',
+      version INTEGER NOT NULL DEFAULT 1,
+      prev_hash TEXT,
+      hash TEXT NOT NULL,
+      updated_by TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      deleted_at TEXT
+    );`,
+    // 7) collective_channel_posts — commsStore Collective slice only.
+    `CREATE TABLE IF NOT EXISTS collective_channel_posts (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      chapter_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      author_user_id TEXT NOT NULL,
+      author_kind TEXT NOT NULL DEFAULT 'user',
+      body TEXT NOT NULL,
+      visibility TEXT NOT NULL DEFAULT 'public_to_collective',
+      liked_by_json TEXT NOT NULL DEFAULT '[]',
+      comments_json TEXT NOT NULL DEFAULT '[]',
+      comment_count INTEGER NOT NULL DEFAULT 0,
+      share_count INTEGER NOT NULL DEFAULT 0,
+      topics_json TEXT,
+      media_urls_json TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT,
+      edited_at TEXT,
+      deleted_at TEXT
+    );`,
+    // 8) partner_deal_promotions — partnerWorkspace Collective slice (hash-chained).
+    `CREATE TABLE IF NOT EXISTS partner_deal_promotions (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      chapter_id TEXT NOT NULL,
+      partner_id TEXT NOT NULL,
+      pipeline_deal_id TEXT NOT NULL,
+      promotion_type TEXT NOT NULL,
+      company_id TEXT,
+      target_email TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      promoted_by TEXT NOT NULL,
+      promoted_at TEXT NOT NULL,
+      approved_at TEXT,
+      approved_by TEXT,
+      rejected_at TEXT,
+      rejected_by TEXT,
+      rejected_reason TEXT,
+      withdrawn_at TEXT,
+      withdrawn_by TEXT,
+      notes TEXT,
+      version INTEGER NOT NULL DEFAULT 1,
+      prev_hash TEXT,
+      hash TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      updated_by TEXT NOT NULL,
+      is_seed INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      deleted_at TEXT
+    );`,
+    // ─────────────────────────────────────────────────────────────
+    // v18 Phase A — screening_events + screening_event_attendees.
+    // Hash-chained event lifecycle; one attendee row per (event, user).
+    // ics_uid is unique so calendar dedup works across re-downloads.
+    // ─────────────────────────────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS screening_events (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      chapter_id TEXT NOT NULL,
+      round_id TEXT,
+      company_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      scheduled_for INTEGER NOT NULL,
+      duration_minutes INTEGER NOT NULL DEFAULT 60,
+      location TEXT,
+      event_type TEXT NOT NULL DEFAULT 'screening',
+      status TEXT NOT NULL DEFAULT 'scheduled',
+      organizer_user_id TEXT NOT NULL,
+      ics_uid TEXT NOT NULL UNIQUE,
+      prev_hash TEXT,
+      curr_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT
+    );`,
+    `CREATE TABLE IF NOT EXISTS screening_event_attendees (
+      id TEXT PRIMARY KEY NOT NULL,
+      event_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'observer',
+      rsvp TEXT NOT NULL DEFAULT 'invited',
+      attended INTEGER NOT NULL DEFAULT 0,
+      checked_in_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(event_id, user_id)
+    );`,
+    // ─────────────────────────────────────────────────────────────
+    // v18 Phase B — Stripe Collective membership billing.
+    // Two hash-chained tables; UNIQUE(user_id, chapter_id) on the billing
+    // row, UNIQUE(stripe_event_id) on the events ledger (idempotency key).
+    // ─────────────────────────────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS collective_memberships_billing (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      chapter_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      tier TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      stripe_customer_id TEXT,
+      stripe_subscription_id TEXT,
+      stripe_price_id TEXT,
+      current_period_start INTEGER,
+      current_period_end INTEGER,
+      cancel_at_period_end INTEGER NOT NULL DEFAULT 0,
+      prev_hash TEXT,
+      curr_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      UNIQUE(user_id, chapter_id)
+    );`,
+    `CREATE TABLE IF NOT EXISTS collective_billing_events (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      chapter_id TEXT NOT NULL,
+      billing_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      stripe_event_id TEXT NOT NULL UNIQUE,
+      raw_payload TEXT NOT NULL,
+      processed_at TEXT NOT NULL,
+      prev_hash TEXT,
+      curr_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_collective_billing_tenant         ON collective_memberships_billing(tenant_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_collective_billing_chapter        ON collective_memberships_billing(chapter_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_collective_billing_user           ON collective_memberships_billing(user_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_collective_billing_status         ON collective_memberships_billing(status);`,
+    `CREATE INDEX IF NOT EXISTS idx_collective_billing_stripe_sub     ON collective_memberships_billing(stripe_subscription_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_collective_billing_events_billing ON collective_billing_events(billing_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_collective_billing_events_type    ON collective_billing_events(event_type);`,
+    `CREATE INDEX IF NOT EXISTS idx_collective_billing_events_tenant  ON collective_billing_events(tenant_id);`,
+    /* ── v18 Phase C — Ask-an-Expert (Q&A + reputation) ── */
+    `CREATE TABLE IF NOT EXISTS expert_questions (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      chapter_id TEXT NOT NULL,
+      asker_user_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      tags TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'open',
+      best_answer_id TEXT,
+      flag_reason TEXT,
+      flagged_by_user_id TEXT,
+      flagged_at TEXT,
+      view_count INTEGER NOT NULL DEFAULT 0,
+      prev_hash TEXT,
+      curr_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT
+    );`,
+    `CREATE TABLE IF NOT EXISTS expert_answers (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      chapter_id TEXT NOT NULL,
+      question_id TEXT NOT NULL,
+      responder_user_id TEXT NOT NULL,
+      body TEXT NOT NULL,
+      upvote_count INTEGER NOT NULL DEFAULT 0,
+      is_best_answer INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'active',
+      flag_reason TEXT,
+      flagged_by_user_id TEXT,
+      flagged_at TEXT,
+      prev_hash TEXT,
+      curr_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT
+    );`,
+    `CREATE TABLE IF NOT EXISTS expert_votes (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      chapter_id TEXT NOT NULL,
+      answer_id TEXT NOT NULL,
+      voter_user_id TEXT NOT NULL,
+      vote_type TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      deleted_at TEXT,
+      UNIQUE(answer_id, voter_user_id)
+    );`,
+    `CREATE TABLE IF NOT EXISTS expert_reputation (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      chapter_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      score INTEGER NOT NULL DEFAULT 0,
+      questions_asked INTEGER NOT NULL DEFAULT 0,
+      answers_given INTEGER NOT NULL DEFAULT 0,
+      best_answers INTEGER NOT NULL DEFAULT 0,
+      upvotes_received INTEGER NOT NULL DEFAULT 0,
+      last_milestone_notified INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      UNIQUE(user_id, chapter_id)
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_expert_questions_tenant   ON expert_questions(tenant_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_expert_questions_chapter  ON expert_questions(chapter_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_expert_questions_asker    ON expert_questions(asker_user_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_expert_questions_status   ON expert_questions(status);`,
+    `CREATE INDEX IF NOT EXISTS idx_expert_questions_created  ON expert_questions(created_at);`,
+    `CREATE INDEX IF NOT EXISTS idx_expert_answers_tenant     ON expert_answers(tenant_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_expert_answers_chapter    ON expert_answers(chapter_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_expert_answers_question   ON expert_answers(question_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_expert_answers_responder  ON expert_answers(responder_user_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_expert_answers_status     ON expert_answers(status);`,
+    `CREATE INDEX IF NOT EXISTS idx_expert_votes_tenant       ON expert_votes(tenant_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_expert_votes_chapter      ON expert_votes(chapter_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_expert_votes_answer       ON expert_votes(answer_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_expert_votes_voter        ON expert_votes(voter_user_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_expert_reputation_tenant  ON expert_reputation(tenant_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_expert_reputation_chapter ON expert_reputation(chapter_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_expert_reputation_user    ON expert_reputation(user_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_expert_reputation_score   ON expert_reputation(score);`,
+    /* ── v19 Phase A — chapter_announcements + announcement_reads ── */
+    `CREATE TABLE IF NOT EXISTS chapter_announcements (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      chapter_id TEXT NOT NULL,
+      author_user_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      pinned INTEGER NOT NULL DEFAULT 0,
+      priority TEXT NOT NULL DEFAULT 'normal',
+      audience TEXT NOT NULL DEFAULT 'all',
+      expires_at TEXT,
+      prev_hash TEXT,
+      curr_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT
+    );`,
+    `CREATE TABLE IF NOT EXISTS announcement_reads (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      chapter_id TEXT NOT NULL,
+      announcement_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      read_at TEXT NOT NULL,
+      UNIQUE(announcement_id, user_id)
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_chapter_announcements_tenant   ON chapter_announcements(tenant_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_chapter_announcements_chapter  ON chapter_announcements(chapter_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_chapter_announcements_author   ON chapter_announcements(author_user_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_chapter_announcements_pinned   ON chapter_announcements(pinned);`,
+    `CREATE INDEX IF NOT EXISTS idx_chapter_announcements_priority ON chapter_announcements(priority);`,
+    `CREATE INDEX IF NOT EXISTS idx_chapter_announcements_expires  ON chapter_announcements(expires_at);`,
+    `CREATE INDEX IF NOT EXISTS idx_chapter_announcements_created  ON chapter_announcements(created_at);`,
+    `CREATE INDEX IF NOT EXISTS idx_announcement_reads_announcement ON announcement_reads(announcement_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_announcement_reads_user        ON announcement_reads(user_id);`,
+    /* ── v19 Phase A — chapter_resources ── */
+    `CREATE TABLE IF NOT EXISTS chapter_resources (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      chapter_id TEXT NOT NULL,
+      uploader_user_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      resource_type TEXT NOT NULL DEFAULT 'link',
+      url TEXT NOT NULL,
+      file_size_bytes INTEGER,
+      mime_type TEXT,
+      tags TEXT NOT NULL DEFAULT '[]',
+      visibility TEXT NOT NULL DEFAULT 'members',
+      status TEXT NOT NULL DEFAULT 'pending',
+      rejection_reason TEXT,
+      flag_reason TEXT,
+      flagged_by_user_id TEXT,
+      flagged_at TEXT,
+      download_count INTEGER NOT NULL DEFAULT 0,
+      prev_hash TEXT,
+      curr_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_chapter_resources_tenant     ON chapter_resources(tenant_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_chapter_resources_chapter    ON chapter_resources(chapter_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_chapter_resources_uploader   ON chapter_resources(uploader_user_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_chapter_resources_type       ON chapter_resources(resource_type);`,
+    `CREATE INDEX IF NOT EXISTS idx_chapter_resources_visibility ON chapter_resources(visibility);`,
+    `CREATE INDEX IF NOT EXISTS idx_chapter_resources_status     ON chapter_resources(status);`,
+    `CREATE INDEX IF NOT EXISTS idx_chapter_resources_created    ON chapter_resources(created_at);`,
+    /* ── v19 Phase A — chapter_leaderboard_snapshots ── */
+    `CREATE TABLE IF NOT EXISTS chapter_leaderboard_snapshots (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      chapter_id TEXT NOT NULL,
+      period TEXT NOT NULL,
+      period_start TEXT NOT NULL,
+      period_end TEXT NOT NULL,
+      data TEXT NOT NULL DEFAULT '[]',
+      generated_at TEXT NOT NULL,
+      UNIQUE(chapter_id, period, period_start)
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_chapter_leaderboard_tenant    ON chapter_leaderboard_snapshots(tenant_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_chapter_leaderboard_chapter   ON chapter_leaderboard_snapshots(chapter_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_chapter_leaderboard_period    ON chapter_leaderboard_snapshots(period);`,
+    `CREATE INDEX IF NOT EXISTS idx_chapter_leaderboard_generated ON chapter_leaderboard_snapshots(generated_at);`,
+    /* ── v19 Phase B — messaging tables ── */
+    `CREATE TABLE IF NOT EXISTS messages (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      chapter_id TEXT,
+      thread_id TEXT,
+      channel_type TEXT NOT NULL,
+      sender_user_id TEXT NOT NULL,
+      recipient_user_ids TEXT NOT NULL DEFAULT '[]',
+      subject TEXT,
+      body TEXT NOT NULL,
+      attachments TEXT NOT NULL DEFAULT '[]',
+      read_by TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'sent',
+      prev_hash TEXT,
+      curr_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_messages_tenant       ON messages(tenant_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_messages_chapter      ON messages(chapter_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_messages_thread       ON messages(thread_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_messages_sender       ON messages(sender_user_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_messages_channel_type ON messages(channel_type);`,
+    `CREATE INDEX IF NOT EXISTS idx_messages_created      ON messages(created_at);`,
+    `CREATE INDEX IF NOT EXISTS idx_messages_status       ON messages(status);`,
+    `CREATE TABLE IF NOT EXISTS message_threads (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      chapter_id TEXT,
+      title TEXT NOT NULL DEFAULT '',
+      participant_user_ids TEXT NOT NULL DEFAULT '[]',
+      last_message_id TEXT,
+      last_activity_at TEXT NOT NULL,
+      created_by_user_id TEXT NOT NULL,
+      prev_hash TEXT,
+      curr_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_message_threads_tenant     ON message_threads(tenant_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_message_threads_chapter    ON message_threads(chapter_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_message_threads_created_by ON message_threads(created_by_user_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_message_threads_activity   ON message_threads(last_activity_at);`,
+    `CREATE TABLE IF NOT EXISTS message_read_receipts (
+      id TEXT PRIMARY KEY NOT NULL,
+      message_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      read_at TEXT NOT NULL,
+      UNIQUE(message_id, user_id)
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_message_read_receipts_message ON message_read_receipts(message_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_message_read_receipts_user    ON message_read_receipts(user_id);`,
+    /* ── v19 Phase B — partner workspace remaining tables ── */
+    `CREATE TABLE IF NOT EXISTS partner_portfolio_companies (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      partner_id TEXT NOT NULL,
+      company_id TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      stage TEXT NOT NULL DEFAULT 'seed',
+      sector TEXT NOT NULL DEFAULT '',
+      lead_invested_amount_minor INTEGER NOT NULL DEFAULT 0,
+      first_invested_at TEXT,
+      notes TEXT NOT NULL DEFAULT '',
+      visibility TEXT NOT NULL DEFAULT 'private',
+      prev_hash TEXT,
+      curr_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_partner_portfolio_tenant     ON partner_portfolio_companies(tenant_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_partner_portfolio_partner    ON partner_portfolio_companies(partner_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_partner_portfolio_company    ON partner_portfolio_companies(company_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_partner_portfolio_visibility ON partner_portfolio_companies(visibility);`,
+    `CREATE INDEX IF NOT EXISTS idx_partner_portfolio_stage      ON partner_portfolio_companies(stage);`,
+    `CREATE INDEX IF NOT EXISTS idx_partner_portfolio_created    ON partner_portfolio_companies(created_at);`,
+    `CREATE TABLE IF NOT EXISTS partner_crm_contacts (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      partner_id TEXT NOT NULL,
+      contact_user_id TEXT,
+      email TEXT NOT NULL DEFAULT '',
+      name TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT '',
+      org TEXT NOT NULL DEFAULT '',
+      last_contact_at TEXT,
+      notes TEXT NOT NULL DEFAULT '',
+      tags TEXT NOT NULL DEFAULT '[]',
+      prev_hash TEXT,
+      curr_hash TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_partner_crm_tenant   ON partner_crm_contacts(tenant_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_partner_crm_partner  ON partner_crm_contacts(partner_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_partner_crm_user     ON partner_crm_contacts(contact_user_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_partner_crm_email    ON partner_crm_contacts(email);`,
+    `CREATE INDEX IF NOT EXISTS idx_partner_crm_created  ON partner_crm_contacts(created_at);`,
+    `CREATE TABLE IF NOT EXISTS partner_deal_pipeline (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      partner_id TEXT NOT NULL,
+      company_id TEXT NOT NULL,
+      stage TEXT NOT NULL DEFAULT 'sourced',
+      assigned_user_ids TEXT NOT NULL DEFAULT '[]',
+      target_close_at TEXT,
+      notes TEXT NOT NULL DEFAULT '',
+      prev_hash TEXT,
+      curr_hash TEXT NOT NULL,
+      legacy_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_partner_deal_tenant  ON partner_deal_pipeline(tenant_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_partner_deal_partner ON partner_deal_pipeline(partner_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_partner_deal_company ON partner_deal_pipeline(company_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_partner_deal_stage   ON partner_deal_pipeline(stage);`,
+    `CREATE INDEX IF NOT EXISTS idx_partner_deal_created ON partner_deal_pipeline(created_at);`,
+
+    /* ── v19 Phase C — audit_chain_verifications ── */
+    `CREATE TABLE IF NOT EXISTS audit_chain_verifications (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      chapter_id TEXT,
+      table_name TEXT NOT NULL,
+      verified_count INTEGER NOT NULL DEFAULT 0,
+      broken_count INTEGER NOT NULL DEFAULT 0,
+      broken_first_id TEXT,
+      total_rows INTEGER NOT NULL DEFAULT 0,
+      duration_ms INTEGER NOT NULL DEFAULT 0,
+      started_at TEXT NOT NULL,
+      finished_at TEXT NOT NULL,
+      details_json TEXT
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_audit_chain_verifications_tenant  ON audit_chain_verifications(tenant_id, started_at);`,
+    `CREATE INDEX IF NOT EXISTS idx_audit_chain_verifications_chapter ON audit_chain_verifications(chapter_id, table_name, started_at);`,
+    `CREATE INDEX IF NOT EXISTS idx_audit_chain_verifications_table   ON audit_chain_verifications(table_name, started_at);`,
+
+    /* ── CP Phase A — SPV / Fund DB migration (migration 0041) ── */
+    `CREATE TABLE IF NOT EXISTS spvs (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      partner_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      lead_company_id TEXT,
+      structure_type TEXT NOT NULL DEFAULT 'spv',
+      status TEXT NOT NULL DEFAULT 'forming',
+      target_minor INTEGER NOT NULL DEFAULT 0,
+      committed_minor INTEGER NOT NULL DEFAULT 0,
+      called_minor INTEGER NOT NULL DEFAULT 0,
+      distributed_minor INTEGER NOT NULL DEFAULT 0,
+      gp_user_id TEXT,
+      formed_at TEXT,
+      closes_at TEXT,
+      terms TEXT NOT NULL DEFAULT '{}',
+      prev_hash TEXT,
+      curr_hash TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_spvs_tenant     ON spvs(tenant_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_spvs_partner    ON spvs(partner_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_spvs_status     ON spvs(status);`,
+    `CREATE INDEX IF NOT EXISTS idx_spvs_lead_co    ON spvs(lead_company_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_spvs_chain_walk ON spvs(partner_id, created_at, id);`,
+
+    `CREATE TABLE IF NOT EXISTS spv_commitments (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      spv_id TEXT NOT NULL,
+      lp_user_id TEXT NOT NULL,
+      amount_minor INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'pending',
+      commitment_doc_url TEXT,
+      signed_at TEXT,
+      funded_at TEXT,
+      prev_hash TEXT,
+      curr_hash TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_commitments_tenant     ON spv_commitments(tenant_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_commitments_spv        ON spv_commitments(spv_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_commitments_lp         ON spv_commitments(lp_user_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_commitments_status     ON spv_commitments(status);`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_commitments_chain_walk ON spv_commitments(spv_id, created_at, id);`,
+
+    `CREATE TABLE IF NOT EXISTS spv_capital_calls (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      spv_id TEXT NOT NULL,
+      sequence_no INTEGER NOT NULL,
+      amount_minor INTEGER NOT NULL DEFAULT 0,
+      called_at TEXT NOT NULL,
+      due_at TEXT,
+      prev_hash TEXT,
+      curr_hash TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_capital_calls_tenant     ON spv_capital_calls(tenant_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_capital_calls_spv        ON spv_capital_calls(spv_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_capital_calls_seq        ON spv_capital_calls(spv_id, sequence_no);`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_capital_calls_chain_walk ON spv_capital_calls(spv_id, created_at, id);`,
+
+    `CREATE TABLE IF NOT EXISTS spv_distributions (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      spv_id TEXT NOT NULL,
+      distribution_type TEXT NOT NULL DEFAULT 'dividend',
+      total_minor INTEGER NOT NULL DEFAULT 0,
+      distributed_at TEXT NOT NULL,
+      prev_hash TEXT,
+      curr_hash TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_distributions_tenant     ON spv_distributions(tenant_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_distributions_spv        ON spv_distributions(spv_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_distributions_type       ON spv_distributions(distribution_type);`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_distributions_chain_walk ON spv_distributions(spv_id, created_at, id);`,
+
+    `CREATE TABLE IF NOT EXISTS spv_positions (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      spv_id TEXT NOT NULL,
+      security_id TEXT NOT NULL,
+      shares TEXT NOT NULL DEFAULT '0',
+      basis_minor INTEGER NOT NULL DEFAULT 0,
+      acquired_at TEXT,
+      status TEXT NOT NULL DEFAULT 'held',
+      prev_hash TEXT,
+      curr_hash TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_positions_tenant     ON spv_positions(tenant_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_positions_spv        ON spv_positions(spv_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_positions_security   ON spv_positions(security_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_positions_status     ON spv_positions(status);`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_positions_chain_walk ON spv_positions(spv_id, created_at, id);`,
+
+    /* ── CP Phase A — One-time backfill / chain stitch tracker (migration 0042). ── */
+    `CREATE TABLE IF NOT EXISTS _migrations_applied (
+      key TEXT PRIMARY KEY NOT NULL,
+      applied_at TEXT NOT NULL,
+      details TEXT NOT NULL DEFAULT ''
+    );`,
+
+    /* ── CP Phase B — consortium_applications (migration 0044; CP-001..005). ── */
+    `CREATE TABLE IF NOT EXISTS consortium_applications (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT,
+      expected_chapter_id TEXT,
+      contact_name TEXT NOT NULL,
+      contact_email TEXT NOT NULL,
+      contact_phone TEXT,
+      organization_name TEXT NOT NULL,
+      website TEXT,
+      jurisdiction TEXT NOT NULL DEFAULT '',
+      partner_type TEXT NOT NULL DEFAULT 'other',
+      aum_range TEXT NOT NULL DEFAULT 'undisclosed',
+      portfolio_company_count INTEGER NOT NULL DEFAULT 0,
+      expected_chapter TEXT NOT NULL DEFAULT '',
+      intro_message TEXT NOT NULL DEFAULT '',
+      referred_by TEXT,
+      source_ip TEXT,
+      source_user_agent TEXT,
+      status TEXT NOT NULL DEFAULT 'submitted',
+      reviewed_by_user_id TEXT,
+      review_notes TEXT,
+      provisioned_partner_id TEXT,
+      prev_hash TEXT,
+      curr_hash TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      reviewed_at TEXT,
+      updated_at TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_consortium_applications_status     ON consortium_applications(status);`,
+    `CREATE INDEX IF NOT EXISTS idx_consortium_applications_chapter    ON consortium_applications(expected_chapter_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_consortium_applications_partner    ON consortium_applications(partner_type);`,
+    `CREATE INDEX IF NOT EXISTS idx_consortium_applications_email      ON consortium_applications(contact_email);`,
+    `CREATE INDEX IF NOT EXISTS idx_consortium_applications_created    ON consortium_applications(created_at);`,
+
+    /* ── CP Phase B — partner_organizations (migration 0045; CP-002). ── */
+    `CREATE TABLE IF NOT EXISTS partner_organizations (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      jurisdiction TEXT NOT NULL DEFAULT '',
+      partner_type TEXT NOT NULL DEFAULT 'other',
+      aum_range TEXT NOT NULL DEFAULT 'undisclosed',
+      primary_chapter_id TEXT,
+      website TEXT,
+      logo_url TEXT,
+      banner_url TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      onboarding_state TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_partner_orgs_tenant   ON partner_organizations(tenant_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_partner_orgs_chapter  ON partner_organizations(primary_chapter_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_partner_orgs_status   ON partner_organizations(status);`,
+
+    /* ── CP Phase B — data_export_log / data_delete_log (migration 0048; CP-013). ── */
+    `CREATE TABLE IF NOT EXISTS data_export_log (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      exported_at TEXT NOT NULL,
+      format TEXT NOT NULL DEFAULT 'json',
+      bytes INTEGER NOT NULL DEFAULT 0,
+      request_ip TEXT,
+      created_at TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_data_export_log_user    ON data_export_log(user_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_data_export_log_tenant  ON data_export_log(tenant_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_data_export_log_created ON data_export_log(created_at);`,
+
+    `CREATE TABLE IF NOT EXISTS data_delete_log (
+      id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      requested_at TEXT NOT NULL,
+      confirmed_at TEXT,
+      initiated_by_user_id TEXT NOT NULL,
+      reason TEXT,
+      records_redacted INTEGER NOT NULL DEFAULT 0,
+      prev_hash TEXT,
+      curr_hash TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_data_delete_log_user      ON data_delete_log(user_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_data_delete_log_tenant    ON data_delete_log(tenant_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_data_delete_log_created   ON data_delete_log(created_at);`,
+
+    /* v19 Phase C perf indexes moved to applyV12AdditiveAlters() so they
+     * run AFTER all v17 ALTER TABLE statements (which add chapter_id
+     * columns to dsc_votes / collective_waitlist / etc.). See line ~407. */
   ];
 }
 

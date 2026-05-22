@@ -162,8 +162,8 @@ const FROZEN_CODES = new Set(REGIONS_ALL.map((r) => r.code.toUpperCase()));
 
 function getActorFromRequest(req: Request): string {
   const ses = req.headers["x-admin-ses"] as string | undefined;
-  const userId = req.headers["x-user-id"] as string | undefined;
-  return ses ?? userId ?? "u_admin";
+  const userId = (req as any).userContext?.userId as string | undefined; /* v14 */
+  return ses ?? userId ?? ""; /* v14 — no u_admin fallback */
 }
 
 function requireConfirm(req: Request, res: Response, proposedChange: unknown): boolean {

@@ -18,6 +18,7 @@
  *   - ALL_OUTBOUND_EVENT_TYPES now 33
  */
 import { describe, it, expect, beforeEach } from "vitest";
+import { installV14TestIdentity } from "./_v14TestIdentity"; /* v14 Tier-1 Fix 1 — restores u_admin default identity for legacy tests */
 import express from "express";
 import http from "node:http";
 
@@ -35,6 +36,7 @@ import { _testBridge } from "../bridgeStore";
 function makeApp() {
   const app = express();
   app.use(express.json());
+  installV14TestIdentity(app);
   registerNotificationCampaignRoutes(app);
   return app;
 }

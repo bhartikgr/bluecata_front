@@ -29,6 +29,7 @@ import {
   founderTiers as founderTiersTable,
   platformConfig as platformConfigTable,
 } from "../shared/schema";
+import { log } from "./lib/logger";
 
 /**
  * Patch v10 — Live activity feed allowlist.
@@ -449,7 +450,7 @@ function appendAudit(
     // If the DB write fails we still surface an entry to keep callers
     // resilient (route may have already optimistically returned 200). The
     // chain ends up only in-memory for this entry, which is logged loudly.
-    console.error("[adminPlatformStore.appendAudit] DB write failed:", (err as Error).message);
+    log.error("[adminPlatformStore.appendAudit] DB write failed:", (err as Error).message);
     const prevHash = "0".repeat(64);
     const body = `${prevHash}|${id}|${eventType}|${entity}|${ts}|${payloadStr}`;
     const hash = sha256(body);
@@ -532,7 +533,7 @@ export async function hydrateAdminPlatformStore(): Promise<void> {
       });
     }
   } catch (err) {
-    console.warn("[adminPlatformStore.hydrate] audit_log load failed:", (err as Error).message);
+    log.warn("[adminPlatformStore.hydrate] audit_log load failed:", (err as Error).message);
   }
 
   // 2) Reconciliation runs — read all live rows into the in-memory array.
@@ -563,7 +564,7 @@ export async function hydrateAdminPlatformStore(): Promise<void> {
       }
     }
   } catch (err) {
-    console.warn("[adminPlatformStore.hydrate] recon_runs load failed:", (err as Error).message);
+    log.warn("[adminPlatformStore.hydrate] recon_runs load failed:", (err as Error).message);
   }
 
   // 3) Founder tiers — replace seed if DB has rows.
@@ -587,7 +588,7 @@ export async function hydrateAdminPlatformStore(): Promise<void> {
       }
     }
   } catch (err) {
-    console.warn("[adminPlatformStore.hydrate] founder_tiers load failed:", (err as Error).message);
+    log.warn("[adminPlatformStore.hydrate] founder_tiers load failed:", (err as Error).message);
   }
 
   // 4) Lifecycle policies — platform_config[key="lifecycle_policies"].
@@ -607,7 +608,7 @@ export async function hydrateAdminPlatformStore(): Promise<void> {
       } catch { /* malformed config row; keep defaults */ }
     }
   } catch (err) {
-    console.warn("[adminPlatformStore.hydrate] platform_config load failed:", (err as Error).message);
+    log.warn("[adminPlatformStore.hydrate] platform_config load failed:", (err as Error).message);
   }
 }
 
@@ -765,7 +766,7 @@ export function setLifecyclePolicies(patch: Partial<LifecyclePolicies>): Lifecyc
         .run();
     });
   } catch (err) {
-    console.error("[adminPlatformStore.setLifecyclePolicies] DB write failed:", (err as Error).message);
+    log.error("[adminPlatformStore.setLifecyclePolicies] DB write failed:", (err as Error).message);
   }
   return { ..._lifecyclePolicies };
 }
@@ -774,7 +775,7 @@ export function setLifecyclePolicies(patch: Partial<LifecyclePolicies>): Lifecyc
 export async function hydrateLifecyclePolicies(_db?: unknown): Promise<void> {
   const dbUrl = process.env.DATABASE_URL;
   if (!dbUrl) return;
-  console.log(`[hydrate] would load lifecycle_policies from DATABASE_URL=${dbUrl.slice(0, 20)}... if Drizzle pg driver were active`);
+  log.info(`[hydrate] would load lifecycle_policies from DATABASE_URL=${dbUrl.slice(0, 20)}... if Drizzle pg driver were active`);
 }
 
 export function registerAdminPlatformRoutes(app: Express): void {
@@ -975,7 +976,11 @@ export function registerAdminPlatformRoutes(app: Express): void {
   });
   app.post("/api/admin/reconciliation/run", (req: Request, res: Response) => {
     const { companyId, roundId } = req.body ?? {};
-    const e: ReconRun = { id: `rec_${randomBytes(4).toString("hex")}`, ts: new Date().toISOString(), companyId: companyId ?? "co_novapay", roundId: roundId ?? "rnd_novapay_seed", engineMain: { totalShares: "12500000", ownership: 1.0 }, engineRef: { totalShares: "12500000", ownership: 1.0 }, diff: { sharesDelta: "0", ownershipDelta: 0, ok: true }, actor: "u_admin" };
+    // v14 — require explicit companyId/roundId from caller; no demo fallback.
+    if (!companyId || !roundId) return res.status(400).json({ error: "companyId_and_roundId_required" });
+    const actorCtx = (req as Request & { userContext?: { userId?: string; isAdmin?: boolean } }).userContext;
+    if (!actorCtx?.userId) return res.status(401).json({ error: "missing_identity" });
+    const e: ReconRun = { id: `rec_${randomBytes(4).toString("hex")}`, ts: new Date().toISOString(), companyId: String(companyId), roundId: String(roundId), engineMain: { totalShares: "12500000", ownership: 1.0 }, engineRef: { totalShares: "12500000", ownership: 1.0 }, diff: { sharesDelta: "0", ownershipDelta: 0, ok: true }, actor: actorCtx.userId };
     // Patch v12 Day 2 Wave 1 — write-through to recon_runs table.
     try {
       const db = getDb();
@@ -994,7 +999,7 @@ export function registerAdminPlatformRoutes(app: Express): void {
         }).run();
       });
     } catch (err) {
-      console.error("[adminPlatformStore.reconciliation/run] DB write failed:", (err as Error).message);
+      log.error("[adminPlatformStore.reconciliation/run] DB write failed:", (err as Error).message);
     }
     reconRuns.push(e);
     res.json(e);
@@ -1004,8 +1009,12 @@ export function registerAdminPlatformRoutes(app: Express): void {
     if (!signature || String(signature).length < 8) {
       return res.status(403).json({ error: "ses_signature_required", message: "Force commit requires admin SES signature (min 8 chars)" });
     }
-    appendAudit("u_admin", companyId ?? "co_novapay", "reconciliation.force_commit", { roundId, signature: String(signature).slice(0, 4) + "…" });
-    res.json({ ok: true, signedBy: "u_admin", at: new Date().toISOString() });
+    // v14 — identity from session, no "u_admin"/"co_novapay" fallbacks.
+    const actorCtx = (req as Request & { userContext?: { userId?: string } }).userContext;
+    if (!actorCtx?.userId) return res.status(401).json({ error: "missing_identity" });
+    if (!companyId) return res.status(400).json({ error: "companyId_required" });
+    appendAudit(actorCtx.userId, String(companyId), "reconciliation.force_commit", { roundId, signature: String(signature).slice(0, 4) + "…" });
+    res.json({ ok: true, signedBy: actorCtx.userId, at: new Date().toISOString() });
   });
 
   /* ====== Telemetry power ====== */
@@ -1058,7 +1067,10 @@ export function registerAdminPlatformRoutes(app: Express): void {
     res.json({ ok: true, policies: getLifecyclePolicies() });
   });
   app.patch("/api/admin/lifecycle-policies", (req: Request, res: Response) => {
-    const actor = String(req.headers["x-actor-email"] ?? "admin@capavate.com");
+    // v14 — actor email from session, never x-actor-email header.
+    const ctx = (req as Request & { userContext?: { userId?: string; identity?: { email?: string } } }).userContext;
+    if (!ctx?.userId) return res.status(401).json({ error: "missing_identity" });
+    const actor = ctx.identity?.email ?? ctx.userId;
     const allowed = ["founderDashboardTenureDays","archivalRetentionDays","governanceMetricsCadenceDays","softCircleExpiryDays","invitationExpiryDays"];
     const patch: Record<string, number> = {};
     for (const key of allowed) {

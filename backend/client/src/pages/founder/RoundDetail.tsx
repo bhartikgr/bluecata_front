@@ -1034,10 +1034,16 @@ function TranchesPanel({ round }: { round: Round }) {
 /* ----- Sprint 11 D12: Commit pipeline ----- */
 function CommitPipeline({ roundId, companyId }: { roundId: string; companyId: string }) {
   const { toast } = useToast();
+  // v15 P0-13 — use apiRequest so the session cookie travels with the call.
+  // Raw fetch() omits credentials and breaks the new requireAuth wrapper on
+  // /api/founder/captable/ledger.
   const ledger = useQuery<{ entries: any[]; complianceHold: boolean; verified: { ok: boolean } }>({
     queryKey: ["/api/founder/captable/ledger", companyId, roundId],
     queryFn: async () => {
-      const res = await fetch(`/api/founder/captable/ledger?companyId=${companyId}&roundId=${roundId}`);
+      const res = await apiRequest(
+        "GET",
+        `/api/founder/captable/ledger?companyId=${encodeURIComponent(companyId)}&roundId=${encodeURIComponent(roundId)}`,
+      );
       return res.json();
     },
   });
@@ -1064,11 +1070,17 @@ function CommitPipeline({ roundId, companyId }: { roundId: string; companyId: st
   // is rolled back, so the ledger never contains a partial commit.
   async function commitFunded() {
     try {
-      const res = await fetch("/api/founder/captable/commit-funded-batch", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ companyId, roundId }),
-      });
+      // v15 P0-13 — apiRequest sends the session cookie and uses the proxy
+      // base. Raw fetch broke the credentialed requireAuth gate.
+      let res: Response;
+      try {
+        res = await apiRequest("POST", "/api/founder/captable/commit-funded-batch", { companyId, roundId });
+      } catch (e: unknown) {
+        // apiRequest throws on !res.ok; reconstruct a response-shaped error.
+        const msg = e instanceof Error ? e.message : String(e);
+        toast({ title: "Commit blocked", description: msg, variant: "destructive" });
+        return;
+      }
       const data = await res.json();
       if (res.ok) {
         const n = Number(data.committedCount ?? 0);

@@ -37,11 +37,15 @@ import { createHash, randomBytes } from "node:crypto";
 import { and, eq, isNull, desc, asc } from "drizzle-orm";
 import { emitSync } from "./sprint10Telemetry";
 import { BridgeOutbound } from "./lib/bridgeOutbound";
-import { getDb } from "./db/connection";
+import { getDb, rawDb } from "./db/connection";
+import { withTenant, crossTenant } from "./lib/withTenant"; /* v14 Tier-1 Fix 4 — tenant scoping on cap-table reads/writes */
+import { requireAuth, requireAdmin } from "./lib/authMiddleware"; /* v15 P0-1/2/3/12/14 — auth on cap-table HTTP surface */
+import { requireIdentity } from "./lib/requireIdentity";
 import {
   captableCommits as captableCommitsTable,
   fundedQueue as fundedQueueTable,
 } from "../shared/schema";
+import { log } from "./lib/logger";
 
 export type CommitState =
   | "invited"
@@ -87,9 +91,38 @@ export const TRANSITIONS: Record<CommitState, CommitState[]> = {
   rejected:     [],
 };
 
-// v12: complianceHold remains in-memory (process-wide; admin must reset
-// after each restart by design).
-let complianceHold = false;
+// v15 P0-12 — per-tenant compliance hold (DB-backed) with in-memory cache.
+// Process-wide flag preserved for back-compat tests that call setComplianceHold(true)
+// without specifying a tenant — they hold ALL tenants.
+let globalComplianceHold = false;
+const tenantComplianceHolds = new Map<string, { heldAt: string; heldBy: string; reason?: string }>();
+
+function ensureComplianceHoldsTable(): void {
+  try {
+    const db = rawDb();
+    db.exec(`CREATE TABLE IF NOT EXISTS compliance_holds (
+      tenant_id TEXT PRIMARY KEY NOT NULL,
+      held_at TEXT NOT NULL,
+      held_by TEXT NOT NULL,
+      reason TEXT,
+      released_at TEXT
+    );`);
+  } catch { /* postgres path or table exists */ }
+}
+
+function hydrateComplianceHolds(): void {
+  try {
+    ensureComplianceHoldsTable();
+    const db = rawDb();
+    const rows = db.prepare(
+      `SELECT tenant_id, held_at, held_by, reason FROM compliance_holds WHERE released_at IS NULL`
+    ).all() as Array<{ tenant_id: string; held_at: string; held_by: string; reason: string | null }>;
+    tenantComplianceHolds.clear();
+    for (const r of rows) {
+      tenantComplianceHolds.set(r.tenant_id, { heldAt: r.held_at, heldBy: r.held_by, reason: r.reason ?? undefined });
+    }
+  } catch { /* sandbox / postgres — best effort */ }
+}
 
 /**
  * Sprint 25 — funded-pipeline queue (NOW DB-PERSISTED).
@@ -177,7 +210,7 @@ export function enqueueFunded(e: FundedEntry): void {
         .run();
     });
   } catch (err) {
-    console.error("[captableCommitStore.enqueueFunded] DB write failed:", (err as Error).message);
+    log.error("[captableCommitStore.enqueueFunded] DB write failed:", (err as Error).message);
     throw err;
   }
 }
@@ -194,7 +227,7 @@ export function getFundedQueue(): ReadonlyArray<FundedEntry> {
       .all() as any[];
     return rows.map(rowToFundedEntry);
   } catch (err) {
-    console.warn("[captableCommitStore.getFundedQueue] DB read failed:", (err as Error).message);
+    log.warn("[captableCommitStore.getFundedQueue] DB read failed:", (err as Error).message);
     return [];
   }
 }
@@ -206,7 +239,7 @@ export function clearFundedQueue(): void {
       tx.delete(fundedQueueTable).run();
     });
   } catch (err) {
-    console.warn("[captableCommitStore.clearFundedQueue] DB delete failed:", (err as Error).message);
+    log.warn("[captableCommitStore.clearFundedQueue] DB delete failed:", (err as Error).message);
   }
 }
 
@@ -214,10 +247,59 @@ function dequeueFundedRow(tx: any, invitationId: string): void {
   tx.delete(fundedQueueTable).where(eq(fundedQueueTable.invitationId, invitationId)).run();
 }
 
-// ─── Compliance hold ─────────────────────────────────────────────────────────
+// ─── Compliance hold (v15 P0-12: per-tenant) ────────────────────────────────
 
-export function setComplianceHold(on: boolean): void { complianceHold = on; }
-export function getComplianceHold(): boolean { return complianceHold; }
+/** Back-compat: legacy callers without a tenantId set the GLOBAL hold (affects every tenant). */
+export function setComplianceHold(on: boolean): void { globalComplianceHold = on; }
+export function getComplianceHold(): boolean { return globalComplianceHold; }
+
+/** v15 P0-12 — set per-tenant compliance hold (persisted). */
+export function setComplianceHoldForTenant(tenantId: string, on: boolean, heldBy: string, reason?: string): void {
+  if (!tenantId) throw new Error("tenantId required");
+  ensureComplianceHoldsTable();
+  try {
+    const db = rawDb();
+    if (on) {
+      const now = new Date().toISOString();
+      db.prepare(
+        `INSERT INTO compliance_holds (tenant_id, held_at, held_by, reason, released_at) VALUES (?, ?, ?, ?, NULL)
+         ON CONFLICT(tenant_id) DO UPDATE SET held_at=excluded.held_at, held_by=excluded.held_by, reason=excluded.reason, released_at=NULL`
+      ).run(tenantId, now, heldBy, reason ?? null);
+      tenantComplianceHolds.set(tenantId, { heldAt: now, heldBy, reason });
+    } else {
+      const now = new Date().toISOString();
+      db.prepare(
+        `UPDATE compliance_holds SET released_at = ? WHERE tenant_id = ?`
+      ).run(now, tenantId);
+      tenantComplianceHolds.delete(tenantId);
+    }
+  } catch (err) {
+    log.warn("[captableCommitStore.setComplianceHoldForTenant] persistence failed:", (err as Error).message);
+    // Mutate the in-memory map even when persistence fails so callers see the requested state.
+    if (on) {
+      tenantComplianceHolds.set(tenantId, { heldAt: new Date().toISOString(), heldBy, reason });
+    } else {
+      tenantComplianceHolds.delete(tenantId);
+    }
+  }
+}
+
+/** v15 P0-12 — query per-tenant compliance hold. */
+export function getComplianceHoldForTenant(tenantId: string): boolean {
+  if (globalComplianceHold) return true;
+  return tenantComplianceHolds.has(tenantId);
+}
+
+export function listComplianceHolds(): Array<{ tenantId: string; heldAt: string; heldBy: string; reason?: string }> {
+  return Array.from(tenantComplianceHolds.entries()).map(([tenantId, v]) => ({ tenantId, ...v }));
+}
+
+/** Test-only — clears in-memory + DB state. */
+export function _resetComplianceHoldsForTests(): void {
+  globalComplianceHold = false;
+  tenantComplianceHolds.clear();
+  try { rawDb().prepare(`DELETE FROM compliance_holds`).run(); } catch { /* noop */ }
+}
 
 // ─── Ledger reads ────────────────────────────────────────────────────────────
 
@@ -229,12 +311,12 @@ export function getLedger(): ReadonlyArray<LedgerEntry> {
     const rows = db
       .select()
       .from(captableCommitsTable)
-      .where(isNull(captableCommitsTable.deletedAt))
+      .where(crossTenant(isNull(captableCommitsTable.deletedAt), captableCommitsTable, { skipSoftDelete: true }))
       .orderBy(asc(captableCommitsTable.seq))
       .all() as any[];
     return rows.map(rowToLedgerEntry);
   } catch (err) {
-    console.warn("[captableCommitStore.getLedger] DB read failed:", (err as Error).message);
+    log.warn("[captableCommitStore.getLedger] DB read failed:", (err as Error).message);
     return [];
   }
 }
@@ -258,7 +340,7 @@ export function listCommitsForUser(userId: string, companyId?: string): Readonly
       .all() as any[];
     return rows.map(rowToLedgerEntry);
   } catch (err) {
-    console.warn("[captableCommitStore.listCommitsForUser] DB read failed:", (err as Error).message);
+    log.warn("[captableCommitStore.listCommitsForUser] DB read failed:", (err as Error).message);
     return [];
   }
 }
@@ -266,19 +348,23 @@ export function listCommitsForUser(userId: string, companyId?: string): Readonly
 export function listMembersForCompany(companyId: string): ReadonlyArray<LedgerEntry> {
   try {
     const db = getDb();
+    // v14 Tier-1 Fix 4 — tenant scoping. listMembersForCompany is called from
+    // founder-facing routes after companyId is resolved from session; tenantId
+    // is derived from companyId via the canonical tenant_co_<id> rule.
+    const tenantId = tenantForCompany(companyId);
+    const cond = and(
+      eq(captableCommitsTable.companyId, companyId),
+      eq(captableCommitsTable.state, "committed"),
+    )!;
     const rows = db
       .select()
       .from(captableCommitsTable)
-      .where(and(
-        eq(captableCommitsTable.companyId, companyId),
-        eq(captableCommitsTable.state, "committed"),
-        isNull(captableCommitsTable.deletedAt),
-      ))
+      .where(withTenant(cond, { tenantId, table: captableCommitsTable }))
       .orderBy(asc(captableCommitsTable.seq))
       .all() as any[];
     return rows.map(rowToLedgerEntry);
   } catch (err) {
-    console.warn("[captableCommitStore.listMembersForCompany] DB read failed:", (err as Error).message);
+    log.warn("[captableCommitStore.listMembersForCompany] DB read failed:", (err as Error).message);
     return [];
   }
 }
@@ -292,9 +378,11 @@ export function clearLedger(): void {
       tx.delete(fundedQueueTable).run();
     });
   } catch (err) {
-    console.warn("[captableCommitStore.clearLedger] DB delete failed:", (err as Error).message);
+    log.warn("[captableCommitStore.clearLedger] DB delete failed:", (err as Error).message);
   }
-  complianceHold = false;
+  globalComplianceHold = false;
+  tenantComplianceHolds.clear();
+  try { rawDb().prepare(`DELETE FROM compliance_holds`).run(); } catch { /* noop */ }
 }
 
 // ─── Validation ──────────────────────────────────────────────────────────────
@@ -358,7 +446,11 @@ export function commitFunded(args: {
 }): CommitResult {
   const from = args.fromState ?? "funded";
   if (!isValidTransition(from, "committed")) return { ok: false, error: `bad_transition:${from}->committed` };
-  if (complianceHold) return { ok: false, error: "compliance_hold_active" };
+  // v15 P0-12 — per-tenant compliance hold (with global hold as back-compat).
+  const tenantForHold = tenantForCompany(args.companyId);
+  if (getComplianceHoldForTenant(tenantForHold)) {
+    return { ok: false, error: `compliance_hold:${tenantForHold}` };
+  }
   if (!isValidAmount(args.amount)) return { ok: false, error: "invalid_amount" };
   if (!isValidShares(args.shares)) return { ok: false, error: "invalid_shares" };
   const currency = (args.currency ?? "USD").toUpperCase();
@@ -445,7 +537,7 @@ export function commitFunded(args: {
       };
     });
   } catch (err) {
-    console.error("[captableCommitStore.commitFunded] DB write failed:", (err as Error).message);
+    log.error("[captableCommitStore.commitFunded] DB write failed:", (err as Error).message);
     return { ok: false, error: `db_write_failed:${(err as Error).message}` };
   }
 
@@ -484,35 +576,109 @@ export async function hydrateCaptableCommitStore(): Promise<void> {
       .from(captableCommitsTable).all() as any[]).length;
     const queueCount = (db.select({ id: fundedQueueTable.invitationId })
       .from(fundedQueueTable).all() as any[]).length;
-    console.log(`[captableCommitStore.hydrate] ledger=${ledgerCount} fundedQueue=${queueCount}`);
+    log.info(`[captableCommitStore.hydrate] ledger=${ledgerCount} fundedQueue=${queueCount}`);
   } catch (err) {
-    console.warn("[captableCommitStore.hydrate] DB read failed:", (err as Error).message);
+    log.warn("[captableCommitStore.hydrate] DB read failed:", (err as Error).message);
   }
+  // v15 P0-12 — restore per-tenant compliance hold map.
+  hydrateComplianceHolds();
 }
 
 // ─── Routes (surface preserved) ──────────────────────────────────────────────
 
+/**
+ * v15 P0-1/2/3 — founder-of-company gate. Requires authenticated identity
+ * AND that the caller is a founder/owner of the supplied companyId (admin
+ * bypasses). companyId is read from req.body for POSTs, req.query for GETs.
+ */
+function requireFounderOfCompany(req: Request, res: Response, next: () => void): void {
+  try {
+    const id = requireIdentity(req);
+    const companyId =
+      (req.body as { companyId?: unknown } | undefined)?.companyId !== undefined
+        ? String((req.body as { companyId?: unknown }).companyId)
+        : typeof req.query.companyId === "string"
+          ? req.query.companyId
+          : "";
+    if (!companyId) {
+      res.status(400).json({ ok: false, error: "missing_required_fields", message: "companyId is required." });
+      return;
+    }
+    if (id.isAdmin) return next();
+    const ownsCompany = id.ctx.founder.companies.some((c) => c.companyId === companyId);
+    if (!ownsCompany) {
+      res.status(403).json({ ok: false, error: "FOUNDER_WRONG_COMPANY", message: "You are not a founder of this company." });
+      return;
+    }
+    next();
+  } catch (e) {
+    const err = e as { status?: number; message?: string; code?: string };
+    res.status(err.status ?? 401).json({ ok: false, error: err.code ?? "UNAUTHORIZED", message: err.message ?? "Sign in to continue." });
+  }
+}
+
 export function registerCaptableCommitRoutes(app: Express): void {
-  app.get("/api/founder/captable/ledger", (_req, res) => {
-    res.json({ entries: getLedger(), complianceHold, verified: verifyChain() });
+  // v15 P0-3 — ledger read requires founder/admin and scopes to companyId.
+  app.get("/api/founder/captable/ledger", requireAuth, (req: Request, res: Response) => {
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId : "";
+    if (!companyId) {
+      return res.status(400).json({ ok: false, error: "missing_required_fields", message: "companyId query param is required." });
+    }
+    let id;
+    try { id = requireIdentity(req); }
+    catch (e) {
+      const err = e as { status?: number };
+      return res.status(err.status ?? 401).json({ ok: false, error: "UNAUTHORIZED" });
+    }
+    if (!id.isAdmin) {
+      const ownsCompany = id.ctx.founder.companies.some((c) => c.companyId === companyId);
+      if (!ownsCompany) {
+        return res.status(403).json({ ok: false, error: "FOUNDER_WRONG_COMPANY" });
+      }
+    }
+    const tenantId = tenantForCompany(companyId);
+    const entries = getLedger().filter((e) => e.companyId === companyId);
+    res.json({
+      entries,
+      complianceHold: getComplianceHoldForTenant(tenantId),
+      verified: verifyChain(),
+    });
   });
 
-  app.get("/api/founder/captable/funded-queue", (req: Request, res: Response) => {
-    const roundId = typeof req.query.roundId === "string" ? req.query.roundId : "";
-    const all = getFundedQueue();
-    const entries = roundId ? all.filter((e) => e.roundId === roundId) : all.slice();
-    res.json({ entries, count: entries.length });
+  app.get("/api/founder/captable/funded-queue", requireAuth, (req: Request, res: Response) => {
+    return requireFounderOfCompany(req, res, () => {
+      const companyId = typeof req.query.companyId === "string" ? req.query.companyId : "";
+      const roundId = typeof req.query.roundId === "string" ? req.query.roundId : "";
+      let entries = getFundedQueue().filter((e) => e.companyId === companyId);
+      if (roundId) entries = entries.filter((e) => e.roundId === roundId);
+      res.json({ entries, count: entries.length });
+    });
   });
 
   // Batch commit — all-or-nothing inside a SINGLE outer transaction so a
   // single failure rolls back ALL inserts.
-  app.post("/api/founder/captable/commit-funded-batch", (req: Request, res: Response) => {
+  // v15 P0-2 — requireAuth + founder.ofCompany gate.
+  app.post("/api/founder/captable/commit-funded-batch", requireAuth, (req: Request, res: Response) => {
+    return requireFounderOfCompany(req, res, () => commitFundedBatchHandler(req, res));
+  });
+
+  function commitFundedBatchHandler(req: Request, res: Response): unknown {
     const { companyId, roundId } = (req.body ?? {}) as { companyId?: string; roundId?: string };
     if (!companyId || !roundId) {
       return res.status(400).json({ ok: false, error: "missing_required_fields", message: "companyId and roundId are required." });
     }
-    if (complianceHold) {
-      return res.status(409).json({ ok: false, error: "compliance_hold_active", message: "Cap-table commits are blocked until admin resolves the hold." });
+    // v15 P0-12 — per-tenant compliance hold. The `error` field stays
+    // `compliance_hold_active` (legacy contract for sprint-25 clients); the
+    // tenant scope is surfaced in a new `tenantId` field so the admin UI can
+    // route the hold to the right founder.
+    const tenantForHold = tenantForCompany(companyId);
+    if (getComplianceHoldForTenant(tenantForHold)) {
+      return res.status(409).json({
+        ok: false,
+        error: "compliance_hold_active",
+        tenantId: tenantForHold,
+        message: "Cap-table commits are blocked until admin resolves the hold.",
+      });
     }
     const candidates = getFundedQueue().filter((e) => e.companyId === companyId && e.roundId === roundId);
     if (candidates.length === 0) {
@@ -640,9 +806,14 @@ export function registerCaptableCommitRoutes(app: Express): void {
       });
     }
     return res.json({ ok: true, committedCount: committed.length, entries: committed });
+  }
+
+  // v15 P0-1 — requireAuth + founder.ofCompany gate.
+  app.post("/api/founder/captable/commit-funded", requireAuth, (req: Request, res: Response) => {
+    return requireFounderOfCompany(req, res, () => commitFundedSingleHandler(req, res));
   });
 
-  app.post("/api/founder/captable/commit-funded", (req: Request, res: Response) => {
+  function commitFundedSingleHandler(req: Request, res: Response): unknown {
     const { invitationId, roundId, companyId, investorId, fromState } = req.body ?? {};
     if (!invitationId || !roundId || !companyId || !investorId) {
       return res.status(400).json({ ok: false, error: "missing_required_fields", message: "invitationId, roundId, companyId, investorId are required." });
@@ -655,7 +826,10 @@ export function registerCaptableCommitRoutes(app: Express): void {
     const shares = rawShares === undefined || rawShares === null ? "" : String(rawShares);
     const currency = typeof rawCurrency === "string" && rawCurrency.length > 0 ? rawCurrency : "USD";
     const r = commitFunded({ invitationId, roundId, companyId, investorId, amount, currency, shares, fromState });
-    if (!r.ok) return res.status(409).json(r);
+    if (!r.ok) {
+      // Surface compliance_hold:* as 409.
+      return res.status(409).json(r);
+    }
     const env = emitSync({
       eventType: "captable_commit",
       aggregateId: r.entry.invitationId,
@@ -675,10 +849,35 @@ export function registerCaptableCommitRoutes(app: Express): void {
       flags: { investorOnCapTable: true },
     });
     return res.json({ ok: true, entry: r.entry, telemetry: env });
+  }
+
+  // v15 P0-12 — admin-only per-tenant compliance hold endpoints.
+  app.post("/api/admin/compliance-hold", requireAdmin, (req, res) => {
+    const body = (req.body ?? {}) as { on?: unknown; tenantId?: unknown; reason?: unknown };
+    const on = !!body.on;
+    const tenantId = typeof body.tenantId === "string" ? body.tenantId : "";
+    if (!tenantId) {
+      // Legacy global hold path — logs a warning, kept for back-compat tests.
+      setComplianceHold(on);
+      return res.json({ ok: true, complianceHold: getComplianceHold(), scope: "global" });
+    }
+    let heldBy = "system";
+    try { heldBy = requireIdentity(req).userId; } catch { /* fall through with system */ }
+    setComplianceHoldForTenant(tenantId, on, heldBy, typeof body.reason === "string" ? body.reason : undefined);
+    res.json({ ok: true, tenantId, held: getComplianceHoldForTenant(tenantId) });
   });
 
-  app.post("/api/admin/compliance-hold", (req, res) => {
-    setComplianceHold(!!req.body?.on);
-    res.json({ ok: true, complianceHold: getComplianceHold() });
+  app.delete("/api/admin/compliance-hold/:tenantId", requireAdmin, (req, res) => {
+    const tenantIdRaw = req.params.tenantId;
+    const tenantId = typeof tenantIdRaw === "string" ? tenantIdRaw : Array.isArray(tenantIdRaw) ? String(tenantIdRaw[0] ?? "") : "";
+    if (!tenantId) return res.status(400).json({ ok: false, error: "missing_tenant" });
+    let heldBy = "system";
+    try { heldBy = requireIdentity(req).userId; } catch { /* default */ }
+    setComplianceHoldForTenant(tenantId, false, heldBy);
+    res.json({ ok: true, tenantId, held: false });
+  });
+
+  app.get("/api/admin/compliance-hold", requireAdmin, (_req, res) => {
+    res.json({ ok: true, holds: listComplianceHolds(), global: getComplianceHold() });
   });
 }

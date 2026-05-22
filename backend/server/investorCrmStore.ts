@@ -42,6 +42,7 @@ import { eq, isNull } from "drizzle-orm";
 import { emitMutation } from "./lib/eventBus";
 import { getDb } from "./db/connection";
 import { investorCrmContacts as investorCrmContactsTable } from "../shared/schema";
+import { log } from "./lib/logger";
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
@@ -215,7 +216,7 @@ function persistContact(c: InvestorCrmContact): void {
       }
     });
   } catch (err) {
-    console.error("[investorCrmStore] DB write failed:", (err as Error).message);
+    log.error("[investorCrmStore] DB write failed:", (err as Error).message);
   }
 }
 
@@ -230,7 +231,7 @@ function softDeleteContact(id: string): void {
         .run();
     });
   } catch (err) {
-    console.error("[investorCrmStore softDelete] failed:", (err as Error).message);
+    log.error("[investorCrmStore softDelete] failed:", (err as Error).message);
   }
 }
 
@@ -346,6 +347,24 @@ function resolveInvestorId(req: Request): string | null {
   return resolvePersonaId(req);
 }
 
+
+/**
+ * v14 Tier-1 Fix 2 — ownership guard for investor CRM mutations.
+ * Closes audit finding F-investor-02 (any auth user could mutate any
+ * investor's CRM contact). Returns the resolved investorId on success;
+ * sends 401/403 and returns null on failure. Callers MUST early-return.
+ */
+function ownContactOr403(req: Request, res: Response, contact: InvestorCrmContact): string | null {
+  const investorId = resolveInvestorId(req);
+  if (!investorId) { res.status(401).json({ error: "missing_identity" }); return null; }
+  const ctx = (req as Request & { userContext?: { isAdmin?: boolean } }).userContext;
+  if (contact.investorId !== investorId && !ctx?.isAdmin) {
+    res.status(403).json({ error: "not_authorized" });
+    return null;
+  }
+  return investorId;
+}
+
 /* ------------------------------------------------------------------ */
 /* Hydration                                                           */
 /* ------------------------------------------------------------------ */
@@ -368,7 +387,7 @@ function seedDemoContactsIntoDb(): void {
       }
     });
   } catch (err) {
-    console.warn("[investorCrmStore] demo seed write-through failed:", (err as Error).message);
+    log.warn("[investorCrmStore] demo seed write-through failed:", (err as Error).message);
   }
 }
 
@@ -389,10 +408,10 @@ export async function hydrateInvestorCrmStore(): Promise<void> {
       contacts.set(c.id, c);
     }
     if (rows.length > 0) {
-      console.log(`[hydrate] investorCrmStore: ${rows.length} contacts restored`);
+      log.info(`[hydrate] investorCrmStore: ${rows.length} contacts restored`);
     }
   } catch (err) {
-    console.warn("[hydrate] investorCrmStore: DB read failed:", (err as Error).message);
+    log.warn("[hydrate] investorCrmStore: DB read failed:", (err as Error).message);
   }
 }
 
@@ -514,6 +533,7 @@ export function registerInvestorCrmRoutes(app: Express): void {
     const { id } = req.params;
     const existing = contacts.get(id);
     if (!existing) return res.status(404).json({ error: "Contact not found" });
+    const _owner = ownContactOr403(req, res, existing); if (!_owner) return; /* v14 ownership */
     const updates = buildContactUpdates(req.body, existing);
     const updated = { ...existing, ...updates };
     contacts.set(id, updated);
@@ -524,8 +544,10 @@ export function registerInvestorCrmRoutes(app: Express): void {
 
   app.delete("/api/investor/crm/contacts/:id", (req: Request, res: Response) => {
     const { id } = req.params;
-    if (!contacts.has(id)) return res.status(404).json({ error: "Contact not found" });
-    contacts.delete(id);
+    const _existing = contacts.get(id);
+    if (!_existing) return res.status(404).json({ error: "Contact not found" });
+    const _owner = ownContactOr403(req, res, _existing); if (!_owner) return; /* v14 ownership */
+        contacts.delete(id);
     softDeleteContact(id);
     emitMutation({ aggregate: "investor_crm", id, change: "delete" });
     return res.json({ ok: true, deleted: id });
@@ -535,6 +557,7 @@ export function registerInvestorCrmRoutes(app: Express): void {
     const { id } = req.params;
     const existing = contacts.get(id);
     if (!existing) return res.status(404).json({ error: "Contact not found" });
+    const _owner = ownContactOr403(req, res, existing); if (!_owner) return; /* v14 ownership */
     const { body: noteBody = "", text = "", noteType = "other" } = req.body ?? {};
     const body = noteBody || text;
     const note: InvestorCrmNote = {
@@ -560,6 +583,7 @@ export function registerInvestorCrmRoutes(app: Express): void {
     const { id } = req.params;
     const existing = contacts.get(id);
     if (!existing) return res.status(404).json({ error: "Contact not found" });
+    const _owner = ownContactOr403(req, res, existing); if (!_owner) return; /* v14 ownership */
     const { title = "", text = "", due = "", priority = "medium", dueDate } = req.body ?? {};
     const taskTitle = title || text;
     const task: InvestorCrmTask = {
@@ -585,6 +609,7 @@ export function registerInvestorCrmRoutes(app: Express): void {
     const { id, taskId } = req.params;
     const existing = contacts.get(id);
     if (!existing) return res.status(404).json({ error: "Contact not found" });
+    const _owner = ownContactOr403(req, res, existing); if (!_owner) return; /* v14 ownership */
     const taskIdx = existing.tasks.findIndex((t) => t.id === taskId);
     if (taskIdx === -1) return res.status(404).json({ error: "Task not found" });
     const { status } = req.body ?? {};
@@ -675,6 +700,7 @@ export function registerInvestorCrmRoutes(app: Express): void {
     const { id } = req.params;
     const existing = contacts.get(id);
     if (!existing) return res.status(404).json({ error: "Contact not found" });
+    const _owner = ownContactOr403(req, res, existing); if (!_owner) return; /* v14 ownership */
     const updates = buildContactUpdates(req.body, existing);
     const updated = { ...existing, ...updates };
     contacts.set(id, updated);
@@ -686,8 +712,10 @@ export function registerInvestorCrmRoutes(app: Express): void {
   // DELETE /api/investor/crm/:id — remove contact
   app.delete("/api/investor/crm/:id", (req: Request, res: Response) => {
     const { id } = req.params;
-    if (!contacts.has(id)) return res.status(404).json({ error: "Contact not found" });
-    contacts.delete(id);
+    const _existing = contacts.get(id);
+    if (!_existing) return res.status(404).json({ error: "Contact not found" });
+    const _owner = ownContactOr403(req, res, _existing); if (!_owner) return; /* v14 ownership */
+        contacts.delete(id);
     softDeleteContact(id);
     emitMutation({ aggregate: "investor_crm", id, change: "delete" });
     return res.json({ ok: true, deleted: id });
@@ -698,6 +726,7 @@ export function registerInvestorCrmRoutes(app: Express): void {
     const { id } = req.params;
     const existing = contacts.get(id);
     if (!existing) return res.status(404).json({ error: "Contact not found" });
+    const _owner = ownContactOr403(req, res, existing); if (!_owner) return; /* v14 ownership */
     const { body: noteBody = "", noteType = "other" } = req.body ?? {};
     const note: InvestorCrmNote = {
       id: "note_" + randomBytes(4).toString("hex"),
@@ -721,6 +750,7 @@ export function registerInvestorCrmRoutes(app: Express): void {
     const { id } = req.params;
     const existing = contacts.get(id);
     if (!existing) return res.status(404).json({ error: "Contact not found" });
+    const _owner = ownContactOr403(req, res, existing); if (!_owner) return; /* v14 ownership */
     const { title = "", priority = "medium", dueDate } = req.body ?? {};
     const task: InvestorCrmTask = {
       id: "tsk_" + randomBytes(4).toString("hex"),
@@ -746,6 +776,7 @@ export function registerInvestorCrmRoutes(app: Express): void {
     const { id, taskId } = req.params;
     const existing = contacts.get(id);
     if (!existing) return res.status(404).json({ error: "Contact not found" });
+    const _owner = ownContactOr403(req, res, existing); if (!_owner) return; /* v14 ownership */
     const taskIdx = existing.tasks.findIndex((t) => t.id === taskId);
     if (taskIdx === -1) return res.status(404).json({ error: "Task not found" });
     const { status } = req.body ?? {};
@@ -803,7 +834,7 @@ export const _testInvestorCrm = {
       const db = getDb();
       db.delete(investorCrmContactsTable).run();
     } catch (err) {
-      console.warn("[_testInvestorCrm.reset] DB reset failed:", (err as Error).message);
+      log.warn("[_testInvestorCrm.reset] DB reset failed:", (err as Error).message);
     }
   },
   get contacts() { return contacts; },

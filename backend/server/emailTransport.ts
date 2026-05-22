@@ -14,6 +14,7 @@
 
 import nodemailer, { type Transporter } from "nodemailer";
 import { randomBytes } from "node:crypto";
+import { log } from "./lib/logger";
 
 export type TransportMode = "smtp" | "console" | "dry_run";
 
@@ -63,7 +64,7 @@ function buildConfig(): SmtpConfig {
   // If SMTP_HOST missing and mode is smtp, fall back to console with a warning.
   let mode = rawMode;
   if (!host && mode === "smtp") {
-    console.warn("[emailTransport] SMTP_HOST is not set — falling back to 'console' mode.");
+    log.warn("[emailTransport] SMTP_HOST is not set — falling back to 'console' mode.");
     mode = "console";
   }
 
@@ -212,7 +213,7 @@ export async function sendMail(args: SendMailArgs): Promise<SendMailResult> {
     } else if (c.mode === "console") {
       const msgId = `console_${randomBytes(8).toString("hex")}`;
       // Intentionally minimal: no credential logging
-      console.log(
+      log.info(
         `[emailTransport][console] to=${args.to} subject="${args.subject}" msgId=${msgId}`
       );
       result = { ok: true, messageId: msgId };
