@@ -34,7 +34,7 @@ export function serveStatic(app: Express) {
   });
 
   // 2. SPA fallback ONLY for non-/api routes.
-  app.use("/*", (_req: Request, res: Response) => {
+  app.use("*", (_req: Request, res: Response) => {
     res.sendFile(path.resolve(distPath, "index.html"));
   });
 }
