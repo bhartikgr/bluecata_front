@@ -16,7 +16,7 @@
  * SANDBOX-SAFE — pure server.
  */
 import type { Express, Request, Response } from "express";
-import { getUserContext, getUserContextForId, listPersonas, registerPersona, registerFounderUser, verifyPassword } from "./userContext";
+import { getUserContextForId, listPersonas, registerPersona, registerFounderUser, verifyPassword } from "./userContext";
 import { setSessionCookie } from "./sessionCookie";
 import { DEMO_SEED_ENABLED } from "./demoGate";
 
@@ -55,10 +55,16 @@ export function registerAuthShellRoutes(app: Express, redemption: {
   redeem: (token: string) => RedemptionResult;
 }): void {
   // ---------- /api/auth/me ----------
-  app.get("/api/auth/me", async (req: Request, res: Response) => {
-    const ctx = await getUserContext(req);
-    res.json(ctx);
-  });
+  // Avi 22-May Issue 6 — REMOVED. The richer handler in server/routes.ts
+  // (~line 1465) supersedes this one: it merges the in-memory prefs cache
+  // (timezone, notificationPrefs) with the UserContext. Because
+  // registerAuthShellRoutes() runs BEFORE registerRoutes(), this simpler
+  // handler used to shadow the rich one, causing Settings.tsx to read back
+  // stale prefs after PATCH /api/auth/me. The rich handler returns the same
+  // userId/isAuthed/identity shape (plus extras), so existing consumers in
+  // sprint19_routes.test.ts, sprint20_investor.test.ts, sprint21_profile.test.ts,
+  // and patch4_fresh_user_no_leak.test.ts continue to pass.
+  // (Intentionally NOT re-registered here — see server/routes.ts.)
 
   // ---------- /api/dev/admin-bypass (preview-only) ----------
   // Sprint 27 hotfix: one-shot GET endpoint that signs the user in as admin

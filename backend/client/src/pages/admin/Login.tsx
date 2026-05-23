@@ -112,6 +112,7 @@ export default function AdminLogin() {
       const res = await apiRequest("POST", "/api/auth/login", { email: email.trim(), password });
       const json = (await res.json()) as { ok: true; ctx: UserContext };
       await queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
+      console.log(json)
       if (!json.ctx.isAdmin) {
         // Non-admin credentials succeeded but the account doesn't have admin rights.
         // Reject explicitly — do NOT route them anywhere from this page.

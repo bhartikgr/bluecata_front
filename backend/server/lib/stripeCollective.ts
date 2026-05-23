@@ -115,6 +115,29 @@ export function stripeWebhookSecretConfigured(): boolean {
   return typeof v === "string" && v.length > 0;
 }
 
+/**
+ * Avi 22-May Issue 4 — derive the Stripe operating mode from the secret key
+ * prefix. Stripe enforces this convention universally: live keys start with
+ * `sk_live_`, test keys with `sk_test_`. Returning the mode in API responses
+ * lets the founder UI surface a clear "Live" / "Test" badge so it's never
+ * ambiguous which set of credentials are wired.
+ *
+ * Returns:
+ *   - "live"          — SECRET_KEY is set and starts with `sk_live_`
+ *   - "test"          — SECRET_KEY is set and starts with `sk_test_`
+ *   - "unrecognized"  — SECRET_KEY is set but doesn't match either prefix
+ *                       (e.g. a restricted key `rk_*` or a malformed value)
+ *   - "unconfigured"  — SECRET_KEY is unset
+ */
+export type StripeMode = "live" | "test" | "unrecognized" | "unconfigured";
+export function stripeMode(): StripeMode {
+  const v = process.env[STRIPE_COLLECTIVE_ENV.SECRET_KEY];
+  if (typeof v !== "string" || v.length === 0) return "unconfigured";
+  if (v.startsWith("sk_live_")) return "live";
+  if (v.startsWith("sk_test_")) return "test";
+  return "unrecognized";
+}
+
 /* ============================================================
  * Lazy SDK singleton + test injection point
  * ============================================================ */

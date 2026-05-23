@@ -42,6 +42,7 @@ import multer from "multer";
 import { randomBytes, createHash } from "node:crypto";
 import { and, eq, isNull, asc } from "drizzle-orm";
 import { getUserContext } from "./lib/userContext";
+import { resolveCompanyIdParam } from "./lib/resolveCompanyIdParam"; /* Avi 22-May Issue 5 */
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 import { getDb } from "./db/connection";
 import {
@@ -426,7 +427,8 @@ export async function hydrateDataroomStore(): Promise<void> {
 
 export function registerDataroomRoutes(app: Express): void {
   app.get("/api/founder/dataroom/folders", (req, res) => {
-    const companyId = String(req.query.companyId ?? "");
+    // Avi 22-May Issue 5 — default to active company when query param absent.
+    const { companyId } = resolveCompanyIdParam(req);
     if (!companyId) return res.status(400).json({ error: "companyId_required" });
     res.json(folders.filter((f) => f.companyId === companyId));
   });
@@ -456,7 +458,8 @@ export function registerDataroomRoutes(app: Express): void {
   });
 
   app.get("/api/founder/dataroom/files", (req, res) => {
-    const companyId = String(req.query.companyId ?? "");
+    // Avi 22-May Issue 5 — default to active company when query param absent.
+    const { companyId } = resolveCompanyIdParam(req);
     if (!companyId) return res.status(400).json({ error: "companyId_required" });
     const folderId = req.query.folderId ? String(req.query.folderId) : null;
     const list = files.filter((f) => f.companyId === companyId && (!folderId || f.folderId === folderId));
@@ -537,7 +540,8 @@ export function registerDataroomRoutes(app: Express): void {
   });
 
   app.get("/api/founder/dataroom/permissions", (req, res) => {
-    const companyId = String(req.query.companyId ?? "");
+    // Avi 22-May Issue 5 — default to active company when query param absent.
+    const { companyId } = resolveCompanyIdParam(req);
     if (!companyId) return res.status(400).json({ error: "companyId_required" });
     const folderIds = new Set(folders.filter((f) => f.companyId === companyId).map((f) => f.id));
     res.json(permissions.filter((p) => folderIds.has(p.folderId)));
@@ -566,13 +570,15 @@ export function registerDataroomRoutes(app: Express): void {
   });
 
   app.get("/api/founder/dataroom/events", (req, res) => {
-    const companyId = String(req.query.companyId ?? "");
+    // Avi 22-May Issue 5 — default to active company when query param absent.
+    const { companyId } = resolveCompanyIdParam(req);
     if (!companyId) return res.status(400).json({ error: "companyId_required" });
     res.json(events.filter((e) => e.companyId === companyId));
   });
 
   app.get("/api/founder/dataroom/engagement", (req, res) => {
-    const companyId = String(req.query.companyId ?? "");
+    // Avi 22-May Issue 5 — default to active company when query param absent.
+    const { companyId } = resolveCompanyIdParam(req);
     if (!companyId) return res.status(400).json({ error: "companyId_required" });
     const fileStats: Record<string, { uniqueViewers: Set<string>; totalViews: number; totalSeconds: number; lastViewedAt: string | null }> = {};
     const investorStats: Record<string, { docsViewed: Set<string>; totalSeconds: number; lastActiveAt: string | null }> = {};

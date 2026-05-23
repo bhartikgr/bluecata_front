@@ -62,9 +62,53 @@ export default function Company() {
  const companyId = useActiveCompanyId();
  const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
 
- const { data: profile, isLoading } = useQuery<CompanyProfile>({
+ // Avi 22-May Issue 1 — only fire the profile query once we have a real
+ // companyId. With an empty id the URL becomes /api/companies//profile and
+ // express returns 404; queryClient maps that to `null` (see getQueryFn in
+ // lib/queryClient.ts) and the old guard `isLoading || !profile` left the
+ // page stuck on "Loading…". The `enabled` flag stops the broken query
+ // entirely; the “no company yet” branch below renders an actionable CTA.
+ const { data: profile, isLoading, isError } = useQuery<CompanyProfile>({
  queryKey: ["/api/companies", companyId, "profile"],
+ enabled: Boolean(companyId),
  });
+
+ if (!companyId) {
+ return (
+ <>
+ <PageHeader title="Company profile" description="No active company" />
+ <PageBody>
+ <Card>
+ <CardContent className="p-6 space-y-3">
+ <div className="text-sm text-muted-foreground">
+ You don’t have an active company yet. Create one from the Welcome
+ flow or the company switcher to start the profile wizard.
+ </div>
+ <Link href="/founder/welcome">
+ <Button>Go to Welcome</Button>
+ </Link>
+ </CardContent>
+ </Card>
+ </PageBody>
+ </>
+ );
+ }
+
+ if (isError) {
+ return (
+ <>
+ <PageHeader title="Company profile" description="Could not load profile" />
+ <PageBody>
+ <Card>
+ <CardContent className="p-6 text-sm">
+ We couldn’t load the company profile. Refresh the page; if the
+ problem persists, the page error is surfaced to admin logs.
+ </CardContent>
+ </Card>
+ </PageBody>
+ </>
+ );
+ }
 
  if (isLoading || !profile) {
  return (

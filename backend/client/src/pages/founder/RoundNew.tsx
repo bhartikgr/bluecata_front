@@ -437,7 +437,22 @@ export default function RoundNew() {
  </>
  )}
  {usesField("pricePerShare") && (
- <div><LabelWithTip tip="What each new share costs in this round. Computed by dividing pre-money valuation by fully-diluted shares before the round."><Label>Price per share (USD)</Label></LabelWithTip><Input type="number" step="0.01" className="mt-1 font-mono" value={form.pricePerShare} onChange={e => update("pricePerShare", e.target.value)} data-testid="input-pps" /></div>
+ <div data-testid="pps-block">
+ <LabelWithTip tip="Audit-grade derivation: PPS = pre_money_valuation ÷ fully_diluted_shares_pre_money. For SAFE / Convertible Note rounds this field is hidden — PPS is set at conversion, not at issue. You may override the derived value when a negotiated PPS differs from the canonical formula; the cap-table engine will use whatever you enter here.">
+ <Label>Price per share (USD)</Label>
+ </LabelWithTip>
+ <Input
+ type="number"
+ step="0.01"
+ className="mt-1 font-mono"
+ value={form.pricePerShare}
+ onChange={e => update("pricePerShare", e.target.value)}
+ data-testid="input-pps"
+ />
+ <p className="text-[11px] text-muted-foreground mt-1 font-mono">
+ PPS = pre_money_valuation ÷ fully_diluted_shares_pre_money
+ </p>
+ </div>
  )}
  {usesField("sharesAuthorized") && (
  <div><LabelWithTip tip="How many new shares this issuance creates. For a Foundation round, this is your founder allocation. For a warrant or option grant, it's the underlying share count."><Label>Shares authorized</Label></LabelWithTip><Input type="number" className="mt-1 font-mono" value={form.sharesAuthorized} onChange={e => update("sharesAuthorized", e.target.value)} data-testid="input-shares" /></div>

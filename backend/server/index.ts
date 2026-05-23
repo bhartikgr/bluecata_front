@@ -186,7 +186,7 @@ app.use((req, res, next) => {
   httpServer.listen(
     {
       port,
-      host: "localhost",
+      host: "0.0.0.0",
       // reusePort: true,  // ❌ Windows pe yeh hatao
     },
     () => {

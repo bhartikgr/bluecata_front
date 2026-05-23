@@ -56,6 +56,7 @@ import {
   STRIPE_COLLECTIVE_ENV,
   getStripeClient,
   priceIdForTier,
+  stripeMode,
   stripeSecretConfigured,
   stripeWebhookSecretConfigured,
   type CollectiveTier,
@@ -933,6 +934,10 @@ export function registerCollectiveBillingRoutes(app: Express): void {
     requireCollectiveMember,
     async (_req: Request, res: Response) => {
       const stripeReady = stripeSecretConfigured();
+      // Avi 22-May Issue 4 — surface the operating mode so the UI can show
+      // a Live / Test badge and Avi never has to guess which key is wired.
+      const mode = stripeMode();
+      const webhookConfigured = stripeWebhookSecretConfigured();
       const tiers = await Promise.all(
         COLLECTIVE_TIER_CATALOG.map(async (t) => {
           const priceId = priceIdForTier(t.tier);
@@ -955,7 +960,13 @@ export function registerCollectiveBillingRoutes(app: Express): void {
           };
         }),
       );
-      res.json({ ok: true, stripeConfigured: stripeReady, tiers });
+      res.json({
+        ok: true,
+        stripeConfigured: stripeReady,
+        mode,
+        webhookConfigured,
+        tiers,
+      });
     },
   );
 

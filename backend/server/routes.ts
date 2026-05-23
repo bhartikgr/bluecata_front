@@ -146,6 +146,8 @@ import { registerSprint21InvitationsRoutes } from "./sprint21InvitationsRoutes";
 import { registerSprint21PortfolioRoutes } from "./sprint21PortfolioRoutes";
 import { registerSprint22Routes } from "./sprint22Routes";
 import { registerRoundCarryForwardRoutes } from "./roundCarryForwardRoutes";
+// Avi 22-May Issue 2 — PPS derivation helper routes.
+import { registerRoundPriceDerivationRoutes } from "./lib/roundPriceDerivation";
 import { registerSecureAuthRoutes } from "./lib/secureAuthRoutes";
 import { registerAdminUsersRoutes } from "./lib/adminUsersRoutes";
 import { realtimeStreamHandler, emitMutation } from "./lib/eventBus";
@@ -154,6 +156,8 @@ import { csrfMiddleware } from "./lib/csrf";
 import { rateLimitMiddleware, collectiveRateLimit } from "./lib/rateLimit";
 import { securityHeaders, corsForApi } from "./middleware/security";
 import { getDb } from "./db/connection";
+import { users as usersTable } from "../shared/schema"; /* Avi 22-May Issue 6 */
+import { eq as drizzleEq } from "drizzle-orm"; /* Avi 22-May Issue 6 */
 import { SYNC_ENTITY_COUNT } from "./db/syncRepo";
 import { getOutbox } from "./bridgeStore";
 import { loadUserContext, requireEntitlement } from "./lib/requireEntitlement";
@@ -1399,17 +1403,62 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // Auth me PATCH — reads userId from session or x-user-id header; no hard auth gate
   // (tests use x-user-id with unknown IDs and expect 200)
+  //
+  // Avi 22-May Issue 6 — "Settings save not persisting." Pre-fix this only
+  // wrote to the in-memory `_meStore` Map, which evaporates on restart and
+  // is per-process (so two workers see different prefs). The fix below
+  // mirrors canonical profile fields (`name`, `avatarUrl`) into the `users`
+  // SQL table inside a SYNC transaction. The non-canonical preferences
+  // (timezone, notificationPrefs, etc.) continue to flow through _meStore
+  // as a hot cache — they are read back by GET /api/auth/me below.
   const _meStore: Map<string, Record<string, unknown>> = new Map();
   app.patch("/api/auth/me", (req, res) => {
     const userId = (req as any).userContext?.userId
       /* v14 — no header fallback */
       ?? "";
     if (!userId) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
+
+    const body = (req.body ?? {}) as Record<string, unknown>;
     const existing = _meStore.get(userId) ?? {};
-    const updated = { ...existing, ...req.body };
-    _meStore.set(userId, updated);
+    const merged = { ...existing, ...body };
+    _meStore.set(userId, merged);
+
+    // Canonical-field write-through to the `users` SQL table. We never throw
+    // a 5xx for a DB miss — the prefs cache above is still updated so the
+    // UI sees the new value immediately. If the row doesn't exist (test
+    // identities that never went through `registerFounderUser`) the UPDATE
+    // is a no-op and the response is still 200.
+    const canonicalPatch: { name?: string; avatarUrl?: string | null } = {};
+    if (typeof body.name === "string" && body.name.length > 0) {
+      canonicalPatch.name = body.name;
+    }
+    if (typeof body.avatarUrl === "string" || body.avatarUrl === null) {
+      canonicalPatch.avatarUrl = body.avatarUrl as string | null;
+    }
+    if (Object.keys(canonicalPatch).length > 0) {
+      try {
+        const db = getDb();
+        // SYNC transaction — better-sqlite3 contract. Compute the WHERE
+        // condition outside; the tx body itself only performs writes.
+        db.transaction((tx: any) => {
+          tx.update(usersTable)
+            .set(canonicalPatch)
+            .where(drizzleEq(usersTable.id, userId))
+            .run();
+        });
+      } catch (err) {
+        // Persistence is best-effort here — the cache above already holds
+        // the new value, so the user's session sees the change. Log and
+        // continue rather than surfacing a 500 the founder cannot act on.
+        log.warn(
+          "[PATCH /api/auth/me] users-table write-through failed (cache still updated):",
+          (err as Error).message,
+        );
+      }
+    }
+
     emitMutation({ aggregate: "user", id: userId, change: "update" });
-    res.json({ ok: true, userId, updated });
+    res.json({ ok: true, userId, updated: merged });
   });
 
   // GET /api/auth/me — return stored prefs + isAuthed status (PUBLIC — returns isAuthed=false for anonymous)
@@ -1463,6 +1512,80 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Founder privacy — no auth gate (open by design; used by tests with unknown userId)
   app.put("/api/founder/privacy", (req, res) => {
     res.json({ ok: true, updated: req.body });
+  });
+
+  /**
+   * Avi 22-May Issue 5 — GET /api/founder/privacy.
+   *
+   * Settings.tsx subscribes to this on mount. Pre-fix it 404'd because
+   * only the PUT counterpart existed. We return the founder's current
+   * privacy preferences pulled from getUserContext when authenticated,
+   * or sensible defaults for anonymous test callers.
+   */
+  app.get("/api/founder/privacy", (req, res) => {
+    const ctx = req.userContext;
+    res.json({
+      ok: true,
+      privacy: {
+        screenName: ctx?.identity?.screenName ?? ctx?.identity?.name ?? "",
+        visibleToCoMembers: true,
+        visibleToCollectiveNetwork: false,
+      },
+    });
+  });
+
+  /**
+   * Avi 22-May Issue 5 — GET /api/founder/team.
+   *
+   * Settings.tsx subscribes for the team-overview surface. We return the
+   * authenticated founder as the sole seat occupant (matches the
+   * `team/members` shape below). Real seat allocation will be wired in a
+   * future patch — this endpoint exists today only to unblock the page.
+   */
+  app.get("/api/founder/team", (req, res) => {
+    const ctx = req.userContext;
+    if (!ctx?.isAuthed) {
+      return res.json({ ok: true, team: { seats: 1, used: 0, members: [] } });
+    }
+    res.json({
+      ok: true,
+      team: {
+        seats: 5,
+        used: 1,
+        members: [
+          {
+            id: ctx.userId,
+            name: ctx.identity.name,
+            email: ctx.identity.email,
+            role: "founder",
+            status: "active",
+          },
+        ],
+      },
+    });
+  });
+
+  /**
+   * Avi 22-May Issue 5 — GET /api/founder/team/members.
+   *
+   * Settings.tsx subscribes to this and previously got 404. Returns the
+   * same member list as /api/founder/team but as a flat array (the shape
+   * Settings.tsx renders directly into the member list table).
+   */
+  app.get("/api/founder/team/members", (req, res) => {
+    const ctx = req.userContext;
+    if (!ctx?.isAuthed) {
+      return res.json([]);
+    }
+    res.json([
+      {
+        id: ctx.userId,
+        name: ctx.identity.name,
+        email: ctx.identity.email,
+        role: "founder",
+        status: "active",
+      },
+    ]);
   });
 
   // Billing plan switch — requireAuth
@@ -1545,26 +1668,36 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     for (const [k, v] of Object.entries(body)) {
       if (!KNOWN_COLS.has(k) && k !== "id" && k !== "raisedAmount") extras[k] = v;
     }
-    const newRound = roundsStoreCreate({
-      companyId,
-      name: String(body.name ?? "Untitled round"),
-      type: String(body.type ?? "seed"),
-      state: body.state ?? "draft",
-      targetAmount: Number(body.targetAmount ?? 0),
-      preMoney: body.preMoney ?? null,
-      postMoney: body.postMoney ?? null,
-      pricePerShare: body.pricePerShare ?? null,
-      minTicket: body.minTicket ?? null,
-      closeDate: body.closeDate ?? null,
-      termsSummary: body.termsSummary ?? null,
-      leadInvestor: body.leadInvestor ?? null,
-      currency: body.currency ?? null,
-      region: body.region ?? null,
-      openDate: body.openDate ?? null,
-      instrument: body.instrument ?? null,
-      actorUserId: ctx.userId ?? undefined,
-      extras,
-    });
+    let newRound;
+    try {
+      newRound = roundsStoreCreate({
+        companyId,
+        name: String(body.name ?? "Untitled round"),
+        type: String(body.type ?? "seed"),
+        state: body.state ?? "draft",
+        targetAmount: Number(body.targetAmount ?? 0),
+        preMoney: body.preMoney ?? null,
+        postMoney: body.postMoney ?? null,
+        pricePerShare: body.pricePerShare ?? null,
+        minTicket: body.minTicket ?? null,
+        closeDate: body.closeDate ?? null,
+        termsSummary: body.termsSummary ?? null,
+        leadInvestor: body.leadInvestor ?? null,
+        currency: body.currency ?? null,
+        region: body.region ?? null,
+        openDate: body.openDate ?? null,
+        instrument: body.instrument ?? null,
+        actorUserId: ctx.userId ?? undefined,
+        extras,
+      });
+    } catch (err) {
+      // Avi 22-May Issue 3 — surface real DB persistence failures.
+      return res.status(500).json({
+        ok: false,
+        error: "ROUND_PERSIST_FAILED",
+        message: (err as Error).message,
+      });
+    }
     // Keep the legacy in-memory `rounds` array in sync so the dozens of
     // existing read-paths (rounds.find / rounds.filter) keep working without
     // a wide refactor. The DB row above is the durable source of truth.
@@ -1591,6 +1724,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   /* ------------ Patch 2: Round Carry-Forward (investor-grade) ------------ */
   registerRoundCarryForwardRoutes(app);
+
+  /* ------------ Avi 22-May Issue 2: PPS derivation helpers (UI advisory) ------------ */
+  registerRoundPriceDerivationRoutes(app);
 
   for (const path of [
     "/api/rounds/:id/invitations/bulk",

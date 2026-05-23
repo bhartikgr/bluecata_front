@@ -33,6 +33,7 @@ import { enqueueOneOff } from "./emailStore";
 import { getDb } from "./db/connection";
 import { companyProfileExtended } from "../shared/schema";
 import { log } from "./lib/logger";
+import { resolveCompanyIdParam } from "./lib/resolveCompanyIdParam"; /* Avi 22-May Issue 5 */
 
 const sha256 = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
 
@@ -669,7 +670,8 @@ export function registerCompanyProfileRoutes(app: Express): void {
    * GET /api/founder/profile?companyId=...
    */
   app.get("/api/founder/profile", (req: Request, res: Response) => {
-    const companyId = String(req.query.companyId ?? "");
+    // Avi 22-May Issue 5 — default to active company when query param absent.
+    const { companyId } = resolveCompanyIdParam(req);
     if (!companyId) return res.status(400).json({ ok: false, error: "companyId required" });
     const profile = getCompanyProfile(companyId);
     res.json({ ok: true, profile });
@@ -741,7 +743,8 @@ export function registerCompanyProfileRoutes(app: Express): void {
    * GET /api/founder/profile/completion?companyId=...
    */
   app.get("/api/founder/profile/completion", (req: Request, res: Response) => {
-    const companyId = String(req.query.companyId ?? "");
+    // Avi 22-May Issue 5 — default to active company when query param absent.
+    const { companyId } = resolveCompanyIdParam(req);
     if (!companyId) return res.status(400).json({ ok: false, error: "companyId required" });
     const profile = getCompanyProfile(companyId);
     const result = computeProfileCompletion(profile);

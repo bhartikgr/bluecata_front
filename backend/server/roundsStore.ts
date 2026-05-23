@@ -192,6 +192,20 @@ export function createRound(input: {
     ...(input.extras ?? {}),
   };
 
+  // Avi 22-May Issue 3 — round persistence proof.
+  //
+  // Previously the DB write was wrapped in a try/catch that demoted ANY
+  // failure to a non-fatal warning. That hid genuine schema-drift /
+  // constraint failures and meant a round could live ONLY in the in-memory
+  // cache on a hot deploy. Avi specifically asked for confirmation that
+  // rounds are saved to the table.
+  //
+  // Hardened contract:
+  //   - First-boot tolerated: "no such table" => the rounds table hasn't
+  //     been migrated yet; allow the cache write to proceed.
+  //   - Any OTHER DB error THROWS so the route handler can surface a 5xx
+  //     to the caller and the audit log shows a clear failure rather than
+  //     a silent cache-only entry.
   try {
     const db = getDb();
     db.transaction((tx: any) => {
@@ -224,7 +238,13 @@ export function createRound(input: {
         .run();
     });
   } catch (err) {
-    log.warn("[roundsStore.createRound] DB write failed (non-fatal):", (err as Error).message);
+    const msg = (err as Error).message;
+    if (/no such table/i.test(msg)) {
+      log.warn("[roundsStore.createRound] rounds table missing (first boot tolerated):", msg);
+    } else {
+      log.error("[roundsStore.createRound] DB write FAILED — propagating to caller:", msg);
+      throw err;
+    }
   }
 
   cacheUpsert(round);

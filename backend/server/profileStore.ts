@@ -42,6 +42,14 @@ import { BridgeOutbound } from "./lib/bridgeOutbound";
 // V2 (Patch v8): legacy Sprint-29 profile store used as fallback when this
 // store has no entry for a companyId (founder PATCH path writes there).
 import { getCompanyProfile as getLegacyCompanyProfile } from "./companyProfileStore";
+// Avi 22-May Issue 1 — third-tier fallback: synthesise an empty profile so a
+// brand-new founder (or a freshly-created company) does not lock the Company
+// page on an infinite "Loading company profile…" spinner.
+import { makeEmptyCompanyProfile } from "./lib/emptyCompanyProfile";
+import { getDb } from "./db/connection";
+import { companies as companiesTable } from "../shared/schema";
+import { eq, isNull, and } from "drizzle-orm";
+import { log as profileLog } from "./lib/logger";
 
 /* ---------------- Stores ---------------- */
 const companyProfiles = new Map<string, CompanyProfile>();
@@ -196,6 +204,14 @@ export function registerProfileRoutes(app: Express): void {
 
   app.get("/api/companies/:id/profile", (req, res) => {
     const id = req.params.id;
+    // Avi 22-May Issue 1 — guard against accidental empty-id requests caused
+    // by the client firing the query before useActiveCompanyId resolves. The
+    // route pattern already forbids the empty case (Express never matches
+    // /api/companies//profile against the `:id` placeholder — it 404s before
+    // reaching us) but we keep this defensive check for parity tests.
+    if (!id || id.trim() === "") {
+      return res.status(400).json({ message: "companyId required" });
+    }
     const p = companyProfiles.get(id);
     if (!p) {
       // V2 (Patch v8): fall back to the Sprint 29 companyProfileStore so a
@@ -217,6 +233,39 @@ export function registerProfileRoutes(app: Express): void {
           updatedAt: legacy.updatedAt ?? null,
           source: "companyProfileStore",
         });
+      }
+      // Avi 22-May Issue 1 — third-tier fallback. If the company exists in
+      // the `companies` table but neither store has a profile row yet (e.g.
+      // freshly-created via POST /api/founder/companies/new, or any
+      // production deploy whose seed never populated this Map), synthesise
+      // an empty-but-schema-complete CompanyProfile so the Founder Company
+      // wizard renders at Step 1 instead of stalling on "Loading…".
+      try {
+        const db = getDb();
+        // CROSS-TENANT (admin) — profile lookup is keyed by company id, not
+        // tenant; tenant comes from the row itself. Ownership is enforced
+        // separately on PATCH.
+        const row = db
+          .select({ id: companiesTable.id, tenantId: companiesTable.tenantId, name: companiesTable.name })
+          .from(companiesTable)
+          .where(and(eq(companiesTable.id, id), isNull(companiesTable.deletedAt)))
+          .get() as { id: string; tenantId: string; name: string } | undefined;
+        if (row) {
+          const seeded = makeEmptyCompanyProfile({
+            id: row.id,
+            tenantId: row.tenantId,
+            companyName: row.name,
+          });
+          // Cache in the Map so subsequent reads stay fast AND so the PATCH
+          // handler (which reads `companyProfiles.get(id)`) sees a base
+          // object to merge into. This is a read-through cache pattern;
+          // the legacy hydrate path is untouched.
+          companyProfiles.set(id, seeded);
+          const score = computeMaReadinessScore(seeded.ma);
+          return res.json({ ...seeded, maScore: score, source: "synthesised_empty" });
+        }
+      } catch (err) {
+        profileLog.warn("[profileStore.getCompanyProfile] companies lookup failed:", (err as Error).message);
       }
       return res.status(404).json({ message: "Company profile not found" });
     }
