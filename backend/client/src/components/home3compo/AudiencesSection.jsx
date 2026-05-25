@@ -286,7 +286,7 @@ function AudiencesSection() {
                 Register Your Company
               </a>
               <span className="audience__cta-note">
-                Free to start · No credit card required
+                14-day free trial · No credit card required
               </span>
             </div>
           </div>

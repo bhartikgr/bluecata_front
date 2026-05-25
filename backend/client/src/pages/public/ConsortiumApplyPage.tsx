@@ -15,6 +15,7 @@
  * (added by the Phase B App.tsx route entry).
  */
 import { useState } from "react";
+import { Button } from "@/components/ui/button";
 
 type PartnerType =
   | "vc"
@@ -265,22 +266,22 @@ export default function ConsortiumApplyPage() {
             )}
           </div>
         )}
-        <button
+        {/* Wave E Fix E3 — was raw <button disabled> with no design-system styling.
+            Now uses <Button> which has consistent disabled:opacity-50 disabled:cursor-not-allowed. */}
+        <Button
           type="submit"
           disabled={submitting}
+          title={submitting ? "Submitting your application—please wait" : undefined}
+          aria-label={submitting ? "Submitting application" : "Submit application"}
+          className="mt-2"
           style={{
             background: "#1f2a44",
             color: "white",
-            border: 0,
-            padding: "12px 18px",
-            borderRadius: 6,
-            cursor: submitting ? "not-allowed" : "pointer",
-            opacity: submitting ? 0.5 : 1,
-            marginTop: 8,
           }}
+          data-testid="button-consortium-apply-submit"
         >
           {submitting ? "Submitting…" : "Submit application"}
-        </button>
+        </Button>
       </form>
     </div>
   );

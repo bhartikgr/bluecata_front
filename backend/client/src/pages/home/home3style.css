@@ -272,7 +272,11 @@ select {
 }
 
 .nav__inner {
-  width: var(--content-wide);
+  /* Wave E Fix E14 — was `width: 1200px` which forced overflow on phones
+     and pushed the hamburger off-screen at 375/768px. Use width:100% with
+     max-width so the inner shrinks to viewport on small screens. */
+  width: 100%;
+  max-width: var(--content-wide);
   margin-inline: auto;
   padding: var(--space-4) var(--space-6);
   display: flex;

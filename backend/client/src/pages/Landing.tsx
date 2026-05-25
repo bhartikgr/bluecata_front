@@ -96,53 +96,61 @@ export default function Landing() {
 
         {/* Two-path CTA grid */}
         <div className="mt-12 grid md:grid-cols-2 gap-5">
-          <Card
+          <button
+            type="button"
             onClick={goFounder}
-            className="group cursor-pointer border-[hsl(219_45%_14%)]/15 hover:border-[hsl(219_45%_14%)]/40 hover:shadow-md transition-all"
+            aria-label="Continue as founder — sign in or get started"
+            className="text-left rounded-lg group cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[hsl(184_98%_22%)]"
             data-testid="card-founder-path"
           >
-            <CardContent className="p-7 md:p-8">
-              <div className="flex items-center justify-between mb-5">
-                <span className="inline-flex h-10 w-10 items-center justify-center rounded-md bg-[hsl(219_45%_14%)] text-white">
-                  <Briefcase className="h-5 w-5" />
-                </span>
-                <span className="text-[10px] tracking-widest font-semibold text-[hsl(219_45%_30%)]/70">
-                  FOUNDER
-                </span>
-              </div>
-              <h2 className="text-xl font-semibold tracking-tight">I'm a founder</h2>
-              <p className="mt-2 text-sm text-[hsl(219_25%_30%)] leading-relaxed">
-                Run your company(ies). Cap table, rounds, dataroom, and investor comms — all in one place.
-              </p>
-              <div className="mt-6 inline-flex items-center text-sm font-medium text-[hsl(184_98%_22%)] group-hover:translate-x-1 transition-transform">
-                Sign in / Get started <ArrowRight className="ml-1.5 h-4 w-4" />
-              </div>
-            </CardContent>
-          </Card>
+            <Card className="border-[hsl(219_45%_14%)]/15 group-hover:border-[hsl(219_45%_14%)]/40 group-hover:shadow-md transition-all">
+              <CardContent className="p-7 md:p-8">
+                <div className="flex items-center justify-between mb-5">
+                  <span className="inline-flex h-10 w-10 items-center justify-center rounded-md bg-[hsl(219_45%_14%)] text-white">
+                    <Briefcase className="h-5 w-5" />
+                  </span>
+                  <span className="text-[10px] tracking-widest font-semibold text-[hsl(219_45%_30%)]/70">
+                    FOUNDER
+                  </span>
+                </div>
+                <h2 className="text-xl font-semibold tracking-tight">I'm a founder</h2>
+                <p className="mt-2 text-sm text-[hsl(219_25%_30%)] leading-relaxed">
+                  Run your company(ies). Cap table, rounds, dataroom, and investor comms — all in one place.
+                </p>
+                <div className="mt-6 inline-flex items-center text-sm font-medium text-[hsl(184_98%_22%)] group-hover:translate-x-1 transition-transform">
+                  Sign in / Get started <ArrowRight className="ml-1.5 h-4 w-4" />
+                </div>
+              </CardContent>
+            </Card>
+          </button>
 
-          <Card
+          <button
+            type="button"
             onClick={goInvestor}
-            className="group cursor-pointer border-[hsl(219_45%_14%)]/15 hover:border-[hsl(219_45%_14%)]/40 hover:shadow-md transition-all"
+            aria-label="Continue as investor — sign in to view your invitation or portfolio"
+            className="text-left rounded-lg group cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[hsl(184_98%_22%)]"
             data-testid="card-investor-path"
           >
-            <CardContent className="p-7 md:p-8">
-              <div className="flex items-center justify-between mb-5">
-                <span className="inline-flex h-10 w-10 items-center justify-center rounded-md bg-[hsl(327_77%_30%)] text-white">
-                  <Wallet className="h-5 w-5" />
-                </span>
-                <span className="text-[10px] tracking-widest font-semibold text-[hsl(327_77%_30%)]">
-                  INVESTOR
-                </span>
-              </div>
-              <h2 className="text-xl font-semibold tracking-tight">I'm an investor</h2>
-              <p className="mt-2 text-sm text-[hsl(219_25%_30%)] leading-relaxed">
-                Sign in to view your invitation or portfolio.
-              </p>
-              <div className="mt-6 inline-flex items-center text-sm font-medium text-[hsl(184_98%_22%)] group-hover:translate-x-1 transition-transform">
-                Sign in <ArrowRight className="ml-1.5 h-4 w-4" />
-              </div>
-            </CardContent>
-          </Card>
+            <Card className="border-[hsl(219_45%_14%)]/15 group-hover:border-[hsl(219_45%_14%)]/40 group-hover:shadow-md transition-all">
+              <CardContent className="p-7 md:p-8">
+                <div className="flex items-center justify-between mb-5">
+                  <span className="inline-flex h-10 w-10 items-center justify-center rounded-md bg-[hsl(327_77%_30%)] text-white">
+                    <Wallet className="h-5 w-5" />
+                  </span>
+                  <span className="text-[10px] tracking-widest font-semibold text-[hsl(327_77%_30%)]">
+                    INVESTOR
+                  </span>
+                </div>
+                <h2 className="text-xl font-semibold tracking-tight">I'm an investor</h2>
+                <p className="mt-2 text-sm text-[hsl(219_25%_30%)] leading-relaxed">
+                  Sign in to view your invitation or portfolio.
+                </p>
+                <div className="mt-6 inline-flex items-center text-sm font-medium text-[hsl(184_98%_22%)] group-hover:translate-x-1 transition-transform">
+                  Sign in <ArrowRight className="ml-1.5 h-4 w-4" />
+                </div>
+              </CardContent>
+            </Card>
+          </button>
         </div>
 
         {/* Investor disclaimer */}
@@ -204,7 +212,9 @@ export default function Landing() {
           <Sparkles className="h-3.5 w-3.5" /> Connected to Capavate Collective
         </span>
         <div className="flex-1" />
-        <span className="text-[10px] text-[hsl(219_25%_30%)]/60" data-testid="chip-sprint">Sprint 15 · login + entitlement</span>
+        {import.meta.env.DEV && (
+          <span className="text-[10px] text-[hsl(219_25%_30%)]/60" data-testid="chip-sprint">Sprint 15 · login + entitlement</span>
+        )}
       </footer>
     </div>
   );

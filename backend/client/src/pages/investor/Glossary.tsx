@@ -89,11 +89,16 @@ export default function InvestorGlossaryPage() {
                   const active = letter === l;
                   const has = lettersWithEntries.has(l);
                   return (
+                    // Wave E Fix E3 — added disabled:opacity-50, disabled:cursor-not-allowed and a title tooltip
+                    // so disabled letters give clear visual + a11y feedback.
                     <button
                       key={l}
+                      type="button"
                       disabled={!has}
                       onClick={() => setLetter(l)}
-                      className={`text-xs px-1.5 py-1 rounded ${active ? "bg-[hsl(184_98%_22%)] text-white" : has ? "hover:bg-muted" : "text-muted-foreground/40"}`}
+                      title={has ? undefined : `No glossary entries starting with ${l}`}
+                      aria-label={has ? `Filter to letter ${l}` : `Letter ${l} — no entries`}
+                      className={`text-xs px-1.5 py-1 rounded transition-opacity disabled:opacity-50 disabled:cursor-not-allowed ${active ? "bg-[hsl(184_98%_22%)] text-white" : has ? "hover:bg-muted" : "text-muted-foreground/40"}`}
                       data-testid={`filter-letter-${l}`}
                     >
                       {l}

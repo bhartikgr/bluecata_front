@@ -21,6 +21,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useRole } from "@/lib/role";
 import { useEntitlement, type UserContext } from "@/lib/entitlement";
+// v19 Wave A / Change 4 — default render path = new PersonaSwitcher dropdown.
+import { PersonaSwitcher } from "./PersonaSwitcher";
 
 type MembershipStatus = {
   userId: string;
@@ -76,12 +78,19 @@ export function shouldShowToggle(args: {
   return { visible: false, reason: "unknown role" };
 }
 
+/**
+ * v19 Wave A / Change 4 — CapCollectiveToggle now delegates to the new
+ * PersonaSwitcher dropdown (4 personas: Capavate, Collective, Consortium
+ * Partner, Admin). The pure-function predicates above are preserved for
+ * existing Sprint 12 / Sprint 15 tests that import them directly.
+ *
+ * We keep the binary-toggle implementation behind an opt-in env flag
+ * (`VITE_USE_LEGACY_CAP_COLLECTIVE_TOGGLE === "1"`) so any consumer that
+ * still relies on the original button can fall back without code changes.
+ */
 export function CapCollectiveToggle() {
   const { role } = useRole();
   const [location, navigate] = useLocation();
-
-  // Sprint 15 D8 — source of truth is the live UserContext. Membership status,
-  // cap-table positions, and admin flag all flow through `/api/auth/me`.
   const { data: ctx } = useEntitlement();
 
   const { visible, reason } = useMemo(
@@ -90,15 +99,30 @@ export function CapCollectiveToggle() {
   );
 
   const onCollective = location.startsWith("/collective");
-  const targetSurface: "capavate" | "collective" = onCollective ? "capavate" : "collective";
 
-  // Persist last surface (module-scoped memory; reset on full reload — sandbox-safe).
   useEffect(() => {
     lastSurface = onCollective ? "collective" : "capavate";
   }, [onCollective]);
 
+  // v19 Wave A / Change 4 — default = new persona dropdown.
+  const useLegacy = (() => {
+    try {
+      const env = (import.meta as { env?: { VITE_USE_LEGACY_CAP_COLLECTIVE_TOGGLE?: string } }).env;
+      return env?.VITE_USE_LEGACY_CAP_COLLECTIVE_TOGGLE === "1";
+    } catch {
+      return false;
+    }
+  })();
+
+  if (!useLegacy) {
+    // Forward to the new PersonaSwitcher (4-persona dropdown).
+    return <PersonaSwitcher />;
+  }
+
+  /* ---------------- Legacy binary-toggle path (opt-in fallback) ---------------- */
+  const targetSurface: "capavate" | "collective" = onCollective ? "capavate" : "collective";
+
   if (!visible) {
-    // Even when hidden, render a tiny invisible probe so tests can detect the decision.
     return (
       <span
         data-testid="toggle-hidden-marker"
@@ -113,7 +137,6 @@ export function CapCollectiveToggle() {
     if (targetSurface === "collective") {
       navigate("/collective");
     } else {
-      // Switch back to last Capavate route per role.
       const home =
         role === "founder" ? "/founder/dashboard" :
         role === "admin"   ? "/admin/dashboard"   :
@@ -145,7 +168,6 @@ export function CapCollectiveToggle() {
         </>
       )}
       <ArrowLeftRight className="h-3 w-3 opacity-70" />
-      {/* Sprint 20 Wave 2 — distinct badge for ON_CAP_TABLE_COLLECTIVE_ACTIVE vs ON_CAP_TABLE (defect 90) */}
       <Badge className="bg-white/15 border-0 text-white/90 text-[9px]" data-testid="badge-toggle-state">
         {role === "admin" ? "ADMIN" :
          onCollective ? "COLLECTIVE" :

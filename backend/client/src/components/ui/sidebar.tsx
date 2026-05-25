@@ -131,6 +131,10 @@ function SidebarProvider({
       <TooltipProvider delayDuration={0}>
         <div
           data-slot="sidebar-wrapper"
+          // Wave G G1 — design token namespace marker. The sidebar already uses
+          // the --sidebar-* var set, which is the same brand spine that
+          // --cap-primary / --cap-secondary derive from.
+          data-cap-token="sidebar"
           style={
             {
               "--sidebar-width": SIDEBAR_WIDTH,
@@ -516,6 +520,9 @@ function SidebarMenuButton({
     <Comp
       data-slot="sidebar-menu-button"
       data-sidebar="menu-button"
+      // Wave G G1 — NavLink token namespace marker. SidebarMenuButton is
+      // the canonical nav-link surface in the app (no standalone NavLink).
+      data-cap-token="nav-link"
       data-size={size}
       data-active={isActive}
       className={cn(sidebarMenuButtonVariants({ variant, size }), className)}

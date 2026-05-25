@@ -34,6 +34,7 @@ import { PostsFeed } from "@/components/comms/PostsFeed";
 import { TransactionPrepPanel } from "@/components/TransactionPrepPanel";
 import { DscSummaryCard } from "@/components/DscSummaryCard";
 import { CapavateGuidanceBox } from "@/components/CapavateGuidanceBox";
+import { HOVER_LIFT } from "@/lib/microInteractions";
 import { DscFeedbackBox } from "@/components/DscFeedbackBox";
 import { MnaReadinessCard } from "@/components/MnaReadinessCard";
 import { useToast } from "@/hooks/use-toast";
@@ -242,6 +243,112 @@ export default function FounderDashboard() {
         }
       />
       <PageBody>
+        {/* Wave G Track 2 — G3: bento header.
+            Quick-glance KPIs + recent activity in a varied bento grid.
+            Lives above the existing dashboard sections (which are preserved). */}
+        <div
+          className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 auto-rows-[minmax(110px,auto)] mb-6"
+          data-testid="bento-grid-founder-dashboard"
+        >
+          {/* Hero tile — col-span-4 */}
+          <Card
+            className="col-span-1 md:col-span-2 lg:col-span-4 bg-gradient-to-br from-[hsl(184_98%_22%/0.06)] to-[hsl(184_98%_22%/0.02)] border-[hsl(184_98%_22%/0.15)]"
+            data-testid="bento-tile-founder-hero"
+          >
+            <CardContent className="p-6 flex items-center justify-between gap-4 flex-wrap">
+              <div>
+                <div className="text-xs uppercase tracking-wide text-[hsl(184_98%_22%)] font-medium">Founder workspace</div>
+                <div className="text-xl font-semibold mt-1">{company ? company.companyName : "Your dashboard"}</div>
+                <div className="text-sm text-muted-foreground mt-0.5">{company?.sector ?? ""} {company?.hq ? `· ${company.hq}` : ""}</div>
+              </div>
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                {activeRound ? <Badge variant="secondary">Active round: {activeRound.name}</Badge> : <Badge variant="outline">No active round</Badge>}
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* KPI tile 1 — Founder ownership */}
+          <Card interactive className={`col-span-1 ${HOVER_LIFT}`} data-testid="bento-tile-kpi-ownership">
+            <CardContent className="p-5">
+              <div className="flex items-center justify-between">
+                <div className="text-xs uppercase tracking-wide text-muted-foreground">Founder ownership</div>
+                <ShieldCheck className="h-4 w-4 text-[hsl(184_98%_22%)]" />
+              </div>
+              <div className="text-2xl font-semibold tracking-tight mt-2 tabular-nums">{fmtPct((company?.kpi?.ownershipPct ?? 0) * 100, 1)}</div>
+              <div className="text-xs text-muted-foreground mt-1">of fully-diluted</div>
+            </CardContent>
+          </Card>
+
+          {/* KPI tile 2 — Holders */}
+          <Card interactive className={`col-span-1 ${HOVER_LIFT}`} data-testid="bento-tile-kpi-holders">
+            <CardContent className="p-5">
+              <div className="flex items-center justify-between">
+                <div className="text-xs uppercase tracking-wide text-muted-foreground">Cap-table holders</div>
+                <Users className="h-4 w-4 text-[hsl(184_98%_22%)]" />
+              </div>
+              <div className="text-2xl font-semibold tracking-tight mt-2 tabular-nums">{company?.kpi?.capTableHolders ?? 0}</div>
+              <div className="text-xs text-muted-foreground mt-1">fully-diluted</div>
+            </CardContent>
+          </Card>
+
+          {/* KPI tile 3 — Raised this year */}
+          <Card interactive className={`col-span-1 ${HOVER_LIFT}`} data-testid="bento-tile-kpi-raised">
+            <CardContent className="p-5">
+              <div className="flex items-center justify-between">
+                <div className="text-xs uppercase tracking-wide text-muted-foreground">Raised this year</div>
+                <TrendingUp className="h-4 w-4 text-emerald-600" />
+              </div>
+              <div className="text-2xl font-semibold tracking-tight mt-2 tabular-nums">{fmtUSD(company?.kpi?.raisedThisYearUsd ?? 0, { compact: true })}</div>
+              <div className="text-xs text-muted-foreground mt-1">of {fmtUSD(totalTarget, { compact: true })} target</div>
+            </CardContent>
+          </Card>
+
+          {/* KPI tile 4 — Dataroom views */}
+          <Card interactive className={`col-span-1 ${HOVER_LIFT}`} data-testid="bento-tile-kpi-dataroom">
+            <CardContent className="p-5">
+              <div className="flex items-center justify-between">
+                <div className="text-xs uppercase tracking-wide text-muted-foreground">Dataroom views</div>
+                <Eye className="h-4 w-4 text-[hsl(184_98%_22%)]" />
+              </div>
+              <div className="text-2xl font-semibold tracking-tight mt-2 tabular-nums">{engagement.data?.topDocs.reduce((s, d) => s + d.totalViews, 0) ?? 0}</div>
+              <div className="text-xs text-muted-foreground mt-1">{engagement.data?.investors.length ?? 0} unique viewers</div>
+            </CardContent>
+          </Card>
+
+          {/* Medium tile — Recent activity (col-span-2) */}
+          <Card interactive className={`col-span-1 md:col-span-2 lg:col-span-2 ${HOVER_LIFT}`} data-testid="bento-tile-founder-activity">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base flex items-center gap-2"><ActivityIcon className="h-4 w-4" /> Recent activity</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ul className="space-y-1.5">
+                {(activity.data ?? []).slice(0, 3).map(a => (
+                  <li key={`bento-${a.id}`} className="flex items-start gap-2 text-xs" data-testid={`bento-activity-${a.id}`}>
+                    <div className="mt-1 h-1.5 w-1.5 rounded-full bg-[hsl(184_98%_22%)] shrink-0" />
+                    <div className="flex-1 min-w-0 truncate">
+                      <span className="font-medium">{a.actor}</span> <span className="text-muted-foreground">{a.action}</span> <span className="font-medium">{a.target}</span>
+                    </div>
+                    <span className="text-[11px] text-muted-foreground shrink-0"><Clock className="inline h-3 w-3 mr-0.5" />{timeAgo(a.ts)}</span>
+                  </li>
+                ))}
+                {(activity.data?.length ?? 0) === 0 && <li className="text-xs text-muted-foreground">No recent activity.</li>}
+              </ul>
+            </CardContent>
+          </Card>
+
+          {/* Small tile — Quick actions */}
+          <Card interactive className={`col-span-1 md:col-span-2 lg:col-span-2 ${HOVER_LIFT}`} data-testid="bento-tile-founder-quick">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm">Quick actions</CardTitle>
+            </CardHeader>
+            <CardContent className="flex flex-wrap gap-2">
+              <Link href="/founder/rounds/new"><Button size="sm" variant="outline" data-testid="bento-action-new-round"><Briefcase className="h-3.5 w-3.5 mr-1.5" /> New round</Button></Link>
+              <Link href="/founder/reports/new"><Button size="sm" variant="outline" data-testid="bento-action-new-report"><FileText className="h-3.5 w-3.5 mr-1.5" /> Investor update</Button></Link>
+              <Link href="/founder/dataroom"><Button size="sm" variant="outline" data-testid="bento-action-dataroom"><FolderOpen className="h-3.5 w-3.5 mr-1.5" /> Dataroom</Button></Link>
+            </CardContent>
+          </Card>
+        </div>
+
         {/* Wave C-1 — Profile Completion Card */}
         <ProfileCompletionCard companyId={companyId} />
 

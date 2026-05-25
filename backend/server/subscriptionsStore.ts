@@ -392,15 +392,27 @@ export function updateSubscription(
 /**
  * createSubscriptionForNewCompany — called by the POST /api/founder/companies endpoint.
  * Idempotent: if a subscription row already exists for the company, returns it as-is.
- * Otherwise creates a new pending_payment row on founder_pro with annual cycle.
+ *
+ * Default behavior (no options.trial): creates a new pending_payment row on
+ * founder_pro with annual cycle. This is the historical/sprint28 behavior
+ * used by the admin paywall and tests.
+ *
+ * Wave B FIX 4 (F-BUG-005) — when options.trial === true, instead provisions
+ * a 14-day `trialing` subscription with no card required. This unblocks the
+ * 'every advertised free feature paywalled' bug for new founder signups:
+ * the founder gets immediate access during the trial window, and only
+ * sees the Capavate Annual ($840) subscribe screen after the trial expires.
+ *
  * Emits a subscription.auto_created_on_company_create bridge event.
  */
 export function createSubscriptionForNewCompany(
   companyId: string,
-  options: { plan?: Plan; actor?: string } = {},
+  options: { plan?: Plan; actor?: string; trial?: boolean; trialDays?: number } = {},
 ): { ok: true; subscription: Subscription; created: boolean } {
   const actor = options.actor ?? "system:new_company";
   const plan = options.plan ?? "founder_pro";
+  const wantsTrial = options.trial === true;
+  const trialDays = options.trialDays ?? 14;
 
   // Idempotent check (Map first, then DB).
   const existing = store.get(companyId);
@@ -426,6 +438,9 @@ export function createSubscriptionForNewCompany(
 
   const price = PLAN_PRICES[plan];
   const renewsOn = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const trialEndsOn = wantsTrial
+    ? new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+    : undefined;
   const prev = (() => {
     // Chain tip: last record in store
     const all = Array.from(store.values());
@@ -434,7 +449,7 @@ export function createSubscriptionForNewCompany(
 
   const body = {
     companyId,
-    status: "pending_payment" as SubscriptionStatus,
+    status: (wantsTrial ? "trialing" : "pending_payment") as SubscriptionStatus,
     plan,
     annualAmountMinor: price.annualMinor,
     currency: price.currency,
@@ -445,6 +460,7 @@ export function createSubscriptionForNewCompany(
     prevRevisionHash: prev,
     updatedAt: new Date().toISOString(),
     updatedBy: actor,
+    ...(trialEndsOn ? { trialEndsOn } : {}),
   };
   const revisionHash = hashRevision(prev, body);
   const record: Subscription = { ...body, revisionHash };
@@ -464,7 +480,7 @@ export function createSubscriptionForNewCompany(
           cardLast4: record.cardLast4,
           invoicesCount: record.invoicesCount,
           pastDueMinor: null,
-          trialEndsOn: null,
+          trialEndsOn: trialEndsOn ?? null,
           version: record.version,
           prevRevisionHash: record.prevRevisionHash,
           revisionHash: record.revisionHash,
@@ -506,13 +522,13 @@ export function createSubscriptionForNewCompany(
     actor,
     action: "subscription.auto_created_on_company_create",
     target: `subscription:${companyId}`,
-    payload: { plan, status: "pending_payment", companyId, version: 1 },
+    payload: { plan, status: record.status, companyId, version: 1, trialEndsOn: trialEndsOn ?? null },
   });
   emitBridgeEvent({
     eventType: "subscription.auto_created_on_company_create",
     aggregateId: companyId,
     aggregateKind: "company",
-    payload: { plan, status: "pending_payment", version: 1, revisionHash },
+    payload: { plan, status: record.status, version: 1, revisionHash, trialEndsOn: trialEndsOn ?? null },
   });
 
   return { ok: true, subscription: record, created: true };

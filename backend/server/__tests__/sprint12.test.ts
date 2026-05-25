@@ -429,11 +429,20 @@ describe("Sprint 12 / Admin — reconciliation force-commit guard", () => {
 });
 
 describe("Sprint 12 / Admin — pricing tiers", () => {
-  it("founder tiers endpoint returns 3 tiers", async () => {
+  // v19 Wave A / Change 2: single-plan default (\$840 USD/year, Capavate
+  // Annual). The 3-tier matrix (Free / Pro / Scale) was retired from the
+  // displayed seed per founder directive. We assert at least 1 tier and that
+  // the default tier is `founder_capavate_annual`. Admins can still add tiers
+  // via the existing admin pricing endpoints — that path is unchanged.
+  it("founder tiers endpoint returns the v19 single-plan default", async () => {
     const app = makeApp();
     const r = await req(app, "GET", "/api/admin/pricing/founder-tiers");
     expect(r.status).toBe(200);
-    expect(r.body.tiers.length).toBeGreaterThanOrEqual(3);
+    expect(r.body.tiers.length).toBeGreaterThanOrEqual(1);
+    const annual = r.body.tiers.find((t: { id: string }) => t.id === "founder_capavate_annual");
+    expect(annual).toBeTruthy();
+    expect(annual.annualPriceCents).toBe(84_000);
+    expect(annual.billingCycle).toBe("annual");
   });
 
   it("collective tiers endpoint returns the $1,200/yr Standard tier per audit §10", async () => {

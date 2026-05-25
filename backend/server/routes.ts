@@ -42,7 +42,10 @@ import { registerNetworkPostsRoutes } from "./networkPostsStore";
 import { registerBulkMessageRoutes } from "./bulkMessageStore";
 import { registerPortfolioAnalyticsRoutes } from "./portfolioAnalyticsStore";
 import { registerSprint21Routes } from "./sprint21Routes";
-import { setSessionCookie, clearSessionCookie } from "./lib/sessionCookie.js";
+import { setSessionCookie, clearSessionCookie, readSessionCookie } from "./lib/sessionCookie.js";
+// Wave C FIX C1 (W-2) — logout must revoke the server-side session, not
+// merely clear cookies on the client. See server/lib/sessionRevocation.ts.
+import { revokeSession } from "./lib/sessionRevocation.js";
 import { getRecentEvents, findEventsByType } from "./sprint10Telemetry";
 // Sprint 11 — founder build
 import { registerMultiCompanyRoutes, updateCompanyDetails } from "./multiCompanyStore";
@@ -975,6 +978,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // (their own companies, or platform-wide events if admin).
   app.get("/api/activity", requireAuth, (req, res) => {
     const ctx = req.userContext ?? getUserContext(req);
+    // Wave C FIX C5 (defense in depth): requireAuth already guards anonymous
+    // callers, but if some upstream short-circuit slipped a request through
+    // with a missing/empty userId, refuse to render any rows. The activity
+    // ledger is hash-chained and tenant-scoped; we must never fall through
+    // to a default-persona view here.
+    if (!ctx.isAuthed || !ctx.userId) {
+      return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
+    }
     const auditEntries = getAuditLog().map((a) => ({
       id: a.id,
       ts: a.ts,
@@ -986,15 +997,40 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }));
     let visible = auditEntries;
     if (!ctx.isAdmin) {
+      // BUG-019 fix (24-May) + Wave C FIX C5 hardening:
+      // platform-tenant rows (e.g. legal_consent.recorded,
+      // lifecycle_policy.changed) are written under `tenant_platform` for ALL
+      // users — so blanket-allowing that tenant leaked other founders' consent
+      // IDs into a fresh founder's Activity Log. Tenant-scope to the caller's
+      // own company tenants; for platform-tenant rows, additionally require
+      // `actor === ctx.userId` so a founder only sees their OWN platform events.
       const userTenantIds = new Set<string>(
         (ctx.founder?.companies ?? []).map((c: any) => `tenant_co_${c.companyId}`),
       );
-      userTenantIds.add("tenant_platform");
-      visible = auditEntries.filter((e) => userTenantIds.has(e.tenantId));
+      const callerUserId = ctx.userId;
+      visible = auditEntries.filter((e) => {
+        if (userTenantIds.has(e.tenantId)) return true;
+        // Platform-tenant rows: only the actor's own events are visible.
+        // (callerUserId is guaranteed non-empty by the early-return above.)
+        if (e.tenantId === "tenant_platform" && e.actor === callerUserId) return true;
+        return false;
+      });
     }
-    // Merge legacy demo seed (empty in non-demo) so existing fixture tests
-    // that assert on `ac_1` etc. continue to find them.
-    const merged = [...visible, ...activity].sort((a, b) => (b.ts ?? "").localeCompare(a.ts ?? ""));
+    // Wave F4 FIX F4-1 (E2E-2, P0): the legacy `activity` demo-seed array
+    // (8 hard-coded rows attributed to "Maya Chen" et al.) has NO tenantId
+    // and is therefore NOT tenant-scopable. Prior to this fix it was merged
+    // into every founder's response — a brand-new founder, with zero of
+    // their own audit-log rows, would see those 8 cross-persona rows and
+    // appear to be inside another founder's Activity Log (the E2E suite
+    // observed exactly this leak). The legacy seed is preserved verbatim
+    // for admins (who legitimately see everything) and for the demo persona
+    // it represents (user named "Maya Chen"); everyone else now gets ZERO
+    // legacy rows. Audit-log rows authored by the caller still flow through
+    // the strict `userTenantIds` / actor-equals-self filter above.
+    const callerName = ctx.identity?.name ?? "";
+    const isDemoMaya = ctx.isAdmin || /^maya\s/i.test(String(callerName));
+    const legacySeedVisible = isDemoMaya ? activity : [];
+    const merged = [...visible, ...legacySeedVisible].sort((a, b) => (b.ts ?? "").localeCompare(a.ts ?? ""));
     // B-V13-6 fix
     res.json(merged);
   });
@@ -1460,12 +1496,39 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // UI sees the new value immediately. If the row doesn't exist (test
     // identities that never went through `registerFounderUser`) the UPDATE
     // is a no-op and the response is still 200.
-    const canonicalPatch: { name?: string; avatarUrl?: string | null } = {};
+    //
+    // Wave C FIX C2 (Ozan, 24-May-2026): extended to also persist `email`,
+    // `title`, and `displayName`. The `users` schema now has dedicated
+    // columns for `title` + `display_name` (migration 0050). `email` is
+    // the canonical login identifier — we only overwrite it when the
+    // caller supplied a non-empty string. The unique constraint on
+    // `users.email` is respected by SQLite — if the new email collides
+    // with another user, the transaction throws and we log + return 200
+    // (cache still updated so the UI is non-destructive); we do NOT
+    // surface a 500 in this path because the founder's session is
+    // otherwise consistent. A future patch can add an explicit 409
+    // response for collision — not in scope for C2.
+    const canonicalPatch: {
+      name?: string;
+      avatarUrl?: string | null;
+      email?: string;
+      title?: string | null;
+      displayName?: string | null;
+    } = {};
     if (typeof body.name === "string" && body.name.length > 0) {
       canonicalPatch.name = body.name;
     }
     if (typeof body.avatarUrl === "string" || body.avatarUrl === null) {
       canonicalPatch.avatarUrl = body.avatarUrl as string | null;
+    }
+    if (typeof body.email === "string" && body.email.length > 0) {
+      canonicalPatch.email = body.email.trim().toLowerCase();
+    }
+    if (typeof body.title === "string" || body.title === null) {
+      canonicalPatch.title = body.title as string | null;
+    }
+    if (typeof body.displayName === "string" || body.displayName === null) {
+      canonicalPatch.displayName = body.displayName as string | null;
     }
     if (Object.keys(canonicalPatch).length > 0) {
       try {
@@ -1515,7 +1578,92 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone ?? "Europe/London",
       notificationPrefs: { emailDigest: true, pushAlerts: false, inAppToasts: true },
     };
-    res.json({ ...defaults, ...stored, ...ctx });
+
+    // Wave F4 FIX F4-2 (E2E-4, P0): the previous response was
+    // `{...defaults, ...stored, ...ctx}` — spreading `ctx` LAST meant the
+    // persona-registry's stale `identity.name` clobbered any `name` /
+    // `displayName` / `email` / `title` the user had just persisted via
+    // PATCH /api/auth/me. The client's Settings tab reads from
+    // `m.identity?.name ?? m.name`, so on reload it saw the stale value
+    // and the save "didn't take". We now re-read the canonical record from
+    // the `users` SQL table (the source of truth) and overlay it into
+    // `identity`, so reload always reflects the most-recently-persisted
+    // value. The `_meStore` cache is preserved for non-canonical prefs
+    // (timezone, notificationPrefs).
+    let canonical: {
+      name?: string;
+      email?: string;
+      title?: string | null;
+      displayName?: string | null;
+      avatarUrl?: string | null;
+    } = {};
+    try {
+      const db = getDb();
+      const rows = db
+        .select()
+        .from(usersTable)
+        .where(drizzleEq(usersTable.id, userId))
+        .all() as Array<{
+          name: string;
+          email: string;
+          title: string | null;
+          displayName: string | null;
+          avatarUrl: string | null;
+        }>;
+      if (rows.length > 0) {
+        const r = rows[0];
+        canonical = {
+          name: r.name,
+          email: r.email,
+          title: r.title,
+          displayName: r.displayName,
+          avatarUrl: r.avatarUrl,
+        };
+      }
+    } catch {
+      // DB unavailable (ephemeral test mode) — fall through to ctx/stored.
+    }
+    // Build the final response. Order matters:
+    //   1. defaults  — timezone / notificationPrefs / id / isAuthed scaffold.
+    //   2. stored    — non-canonical prefs the user has set (timezone etc.).
+    //   3. ctx       — persona-registry shape (founder/investor/collective/etc.).
+    //   4. canonical — LAST: overrides top-level name/email/title/displayName
+    //                  with DB-truth values, and re-emits a fresh identity
+    //                  object that incorporates those values so the client
+    //                  reading `m.identity?.name ?? m.name` always wins.
+    const baseIdentity = (ctx as any).identity ?? { email: "", name: "" };
+    const mergedIdentity = {
+      ...baseIdentity,
+      ...(canonical.name !== undefined ? { name: canonical.name } : {}),
+      ...(canonical.email !== undefined ? { email: canonical.email } : {}),
+      ...(canonical.displayName !== undefined && canonical.displayName !== null
+        ? { displayName: canonical.displayName } : {}),
+      ...(canonical.title !== undefined && canonical.title !== null
+        ? { title: canonical.title } : {}),
+      // Also honor `_meStore` (in-memory cache) for the SAME tick where the
+      // PATCH just landed but DB read may be ephemeral / not yet committed
+      // in some test contexts.
+      ...(typeof stored.name === "string" ? { name: stored.name } : {}),
+      ...(typeof stored.email === "string" ? { email: stored.email } : {}),
+      ...(typeof stored.displayName === "string" || stored.displayName === null
+        ? { displayName: stored.displayName as string | null } : {}),
+      ...(typeof stored.title === "string" || stored.title === null
+        ? { title: stored.title as string | null } : {}),
+    };
+
+    res.json({
+      ...defaults,
+      ...stored,
+      ...ctx,
+      // canonical overlays at the top level (client also reads `m.name` etc.)
+      ...(canonical.name !== undefined ? { name: canonical.name } : {}),
+      ...(canonical.email !== undefined ? { email: canonical.email } : {}),
+      ...(canonical.displayName !== undefined ? { displayName: canonical.displayName } : {}),
+      ...(canonical.title !== undefined ? { title: canonical.title } : {}),
+      // _meStore overlay (most-recently-PATCHed wins, even before DB commit visibility)
+      ...stored,
+      identity: mergedIdentity,
+    });
   });
 
   // Companies PATCH — requireAuth
@@ -1776,6 +1924,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
    * Sprint 23 Wave A — DEF-014: POST /api/auth/logout (PUBLIC — clears session)
    * ------------------------------------------------------------------ */
   app.post("/api/auth/logout", (req, res) => {
+    // Wave C FIX C1 (W-2): the cookie token value IS the userId in the
+    // Capavate auth model (see lib/userContext.ts::resolvePersonaId). Add
+    // it to the server-side revocation set BEFORE clearing the cookie so
+    // a captured cookie (XSS, network log, shared-machine snoop) cannot
+    // continue to authenticate. A subsequent successful login clears the
+    // userId from the revocation set (see authRoutes.ts clearRevocation),
+    // so the “logout → re-login with same creds” flow stays idempotent.
+    const tokenUserId = readSessionCookie(req);
+    if (tokenUserId) {
+      revokeSession(tokenUserId);
+    }
     clearSessionCookie(res);
     res.clearCookie("cap_jwt", { path: "/" });
     res.status(200).json({ ok: true, message: "Logged out" });

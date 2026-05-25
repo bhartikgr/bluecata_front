@@ -80,7 +80,7 @@ export default function FounderQABox({ roundId }: Props) {
       queryClient.invalidateQueries({ queryKey: ["/api/rounds", roundId, "founder-qa"] });
     },
     onError: (err: Error) => {
-      toast({ title: "Failed to send", description: err.message, variant: "destructive" });
+      toast({ title: "Failed to send", description: "Please try again. If this continues, contact support.", variant: "destructive" });
     },
   });
 

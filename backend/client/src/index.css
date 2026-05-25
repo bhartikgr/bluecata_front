@@ -12,6 +12,32 @@
 
 /* LIGHT MODE */
 :root {
+  /* Wave E Fix E4 — canonical brand HSL custom properties so a future PR
+     can migrate hardcoded `hsl(184_98%_22%)` / `hsl(219_45%_20%)` literals
+     to `bg-cap-primary` / `bg-cap-secondary`. Additive: no existing styles
+     are altered. v23 supports BOTH the literal and the var.
+     Values mirror the Hydra Teal accent and Navy primary above. */
+  --cap-primary: 184 98% 22%;        /* Hydra Teal */
+  --cap-primary-hover: 184 98% 18%;
+  --cap-secondary: 219 45% 20%;      /* Navy */
+  --cap-secondary-hover: 219 45% 16%;
+
+  /* Wave G G1 — extended design token system. ADDITIVE: each new token is
+     a thin alias over an existing brand/semantic CSS variable so that the
+     8 high-visibility components can opt into the token namespace without
+     any visual diff. Future PRs migrate the remaining 372 literal sites
+     incrementally; this only formalises the public surface. */
+  --cap-surface: 0 0% 100%;          /* Card / panel background — mirrors --card */
+  --cap-surface-hover: 210 33% 96%;  /* Subtle hover tint over surface */
+  --cap-border: 215 20% 88%;         /* Default border — mirrors --border */
+  --cap-text-primary: 219 45% 14%;   /* Body text — mirrors --foreground */
+  --cap-text-secondary: 219 15% 42%; /* Muted body — mirrors --muted-foreground */
+  --cap-text-disabled: 219 15% 65%;  /* Disabled label text */
+  --cap-success: 158 64% 30%;        /* Positive states — mirrors --success */
+  --cap-warning: 38 92% 45%;         /* Warning states — mirrors --warning */
+  --cap-error: 7 61% 43%;            /* Destructive — mirrors --destructive */
+  --cap-info: 219 70% 55%;           /* Informational — chart-6 blue */
+
   --button-outline: rgba(0, 0, 0, 0.1);
   --badge-outline: rgba(0, 0, 0, 0.05);
   --opaque-button-border-intensity: -8;
@@ -176,4 +202,37 @@
   .text-plum { color: hsl(333 75% 35%); }
 
   .text-balance { text-wrap: balance; }
+
+  /* Wave G G4 — shimmer skeleton loading state. Used by <PageSkeleton>,
+     <TableSkeleton>, <CardSkeleton>, <ChartSkeleton>. The animation moves
+     a gradient sweep across the element; we use background-position so the
+     animation runs on the compositor (GPU-friendly, no layout reflow).
+
+     Accessibility: when the user has prefers-reduced-motion: reduce, the
+     animation is suppressed and the skeleton renders as a flat gray block.
+     This is enforced by the `.animate-shimmer` block + the media query that
+     overrides `animation: none`. */
+  @keyframes shimmer {
+    0%   { background-position: -200% 0; }
+    100% { background-position:  200% 0; }
+  }
+  .animate-shimmer {
+    background-image: linear-gradient(
+      90deg,
+      hsl(215 25% 94%) 0%,
+      hsl(215 25% 88%) 50%,
+      hsl(215 25% 94%) 100%
+    );
+    background-size: 200% 100%;
+    background-repeat: no-repeat;
+    animation: shimmer 1.5s ease-in-out infinite;
+    will-change: background-position;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .animate-shimmer {
+      animation: none;
+      background-image: none;
+      background-color: hsl(215 25% 91%);
+    }
+  }
 }

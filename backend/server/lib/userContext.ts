@@ -28,6 +28,10 @@ import { storeCredential, lookupByEmail } from "../userCredentialsStore";
 // ordering is correct (when foreign key enforcement is turned on the row
 // already exists). This also lets `users.email` participate in admin lookups.
 import { getDb } from "../db/connection";
+// Wave C FIX C1 (W-2) — Server-side session revocation: cookies whose userId
+// has been added to the revocation set (via /api/auth/logout) must no longer
+// authenticate, even if the cookie value itself is otherwise valid.
+import { isRevoked } from "./sessionRevocation";
 import { users as usersTable } from "../../shared/schema";
 import { eq } from "drizzle-orm";
 import { log } from "./logger";
@@ -366,7 +370,14 @@ export function resolvePersonaId(req: Request): string | null {
     ? (req.headers[HDR] as string | undefined) ?? undefined
     : undefined;
   const queryId = typeof req.query.userId === "string" ? req.query.userId : undefined;
-  return cookieId ?? headerId ?? queryId ?? null;
+  const resolved = cookieId ?? headerId ?? queryId ?? null;
+  // Wave C FIX C1: short-circuit revoked tokens. A captured cookie whose
+  // userId has been added to the revocation set (logout) must no longer
+  // authenticate. The next successful login clears the userId from the set.
+  if (resolved && isRevoked(resolved)) {
+    return null;
+  }
+  return resolved;
 }
 
 /**

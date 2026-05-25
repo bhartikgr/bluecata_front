@@ -25,6 +25,18 @@ import { appendAdminAudit } from "./adminPlatformStore";
 // Patch v6 — free-plan activation needs a company + user context.
 import { getUserContext } from "./lib/userContext";
 import { addCompanyForFounder, getCompaniesForFounder, getActiveCompanyId, setActiveCompanyId, type FounderCompanyMembership } from "./multiCompanyStore";
+// v19 Wave A / Change 3 — AirWallex is the new default gateway. The resolver
+// picks between AirWallex and Stripe per env (PAYMENT_GATEWAY_DEFAULT). We do
+// NOT touch the existing chargeSubscription / chargeRefund signatures — those
+// remain stable. We do, however, augment getPublicConfig() to return BOTH
+// gateways and add per-gateway webhook handlers below.
+import {
+  getDefaultGatewayId,
+  listPublicGatewayConfig,
+  isGatewayReady,
+} from "./lib/paymentGatewayResolver";
+import { verifyWebhookSignature as verifyAirwallexSig } from "./lib/airwallexGateway";
+import { verifyWebhookSignature as verifyStripeSig } from "./lib/stripeGateway";
 
 /* ---------- Types ---------- */
 
@@ -175,15 +187,35 @@ export function chargeRefund(input: ChargeRefundInput): { ok: boolean; refundEnt
 
 /**
  * Public gateway configuration returned to the admin Payment Gateway tab.
+ *
+ * v19 Wave A / Change 3: now reports the v19 default gateway (AirWallex)
+ * alongside Stripe. The legacy single-gateway shape is preserved for
+ * back-compat — callers that want the per-gateway list should hit
+ * `getPublicGatewayList()`.
  */
-export function getPublicConfig(): GatewayConfig {
+export function getPublicConfig(): GatewayConfig & { defaultGateway?: string; defaultWebhookUrl?: string } {
+  const def = getDefaultGatewayId();
   return {
-    name: "Collective Gateway",
+    name: def === "airwallex" ? "AirWallex" : "Stripe",
     mode: process.env.NODE_ENV === "production" ? "live" : "test",
-    supportedMethods: ["card", "sepa", "ach"],
+    supportedMethods: def === "airwallex"
+      ? ["card", "wechat_pay", "alipay", "bank_transfer"]
+      : ["card", "sepa", "ach"],
+    // Legacy generic webhook path — PRESERVED for back-compat with sprint28 tests
+    // and existing integrations. The v19 per-gateway path is exposed in
+    // `defaultWebhookUrl` below.
     webhookUrl: "/api/webhooks/payment-gateway",
-    version: "1.0",
+    version: "2.0",
+    defaultGateway: def,
+    defaultWebhookUrl: `/api/webhooks/payment-gateway/${def}`,
   };
+}
+
+/**
+ * v19 Wave A / Change 3 — per-gateway public config (admin Payment Gateway tab).
+ */
+export function getPublicGatewayList() {
+  return listPublicGatewayConfig();
 }
 
 /* ---------- Routes ---------- */
@@ -396,6 +428,95 @@ export function registerPaymentGatewayRoutes(app: Express): void {
     if (!result.ok) return res.status(404).json(result);
     appendAdminAudit(`founder:${companyId}`, `subscription:${companyId}`, "payment_method.changed", { cardLast4, cardholderName });
     res.json({ ok: true, subscription: result.subscription });
+  });
+
+  /**
+   * v19 Wave A / Change 3 — per-gateway webhook handlers.
+   *
+   * `/api/webhooks/payment-gateway/airwallex`
+   * `/api/webhooks/payment-gateway/stripe`
+   *
+   * Both verify the inbound HMAC signature against the gateway-specific
+   * secret. Verification is REQUIRED in production (NODE_ENV === "production")
+   * but advisory in dev/test (where shared secrets are typically unset).
+   *
+   * Payloads are normalised to the existing `{ type, intentId, status,
+   * companyId }` shape and forwarded through the same dispatch logic used by
+   * the legacy `/api/webhooks/payment-gateway` endpoint.
+   */
+  function handleGatewayWebhook(gateway: "airwallex" | "stripe", req: Request, res: Response) {
+    const rawBody = typeof req.body === "string" ? req.body : JSON.stringify(req.body ?? {});
+    const isProd = process.env.NODE_ENV === "production";
+    const sigOk = gateway === "airwallex"
+      ? verifyAirwallexSig(req.headers as Record<string, string | string[] | undefined>, rawBody)
+      : verifyStripeSig(req.headers as Record<string, string | string[] | undefined>, rawBody);
+
+    if (isProd && isGatewayReady(gateway) && !sigOk) {
+      return res.status(401).json({ ok: false, error: "invalid_webhook_signature", gateway });
+    }
+
+    const body = typeof req.body === "object" && req.body !== null ? req.body as Record<string, unknown> : {};
+    // Normalise AirWallex (`event_type`, `data.id`) / Stripe (`type`, `data.object.id`) shapes.
+    let type: string | undefined;
+    let intentId: string | undefined;
+    let status: string | undefined;
+    let companyId: string | undefined;
+    if (gateway === "airwallex") {
+      type = (body.name as string | undefined) ?? (body.type as string | undefined);
+      const data = body.data as { object?: { id?: string; status?: string; merchant_order_id?: string } } | undefined;
+      intentId = data?.object?.id ?? (body.intentId as string | undefined);
+      status = data?.object?.status ?? (body.status as string | undefined);
+      companyId = data?.object?.merchant_order_id ?? (body.companyId as string | undefined);
+    } else {
+      type = body.type as string | undefined;
+      const data = body.data as { object?: { id?: string; status?: string; metadata?: { companyId?: string } } } | undefined;
+      intentId = data?.object?.id ?? (body.intentId as string | undefined);
+      status = data?.object?.status ?? (body.status as string | undefined);
+      companyId = data?.object?.metadata?.companyId ?? (body.companyId as string | undefined);
+    }
+
+    if (!type || !intentId) {
+      return res.status(400).json({ ok: false, error: "missing_fields", gateway });
+    }
+
+    const key = webhookKey(intentId, type);
+    if (processedWebhookEvents.has(key)) {
+      return res.json({ ok: true, idempotent: true, gateway });
+    }
+    processedWebhookEvents.add(key);
+
+    recentWebhookEvents.push({
+      id: `wh_${randomBytes(4).toString("hex")}`,
+      type,
+      intentId,
+      status: status ?? "received",
+      companyId: companyId ?? null,
+      receivedAt: new Date().toISOString(),
+    });
+
+    // Normalise type into the legacy dispatch verbs.
+    const isSuccess = /succeed|paid|captured|completed/i.test(type) || /SUCCEEDED|succeeded/.test(status ?? "");
+    const isFailure = /fail|declined|errored|cancelled/i.test(type) || /FAILED|failed/.test(status ?? "");
+    if (isSuccess && companyId) {
+      const sub = getSubscription(companyId);
+      if (sub?.status === "past_due") {
+        updateSubscription(companyId, { status: "active" }, `system:webhook:${gateway}`);
+      }
+    } else if (isFailure && companyId) {
+      const sub = getSubscription(companyId);
+      if (sub?.status === "active") {
+        updateSubscription(companyId, { status: "past_due" }, `system:webhook:${gateway}`);
+      }
+    }
+
+    return res.json({ ok: true, gateway });
+  }
+
+  app.post("/api/webhooks/payment-gateway/airwallex", (req: Request, res: Response) => {
+    handleGatewayWebhook("airwallex", req, res);
+  });
+  app.post("/api/webhooks/payment-gateway/stripe", (req: Request, res: Response) => {
+    handleGatewayWebhook("stripe", req, res);
   });
 
   /**

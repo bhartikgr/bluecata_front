@@ -30,8 +30,74 @@
  */
 import type { Express, Request, Response } from "express";
 import { createHash, createHmac, randomBytes } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { emitMutation } from "./lib/eventBus";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
+import { getDb } from "./db/connection";
+import { bridgeOutbox as bridgeOutboxTable } from "@shared/schema";
+import { log } from "./lib/logger";
+
+/**
+ * Wave C / FIX C3 (Ozan, 24-May-2026) — bridge_outbox DB write-through.
+ *
+ * Pre-fix the outbox lived ONLY in the `outbox: OutboxEntry[]` Array below.
+ * On process restart every queued envelope was lost. The `bridge_outbox`
+ * SQL table existed (shared/schema.ts:477) but nothing wrote to it. This
+ * patch adds best-effort write-through:
+ *   • INSERT on `emitBridgeEvent` (every new envelope).
+ *   • UPDATE on `drainOutbox` after each delivery attempt (status,
+ *     attempts, deliveredAt, lastError, nextRetryAt).
+ * Writes are wrapped in try/catch and logged on failure — the in-memory
+ * outbox remains the source of truth at runtime, so a DB outage never
+ * blocks a bridge emit. A subsequent boot can rehydrate by querying the
+ * table directly; that hydration helper is provided as `_hydrateOutbox`.
+ */
+function persistOutboxInsert(entry: OutboxEntry): void {
+  try {
+    const db = getDb();
+    db.insert(bridgeOutboxTable)
+      .values({
+        id: entry.envelope.eventId,
+        eventType: entry.envelope.eventType,
+        aggregateId: entry.envelope.aggregateId,
+        aggregateKind: entry.envelope.aggregateKind,
+        envelopeJson: JSON.stringify(entry.envelope),
+        hmac: entry.hmac,
+        status: entry.status,
+        attempts: entry.attempts,
+        nextRetryAt: entry.nextRetryAt,
+        enqueuedAt: entry.enqueuedAt,
+        deliveredAt: entry.deliveredAt,
+        lastError: entry.lastError,
+      })
+      .onConflictDoNothing()
+      .run();
+  } catch (err) {
+    log.warn(
+      `[bridgeStore.persistOutboxInsert] DB write-through failed for ${entry.envelope.eventId}: ${(err as Error).message}`,
+    );
+  }
+}
+
+function persistOutboxUpdate(entry: OutboxEntry): void {
+  try {
+    const db = getDb();
+    db.update(bridgeOutboxTable)
+      .set({
+        status: entry.status,
+        attempts: entry.attempts,
+        nextRetryAt: entry.nextRetryAt,
+        deliveredAt: entry.deliveredAt,
+        lastError: entry.lastError,
+      })
+      .where(eq(bridgeOutboxTable.id, entry.envelope.eventId))
+      .run();
+  } catch (err) {
+    log.warn(
+      `[bridgeStore.persistOutboxUpdate] DB write-through failed for ${entry.envelope.eventId}: ${(err as Error).message}`,
+    );
+  }
+}
 
 const HMAC_SECRET = process.env.BRIDGE_HMAC_SECRET ?? "capavate-collective-bridge-shared-secret";
 const SCHEMA_VERSION = "1.0";
@@ -297,6 +363,8 @@ export function emitBridgeEvent(args: EmitArgs): OutboxEntry {
     deliveredAt: null,
   };
   outbox.push(entry);
+  // Wave C FIX C3 — write-through to bridge_outbox SQL table (best-effort).
+  persistOutboxInsert(entry);
   // Fan out to SSE realtime channel so admin Bridge page + collective dashboard update within ~1s
   emitMutation({ aggregate: "bridge", id: entry.envelope.eventId, change: "create" });
   return entry;
@@ -343,6 +411,8 @@ export async function drainOutbox(deliver: (env: BridgeEnvelope, hmac: string) =
         e.nextRetryAt = now + Math.min(60_000, Math.pow(2, e.attempts) * 1000);
       }
     }
+    // Wave C FIX C3 — mirror status change into DB (best-effort).
+    persistOutboxUpdate(e);
   }
   return { delivered, deadLettered };
 }

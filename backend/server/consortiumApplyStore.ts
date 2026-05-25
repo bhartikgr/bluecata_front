@@ -758,70 +758,80 @@ export function withdrawApplication(
  * ============================================================ */
 export function registerConsortiumApplyRoutes(app: Express): void {
   /* ---------- Public ---------- */
-  app.post(
-    "/api/public/consortium/apply",
-    (req: Request, res: Response, next: NextFunction): void => {
-      // Rate limit per IP — bucket public:apply.
-      const ip = clientIp(req);
-      const r = publicApplyTick(ip, Date.now());
-      res.setHeader("X-RateLimit-Bucket", "public:apply");
-      res.setHeader("X-RateLimit-Limit", String(PUBLIC_APPLY_LIMIT));
-      res.setHeader(
-        "X-RateLimit-Reset",
-        String(Math.floor(r.resetAt / 1000)),
-      );
-      if (!r.ok) {
-        res.status(429).json({
-          error: "rate_limited",
-          bucket: "public:apply",
-          retryAfterMs: r.resetAt - Date.now(),
-        });
-        return;
-      }
-      next();
-    },
-    (req: Request, res: Response): void => {
-      const parsed = publicApplySchema.safeParse(req.body);
-      if (!parsed.success) {
-        res.status(400).json({
-          error: "validation_failed",
-          issues: parsed.error.issues,
-        });
-        return;
-      }
-      const body = parsed.data;
-      if (!verifyCaptcha(body.captchaToken)) {
-        res.status(400).json({ error: "captcha_failed" });
-        return;
-      }
-      try {
-        const row = submitApplication({
-          organizationName: body.organizationName,
-          contactName: body.contactName,
-          contactEmail: body.contactEmail,
-          contactPhone: body.contactPhone ?? null,
-          website: body.website ?? null,
-          jurisdiction: body.jurisdiction,
-          partnerType: body.partnerType,
-          aumRange: body.aumRange ?? body.aum_range ?? "undisclosed",
-          portfolioCompanyCount:
-            body.portfolioCompanyCount ?? body.portfolio_company_count ?? 0,
-          expectedChapter: body.expectedChapter,
-          introMessage: body.introMessage,
-          referredBy: body.referredBy ?? null,
-          sourceIp: clientIp(req),
-          sourceUserAgent: (req.headers["user-agent"] as string) ?? null,
-        });
-        res.status(201).json({
-          applicationId: row.id,
-          status: row.status,
-        });
-      } catch (err) {
-        log.error("[consortium.apply] submit failed:", err);
-        res.status(500).json({ error: "submit_failed" });
-      }
-    },
-  );
+  // Wave F4 FIX F4-3 (E2E-7, P0): the canonical public submit endpoint is
+  // `/api/public/consortium/apply`, but the client app shell and the v23.1
+  // E2E suite both probe `/api/consortium-applications` (the REST-style name
+  // that mirrors `/admin/consortium-applications`). The form would 401 against
+  // that path because no route was registered, and the global SPA fallback
+  // returned auth-gated HTML. We now register BOTH paths to the same public,
+  // rate-limited, no-auth handler — additive only, no behavior change on the
+  // canonical path. Tracked: avi_patch_v19/docs/WAVE_F4_FIX_REPORT.md.
+  const publicApplyRateLimit = (req: Request, res: Response, next: NextFunction): void => {
+    // Rate limit per IP — bucket public:apply (5/hr/IP per spec).
+    const ip = clientIp(req);
+    const r = publicApplyTick(ip, Date.now());
+    res.setHeader("X-RateLimit-Bucket", "public:apply");
+    res.setHeader("X-RateLimit-Limit", String(PUBLIC_APPLY_LIMIT));
+    res.setHeader(
+      "X-RateLimit-Reset",
+      String(Math.floor(r.resetAt / 1000)),
+    );
+    if (!r.ok) {
+      res.status(429).json({
+        error: "rate_limited",
+        bucket: "public:apply",
+        retryAfterMs: r.resetAt - Date.now(),
+      });
+      return;
+    }
+    next();
+  };
+
+  const publicApplyHandler = (req: Request, res: Response): void => {
+    const parsed = publicApplySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({
+        error: "validation_failed",
+        issues: parsed.error.issues,
+      });
+      return;
+    }
+    const body = parsed.data;
+    if (!verifyCaptcha(body.captchaToken)) {
+      res.status(400).json({ error: "captcha_failed" });
+      return;
+    }
+    try {
+      const row = submitApplication({
+        organizationName: body.organizationName,
+        contactName: body.contactName,
+        contactEmail: body.contactEmail,
+        contactPhone: body.contactPhone ?? null,
+        website: body.website ?? null,
+        jurisdiction: body.jurisdiction,
+        partnerType: body.partnerType,
+        aumRange: body.aumRange ?? body.aum_range ?? "undisclosed",
+        portfolioCompanyCount:
+          body.portfolioCompanyCount ?? body.portfolio_company_count ?? 0,
+        expectedChapter: body.expectedChapter,
+        introMessage: body.introMessage,
+        referredBy: body.referredBy ?? null,
+        sourceIp: clientIp(req),
+        sourceUserAgent: (req.headers["user-agent"] as string) ?? null,
+      });
+      res.status(201).json({
+        applicationId: row.id,
+        status: row.status,
+      });
+    } catch (err) {
+      log.error("[consortium.apply] submit failed:", err);
+      res.status(500).json({ error: "submit_failed" });
+    }
+  };
+
+  app.post("/api/public/consortium/apply", publicApplyRateLimit, publicApplyHandler);
+  // Alias — REST-style path mirroring the admin route. Must remain public.
+  app.post("/api/consortium-applications", publicApplyRateLimit, publicApplyHandler);
 
   app.get(
     "/api/public/consortium/apply/:id/status",

@@ -5,8 +5,12 @@ import type {
   ToastProps,
 } from "@/components/ui/toast"
 
-const TOAST_LIMIT = 1
-const TOAST_REMOVE_DELAY = 1000000
+// Wave E Fix E2 — was TOAST_LIMIT=1 (too aggressive, replaced quick consecutive toasts)
+// and TOAST_REMOVE_DELAY=1_000_000ms (~16min, toasts effectively never auto-dismissed).
+// Now: stack up to 5 toasts and auto-dismiss after 5s. Per-toast `duration` prop
+// still overrides if a caller needs longer.
+const TOAST_LIMIT = 5
+const TOAST_REMOVE_DELAY = 5000
 
 type ToasterToast = ToastProps & {
   id: string

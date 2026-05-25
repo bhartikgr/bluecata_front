@@ -267,7 +267,7 @@ function NewContactDialog({ open, onClose }: NewContactDialogProps) {
       setConfirming(false);
     },
     onError: (err: Error) => {
-      toast({ title: "Error creating contact", description: err.message, variant: "destructive" });
+      toast({ title: "Error creating contact", description: "Please try again. If this continues, contact support.", variant: "destructive" });
     },
   });
 

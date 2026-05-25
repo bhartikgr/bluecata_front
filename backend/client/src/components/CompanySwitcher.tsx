@@ -9,6 +9,7 @@ import { asArray } from "@/lib/safeArray";
  *
  * Visible only when role === "founder".
  */
+import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Building2, Check, ChevronDown, Plus } from "lucide-react";
 import {
@@ -20,6 +21,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { NewCompanyDialog } from "@/components/NewCompanyDialog";
 
 type FounderCompany = {
   companyId: string;
@@ -62,6 +64,7 @@ function shortPlan(plan: string): string {
 
 export function CompanySwitcher() {
   const { toast } = useToast();
+  const [addOpen, setAddOpen] = useState(false);
   const companiesQuery = useQuery<FounderCompany[]>({
     queryKey: ["/api/founder/companies"],
   });
@@ -155,10 +158,19 @@ export function CompanySwitcher() {
           );
         })}
         <DropdownMenuSeparator />
-        <DropdownMenuItem disabled className="text-xs text-muted-foreground">
-          <Plus className="h-3.5 w-3.5 mr-2" /> Add company (coming soon)
+        <DropdownMenuItem
+          onSelect={(e) => {
+            // Prevent the menu from closing before we open the dialog.
+            e.preventDefault();
+            setAddOpen(true);
+          }}
+          className="text-xs cursor-pointer"
+          data-testid="menu-item-add-company"
+        >
+          <Plus className="h-3.5 w-3.5 mr-2" /> Add company
         </DropdownMenuItem>
       </DropdownMenuContent>
+      <NewCompanyDialog open={addOpen} onOpenChange={setAddOpen} />
     </DropdownMenu>
   );
 }

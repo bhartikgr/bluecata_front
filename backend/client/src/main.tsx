@@ -1,4 +1,5 @@
 import { createRoot } from "react-dom/client";
+import { StrictMode } from "react";
 import App from "./App";
 import "./index.css";
 import { LegalDrawerProvider } from "./lib/legalDrawer";
@@ -25,9 +26,13 @@ root.classList.add("light");
 root.classList.remove("dark");
 root.style.colorScheme = "light";
 
+// Wave E Fix E15 — wrap in <StrictMode> so dev surfaces double-effect bugs
+// and unsafe lifecycle warnings. StrictMode is a no-op in production builds.
 createRoot(document.getElementById("root")!).render(
-  <LegalDrawerProvider>
-    <App />
-    <ConnectedLegalDrawer />
-  </LegalDrawerProvider>
+  <StrictMode>
+    <LegalDrawerProvider>
+      <App />
+      <ConnectedLegalDrawer />
+    </LegalDrawerProvider>
+  </StrictMode>
 );

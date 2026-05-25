@@ -13,11 +13,16 @@ export function registerWelcomeRoutes(app: Express): void {
   app.get("/api/founder/welcome", async (req: Request, res: Response) => {
     const ctx = await getUserContext(req);
     const userId = ctx?.userId || "anonymous";
-    const displayName = ctx?.displayName || "Founder";
+    // Wave B FIX 5 (F-BUG-008) — the UserContext stores the founder's name
+    // on `identity.name` (set by registerFounderUser from the signup form).
+    // The legacy code here read `ctx.displayName`, which has never existed
+    // on UserContext, so firstName always fell back to "Founder".
+    const displayName = (ctx?.identity?.name ?? "").trim() || "Founder";
     const firstName = displayName.split(" ")[0] || "Founder";
     res.json({
       welcomeAck: ackByUser.get(userId) === true,
       firstName,
+      displayName,
     });
   });
 

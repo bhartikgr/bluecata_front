@@ -4,12 +4,17 @@ import { cva } from 'class-variance-authority';
 import type { VariantProps } from 'class-variance-authority';
 
 import { cn } from "@/lib/utils"
+import { BUTTON_PRESS } from "@/lib/microInteractions"
 
 // Sprint 16 B1 — Collective design port: primary/secondary/destructive CTAs
 // adopt pill radius (rounded-full); outline/ghost keep rounded-md.
+// Wave E Fix E9 — raise disabled opacity 50→60 to lift contrast above the
+// borderline 2.3:1 reading flagged in the a11y audit (WCAG 1.4.3 exempts
+// disabled controls, but Capavate's brand bar is higher). Also keep
+// `disabled:pointer-events-none` so disabled buttons never receive clicks.
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0" +
-  " hover-elevate active-elevate-2",
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-60 disabled:cursor-not-allowed [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0" +
+  " hover-elevate active-elevate-2 " + BUTTON_PRESS,
   {
     variants: {
       variant: {
@@ -53,6 +58,11 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
     const Comp = asChild ? Slot : "button"
     return (
       <Comp
+        // Wave G G1 — token namespace marker. The semantic Tailwind classes
+        // (bg-primary / bg-destructive / bg-secondary) already resolve to the
+        // brand vars exposed under `--cap-*` aliases. Future PRs may swap
+        // these for `bg-cap-primary` etc. without a visual diff.
+        data-cap-token="button"
         className={cn(buttonVariants({ variant, size, className }))}
         ref={ref}
         {...props}

@@ -15,8 +15,51 @@ import { useActiveCompanyId } from "@/lib/useActiveCompany";
 
 type ActivityRow = { id: string; ts: string; actor: string; action: string; target: string; threadId?: string; postId?: string };
 
+// ----- Wave B FIX 7 (F-BUG-014) -----
+// Real /api/activity rows return canonical dot-notation eventTypes
+// (e.g. "round.created", "legal_consent.recorded", "partner.application.submitted",
+// "network.post.created", "dataroom.uploaded", "captable.edited", "report.sent").
+// The previous classifier only matched English verbs in legacy demo seed
+// strings, so every real production audit row fell through to "Other" —
+// QA flagged this as F-BUG-014. We now map by canonical prefix FIRST,
+// then fall back to substring matching for legacy seed rows.
 function classifyAction(action: string): string {
-  const a = action.toLowerCase();
+  const a = (action ?? "").toLowerCase();
+
+  // 1) Canonical dot-prefix routing (real audit eventTypes).
+  const prefix = a.split(".", 1)[0] ?? "";
+  switch (prefix) {
+    case "dataroom":
+    case "document":
+    case "file":
+      return "dataroom";
+    case "round":
+    case "invitation":
+    case "softcircle":
+    case "soft_circle":
+    case "commit":
+      return "round";
+    case "crm":
+    case "contact":
+    case "broadcast":
+    case "message":
+    case "messaging":
+      return "crm";
+    case "captable":
+    case "cap_table":
+    case "position":
+    case "share":
+    case "shares":
+    case "ledger":
+      return "captable";
+    case "report":
+    case "update":
+    case "network":
+    case "post":
+      return "report";
+  }
+
+  // 2) Legacy substring fallback for demo seed strings.
   if (a.includes("upload") || a.includes("download") || a.includes("view")) return "dataroom";
   if (a.includes("soft-circled") || a.includes("commit") || a.includes("invest")) return "round";
   if (a.includes("invit") || a.includes("crm") || a.includes("broadcast")) return "crm";
@@ -65,7 +108,26 @@ export default function ActivityPage() {
   const PAGE_SIZE = 50;
   const [pageCount, setPageCount] = useState(1);
 
-  const rows = a.data ?? [];
+  // Wave G HOTFIX (E2E founder.activity-log-tenant-isolation) — exclude
+  // platform-compliance audit rows from the founder-facing Activity Log UI.
+  // `legal_consent.recorded` events are written under `tenant_platform` for
+  // every signup (one per accepted document, so the 2-doc "terms + privacy"
+  // bundle yields 2 rows). The server-side `/api/activity` correctly returns
+  // these rows (the user IS allowed to see their OWN platform-tenant events;
+  // server tenant-isolation vitest coverage in `activityLogTenantIsolation`
+  // and `activityLogStrictTenantIsolation` continue to require this), but
+  // the founder Activity Log UI is the audit ledger of actions taken on
+  // company resources — consent acceptance is surfaced separately via the
+  // Legal & Privacy drawer and `/api/legal/consent/mine` (Settings page).
+  // Hiding these compliance-only events from this view is purely cosmetic;
+  // the rows remain in the underlying ledger, the admin Activity view, and
+  // the user's own consent receipts page. This restores the pre-Wave-G UX
+  // where a brand-new founder's Activity Log is empty until they actually
+  // do something on their cap table.
+  const rows = useMemo(
+    () => (a.data ?? []).filter(r => r.action !== "legal_consent.recorded"),
+    [a.data],
+  );
 
   const actors = useMemo(() => Array.from(new Set(rows.map(r => r.actor))).sort(), [rows]);
 

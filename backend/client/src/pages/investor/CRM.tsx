@@ -151,7 +151,7 @@ function EditContactDialog({
       toast({ title: "Contact updated" });
       onOpenChange(false);
     },
-    onError: (err: Error) => toast({ variant: "destructive", title: "Update failed", description: err.message }),
+    onError: (err: Error) => toast({ variant: "destructive", title: "Update failed", description: "Please try again. If this continues, contact support." }),
   });
 
   function addTag() {
@@ -267,7 +267,7 @@ function AddNoteDialog({
       setBody("");
       onOpenChange(false);
     },
-    onError: (err: Error) => toast({ variant: "destructive", title: "Failed", description: err.message }),
+    onError: (err: Error) => toast({ variant: "destructive", title: "Failed", description: "Please try again. If this continues, contact support." }),
   });
 
   return (
@@ -346,7 +346,7 @@ function AddTaskDialog({
       setTitle(""); setDueDate("");
       onOpenChange(false);
     },
-    onError: (err: Error) => toast({ variant: "destructive", title: "Failed", description: err.message }),
+    onError: (err: Error) => toast({ variant: "destructive", title: "Failed", description: "Please try again. If this continues, contact support." }),
   });
 
   return (

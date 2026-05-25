@@ -11,8 +11,15 @@
     "start": "NODE_ENV=production node dist/index.cjs",
     "check": "tsc",
     "db:push": "drizzle-kit push",
+    "db:migrate": "tsx server/db/migrate.ts",
+    "db:seed:demo": "tsx scripts/seed_demo.ts",
     "test": "cross-env ENABLE_DEMO_SEED=1 NODE_ENV=test vitest run",
     "test:watch": "cross-env ENABLE_DEMO_SEED=1 NODE_ENV=test vitest",
+    "test:e2e": "playwright test",
+    "test:e2e:install": "playwright install --with-deps chromium",
+    "test:e2e:headed": "playwright test --headed",
+    "test:e2e:debug": "playwright test --debug",
+    "test:e2e:ui": "playwright test --ui",
     "perf:smoke": "tsx scripts/perf_smoke.ts"
   },
   "dependencies": {
@@ -73,6 +80,7 @@
     "nodemailer": "^8.0.7",
     "passport": "^0.7.0",
     "passport-local": "^1.0.0",
+    "pg": "^8.21.0",
     "postgres": "^3.4.9",
     "react": "^18.3.1",
     "react-day-picker": "^8.10.1",
@@ -92,6 +100,7 @@
     "zod-validation-error": "^3.4.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "@tailwindcss/typography": "^0.5.15",
     "@tailwindcss/vite": "^4.1.18",
     "@types/better-sqlite3": "^7.6.12",

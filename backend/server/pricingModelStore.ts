@@ -320,7 +320,87 @@ function seedInitialModels() {
   collectiveStandard.revisionHash = hashRevision(collectiveStandard.prevRevisionHash, collectiveStandard);
   lastHashChain = collectiveStandard.revisionHash;
 
-  for (const m of [founderFree, founderPro, collectiveStandard]) {
+  /* ------------------------------------------------------------------
+   * Wave F4 FIX F4-4 (E2E-8, P0) — Capavate Annual canonical tier.
+   *
+   * Per Ozan's directive (24-May-2026): the founder-side commercial offer
+   * is a single tier — "Capavate Annual" at $840 USD/year per company,
+   * delivering full Capavate functionality. The legacy `founder-free` /
+   * `founder-pro` rows are retained (status="live" for now so the
+   * sprint28 `find(m => m.status === "live")` invariant still holds, and
+   * deletion of seed-grandfathered subscriptions is not required), but
+   * the canonical SKU that admins manage and the marketing site quotes
+   * is `pm_capavate_annual_v1` below.
+   *
+   * The /admin/pricing Pricing-Models tab renders `card-pm-<id>` for
+   * every entry in `listModels()` — before this fix the Capavate Annual
+   * SKU was missing from the seed, so the admin had no way to manage it.
+   * After this fix the tab surfaces it alongside the legacy rows.
+   * ------------------------------------------------------------------ */
+  const capavateAnnual: PricingModel = {
+    id: "pm_capavate_annual_v1",
+    productLine: "founder",
+    slug: "capavate-annual",
+    name: "Capavate Annual",
+    description: "Capavate Annual — $840 USD/year per company. Full Capavate functionality (cap-table mgmt, rounds, dataroom, investor CRM, e-sign, M&A signals, ESOP, audit chain, compliance, email support). Collective + Consortium are separate commercial offerings.",
+    status: "live",
+    currency: "USD",
+    basePriceMinor: 84_000, // $840.00 = 84_000 cents
+    cadence: "annual",
+    cadenceOptions: [
+      { cadence: "annual", priceMinor: 84_000 },
+    ],
+    currencyOverrides: [
+      { currency: "USD", basePriceMinor: 84_000 },
+      { currency: "EUR", basePriceMinor: 78_000 },
+      { currency: "GBP", basePriceMinor: 67_000 },
+    ],
+    regionalMultipliers: [
+      { region: "US", multiplier: 1.00 },
+      { region: "UK", multiplier: 1.00 },
+      { region: "EU", multiplier: 1.00 },
+      { region: "CA", multiplier: 1.00 },
+      { region: "AU", multiplier: 1.00 },
+      { region: "SG", multiplier: 0.80 },
+      { region: "HK", multiplier: 0.80 },
+      { region: "JP", multiplier: 0.80 },
+      { region: "IN", multiplier: 0.50, notes: "PPP-adjusted per World Bank index" },
+      { region: "CN", multiplier: 0.50, notes: "PPP-adjusted; tax-inclusive billing" },
+    ],
+    features: [
+      { key: "captable", label: "Cap-table mgmt", included: true, quota: null },
+      { key: "rounds", label: "Round management", included: true, quota: null },
+      { key: "dataroom", label: "Data room", included: true, quota: null },
+      { key: "crm", label: "Investor CRM", included: true, quota: null },
+      { key: "esign", label: "E-sign included", included: true, quota: null },
+      { key: "ma_signals", label: "M&A signals", included: true, quota: null },
+      { key: "esop", label: "ESOP / option pool", included: true, quota: null },
+      { key: "audit_chain", label: "Audit log & hash chain verification", included: true, quota: null },
+      { key: "compliance", label: "GDPR / CCPA compliance tools", included: true, quota: null },
+      { key: "support", label: "Email support", included: true, quota: null },
+      { key: "collective", label: "Collective membership", included: false, quota: null },
+      { key: "consortium", label: "Consortium partner features", included: false, quota: null },
+    ],
+    metering: [],
+    volumeBrackets: [],
+    discountCodes: [],
+    trial: { lengthDays: 14, requiresCard: false, autoConvertToPlanId: null },
+    effectiveFrom: null,
+    effectiveTo: null,
+    grandfatherOnChange: true,
+    taxInclusive: false,
+    version: 1,
+    prevRevisionHash: lastHashChain,
+    revisionHash: "",
+    createdAt: now,
+    updatedAt: now,
+    createdBy: "system:seed",
+    updatedBy: "system:seed",
+  };
+  capavateAnnual.revisionHash = hashRevision(capavateAnnual.prevRevisionHash, capavateAnnual);
+  lastHashChain = capavateAnnual.revisionHash;
+
+  for (const m of [founderFree, founderPro, collectiveStandard, capavateAnnual]) {
     models.set(m.id, m);
     history.set(m.id, [snapshot(m)]);
   }

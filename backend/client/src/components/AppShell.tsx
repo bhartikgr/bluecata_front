@@ -269,7 +269,7 @@ function RoleSwitch() {
       <DropdownMenuContent align="end" className="w-56">
         <DropdownMenuLabel>Switch persona (demo)</DropdownMenuLabel>
         <DropdownMenuSeparator />
-        {(["founder", "investor"] as Role[]).map(r => (
+        {(["founder", "investor", "admin"] as Role[]).map(r => (
           <DropdownMenuItem
             key={r}
             data-testid={`menuitem-role-${r}`}

@@ -442,7 +442,7 @@ export default function AdminInvestorDetail() {
       setConfirmSaveOpen(false);
     },
     onError: (err: Error) => {
-      toast({ title: "Save failed", description: err.message, variant: "destructive" });
+      toast({ title: "Save failed", description: "Please try again. If this continues, contact support.", variant: "destructive" });
       setConfirmSaveOpen(false);
     },
   });
@@ -469,7 +469,7 @@ export default function AdminInvestorDetail() {
         setSuspendReason("");
       })
       .catch((err: Error) => {
-        toast({ title: `Action failed`, description: err.message, variant: "destructive" });
+        toast({ title: `Action failed`, description: "Please try again. If this continues, contact support.", variant: "destructive" });
         setActionDialog(null);
       });
   }

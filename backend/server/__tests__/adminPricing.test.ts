@@ -1,49 +1,71 @@
 /**
- * Sprint 11 \u2014 Admin pricing tier tests.
+ * Sprint 11 — Admin pricing tier tests.
  *
- * Locks the 3 founder pricing tiers (Free $0, Pro $249/mo, Scale $749/mo)
- * and the feature matrix structure consumed by the Settings > Plan & Pricing
- * tab.
+ * v19 Wave A / Change 2: Per founder directive (Ozan, 24-May-2026), display
+ * only ONE pricing option — \$840 USD/year — that delivers full Capavate
+ * functionality per company. Collective + Consortium are explicit exclusions.
+ *
+ * The previous 3-tier matrix (Free / Pro / Scale) was removed from the
+ * displayed seed. Subscription enum / `subscriptionsStore.PLAN_PRICES` still
+ * carries the legacy Plan keys for back-compat with existing subscriptions —
+ * see server/subscriptionsStore.ts and sprint28_* tests. This file locks the
+ * DISPLAY layer (PRICING_TIERS) only.
  */
 import { describe, it, expect } from "vitest";
 import { PRICING_TIERS } from "../adminPricingStore";
 
-describe("adminPricingStore", () => {
-  it("defines exactly 3 founder tiers", () => {
-    expect(PRICING_TIERS.length).toBe(3);
-    expect(PRICING_TIERS.map((t) => t.id).sort()).toEqual([
-      "founder_free",
-      "founder_pro",
-      "founder_scale",
-    ]);
+describe("adminPricingStore (v19 single-plan)", () => {
+  it("defines exactly one default founder tier", () => {
+    expect(PRICING_TIERS.length).toBe(1);
+    expect(PRICING_TIERS[0]!.id).toBe("founder_capavate_annual");
   });
 
-  it("free tier costs $0/mo", () => {
-    const free = PRICING_TIERS.find((t) => t.id === "founder_free")!;
-    expect(free.monthlyUsd).toBe(0);
-    expect(free.annualUsd).toBe(0);
+  it("the lone tier is \\$840 USD/year (annual billing)", () => {
+    const tier = PRICING_TIERS[0]!;
+    expect(tier.annualUsd).toBe(840);
+    expect(tier.annualPriceCents).toBe(84_000);
+    expect(tier.billingCycle).toBe("annual");
+    expect(tier.displayPrice).toMatch(/840/);
+    expect(tier.displayPrice).toMatch(/year/i);
   });
 
-  it("pro tier costs $249/mo and has annual discount", () => {
-    const pro = PRICING_TIERS.find((t) => t.id === "founder_pro")!;
-    expect(pro.monthlyUsd).toBe(249);
-    expect(pro.annualUsd).toBeGreaterThan(0);
-    expect(pro.annualUsd).toBeLessThan(pro.monthlyUsd * 12);
+  it("monthly equivalent is \\$70 (= 840 / 12) for display only", () => {
+    expect(PRICING_TIERS[0]!.monthlyUsd).toBe(70);
   });
 
-  it("scale tier costs $749/mo and has annual discount", () => {
-    const scale = PRICING_TIERS.find((t) => t.id === "founder_scale")!;
-    expect(scale.monthlyUsd).toBe(749);
-    expect(scale.annualUsd).toBeLessThan(scale.monthlyUsd * 12);
+  it("Collective and Consortium are explicitly EXCLUDED from the tier", () => {
+    const tier = PRICING_TIERS[0]!;
+    const collective = tier.features.find((f) => f.key === "collective");
+    const consortium = tier.features.find((f) => f.key === "consortium");
+    expect(collective).toBeDefined();
+    expect(consortium).toBeDefined();
+    expect(collective!.included).toBe(false);
+    expect(consortium!.included).toBe(false);
   });
 
-  it("each tier declares a feature matrix with included flags", () => {
-    for (const t of PRICING_TIERS) {
-      expect(t.features.length).toBeGreaterThan(0);
-      for (const f of t.features) {
-        expect(f.label).toBeTruthy();
-        expect(typeof f.included).toBe("boolean");
-      }
+  it("declares a feature matrix with included flags (all flags boolean)", () => {
+    const tier = PRICING_TIERS[0]!;
+    expect(tier.features.length).toBeGreaterThan(0);
+    for (const f of tier.features) {
+      expect(f.label).toBeTruthy();
+      expect(typeof f.included).toBe("boolean");
+    }
+  });
+
+  it("includes the core Capavate features as ENABLED", () => {
+    const tier = PRICING_TIERS[0]!;
+    const required = [
+      "cap_table",
+      "rounds",
+      "data_room",
+      "investors_crm",
+      "documents",
+      "esop",
+    ];
+    for (const key of required) {
+      const f = tier.features.find((x) => x.key === key);
+      expect(f, `expected feature ${key} on tier`).toBeDefined();
+      expect(f!.included).toBe(true);
     }
   });
 });

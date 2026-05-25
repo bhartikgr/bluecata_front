@@ -22,6 +22,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeProvider } from "@/lib/theme";
 import { RoleProvider } from "@/lib/role";
 import NotFound from "@/pages/not-found";
+// Wave C FIX C7 — polished admin 404.
+import AdminNotFound from "@/pages/admin/AdminNotFound";
 import FinancialsFill from "@/pages/FinancialsFill";
 import { AppShell } from "@/components/AppShell";
 
@@ -229,13 +231,142 @@ function isAuthRoute(path: string) {
     path.startsWith("/collective/preview") ||
     path.startsWith("/collective/") ||
     path.startsWith("/auth/") ||
-    path === "/select-company"
+    path === "/select-company" ||
+    // Wave B FIX 8 — legacy/leak paths render bare (no AppShell) so the
+    // sidebar/role chip never leak to unauthenticated visitors.
+    path === "/dashboard" ||
+    path === "/cap-table" ||
+    path === "/rounds" ||
+    path === "/company-profile" ||
+    path.startsWith("/invite/")
   );
+}
+
+/* ---------- Wave B FIX 8 (I-BUG-006, I-BUG-007) ---------- */
+/* Common legacy paths the QA found exposed. Each component reads
+ * /api/auth/me; unauthenticated → /auth/login?returnTo=...,
+ * authenticated → the appropriate portal home. Renders BARE (no shell). */
+function LegacyDashboardRedirect() {
+  const [currentLocation] = useLocation();
+  const { data, isLoading } = useQuery<{ isAuthed?: boolean; isAdmin?: boolean; founder?: { activeCompanyId: string | null }; investor?: { state: string } }>({
+    queryKey: ["/api/auth/me"],
+    queryFn: async () => {
+      try {
+        const res = await fetch("/api/auth/me");
+        if (!res.ok) return { isAuthed: false };
+        return res.json();
+      } catch {
+        return { isAuthed: false };
+      }
+    },
+    staleTime: 30_000,
+    retry: false,
+  });
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-6" data-testid="legacy-redirect-loading">
+        <div className="text-sm text-muted-foreground">Redirecting to your dashboard…</div>
+      </div>
+    );
+  }
+  if (!data?.isAuthed) {
+    const returnTo = encodeURIComponent(currentLocation);
+    return <Redirect to={`/auth/login?returnTo=${returnTo}`} />;
+  }
+  if (data.isAdmin) return <Redirect to="/admin/dashboard" />;
+  if (data.investor && data.investor.state && data.investor.state !== "NONE")
+    return <Redirect to="/investor/dashboard" />;
+  return <Redirect to="/founder/dashboard" />;
+}
+
+function LegacyInviteRedirect() {
+  // Always redirect to the public landing — invite tokens are now handled
+  // via /auth/redeem (token in querystring) so the legacy /invite/:token
+  // path is no longer the canonical ingress.
+  const [currentLocation] = useLocation();
+  // Pull the token out of the wouter path (last segment).
+  const token = currentLocation.split("/").filter(Boolean).pop() ?? "";
+  if (token && token !== "invite") {
+    return <Redirect to={`/auth/redeem?token=${encodeURIComponent(token)}`} />;
+  }
+  return <Redirect to="/onboarding" />;
+}
+
+/* Auth-aware catch-all. If the user is signed in, show a real 404; if
+ * not, send them to login with returnTo. This stops the public 404 inside
+ * the founder shell that the QA called out (I-BUG-008). */
+function NotFoundOrLogin() {
+  const [currentLocation] = useLocation();
+  const { data, isLoading } = useQuery<{ isAuthed?: boolean }>({
+    queryKey: ["/api/auth/me"],
+    queryFn: async () => {
+      try {
+        const res = await fetch("/api/auth/me");
+        if (!res.ok) return { isAuthed: false };
+        return res.json();
+      } catch {
+        return { isAuthed: false };
+      }
+    },
+    staleTime: 30_000,
+    retry: false,
+  });
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-6">
+        <div className="text-sm text-muted-foreground">Loading…</div>
+      </div>
+    );
+  }
+  if (!data?.isAuthed) {
+    const returnTo = encodeURIComponent(currentLocation);
+    return <Redirect to={`/auth/login?returnTo=${returnTo}`} />;
+  }
+  return <NotFound />;
+}
+
+/* ---------- Wave C FIX C6 (I-FINAL-001) ---------- */
+/* The Investor / Founder / Partner / Collective / Admin app shells must
+ * never render to an UNAUTHENTICATED visitor — doing so leaks the sidebar,
+ * "ROLE: Investor" pill, search bar, and other internal navigation to
+ * anonymous URLs (e.g. /#/investor/pipeline, /#/investor/deal-flow,
+ * /#/investor/billing, /#/investor/activity, /#/dashboard). Wave B FIX 8
+ * patched a handful of explicit legacy paths via `isAuthRoute`, but any
+ * unregistered URL under a portal namespace fell through to the catch-all
+ * INSIDE <AppShell>, exposing the shell to anonymous probers.
+ *
+ * Fix: probe /api/auth/me once at the AppRouter level. If the visitor is
+ * NOT authenticated, render the route tree BARE — no AppShell chrome.
+ * Authenticated visitors keep the existing shell behaviour. Routes that
+ * are intentionally public-and-bare (the auth shell, marketing landing,
+ * etc.) are unaffected because they continue to opt in via isAuthRoute.
+ */
+function useIsAuthedProbe(): { isAuthed: boolean; isLoading: boolean } {
+  const { data, isLoading } = useQuery<{ isAuthed?: boolean }>({
+    queryKey: ["/api/auth/me"],
+    queryFn: async () => {
+      try {
+        const res = await fetch("/api/auth/me");
+        if (!res.ok) return { isAuthed: false };
+        return res.json();
+      } catch {
+        return { isAuthed: false };
+      }
+    },
+    staleTime: 30_000,
+    retry: false,
+  });
+  return { isAuthed: Boolean(data?.isAuthed), isLoading };
 }
 
 function AppRouter() {
   const [location] = useLocation();
-  const bare = isAuthRoute(location);
+  const { isAuthed, isLoading: authProbeLoading } = useIsAuthedProbe();
+  // Wave C FIX C6: never render AppShell to anonymous users. `bare` is true
+  // if either the route is an explicit auth/landing path OR the visitor is
+  // unauthenticated. While the auth probe is loading we render bare to
+  // avoid a flash of shell chrome.
+  const bare = isAuthRoute(location) || authProbeLoading || !isAuthed;
   useRealtimeSync();
 
   const routes = (
@@ -506,11 +637,46 @@ function AppRouter() {
         <Route path="/admin/audit-chain-verify">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AuditChainVerifyPage /></RequireAuth>}
         </Route>
+        {/* Wave B FIX 11 (A-BUG-002) — documented alias path used by the v19
+            admin runbook + QA scripts. Both routes render the same page. */}
+        <Route path="/admin/audit/verify-chain">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AuditChainVerifyPage /></RequireAuth>}
+        </Route>
+        {/* Wave B FIX (A-BUG-011) — alias for the audit-log page. */}
+        <Route path="/admin/audit">
+          {() => <Redirect to="/admin/audit-log" />}
+        </Route>
         <Route path="/admin/reconciliation">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminReconciliation /></RequireAuth>}
         </Route>
         <Route path="/admin/telemetry">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminTelemetry /></RequireAuth>}
+        </Route>
+
+        {/* Wave C FIX C7 — admin sidebar route reconciliation + 404 polish.
+         * A-FINAL-023 (Avi, 24-May-2026): the live QA build returned the
+         * generic dev 404 "Did you forget to add the page to the router?"
+         * for /admin/lifecycle (sidebar uses /admin/lifecycle-policies) and
+         * /admin/chapters (phantom URL never registered). This block:
+         *
+         *   1. Adds an explicit alias for /admin/lifecycle → the canonical
+         *      /admin/lifecycle-policies URL so bookmarked / pasted links
+         *      from older admin docs keep working.
+         *   2. Adds an /admin/* catch-all rendering the polished
+         *      AdminNotFound component (admin-branded card with a link
+         *      back to the dashboard) for any unregistered admin path.
+         *      This sits BEFORE the global NotFoundOrLogin catch-all so
+         *      admin visitors see the admin-aware 404 instead of the dev
+         *      placeholder. */}
+        <Route path="/admin/lifecycle">
+          {() => <Redirect to="/admin/lifecycle-policies" />}
+        </Route>
+        <Route path="/admin/:rest*">
+          {() => (
+            <RequireAuth role="admin" redirectTo="/admin/login">
+              <AdminNotFound />
+            </RequireAuth>
+          )}
         </Route>
 
         {/* ===== COLLECTIVE ROUTES — RequireAuth ===== */}
@@ -615,7 +781,24 @@ function AppRouter() {
           {() => <RequireAuth><CollectiveShell><PartnerFunds /></CollectiveShell></RequireAuth>}
         </Route>
 
-        <Route component={NotFound} />
+        {/* Wave B FIX 8 (I-BUG-006, I-BUG-007) — explicit redirects for legacy/
+            unguarded paths that previously fell through to <NotFound> while
+            rendering inside <AppShell>. The shell-leak was a P0 trust issue
+            for anonymous visitors hitting copy-pasted internal URLs. These
+            routes redirect: unauthenticated → /auth/login (with returnTo),
+            authenticated → their portal default. */}
+        <Route path="/dashboard" component={LegacyDashboardRedirect} />
+        <Route path="/cap-table" component={LegacyDashboardRedirect} />
+        <Route path="/rounds" component={LegacyDashboardRedirect} />
+        <Route path="/company-profile" component={LegacyDashboardRedirect} />
+        <Route path="/invite/:token" component={LegacyInviteRedirect} />
+
+        {/* Wave B FIX 3 (F-BUG-004) — explicit /onboarding handler is the
+            public Landing component (registered above), so no change here.
+            The legacy /#/onboarding now resolves via the Landing route at
+            line ~249. */}
+
+        <Route component={NotFoundOrLogin} />
       </Switch>
     </ErrorBoundary>
   );

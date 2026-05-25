@@ -635,10 +635,15 @@ export function registerMultiCompanyRoutes(app: Express): void {
     addCompanyForFounder(ctx.userId, newCompany);
     // V1: ensure subscriptionsStore row exists — idempotent.
     // Side-effect runs AFTER addCompanyForFounder's transaction has committed.
+    //
+    // Wave B FIX 4 (F-BUG-005) — provision a 14-day trial (status='trialing')
+    // so the founder is not paywalled out of every feature on signup. After
+    // the trial expires they will be redirected to /founder/subscribe.
     try {
       createSubscriptionForNewCompany(companyId, {
-        plan: "founder_free",
+        plan: "founder_pro",
         actor: `founder:${ctx.userId}`,
+        trial: true,
       });
     } catch (err) {
       // Non-fatal: log but don't block company creation. The company is still

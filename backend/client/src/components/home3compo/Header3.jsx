@@ -41,6 +41,18 @@ export default function Header3() {
       }
     };
 
+    // Wave E Fix E8 — Esc-to-close on Sign-In dropdown + return focus.
+    const handleEsc = (e) => {
+      if (e.key !== "Escape") return;
+      const openDd = document.querySelector(".dropdown.is-open");
+      if (openDd) {
+        openDd.classList.remove("is-open");
+        const trig = openDd.querySelector(".dropdown__trigger");
+        trig?.setAttribute("aria-expanded", "false");
+        trig?.focus();
+      }
+    };
+
     // 2. Nav Scroll Shadow
     const nav = document.getElementById("nav");
     const handleScroll = () => {
@@ -59,6 +71,7 @@ export default function Header3() {
 
     // Events Attach
     document.addEventListener("click", handleDropdown);
+    document.addEventListener("keydown", handleEsc);
     window.addEventListener("scroll", handleScroll, { passive: true });
     mobileToggle?.addEventListener("click", openMenu);
     mobileClose?.addEventListener("click", closeMenu);
@@ -71,6 +84,7 @@ export default function Header3() {
     // Cleanup (Important for React)
     return () => {
       document.removeEventListener("click", handleDropdown);
+      document.removeEventListener("keydown", handleEsc);
       window.removeEventListener("scroll", handleScroll);
       mobileToggle?.removeEventListener("click", openMenu);
       mobileClose?.removeEventListener("click", closeMenu);
@@ -79,7 +93,18 @@ export default function Header3() {
 
   return (
     <>
-      <nav className="nav" id="nav">
+      {/* Wave E Fix E6 — Skip to content link (a11y).
+          Visible only on keyboard focus; jumps past the nav to <main id="main-content">. */}
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 focus:z-50 focus:bg-white focus:text-black focus:px-4 focus:py-2 focus:rounded focus:shadow-lg"
+        data-testid="link-skip-to-content"
+      >
+        Skip to content
+      </a>
+      {/* Wave E Fix E5 — explicit role="banner" so screen readers identify
+          the top navigation as the page banner landmark. */}
+      <nav className="nav" id="nav" role="banner" aria-label="Primary">
         <div className="nav__inner">
           <a href="#" className="nav__logo" aria-label="Capavate Home">
             <img
@@ -120,6 +145,8 @@ export default function Header3() {
               <button
                 className="dropdown__trigger btn btn--ghost btn--sm"
                 aria-expanded="false"
+                aria-haspopup="menu"
+                aria-controls="header-signin-menu"
                 type="button"
               >
                 Sign In
@@ -134,24 +161,26 @@ export default function Header3() {
                   <path d="M3 5l3 3 3-3" />
                 </svg>
               </button>
-              <div className="dropdown__menu">
+              <div className="dropdown__menu" id="header-signin-menu" role="menu">
                 <a
-                  href="#/onboarding"
+                  href="#/auth/login?portal=investor"
                   className="dropdown__item"
+                  data-testid="link-header-investor-login"
                 >
                   <span className="dropdown__icon">📊</span>
                   <div>
-                    <strong>Investors &amp; Shareholders</strong>
+                    <strong>For Investors</strong>
                     <small>View your verified portfolio</small>
                   </div>
                 </a>
                 <a
-                  href="#/onboarding"
+                  href="#/auth/signup?portal=founder"
                   className="dropdown__item"
+                  data-testid="link-header-founder-signup"
                 >
                   <span className="dropdown__icon">🏢</span>
                   <div>
-                    <strong>Companies</strong>
+                    <strong>For Founders</strong>
                     <small>Manage your investor network</small>
                   </div>
                 </a>
@@ -225,11 +254,12 @@ export default function Header3() {
                 margin: "var(--space-2) 0",
               }}
             />
-            <a href="#/onboarding">Investor Sign In</a>
-            <a href="#/onboarding">Company Sign In</a>
+            <a href="#/auth/login?portal=investor" data-testid="link-mobile-investor-login">For Investors</a>
+            <a href="#/auth/signup?portal=founder" data-testid="link-mobile-founder-signup">For Founders</a>
             <a href="#/partner/login" data-testid="link-mobile-partner-login">Consortium Partner Sign In</a>
+            <a href="#/apply/consortium" data-testid="link-mobile-partner-apply">Apply: Consortium Partners</a>
             <a
-              href="#/onboarding"
+              href="#/auth/signup?portal=founder"
               className="btn btn--primary text-white"
             >
               Register Your Company

@@ -28,6 +28,21 @@ const PUBLIC_API_PREFIXES = [
   "/api/health",                   // v19 Phase C — enhanced healthcheck (public)
   "/api/regions",                  // canonical region list \u2014 safe to expose
   "/api/dev/admin-bypass",         // self-gates via env var
+  // Wave B FIX 12 (CP-BUG-001) — the consortium-partner apply form must be
+  // reachable without a session. /api/public/* is the canonical public-API
+  // namespace for unauthenticated endpoints (rate-limited per-IP in their
+  // own handlers).
+  "/api/public/",
+  // Wave G HOTFIX (E2E partner.consortium-apply-public-works) — the REST-style
+  // alias `/api/consortium-applications` (registered alongside the canonical
+  // `/api/public/consortium/apply` in server/consortiumApplyStore.ts) MUST also
+  // bypass the global default-auth route guard so anonymous POSTs reach the
+  // rate-limited public handler. Without this entry, applyRouteGuards's
+  // fall-through `requireAuth` short-circuits with 401 before the registered
+  // public route runs. The route itself is rate-limited per-IP and validates
+  // its body via publicApplySchema (returning 400 on bad input), so adding
+  // the alias to the public bypass list is the minimal, surgical fix.
+  "/api/consortium-applications",
 ];
 
 /** Apply auth middleware to every request before it reaches a route handler. */

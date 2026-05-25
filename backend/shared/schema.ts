@@ -57,6 +57,9 @@ export const users = sqliteTable("users", {
   deletionToken: text("deletion_token"),
   anonymizedAt: text("anonymized_at"),
   anonymizedByUserId: text("anonymized_by_user_id"),
+  // Wave C FIX C2 — profile durability (migration 0050).
+  title: text("title"),
+  displayName: text("display_name"),
 });
 
 /**
@@ -993,6 +996,9 @@ export const founderTiers = sqliteTable("founder_tiers", {
   updatedAt: text("updated_at").notNull(),
   updatedBy: text("updated_by").notNull().default("system"),
   deletedAt: text("deleted_at"),
+  // v19 Wave A / Change 2 — single-plan default annotations.
+  billingCycle: text("billing_cycle"),            // "annual" | "monthly" | "one_time"
+  annualPriceCents: integer("annual_price_cents"),// canonical integer cents for $/yr
 });
 
 /* -----------------------------------------------------------------

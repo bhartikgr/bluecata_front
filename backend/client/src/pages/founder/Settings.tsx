@@ -29,7 +29,7 @@ import { Slider } from "@/components/ui/slider";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 
 type PricingFeature = { key: string; label: string; included: boolean; limit?: string };
-type PricingTier = { id: string; name: string; monthlyUsd: number; annualUsd: number; blurb: string; features: PricingFeature[] };
+type PricingTier = { id: string; name: string; monthlyUsd: number; annualUsd: number; blurb: string; features: PricingFeature[]; billingCycle?: "annual" | "monthly" | "one_time"; annualPriceCents?: number; displayPrice?: string };
 
 export default function Settings() {
   const { toast } = useToast();
@@ -76,6 +76,38 @@ export default function Settings() {
     if (company?.legalName   !== undefined) setCoLegalName(company.legalName ?? "");
   }, [company?.companyName, company?.legalName]);
 
+  // ----- Wave B FIX 6 (F-BUG-009) -----
+  // Pre-populate the Profile tab inputs (Display name / Email / Title) from
+  // the authenticated user's /api/auth/me payload so the values the founder
+  // supplied at signup are already there on first visit. Previously the
+  // inputs were uncontrolled `defaultValue=""` placeholders, which QA flagged
+  // because a brand-new founder's data was nowhere to be found.
+  type MeShape = {
+    isAuthed?: boolean;
+    userId?: string;
+    identity?: { name?: string; email?: string; title?: string };
+    name?: string;
+    email?: string;
+    title?: string;
+  };
+  const meQ = useQuery<MeShape>({
+    queryKey: ["/api/auth/me"],
+    queryFn: async () => (await apiRequest("GET", "/api/auth/me")).json(),
+  });
+  const [profileName,  setProfileName]  = useState("");
+  const [profileEmail, setProfileEmail] = useState("");
+  const [profileTitle, setProfileTitle] = useState("");
+  useEffect(() => {
+    const m = meQ.data;
+    if (!m) return;
+    const n = m.identity?.name  ?? m.name  ?? "";
+    const e = m.identity?.email ?? m.email ?? "";
+    const t = m.identity?.title ?? m.title ?? "";
+    if (n) setProfileName(n);
+    if (e) setProfileEmail(e);
+    if (t) setProfileTitle(t);
+  }, [meQ.data]);
+
   // Team members are sourced from the API; show empty state if none.
   type TeamMember = { id: string; name: string; email: string; role: string; joined: string };
   const teamQ = useQuery<{ members: TeamMember[] }>({
@@ -90,7 +122,7 @@ export default function Settings() {
   const teamMembers: TeamMember[] = teamQ.data?.members ?? [];
 
   const saveProfileMut = useMutation({
-    mutationFn: async () => (await apiRequest("PATCH", "/api/auth/me", { timezone })).json(),
+    mutationFn: async () => (await apiRequest("PATCH", "/api/auth/me", { timezone, name: profileName, email: profileEmail, title: profileTitle })).json(),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] }); toast({ title: "Profile saved" }); },
     onError: () => toast({ title: "Save failed", variant: "destructive" }),
   });
@@ -169,9 +201,9 @@ export default function Settings() {
               <Card>
                 <CardHeader><CardTitle className="text-base">Personal details</CardTitle></CardHeader>
                 <CardContent className="space-y-3">
-                  <div><Label>Display name</Label><Input className="mt-1" defaultValue="" placeholder="Your full name" data-testid="input-display-name" /></div>
-                  <div><Label>Email</Label><Input className="mt-1" type="email" defaultValue="" placeholder="you@company.com" data-testid="input-email" /></div>
-                  <div><Label>Title</Label><Input className="mt-1" defaultValue="" placeholder="e.g. CEO & Co-founder" data-testid="input-title" /></div>
+                  <div><Label>Display name</Label><Input className="mt-1" value={profileName} onChange={(e) => setProfileName(e.target.value)} placeholder="Your full name" data-testid="input-display-name" /></div>
+                  <div><Label>Email</Label><Input className="mt-1" type="email" value={profileEmail} onChange={(e) => setProfileEmail(e.target.value)} placeholder="you@company.com" data-testid="input-email" /></div>
+                  <div><Label>Title</Label><Input className="mt-1" value={profileTitle} onChange={(e) => setProfileTitle(e.target.value)} placeholder="e.g. CEO & Co-founder" data-testid="input-title" /></div>
                   <div>
                     <Label>Default time zone</Label>
                     <Select value={timezone} onValueChange={setTimezone}>
@@ -287,16 +319,27 @@ export default function Settings() {
               title="Plan"
               body="Your subscription tier and feature entitlements. Upgrades take effect immediately and pro-rate against the current billing period. Downgrades take effect at the next renewal so commitments to investors remain stable."
             />
+            {(() => {
+              const tierList = asArray<PricingTier>(tiersQ.data);
+              const singleTier = tierList.length === 1;
+              return (
+            <>
             <div className="flex items-center justify-between mb-3">
               <div className="text-xs text-muted-foreground">Live from admin pricing console — every change there reflects here.</div>
-              <div className="flex gap-1 rounded-md border p-1 text-xs">
-                <button type="button" className={`px-3 py-1 rounded ${billingPeriod === "monthly" ? "bg-[hsl(219_45%_20%)] text-white" : ""}`} onClick={() => setBillingPeriod("monthly")} data-testid="button-monthly">Monthly</button>
-                <button type="button" className={`px-3 py-1 rounded ${billingPeriod === "annual" ? "bg-[hsl(219_45%_20%)] text-white" : ""}`} onClick={() => setBillingPeriod("annual")} data-testid="button-annual">Annual (save 17%)</button>
-              </div>
+              {!singleTier && (
+                <div className="flex gap-1 rounded-md border p-1 text-xs" data-testid="toggle-billing-period">
+                  <button type="button" className={`px-3 py-1 rounded ${billingPeriod === "monthly" ? "bg-[hsl(219_45%_20%)] text-white" : ""}`} onClick={() => setBillingPeriod("monthly")} data-testid="button-monthly">Monthly</button>
+                  <button type="button" className={`px-3 py-1 rounded ${billingPeriod === "annual" ? "bg-[hsl(219_45%_20%)] text-white" : ""}`} onClick={() => setBillingPeriod("annual")} data-testid="button-annual">Annual (save 17%)</button>
+                </div>
+              )}
             </div>
-            <div className="grid md:grid-cols-3 gap-3">
-              {asArray<PricingTier>(tiersQ.data).map(t => {
-                const price = billingPeriod === "monthly" ? t.monthlyUsd : t.annualUsd;
+            <div className={singleTier ? "grid md:grid-cols-1 max-w-xl mx-auto gap-3" : "grid md:grid-cols-3 gap-3"} data-testid={singleTier ? "single-plan-grid" : "multi-plan-grid"}>
+              {tierList.map(t => {
+                // Single-tier mode: always show annual price + displayPrice if provided.
+                const effectiveCycle: "monthly" | "annual" = singleTier
+                  ? (t.billingCycle === "monthly" ? "monthly" : "annual")
+                  : billingPeriod;
+                const price = effectiveCycle === "monthly" ? t.monthlyUsd : t.annualUsd;
                 const isActive = t.id === activeTier;
                 return (
                   <Card key={t.id} className={isActive ? "border-[hsl(184_98%_22%)] border-2" : ""} data-testid={`card-tier-${t.id}`}>
@@ -309,8 +352,17 @@ export default function Settings() {
                     </CardHeader>
                     <CardContent className="space-y-3">
                       <div>
-                        <div className="text-2xl font-bold">{price === 0 ? "Free" : fmtUSD(price)}</div>
-                        <div className="text-xs text-muted-foreground">{price === 0 ? "Always" : `per ${billingPeriod === "monthly" ? "month" : "year"}`}</div>
+                        {singleTier && t.displayPrice ? (
+                          <>
+                            <div className="text-2xl font-bold" data-testid="single-plan-display-price">{t.displayPrice}</div>
+                            <div className="text-xs text-muted-foreground">Per company • Full Capavate access</div>
+                          </>
+                        ) : (
+                          <>
+                            <div className="text-2xl font-bold">{price === 0 ? "Free" : fmtUSD(price)}</div>
+                            <div className="text-xs text-muted-foreground">{price === 0 ? "Always" : `per ${effectiveCycle === "monthly" ? "month" : "year"}`}</div>
+                          </>
+                        )}
                       </div>
                       <ul className="space-y-1.5 text-xs">
                         {t.features.map(f => (
@@ -332,6 +384,9 @@ export default function Settings() {
                 );
               })}
             </div>
+            </>
+              );
+            })()}
           </TabsContent>
 
           {/* BILLING */}

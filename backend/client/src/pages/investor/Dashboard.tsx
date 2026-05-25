@@ -30,6 +30,7 @@ import { CapavateGuidanceBox } from "@/components/CapavateGuidanceBox";
 import { MaIntelligenceCard } from "@/components/investor/MaIntelligenceCard";
 import { DiscussWithCapTableDialog } from "@/components/investor/DiscussWithCapTableDialog";
 import { MemberValueIntelligenceInvestor } from "@/components/investor/MemberValueIntelligenceInvestor";
+import { HOVER_LIFT } from "@/lib/microInteractions";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { PortfolioAnalytics } from "../../../../server/portfolioAnalyticsStore";
@@ -126,6 +127,112 @@ export default function InvestorDashboard() {
             </Link>
           </div>
         )}
+
+        {/* Wave G Track 2 — G3: investor bento header.
+            Lives above the existing dashboard sections (which are preserved).
+            Portfolio overview hero + 4 KPIs + activity tile + quick-actions tile. */}
+        <div
+          className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 auto-rows-[minmax(110px,auto)] mb-6"
+          data-testid="bento-grid-investor-dashboard"
+        >
+          {/* Hero — Portfolio overview */}
+          <Card
+            className="col-span-1 md:col-span-2 lg:col-span-4 bg-gradient-to-br from-[hsl(184_98%_22%/0.06)] to-[hsl(184_98%_22%/0.02)] border-[hsl(184_98%_22%/0.15)]"
+            data-testid="bento-tile-investor-hero"
+          >
+            <CardContent className="p-6 flex items-start justify-between gap-4 flex-wrap">
+              <div>
+                <div className="text-xs uppercase tracking-wide text-[hsl(184_98%_22%)] font-medium">Portfolio overview</div>
+                <div className="text-xl font-semibold mt-1">{a ? fmtUSD(a.totalCurrentValue, { compact: true }) : "—"} current value</div>
+                <div className="text-sm text-muted-foreground mt-0.5">{a ? `MOIC ${a.moic.toFixed(2)}x · IRR ${a.irr.toFixed(1)}%` : "Loading analytics…"}</div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Link href="/investor/portfolio"><Button size="sm" variant="outline" data-testid="bento-action-portfolio"><Briefcase className="h-3.5 w-3.5 mr-1.5" /> View portfolio</Button></Link>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* KPI 1 — Total committed */}
+          <Card interactive className={`col-span-1 ${HOVER_LIFT}`} data-testid="bento-tile-investor-kpi-committed">
+            <CardContent className="p-5">
+              <div className="flex items-center justify-between">
+                <div className="text-xs uppercase tracking-wide text-muted-foreground">Total committed</div>
+                <Target className="h-4 w-4 text-[hsl(184_98%_22%)]" />
+              </div>
+              <div className="text-2xl font-semibold tracking-tight mt-2 tabular-nums">{a ? fmtUSD(a.totalInvested, { compact: true }) : "—"}</div>
+              <div className="text-xs text-muted-foreground mt-1">across portfolio</div>
+            </CardContent>
+          </Card>
+
+          {/* KPI 2 — Companies in portfolio */}
+          <Card interactive className={`col-span-1 ${HOVER_LIFT}`} data-testid="bento-tile-investor-kpi-companies">
+            <CardContent className="p-5">
+              <div className="flex items-center justify-between">
+                <div className="text-xs uppercase tracking-wide text-muted-foreground">Companies</div>
+                <Building2 className="h-4 w-4 text-[hsl(184_98%_22%)]" />
+              </div>
+              <div className="text-2xl font-semibold tracking-tight mt-2 tabular-nums">{portfolio.data?.length ?? 0}</div>
+              <div className="text-xs text-muted-foreground mt-1">in your cap tables</div>
+            </CardContent>
+          </Card>
+
+          {/* KPI 3 — Soft circles open */}
+          <Card interactive className={`col-span-1 ${HOVER_LIFT}`} data-testid="bento-tile-investor-kpi-softcircles">
+            <CardContent className="p-5">
+              <div className="flex items-center justify-between">
+                <div className="text-xs uppercase tracking-wide text-muted-foreground">Soft circles open</div>
+                <Megaphone className="h-4 w-4 text-amber-500" />
+              </div>
+              <div className="text-2xl font-semibold tracking-tight mt-2 tabular-nums">{activity.data?.filter(x => x.kind === "soft_circle").length ?? 0}</div>
+              <div className="text-xs text-muted-foreground mt-1">live opportunities</div>
+            </CardContent>
+          </Card>
+
+          {/* KPI 4 — Funded */}
+          <Card interactive className={`col-span-1 ${HOVER_LIFT}`} data-testid="bento-tile-investor-kpi-funded">
+            <CardContent className="p-5">
+              <div className="flex items-center justify-between">
+                <div className="text-xs uppercase tracking-wide text-muted-foreground">Funded</div>
+                <TrendingUp className="h-4 w-4 text-emerald-600" />
+              </div>
+              <div className="text-2xl font-semibold tracking-tight mt-2 tabular-nums">{a ? `${a.tvpi.toFixed(2)}x` : "—"}</div>
+              <div className="text-xs text-muted-foreground mt-1">TVPI multiple</div>
+            </CardContent>
+          </Card>
+
+          {/* Medium tile — Recent activity (col-span-2) */}
+          <Card interactive className={`col-span-1 md:col-span-2 lg:col-span-2 ${HOVER_LIFT}`} data-testid="bento-tile-investor-activity">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base flex items-center gap-2"><Activity className="h-4 w-4" /> Recent round activity</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ul className="space-y-1.5">
+                {(activity.data ?? []).slice(0, 3).map(act => (
+                  <li key={`bento-${act.id}`} className="flex items-start gap-2 text-xs" data-testid={`bento-activity-${act.id}`}>
+                    <div className="mt-1 h-1.5 w-1.5 rounded-full bg-[hsl(184_98%_22%)] shrink-0" />
+                    <div className="flex-1 min-w-0 truncate">
+                      <span className="font-medium">{act.company}</span>
+                      <span className="text-muted-foreground"> · {act.text}</span>
+                    </div>
+                  </li>
+                ))}
+                {(activity.data?.length ?? 0) === 0 && <li className="text-xs text-muted-foreground">No recent activity.</li>}
+              </ul>
+            </CardContent>
+          </Card>
+
+          {/* Medium tile — Upcoming events / quick actions (col-span-2) */}
+          <Card interactive className={`col-span-1 md:col-span-2 lg:col-span-2 ${HOVER_LIFT}`} data-testid="bento-tile-investor-quick">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm">Quick actions</CardTitle>
+            </CardHeader>
+            <CardContent className="flex flex-wrap gap-2">
+              <Link href="/investor/invitations"><Button size="sm" variant="outline" data-testid="bento-action-invitations"><Inbox className="h-3.5 w-3.5 mr-1.5" /> Invitations</Button></Link>
+              <Link href="/investor/crm"><Button size="sm" variant="outline" data-testid="bento-action-crm"><Building2 className="h-3.5 w-3.5 mr-1.5" /> CRM</Button></Link>
+              <Link href="/investor/profile"><Button size="sm" variant="outline" data-testid="bento-action-profile"><Sparkles className="h-3.5 w-3.5 mr-1.5" /> Update profile</Button></Link>
+            </CardContent>
+          </Card>
+        </div>
 
         {/* A1 — Capavate guidance info-box */}
         <CapavateGuidanceBox variant="investor" />

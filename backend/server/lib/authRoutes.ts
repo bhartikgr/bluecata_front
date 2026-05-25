@@ -18,6 +18,18 @@
 import type { Express, Request, Response } from "express";
 import { getUserContextForId, listPersonas, registerPersona, registerFounderUser, verifyPassword } from "./userContext";
 import { setSessionCookie } from "./sessionCookie";
+// Wave C FIX C1 (W-2) — clear any prior session revocation on successful
+// login so the freshly-issued cookie authenticates correctly. The logout
+// handler (server/routes.ts) populates the revocation set; a subsequent
+// login MUST be idempotent (“re-login with same creds works”, per Wave C C1
+// test contract).
+import { clearRevocation } from "./sessionRevocation";
+// Wave C FIX C4 — per-IP rate limit on login/signup. Additive over the
+// existing per-email failure lockout (recordAuthFailure / isLockedOut)
+// in this file's recording paths; this middleware throttles BEFORE the
+// handler runs so credential-spray attacks see a 429 even when the
+// password is correct.
+import { authLoginRateLimit, authSignupRateLimit } from "./rateLimit";
 import { DEMO_SEED_ENABLED } from "./demoGate";
 
 /* ---------- email -> persona resolution ---------- */
@@ -91,6 +103,7 @@ export function registerAuthShellRoutes(app: Express, redemption: {
       return res.status(404).json({ ok: false, error: "NOT_FOUND" });
     }
     const adminId = "u_admin";
+    clearRevocation(adminId); // Wave C FIX C1
     setSessionCookie(res, adminId);
     const hashTarget = typeof req.query.next === "string" ? req.query.next : "#/admin/dashboard";
     // Compute the SPA redirect from the Referer URL. The Referer is the page
@@ -117,7 +130,10 @@ export function registerAuthShellRoutes(app: Express, redemption: {
   // ---------- /api/auth/login ----------
   // Sprint-fix May 14 2026 — supports BOTH canonical demo personas
   // (MOCK_PASSWORDS) AND newly-registered founders (verifyPassword).
-  app.post("/api/auth/login", async (req: Request, res: Response) => {
+  // Wave C FIX C4 (Ozan, 24-May-2026) — per-IP login rate limiter
+  // (10/min/IP) mounted as middleware so credential-spray attacks 429
+  // before the handler runs.
+  app.post("/api/auth/login", authLoginRateLimit, async (req: Request, res: Response) => {
     const body = (req.body ?? {}) as { email?: string; password?: string; userId?: string };
     const providedPw = body.password ?? "";
 
@@ -132,6 +148,7 @@ export function registerAuthShellRoutes(app: Express, redemption: {
         });
       }
       if (MOCK_PASSWORDS[canonicalId] === providedPw) {
+        clearRevocation(canonicalId); // Wave C FIX C1
         setSessionCookie(res, canonicalId);
         const ctx = getUserContextForId(canonicalId);
         return res.json({ ok: true, ctx });
@@ -148,6 +165,7 @@ export function registerAuthShellRoutes(app: Express, redemption: {
     if (body.email && providedPw) {
       const runtimeId = verifyPassword(body.email, providedPw);
       if (runtimeId) {
+        clearRevocation(runtimeId); // Wave C FIX C1
         setSessionCookie(res, runtimeId);
         const ctx = getUserContextForId(runtimeId);
         return res.json({ ok: true, ctx });
@@ -165,7 +183,9 @@ export function registerAuthShellRoutes(app: Express, redemption: {
   // ---------- /api/auth/signup (founder-only) ----------
   // Sprint 24: validate body, reject duplicates with 409, require minimum
   // password length, and reject investor portal signups with a clear 403.
-  app.post("/api/auth/signup", async (req: Request, res: Response) => {
+  // Wave C FIX C4 (Ozan, 24-May-2026) — per-IP signup rate limiter
+  // (5/hour/IP) to slow bulk account creation from a single network.
+  app.post("/api/auth/signup", authSignupRateLimit, async (req: Request, res: Response) => {
     const body = (req.body ?? {}) as { email?: string; name?: string; password?: string; portal?: string };
     if (body.portal === "investor") {
       return res.status(403).json({
@@ -202,6 +222,7 @@ export function registerAuthShellRoutes(app: Express, redemption: {
         message: "An account with that email already exists. Sign in instead.",
       });
     }
+    clearRevocation(userId); // Wave C FIX C1
     setSessionCookie(res, userId);
     const ctx = getUserContextForId(userId);
     return res.json({ ok: true, ctx });

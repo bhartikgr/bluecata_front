@@ -47,6 +47,8 @@ const Toast = React.forwardRef<
   return (
     <ToastPrimitives.Root
       ref={ref}
+      // Wave G G1 — design token namespace marker.
+      data-cap-token="toast"
       className={cn(toastVariants({ variant }), className)}
       {...props}
     />

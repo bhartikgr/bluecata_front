@@ -169,7 +169,7 @@ export default function ApplyToCollective() {
       setStep(7);
       toast({ title: "Application submitted", description: "We'll review and respond within 5 business days." });
     },
-    onError: (err: Error) => toast({ variant: "destructive", title: "Could not submit", description: err.message }),
+    onError: (err: Error) => toast({ variant: "destructive", title: "Could not submit", description: "Please try again. If this continues, contact support." }),
   });
 
   /* ---- step validation ---- */

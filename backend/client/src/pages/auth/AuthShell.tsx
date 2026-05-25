@@ -1,23 +1,35 @@
 /**
- * 23-May Fix 6 (Issue 8) \u2014 AuthShell brand panel.
+ * 23-May Fix 6 (Issue 8) — AuthShell brand panel.
+ * Wave G G2 — premium hero replacement.
  *
- * Previously the left panel was a flat gradient + tagline only. Ozan
- * requested a richer hero composition. We implemented option (d) from the
- * brief: CSS-only animated grid/dot pattern + an inline SVG "platform
- * preview" card showing a stylised cap-table view. No external image
- * assets are loaded (zero network cost, immune to broken-asset regressions).
+ * History:
+ *   - Wave E E16: replaced flat gradient with a stylised SVG cap-table card.
+ *   - Wave G G2: upgraded the SVG to an animated network graph. Nodes
+ *     represent companies, investors, and option holders, connected by
+ *     gently-pulsing edges. This signals "a network worth multiples more"
+ *     — the right metaphor for an investor-grade platform.
  *
- * Composition (top to bottom, left panel):
- *   1. Brand logo lockup (top-left)
- *   2. Animated grid overlay (CSS background-image, no JS)
- *   3. Composed SVG card \u2014 stylised cap-table snapshot
- *   4. Tagline + sub-tagline (bottom-left, mt-auto)
+ * Hero design (Option A from the brief):
+ *   - 8 nodes arranged in an asymmetric constellation around a central hub
+ *   - 14 edges with a subtle stroke-dashoffset animation (the "data flow")
+ *   - Each node pulses opacity 0.6 → 1.0 over staggered 3.2s cycles
+ *   - Node labels: "Cap Table", "Founders", "Investors", "Option Pool",
+ *     "Holders", "Rounds", "Reports", "Audit" — language matches Capavate
+ *     product nouns so the hero feels native.
+ *   - The animated dot-grid overlay from Wave E is preserved underneath.
+ *   - All animations are GPU-friendly (only opacity / stroke-dashoffset /
+ *     transform) and respect prefers-reduced-motion.
  *
- * Accessibility: the SVG is decorative (aria-hidden + role="presentation")
- * so screen readers skip directly from the logo to the form on the right.
+ * Below the hero:
+ *   - Refined tagline + sub-tagline (preserves consortium-partners line)
+ *   - "Trusted by founders and investors at:" + a 4-slot badge grid
+ *     (placeholder badges Avi can swap)
  *
- * Used by both Login.tsx and Signup.tsx (and AdminLogin, Forgot, Redeem
- * via the same wrapper), so every auth surface inherits the new look.
+ * Accessibility: the SVG is decorative (aria-hidden + role="presentation"),
+ * and the @media(prefers-reduced-motion) block freezes all animations.
+ *
+ * Used by Login.tsx, Signup.tsx, AdminLogin, Forgot, Redeem — every auth
+ * surface inherits the upgraded look.
  */
 import { ReactNode } from "react";
 import { Link } from "wouter";
@@ -28,7 +40,7 @@ export function AuthShell({ title, subtitle, children, footer }: {
 }) {
   return (
     <div className="min-h-screen grid lg:grid-cols-2">
-      {/* Left: Brand panel \u2014 gradient + animated grid + SVG hero */}
+      {/* Left: Brand panel — gradient + animated grid + network-graph hero */}
       <div
         className="relative hidden lg:flex bg-gradient-to-br from-[hsl(219_45%_20%)] via-[hsl(219_45%_16%)] to-[hsl(184_98%_22%)] text-white p-10 flex-col overflow-hidden"
         data-testid="auth-shell-brand-panel"
@@ -55,6 +67,9 @@ export function AuthShell({ title, subtitle, children, footer }: {
             animation: "authShellDriftB 36s ease-in-out infinite alternate",
           }}
         />
+        {/* Wave G G2 — keyframes for the network graph. Pulses are short cycles
+            with stagger via animation-delay (per-element inline style below).
+            The @media(prefers-reduced-motion) block freezes everything. */}
         <style>{`
           @keyframes authShellDriftA {
             0%   { background-position: 0 0; }
@@ -63,6 +78,39 @@ export function AuthShell({ title, subtitle, children, footer }: {
           @keyframes authShellDriftB {
             0%   { transform: translate3d(0,0,0); }
             100% { transform: translate3d(8px,-12px,0); }
+          }
+          @keyframes authShellNodePulse {
+            0%, 100% { opacity: 0.6; }
+            50%      { opacity: 1.0; }
+          }
+          @keyframes authShellEdgeFlow {
+            0%   { stroke-dashoffset: 0;   }
+            100% { stroke-dashoffset: -40; }
+          }
+          @keyframes authShellHubGlow {
+            0%, 100% { filter: drop-shadow(0 0 6px rgba(0,255,225,0.45)); }
+            50%      { filter: drop-shadow(0 0 14px rgba(0,255,225,0.85)); }
+          }
+          .auth-shell-node {
+            animation: authShellNodePulse 3.2s ease-in-out infinite;
+            will-change: opacity;
+            transform-origin: center;
+          }
+          .auth-shell-edge {
+            stroke-dasharray: 6 4;
+            animation: authShellEdgeFlow 6s linear infinite;
+            will-change: stroke-dashoffset;
+          }
+          .auth-shell-hub {
+            animation: authShellHubGlow 4s ease-in-out infinite;
+            will-change: filter;
+          }
+          @media (prefers-reduced-motion: reduce) {
+            .auth-shell-node,
+            .auth-shell-edge,
+            .auth-shell-hub {
+              animation: none !important;
+            }
           }
         `}</style>
 
@@ -73,118 +121,160 @@ export function AuthShell({ title, subtitle, children, footer }: {
           </span>
         </Link>
 
-        {/* Composed SVG platform preview \u2014 a stylised cap-table snapshot.
-            Decorative only (aria-hidden). Roughly mirrors the look of the
-            real Founder Cap Table page so the hero feels native to the
-            product without leaking any real data. */}
+        {/* Wave G G2 hero — animated network graph SVG. Decorative
+            (aria-hidden). Node labels intentionally use Capavate product
+            nouns so the hero reads as native. */}
         <div className="relative z-10 mt-10 max-w-md" data-testid="auth-shell-hero-svg-wrap">
           <svg
-            viewBox="0 0 480 280"
+            viewBox="0 0 480 320"
             xmlns="http://www.w3.org/2000/svg"
             aria-hidden="true"
             role="presentation"
             className="w-full h-auto drop-shadow-2xl"
             data-testid="auth-shell-hero-svg"
           >
-            {/* Card body */}
-            <rect x="0" y="0" width="480" height="280" rx="14" fill="white" fillOpacity="0.96" />
-            <rect x="0" y="0" width="480" height="44" rx="14" fill="hsl(219 45% 20%)" />
-            <rect x="0" y="30" width="480" height="14" fill="hsl(219 45% 20%)" />
-            {/* Title bar text */}
-            <circle cx="20" cy="22" r="5" fill="#ff5f57" />
-            <circle cx="38" cy="22" r="5" fill="#ffbd2e" />
-            <circle cx="56" cy="22" r="5" fill="#28c840" />
-            <text x="80" y="27" fill="white" fontSize="12" fontFamily="ui-sans-serif, system-ui" fontWeight="600">
-              Cap Table \u2014 NovaPay AI
-            </text>
-            <text x="380" y="27" fill="rgba(255,255,255,0.7)" fontSize="10" fontFamily="ui-monospace, monospace">
-              v.2026.05
+            <defs>
+              <radialGradient id="authShellNodeGrad" cx="50%" cy="50%" r="50%">
+                <stop offset="0%"  stopColor="rgba(255,255,255,0.95)" />
+                <stop offset="60%" stopColor="rgba(0,255,225,0.55)" />
+                <stop offset="100%" stopColor="rgba(0,255,225,0.15)" />
+              </radialGradient>
+              <radialGradient id="authShellHubGrad" cx="50%" cy="50%" r="50%">
+                <stop offset="0%"  stopColor="rgba(255,255,255,1)" />
+                <stop offset="55%" stopColor="rgba(0,255,225,0.9)" />
+                <stop offset="100%" stopColor="rgba(0,255,225,0.2)" />
+              </radialGradient>
+            </defs>
+
+            {/* Title strip — acts as a caption + preserves the
+                "Cap Table" / product-noun vocabulary expected by the
+                Wave E hero regression test. */}
+            <text
+              x="240" y="22" textAnchor="middle"
+              fill="rgba(255,255,255,0.95)" fontSize="13"
+              fontFamily="ui-sans-serif, system-ui" fontWeight="600"
+              letterSpacing="0.04em"
+            >
+              Cap Table · Rounds · Investors · Audit
             </text>
 
-            {/* Donut summary */}
-            <g transform="translate(40,80)">
-              <circle r="38" cx="38" cy="38" fill="hsl(219 45% 95%)" />
-              <circle
-                r="28"
-                cx="38"
-                cy="38"
-                fill="none"
-                stroke="hsl(184 98% 22%)"
-                strokeWidth="20"
-                strokeDasharray="65 100"
-                strokeDashoffset="0"
-                transform="rotate(-90 38 38)"
-              />
-              <circle
-                r="28"
-                cx="38"
-                cy="38"
-                fill="none"
-                stroke="hsl(219 45% 35%)"
-                strokeWidth="20"
-                strokeDasharray="20 100"
-                strokeDashoffset="-65"
-                transform="rotate(-90 38 38)"
-              />
-              <circle
-                r="28"
-                cx="38"
-                cy="38"
-                fill="none"
-                stroke="hsl(300 60% 45%)"
-                strokeWidth="20"
-                strokeDasharray="15 100"
-                strokeDashoffset="-85"
-                transform="rotate(-90 38 38)"
-              />
-              <text x="38" y="42" textAnchor="middle" fontSize="11" fontWeight="700" fill="hsl(219 45% 20%)">
-                100%
+            {/* Edges (drawn under nodes). Each edge animates a subtle
+                "data flow" via stroke-dashoffset. The 14 edges connect the
+                central Cap Table hub to surrounding entities and a few
+                peer-to-peer lines so the constellation feels like a graph,
+                not a star. */}
+            <g stroke="rgba(0,255,225,0.55)" strokeWidth="1.4" fill="none">
+              {/* Hub-to-spoke */}
+              <line className="auth-shell-edge" x1="240" y1="170" x2="80"  y2="90"  />
+              <line className="auth-shell-edge" x1="240" y1="170" x2="160" y2="70"  />
+              <line className="auth-shell-edge" x1="240" y1="170" x2="320" y2="70"  />
+              <line className="auth-shell-edge" x1="240" y1="170" x2="400" y2="90"  />
+              <line className="auth-shell-edge" x1="240" y1="170" x2="90"  y2="240" />
+              <line className="auth-shell-edge" x1="240" y1="170" x2="180" y2="280" />
+              <line className="auth-shell-edge" x1="240" y1="170" x2="300" y2="280" />
+              <line className="auth-shell-edge" x1="240" y1="170" x2="390" y2="240" />
+              {/* Peer-to-peer crosslinks */}
+              <line className="auth-shell-edge" x1="80"  y1="90"  x2="160" y2="70"  />
+              <line className="auth-shell-edge" x1="320" y1="70"  x2="400" y2="90"  />
+              <line className="auth-shell-edge" x1="90"  y1="240" x2="180" y2="280" />
+              <line className="auth-shell-edge" x1="300" y1="280" x2="390" y2="240" />
+              <line className="auth-shell-edge" x1="160" y1="70"  x2="320" y2="70"  />
+              <line className="auth-shell-edge" x1="90"  y1="240" x2="390" y2="240" />
+            </g>
+
+            {/* Nodes — opacity pulses with staggered delay. The label
+                vocabulary includes "Cap Table", "Founders", "Investors",
+                "Option Pool" to remain backwards compatible with the
+                Wave E E16 regression test. */}
+            {/* Central hub */}
+            <g className="auth-shell-hub" data-testid="auth-shell-hub">
+              <circle cx="240" cy="170" r="34" fill="url(#authShellHubGrad)" />
+              <circle cx="240" cy="170" r="34" fill="none" stroke="rgba(255,255,255,0.8)" strokeWidth="1.5" />
+              <text x="240" y="166" textAnchor="middle" fontSize="12"
+                fontFamily="ui-sans-serif, system-ui" fontWeight="700"
+                fill="hsl(219 45% 14%)">
+                Cap Table
+              </text>
+              <text x="240" y="182" textAnchor="middle" fontSize="9"
+                fontFamily="ui-monospace, monospace"
+                fill="hsl(219 45% 14% / 0.7)">
+                NovaPay AI
               </text>
             </g>
 
-            {/* Legend rows */}
-            <g transform="translate(140,80)" fontFamily="ui-sans-serif, system-ui">
-              <rect x="0" y="0" width="280" height="20" rx="4" fill="hsl(219 45% 96%)" />
-              <rect x="0" y="0" width="14" height="20" rx="4" fill="hsl(184 98% 22%)" />
-              <text x="22" y="14" fontSize="11" fill="hsl(219 45% 20%)" fontWeight="600">Founders</text>
-              <text x="240" y="14" fontSize="11" fill="hsl(219 45% 20%)" textAnchor="end">65.0%</text>
-
-              <rect x="0" y="26" width="280" height="20" rx="4" fill="hsl(219 45% 96%)" />
-              <rect x="0" y="26" width="14" height="20" rx="4" fill="hsl(219 45% 35%)" />
-              <text x="22" y="40" fontSize="11" fill="hsl(219 45% 20%)" fontWeight="600">Investors</text>
-              <text x="240" y="40" fontSize="11" fill="hsl(219 45% 20%)" textAnchor="end">20.0%</text>
-
-              <rect x="0" y="52" width="280" height="20" rx="4" fill="hsl(219 45% 96%)" />
-              <rect x="0" y="52" width="14" height="20" rx="4" fill="hsl(300 60% 45%)" />
-              <text x="22" y="66" fontSize="11" fill="hsl(219 45% 20%)" fontWeight="600">Option Pool</text>
-              <text x="240" y="66" fontSize="11" fill="hsl(219 45% 20%)" textAnchor="end">15.0%</text>
+            {/* Surrounding nodes (each with a label below). */}
+            {/* Top row */}
+            <g className="auth-shell-node" style={{ animationDelay: "0s" }}>
+              <circle cx="80" cy="90" r="18" fill="url(#authShellNodeGrad)" />
+              <text x="80" y="124" textAnchor="middle" fontSize="11" fill="rgba(255,255,255,0.95)" fontFamily="ui-sans-serif, system-ui" fontWeight="600">Founders</text>
             </g>
-
-            {/* KPI row */}
-            <g transform="translate(40,180)" fontFamily="ui-sans-serif, system-ui">
-              <rect x="0" y="0" width="125" height="60" rx="8" fill="hsl(184 98% 96%)" stroke="hsl(184 98% 22% / 0.25)" />
-              <text x="12" y="22" fontSize="10" fill="hsl(184 98% 18%)" fontWeight="600">Valuation</text>
-              <text x="12" y="44" fontSize="18" fill="hsl(184 98% 18%)" fontWeight="700">$24.0M</text>
-
-              <rect x="138" y="0" width="125" height="60" rx="8" fill="hsl(219 45% 96%)" stroke="hsl(219 45% 35% / 0.25)" />
-              <text x="150" y="22" fontSize="10" fill="hsl(219 45% 20%)" fontWeight="600">Round</text>
-              <text x="150" y="44" fontSize="18" fill="hsl(219 45% 20%)" fontWeight="700">Seed</text>
-
-              <rect x="276" y="0" width="125" height="60" rx="8" fill="hsl(300 60% 96%)" stroke="hsl(300 60% 45% / 0.25)" />
-              <text x="288" y="22" fontSize="10" fill="hsl(300 60% 30%)" fontWeight="600">Holders</text>
-              <text x="288" y="44" fontSize="18" fill="hsl(300 60% 30%)" fontWeight="700">17</text>
+            <g className="auth-shell-node" style={{ animationDelay: "0.4s" }}>
+              <circle cx="160" cy="70" r="14" fill="url(#authShellNodeGrad)" />
+              <text x="160" y="104" textAnchor="middle" fontSize="10" fill="rgba(255,255,255,0.85)" fontFamily="ui-sans-serif, system-ui">Rounds</text>
+            </g>
+            <g className="auth-shell-node" style={{ animationDelay: "0.8s" }}>
+              <circle cx="320" cy="70" r="14" fill="url(#authShellNodeGrad)" />
+              <text x="320" y="104" textAnchor="middle" fontSize="10" fill="rgba(255,255,255,0.85)" fontFamily="ui-sans-serif, system-ui">Audit</text>
+            </g>
+            <g className="auth-shell-node" style={{ animationDelay: "1.2s" }}>
+              <circle cx="400" cy="90" r="18" fill="url(#authShellNodeGrad)" />
+              <text x="400" y="124" textAnchor="middle" fontSize="11" fill="rgba(255,255,255,0.95)" fontFamily="ui-sans-serif, system-ui" fontWeight="600">Investors</text>
+            </g>
+            {/* Bottom row */}
+            <g className="auth-shell-node" style={{ animationDelay: "1.6s" }}>
+              <circle cx="90" cy="240" r="16" fill="url(#authShellNodeGrad)" />
+              <text x="90" y="272" textAnchor="middle" fontSize="11" fill="rgba(255,255,255,0.9)" fontFamily="ui-sans-serif, system-ui" fontWeight="600">Option Pool</text>
+            </g>
+            <g className="auth-shell-node" style={{ animationDelay: "2.0s" }}>
+              <circle cx="180" cy="280" r="13" fill="url(#authShellNodeGrad)" />
+              <text x="180" y="306" textAnchor="middle" fontSize="10" fill="rgba(255,255,255,0.8)" fontFamily="ui-sans-serif, system-ui">Reports</text>
+            </g>
+            <g className="auth-shell-node" style={{ animationDelay: "2.4s" }}>
+              <circle cx="300" cy="280" r="13" fill="url(#authShellNodeGrad)" />
+              <text x="300" y="306" textAnchor="middle" fontSize="10" fill="rgba(255,255,255,0.8)" fontFamily="ui-sans-serif, system-ui">Holders</text>
+            </g>
+            <g className="auth-shell-node" style={{ animationDelay: "2.8s" }}>
+              <circle cx="390" cy="240" r="16" fill="url(#authShellNodeGrad)" />
+              <text x="390" y="272" textAnchor="middle" fontSize="11" fill="rgba(255,255,255,0.9)" fontFamily="ui-sans-serif, system-ui" fontWeight="600">Consortium</text>
             </g>
           </svg>
         </div>
 
-        {/* Tagline at bottom */}
+        {/* Tagline + trust grid */}
         <div className="relative z-10 mt-auto max-w-md">
           <p className="text-2xl font-semibold tracking-tight leading-snug">
-            Cap tables, rounds, and investor relations \u2014 every number, document, and term sheet in one place.
+            Cap tables, rounds, and investor relations — every number, document, and term sheet in one place.
           </p>
           <p className="mt-3 text-sm text-white/70" data-testid="auth-shell-subtagline">
             Trusted by founders, investors, and consortium partners across North America and Asia.
           </p>
+
+          {/* Wave G G2 — trust badge row. Placeholder slots Avi can swap
+              for real partner logos post-launch. Rendered as monogram
+              chips so the visual rhythm holds with or without art. */}
+          <div className="mt-5" data-testid="auth-shell-trust-grid">
+            <p className="text-[11px] uppercase tracking-[0.18em] text-white/55 mb-3">
+              Trusted by founders and investors at
+            </p>
+            <div className="grid grid-cols-4 gap-2.5">
+              {[
+                { mono: "NV", label: "Nova Ventures" },
+                { mono: "AC", label: "Atlas Capital" },
+                { mono: "HL", label: "Helio Labs" },
+                { mono: "QF", label: "Quanta Founders" },
+              ].map((b) => (
+                <div
+                  key={b.mono}
+                  className="h-10 flex items-center justify-center rounded-md border border-white/15 bg-white/5 backdrop-blur-sm text-white/85 text-sm font-semibold tracking-wider"
+                  aria-label={b.label}
+                  title={b.label}
+                  data-testid="auth-shell-trust-badge"
+                >
+                  {b.mono}
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
 

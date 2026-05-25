@@ -1,9 +1,23 @@
 /**
  * Sprint 11 — Admin pricing store (read by founder Settings).
  *
- * Routes:
+ * v19 Wave A / Change 2: Single-plan default.
+ * --------------------------------------------
+ * Per founder directive (Ozan, 24-May-2026): “Display only one pricing
+ * option for companies (\$840 USD/year). This delivers them full Capavate
+ * functionality (not Collective or Consortium Partners). Obviously, this is
+ * per company.”
+ *
+ * The `founder_tiers` table backend schema is preserved (admins can still
+ * add tiers via the existing admin pricing endpoints). What changed:
+ *   • default seed array contains exactly one tier
+ *   • tier carries explicit annual price + billingCycle annotations
+ *   • Collective + Consortium are explicitly marked NOT included — those
+ *     surfaces have their own commercial flow.
+ *
+ * Routes (unchanged):
  *   GET  /api/admin/pricing-tiers       — current tier table (consumed by Founder Settings → Plan & Pricing)
- *   PATCH /api/admin/pricing-tiers/:id  — admin updates a tier (price, included features)
+ *   PATCH /api/admin/pricing-tiers/:id  — admin updates a tier (price, included features, blurb)
  */
 import type { Express, Request, Response } from "express";
 
@@ -14,67 +28,44 @@ export type PricingTier = {
   annualUsd: number;
   blurb: string;
   features: Array<{ key: string; label: string; included: boolean; limit?: string }>;
+  /** v19 Wave A: explicit billing cycle for display. */
+  billingCycle?: "annual" | "monthly" | "one_time";
+  /** v19 Wave A: integer cents for accurate display + billing. */
+  annualPriceCents?: number;
+  /** v19 Wave A: pre-formatted display string. */
+  displayPrice?: string;
 };
 
+/**
+ * v19 Wave A / Change 2 — single default tier.
+ *
+ * Capavate Annual: \$840 USD/year per company, full Capavate functionality.
+ * Collective + Consortium are explicitly excluded — those are separate
+ * commercial offerings with their own membership flows.
+ */
 export const PRICING_TIERS: PricingTier[] = [
   {
-    id: "founder_free",
-    name: "Founder Free",
-    monthlyUsd: 0,
-    annualUsd: 0,
-    blurb: "Solo founder, single round, lightweight cap table.",
+    id: "founder_capavate_annual",
+    name: "Capavate Annual",
+    monthlyUsd: 70,           // $70/mo display equivalent (= $840 / 12)
+    annualUsd: 840,
+    blurb: "Full Capavate functionality — \$840 USD/year per company.",
+    billingCycle: "annual",
+    annualPriceCents: 84000,
+    displayPrice: "\$840 USD/year per company",
     features: [
-      { key: "captable", label: "Cap table", included: true, limit: "≤ 25 holders" },
-      { key: "rounds", label: "Active rounds", included: true, limit: "1" },
-      { key: "dataroom", label: "Dataroom", included: true, limit: "100 MB" },
-      { key: "investor_crm", label: "Investor CRM", included: false },
-      { key: "reports", label: "Investor reports", included: false },
-      { key: "messages", label: "Messages", included: true, limit: "DM only" },
-      { key: "soft_circle", label: "Soft-circle book", included: false },
-      { key: "warrants_options", label: "Warrants + ESOP attach", included: false },
-      { key: "anti_dilution", label: "Anti-dilution simulator", included: false },
-      { key: "audit_export", label: "Audit-grade activity export", included: false },
-      { key: "collective_apply", label: "Apply to Capavate Collective", included: true },
-    ],
-  },
-  {
-    id: "founder_pro",
-    name: "Founder Pro",
-    monthlyUsd: 249,
-    annualUsd: 2_490,
-    blurb: "Active fundraisers running 1+ rounds with a real investor list.",
-    features: [
-      { key: "captable", label: "Cap table", included: true, limit: "Unlimited" },
-      { key: "rounds", label: "Active rounds", included: true, limit: "Unlimited" },
-      { key: "dataroom", label: "Dataroom", included: true, limit: "10 GB + watermarking" },
-      { key: "investor_crm", label: "Investor CRM", included: true },
-      { key: "reports", label: "Investor reports", included: true, limit: "Templates + read-receipts" },
-      { key: "messages", label: "Messages", included: true, limit: "Threads + posts + broadcasts" },
-      { key: "soft_circle", label: "Soft-circle book", included: true },
-      { key: "warrants_options", label: "Warrants + ESOP attach", included: true },
-      { key: "anti_dilution", label: "Anti-dilution simulator", included: true },
-      { key: "audit_export", label: "Audit-grade activity export", included: true },
-      { key: "collective_apply", label: "Apply to Capavate Collective", included: true },
-    ],
-  },
-  {
-    id: "founder_scale",
-    name: "Founder Scale",
-    monthlyUsd: 749,
-    annualUsd: 7_490,
-    blurb: "Multi-company groups, late-stage rounds, full M&A intelligence.",
-    features: [
-      { key: "captable", label: "Cap table", included: true, limit: "Unlimited + ledger export" },
-      { key: "rounds", label: "Active rounds", included: true, limit: "Unlimited" },
-      { key: "dataroom", label: "Dataroom", included: true, limit: "Unlimited + investor watermark + DRM" },
-      { key: "investor_crm", label: "Investor CRM", included: true },
-      { key: "reports", label: "Investor reports", included: true },
-      { key: "messages", label: "Messages", included: true },
-      { key: "soft_circle", label: "Soft-circle book", included: true },
-      { key: "warrants_options", label: "Warrants + ESOP attach", included: true },
-      { key: "anti_dilution", label: "Anti-dilution simulator", included: true, limit: "+ M&A intelligence" },
-      { key: "audit_export", label: "Audit-grade activity export", included: true },
-      { key: "collective_apply", label: "Apply to Capavate Collective", included: true, limit: "Path A + Path B" },
+      { key: "cap_table", label: "Cap Table Management", included: true },
+      { key: "rounds", label: "Round Management", included: true },
+      { key: "data_room", label: "Data Room", included: true },
+      { key: "investors_crm", label: "Investor CRM", included: true },
+      { key: "documents", label: "Documents & Term Sheets", included: true },
+      { key: "esop", label: "ESOP / Option Pool", included: true },
+      { key: "communications", label: "Messages & Communications", included: true },
+      { key: "audit_chain", label: "Audit Log & Hash Chain Verification", included: true },
+      { key: "compliance", label: "GDPR / CCPA Compliance Tools", included: true },
+      { key: "support", label: "Email Support", included: true },
+      { key: "collective", label: "Collective Membership", included: false },
+      { key: "consortium", label: "Consortium Partner Features", included: false },
     ],
   },
 ];
@@ -88,8 +79,17 @@ export function registerAdminPricingRoutes(app: Express): void {
     const t = PRICING_TIERS.find((x) => x.id === req.params.id);
     if (!t) return res.status(404).json({ error: "tier_not_found" });
     if (typeof req.body?.monthlyUsd === "number") t.monthlyUsd = req.body.monthlyUsd;
-    if (typeof req.body?.annualUsd === "number") t.annualUsd = req.body.annualUsd;
+    if (typeof req.body?.annualUsd === "number") {
+      t.annualUsd = req.body.annualUsd;
+      t.annualPriceCents = Math.round(req.body.annualUsd * 100);
+    }
     if (typeof req.body?.blurb === "string") t.blurb = req.body.blurb;
+    if (req.body?.billingCycle === "annual" || req.body?.billingCycle === "monthly" || req.body?.billingCycle === "one_time") {
+      t.billingCycle = req.body.billingCycle;
+    }
     res.json(t);
   });
 }
+
+// v19 Wave A / Change 2 — test helper exports.
+export const _testPricing = { PRICING_TIERS };

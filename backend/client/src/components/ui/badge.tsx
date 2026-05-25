@@ -36,6 +36,8 @@ const Badge = React.forwardRef<HTMLDivElement, BadgeProps>(
     return (
       <div
         ref={ref}
+        // Wave G G1 — design token namespace marker.
+        data-cap-token="badge"
         className={cn(badgeVariants({ variant }), className)}
         {...props}
       />

@@ -578,12 +578,19 @@ export async function hydrateAdminPlatformStore(): Promise<void> {
       founderTiers.length = 0;
       for (const r of rows) {
         try {
-          founderTiers.push({
+          const tier: FounderTier = {
             id: r.id,
             name: r.name,
             usdMonthly: r.usdMonthly,
             features: JSON.parse(r.featuresJson),
-          });
+          };
+          // v19 Wave A / Change 2 — read optional billing cycle annotations.
+          if (r.billingCycle) tier.billingCycle = r.billingCycle as FounderTier["billingCycle"];
+          if (typeof r.annualPriceCents === "number") tier.annualPriceCents = r.annualPriceCents;
+          if (tier.annualPriceCents != null) {
+            tier.displayPrice = `$${(tier.annualPriceCents / 100).toLocaleString("en-US")} USD/year per company`;
+          }
+          founderTiers.push(tier);
         } catch { /* skip malformed row */ }
       }
     }
@@ -620,39 +627,52 @@ const reconRuns: ReconRun[] = [
   { id: "rec_3", ts: new Date(Date.now()-86400_000).toISOString(), companyId: "co_helia", roundId: "rnd_helia_a", engineMain: { totalShares: "4500000", ownership: 1.0 }, engineRef: { totalShares: "4500900", ownership: 1.0002 }, diff: { sharesDelta: "900", ownershipDelta: 0.0002, ok: false }, actor: "system_nightly" },
 ];
 
-/* ------------ Pricing tiers (Collective + Founder) ------------ */
-interface FounderTier { id: string; name: string; usdMonthly: number; features: { key: string; label: string; included: boolean }[]; }
+/* ------------ Pricing tiers (Collective + Founder) ------------
+ *
+ * v19 Wave A / Change 2 — single-plan default.
+ * --------------------------------------------
+ * Per founder directive (Ozan, 24-May-2026): exactly ONE active tier
+ * by default — Capavate Annual at $840 USD/year per company. Old
+ * Free / Pro / Scale tiers are removed from the seed but the schema
+ * column structure stays intact so admins can re-add tiers via the
+ * existing admin pricing UI (POST/PATCH on /api/admin/pricing-models).
+ *
+ * The shape now carries optional billingCycle + annualPriceCents +
+ * displayPrice annotations — used by the founder UI to render the
+ * \$840 figure precisely without doing client-side multiplication.
+ */
+interface FounderTier {
+  id: string;
+  name: string;
+  usdMonthly: number;
+  features: { key: string; label: string; included: boolean }[];
+  billingCycle?: "annual" | "monthly" | "one_time";
+  annualPriceCents?: number;
+  displayPrice?: string;
+}
 const founderTiers: FounderTier[] = [
-  { id: "founder_free", name: "Founder Free", usdMonthly: 0, features: [
-    { key: "captable", label: "Cap table mgmt", included: true },
-    { key: "rounds", label: "Round wizard (1 round)", included: true },
-    { key: "dataroom", label: "Dataroom (1 GB)", included: true },
-    { key: "reports", label: "Investor reports (manual)", included: true },
-    { key: "crm", label: "Investor CRM (10 contacts)", included: true },
-    { key: "esign", label: "E-sign", included: false },
-    { key: "ma_signals", label: "M&A signals", included: false },
-    { key: "consortium", label: "Consortium routing", included: false },
-  ]},
-  { id: "founder_pro", name: "Founder Pro", usdMonthly: 249, features: [
-    { key: "captable", label: "Cap table mgmt", included: true },
-    { key: "rounds", label: "Unlimited rounds", included: true },
-    { key: "dataroom", label: "Dataroom (50 GB)", included: true },
-    { key: "reports", label: "Investor reports (scheduled)", included: true },
-    { key: "crm", label: "Investor CRM (unlimited)", included: true },
-    { key: "esign", label: "E-sign included", included: true },
-    { key: "ma_signals", label: "M&A signals (basic)", included: true },
-    { key: "consortium", label: "Consortium routing", included: false },
-  ]},
-  { id: "founder_scale", name: "Founder Scale", usdMonthly: 749, features: [
-    { key: "captable", label: "Cap table mgmt", included: true },
-    { key: "rounds", label: "Unlimited rounds + SPVs", included: true },
-    { key: "dataroom", label: "Dataroom (500 GB)", included: true },
-    { key: "reports", label: "Investor reports (auto)", included: true },
-    { key: "crm", label: "Investor CRM (unlimited)", included: true },
-    { key: "esign", label: "E-sign + audit trail", included: true },
-    { key: "ma_signals", label: "M&A signals (full)", included: true },
-    { key: "consortium", label: "Consortium routing", included: true },
-  ]},
+  {
+    id: "founder_capavate_annual",
+    name: "Capavate Annual",
+    usdMonthly: 70, // $70/mo display equivalent = $840/year
+    billingCycle: "annual",
+    annualPriceCents: 84000,
+    displayPrice: "$840 USD/year per company",
+    features: [
+      { key: "cap_table", label: "Cap Table Management", included: true },
+      { key: "rounds", label: "Round Management", included: true },
+      { key: "data_room", label: "Data Room", included: true },
+      { key: "investors_crm", label: "Investor CRM", included: true },
+      { key: "documents", label: "Documents & Term Sheets", included: true },
+      { key: "esop", label: "ESOP / Option Pool", included: true },
+      { key: "communications", label: "Messages & Communications", included: true },
+      { key: "audit_chain", label: "Audit Log & Hash Chain Verification", included: true },
+      { key: "compliance", label: "GDPR / CCPA Compliance Tools", included: true },
+      { key: "support", label: "Email Support", included: true },
+      { key: "collective", label: "Collective Membership", included: false },
+      { key: "consortium", label: "Consortium Partner Features", included: false },
+    ],
+  },
 ];
 
 const collectiveTiers = [

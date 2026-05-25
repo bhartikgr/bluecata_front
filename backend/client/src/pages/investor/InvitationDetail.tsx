@@ -187,7 +187,7 @@ export default function InvitationDetail() {
   onError: (err: Error) => {
    // noop_transition:viewed is benign — the server already recorded the view on a prior mount
    if (/noop_transition/i.test(err.message)) return;
-   toast({ title: "Action failed", description: err.message, variant: "destructive" });
+   toast({ title: "Action failed", description: "Please try again. If this continues, contact support.", variant: "destructive" });
   },
  });
 

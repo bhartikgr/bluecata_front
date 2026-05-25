@@ -27,7 +27,8 @@ export default function Footer3() {
   };
   return (
     <>
-      <footer className="footer">
+      {/* Wave E Fix E5 — explicit role="contentinfo" landmark for SR users. */}
+      <footer className="footer" role="contentinfo">
         <div className="footer__inner">
           <div className="footer__top">
             <div className="footer__brand">
@@ -132,8 +133,9 @@ export default function Footer3() {
                     {openFooterDropdown && (
                       <div className="dropdown__menu dropdown__menu--footer dropdown__menu--up">
                         <a
-                          href="https://capavate.com/#/onboarding"
+                          href="https://capavate.com/#/auth/login?portal=investor"
                           className="dropdown__item text-black"
+                          data-testid="link-footer-investor-login"
                         >
                           <span className="dropdown__icon">📊</span>
                           <div>
@@ -141,8 +143,9 @@ export default function Footer3() {
                           </div>
                         </a>
                         <a
-                          href="https://capavate.com/#/onboarding"
+                          href="https://capavate.com/#/auth/login?portal=founder"
                           className="dropdown__item text-black"
+                          data-testid="link-footer-founder-login"
                         >
                           <span className="dropdown__icon">🏢</span>
                           <div>

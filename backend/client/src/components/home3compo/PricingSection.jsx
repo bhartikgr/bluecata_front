@@ -10,7 +10,7 @@ export default function PricingSection() {
               <span className="eyebrow__dot"></span> Pricing
             </div>
             <h2 className="section-title">
-              $70/month to activate a network <em>worth multiples more.</em>
+              $840/year per company to activate a network <em>worth multiples more.</em>
             </h2>
             <p className="section-sub">
               One plan for companies, billed annually. Free for every investor
@@ -28,12 +28,12 @@ export default function PricingSection() {
                 </p>
               </div>
               <div className="pricing__card-price-wrap">
-                <span className="pricing__card-price">$70</span>
+                <span className="pricing__card-price">$840</span>
                 <span className="pricing__card-term">
-                  /month · billed annually
+                  /year · per company
                 </span>
                 <span className="pricing__card-annual">
-                  $840/year — less than one warm introduction is worth
+                  Each additional company: $840/year (per-company billing)
                 </span>
               </div>
             </div>
@@ -139,8 +139,13 @@ export default function PricingSection() {
                 every holding — at no cost. Investors are invited by their
                 companies.
               </p>
+              <ul className="pricing__secondary-features">
+                <li>Verified portfolio holdings</li>
+                <li>Co-investor visibility</li>
+                <li>Real-time round updates</li>
+              </ul>
               <a
-                href="https://capavate.com/onboarding"
+                href="https://capavate.com/#/onboarding?portal=investor"
                 className="btn btn--ghost btn--sm"
               >
                 Access Your Portfolio
@@ -155,7 +160,7 @@ export default function PricingSection() {
                 Volume onboarding, portfolio-wide management, and referral
                 revenue. Pricing based on number of client companies.
               </p>
-              <a href="#cta-final" className="btn btn--ghost btn--sm">
+              <a href="https://capavate.com/#/apply/consortium" className="btn btn--ghost btn--sm">
                 Become an Ecosystem Partner
               </a>
             </div>

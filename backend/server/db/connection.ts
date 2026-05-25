@@ -299,6 +299,9 @@ function applyV12AdditiveAlters(db: any) {
     ["users", "ALTER TABLE users ADD COLUMN deletion_token TEXT"],
     ["users", "ALTER TABLE users ADD COLUMN anonymized_at TEXT"],
     ["users", "ALTER TABLE users ADD COLUMN anonymized_by_user_id TEXT"],
+    // ---- Wave C FIX C2 — migration 0050 (users profile durability columns). ----
+    ["users", "ALTER TABLE users ADD COLUMN title TEXT"],
+    ["users", "ALTER TABLE users ADD COLUMN display_name TEXT"],
   ];
   for (const [table, sql] of alters) {
     try {
@@ -705,7 +708,9 @@ function buildProductionTableStatements(): string[] {
       features_json TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       updated_by TEXT NOT NULL DEFAULT 'system',
-      deleted_at TEXT
+      deleted_at TEXT,
+      billing_cycle TEXT,
+      annual_price_cents INTEGER
     );`,
     `CREATE TABLE IF NOT EXISTS securities (
       id TEXT PRIMARY KEY NOT NULL,
@@ -2052,6 +2057,25 @@ function buildCreateTableStatements(): string[] {
       created_at TEXT NOT NULL
     );`,
 
+    // Wave C FIX C3 — bridge_outbox table baked into inline DDL so the
+    // bridge envelope write-through works without depending on the per-file
+    // migration runner having fired (NODE_ENV=test uses :memory: and skips
+    // the migration runner). Mirrors migrations/0000.
+    `CREATE TABLE IF NOT EXISTS bridge_outbox (
+      id TEXT PRIMARY KEY NOT NULL,
+      event_type TEXT NOT NULL,
+      aggregate_id TEXT NOT NULL,
+      aggregate_kind TEXT NOT NULL,
+      envelope_json TEXT NOT NULL,
+      hmac TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'queued',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      next_retry_at INTEGER,
+      enqueued_at TEXT NOT NULL,
+      delivered_at TEXT,
+      last_error TEXT
+    );`,
+
     `CREATE INDEX IF NOT EXISTS idx_sync_company_tenant ON sync_company(tenant_id);`,
     `CREATE INDEX IF NOT EXISTS idx_sync_investor_email ON sync_investor(email);`,
     `CREATE INDEX IF NOT EXISTS idx_sync_round_company ON sync_round(company_id);`,
@@ -2063,3 +2087,14 @@ function buildCreateTableStatements(): string[] {
 }
 
 export { schema };
+
+/**
+ * v19 Wave A / Change 1 — surface the inline-DDL applier so server/db/migrate.ts
+ * can prime a fresh SQLite database with the baseline schema BEFORE applying
+ * the per-file migration set on top. Pure re-export; does not change behavior
+ * for any existing caller. The first arg is the raw better-sqlite3 handle.
+ */
+export function applyInlineMigrationsForFreshDb(rawSqliteHandle: any): void {
+  applyInlineMigrations(rawSqliteHandle);
+}
+
