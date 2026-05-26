@@ -13,6 +13,9 @@
     "db:push": "drizzle-kit push",
     "db:migrate": "tsx server/db/migrate.ts",
     "db:seed:demo": "tsx scripts/seed_demo.ts",
+    "db:purge:demo": "tsx scripts/db_purge_demo.ts",
+    "db:doctor": "tsx scripts/db_doctor.ts",
+    "docs:schema": "tsx scripts/generate_schema_reference.ts",
     "test": "cross-env ENABLE_DEMO_SEED=1 NODE_ENV=test vitest run",
     "test:watch": "cross-env ENABLE_DEMO_SEED=1 NODE_ENV=test vitest",
     "test:e2e": "playwright test",
@@ -21,7 +24,8 @@
     "test:e2e:debug": "playwright test --debug",
     "test:e2e:ui": "playwright test --ui",
     "perf:smoke": "tsx scripts/perf_smoke.ts",
-    "test:pglite": "cross-env NODE_ENV=test vitest run --reporter=verbose server/db/__tests__/portable-pglite.test.ts"
+    "test:pglite": "cross-env NODE_ENV=test vitest run --reporter=verbose server/db/__tests__/portable-pglite.test.ts",
+    "test:hash-replay": "cross-env NODE_ENV=test vitest run --reporter=verbose server/db/__tests__/hash-chain-replay.test.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

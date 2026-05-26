@@ -37,6 +37,7 @@ import Login from "@/pages/auth/Login";
 import Signup from "@/pages/auth/Signup";
 import Forgot from "@/pages/auth/Forgot";
 import Redeem from "@/pages/auth/Redeem";
+import SetPasswordPage from "@/pages/SetPasswordPage"; // v23.4.1 Task C — consortium partner invite
 import SelectCompany from "@/pages/SelectCompany";
 
 import FounderDashboard from "@/pages/founder/Dashboard";
@@ -231,6 +232,7 @@ function isAuthRoute(path: string) {
     path.startsWith("/collective/preview") ||
     path.startsWith("/collective/") ||
     path.startsWith("/auth/") ||
+    path === "/set-password" || // v23.4.1 Task C — public invite redemption
     path === "/select-company" ||
     // Wave B FIX 8 — legacy/leak paths render bare (no AppShell) so the
     // sidebar/role chip never leak to unauthenticated visitors.
@@ -389,6 +391,8 @@ function AppRouter() {
         <Route path="/auth/signup" component={Signup} />
         <Route path="/auth/forgot" component={Forgot} />
         <Route path="/auth/redeem" component={Redeem} />
+        {/* v23.4.1 Task C — Consortium Partner set-password invite link (public) */}
+        <Route path="/set-password" component={SetPasswordPage} />
 
         {/* Sprint 27 — dedicated admin login (public) */}
         <Route path="/admin/login" component={AdminLogin} />

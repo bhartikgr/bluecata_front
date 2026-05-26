@@ -1925,7 +1925,8 @@ function buildProductionTableStatements(): string[] {
       curr_hash TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL,
       reviewed_at TEXT,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      invite_payload_json TEXT
     );`,
     `CREATE INDEX IF NOT EXISTS idx_consortium_applications_status     ON consortium_applications(status);`,
     `CREATE INDEX IF NOT EXISTS idx_consortium_applications_chapter    ON consortium_applications(expected_chapter_id);`,

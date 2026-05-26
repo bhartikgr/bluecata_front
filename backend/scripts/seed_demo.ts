@@ -67,6 +67,27 @@ async function main() {
   const db = getDb();
   const now = new Date().toISOString();
 
+  // v23.4.1 Task F — Production data guard.
+  // Refuse to seed demo data if real (non-demo) users already exist.
+  // This is defense-in-depth: even if ENABLE_DEMO_SEED is accidentally set
+  // in a real environment, the seed will not pollute production data.
+  // Callers must run 'npm run db:purge:demo' first if they truly want to reset.
+  try {
+    const realUsers = db
+      .select({ id: usersTable.id })
+      .from(usersTable)
+      .where(eq(usersTable.isDemo, 0))
+      .all() as Array<{ id: string }>;
+    if (realUsers.length > 0) {
+      console.error(
+        `[db:seed:demo] Refusing to seed — production data detected (${realUsers.length} non-demo user${realUsers.length === 1 ? "" : "s"}). Run db:purge:demo first if you really want to reset, or use a clean database.`,
+      );
+      process.exit(1);
+    }
+  } catch {
+    // Table may not exist yet (fresh DB); proceed with seeding
+  }
+
   let created = 0;
   let rotated = 0;
 

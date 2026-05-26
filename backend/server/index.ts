@@ -110,6 +110,56 @@ app.use((req, res, next) => {
   // KL-04: Hydrate in-memory stores from DB on startup (no-op in sandbox)
   await hydrateAllStores();
 
+  // v23.4.1 Task J — Boot-time migration drift check.
+  // Runs db_doctor logic inline (not via child_process) to avoid startup overhead.
+  // In production: BLOCKING — exits 1 if schema is out of date.
+  // In development: WARN only (so hot-reload is not killed by drift).
+  if (process.env.SKIP_DB_DOCTOR !== "1") {
+    try {
+      const { rawDb: rawDbFn } = await import("./db/connection");
+      const db = rawDbFn();
+      const criticalColumns: Record<string, string[]> = {
+        "founder_tiers": ["id", "name", "usd_monthly", "billing_cycle"],
+        "consortium_applications": ["id", "contact_email", "status", "invite_payload_json"],
+        "auth_redeem_tokens": ["id", "token_hash", "email", "intent", "expires_at"],
+      };
+      const missing: string[] = [];
+      const existingTables = new Set(
+        (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[])
+          .map((r: { name: string }) => r.name),
+      );
+      for (const [tbl, cols] of Object.entries(criticalColumns)) {
+        if (!existingTables.has(tbl)) {
+          missing.push(`table:${tbl}`);
+          continue;
+        }
+        const actualCols = new Set(
+          (db.prepare(`PRAGMA table_info(${tbl})`).all() as { name: string }[]).map(
+            (r: { name: string }) => r.name,
+          ),
+        );
+        for (const col of cols) {
+          if (!actualCols.has(col)) missing.push(`${tbl}.${col}`);
+        }
+      }
+      if (missing.length > 0) {
+        const isProd = process.env.NODE_ENV === "production";
+        const msg = `[boot] Database schema is out of date. Run 'npm run db:migrate' then restart. Missing: ${missing.join(", ")}.`;
+        if (isProd) {
+          structuredLog.error(msg + " Aborting boot.");
+          process.exit(1);
+        } else {
+          structuredLog.warn(msg + " (non-production: continuing anyway)");
+        }
+      } else {
+        structuredLog.info("[boot] db:doctor passed — schema is current");
+      }
+    } catch (doctorErr) {
+      // Doctor check failed (e.g. fresh DB before first migrate) — warn and continue
+      structuredLog.warn("[boot] db:doctor check skipped (DB may be fresh):", String(doctorErr));
+    }
+  }
+
   // v12 Phase A.6 — seed demo personas (Maya / Aisha / Daniel + NovaPay /
   // Arboreal / Kelvin + Keiretsu Canada) BEHIND the demo gate. Production
   // never seeds. Every row carries is_demo=1 so v13 can purge cleanly.

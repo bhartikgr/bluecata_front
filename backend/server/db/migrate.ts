@@ -461,6 +461,14 @@ export async function runMigrations(opts: RunOptions = {}): Promise<RunResult> {
           const sql = fs.readFileSync(f.absPath, "utf8");
           try {
             adapter.applyOne(f.name, sql);
+            // v23.4.1 Task E: explicit log for 0049 so its absence is visible in boot logs
+            if (f.name.startsWith("0049_")) {
+              log.info(`Applied 0049_founder_tier_billing_cycle — founder_tiers now supports annual billing`);
+            }
+            // v23.4.1 Task B: explicit log for 0051
+            if (f.name.startsWith("0051_")) {
+              log.info(`Applied 0051_consortium_invite_payload — consortium_applications.invite_payload_json column added`);
+            }
           } catch (err: any) {
             throw new Error(`Migration ${f.name} failed: ${err?.message ?? err}`);
           }

@@ -1,11 +1,14 @@
 /**
  * CP Phase B — Admin queue: Consortium-partner applications.
+ * v23.4.1 Task D: added "Copy invite link" + "Resend invite" for approved applications.
  *
  * Routes used:
  *   GET   /api/admin/consortium/applications?status=&partner_type=&limit=&offset=
  *   GET   /api/admin/consortium/applications/:id
  *   POST  /api/admin/consortium/applications/:id/review        { status, review_notes? }
  *   POST  /api/admin/consortium/applications/:id/withdraw      { review_notes? }
+ *   GET   /api/admin/consortium/applications/:id/invite-link   [v23.4.1]
+ *   POST  /api/admin/consortium/applications/:id/resend-invite [v23.4.1]
  *
  * Plus the partner-promotion moderation queue surfaces from
  *   GET   /api/admin/partner/promotions/queue
@@ -24,7 +27,9 @@ import {
   AlertTriangle,
   CheckCircle2,
   Clock,
+  Copy,
   Inbox,
+  Mail,
   RefreshCw,
   ShieldCheck,
   XCircle,
@@ -34,6 +39,13 @@ import {
 
 type AppStatus = "submitted" | "under_review" | "approved" | "rejected" | "withdrawn";
 type PartnerType = "vc" | "syndicate" | "family_office" | "angel_network" | "other";
+
+interface InvitePayload {
+  inviteLink: string;
+  inviteEmailStatus: "pending" | "delivered" | "failed";
+  inviteEmailError: string | null;
+  sentAt: string | null;
+}
 
 interface Application {
   id: string;
@@ -52,6 +64,8 @@ interface Application {
   reviewNotes?: string | null;
   createdAt: string;
   updatedAt: string;
+  /** v23.4.1 — invite payload (present once approved) */
+  invitePayload?: InvitePayload | null;
 }
 
 interface PromotionRow {
@@ -113,6 +127,8 @@ export default function AdminConsortiumApplicationsPage() {
   const [selected, setSelected] = useState<Application | null>(null);
   const [notes, setNotes] = useState<string>("");
   const [busy, setBusy] = useState<string | null>(null);
+  // v23.4.1 Task D — invite status feedback
+  const [inviteMsg, setInviteMsg] = useState<{ id: string; msg: string; ok: boolean } | null>(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -192,6 +208,47 @@ export default function AdminConsortiumApplicationsPage() {
       await reload();
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // v23.4.1 Task D: Copy invite link
+  async function copyInviteLink(id: string): Promise<void> {
+    setBusy(`${id}:invite-link`);
+    setInviteMsg(null);
+    try {
+      const data = await fetchJson<{ inviteLink: string; inviteEmailStatus: string }>(
+        `/api/admin/consortium/applications/${encodeURIComponent(id)}/invite-link`,
+      );
+      await navigator.clipboard.writeText(data.inviteLink);
+      setInviteMsg({ id, msg: "Link copied to clipboard.", ok: true });
+    } catch (e) {
+      setInviteMsg({ id, msg: `Copy failed: ${(e as Error).message}`, ok: false });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // v23.4.1 Task D: Resend invite email
+  async function resendInvite(id: string): Promise<void> {
+    setBusy(`${id}:resend`);
+    setInviteMsg(null);
+    try {
+      const data = await fetchJson<{ ok: boolean; inviteEmailStatus: string; inviteLink: string }>(
+        `/api/admin/consortium/applications/${encodeURIComponent(id)}/resend-invite`,
+        { method: "POST", body: JSON.stringify({}) },
+      );
+      setInviteMsg({
+        id,
+        msg: data.inviteEmailStatus === "delivered"
+          ? "Invite email sent."
+          : `Email not delivered — link available. Status: ${data.inviteEmailStatus}`,
+        ok: data.inviteEmailStatus === "delivered",
+      });
+      await reload();
+    } catch (e) {
+      setInviteMsg({ id, msg: `Resend failed: ${(e as Error).message}`, ok: false });
     } finally {
       setBusy(null);
     }
@@ -447,6 +504,33 @@ export default function AdminConsortiumApplicationsPage() {
                 >
                   Withdraw
                 </Button>
+                {/* v23.4.1 Task D — invite controls for approved applications */}
+                {selected.status === "approved" && (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-8"
+                      disabled={!!busy}
+                      onClick={() => void copyInviteLink(selected.id)}
+                      data-testid="button-copy-invite-link"
+                    >
+                      <Copy className="h-3.5 w-3.5 mr-1" />
+                      Copy invite link
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-8"
+                      disabled={!!busy}
+                      onClick={() => void resendInvite(selected.id)}
+                      data-testid="button-resend-invite"
+                    >
+                      <Mail className="h-3.5 w-3.5 mr-1" />
+                      Resend invite
+                    </Button>
+                  </>
+                )}
                 <Button
                   size="sm"
                   variant="ghost"
@@ -454,11 +538,48 @@ export default function AdminConsortiumApplicationsPage() {
                   onClick={() => {
                     setSelected(null);
                     setNotes("");
+                    setInviteMsg(null);
                   }}
                 >
                   Close
                 </Button>
               </div>
+
+              {/* Invite status/feedback message */}
+              {inviteMsg && inviteMsg.id === selected.id && (
+                <div
+                  className={`mt-2 text-xs px-3 py-2 rounded ${inviteMsg.ok ? "bg-emerald-50 text-emerald-800" : "bg-rose-50 text-rose-800"}`}
+                  data-testid="invite-feedback"
+                >
+                  {inviteMsg.msg}
+                </div>
+              )}
+
+              {/* Invite email status badge for approved applications */}
+              {selected.status === "approved" && selected.invitePayload && (
+                <div className="mt-2 flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground">Invite email:</span>
+                  <Badge
+                    className={[
+                      selected.invitePayload.inviteEmailStatus === "delivered" ? "bg-emerald-100 text-emerald-900" : "",
+                      selected.invitePayload.inviteEmailStatus === "failed" ? "bg-rose-100 text-rose-900" : "",
+                      selected.invitePayload.inviteEmailStatus === "pending" ? "bg-amber-100 text-amber-900" : "",
+                      "border-0",
+                    ].filter(Boolean).join(" ")}
+                    data-testid="badge-invite-status"
+                  >
+                    {selected.invitePayload.inviteEmailStatus}
+                  </Badge>
+                  {selected.invitePayload.inviteEmailStatus === "failed" && selected.invitePayload.inviteEmailError && (
+                    <span className="text-xs text-rose-700">{selected.invitePayload.inviteEmailError}</span>
+                  )}
+                  {selected.invitePayload.sentAt && (
+                    <span className="text-xs text-muted-foreground">
+                      sent {new Date(selected.invitePayload.sentAt).toLocaleString()}
+                    </span>
+                  )}
+                </div>
+              )}
             </CardContent>
           </Card>
         )}
