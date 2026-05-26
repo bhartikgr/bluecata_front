@@ -29,6 +29,7 @@ import { emitSync } from "./sprint10Telemetry";
 import { getMembership } from "./membershipStore";
 import { requireCollectiveEnabled } from "./lib/featureFlags"; /* v16 Fix 6 */
 import { getDb } from "./db/connection"; /* v17 Phase B */
+import { pAll } from "./db/portable"; /* Wave H Track A — Postgres compatibility */
 import { DEFAULT_CHAPTER_ID, DEFAULT_CHAPTER_TENANT_ID } from "./lib/chapterDefaults";
 import { log } from "./lib/logger";
 
@@ -53,11 +54,16 @@ export async function hydrateCollectiveAppStore(): Promise<void> {
   applications.length = 0;
   try {
     const db: any = getDb();
-    const rows = db
-      .select()
-      .from(collectiveAppsTable)
-      .where(isNull((collectiveAppsTable as any).deletedAt))
-      .all() as any[];
+    /* Wave H Track A — was `.all() as any[]`; converted to portable pAll() so
+     * this hydrate path works on both better-sqlite3 (sync .all) and
+     * postgres-js (thenable). This was one of the three crash sites in
+     * Avi's production logs: `[hydrate] collectiveAppStore: DB read failed`. */
+    const rows = await pAll<any>(
+      db
+        .select()
+        .from(collectiveAppsTable)
+        .where(isNull((collectiveAppsTable as any).deletedAt))
+    );
     for (const r of rows) {
       let payload: any = {};
       try { payload = JSON.parse(r.payload_json ?? r.payloadJson ?? "{}"); } catch { /* empty */ }

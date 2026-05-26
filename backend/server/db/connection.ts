@@ -150,6 +150,20 @@ export function resetDbForTests(): void {
   _driver = null;
 }
 
+// --- Wave H Track A: driver introspection --------------------------------
+//
+// Used by server/db/portable.ts to dispatch terminal methods (.all/.get/.run)
+// to the correct underlying shape (sync on better-sqlite3, async on
+// postgres-js). Calling this before getDb() returns null — callers should
+// call getDb() first to ensure a connection has been established.
+export function getDbDriver(): "sqlite" | "postgres" | null {
+  if (_driver) return _driver;
+  // Lazy infer from DATABASE_URL even if getDb() has not run yet — this lets
+  // module-load-time code branch correctly before the first query.
+  if (_isPostgresUrl(process.env.DATABASE_URL)) return "postgres";
+  return "sqlite";
+}
+
 // --- inline SQLite migrations (Patch v4 parity, v12 extended) ------------
 //
 // v12 extends applyInlineMigrations to also create the production

@@ -25,6 +25,7 @@ import { appendAdminAudit } from "./adminPlatformStore";
 import { emitBridgeEvent } from "./bridgeStore";
 import { getById as getContactById, _registerSeedPartner, TIER_RANK, TIER_SEAT_LIMITS, type PartnerTier, type PartnerSubRole } from "./adminContactsStoreShim";
 import { getDb } from "./db/connection";
+import { pAll } from "./db/portable"; /* Wave H Track A — Postgres compatibility */
 import { partnerDealPromotions as partnerDealPromotionsTable } from "@shared/schema";
 import { DEFAULT_CHAPTER_ID, DEFAULT_CHAPTER_TENANT_ID } from "./lib/chapterDefaults";
 import { log } from "./lib/logger";
@@ -1663,11 +1664,17 @@ function persistDealPromotion(p: PartnerDealPromotion, isInsert: boolean): void 
 export async function hydratePartnerWorkspaceCollectiveStore(): Promise<void> {
   try {
     const db = getDb();
-    const rows: any[] = await db
-      .select()
-      .from(partnerDealPromotionsTable)
-      .where(isNull((partnerDealPromotionsTable as any).deletedAt))
-      .all();
+    /* Wave H Track A — was `await db.select()...all()` which crashes on
+     * postgres-js (no .all method). Converted to portable pAll() so this
+     * hydrate path works on both drivers. This was one of the three crash
+     * sites in Avi's production logs:
+     *   `[hydrate] partnerWorkspaceStore: hydrate failed`. */
+    const rows: any[] = await pAll<any>(
+      db
+        .select()
+        .from(partnerDealPromotionsTable)
+        .where(isNull((partnerDealPromotionsTable as any).deletedAt))
+    );
     dealPromotions.length = 0;
     dealPromotionsHistory.length = 0;
     for (const r of rows) {

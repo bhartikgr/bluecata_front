@@ -22,6 +22,7 @@
 import { randomBytes, createHash } from "crypto";
 import { eq, isNull } from "drizzle-orm";
 import { getDb } from "./db/connection";
+import { pAll } from "./db/portable"; /* Wave H Track A — Postgres compatibility */
 import { dscVotes as dscVotesTable } from "../shared/schema";
 import * as collectiveMembershipStore from "./collectiveMembershipStore";
 import { log } from "./lib/logger";
@@ -333,11 +334,16 @@ export async function hydrateDscVoteStore(): Promise<void> {
   memVotes.length = 0;
   try {
     const db: any = getDb();
-    const rows = db
-      .select()
-      .from(dscVotesTable)
-      .where(isNull((dscVotesTable as any).deletedAt ?? (dscVotesTable as any).deleted_at ?? null))
-      .all() as any[];
+    /* Wave H Track A — was `.all() as any[]`; converted to portable pAll() so
+     * this hydrate path works on both better-sqlite3 (sync .all) and
+     * postgres-js (thenable). This was one of the three crash sites in
+     * Avi's production logs: `[hydrate] dscVoteStore: DB read failed`. */
+    const rows = await pAll<any>(
+      db
+        .select()
+        .from(dscVotesTable)
+        .where(isNull((dscVotesTable as any).deletedAt ?? (dscVotesTable as any).deleted_at ?? null))
+    );
     for (const r of rows) {
       let conds: string[] | null = null;
       try {
