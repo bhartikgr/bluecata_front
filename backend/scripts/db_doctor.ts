@@ -142,7 +142,7 @@ function printResults(result: DoctorResult) {
   const FAIL = "\x1b[31mFAIL\x1b[0m";
   const WARN = "\x1b[33mWARN\x1b[0m";
 
-  console.log("\n[db:doctor] Capavate v23.4.1 schema integrity check\n");
+  console.log("\n[db:doctor] Capavate v23.4.2 schema integrity check\n");
 
   for (const r of result.results) {
     if (!r.tablePresent) {

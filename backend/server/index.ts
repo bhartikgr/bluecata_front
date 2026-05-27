@@ -215,6 +215,29 @@ app.use((req, res, next) => {
     return res.status(status).json({ message });
   });
 
+  // v23.4.2 — boot-time APP_URL sanity check.
+  // In production, APP_URL is used to construct invite-email links
+  // (partner signup, password reset, etc.). If it points at localhost,
+  // every link a recipient receives will be unusable from outside the
+  // server. Log loudly so the operator notices BEFORE inviting anyone.
+  // This is a warning, not a hard fail — the server still boots, and
+  // localhost APP_URL is legitimate for staging on the host machine.
+  if (process.env.NODE_ENV === "production") {
+    const appUrl = process.env.APP_URL ?? "";
+    if (!appUrl) {
+      log(
+        "[boot] APP_URL is not set. Invite-email links will use a relative path or default. " +
+          "Set APP_URL=https://<your-public-domain> in .env.",
+      );
+    } else if (/localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(appUrl)) {
+      log(
+        `[boot] WARNING: APP_URL=${appUrl} in production. ` +
+          "Invite-email links will be broken for external recipients. " +
+          "Set APP_URL to your public domain (https://...) in .env, then restart.",
+      );
+    }
+  }
+
   // importantly only setup vite in development and after
   // setting up all the other routes so the catch-all route
   // doesn't interfere with the other routes

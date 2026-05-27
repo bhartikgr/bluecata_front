@@ -153,6 +153,7 @@ import { registerRoundCarryForwardRoutes } from "./roundCarryForwardRoutes";
 import { registerRoundPriceDerivationRoutes } from "./lib/roundPriceDerivation";
 import { registerSecureAuthRoutes } from "./lib/secureAuthRoutes";
 import { registerAdminUsersRoutes } from "./lib/adminUsersRoutes";
+import { registerAdminEmailRoutes } from "./lib/adminEmailRoutes";
 import { realtimeStreamHandler, emitMutation } from "./lib/eventBus";
 import { BridgeOutbound } from "./lib/bridgeOutbound";
 import { csrfMiddleware } from "./lib/csrf";
@@ -583,6 +584,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   /* ------------ Sprint 17 D7: admin user management ------------ */
   registerAdminUsersRoutes(app);
+
+  /* ------------ v23.4.2: admin SMTP diagnostic endpoints ------------ */
+  registerAdminEmailRoutes(app);
 
   /* ------------ Sprint 17 D4: realtime invalidation stream ------------ */
   app.get("/api/events/stream", realtimeStreamHandler);
