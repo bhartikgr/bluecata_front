@@ -165,10 +165,10 @@ const defaultForm: FormShape = {
  sharesAuthorized: "1000000",
  openDate: "2026-05-15",
  closeDate: "2026-07-15",
- notes: "Lead candidate: Hydra Capital. Target $1.5M lead check, $2.5M follower book.",
- useOfProceeds: "50% engineering hires; 20% cloud + LLM compute; 22% go-to-market; 8% legal + working capital.",
+ notes: "",
+ useOfProceeds: "",
  tranches: false,
- tranchesPlan: "Tranche 1: $2.5M concurrent with signing. Tranche 2: $1.5M on hitting Net New ARR ≥ $2M by Q1 2027.",
+ tranchesPlan: "",
 };
 
 export default function RoundNew() {

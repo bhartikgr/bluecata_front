@@ -462,8 +462,8 @@ export default function RoundDetail() {
  <DialogTitle>Invite an investor</DialogTitle>
  </DialogHeader>
  <div className="space-y-3">
- <div><Label>Investor name</Label><Input className="mt-1" value={inviteName} onChange={e => setInviteName(e.target.value)} placeholder="Hydra Capital — Aisha Rahman" data-testid="input-invite-name" /></div>
- <div><Label>Email</Label><Input className="mt-1" type="email" value={inviteEmail} onChange={e => setInviteEmail(e.target.value)} placeholder="aisha@hydracapital.com" data-testid="input-invite-email" /></div>
+ <div><Label>Investor name</Label><Input className="mt-1" value={inviteName} onChange={e => setInviteName(e.target.value)} placeholder="Investor name" data-testid="input-invite-name" /></div>
+ <div><Label>Email</Label><Input className="mt-1" type="email" value={inviteEmail} onChange={e => setInviteEmail(e.target.value)} placeholder="investor@firm.com" data-testid="input-invite-email" /></div>
  <div><Label>Personal note (optional)</Label><Input className="mt-1" value={inviteNote} onChange={e => setInviteNote(e.target.value)} placeholder="Following up from our coffee at Latitude…" data-testid="input-invite-note" /></div>
  <div><Label>Expires in</Label>
  <select className="mt-1 w-full h-9 px-3 rounded-md border border-input bg-background text-sm" data-testid="select-invite-expiry">

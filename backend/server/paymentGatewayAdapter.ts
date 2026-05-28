@@ -221,6 +221,37 @@ export function getPublicGatewayList() {
 
 /* ---------- Routes ---------- */
 
+/**
+ * v23.4.5 BUG 018 — per-user auto-provision lock.
+ *
+ * Serializes concurrent calls to /api/founder/subscription/charge for the
+ * same userId. When a second request arrives while the first is still
+ * running, it awaits the in-flight Promise and then runs `task()` with the
+ * companies cache already updated by the first one — so it short-circuits
+ * to the existing company instead of minting a duplicate.
+ */
+const AUTO_PROVISION_LOCKS = new Map<string, Promise<string | null>>();
+async function acquireAutoProvisionLock(
+  userId: string,
+  task: () => Promise<string | null>,
+): Promise<string | null> {
+  const pending = AUTO_PROVISION_LOCKS.get(userId);
+  if (pending) {
+    // Wait for the first holder to release; then run our task (which will
+    // re-check the cache and short-circuit if a company now exists).
+    await pending.catch(() => null);
+  }
+  const run = (async () => {
+    try {
+      return await task();
+    } finally {
+      AUTO_PROVISION_LOCKS.delete(userId);
+    }
+  })();
+  AUTO_PROVISION_LOCKS.set(userId, run);
+  return run;
+}
+
 export function registerPaymentGatewayRoutes(app: Express): void {
   /**
    * GET /api/admin/payment-gateway/config
@@ -348,44 +379,62 @@ export function registerPaymentGatewayRoutes(app: Express): void {
     // v23.4.3 BUG-001: if no companyId resolved AND founder has zero
     // companies, auto-provision a placeholder workspace so the paid
     // subscription has somewhere to anchor.
+    //
+    // v23.4.5 BUG 018 fix: idempotency guard against duplicate auto-provision.
+    // Symptom: when the Subscribe call is retried (double-click, webhook
+    // retry, network re-issue) two concurrent requests each see
+    // `companies.length === 0`, each mint a fresh `co_<rand>` id, and both
+    // succeed — the founder ends up with 2–3 phantom "X's Workspace" rows.
+    // Fix: serialize per-user via an in-flight Promise; re-check the founder
+    // companies count after acquiring the lock and re-fetching context.
     if (!companyId) {
       try {
         const ctx = await getUserContext(req);
-        if (ctx.isAuthed && (!ctx.founder?.companies?.length)) {
-          const newId = `co_${randomBytes(6).toString("hex")}`;
-          const founderName = (ctx.identity?.name ?? "My Company").trim() || "My Company";
-          const placeholder: FounderCompanyMembership = {
-            companyId: newId,
-            companyName: `${founderName}'s Workspace`,
-            legalName: `${founderName}'s Workspace, Inc.`,
-            logoUrl: null,
-            role: "founder",
-            lastActiveAt: new Date().toISOString(),
-            kpi: {
-              capTableHolders: 0, activeRoundsCount: 0, raisedThisYearUsd: 0,
-              dataroomFiles: 0, pendingSoftCircles: 0, ownershipPct: 1.0,
-            },
-            collective: { status: "none" },
-            billing: { plan: "Founder Pro", monthlyUsd: 0, nextBillingDate: "—", cardLast4: null, invoiceCount: 0 },
-            sector: "",
-            stage: "",
-            hq: "",
-          };
-          addCompanyForFounder(ctx.userId, placeholder);
-          setActiveCompanyId(ctx.userId, newId);
-          // Anchor a pending_payment subscription to the new company so the
-          // charge below has a row to update.
-          createSubscriptionForNewCompany(newId, {
-            plan: "founder_pro",
-            actor: `founder:${ctx.userId}`,
-          });
-          companyId = newId;
-          appendAdminAudit(
-            `founder:${ctx.userId}`,
-            `company:${newId}`,
-            "company.auto_provisioned_on_charge",
-            { reason: "bug001_paid_plan_fresh_founder" },
-          );
+        if (ctx.isAuthed) {
+          companyId = await acquireAutoProvisionLock(ctx.userId, async () => {
+            // Re-check inside the lock: a concurrent request may have already
+            // provisioned the workspace and updated USER_COMPANIES.
+            const existing = getCompaniesForFounder(ctx.userId);
+            if (existing.length > 0) {
+              // Pick the first owned company — honour active selection if set.
+              const activeId = getActiveCompanyId(ctx.userId);
+              return activeId || existing[0].companyId;
+            }
+            const newId = `co_${randomBytes(6).toString("hex")}`;
+            const founderName = (ctx.identity?.name ?? "My Company").trim() || "My Company";
+            const placeholder: FounderCompanyMembership = {
+              companyId: newId,
+              companyName: `${founderName}'s Workspace`,
+              legalName: `${founderName}'s Workspace, Inc.`,
+              logoUrl: null,
+              role: "founder",
+              lastActiveAt: new Date().toISOString(),
+              kpi: {
+                capTableHolders: 0, activeRoundsCount: 0, raisedThisYearUsd: 0,
+                dataroomFiles: 0, pendingSoftCircles: 0, ownershipPct: 1.0,
+              },
+              collective: { status: "none" },
+              billing: { plan: "Founder Pro", monthlyUsd: 0, nextBillingDate: "—", cardLast4: null, invoiceCount: 0 },
+              sector: "",
+              stage: "",
+              hq: "",
+            };
+            addCompanyForFounder(ctx.userId, placeholder);
+            setActiveCompanyId(ctx.userId, newId);
+            // Anchor a pending_payment subscription to the new company so the
+            // charge below has a row to update.
+            createSubscriptionForNewCompany(newId, {
+              plan: "founder_pro",
+              actor: `founder:${ctx.userId}`,
+            });
+            appendAdminAudit(
+              `founder:${ctx.userId}`,
+              `company:${newId}`,
+              "company.auto_provisioned_on_charge",
+              { reason: "bug001_paid_plan_fresh_founder" },
+            );
+            return newId;
+          }) || companyId;
         }
       } catch (err) {
         // Non-fatal: if auto-provision fails, the charge endpoint returns

@@ -81,7 +81,15 @@ export function CompanySwitcher() {
       queryClient.invalidateQueries({ queryKey: ["/api/founder/active-company"] });
       // Cross-company invalidations: cap table, rounds, dataroom, reports, CRM
       queryClient.invalidateQueries({ queryKey: ["/api/founder/captable"] });
+      // v23.4.5 BUG 020 fix: the rounds list page uses queryKey ["/api/rounds", ...]
+      // (no "founder" prefix). Previously we only invalidated the
+      // "/api/founder/rounds" namespace, so the rounds cache was never
+      // cleared on company-switch and the founder saw rounds from their
+      // PREVIOUS company. Invalidate both prefixes plus the cap-table flavour.
       queryClient.invalidateQueries({ queryKey: ["/api/founder/rounds"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/rounds"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/captable"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/companies"] });
       queryClient.invalidateQueries({ queryKey: ["/api/founder/dataroom/files"] });
       queryClient.invalidateQueries({ queryKey: ["/api/founder/reports2"] });
       queryClient.invalidateQueries({ queryKey: ["/api/founder/investor-crm"] });

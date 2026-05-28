@@ -58,9 +58,9 @@ export default function CRMNew() {
           <CardHeader><CardTitle className="text-base">New contact</CardTitle></CardHeader>
           <CardContent className="space-y-4 max-w-2xl">
             <div className="grid md:grid-cols-2 gap-4">
-              <div><Label>Firm name</Label><Input className="mt-1" value={form.name} onChange={e => update("name", e.target.value)} placeholder="Hydra Capital" data-testid="input-firm" /></div>
-              <div><Label>Primary contact</Label><Input className="mt-1" value={form.contact} onChange={e => update("contact", e.target.value)} placeholder="Aisha Rahman" data-testid="input-contact" /></div>
-              <div><Label>Email</Label><Input className="mt-1" type="email" value={form.email} onChange={e => update("email", e.target.value)} placeholder="aisha@hydracapital.com" data-testid="input-email" /></div>
+              <div><Label>Firm name</Label><Input className="mt-1" value={form.name} onChange={e => update("name", e.target.value)} placeholder="Firm name" data-testid="input-firm" /></div>
+              <div><Label>Primary contact</Label><Input className="mt-1" value={form.contact} onChange={e => update("contact", e.target.value)} placeholder="Contact name" data-testid="input-contact" /></div>
+              <div><Label>Email</Label><Input className="mt-1" type="email" value={form.email} onChange={e => update("email", e.target.value)} placeholder="contact@firm.com" data-testid="input-email" /></div>
               <div><Label>Stage focus</Label><Input className="mt-1" value={form.stageFocus} onChange={e => update("stageFocus", e.target.value)} placeholder="Seed–Series A" data-testid="input-stage" /></div>
               <div className="md:col-span-2"><Label>Typical check size</Label><Input className="mt-1" value={form.checkSize} onChange={e => update("checkSize", e.target.value)} placeholder="$1M–$3M" data-testid="input-check" /></div>
               <div className="md:col-span-2"><Label>Notes</Label><Textarea rows={4} className="mt-1" value={form.notes} onChange={e => update("notes", e.target.value)} placeholder="What signal makes this investor a good fit?" data-testid="input-notes" /></div>

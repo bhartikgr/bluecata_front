@@ -187,19 +187,6 @@ function isValidIso2(s: string): boolean {
   return /^[A-Z]{2}/.test(s); // must start with 2 uppercase letters; may have free-text city after
 }
 
-// BUG-006 fix: required fields for company profile create/update.
-export const REQUIRED_COMPANY_PROFILE_FIELDS = ["name"] as const;
-
-export function validateRequiredProfileFields(patch: Partial<CompanyProfile>): string | null {
-  for (const field of REQUIRED_COMPANY_PROFILE_FIELDS) {
-    const v = patch[field as keyof CompanyProfile];
-    if (v === undefined || v === null || (typeof v === "string" && v.trim() === "")) {
-      return `${field} is required`;
-    }
-  }
-  return null;
-}
-
 export function validateProfilePatch(patch: Partial<CompanyProfile>): string | null {
   for (const field of URL_FIELDS) {
     const v = patch[field];
@@ -787,8 +774,7 @@ export function registerCompanyProfileRoutes(app: Express): void {
 
     const entry = createFinancialRequestToken({ companyId, fieldKey, requestedBy: actor, accountantEmail, note });
 
-    // v23.4.3: BrowserRouter — removed /#/ prefix from email link.
-const magicLink = `https://capavate.com/financials-fill/${entry.token}?company=${companyId}&field=${fieldKey}`;
+    const magicLink = `https://capavate.com/#/financials-fill/${entry.token}?company=${companyId}&field=${fieldKey}`;
 
     enqueueOneOff({
       recipientUserId: `acct_${randomBytes(4).toString("hex")}`,

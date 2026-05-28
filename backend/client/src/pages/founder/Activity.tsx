@@ -15,6 +15,29 @@ import { useActiveCompanyId } from "@/lib/useActiveCompany";
 
 type ActivityRow = { id: string; ts: string; actor: string; action: string; target: string; threadId?: string; postId?: string };
 
+/**
+ * v23.4.5 Phase 8 — actor display formatting.
+ *
+ * Audit-log rows store the actor as the raw user id (`usr_abc123…`). The
+ * Activity Log UI used to render that id verbatim (QA #26). We now:
+ *   1. If the actor matches the signed-in user, use their display name.
+ *   2. Else if it has the `usr_` prefix, shorten to `User abc12345` so the
+ *      column is readable and still identifies the user uniquely enough for
+ *      audit correlation.
+ *   3. Else (legacy demo seed rows like “Maya Chen”) pass through.
+ */
+function formatActor(actor: string, selfId: string | null, selfName: string | null): string {
+  if (!actor) return "";
+  if (selfId && actor === selfId) return selfName ?? "You";
+  if (actor.startsWith("usr_")) {
+    const tail = actor.slice(4, 12); // 8 chars is plenty for human recognition
+    return `User ${tail}`;
+  }
+  return actor;
+}
+
+type MeShape = { isAuthed?: boolean; userId?: string | null; identity?: { name?: string | null; displayName?: string | null } | null; name?: string | null };
+
 // ----- Wave B FIX 7 (F-BUG-014) -----
 // Real /api/activity rows return canonical dot-notation eventTypes
 // (e.g. "round.created", "legal_consent.recorded", "partner.application.submitted",
@@ -98,6 +121,12 @@ export default function ActivityPage() {
     queryKey: ["/api/activity", companyId],
     queryFn: async () => (await apiRequest("GET", `/api/activity?companyId=${companyId}`)).json(),
   });
+  // v23.4.5 Phase 8 — resolve the caller’s own id→name so the “You did X”
+  // row reads naturally instead of “usr_abc123 did X”.
+  const meQ = useQuery<MeShape>({ queryKey: ["/api/auth/me"] });
+  const selfId = meQ.data?.userId ?? null;
+  const selfName =
+    meQ.data?.identity?.displayName ?? meQ.data?.identity?.name ?? meQ.data?.name ?? null;
 
   const [q, setQ] = useState("");
   const [typeF, setTypeF] = useState("all");
@@ -129,7 +158,11 @@ export default function ActivityPage() {
     [a.data],
   );
 
-  const actors = useMemo(() => Array.from(new Set(rows.map(r => r.actor))).sort(), [rows]);
+  // Display names for the actor filter dropdown (raw id remains the option value).
+  const actors = useMemo(
+    () => Array.from(new Set(rows.map((r) => r.actor))).sort(),
+    [rows],
+  );
 
   const filtered = useMemo(() => rows.filter(r => {
     if (typeF !== "all" && classifyAction(r.action) !== typeF) return false;
@@ -138,10 +171,16 @@ export default function ActivityPage() {
     if (to && r.ts > to + "T23:59:59Z") return false;
     if (q) {
       const needle = q.toLowerCase();
-      if (!r.actor.toLowerCase().includes(needle) && !r.action.toLowerCase().includes(needle) && !r.target.toLowerCase().includes(needle)) return false;
+      const actorDisplay = formatActor(r.actor, selfId, selfName).toLowerCase();
+      if (
+        !r.actor.toLowerCase().includes(needle) &&
+        !actorDisplay.includes(needle) &&
+        !r.action.toLowerCase().includes(needle) &&
+        !r.target.toLowerCase().includes(needle)
+      ) return false;
     }
     return true;
-  }), [rows, q, typeF, actorF, from, to]);
+  }), [rows, q, typeF, actorF, from, to, selfId, selfName]);
 
   // Reset visible window when filters change.
   useEffect(() => { setPageCount(1); }, [q, typeF, actorF, from, to]);
@@ -152,6 +191,7 @@ export default function ActivityPage() {
   function exportCSV() {
     const header = ["id", "timestamp", "actor", "action", "target", "type"];
     const lines = [header.join(",")].concat(
+      // CSV export keeps the raw actor id so audit correlation is still possible.
       filtered.map(r => [r.id, r.ts, `"${r.actor.replace(/"/g, '""')}"`, `"${r.action.replace(/"/g, '""')}"`, `"${r.target.replace(/"/g, '""')}"`, classifyAction(r.action)].join(","))
     );
     const blob = new Blob([lines.join("\n")], { type: "text/csv" });
@@ -204,7 +244,7 @@ export default function ActivityPage() {
                   <SelectTrigger className="mt-1" data-testid="select-actor"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">All actors</SelectItem>
-                    {actors.map(actor => <SelectItem key={actor} value={actor}>{actor}</SelectItem>)}
+                    {actors.map(actor => <SelectItem key={actor} value={actor}>{formatActor(actor, selfId, selfName)}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
@@ -243,13 +283,13 @@ export default function ActivityPage() {
                         {/* Sprint 19 J — make message/post activity rows clickable */}
                         {activityLink(x) ? (
                           <Link href={activityLink(x)!} className="text-sm hover:underline">
-                            <span className="font-medium">{x.actor}</span>{" "}
+                            <span className="font-medium">{formatActor(x.actor, selfId, selfName)}</span>{" "}
                             <span className="text-muted-foreground">{x.action}</span>{" "}
                             <span className="font-medium">{x.target}</span>
                           </Link>
                         ) : (
                           <span className="text-sm">
-                            <span className="font-medium">{x.actor}</span>{" "}
+                            <span className="font-medium">{formatActor(x.actor, selfId, selfName)}</span>{" "}
                             <span className="text-muted-foreground">{x.action}</span>{" "}
                             <span className="font-medium">{x.target}</span>
                           </span>

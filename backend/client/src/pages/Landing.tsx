@@ -75,13 +75,18 @@ export default function Landing() {
           </span>
         </Link>
         <div className="flex-1" />
-        <button
-          onClick={goAdmin}
-          className="text-xs text-[hsl(219_45%_30%)] hover:text-[hsl(219_45%_14%)] underline underline-offset-4"
-          data-testid="link-admin-signin"
-        >
-          Admin sign-in →
-        </button>
+        {/* v23.4.5 Phase 9 (QA #16) — Admin sign-in is dev-only on the public
+           landing page. Operators access admin via the canonical /admin/login
+           URL in production. */}
+        {import.meta.env.DEV && (
+          <button
+            onClick={goAdmin}
+            className="text-xs text-[hsl(219_45%_30%)] hover:text-[hsl(219_45%_14%)] underline underline-offset-4"
+            data-testid="link-admin-signin"
+          >
+            Admin sign-in →
+          </button>
+        )}
       </header>
 
       {/* Hero */}
@@ -163,6 +168,10 @@ export default function Landing() {
         </p>
 
         {/* Demo-only: token tray (preview tooling, hidden by default) */}
+        {/* v23.4.5 Phase 9 (QA #18) — the entire preview-redemption-tokens
+           tray is dev-only. In production landing pages it must never
+           surface internal redemption flows or invitee PII. */}
+        {import.meta.env.DEV && (
         <div className="mt-12 border-t border-black/5 pt-6">
           <button
             onClick={() => setShowTokens((s) => !s)}
@@ -201,6 +210,7 @@ export default function Landing() {
             </div>
           )}
         </div>
+        )}
       </main>
 
       {/* Footer chips */}

@@ -53,7 +53,7 @@ import { registerMembershipRoutes } from "./membershipStore";
 import { registerDataroomRoutes } from "./dataroomStore";
 import { registerReportsRoutes } from "./reportsStore";
 import { registerFounderCrmRoutes } from "./founderCrmStore";
-import { registerCaptableCommitRoutes, commitFunded } from "./captableCommitStore";
+import { registerCaptableCommitRoutes } from "./captableCommitStore";
 import { registerTermSheetRoutes } from "./termSheetStore";
 import { registerAdminPricingRoutes } from "./adminPricingStore";
 import { registerBridgeRoutes } from "./bridgeStore";
@@ -75,8 +75,6 @@ import {
   createSoftCircle as softCircleCreate,
   validateSoftCircle as softCircleValidate,
   listForRound as softCircleListForRound,
-  updateSoftCircleStatus as softCircleUpdateStatus,
-  getSoftCircle,
 } from "./softCircleStore";
 import { configureSubscriptionsStore, registerSubscriptionRoutes, listSubscriptions, updateSubscription, getSubscription, createSubscriptionForNewCompany, type Subscription } from "./subscriptionsStore";
 import { configurePricingModelStore, registerPricingModelRoutes } from "./pricingModelStore";
@@ -161,7 +159,7 @@ import { BridgeOutbound } from "./lib/bridgeOutbound";
 import { csrfMiddleware } from "./lib/csrf";
 import { rateLimitMiddleware, collectiveRateLimit } from "./lib/rateLimit";
 import { securityHeaders, corsForApi } from "./middleware/security";
-import { getDb, rawDb } from "./db/connection";
+import { getDb } from "./db/connection";
 import { users as usersTable } from "../shared/schema"; /* Avi 22-May Issue 6 */
 import { eq as drizzleEq } from "drizzle-orm"; /* Avi 22-May Issue 6 */
 import { SYNC_ENTITY_COUNT } from "./db/syncRepo";
@@ -1350,101 +1348,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  // Phase 4 (BUG-011, BUG-012, Q2): Batch invite endpoint.
-  // POST /api/founder/rounds/:roundId/invitations
-  // Body: { contactIds?: string[], freeformInvites?: [{ name, email, organization?, suggestedTicket? }] }
-  // BUG-011 de-dupe: checks auth_users table by email (case-insensitive) before creating a new user.
-  // Freeform invites also create a crm_contacts row if not already present.
-  app.post("/api/founder/rounds/:roundId/invitations", requireAuth, async (req, res) => {
-    const ctx = req.userContext!;
-    const roundId = paramStr(req.params.roundId);
-    const companyId = ctx.founder?.activeCompanyId ?? "";
-    if (!companyId) {
-      return res.status(400).json({ ok: false, error: "no_company", message: "No active company." });
-    }
-    // Verify founder owns this round
-    const round = (rounds as any[]).find((r: any) => r.id === roundId);
-    if (!round) return res.status(404).json({ ok: false, error: "round_not_found" });
-    if (!ctx.isAdmin && round.companyId !== companyId) {
-      return res.status(403).json({ ok: false, error: "FOUNDER_WRONG_ROUND" });
-    }
-    const { contactIds = [], freeformInvites = [] } = req.body ?? {};
-    const results: Array<{ email: string; status: "sent" | "queued" | "duplicate" | "failed"; error?: string }> = [];
-    const db = rawDb();
-
-    // Helper: look up existing user by email (BUG-011 de-dupe)
-    function findExistingUserId(email: string): string | null {
-      const row = db.prepare(`SELECT id FROM auth_users WHERE lower(email) = ?`).get(email.toLowerCase()) as { id: string } | undefined;
-      return row?.id ?? null;
-    }
-
-    // Helper: create or find a CRM contact for this email
-    function ensureCrmContact(name: string, email: string, organization?: string): void {
-      try {
-        const { listContactsForCompany, _testAccessFounderCrm } = require("./founderCrmStore");
-        const contacts = listContactsForCompany(companyId);
-        const existing = (contacts as any[]).find((c: any) => (c.email ?? "").toLowerCase() === email.toLowerCase());
-        if (!existing) {
-          // Insert into the in-memory list + DB via the POST handler (simplified: direct insert)
-          const { randomBytes } = require("node:crypto");
-          const id = `fcrm_${randomBytes(3).toString("hex")}`;
-          const now = new Date().toISOString();
-          try {
-            db.prepare(`INSERT OR IGNORE INTO founder_crm_contacts (id, tenant_id, company_id, name, email, firm_name, stage, ma_signals, created_at, updated_at)
-              VALUES (?, ?, ?, ?, ?, ?, 'lead', 0, ?, ?)`).
-              run(id, `tenant_co_${companyId}`, companyId, name, email.toLowerCase(), organization ?? "—", now, now);
-          } catch { /* non-fatal */ }
-        }
-      } catch { /* non-fatal */ }
-    }
-
-    // --- Process CRM contact IDs ---
-    for (const contactId of contactIds as string[]) {
-      try {
-        const { listContactsForCompany } = require("./founderCrmStore");
-        const contacts = listContactsForCompany(companyId);
-        const contact = (contacts as any[]).find((c: any) => c.id === contactId);
-        if (!contact) { results.push({ email: contactId, status: "failed", error: "contact_not_found" }); continue; }
-        const email = contact.email;
-        if (!email) { results.push({ email: contactId, status: "failed", error: "no_email" }); continue; }
-        const existingUserId = findExistingUserId(email);
-        const result = await roundInvitationsCreate({
-          roundId, companyId, investorEmail: email,
-          investorName: contact.name ?? null,
-          invitedByUserId: ctx.userId ?? "u_unknown",
-          ...(existingUserId ? { note: `existing_user:${existingUserId}` } : {}),
-        });
-        results.push({ email, status: result.emailSent ? "sent" : "queued" });
-      } catch (err) {
-        results.push({ email: String(contactId), status: "failed", error: (err as Error).message });
-      }
-    }
-
-    // --- Process freeform invites ---
-    for (const fi of freeformInvites as Array<{ name: string; email: string; organization?: string; suggestedTicket?: number }>) {
-      if (!fi.email || !fi.name) { results.push({ email: fi.email ?? "?", status: "failed", error: "name_and_email_required" }); continue; }
-      const email = fi.email.trim().toLowerCase();
-      try {
-        // BUG-011: check for existing user
-        const existingUserId = findExistingUserId(email);
-        // Always ensure CRM entry (Q2)
-        ensureCrmContact(fi.name, email, fi.organization);
-        const result = await roundInvitationsCreate({
-          roundId, companyId, investorEmail: email,
-          investorName: fi.name,
-          note: fi.suggestedTicket ? `suggested_ticket:${fi.suggestedTicket}` : null,
-          invitedByUserId: ctx.userId ?? "u_unknown",
-          ...(existingUserId ? {} : {}),
-        });
-        results.push({ email, status: result.emailSent ? "sent" : "queued" });
-      } catch (err) {
-        results.push({ email, status: "failed", error: (err as Error).message });
-      }
-    }
-
-    return res.json({ ok: true, results });
-  });
-
   // Founder — resend the invitation (re-issues an email). Reuses existing
   // token hash to keep the link stable; we DO NOT generate a new raw token,
   // we simply re-send a notification.
@@ -1534,85 +1437,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const sc = softCircleValidate(scId);
     if (!sc) return res.status(404).json({ ok: false, error: "soft_circle_not_found" });
     return res.json({ ok: true, scId, validated: true, softCircle: sc });
-  });
-
-  // Phase 5 (Q3): Per-row "Confirm Funds Received" endpoint.
-  // POST /api/founder/rounds/:roundId/soft-circles/:scId/confirm-funds
-  // Body: { shares: string, pricePerShare: string, notes?: string }
-  //
-  // Transitions soft-circle confirmed → committed AND writes a captable commit.
-  // Uses existing captableCommitStore.commitFunded() — NO math changes.
-  // Ozan architectural decision #3: this is a PER-ROW button, not batch.
-  app.post("/api/founder/rounds/:roundId/soft-circles/:scId/confirm-funds", requireAuth, (req, res) => {
-    const ctx = req.userContext!;
-    const roundId = paramStr(req.params.roundId);
-    const scId    = paramStr(req.params.scId);
-
-    // Verify founder owns the round
-    const round = (rounds as any[]).find((r: any) => r.id === roundId);
-    if (!round) return res.status(404).json({ ok: false, error: "round_not_found" });
-    const companyId = round.companyId as string;
-    if (!ctx.isAdmin && !ctx.founder.companies.some((c) => c.companyId === companyId)) {
-      return res.status(403).json({ ok: false, error: "FOUNDER_WRONG_ROUND" });
-    }
-
-    // Fetch the soft-circle
-    const sc = getSoftCircle(scId);
-    if (!sc) return res.status(404).json({ ok: false, error: "soft_circle_not_found" });
-    if (sc.status !== "confirmed") {
-      return res.status(400).json({ ok: false, error: "status_not_confirmed", current: sc.status,
-        message: "Only soft-circles in 'confirmed' status can be confirmed as funded." });
-    }
-
-    const body = req.body ?? {};
-    const shares = String(body.shares ?? sc.amount).trim();
-    const pricePerShare = String(body.pricePerShare ?? "1").trim();
-    const notes = body.notes ?? null;
-
-    if (!shares || isNaN(Number(shares)) || Number(shares) <= 0) {
-      return res.status(400).json({ ok: false, error: "invalid_shares", message: "shares must be a positive number." });
-    }
-    if (!pricePerShare || isNaN(Number(pricePerShare)) || Number(pricePerShare) <= 0) {
-      return res.status(400).json({ ok: false, error: "invalid_price", message: "pricePerShare must be a positive number." });
-    }
-
-    // Transition soft-circle: confirmed → committed
-    const updated = softCircleUpdateStatus(scId, "committed");
-    if (!updated) return res.status(500).json({ ok: false, error: "status_update_failed" });
-
-    // Write cap-table commit via existing captableCommitStore API.
-    // Amount = shares * pricePerShare (in cents as minor unit integer).
-    const amountMinor = Math.round(Number(shares) * Number(pricePerShare) * 100);
-    const investorId  = sc.investorUserId ?? sc.investorEmail ?? "unknown";
-    const invitationId = sc.invitationId ?? `inv_${scId}`;
-
-    const commitResult = commitFunded({
-      invitationId,
-      roundId,
-      companyId,
-      investorId,
-      amount: String(amountMinor),
-      currency: sc.currency ?? "USD",
-      shares,
-      fromState: "funded",   // commitFunded allows funded → committed transition
-    });
-
-    // Audit-log
-    appendAdminAudit(
-      ctx.userId ?? "u_unknown",
-      `company:${companyId}`,
-      "soft_circle.funds_confirmed",
-      { scId, roundId, investorId, shares, pricePerShare, notes, commitResult },
-    );
-
-    return res.json({
-      ok: true,
-      softCircle: updated,
-      captableCommit: commitResult,
-      message: commitResult.ok
-        ? "Funds confirmed. Cap-table position written."
-        : `Funds confirmed. Cap-table write note: ${commitResult.error}`,
-    });
   });
 
   // Term-sheet send + PDF — requireAuth
@@ -2006,17 +1830,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // POST /api/rounds — create a round — requireAuth
   // Patch v10 (B-F5): verify caller owns body.companyId.
   // v13 (Avi's Issue 3): persisted to `rounds` SQL table via roundsStore.
-  // v23.4.3 BUG-005: reject with no_company when founder has no companies.
   app.post("/api/rounds", requireAuth, (req, res) => {
     const ctx = req.userContext!;
     const body = req.body ?? {};
     const companyId = body.companyId;
     if (!companyId || typeof companyId !== "string") {
       return res.status(400).json({ ok: false, error: "companyId required" });
-    }
-    // BUG-005: founder must have at least one company.
-    if (!ctx.isAdmin && ctx.founder.companies.length === 0) {
-      return res.status(400).json({ ok: false, error: "no_company", message: "Create your company profile before opening a round." });
     }
     const ownsCompany = ctx.isAdmin || ctx.founder.companies.some((c) => c.companyId === companyId);
     if (!ownsCompany) {
@@ -2155,7 +1974,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (knownFounder) {
       return res.json({ companyId: id, userId: knownFounder.userId, name: knownFounder.name });
     }
-    return res.status(404).json({ message: "Company not found or has no founder on record" });
+    return res.status(404).json({ ok: false, error: "COMPANY_NOT_FOUND", message: `Company ${id} not found or has no founder on record.` });
   });
 
   /* ------------------------------------------------------------------

@@ -15,10 +15,15 @@ export default defineConfig({
     },
   },
   root: path.resolve(import.meta.dirname, "client"),
-  // Sprint 16 hotfix: relative base required because the deploy proxy serves
-  // the site under a long token-prefixed URL. Absolute /assets/... paths 404.
-  // Hash-router handles deep links; main.tsx rewrites /founder/... → /#/founder/...
-  base: "./",
+  // v23.4.4 — absolute base for BrowserRouter.
+  //
+  // Sprint 16's `base: "./"` was paired with the hash-router (the SPA only
+  // ever loaded from /index.html, so relative asset paths worked). With
+  // BrowserRouter (v23.4.3) every deep link loads from a different
+  // pathname, and relative `./assets/...` URLs resolve against the
+  // current path — e.g. on /founder/dashboard the browser asks for
+  // /founder/assets/index.js, which 404s. Absolute `/` base fixes that.
+  base: "/",
   build: {
     outDir: path.resolve(import.meta.dirname, "dist/public"),
     emptyOutDir: true,

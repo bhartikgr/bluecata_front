@@ -48,6 +48,11 @@ export function NewCompanyDialog({ open, onOpenChange }: NewCompanyDialogProps) 
 
   const create = useMutation({
     mutationFn: async () => {
+      // v23.4.5 BUG 018 / QA#5#6 fix: apiRequest returns a Response object; the
+      // previous cast `res as { ok: boolean; companyId: string }` evaluated
+      // `data.ok = Response.ok` (truthy for 2xx) but `data.companyId` was
+      // undefined, so the success branch fell through to the destructive toast
+      // even when the backend created the company successfully. Parse JSON.
       const res = await apiRequest("POST", "/api/founder/companies/new", {
         name: name.trim(),
         legalName: legalName.trim() || `${name.trim()}, Inc.`,
@@ -55,7 +60,8 @@ export function NewCompanyDialog({ open, onOpenChange }: NewCompanyDialogProps) 
         stage: stage.trim(),
         hq: hq.trim(),
       });
-      return res as { ok: boolean; companyId: string; company: unknown; error?: string };
+      const body = await res.json().catch(() => ({}));
+      return body as { ok: boolean; companyId: string; company: unknown; error?: string };
     },
     onSuccess: async (data) => {
       if (!data?.ok || !data.companyId) {
@@ -123,7 +129,7 @@ export function NewCompanyDialog({ open, onOpenChange }: NewCompanyDialogProps) 
               data-testid="input-new-company-name"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="Acme Robotics"
+              placeholder="Your company name"
               required
               minLength={2}
             />
@@ -135,7 +141,7 @@ export function NewCompanyDialog({ open, onOpenChange }: NewCompanyDialogProps) 
               data-testid="input-new-company-legal"
               value={legalName}
               onChange={(e) => setLegalName(e.target.value)}
-              placeholder="Acme Robotics, Inc."
+              placeholder="Your company legal name, Inc."
             />
           </div>
           <div className="grid grid-cols-2 gap-3">

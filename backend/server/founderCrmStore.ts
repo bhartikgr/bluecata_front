@@ -252,24 +252,15 @@ export function registerFounderCrmRoutes(app: Express): void {
   }
 
   // POST /api/founder/investor-crm — create contact
-  // BUG-007/008 fix: validate required fields: name and email are mandatory.
   app.post("/api/founder/investor-crm", requireAuth, (req: Request, res: Response) => {
     const companyId = ensureCompanyId(req, res); if (!companyId) return;
-    // Required field validation
-    const name = req.body?.name?.trim();
-    const email = req.body?.email?.trim();
-    if (!name) return res.status(400).json({ ok: false, error: "name_required", message: "Contact name is required." });
-    if (!email) return res.status(400).json({ ok: false, error: "email_required", message: "Contact email is required." });
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      return res.status(400).json({ ok: false, error: "email_invalid", message: "Contact email must be a valid email address." });
-    }
     const c: FounderCrmContact = {
       id: `fcrm_${randomBytes(3).toString("hex")}`,
       companyId: req.body?.companyId ?? companyId,
       investorId: req.body?.investorId ?? `u_${randomBytes(3).toString("hex")}`,
-      name,
+      name: req.body?.name ?? "New contact",
       firmName: req.body?.firmName ?? "—",
-      email,
+      email: req.body?.email ?? "",
       region: req.body?.region ?? "US",
       stage: normalizeStage(req.body?.stage) as FounderCrmContact["stage"],
       ownership: { sharesUsd: 0, pct: 0 },
@@ -278,10 +269,12 @@ export function registerFounderCrmRoutes(app: Express): void {
       notesUpdatedAt: new Date().toISOString(),
       tasks: [], series: req.body?.series ?? "—",
     };
-    contacts.push(c);
-    // Patch v12 Day 3: write-through. No trailing `()` — Drizzle invokes the
-    // callback for us. Failure to persist is logged but does NOT throw —
-    // in-memory state remains consistent; hydration on restart will reconcile.
+    // v23.4.5 BUG 013 fix: DB-FIRST write order. Previous behaviour pushed to
+    // in-memory cache before attempting DB persist; a silent DB failure left
+    // the contact visible only in the cache, and a restart wiped it ("CRM data
+    // lost overnight"). Now we INSERT into founder_crm_contacts FIRST. Only if
+    // the DB write succeeds do we add to the read cache. On failure, return
+    // 500 so the client can surface the problem instead of silently dropping.
     try {
       const db = getDb();
       db.transaction((tx: any) => {
@@ -289,7 +282,9 @@ export function registerFounderCrmRoutes(app: Express): void {
       });
     } catch (err) {
       log.error("[founderCrmStore POST] DB write failed:", (err as Error).message);
+      return res.status(500).json({ ok: false, error: "crm_contact_persist_failed" });
     }
+    contacts.push(c);
     // B-V11-7 fix: emit a `crm.contact.created` audit entry so the company
     // activity timeline reflects investor-CRM growth.
     appendAdminAudit(
@@ -301,12 +296,19 @@ export function registerFounderCrmRoutes(app: Express): void {
     res.json(c);
   });
 
-  // PATCH /api/founder/investor-crm/:id — update stage / notes / tasks
+  // PATCH /api/founder/investor-crm/:id — update stage / notes / tasks / contact fields
+  // v23.4.5 BUG 009 fix: PATCH now also accepts name/firmName/email/region/series
+  // so the founder-side CRM "Edit" button can perform a full contact update.
   app.patch("/api/founder/investor-crm/:id", requireAuth, (req: Request, res: Response) => {
     const c = contacts.find((x) => x.id === req.params.id);
     if (!c) return res.status(404).json({ error: "not_found" });
     if (typeof req.body?.stage === "string") c.stage = normalizeStage(req.body.stage) as FounderCrmContact["stage"];
     if (typeof req.body?.notes === "string") { c.notes = req.body.notes; c.notesUpdatedAt = new Date().toISOString(); }
+    if (typeof req.body?.name === "string" && req.body.name.trim().length > 0) c.name = req.body.name.trim();
+    if (typeof req.body?.firmName === "string") c.firmName = req.body.firmName.trim() || "—";
+    if (typeof req.body?.email === "string") c.email = req.body.email.trim();
+    if (typeof req.body?.region === "string") c.region = req.body.region.trim();
+    if (typeof req.body?.series === "string") c.series = req.body.series.trim() || "—";
     if (req.body?.task) {
       c.tasks.push({ id: `tsk_${randomBytes(3).toString("hex")}`, text: req.body.task.text, due: req.body.task.due, status: "open" });
     }
@@ -319,6 +321,11 @@ export function registerFounderCrmRoutes(app: Express): void {
       db.transaction((tx: any) => {
         tx.update(founderCrmContactsTable)
           .set({
+            name: c.name,
+            firmName: c.firmName,
+            email: c.email,
+            region: c.region,
+            series: c.series,
             stage: c.stage,
             notes: c.notes,
             notesUpdatedAt: c.notesUpdatedAt,
@@ -341,73 +348,23 @@ export function registerFounderCrmRoutes(app: Express): void {
     res.json(c);
   });
 
-  // BUG-009 fix: PATCH /api/founder/investor-crm/:id now also allows updating
-  // mutable fields: name, email, firmName, region, series.
-  // (Previously only stage, notes, tasks were patchable.)
-  // This extends the existing PATCH endpoint above implicitly via req.body checks.
-  // The above PATCH already handles stage/notes/tasks. We add name/email below
-  // by extending the existing handler. But since the handler is already defined,
-  // we register a companion PATCH endpoint under /api/founder/crm/:id that
-  // supports the full field set and is what the frontend calls for full edits.
-  app.patch("/api/founder/crm/:id", requireAuth, (req: Request, res: Response) => {
-    const c = contacts.find((x) => x.id === req.params.id);
-    if (!c) return res.status(404).json({ error: "not_found" });
-    // Validate name/email if provided
-    if (req.body?.name !== undefined) {
-      const name = String(req.body.name).trim();
-      if (!name) return res.status(400).json({ ok: false, error: "name_required", message: "Contact name is required." });
-      c.name = name;
-    }
-    if (req.body?.email !== undefined) {
-      const email = String(req.body.email).trim();
-      if (!email) return res.status(400).json({ ok: false, error: "email_required", message: "Contact email is required." });
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-        return res.status(400).json({ ok: false, error: "email_invalid", message: "Contact email must be a valid email address." });
-      }
-      c.email = email;
-    }
-    if (req.body?.firmName !== undefined) c.firmName = String(req.body.firmName);
-    if (req.body?.region !== undefined) c.region = String(req.body.region);
-    if (req.body?.series !== undefined) c.series = String(req.body.series);
-    if (typeof req.body?.stage === "string") c.stage = normalizeStage(req.body.stage) as FounderCrmContact["stage"];
-    if (typeof req.body?.notes === "string") { c.notes = req.body.notes; c.notesUpdatedAt = new Date().toISOString(); }
-    try {
-      const db = getDb();
-      const tenantId = tenantForCompany(c.companyId);
-      db.transaction((tx: any) => {
-        tx.update(founderCrmContactsTable)
-          .set({ name: c.name, firmName: c.firmName, email: c.email, region: c.region, series: c.series, stage: c.stage, notes: c.notes, notesUpdatedAt: c.notesUpdatedAt, updatedAt: new Date().toISOString() })
-          .where(withTenant(eq(founderCrmContactsTable.id, c.id), { tenantId, table: founderCrmContactsTable }))
-          .run();
-      });
-    } catch (err) {
-      log.error("[founderCrmStore PATCH /crm/:id] DB write failed:", (err as Error).message);
-    }
-    appendAdminAudit(
-      (req as Request & { userContext?: { userId?: string } }).userContext?.userId ?? "u_unknown",
-      `company:${c.companyId}`,
-      "crm.contact.updated",
-      { contactId: c.id, stage: c.stage },
-    );
-    res.json({ ok: true, contact: c });
-  });
-
-  // BUG-010 fix: DELETE /api/founder/crm/:id — soft-delete CRM contact.
-  // Sets deletedAt timestamp; contact is excluded from all future list reads.
-  app.delete("/api/founder/crm/:id", requireAuth, (req: Request, res: Response) => {
+  // DELETE /api/founder/investor-crm/:id — soft-delete a contact.
+  // v23.4.5 BUG 010 fix: the "Clear" / delete button on the founder CRM
+  // requires a delete endpoint. Soft-delete via `deletedAt` to keep audit
+  // trail intact, mirroring the investor-side CRM delete behaviour.
+  app.delete("/api/founder/investor-crm/:id", requireAuth, (req: Request, res: Response) => {
     const idx = contacts.findIndex((x) => x.id === req.params.id);
-    if (idx === -1) return res.status(404).json({ ok: false, error: "not_found" });
+    if (idx < 0) return res.status(404).json({ error: "not_found" });
     const c = contacts[idx];
-    const now = new Date().toISOString();
-    // Soft-delete in memory: mark with deletedAt and remove from the live list.
-    // The DB row is updated to set deleted_at so the record is retained for audit.
+    // Remove from in-memory cache.
     contacts.splice(idx, 1);
+    // Write-through soft-delete to DB (tenant-scoped).
     try {
       const db = getDb();
       const tenantId = tenantForCompany(c.companyId);
       db.transaction((tx: any) => {
         tx.update(founderCrmContactsTable)
-          .set({ deletedAt: now, updatedAt: now })
+          .set({ deletedAt: new Date().toISOString(), updatedAt: new Date().toISOString() })
           .where(withTenant(eq(founderCrmContactsTable.id, c.id), { tenantId, table: founderCrmContactsTable }))
           .run();
       });
@@ -418,9 +375,9 @@ export function registerFounderCrmRoutes(app: Express): void {
       (req as Request & { userContext?: { userId?: string } }).userContext?.userId ?? "u_unknown",
       `company:${c.companyId}`,
       "crm.contact.deleted",
-      { contactId: c.id },
+      { contactId: c.id, firmName: c.firmName },
     );
-    res.json({ ok: true, contactId: c.id, deletedAt: now });
+    res.json({ ok: true, id: c.id });
   });
 
   // POST /api/founder/investor-crm/broadcast — segmented broadcast

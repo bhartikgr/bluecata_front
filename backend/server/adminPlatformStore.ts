@@ -595,20 +595,7 @@ export async function hydrateAdminPlatformStore(): Promise<void> {
       }
     }
   } catch (err) {
-    const errMsg = (err as Error).message ?? "";
-    // v23.4.1 Task E: detect the specific 'billing_cycle' / 'no such column' error
-    // that Avi hit (migration 0049 not applied) and emit a CLEAR actionable message
-    // instead of a generic 'hydrate failed' line.
-    if (
-      errMsg.includes("billing_cycle") ||
-      (errMsg.includes("no such column") && errMsg.includes("founder_tier"))
-    ) {
-      log.warn(
-        "[adminPlatformStore.hydrate] founder_tiers schema is out of date — run 'npm run db:migrate' to apply migration 0049. Falling back to in-memory seed defaults.",
-      );
-    } else {
-      log.warn("[adminPlatformStore.hydrate] founder_tiers load failed:", errMsg);
-    }
+    log.warn("[adminPlatformStore.hydrate] founder_tiers load failed:", (err as Error).message);
   }
 
   // 4) Lifecycle policies — platform_config[key="lifecycle_policies"].

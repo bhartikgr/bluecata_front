@@ -1,5 +1,5 @@
 /**
- * server/consortiumApplyStore.ts — CP Phase B + v23.4.1 hotfix.
+ * server/consortiumApplyStore.ts — CP Phase B.
  *
  * DB-backed store + endpoints for the Consortium Partner Apply-to-Join flow
  * (CP-001..CP-005 in the v19 audit).
@@ -15,17 +15,6 @@
  *     GET   /api/admin/consortium/applications/:id
  *     POST  /api/admin/consortium/applications/:id/review        body { status: 'approved'|'rejected', review_notes? }
  *     POST  /api/admin/consortium/applications/:id/withdraw      body { review_notes? }
- *     POST  /api/admin/consortium/applications/:id/resend-invite [v23.4.1]
- *     GET   /api/admin/consortium/applications/:id/invite-link   [v23.4.1]
- *
- * v23.4.1 hotfix changes (Task B):
- *   1. CONSORTIUM_AUTO_APPROVE env flag (default "1") — auto-approve on submit.
- *   2. approveApplication() now mints a redeem token (auth_redeem_tokens table,
- *      intent='invite') and sends a set-password invite email via emailSender.ts.
- *      The invite_payload_json column (migration 0051) stores the link + status.
- *   3. Two new admin endpoints: resend-invite + invite-link (admin-only).
- *   4. In NODE_ENV !== 'production', inviteLink is returned in the approve response
- *      for local testing. In production it is NEVER in any public API response.
  *
  * Hash chain: every state transition appends a new row by *updating* the
  * existing application with a fresh (prev_hash, curr_hash) pair computed
@@ -43,16 +32,15 @@
  *      that email exists, we re-use the existing id).
  *   4. INSERT a chapter_memberships row tying the user to expected_chapter_id
  *      as a 'member' (chapter admins promote separately).
- *   5. INSERT an auth_redeem_tokens row for the set-password invite.  [v23.4.1]
- *   6. UPDATE the application row with status='approved', provisioned_partner_id,
- *      reviewed_by_user_id, reviewed_at, prev_hash←currHash, curr_hash←new hash,
- *      invite_payload_json (link + email status).                     [v23.4.1]
+ *   5. UPDATE the application row with status='approved', provisioned_partner_id,
+ *      reviewed_by_user_id, reviewed_at, prev_hash←currHash, curr_hash←new hash.
  *
  * After commit:
  *   - appendAdminAudit() for cross-cutting audit trail
  *   - SSE publish on 'consortium-apply' topic
- *   - sendEmail() — SMTP if configured, console/dry_run otherwise.    [v23.4.1]
- *   - invite_payload_json updated with email delivery result.         [v23.4.1]
+ *   - commsStore notification to the new partner_admin user (welcome).
+ *
+ * Public submit fires email/SMTP via env-driven transport (logged if not wired).
  */
 
 import type { Express, Request, Response, NextFunction } from "express";
@@ -62,7 +50,6 @@ import { z } from "zod";
 
 import { requireAuth, requireAdmin } from "./lib/authMiddleware";
 import { getDb } from "./db/connection";
-import { rawDb } from "./db/connection";
 import {
   consortiumApplications as appsTable,
   partnerOrganizations as partnerOrgsTable,
@@ -73,7 +60,6 @@ import {
 import { publish as ssePublish } from "./lib/sseHub";
 import { appendAdminAudit } from "./adminPlatformStore";
 import { log } from "./lib/logger";
-import { sendEmail } from "./lib/emailSender";
 
 /* ============================================================
  * Types
@@ -99,14 +85,6 @@ export type AumRange =
   | "250M-1B"
   | ">1B"
   | "undisclosed";
-
-/** Stored in invite_payload_json column (migration 0051). */
-export interface InvitePayload {
-  inviteLink: string;
-  inviteEmailStatus: "pending" | "delivered" | "failed";
-  inviteEmailError: string | null;
-  sentAt: string | null;
-}
 
 export interface ConsortiumApplicationRow {
   id: string;
@@ -135,8 +113,6 @@ export interface ConsortiumApplicationRow {
   createdAt: string;
   reviewedAt: string | null;
   updatedAt: string;
-  /** v23.4.1: invite payload (null until application is approved) */
-  invitePayload: InvitePayload | null;
 }
 
 /* ============================================================
@@ -167,11 +143,6 @@ function computeHash(
 }
 
 function rowToApp(r: any): ConsortiumApplicationRow {
-  let invitePayload: InvitePayload | null = null;
-  const rawPayload = r.invite_payload_json ?? r.invitePayloadJson ?? null;
-  if (rawPayload) {
-    try { invitePayload = JSON.parse(rawPayload) as InvitePayload; } catch { invitePayload = null; }
-  }
   return {
     id: r.id,
     tenantId: r.tenant_id ?? r.tenantId ?? null,
@@ -201,7 +172,6 @@ function rowToApp(r: any): ConsortiumApplicationRow {
     createdAt: r.created_at ?? r.createdAt,
     reviewedAt: r.reviewed_at ?? r.reviewedAt ?? null,
     updatedAt: r.updated_at ?? r.updatedAt,
-    invitePayload,
   };
 }
 
@@ -278,35 +248,6 @@ function verifyCaptcha(token: string | undefined): boolean {
   // For now, accept any non-empty token if the secret length matches a
   // server-side test convention (>= 8). Real wiring is Avi's job.
   return token.length >= 4 && secret.length >= 4;
-}
-
-/* ============================================================
- * v23.4.1 — Invite token helpers
- *
- * Mint a 32-byte random token. Store sha256 hash in auth_redeem_tokens
- * (same table/pattern used by adminUsersRoutes.ts:88). Return the raw
- * token for inclusion in the invite URL.
- * ============================================================ */
-function mintRedeemToken(email: string, expiryMs = 24 * 60 * 60 * 1000): string {
-  const tokenRaw = randomBytes(32).toString("hex");
-  const tokenHash = createHash("sha256").update(tokenRaw).digest("hex");
-  const tokenId = `tk_${randomBytes(6).toString("hex")}`;
-  const now = nowIso();
-  const expiresAt = new Date(Date.now() + expiryMs).toISOString();
-  // Use rawDb() to stay on the same DB connection regardless of Drizzle wrapping
-  // (same pattern as adminUsersRoutes.ts:88 and secureAuthRoutes.ts:145)
-  rawDb()
-    .prepare(
-      `INSERT INTO auth_redeem_tokens (id, token_hash, email, intent, expires_at, created_at)
-       VALUES (?, ?, ?, 'invite', ?, ?)`,
-    )
-    .run(tokenId, tokenHash, email, expiresAt, now);
-  return tokenRaw;
-}
-
-function buildInviteLink(tokenRaw: string): string {
-  const appUrl = (process.env.APP_URL ?? "http://localhost:5000").replace(/\/$/, "");
-  return `${appUrl}/set-password?token=${tokenRaw}`;
 }
 
 /* ============================================================
@@ -428,7 +369,6 @@ export function submitApplication(input: SubmitInput): ConsortiumApplicationRow 
     createdAt: now,
     reviewedAt: null,
     updatedAt: now,
-    invitePayload: null,
   };
   draft.currHash = computeHash(null, chainPayload(draft));
 
@@ -485,6 +425,8 @@ export function submitApplication(input: SubmitInput): ConsortiumApplicationRow 
     organizationName: draft.organizationName,
   });
 
+  // Notification stub — email infra will be wired by Avi (SMTP_*).
+  // For now, log a structured line that integrators can grep for.
   log.info(
     "[consortium.apply] submitted",
     JSON.stringify({
@@ -527,8 +469,7 @@ export function listApplications(filters: {
 }
 
 /* ============================================================
- * Approval — provisions tenant, partner_org, user, chapter membership,
- * and mints a redeem token for the set-password invite.  [v23.4.1]
+ * Approval — provisions tenant, partner_org, user, chapter membership.
  *
  * CROSS-TENANT: this operation is intentionally cross-tenant because it
  * is the provisioning step that *creates* the new partner tenant. The
@@ -538,16 +479,12 @@ export function approveApplication(
   id: string,
   actorUserId: string,
   reviewNotes?: string | null,
-): ConsortiumApplicationRow & { inviteLink?: string } {
+): ConsortiumApplicationRow {
   const existing = appsCache.get(id);
   if (!existing) throw new Error("APPLICATION_NOT_FOUND");
   if (existing.status === "approved" && existing.provisionedPartnerId) {
-    // Idempotent — return existing (with invite link if in dev)
-    const result: ConsortiumApplicationRow & { inviteLink?: string } = { ...existing };
-    if (process.env.NODE_ENV !== "production" && existing.invitePayload?.inviteLink) {
-      result.inviteLink = existing.invitePayload.inviteLink;
-    }
-    return result;
+    // Idempotent — return existing.
+    return existing;
   }
   if (existing.status === "rejected" || existing.status === "withdrawn") {
     throw new Error("APPLICATION_NOT_REVIEWABLE");
@@ -569,7 +506,6 @@ export function approveApplication(
     currHash: "",
     reviewedAt: now,
     updatedAt: now,
-    invitePayload: null,
   };
   updated.currHash = computeHash(updated.prevHash, chainPayload(updated));
 
@@ -591,24 +527,6 @@ export function approveApplication(
 
   const chapterMembershipId = `cm_${randomBytes(6).toString("hex")}`;
   const chapterTenantId = `tenant_chap_${updated.expectedChapter}`;
-
-  // v23.4.1: Mint redeem token BEFORE the tx so we have the raw token for the
-  // invite link. The token row is inserted inside the tx for atomicity.
-  // We pre-generate the raw token here then pass the hash into the tx.
-  const tokenRaw = randomBytes(32).toString("hex");
-  const tokenHash = createHash("sha256").update(tokenRaw).digest("hex");
-  const tokenId = `tk_${randomBytes(6).toString("hex")}`;
-  const tokenExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-  const inviteLink = buildInviteLink(tokenRaw);
-
-  // Initial invite payload (pending — email send happens after tx commit)
-  const invitePayloadPending: InvitePayload = {
-    inviteLink,
-    inviteEmailStatus: "pending",
-    inviteEmailError: null,
-    sentAt: null,
-  };
-  updated.invitePayload = invitePayloadPending;
 
   db.transaction((tx: any) => {
     // 1) tenant row
@@ -680,16 +598,7 @@ export function approveApplication(
       .onConflictDoNothing()
       .run();
 
-    // 5) auth_redeem_tokens row — invite token (v23.4.1)
-    // Same pattern as adminUsersRoutes.ts:88. Intent='invite', 24h expiry.
-    rawDb()
-      .prepare(
-        `INSERT INTO auth_redeem_tokens (id, token_hash, email, intent, expires_at, created_at)
-         VALUES (?, ?, ?, 'invite', ?, ?)`,
-      )
-      .run(tokenId, tokenHash, updated.contactEmail, tokenExpiresAt, now);
-
-    // 6) Update application row with approval + new chain link + invite payload
+    // 5) Update application row with approval + new chain link
     tx.update(appsTable)
       .set({
         tenantId: updated.tenantId,
@@ -701,9 +610,7 @@ export function approveApplication(
         currHash: updated.currHash,
         reviewedAt: updated.reviewedAt,
         updatedAt: updated.updatedAt,
-        // invite_payload_json column added by migration 0051
-        invitePayloadJson: JSON.stringify(invitePayloadPending),
-      } as any)
+      })
       .where(eq(appsTable.id, id))
       .run();
   });
@@ -719,7 +626,6 @@ export function approveApplication(
       organizationName: updated.organizationName,
       provisionedPartnerId: partnerId,
       tenantId: newTenantId,
-      inviteEmailPending: true,
     },
     newTenantId,
   );
@@ -729,83 +635,18 @@ export function approveApplication(
     partnerId,
   });
 
+  // Welcome stub (commsStore wire-up deferred to email infra).
   log.info(
-    "[consortium.apply] approved — minting invite token and sending email",
+    "[consortium.apply] approved",
     JSON.stringify({
       applicationId: updated.id,
       partnerId,
       userId,
       tenantId: newTenantId,
-      inviteLink: process.env.NODE_ENV !== "production" ? inviteLink : "[redacted]",
     }),
   );
 
-  // After tx commit: send invite email (fire-and-forget for tx integrity,
-  // but we update invite_payload_json with the result synchronously).
-  void (async () => {
-    try {
-      const result = await sendEmail({
-        to: updated.contactEmail,
-        subject: "Welcome to Capavate — Set your password",
-        text: [
-          `Hi ${updated.contactName},`,
-          "",
-          `Your Consortium Partner application for ${updated.organizationName} has been approved.`,
-          "",
-          `Set your password and activate your account here:`,
-          inviteLink,
-          "",
-          `This link expires in 24 hours.`,
-          "",
-          `If you did not apply, please ignore this email.`,
-          "",
-          `— Capavate Team`,
-        ].join("\n"),
-        html: [
-          `<p>Hi ${updated.contactName},</p>`,
-          `<p>Your Consortium Partner application for <strong>${updated.organizationName}</strong> has been approved.</p>`,
-          `<p><a href="${inviteLink}">Set your password and activate your account</a></p>`,
-          `<p><small>This link expires in 24 hours. If you did not apply, ignore this email.</small></p>`,
-        ].join(""),
-        category: "consortium_invite",
-        refId: updated.id,
-      });
-
-      const finalPayload: InvitePayload = {
-        inviteLink,
-        inviteEmailStatus: result.delivered ? "delivered" : "failed",
-        inviteEmailError: result.error ?? null,
-        sentAt: nowIso(),
-      };
-      // Persist the email delivery result to the DB row + cache
-      rawDb()
-        .prepare(`UPDATE consortium_applications SET invite_payload_json = ? WHERE id = ?`)
-        .run(JSON.stringify(finalPayload), updated.id);
-      const cachedRow = appsCache.get(updated.id);
-      if (cachedRow) {
-        cachedRow.invitePayload = finalPayload;
-        appsCache.set(updated.id, cachedRow);
-      }
-
-      if (!result.delivered) {
-        log.warn(
-          `[consortium.apply] invite email NOT delivered to ${updated.contactEmail}: ${result.error ?? "unknown"}`,
-        );
-        log.warn(
-          `[consortium.apply] admin fallback: use GET /api/admin/consortium/applications/${updated.id}/invite-link to copy the link`,
-        );
-      }
-    } catch (err) {
-      log.error("[consortium.apply] post-approval email task failed:", err);
-    }
-  })();
-
-  // Return result — include inviteLink in non-production for local testing
-  const returnRow: ConsortiumApplicationRow & { inviteLink?: string } = { ...updated };
-  if (process.env.NODE_ENV !== "production") {
-    returnRow.inviteLink = inviteLink;
-  }
-  return returnRow;
+  return updated;
 }
 
 export function rejectApplication(
@@ -926,7 +767,7 @@ export function registerConsortiumApplyRoutes(app: Express): void {
   // rate-limited, no-auth handler — additive only, no behavior change on the
   // canonical path. Tracked: avi_patch_v19/docs/WAVE_F4_FIX_REPORT.md.
   const publicApplyRateLimit = (req: Request, res: Response, next: NextFunction): void => {
-    // Rate limit per IP — bucket public:apply (5/hr/IP per spec)
+    // Rate limit per IP — bucket public:apply (5/hr/IP per spec).
     const ip = clientIp(req);
     const r = publicApplyTick(ip, Date.now());
     res.setHeader("X-RateLimit-Bucket", "public:apply");
@@ -978,54 +819,10 @@ export function registerConsortiumApplyRoutes(app: Express): void {
         sourceIp: clientIp(req),
         sourceUserAgent: (req.headers["user-agent"] as string) ?? null,
       });
-
-      // v23.4.1 — CONSORTIUM_AUTO_APPROVE (default "1" in production, "0" in test).
-      // If set, immediately approve the application so the applicant receives
-      // their invite email without waiting for manual admin review.
-      // In NODE_ENV=test we default to "0" so pre-existing tests that assert
-      // status==='submitted' after submit continue to pass without modification.
-      const autoApproveDefault = process.env.NODE_ENV === "test" ? "0" : "1";
-      const autoApprove = (process.env.CONSORTIUM_AUTO_APPROVE ?? autoApproveDefault) === "1";
-      // AVI-C fix: log auto-approve flag at request time (per-request read, not cached)
-      if (autoApprove) {
-        log.info("[consortium] AUTO_APPROVE flag is set — immediately approving application", { applicationId: row.id });
-      } else {
-        log.info("[consortium] AUTO_APPROVE flag is NOT set — application queued for manual review", { applicationId: row.id });
-      }
-      if (autoApprove) {
-        try {
-          const approved = approveApplication(
-            row.id,
-            "u_system_auto_approve",
-            "auto-approved on submit",
-          ) as ConsortiumApplicationRow & { inviteLink?: string };
-
-          const response: Record<string, unknown> = {
-            applicationId: approved.id,
-            status: approved.status,
-          };
-          // Only include inviteLink in non-production (local testing convenience).
-          // NEVER expose in production — admin uses /invite-link endpoint instead.
-          if (process.env.NODE_ENV !== "production" && approved.inviteLink) {
-            response.inviteLink = approved.inviteLink;
-          }
-          res.status(201).json(response);
-        } catch (approveErr) {
-          // If auto-approve fails, still return the submitted application ID
-          // so the applicant gets "application received". Admin will approve manually.
-          log.error("[consortium.apply] auto-approve failed:", approveErr);
-          res.status(201).json({
-            applicationId: row.id,
-            status: row.status,
-            warning: "auto_approve_failed_admin_will_review",
-          });
-        }
-      } else {
-        res.status(201).json({
-          applicationId: row.id,
-          status: row.status,
-        });
-      }
+      res.status(201).json({
+        applicationId: row.id,
+        status: row.status,
+      });
     } catch (err) {
       log.error("[consortium.apply] submit failed:", err);
       res.status(500).json({ error: "submit_failed" });
@@ -1158,153 +955,6 @@ export function registerConsortiumApplyRoutes(app: Express): void {
       }
     },
   );
-
-  /* ---------- Admin: invite link (v23.4.1) ---------- */
-
-  /**
-   * GET /api/admin/consortium/applications/:id/invite-link
-   *
-   * Returns the stored inviteLink for an approved application.
-   * Used by "Copy invite link" in the admin UI when SMTP delivery failed.
-   * Admin-only. Never exposed in any public API response.
-   */
-  app.get(
-    "/api/admin/consortium/applications/:id/invite-link",
-    requireAuth,
-    requireAdmin,
-    (req: Request, res: Response): void => {
-      const a = getApplication(String(req.params.id));
-      if (!a) {
-        res.status(404).json({ error: "not_found" });
-        return;
-      }
-      if (a.status !== "approved") {
-        res.status(404).json({ error: "not_approved_yet" });
-        return;
-      }
-      if (!a.invitePayload?.inviteLink) {
-        res.status(404).json({ error: "invite_not_generated" });
-        return;
-      }
-      const ctx = (req as any).userContext;
-      const actor = ctx?.userId ?? "u_admin_unknown";
-      appendAdminAudit(
-        actor,
-        `consortium_application:${a.id}`,
-        "consortium.invite_link.viewed",
-        { contactEmail: a.contactEmail },
-      );
-      res.json({
-        applicationId: a.id,
-        inviteLink: a.invitePayload.inviteLink,
-        inviteEmailStatus: a.invitePayload.inviteEmailStatus,
-        sentAt: a.invitePayload.sentAt,
-      });
-    },
-  );
-
-  /**
-   * POST /api/admin/consortium/applications/:id/resend-invite
-   *
-   * Mints a fresh redeem token (old token effectively revoked by expiry update),
-   * sends a new invite email, and returns the new inviteLink.
-   * Admin-only. For "Resend invite" button in the admin UI.
-   */
-  app.post(
-    "/api/admin/consortium/applications/:id/resend-invite",
-    requireAuth,
-    requireAdmin,
-    async (req: Request, res: Response): Promise<void> => {
-      const a = getApplication(String(req.params.id));
-      if (!a) {
-        res.status(404).json({ error: "not_found" });
-        return;
-      }
-      if (a.status !== "approved") {
-        res.status(409).json({ error: "not_approved_cannot_resend" });
-        return;
-      }
-      const ctx = (req as any).userContext;
-      const actor = ctx?.userId ?? "u_admin_unknown";
-
-      try {
-        // Revoke any existing unexpired invite tokens for this email
-        rawDb()
-          .prepare(
-            `UPDATE auth_redeem_tokens SET expires_at = ? WHERE email = ? AND intent = 'invite' AND consumed_at IS NULL`,
-          )
-          .run(new Date(0).toISOString(), a.contactEmail);
-
-        // Mint fresh token
-        const tokenRaw = mintRedeemToken(a.contactEmail);
-        const inviteLink = buildInviteLink(tokenRaw);
-        const now = nowIso();
-
-        // Send email
-        const result = await sendEmail({
-          to: a.contactEmail,
-          subject: "Capavate — New set-password link",
-          text: [
-            `Hi ${a.contactName},`,
-            "",
-            `A new set-password link has been generated for your Capavate account:`,
-            inviteLink,
-            "",
-            `This link expires in 24 hours.`,
-            "",
-            `— Capavate Admin`,
-          ].join("\n"),
-          html: [
-            `<p>Hi ${a.contactName},</p>`,
-            `<p>A new set-password link has been generated for your Capavate account:</p>`,
-            `<p><a href="${inviteLink}">Set your password</a></p>`,
-            `<p><small>This link expires in 24 hours.</small></p>`,
-          ].join(""),
-          category: "consortium_invite_resend",
-          refId: a.id,
-        });
-
-        const finalPayload: InvitePayload = {
-          inviteLink,
-          inviteEmailStatus: result.delivered ? "delivered" : "failed",
-          inviteEmailError: result.error ?? null,
-          sentAt: now,
-        };
-
-        // Persist to DB + cache
-        rawDb()
-          .prepare(`UPDATE consortium_applications SET invite_payload_json = ? WHERE id = ?`)
-          .run(JSON.stringify(finalPayload), a.id);
-        const cachedRow = appsCache.get(a.id);
-        if (cachedRow) {
-          cachedRow.invitePayload = finalPayload;
-          appsCache.set(a.id, cachedRow);
-        }
-
-        appendAdminAudit(
-          actor,
-          `consortium_application:${a.id}`,
-          "consortium.invite.resent",
-          {
-            contactEmail: a.contactEmail,
-            delivered: result.delivered,
-            error: result.error ?? null,
-          },
-        );
-
-        res.json({
-          ok: true,
-          applicationId: a.id,
-          inviteLink, // Always returned to admin (not a public endpoint)
-          inviteEmailStatus: finalPayload.inviteEmailStatus,
-          inviteEmailError: finalPayload.inviteEmailError,
-        });
-      } catch (err) {
-        log.error("[consortium.apply] resend-invite failed:", err);
-        res.status(500).json({ error: "resend_failed" });
-      }
-    },
-  );
 }
 
 /* ============================================================
@@ -1390,6 +1040,4 @@ export const _consortiumApplyInternal = {
   chainPayload,
   rowToApp,
   publicApplyBuckets,
-  mintRedeemToken,
-  buildInviteLink,
 };

@@ -181,7 +181,7 @@ export function registerProfileRoutes(app: Express): void {
   app.get("/api/companies/:id/ma-readiness", (req, res) => {
     const id = req.params.id;
     const p = companyProfiles.get(id);
-    if (!p) return res.status(404).json({ message: "Company not found" });
+    if (!p) return res.status(404).json({ ok: false, error: "COMPANY_NOT_FOUND", message: `Company ${id} not found.` });
     const { score, components } = computeMaReadinessScore(p.ma);
     // Synthesize a 30-day history with a slight upward drift towards the current
     // score — a stand-in for production where we'd persist daily snapshots.
@@ -267,7 +267,7 @@ export function registerProfileRoutes(app: Express): void {
       } catch (err) {
         profileLog.warn("[profileStore.getCompanyProfile] companies lookup failed:", (err as Error).message);
       }
-      return res.status(404).json({ message: "Company profile not found" });
+      return res.status(404).json({ ok: false, error: "COMPANY_NOT_FOUND", message: `Company ${id} not found.` });
     }
     const role = String(req.query.as ?? "founder");
     const score = computeMaReadinessScore(p.ma);
@@ -288,7 +288,7 @@ export function registerProfileRoutes(app: Express): void {
   app.patch("/api/companies/:id/profile", (req, res) => {
     const id = req.params.id;
     const current = companyProfiles.get(id);
-    if (!current) return res.status(404).json({ message: "Company profile not found" });
+    if (!current) return res.status(404).json({ ok: false, error: "COMPANY_NOT_FOUND", message: `Company ${id} not found.` });
 
     // v14 Tier-1 Fix 2 — ownership: founder of this company or admin only.
     const ctxOwn = (req as Request & { userContext?: { userId?: string; isAdmin?: boolean; founder?: { companies: { companyId: string }[] } } }).userContext;
@@ -297,7 +297,24 @@ export function registerProfileRoutes(app: Express): void {
     if (!ownsCompany) return res.status(403).json({ message: "not_authorized" });
 
     const parsed = companyProfilePatchSchema.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ message: "Invalid patch", issues: parsed.error.issues });
+    if (!parsed.success) {
+      // v23.4.5 Phase 7 — normalise zod issues into `{ field: "message" }` so
+      // the client can render inline field errors without parsing zod’s raw
+      // `issues` shape. Field paths are dot-joined (e.g. `contact.companyName`).
+      const errors: Record<string, string> = {};
+      for (const issue of parsed.error.issues) {
+        const path = issue.path.length ? issue.path.join(".") : "_root";
+        // First error per field wins (matches react-hook-form behaviour).
+        if (!(path in errors)) errors[path] = issue.message;
+      }
+      return res.status(400).json({
+        ok: false,
+        error: "VALIDATION_FAILED",
+        message: "Invalid patch",
+        errors,
+        issues: parsed.error.issues,
+      });
+    }
 
     // Reject read-only mutations on Auth0-driven fields. companyEmail can be
     // changed by founder, but tenantId and id are immutable.
@@ -344,7 +361,7 @@ export function registerProfileRoutes(app: Express): void {
   app.patch("/api/companies/:id/ma-intelligence", (req, res) => {
     const id = req.params.id;
     const current = companyProfiles.get(id);
-    if (!current) return res.status(404).json({ message: "Company profile not found" });
+    if (!current) return res.status(404).json({ ok: false, error: "COMPANY_NOT_FOUND", message: `Company ${id} not found.` });
 
     // v14 Tier-1 Fix 2 — ownership: founder of this company or admin only.
     const ctxMa = (req as Request & { userContext?: { userId?: string; isAdmin?: boolean; founder?: { companies: { companyId: string }[] } } }).userContext;

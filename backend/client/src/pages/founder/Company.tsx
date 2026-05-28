@@ -189,8 +189,35 @@ function CompanyWizard({
  const updateLegal = (next: typeof legal) => { setLegal(next); queueAutosave({ legal: next }); };
  const updateMa = (next: typeof ma) => { setMa(next); queueAutosave({ ma: next }); };
 
+ /* ---- v23.4.5 Phase 7 — required-field validation ---- */
+ /* The three industry-required fields per QA #14 / BUG 006:
+  *   1. contact.companyName       (Name of Company)
+  *   2. legal.countryOfIncorporationCode (Jurisdiction)
+  *   3. legal.entityType          (Entity type)
+  * The full zod schema enforces additional shape constraints (email, URL, etc)
+  * — those still surface server-side, but the three below are the
+  * “cannot save profile without these” fields the audit asks for. */
+ const missingRequired = (): string[] => {
+ const missing: string[] = [];
+ if (!contact.companyName || !contact.companyName.trim()) missing.push("Company name");
+ if (!legal.countryOfIncorporationCode) missing.push("Country of incorporation");
+ if (!legal.entityType) missing.push("Entity type");
+ return missing;
+ };
+ const requiredMissingList = missingRequired();
+ const isProfileValid = requiredMissingList.length === 0;
+
  const saveDraft = () => {
  if (debounceRef.current) clearTimeout(debounceRef.current);
+ const missing = missingRequired();
+ if (missing.length) {
+ toast({
+ title: "Missing required fields",
+ description: `Please fill in: ${missing.join(", ")}.`,
+ variant: "destructive",
+ });
+ return;
+ }
  patchMutation.mutate({ contact, address, legal, ma });
  toast({ title: "Saved", description: "Draft saved. Investor surfaces will refresh on next view." });
  };
@@ -327,11 +354,20 @@ function CompanyWizard({
  )}
  <Button
  onClick={() => {
+ const missing = missingRequired();
+ if (missing.length) {
+ toast({
+ title: "Missing required fields",
+ description: `Please fill in: ${missing.join(", ")}.`,
+ variant: "destructive",
+ });
+ return;
+ }
  saveDraft();
  legalConsentRef.current?.recordConsent().catch(() => null);
  toast({ title: "Profile saved", description: "All four steps captured. Sync to Collective queued." });
  }}
- disabled={!legalConsentChecked}
+ disabled={!legalConsentChecked || !isProfileValid}
  data-testid="button-save-profile"
  >
  <Check className="h-4 w-4 mr-1.5" /> Save profile

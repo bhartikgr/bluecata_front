@@ -15,6 +15,7 @@ import { Plus, Briefcase, Calendar, Users, ArrowRight, Lock } from "lucide-react
 import { fmtUSD, fmtPct, fmtDate } from "@/lib/format";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { useActiveCompanyId } from "@/lib/useActiveCompany";
 
 type Round = { id: string; company: string; name: string; type: string; state: string; targetAmount: number; raisedAmount: number; preMoney: number | null; postMoney: number | null; pricePerShare: number | null; minTicket: number | null; closeDate: string; termsSummary?: string };
 
@@ -30,7 +31,20 @@ const TYPE_LABEL: Record<string, string> = {
 };
 
 export default function Rounds() {
-  const rounds = useQuery<Round[]>({ queryKey: ["/api/rounds"] });
+  // v23.4.5 BUG 020 fix: key the rounds query by activeCompanyId AND send the
+  // companyId query param explicitly. Previously the query was keyed only by
+  // "/api/rounds" so React Query served stale data after a company switch —
+  // founder saw rounds from their previous company. The server already scopes
+  // results when ?companyId= is passed and the caller owns the company.
+  const activeCompanyId = useActiveCompanyId();
+  const rounds = useQuery<Round[]>({
+    queryKey: ["/api/rounds", activeCompanyId],
+    enabled: Boolean(activeCompanyId),
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/rounds?companyId=${encodeURIComponent(activeCompanyId)}`);
+      return res.json();
+    },
+  });
   const [editingRound, setEditingRound] = useState<Round | null>(null);
   const [, setLocation] = useLocation();
 

@@ -173,11 +173,11 @@ export default function Settings() {
           <TabsList className="flex flex-wrap h-auto gap-1 justify-start" data-testid="tabs-settings">
             <TabsTrigger value="profile" data-testid="tab-profile"><User className="h-3.5 w-3.5 mr-1" /> Profile</TabsTrigger>
             <TabsTrigger value="company" data-testid="tab-company"><Building2 className="h-3.5 w-3.5 mr-1" /> Company</TabsTrigger>
-            {/* v13 (Avi's Issue 7) — Team / Billing / Notifications are not yet wired to durable writes; mark them so testers don't expect saves to persist. The Company tab IS durable (v11+v12 multiCompanyStore.updateCompanyDetails). B-V13-7 fix */}
-            <TabsTrigger value="team" data-testid="tab-team"><Users className="h-3.5 w-3.5 mr-1" /> Team <span className="ml-1 text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-800" data-testid="badge-team-soon">Coming soon</span></TabsTrigger>
+            {/* v23.4.4 (BUG 015) — "Coming soon" badges removed. Team / Billing / Notifications tabs are wired to their respective stores and persist via the standard API mutation path. */}
+            <TabsTrigger value="team" data-testid="tab-team"><Users className="h-3.5 w-3.5 mr-1" /> Team</TabsTrigger>
             <TabsTrigger value="plan" data-testid="tab-plan"><CreditCard className="h-3.5 w-3.5 mr-1" /> Plan</TabsTrigger>
-            <TabsTrigger value="billing" data-testid="tab-billing"><Receipt className="h-3.5 w-3.5 mr-1" /> Billing <span className="ml-1 text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-800" data-testid="badge-billing-soon">Coming soon</span></TabsTrigger>
-            <TabsTrigger value="notifications" data-testid="tab-notifications"><Bell className="h-3.5 w-3.5 mr-1" /> Notifications <span className="ml-1 text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-800" data-testid="badge-notifications-soon">Coming soon</span></TabsTrigger>
+            <TabsTrigger value="billing" data-testid="tab-billing"><Receipt className="h-3.5 w-3.5 mr-1" /> Billing</TabsTrigger>
+            <TabsTrigger value="notifications" data-testid="tab-notifications"><Bell className="h-3.5 w-3.5 mr-1" /> Notifications</TabsTrigger>
             <TabsTrigger value="data" data-testid="tab-data"><Database className="h-3.5 w-3.5 mr-1" /> Data</TabsTrigger>
             <TabsTrigger value="privacy" data-testid="tab-privacy"><ShieldAlert className="h-3.5 w-3.5 mr-1" /> Privacy</TabsTrigger>
             {/* Wave C-1 — new tabs before Legal */}

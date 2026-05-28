@@ -595,11 +595,11 @@ export default function InvitationDetail() {
          </div>
          <div>
           <Label>Your full legal name (typed signature)</Label>
-          <Input className="mt-1" placeholder="Aisha Rahman" value={signerName} onChange={(e) => setSignerName(e.target.value)} data-testid="input-investor-signer-name" />
+          <Input className="mt-1" placeholder="Your full legal name" value={signerName} onChange={(e) => setSignerName(e.target.value)} data-testid="input-investor-signer-name" />
          </div>
          <div>
           <Label>Your email</Label>
-          <Input className="mt-1" placeholder="aisha@hydracapital.com" value={signerEmail} onChange={(e) => setSignerEmail(e.target.value)} data-testid="input-investor-signer-email" />
+          <Input className="mt-1" placeholder="you@firm.com" value={signerEmail} onChange={(e) => setSignerEmail(e.target.value)} data-testid="input-investor-signer-email" />
          </div>
          <div>
           <Label>Note to founder (optional)</Label>

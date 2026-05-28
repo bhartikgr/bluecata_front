@@ -602,7 +602,7 @@ export function registerMultiCompanyRoutes(app: Express): void {
     const ctx = getUserContext(req);
     if (!ctx.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
     const ok = setActiveCompanyId(ctx.userId, req.params.id);
-    if (!ok) return res.status(404).json({ ok: false, error: "company_not_found" });
+    if (!ok) return res.status(404).json({ ok: false, error: "COMPANY_NOT_FOUND", message: `Company ${req.params.id} not found.` });
     return res.json({ ok: true, activeCompanyId: req.params.id });
   });
 
@@ -658,7 +658,7 @@ export function registerMultiCompanyRoutes(app: Express): void {
     if (!ctx.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
     const companiesRaw = getCompaniesForFounder(ctx.userId);
     const raw = companiesRaw.find((x) => x.companyId === req.params.id);
-    if (!raw) return res.status(404).json({ error: "company_not_found" });
+    if (!raw) return res.status(404).json({ ok: false, error: "COMPANY_NOT_FOUND", message: `Company ${req.params.id} not found.` });
     // V3 (Patch v8): overlay canonical subscription billing.
     const c = mergeBillingFromSubscription(raw);
     const invoices = Array.from({ length: c.billing.invoiceCount }).map((_, i) => {

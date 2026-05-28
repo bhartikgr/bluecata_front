@@ -24,7 +24,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
-import { Plus, Search, Mail, Send, MessageSquare, ArrowUpRight, Megaphone, ChevronRight, Filter, Users, Network, Sparkles } from "lucide-react";
+import { Plus, Search, Mail, Send, MessageSquare, ArrowUpRight, Megaphone, ChevronRight, Filter, Users, Network, Sparkles, Pencil, Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { fmtUSD, fmtPct, timeAgo } from "@/lib/format";
@@ -77,6 +77,9 @@ export default function FounderInvestorCRM() {
   const [activeChip, setActiveChip] = useState<QuickChip>("all");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [editing, setEditing] = useState<CrmContact | null>(null);
+  // v23.4.5 BUG 009/010 — full-edit dialog state separate from notes-only "editing".
+  const [editContact, setEditContact] = useState<CrmContact | null>(null);
+  const [editForm, setEditForm] = useState<{ name: string; firmName: string; email: string; region: string; series: string }>({ name: "", firmName: "", email: "", region: "", series: "" });
   const [bcOpen, setBcOpen] = useState(false);
   const [bcStage, setBcStage] = useState<Stage | "all">("all");
   const [bcRegion, setBcRegion] = useState<string>("all");
@@ -153,6 +156,35 @@ export default function FounderInvestorCRM() {
       queryClient.invalidateQueries({ queryKey: ["/api/founder/investor-crm"] });
       setEditing(null);
       toast({ title: "Notes saved" });
+    },
+  });
+
+  // v23.4.5 BUG 009 — full-edit mutation. Saves name/firmName/email/region/series
+  // to /api/founder/investor-crm/:id PATCH (extended in v23.4.5 to accept these).
+  const updateContact = useMutation({
+    mutationFn: async ({ id, patch }: { id: string; patch: Partial<{ name: string; firmName: string; email: string; region: string; series: string }> }) =>
+      (await apiRequest("PATCH", `/api/founder/investor-crm/${id}`, patch)).json(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/founder/investor-crm", companyId] });
+      setEditContact(null);
+      toast({ title: "Contact updated" });
+    },
+    onError: () => {
+      toast({ title: "Could not update contact", description: "Please try again.", variant: "destructive" as any });
+    },
+  });
+
+  // v23.4.5 BUG 010 — delete mutation. DELETE /api/founder/investor-crm/:id
+  // (soft-delete on the server). Refetch list on success.
+  const deleteContact = useMutation({
+    mutationFn: async (id: string) =>
+      (await apiRequest("DELETE", `/api/founder/investor-crm/${id}`)).json(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/founder/investor-crm", companyId] });
+      toast({ title: "Contact deleted" });
+    },
+    onError: () => {
+      toast({ title: "Could not delete contact", description: "Please try again.", variant: "destructive" as any });
     },
   });
 
@@ -453,6 +485,34 @@ export default function FounderInvestorCRM() {
                       >
                         <Sparkles className="h-3.5 w-3.5" />
                       </Button>
+                      {/* v23.4.5 BUG 009 — wire Edit button to PATCH /api/founder/investor-crm/:id */}
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        title="Edit contact"
+                        onClick={() => {
+                          setEditContact(c);
+                          setEditForm({ name: c.name, firmName: c.firmName ?? "", email: c.email ?? "", region: c.region ?? "", series: c.series ?? "" });
+                        }}
+                        data-testid={`button-edit-${c.id}`}
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </Button>
+                      {/* v23.4.5 BUG 010 — wire Delete button to DELETE /api/founder/investor-crm/:id */}
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        title="Delete contact"
+                        onClick={() => {
+                          if (window.confirm(`Delete contact "${c.name}"? This cannot be undone.`)) {
+                            deleteContact.mutate(c.id);
+                          }
+                        }}
+                        disabled={deleteContact.isPending}
+                        data-testid={`button-delete-${c.id}`}
+                      >
+                        <Trash2 className="h-3.5 w-3.5 text-red-600" />
+                      </Button>
                     </div>
                   </div>
                 </CardContent>
@@ -472,6 +532,50 @@ export default function FounderInvestorCRM() {
           isCollectiveMember={true}
           prefill={warmIntroTarget ? { targetKind: "investor", targetName: warmIntroTarget.name, brokerContactId: warmIntroTarget.id } : undefined}
         />
+
+        {/* v23.4.5 BUG 009 — Full-edit contact dialog */}
+        <Dialog open={!!editContact} onOpenChange={(o) => !o && setEditContact(null)}>
+          <DialogContent>
+            <DialogHeader><DialogTitle>Edit contact — {editContact?.name}</DialogTitle></DialogHeader>
+            {editContact && (
+              <div className="space-y-3">
+                <div>
+                  <Label htmlFor="edit-name" className="text-xs">Contact name</Label>
+                  <Input id="edit-name" value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} data-testid="input-edit-contact-name" />
+                </div>
+                <div>
+                  <Label htmlFor="edit-firm" className="text-xs">Firm name</Label>
+                  <Input id="edit-firm" value={editForm.firmName} onChange={(e) => setEditForm({ ...editForm, firmName: e.target.value })} data-testid="input-edit-contact-firm" />
+                </div>
+                <div>
+                  <Label htmlFor="edit-email" className="text-xs">Email</Label>
+                  <Input id="edit-email" type="email" value={editForm.email} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} data-testid="input-edit-contact-email" />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <Label htmlFor="edit-region" className="text-xs">Region</Label>
+                    <Input id="edit-region" value={editForm.region} onChange={(e) => setEditForm({ ...editForm, region: e.target.value })} data-testid="input-edit-contact-region" />
+                  </div>
+                  <div>
+                    <Label htmlFor="edit-series" className="text-xs">Series</Label>
+                    <Input id="edit-series" value={editForm.series} onChange={(e) => setEditForm({ ...editForm, series: e.target.value })} data-testid="input-edit-contact-series" />
+                  </div>
+                </div>
+              </div>
+            )}
+            <DialogFooter>
+              <Button variant="ghost" onClick={() => setEditContact(null)}>Cancel</Button>
+              <Button
+                onClick={() => editContact && updateContact.mutate({ id: editContact.id, patch: editForm })}
+                disabled={updateContact.isPending || !editForm.name.trim()}
+                className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+                data-testid="button-save-edit-contact"
+              >
+                {updateContact.isPending ? "Saving…" : "Save changes"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {/* Notes editor dialog */}
         <Dialog open={!!editing} onOpenChange={(o) => !o && setEditing(null)}>

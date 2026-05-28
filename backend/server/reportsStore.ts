@@ -35,10 +35,6 @@ import { getDb } from "./db/connection";
 import { reports as reportsTable } from "../shared/schema";
 import { appendAdminAudit } from "./adminPlatformStore";
 import { log } from "./lib/logger";
-// BUG 003 — real SMTP fanout for investor report send
-import { sendEmail } from "./lib/emailSender";
-// BUG 003 — CRM contacts for recipients picker
-import { listContactsForCompany } from "./founderCrmStore";
 
 // Tenant id for a company. Same canonical pattern as roundsStore /
 // adminPlatformStore / founderCrmStore.
@@ -298,121 +294,7 @@ export function registerReportsRoutes(app: Express): void {
     res.json(r);
   });
 
-  /**
-   * BUG 003 — PATCH /api/founder/reports2/:id
-   *
-   * Edit a draft report's content (title, sections, period).
-   * Only allowed while status === 'draft'. Persists changes back to DB via
-   * the same write-through used by the POST create path.
-   *
-   * Body (all fields optional / partial):
-   *   { title?, period?, sections?, metricsSnapshot? }
-   *
-   * Returns the updated Report object.
-   */
-  app.patch("/api/founder/reports2/:id", (req, res) => {
-    const ctx = getUserContext(req);
-    if (!ctx.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
-
-    const r = reports.find((x) => x.id === req.params.id);
-    if (!r) return res.status(404).json({ error: "not_found" });
-
-    // Ownership check — founder must own the company this report belongs to.
-    const ownsCompany = ctx.isAdmin || ctx.founder.companies.some((c) => c.companyId === r.companyId);
-    if (!ownsCompany) return res.status(403).json({ ok: false, error: "FOUNDER_WRONG_COMPANY" });
-
-    // Only draft reports may be edited.
-    if (r.status !== "draft") {
-      return res.status(409).json({ ok: false, error: "report_not_draft", detail: "Only draft reports may be edited. Create a new report to start a new draft." });
-    }
-
-    const { title, period, sections, metricsSnapshot } = req.body ?? {};
-
-    if (title !== undefined) {
-      if (typeof title !== "string" || title.trim().length === 0) {
-        return res.status(400).json({ ok: false, error: "invalid_title", detail: "title must be a non-empty string" });
-      }
-      r.title = title.trim();
-    }
-    if (period !== undefined) {
-      if (typeof period !== "string") return res.status(400).json({ ok: false, error: "invalid_period" });
-      r.period = period;
-    }
-    if (sections !== undefined) {
-      if (!Array.isArray(sections)) return res.status(400).json({ ok: false, error: "invalid_sections", detail: "sections must be an array" });
-      r.sections = sections as ReportSection[];
-    }
-    if (metricsSnapshot !== undefined && typeof metricsSnapshot === "object" && metricsSnapshot !== null) {
-      r.metricsSnapshot = { ...r.metricsSnapshot, ...metricsSnapshot };
-    }
-
-    // Write-through to DB (same pattern as POST create).
-    const now = new Date().toISOString();
-    try {
-      const db = getDb();
-      db.transaction((tx: any) => {
-        tx.update(reportsTable)
-          .set({
-            title: r.title,
-            period: r.period ?? null,
-            contentJson: JSON.stringify({
-              sections: r.sections,
-              metricsSnapshot: r.metricsSnapshot,
-              schedule: r.schedule,
-              readReceipts: r.readReceipts,
-              recipientsCount: r.recipientsCount,
-            }),
-            updatedAt: now,
-          })
-          .where((reportsTable as any).id === r.id)
-          .run();
-      });
-    } catch (err) {
-      log.warn("[reportsStore.patch] DB update failed (non-fatal):", (err as Error).message);
-    }
-
-    try {
-      appendAdminAudit(
-        ctx.userId ?? "u_unknown",
-        `company:${r.companyId}`,
-        "report.edited",
-        { reportId: r.id, fieldsChanged: Object.keys(req.body ?? {}) },
-        tenantForCompany(r.companyId),
-      );
-    } catch (err) {
-      log.warn("[reportsStore.patch] audit append failed:", (err as Error).message);
-    }
-
-    res.json({ ok: true, report: r });
-  });
-
-  /**
-   * BUG 003 — GET /api/founder/reports2/:id/recipients-candidates
-   *
-   * Returns the CRM contacts for the company so the client can display the
-   * multi-select recipients picker when sending a report. Each candidate
-   * carries { id, name, email } so the picker can both display a label and
-   * use the email as the delivery target.
-   */
-  app.get("/api/founder/reports2/:id/recipients-candidates", (req, res) => {
-    const ctx = getUserContext(req);
-    if (!ctx.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
-
-    const r = reports.find((x) => x.id === req.params.id);
-    if (!r) return res.status(404).json({ error: "not_found" });
-
-    const ownsCompany = ctx.isAdmin || ctx.founder.companies.some((c) => c.companyId === r.companyId);
-    if (!ownsCompany) return res.status(403).json({ ok: false, error: "FOUNDER_WRONG_COMPANY" });
-
-    const crmContacts = listContactsForCompany(r.companyId);
-    const candidates = crmContacts
-      .filter((c) => c.email && c.email.trim().length > 0)
-      .map((c) => ({ id: c.id, name: c.name, email: c.email, firmName: c.firmName ?? "", stage: c.stage }));
-
-    res.json({ ok: true, candidates });
-  });
-
-  app.post("/api/founder/reports2/:id/send", async (req, res) => {
+  app.post("/api/founder/reports2/:id/send", (req, res) => {
     const ctx = getUserContext(req);
     if (!ctx.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
     const r = reports.find((x) => x.id === req.params.id);
@@ -432,42 +314,6 @@ export function registerReportsRoutes(app: Express): void {
     r.recipientsCount = recipients.length;
     r.status = "sent";
     r.sentAt = new Date().toISOString();
-
-    // v23.4.3 BUG-003 Phase 6 — SMTP fanout to email recipients.
-    // body.emailRecipients is an explicit list of email addresses (from CRM
-    // picker or freeform entries in the recipients UI). Optional and
-    // additive to the in-app fanout below. SMTP failures are non-fatal —
-    // they're logged but never block the response, because the in-app
-    // notification is the primary delivery path.
-    const emailRecipients: string[] = Array.isArray(req.body?.emailRecipients)
-      ? req.body.emailRecipients.filter(
-          (e: unknown) => typeof e === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e),
-        )
-      : [];
-    if (emailRecipients.length > 0) {
-      const reportUrl = `${process.env.APP_URL ?? ""}/founder/reports/${r.id}`;
-      const smtpPromises = emailRecipients.map((email) =>
-        sendEmail({
-          to: email,
-          subject: `Investor Update: ${r.title}`,
-          text: [
-            `You have a new investor update from your portfolio company.`,
-            ``,
-            `Report: ${r.title}`,
-            `Period: ${r.period ?? "—"}`,
-            ``,
-            `View online: ${reportUrl}`,
-          ].join("\n"),
-          html: `<p>You have a new investor update.</p><p><strong>${r.title}</strong> (${r.period ?? "—"})</p><p><a href="${reportUrl}">View report →</a></p>`,
-          category: "investor_report",
-          refId: r.id,
-        }).catch((err) => {
-          log.warn("[reportsStore.send] SMTP failed for", email, (err as Error).message);
-          return null;
-        }),
-      );
-      await Promise.all(smtpPromises);
-    }
 
     // Patch v10 — Fanout: emit in-app notification + bridge event for every recipient.
     let delivered = 0;

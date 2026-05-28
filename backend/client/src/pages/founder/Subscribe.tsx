@@ -502,7 +502,7 @@ export default function FounderSubscribe() {
                         <FormItem>
                           <FormLabel className="text-xs">Billing zip / postal code</FormLabel>
                           <FormControl>
-                            <Input placeholder="94105" {...field} data-testid="input-billing-zip" />
+                            <Input placeholder="ZIP / Postal code" {...field} data-testid="input-billing-zip" />
                           </FormControl>
                           <FormMessage />
                         </FormItem>
