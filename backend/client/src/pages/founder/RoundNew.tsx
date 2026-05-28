@@ -183,6 +183,11 @@ export default function RoundNew() {
  // Defect A — use real active companyId (never hardcode co_novapay).
  const companyId = useActiveCompanyId();
 
+ // BUG-005: round creation requires a company. Redirect to company setup if none.
+ // This guard must come before any hooks that depend on companyId to avoid
+ // React hooks ordering violations.
+ // (companyId null = loading OR no company; we handle loading below in the render)
+
  // Defect B13 / Sprint 25 — createRoundMut wires the Create button to the real endpoint.
  //
  // Sprint 25 PRECISION RULE: money / valuation / price / discount / rate values
@@ -291,6 +296,34 @@ export default function RoundNew() {
  case "option_pool":
  return `Option Pool +${form.poolSize}% (${ESOP_TIMING.find(t => t.value === form.poolTiming)?.label}) · ${form.vestingMonths}mo / ${form.cliffMonths}mo cliff · ${form.jurisdictionVariant}`;
  }
+ }
+
+ // BUG-005 fix: if no active company, show a clear message and link to company setup.
+ // This is a render-time guard (after all hooks) — not an early return before hooks.
+ if (companyId === null || companyId === "") {
+ return (
+ <>
+ <PageHeader
+ title="New round"
+ description="Create a company profile first, then you can open rounds."
+ breadcrumbs={[{ href: "/founder/dashboard", label: "Workspace" }, { href: "/founder/rounds", label: "Rounds" }, { label: "New" }]}
+ />
+ <PageBody>
+ <div className="max-w-md mx-auto mt-16 text-center p-8 border rounded-lg bg-muted/30">
+ <h2 className="text-lg font-semibold mb-2">No company yet</h2>
+ <p className="text-muted-foreground mb-6">
+ You need to create your company profile before opening a funding round.
+ </p>
+ <Button
+ asChild
+ className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+ >
+ <a href="/founder/company">Create company profile</a>
+ </Button>
+ </div>
+ </PageBody>
+ </>
+ );
  }
 
  return (

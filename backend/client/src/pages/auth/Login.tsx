@@ -63,11 +63,10 @@ const DEMO_PRESETS: Array<{ email: string; password: string; label: string; port
       ]
     : [];
 
+// v23.4.3: BrowserRouter — read query from window.location.search (not hash).
 function readHashQuery(): URLSearchParams {
   if (typeof window === "undefined") return new URLSearchParams();
-  const hash = window.location.hash || "";
-  const qIdx = hash.indexOf("?");
-  return new URLSearchParams(qIdx === -1 ? "" : hash.slice(qIdx + 1));
+  return new URLSearchParams(window.location.search);
 }
 
 export default function Login() {
@@ -138,12 +137,12 @@ export default function Login() {
     setPortal(p);
     setErrorMsg(null);
     setWrongPortalSuggest(null);
-    // Update the hash so a refresh or share preserves the portal choice.
+    // v23.4.3: BrowserRouter — update search params (not hash) so a refresh
+    // or share preserves the portal choice.
     if (typeof window !== "undefined") {
-      const newQuery = new URLSearchParams(window.location.hash.split("?")[1] ?? "");
+      const newQuery = new URLSearchParams(window.location.search);
       newQuery.set("portal", p);
-      const newHash = `#/auth/login?${newQuery.toString()}`;
-      window.history.replaceState(null, "", newHash);
+      window.history.replaceState(null, "", `/login?${newQuery.toString()}`);
     }
   }
 

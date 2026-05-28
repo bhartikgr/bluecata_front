@@ -1,20 +1,10 @@
 import { Switch, Route, Router, useLocation, Redirect } from "wouter";
-import { useHashLocation } from "wouter/use-hash-location";
-import { useCallback, type ReactNode } from "react";
+// v23.4.3 Phase 2: removed useHashLocation import — switched to BrowserRouter
+// (History API). URLs are now /founder/dashboard, not /#/founder/dashboard.
+// Ozan architectural decision #1 locked.
+import { type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useEntitlement } from "@/lib/entitlement";
-
-/**
- * Hash-router hook that strips ?query so Wouter's Route matchers see the
- * pathname only. Sprint 7's /investor/signup uses ?token=..., which would
- * otherwise drop into the NotFound catch-all.
- */
-function useHashLocationWithoutQuery(): [string, (to: string, opts?: { replace?: boolean }) => void] {
-  const [loc, nav] = useHashLocation();
-  const path = loc.split("?")[0] || "/";
-  const navigate = useCallback((to: string, opts?: { replace?: boolean }) => nav(to, opts), [nav]);
-  return [path, navigate];
-}
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -817,7 +807,9 @@ function App() {
         <RoleProvider>
           <TooltipProvider>
             <Toaster />
-            <Router hook={useHashLocationWithoutQuery}>
+            {/* v23.4.3: BrowserRouter (History API) — no hook= prop means wouter
+                uses window.history (pushState). Ozan architectural decision #1. */}
+            <Router>
               <AppRouter />
             </Router>
           </TooltipProvider>

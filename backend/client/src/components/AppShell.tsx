@@ -1,4 +1,4 @@
-import { ReactNode, useState, useEffect } from "react";
+import { ReactNode, useState, useEffect, useCallback } from "react";
 import { Link, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -25,6 +25,7 @@ import { CapCollectiveToggle } from "./CapCollectiveToggle";
 import { NotificationBell } from "./NotificationBell";
 import { useEntitlement } from "@/lib/entitlement";
 import { SPRINT_BANNER } from "@/lib/sprint-banner";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 
 /** Role-aware glossary link rendered in the page header. */
 function GlossaryLink() {
@@ -252,6 +253,26 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
 function RoleSwitch() {
   const { role, setRole } = useRole();
   const [, navigate] = useLocation();
+  // BUG-002 fix: Only show roles the user actually has membership in.
+  // Read from /api/auth/me to determine available roles.
+  const { data: entCtx } = useEntitlement();
+
+  // Derive which roles this user actually has.
+  const availableRoles = useCallback((): Role[] => {
+    if (!entCtx) return [role]; // fallback to current role while loading
+    const roles: Role[] = [];
+    if (entCtx.isAdmin) roles.push("admin");
+    if ((entCtx.founder?.companies?.length ?? 0) > 0) roles.push("founder");
+    if (entCtx.investor?.state && entCtx.investor.state !== "NONE") roles.push("investor");
+    // Always include the current role so the switcher is never empty
+    if (roles.length === 0) roles.push(role);
+    return roles;
+  }, [entCtx, role]);
+
+  const roles = availableRoles();
+  // Only render if user has more than one role (otherwise no switching needed)
+  if (roles.length <= 1 && !entCtx?.isAdmin) return null;
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -267,9 +288,9 @@ function RoleSwitch() {
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-56">
-        <DropdownMenuLabel>Switch persona (demo)</DropdownMenuLabel>
+        <DropdownMenuLabel>Switch role</DropdownMenuLabel>
         <DropdownMenuSeparator />
-        {(["founder", "investor", "admin"] as Role[]).map(r => (
+        {roles.map(r => (
           <DropdownMenuItem
             key={r}
             data-testid={`menuitem-role-${r}`}
@@ -364,7 +385,18 @@ function Header({ onMobileMenu }: { onMobileMenu: () => void }) {
           <DropdownMenuItem onSelect={() => navigate(role === "investor" ? "/investor/settings" : "/founder/settings")}>
             <Settings className="h-4 w-4 mr-2" /> Settings
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => navigate("/login")}>
+          <DropdownMenuItem
+            onSelect={async () => {
+              // BUG-004 fix: call logout endpoint to clear server-side session +
+              // cookies before navigating. Failure is non-fatal (cookie still
+              // cleared by the server on next auth probe).
+              try {
+                await apiRequest("POST", "/api/auth/logout");
+              } catch { /* non-fatal */ }
+              await queryClient.resetQueries();
+              window.location.href = "/login";
+            }}
+          >
             <LogOut className="h-4 w-4 mr-2" /> Sign out
           </DropdownMenuItem>
         </DropdownMenuContent>
