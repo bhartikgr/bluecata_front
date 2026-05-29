@@ -241,8 +241,27 @@ export default function Dataroom() {
                               <td className="px-3 py-3 text-muted-foreground">{timeAgo(f.uploadedAt)}</td>
                               <td className="px-3 py-3 text-right font-mono tabular-nums text-muted-foreground">{fmtBytes(f.sizeBytes)}</td>
                               <td className="px-5 py-3 text-right">
+                                {/* v23.4.7 Phase 12 / BUG 027 — the view icon now
+                                 * opens the file in a new tab with
+                                 * Content-Disposition: inline (so the browser
+                                 * renders the document instead of forcing a
+                                 * download). The dedicated download icon
+                                 * preserves the original attachment behavior. */}
                                 <div className="inline-flex gap-1">
-                                  <Button size="sm" variant="ghost" onClick={() => setPreviewFile(f)} data-testid={`button-view-${f.id}`}><Eye className="h-3.5 w-3.5" /></Button>
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    onClick={() =>
+                                      window.open(
+                                        `/api/founder/dataroom/files/${f.id}/download?disposition=inline`,
+                                        "_blank",
+                                        "noopener,noreferrer"
+                                      )
+                                    }
+                                    data-testid={`button-view-${f.id}`}
+                                  >
+                                    <Eye className="h-3.5 w-3.5" />
+                                  </Button>
                                   <Button size="sm" variant="ghost" asChild data-testid={`button-download-${f.id}`}>
                                     <a href={`/api/founder/dataroom/files/${f.id}/download`}><Download className="h-3.5 w-3.5" /></a>
                                   </Button>
@@ -280,9 +299,10 @@ export default function Dataroom() {
                       </div>
                     )}
                     {previewFile.mime.startsWith("image/") ? (
-                      <img src={`/api/founder/dataroom/files/${previewFile.id}/download`} alt={previewFile.name} className="max-h-full max-w-full" />
+                      /* v23.4.7 Phase 12 / BUG 027: preview surfaces use inline disposition so the browser renders the asset instead of triggering a download prompt. */
+                      <img src={`/api/founder/dataroom/files/${previewFile.id}/download?disposition=inline`} alt={previewFile.name} className="max-h-full max-w-full" />
                     ) : previewFile.mime === "application/pdf" ? (
-                      <iframe title="pdf-preview" src={`/api/founder/dataroom/files/${previewFile.id}/download#toolbar=0`} className="w-full h-full" />
+                      <iframe title="pdf-preview" src={`/api/founder/dataroom/files/${previewFile.id}/download?disposition=inline#toolbar=0`} className="w-full h-full" />
                     ) : (
                       <div className="text-center">
                         <FileText className="h-12 w-12 mx-auto text-muted-foreground mb-2" />

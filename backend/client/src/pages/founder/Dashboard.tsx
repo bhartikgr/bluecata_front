@@ -142,6 +142,40 @@ function ProfileCompletionCard({ companyId }: { companyId: string }) {
 
 type Round = { id: string; companyId: string; name: string; type: string; state: string; targetAmount: number; raisedAmount: number; closeDate: string };
 type Activity = { id: string; ts: string; actor: string; action: string; target: string };
+type MeShape = { isAuthed?: boolean; userId?: string | null; identity?: { name?: string | null; displayName?: string | null } | null; name?: string | null };
+
+/**
+ * v23.4.7 Phase 5 (B-102) — apply v23.4.5 formatActor semantics to the dashboard
+ * recent-activity feed. The helper in Activity.tsx is `do-not-touch` per the
+ * sacred-helper policy, so we duplicate the same tiny pure function here.
+ *
+ * QA #B-102 specifically observed `u_founder_...` ids on the dashboard feed,
+ * which the original Activity.tsx helper did NOT cover (it only stripped
+ * `usr_`). We extend coverage to both the canonical `usr_` prefix and the
+ * legacy/dev `u_` prefix that the audit log still emits in some seed paths.
+ * Behavior:
+ *   - actor === selfId         → selfName (or "You")
+ *   - usr_xxxxxxxx             → "User xxxxxxxx"
+ *   - u_<role>_xxxxxxxx        → "User xxxxxxxx" (last 8 readable chars)
+ *   - anything else            → pass through (legacy demo seed rows)
+ */
+function formatActorDashboard(actor: string, selfId: string | null, selfName: string | null): string {
+  if (!actor) return "";
+  if (selfId && actor === selfId) return selfName ?? "You";
+  if (actor.startsWith("usr_")) {
+    const tail = actor.slice(4, 12);
+    return `User ${tail}`;
+  }
+  if (actor.startsWith("u_")) {
+    // u_founder_abc12345 / u_investor_xyz → take the last 8 chars
+    const stripped = actor.slice(2);
+    const lastUnderscore = stripped.lastIndexOf("_");
+    const tailRaw = lastUnderscore >= 0 ? stripped.slice(lastUnderscore + 1) : stripped;
+    const tail = tailRaw.slice(0, 8);
+    return tail ? `User ${tail}` : "User";
+  }
+  return actor;
+}
 type DREngagement = {
   topDocs: Array<{ fileId: string; name: string; uniqueViewers: number; totalViews: number; avgTimeSeconds: number; lastViewedAt: string | null }>;
   investors: Array<{ investorId: string; docsViewed: number; totalSeconds: number }>;
@@ -168,6 +202,12 @@ export default function FounderDashboard() {
 
   const rounds = useQuery<Round[]>({ queryKey: ["/api/rounds"] });
   const activity = useQuery<Activity[]>({ queryKey: ["/api/activity"] });
+  // v23.4.7 Phase 5 (B-102) — pull caller identity so the activity feed reads
+  // "You" / "User abc12345" instead of raw u_founder_... ids.
+  const meQ = useQuery<MeShape>({ queryKey: ["/api/auth/me"] });
+  const selfId = meQ.data?.userId ?? null;
+  const selfName =
+    meQ.data?.identity?.displayName ?? meQ.data?.identity?.name ?? meQ.data?.name ?? null;
   const engagement = useQuery<DREngagement>({ queryKey: ["/api/founder/dataroom/engagement", companyId], queryFn: async () => (await apiRequest("GET", `/api/founder/dataroom/engagement?companyId=${companyId}`)).json() });
   const reports = useQuery<Report[]>({ queryKey: ["/api/founder/reports2", companyId], queryFn: async () => (await apiRequest("GET", `/api/founder/reports2?companyId=${companyId}`)).json() });
   const maAll = useQuery<MaInitiative[]>({ queryKey: ["/api/investor/ma/initiatives"] });
@@ -326,7 +366,7 @@ export default function FounderDashboard() {
                   <li key={`bento-${a.id}`} className="flex items-start gap-2 text-xs" data-testid={`bento-activity-${a.id}`}>
                     <div className="mt-1 h-1.5 w-1.5 rounded-full bg-[hsl(184_98%_22%)] shrink-0" />
                     <div className="flex-1 min-w-0 truncate">
-                      <span className="font-medium">{a.actor}</span> <span className="text-muted-foreground">{a.action}</span> <span className="font-medium">{a.target}</span>
+                      <span className="font-medium">{formatActorDashboard(a.actor, selfId, selfName)}</span> <span className="text-muted-foreground">{a.action}</span> <span className="font-medium">{a.target}</span>
                     </div>
                     <span className="text-[11px] text-muted-foreground shrink-0"><Clock className="inline h-3 w-3 mr-0.5" />{timeAgo(a.ts)}</span>
                   </li>
@@ -588,7 +628,7 @@ export default function FounderDashboard() {
                 <li key={a.id} className="px-3 py-2.5 flex items-start gap-3 text-sm" data-testid={`row-activity-${a.id}`}>
                   <div className="mt-1 h-1.5 w-1.5 rounded-full bg-[hsl(184_98%_22%)]" />
                   <div className="flex-1 min-w-0">
-                    <div><span className="font-medium">{a.actor}</span> <span className="text-muted-foreground">{a.action}</span> <span className="font-medium">{a.target}</span></div>
+                    <div><span className="font-medium">{formatActorDashboard(a.actor, selfId, selfName)}</span> <span className="text-muted-foreground">{a.action}</span> <span className="font-medium">{a.target}</span></div>
                     <div className="text-[11px] text-muted-foreground"><Clock className="inline h-3 w-3 mr-1" />{timeAgo(a.ts)}</div>
                   </div>
                 </li>

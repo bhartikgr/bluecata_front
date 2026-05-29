@@ -106,11 +106,27 @@ export function PaymentSurface({ customerId, kind = "subscription", demoMode = t
         </p>
       </CardHeader>
       <CardContent>
+        {/* v23.4.7 Phase 8 / BUG 016 — the customer-facing banner now reads in
+         * business language. The Stripe / state=demo tech detail is gated
+         * behind import.meta.env.DEV so it ONLY renders in local development.
+         */}
         {demoMode && (
           <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 mb-4 flex items-start gap-2" data-testid="banner-demo-mode">
             <ShieldCheck className="h-4 w-4 shrink-0 mt-0.5" />
             <div>
-              <strong>Stripe placeholder.</strong> No real charge will be made. The real payment integration ships in a follow-up release. All ledger entries are tagged <code className="font-mono">state=demo</code>.
+              <strong>Payment processing is in private beta.</strong> Your
+              company workspace is fully functional; payment activation will
+              be enabled once your billing relationship is confirmed.
+              {import.meta.env.DEV && (
+                <span
+                  className="block mt-1 text-amber-700 italic"
+                  data-testid="banner-demo-dev-detail"
+                >
+                  Dev note: Stripe placeholder — no real charge will be made.
+                  All ledger entries are tagged{" "}
+                  <code className="font-mono">state=demo</code>.
+                </span>
+              )}
             </div>
           </div>
         )}

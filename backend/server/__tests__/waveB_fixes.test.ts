@@ -136,7 +136,14 @@ describe("Wave B FIX 4 (F-BUG-005): auto-trial subscription on new company", () 
 /* FIX 1 + FIX 4 — /api/founder/companies/new HTTP path           */
 /* --------------------------------------------------------------- */
 describe("Wave B FIX 1 (F-BUG-002) + FIX 4 (F-BUG-005): POST /api/founder/companies/new", () => {
-  it("creates a company AND provisions a trialing subscription for the new founder", async () => {
+  // v23.4.7 Phase 3 (BUG 031): the previous behavior of this route was to
+  // always provision a `founder_pro` trialing subscription regardless of what
+  // the caller asked for, which produced the "new company labeled PRO" bug.
+  // The route now defaults to `founder_free` (no trial, permanent free tier)
+  // and accepts an optional `plan` body parameter from the NewCompanyDialog
+  // plan-picker. The two cases below validate both the default and the
+  // explicit-pro paths.
+  it("defaults to founder_free (no trial) when no plan is supplied (v23.4.7 BUG 031)", async () => {
     const { app } = await buildApp();
 
     const { userId } = registerFounderUser({
@@ -158,9 +165,36 @@ describe("Wave B FIX 1 (F-BUG-002) + FIX 4 (F-BUG-005): POST /api/founder/compan
     expect(typeof companyId).toBe("string");
     expect(companyId.length).toBeGreaterThan(0);
 
-    // Subscription should exist and be in trial.
+    // v23.4.7: default plan is now founder_free — no trial countdown.
     const sub = getSubscription(companyId);
     expect(sub).not.toBeNull();
+    expect(sub!.plan).toBe("founder_free");
+    expect(sub!.trialEndsOn).toBeUndefined();
+  });
+
+  it("upgrades to founder_pro (trialing) when plan='founder_pro' is supplied (v23.4.7 BUG 031)", async () => {
+    const { app } = await buildApp();
+
+    const { userId } = registerFounderUser({
+      email: `waveB_founder_pro_${Date.now()}@test.example`,
+      name: "Wave B Pro Founder",
+      password: "password12345",
+    });
+
+    const r = await rawRequest(
+      app,
+      "POST",
+      "/api/founder/companies/new",
+      { name: "Wave B Pro Co", sector: "SaaS", stage: "Seed", hq: "NYC", plan: "founder_pro" },
+      { "x-user-id": userId },
+    );
+    expect(r.status).toBe(201);
+    expect(r.body.ok).toBe(true);
+    const companyId: string = r.body.companyId;
+
+    const sub = getSubscription(companyId);
+    expect(sub).not.toBeNull();
+    expect(sub!.plan).toBe("founder_pro");
     expect(sub!.status).toBe("trialing");
     expect(sub!.trialEndsOn).toBeDefined();
   });

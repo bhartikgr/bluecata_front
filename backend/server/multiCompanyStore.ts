@@ -615,8 +615,25 @@ export function registerMultiCompanyRoutes(app: Express): void {
   app.post("/api/founder/companies/new", (req: Request, res: Response) => {
     const ctx = getUserContext(req);
     if (!ctx.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
-    const { name, legalName, sector, stage, hq } = req.body ?? {};
+    const { name, legalName, sector, stage, hq, plan: planRaw } = req.body ?? {};
     if (!name) return res.status(400).json({ ok: false, error: "name is required" });
+    // v23.4.7 Phase 3 (BUG 031): default new companies to founder_free instead
+    // of founder_pro. The previous behavior labeled every new company "PRO"
+    // even though the signup copy said "14-day trial — no card required",
+    // which surprised founders and skewed billing telemetry. Accept an
+    // optional `plan` from the body so the NewCompanyDialog plan-picker can
+    // upgrade-on-create. Whitelist enforced against the Plan union.
+    const ALLOWED_PLANS = ["founder_free", "founder_pro", "founder_scale"] as const;
+    type AllowedPlan = (typeof ALLOWED_PLANS)[number];
+    const requestedPlan: AllowedPlan = ALLOWED_PLANS.includes(planRaw)
+      ? (planRaw as AllowedPlan)
+      : "founder_free";
+    const planLabel =
+      requestedPlan === "founder_pro"
+        ? "Founder Pro"
+        : requestedPlan === "founder_scale"
+          ? "Founder Scale"
+          : "Founder Free";
     const companyId = `co_${randomBytes(6).toString("hex")}`;
     const newCompany: FounderCompanyMembership = {
       companyId,
@@ -627,7 +644,7 @@ export function registerMultiCompanyRoutes(app: Express): void {
       lastActiveAt: new Date().toISOString(),
       kpi: { capTableHolders: 0, activeRoundsCount: 0, raisedThisYearUsd: 0, dataroomFiles: 0, pendingSoftCircles: 0, ownershipPct: 0 },
       collective: { status: "none" },
-      billing: { plan: "Founder Free", monthlyUsd: 0, nextBillingDate: "\u2014", cardLast4: null, invoiceCount: 0 },
+      billing: { plan: planLabel, monthlyUsd: 0, nextBillingDate: "\u2014", cardLast4: null, invoiceCount: 0 },
       sector: sector ?? "",
       stage: stage ?? "",
       hq: hq ?? "",
@@ -639,11 +656,14 @@ export function registerMultiCompanyRoutes(app: Express): void {
     // Wave B FIX 4 (F-BUG-005) — provision a 14-day trial (status='trialing')
     // so the founder is not paywalled out of every feature on signup. After
     // the trial expires they will be redirected to /founder/subscribe.
+    //
+    // v23.4.7 Phase 3: trial flag only makes sense for paid plans. founder_free
+    // is permanent free — no trial countdown.
     try {
       createSubscriptionForNewCompany(companyId, {
-        plan: "founder_pro",
+        plan: requestedPlan,
         actor: `founder:${ctx.userId}`,
-        trial: true,
+        trial: requestedPlan !== "founder_free",
       });
     } catch (err) {
       // Non-fatal: log but don't block company creation. The company is still

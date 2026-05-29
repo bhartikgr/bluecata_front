@@ -30,6 +30,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
@@ -45,6 +46,11 @@ export function NewCompanyDialog({ open, onOpenChange }: NewCompanyDialogProps) 
   const [sector, setSector] = useState("");
   const [stage, setStage] = useState("");
   const [hq, setHq] = useState("");
+  // v23.4.7 Phase 3 (BUG 031): plan-picker. Default 'founder_free' so a
+  // brand-new company is NOT auto-labeled "PRO". Whitelisted by the server
+  // route to founder_free | founder_pro | founder_scale.
+  type PlanPick = "founder_free" | "founder_pro" | "founder_scale";
+  const [plan, setPlan] = useState<PlanPick>("founder_free");
 
   const create = useMutation({
     mutationFn: async () => {
@@ -59,6 +65,7 @@ export function NewCompanyDialog({ open, onOpenChange }: NewCompanyDialogProps) 
         sector: sector.trim(),
         stage: stage.trim(),
         hq: hq.trim(),
+        plan, // v23.4.7 Phase 3 (BUG 031): explicit plan selection
       });
       const body = await res.json().catch(() => ({}));
       return body as { ok: boolean; companyId: string; company: unknown; error?: string };
@@ -94,6 +101,7 @@ export function NewCompanyDialog({ open, onOpenChange }: NewCompanyDialogProps) 
       setSector("");
       setStage("");
       setHq("");
+      setPlan("founder_free");
       onOpenChange(false);
     },
     onError: (e: any) =>
@@ -175,6 +183,47 @@ export function NewCompanyDialog({ open, onOpenChange }: NewCompanyDialogProps) 
               onChange={(e) => setHq(e.target.value)}
               placeholder="San Francisco, USA"
             />
+          </div>
+          {/* v23.4.7 Phase 3 (BUG 031): plan picker. Default = Free. */}
+          <div className="space-y-2 pt-1">
+            <Label className="text-sm font-medium">Plan</Label>
+            <RadioGroup
+              value={plan}
+              onValueChange={(v) => setPlan(v as PlanPick)}
+              data-testid="radio-group-new-company-plan"
+              className="grid grid-cols-3 gap-2"
+            >
+              <label
+                htmlFor="plan-free"
+                className={`flex flex-col gap-1 rounded-md border p-2 cursor-pointer text-xs ${plan === "founder_free" ? "border-primary" : "border-border"}`}
+              >
+                <span className="flex items-center gap-2 font-medium">
+                  <RadioGroupItem value="founder_free" id="plan-free" data-testid="radio-plan-free" />
+                  Free
+                </span>
+                <span className="text-muted-foreground">Default — recommended to start</span>
+              </label>
+              <label
+                htmlFor="plan-pro"
+                className={`flex flex-col gap-1 rounded-md border p-2 cursor-pointer text-xs ${plan === "founder_pro" ? "border-primary" : "border-border"}`}
+              >
+                <span className="flex items-center gap-2 font-medium">
+                  <RadioGroupItem value="founder_pro" id="plan-pro" data-testid="radio-plan-pro" />
+                  Pro
+                </span>
+                <span className="text-muted-foreground">14-day trial, no card</span>
+              </label>
+              <label
+                htmlFor="plan-scale"
+                className={`flex flex-col gap-1 rounded-md border p-2 cursor-pointer text-xs ${plan === "founder_scale" ? "border-primary" : "border-border"}`}
+              >
+                <span className="flex items-center gap-2 font-medium">
+                  <RadioGroupItem value="founder_scale" id="plan-scale" data-testid="radio-plan-scale" />
+                  Scale
+                </span>
+                <span className="text-muted-foreground">Talk to sales</span>
+              </label>
+            </RadioGroup>
           </div>
           <DialogFooter className="pt-2">
             <Button

@@ -70,11 +70,17 @@ export default function Settings() {
   // else, and no user edit ever reached the server.
   const [coDisplayName, setCoDisplayName] = useState("");
   const [coLegalName,   setCoLegalName]   = useState("");
+  // v23.4.7 Phase 9 / BUG 017 — Default currency is a Select (not a plain
+  // text input). Hydrated from the active-company query and persisted via the
+  // existing saveCompanyMut PATCH body.
+  const [coCurrency,    setCoCurrency]    = useState("USD");
   // Re-hydrate the form whenever the active company query resolves / switches.
   useEffect(() => {
     if (company?.companyName !== undefined) setCoDisplayName(company.companyName ?? "");
     if (company?.legalName   !== undefined) setCoLegalName(company.legalName ?? "");
-  }, [company?.companyName, company?.legalName]);
+    const cur = (company as { defaultCurrency?: string } | undefined)?.defaultCurrency;
+    if (cur) setCoCurrency(cur);
+  }, [company?.companyName, company?.legalName, (company as { defaultCurrency?: string } | undefined)?.defaultCurrency]);
 
   // ----- Wave B FIX 6 (F-BUG-009) -----
   // Pre-populate the Profile tab inputs (Display name / Email / Title) from
@@ -129,9 +135,11 @@ export default function Settings() {
 
   const saveCompanyMut = useMutation({
     // B-V11-5 fix: send both display name and legal name from controlled state.
+    // v23.4.7 Phase 9 / BUG 017: also send the picked defaultCurrency.
     mutationFn: async () => (await apiRequest("PATCH", `/api/companies/${companyId}`, {
       name: coDisplayName,
       legalName: coLegalName,
+      defaultCurrency: coCurrency,
     })).json(),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/founder/companies"] }); queryClient.invalidateQueries({ queryKey: ["/api/founder/active-company"] }); toast({ title: "Company saved" }); },
     onError: () => toast({ title: "Save failed", variant: "destructive" }),
@@ -256,7 +264,22 @@ export default function Settings() {
               <CardContent className="grid md:grid-cols-2 gap-4">
                 <div><Label>Display name</Label><Input className="mt-1" value={coDisplayName} onChange={(e) => setCoDisplayName(e.target.value)} placeholder="e.g. Acme Inc." data-testid="input-co-name" /></div>
                 <div><Label>Legal name</Label><Input className="mt-1" value={coLegalName} onChange={(e) => setCoLegalName(e.target.value)} data-testid="input-legal-name" /></div>
-                <div><Label>Default currency</Label><Input className="mt-1" defaultValue="USD" data-testid="input-currency" /></div>
+                {/* v23.4.7 Phase 9 / BUG 017 — currency picker (frontend only;
+                 *  engine-level currency awareness stays SACRED + deferred). */}
+                <div>
+                  <Label>Default currency</Label>
+                  <Select value={coCurrency} onValueChange={setCoCurrency}>
+                    <SelectTrigger className="mt-1" data-testid="select-currency"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {[
+                        "USD","CAD","EUR","GBP","AUD","JPY","HKD",
+                        "SGD","INR","CHF","SEK","NOK","DKK","NZD",
+                      ].map((c) => (
+                        <SelectItem key={c} value={c} data-testid={`currency-option-${c}`}>{c}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
                 <div><Label>Region of incorporation</Label><Input className="mt-1" defaultValue="US" data-testid="input-region" /></div>
                 <div className="md:col-span-2"><Label>Tagline</Label><Input className="mt-1" defaultValue="" placeholder="One-line value proposition" data-testid="input-tagline" /></div>
                 <div className="md:col-span-2"><Label>Description</Label><Textarea rows={3} className="mt-1" defaultValue="" placeholder="What does your company do?" data-testid="textarea-description" /></div>

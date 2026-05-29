@@ -128,18 +128,35 @@ function writeStoredPersona(p: Persona): void {
  * Pure helper — determines which personas a given UserContext can access.
  *
  * Exported for unit-test parity with `shouldShowToggleFromCtx`.
+ *
+ * v23.4.7 Phase 7 / BUG 002 fix — strictly gate every persona by membership
+ * predicates from UserContext so the role/persona dropdown NEVER shows an
+ * option the user is not actually a member of:
+ *   - Capavate   → `founder.companies.length > 0`  OR  `isAdmin`
+ *   - Collective → `investor.state !== "NONE"`     OR  founder of an
+ *                  active Collective company       OR  `isAdmin`
+ *   - Partner    → `isAdmin` (no explicit partner role flag in UserContext)
+ *   - Admin      → `isAdmin`
  */
 export function entitledPersonas(ctx: UserContext | null | undefined): Set<Persona> {
   const out = new Set<Persona>();
   if (!ctx) return out;
-  // Capavate (founder) always available when the user has a founder company.
-  if (ctx.founder?.companies?.length) out.add("capavate");
-  // Collective: visibility predicate from CapCollectiveToggle.
+  // Capavate (founder) — must actually be a founder of at least one company.
+  if (ctx.founder?.companies?.length && ctx.founder.companies.length > 0) {
+    out.add("capavate");
+  }
+  // Collective — visible if the user has any investor state OR is a founder
+  // of an active Collective company (the shouldShowToggleFromCtx path). This
+  // closes BUG 002: founder users with no investor state never see Collective
+  // unless they belong to a Collective-active company.
+  const hasInvestorState =
+    !!ctx.investor && typeof ctx.investor.state === "string" && ctx.investor.state !== "NONE";
+  if (hasInvestorState) out.add("collective");
   if (shouldShowToggleFromCtx(ctx).visible) out.add("collective");
-  // Partner: any active partner-team membership is admin-driven; conservative
-  // approach is to expose only when admin OR explicit partner role flag.
+  // Partner — admin-only entry point. No partner role flag exists on
+  // UserContext yet; keep behavior conservative.
   if (ctx.isAdmin) out.add("partner");
-  // Admin: explicit flag.
+  // Admin — explicit flag only.
   if (ctx.isAdmin) out.add("admin");
   // Always expose capavate to admins (gives them a way back to founder UI).
   if (ctx.isAdmin) out.add("capavate");
@@ -202,7 +219,13 @@ export function PersonaSwitcher({ ctxOverride, hideDemoBadge }: PersonaSwitcherP
 
   const demo = !hideDemoBadge && isDemoMode();
 
-  if (!visible) {
+  // v23.4.7 Phase 7 / BUG 002 — the switcher must remain available whenever
+  // the user is entitled to MORE THAN ONE persona, even if the legacy
+  // shouldShowToggleFromCtx predicate (Collective-membership-gated) returns
+  // hidden. A founder with no Collective membership still needs the dropdown
+  // hidden (they only have Capavate), but multi-role users (e.g. admin +
+  // founder) must see it.
+  if (!visible && entitled.size <= 1) {
     // Keep parity with legacy `toggle-hidden-marker` so existing tests/snapshots stay green.
     return (
       <span

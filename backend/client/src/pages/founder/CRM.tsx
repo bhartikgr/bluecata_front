@@ -24,6 +24,16 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Plus, Search, Mail, Send, MessageSquare, ArrowUpRight, Megaphone, ChevronRight, Filter, Users, Network, Sparkles, Pencil, Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -88,6 +98,10 @@ export default function FounderInvestorCRM() {
   // Defect 39 — when opened from "Bulk message", pre-populate with selected contact IDs.
   const [bcInitialIds, setBcInitialIds] = useState<Set<string>>(new Set());
   const [warmIntroOpen, setWarmIntroOpen] = useState(false);
+  // v23.4.7 Phase 5 (BUG 025/B-102) — swap window.confirm for Radix AlertDialog
+  // so the destructive delete confirmation is keyboard-accessible, theme-consistent,
+  // and testable. State holds the contact about to be deleted (null = closed).
+  const [pendingDelete, setPendingDelete] = useState<CrmContact | null>(null);
   const [warmIntroTarget, setWarmIntroTarget] = useState<{ id: string; name: string } | null>(null);
 
   const contactsQ = useQuery<CrmContact[]>({
@@ -161,6 +175,7 @@ export default function FounderInvestorCRM() {
 
   // v23.4.5 BUG 009 — full-edit mutation. Saves name/firmName/email/region/series
   // to /api/founder/investor-crm/:id PATCH (extended in v23.4.5 to accept these).
+  // v23.4.7 Phase 5 (BUG 026) — same friendly 403/404 surfacing as delete.
   const updateContact = useMutation({
     mutationFn: async ({ id, patch }: { id: string; patch: Partial<{ name: string; firmName: string; email: string; region: string; series: string }> }) =>
       (await apiRequest("PATCH", `/api/founder/investor-crm/${id}`, patch)).json(),
@@ -169,13 +184,37 @@ export default function FounderInvestorCRM() {
       setEditContact(null);
       toast({ title: "Contact updated" });
     },
-    onError: () => {
-      toast({ title: "Could not update contact", description: "Please try again.", variant: "destructive" as any });
+    onError: (err: any) => {
+      const status = err && typeof err.status === "number" ? err.status : undefined;
+      if (status === 403) {
+        toast({
+          title: "You don’t have permission to edit this contact",
+          description: "This contact may belong to a different company. Switch to the right company and try again.",
+          variant: "destructive" as any,
+        });
+      } else if (status === 404) {
+        toast({
+          title: "Contact not found",
+          description: "It may have been removed. Refreshing the list.",
+          variant: "destructive" as any,
+        });
+        queryClient.invalidateQueries({ queryKey: ["/api/founder/investor-crm", companyId] });
+      } else {
+        toast({
+          title: "Could not update contact",
+          description: (err && err.message) || "Please try again.",
+          variant: "destructive" as any,
+        });
+      }
     },
   });
 
   // v23.4.5 BUG 010 — delete mutation. DELETE /api/founder/investor-crm/:id
   // (soft-delete on the server). Refetch list on success.
+  // v23.4.7 Phase 5 (BUG 025) — surface friendly 403 / 404 messages instead of
+  // a generic "Please try again" so the founder understands when the failure is
+  // a permission issue (e.g. contact belongs to a tenant they don't own anymore
+  // after a company switch) versus a transient network error.
   const deleteContact = useMutation({
     mutationFn: async (id: string) =>
       (await apiRequest("DELETE", `/api/founder/investor-crm/${id}`)).json(),
@@ -183,8 +222,28 @@ export default function FounderInvestorCRM() {
       queryClient.invalidateQueries({ queryKey: ["/api/founder/investor-crm", companyId] });
       toast({ title: "Contact deleted" });
     },
-    onError: () => {
-      toast({ title: "Could not delete contact", description: "Please try again.", variant: "destructive" as any });
+    onError: (err: any) => {
+      const status = err && typeof err.status === "number" ? err.status : undefined;
+      if (status === 403) {
+        toast({
+          title: "You don’t have permission to delete this contact",
+          description: "This contact may belong to a different company. Switch to the right company and try again.",
+          variant: "destructive" as any,
+        });
+      } else if (status === 404) {
+        toast({
+          title: "Contact not found",
+          description: "It may have already been removed. Refreshing the list.",
+          variant: "destructive" as any,
+        });
+        queryClient.invalidateQueries({ queryKey: ["/api/founder/investor-crm", companyId] });
+      } else {
+        toast({
+          title: "Could not delete contact",
+          description: (err && err.message) || "Please try again.",
+          variant: "destructive" as any,
+        });
+      }
     },
   });
 
@@ -498,16 +557,15 @@ export default function FounderInvestorCRM() {
                       >
                         <Pencil className="h-3.5 w-3.5" />
                       </Button>
-                      {/* v23.4.5 BUG 010 — wire Delete button to DELETE /api/founder/investor-crm/:id */}
+                      {/* v23.4.5 BUG 010 / v23.4.7 Phase 5 BUG 025 — wire Delete
+                          button to DELETE /api/founder/investor-crm/:id behind
+                          an accessible AlertDialog confirmation. */}
                       <Button
                         size="sm"
                         variant="ghost"
                         title="Delete contact"
-                        onClick={() => {
-                          if (window.confirm(`Delete contact "${c.name}"? This cannot be undone.`)) {
-                            deleteContact.mutate(c.id);
-                          }
-                        }}
+                        aria-label={`Delete contact ${c.name}`}
+                        onClick={() => setPendingDelete(c)}
                         disabled={deleteContact.isPending}
                         data-testid={`button-delete-${c.id}`}
                       >
@@ -594,6 +652,38 @@ export default function FounderInvestorCRM() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        {/* v23.4.7 Phase 5 (BUG 025) — destructive delete confirmation.
+            Replaces window.confirm with keyboard-accessible Radix AlertDialog.
+            Auto-closes on success/failure; pendingDelete=null both clears the
+            modal and gates the AlertDialog open prop. */}
+        <AlertDialog open={!!pendingDelete} onOpenChange={(o) => { if (!o) setPendingDelete(null); }}>
+          <AlertDialogContent data-testid="alert-delete-contact">
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete contact?</AlertDialogTitle>
+              <AlertDialogDescription>
+                {pendingDelete
+                  ? <>This will permanently remove <strong>{pendingDelete.name}</strong> from your CRM. This cannot be undone.</>
+                  : null}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel data-testid="button-delete-cancel">Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                data-testid="button-delete-confirm"
+                onClick={() => {
+                  if (!pendingDelete) return;
+                  const id = pendingDelete.id;
+                  setPendingDelete(null);
+                  deleteContact.mutate(id);
+                }}
+                className="bg-red-600 hover:bg-red-700 focus:ring-red-600"
+              >
+                Delete contact
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </PageBody>
     </>
   );

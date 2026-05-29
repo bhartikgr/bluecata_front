@@ -28,7 +28,7 @@
  *       `_testAccessFounderCrm = { contacts }`.
  */
 import type { Express, Request, Response } from "express";
-import { randomBytes } from "node:crypto";
+import crypto, { randomBytes } from "node:crypto";
 import { and, eq, isNull } from "drizzle-orm";
 import { emitSync } from "./sprint10Telemetry";
 import { requireAuth } from "./lib/authMiddleware";
@@ -36,6 +36,10 @@ import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 // B-V11-7 fix: log CRM-contact creation events to the central audit log so the
 // activity timeline (/api/founder/companies/:id/activity) surfaces them.
 import { appendAdminAudit } from "./adminPlatformStore";
+// v23.4.7 Phase 14 / BUG 011 — best-effort invite email when a founder adds
+// a new investor to their CRM. The email send is best-effort (DB-first
+// pattern); failures are logged but do not block the contact creation.
+import { sendEmail } from "./lib/emailSender";
 import { getDb } from "./db/connection";
 import { withTenant, crossTenant } from "./lib/withTenant"; /* v14 Tier-1 Fix 4 — tenant scoping on writes */
 import { founderCrmContacts as founderCrmContactsTable } from "../shared/schema";
@@ -252,8 +256,34 @@ export function registerFounderCrmRoutes(app: Express): void {
   }
 
   // POST /api/founder/investor-crm — create contact
-  app.post("/api/founder/investor-crm", requireAuth, (req: Request, res: Response) => {
+  // v23.4.7 Phase 14 / BUG 011 — the founder can now optionally have the new
+  // investor receive an invitation email with a redemption link. The endpoint
+  // also checks whether the email is already a known user (so the client can
+  // surface a friendlier "already in the system" hint).
+  app.post("/api/founder/investor-crm", requireAuth, async (req: Request, res: Response) => {
     const companyId = ensureCompanyId(req, res); if (!companyId) return;
+    const incomingEmail = typeof req.body?.email === "string" ? req.body.email.trim() : "";
+    const sendInvite = !!req.body?.sendInvite;
+
+    // Check for an existing user up-front so the response can surface it even
+    // if the contact persists successfully.
+    let existingUserId: string | null = null;
+    if (incomingEmail) {
+      try {
+        const db = getDb();
+        // SQLite path used elsewhere in this codebase; safe to fall through
+        // gracefully if `prepare` is not available on the driver.
+        const driver = db as unknown as { prepare?: (sql: string) => { get: (...args: unknown[]) => unknown } };
+        if (typeof driver.prepare === "function") {
+          const row = driver.prepare(`SELECT id FROM auth_users WHERE lower(email) = ?`).get(incomingEmail.toLowerCase()) as
+            | { id: string } | undefined;
+          if (row?.id) existingUserId = row.id;
+        }
+      } catch (err) {
+        log.warn("[founderCrmStore POST] existing-user lookup failed:", (err as Error).message);
+      }
+    }
+
     const c: FounderCrmContact = {
       id: `fcrm_${randomBytes(3).toString("hex")}`,
       companyId: req.body?.companyId ?? companyId,
@@ -293,7 +323,61 @@ export function registerFounderCrmRoutes(app: Express): void {
       "crm.contact.created",
       { contactId: c.id, firmName: c.firmName, stage: c.stage },
     );
-    res.json(c);
+
+    // v23.4.7 Phase 14 / BUG 011 — optional invite email. We always mint a
+    // redemption token BEFORE the email send so a transient SMTP failure
+    // leaves a usable invite the founder/admin can resend later (same pattern
+    // as Phase 1 partner-approval emails).
+    let invitedUserId: string | null = null;
+    let inviteSent = false;
+    if (sendInvite && incomingEmail && !existingUserId) {
+      try {
+        const tokenRaw = crypto.randomBytes(32).toString("hex");
+        const tokenHash = crypto.createHash("sha256").update(tokenRaw).digest("hex");
+        const expiresAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1_000).toISOString();
+        const tokenId = `tk_${crypto.randomBytes(6).toString("hex")}`;
+        invitedUserId = tokenId;
+        try {
+          const db = getDb();
+          const driver = db as unknown as { prepare?: (sql: string) => { run: (...args: unknown[]) => unknown } };
+          if (typeof driver.prepare === "function") {
+            driver.prepare(
+              `INSERT INTO auth_redeem_tokens (id, token_hash, email, intent, expires_at, created_at)
+               VALUES (?, ?, ?, 'invite', ?, ?)`,
+            ).run(tokenId, tokenHash, incomingEmail.toLowerCase(), expiresAt, new Date().toISOString());
+          }
+        } catch (dbErr) {
+          log.warn("[founderCrmStore POST] invite token persist failed:", (dbErr as Error).message);
+        }
+        const appUrl = (process.env.APP_URL ?? "http://localhost:5000").replace(/\/$/, "");
+        const redeemUrl = `${appUrl}/auth/redeem?token=${tokenRaw}`;
+        try {
+          await sendEmail({
+            to: incomingEmail,
+            subject: `You have been invited to connect on Capavate`,
+            text: `${c.firmName === "—" ? "A founder" : c.firmName} invited you to connect on Capavate.\n\nUse this link (valid for 14 days) to set up your account:\n${redeemUrl}\n`,
+            html: `<p>${c.firmName === "—" ? "A founder" : c.firmName} invited you to connect on Capavate.</p><p><a href="${redeemUrl}">Set up your account</a></p><p>The link is valid for 14 days.</p>`,
+            category: "crm_invite",
+            refId: tokenId,
+          });
+          inviteSent = true;
+        } catch (emailErr) {
+          log.warn("[founderCrmStore POST] invite email failed (token still minted)", { error: (emailErr as Error).message });
+        }
+      } catch (err) {
+        log.warn("[founderCrmStore POST] invite flow failed", (err as Error).message);
+      }
+    }
+
+    res.json({
+      ...c,
+      // Non-breaking augmentation: response still includes every contact field
+      // the existing client expects. New fields are additive.
+      existingUser: !!existingUserId,
+      existingUserId,
+      inviteSent,
+      invitedUserId,
+    });
   });
 
   // PATCH /api/founder/investor-crm/:id — update stage / notes / tasks / contact fields

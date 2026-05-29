@@ -62,16 +62,68 @@ export default function Company() {
  const companyId = useActiveCompanyId();
  const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
 
+ // v23.4.7 Phase 10 / B-104 — Company Profile context snap-back.
+ //
+ // Symptom (Avi): create a new company, land on its dashboard, click
+ // "Company Profile" — the page renders the OLD company's profile and the
+ // top-bar quietly switches back. Root cause: a stale TanStack cache of
+ // /api/founder/active-company can return a companyId that's no longer the
+ // user's current active company.
+ //
+ // Mitigation: cross-check `companyId` against the canonical company list
+ // at /api/founder/companies. If the active id is missing OR doesn't match
+ // any of the user's current companies, render a "Select a company" CTA
+ // instead of silently picking companies[0] or a stale id.
+ type FounderCompanyRow = { id?: string; companyId?: string; name?: string; companyName?: string };
+ const companiesQ = useQuery<{ companies?: FounderCompanyRow[] } | FounderCompanyRow[]>({
+ queryKey: ["/api/founder/companies"],
+ });
+ const companiesList: FounderCompanyRow[] = (() => {
+ const d = companiesQ.data as { companies?: FounderCompanyRow[] } | FounderCompanyRow[] | undefined;
+ if (!d) return [];
+ if (Array.isArray(d)) return d;
+ return Array.isArray(d.companies) ? d.companies : [];
+ })();
+ const activeCompanyBelongsToUser =
+ !!companyId &&
+ companiesList.some((c) => (c.id ?? c.companyId) === companyId);
+
  // Avi 22-May Issue 1 — only fire the profile query once we have a real
  // companyId. With an empty id the URL becomes /api/companies//profile and
  // express returns 404; queryClient maps that to `null` (see getQueryFn in
  // lib/queryClient.ts) and the old guard `isLoading || !profile` left the
  // page stuck on "Loading…". The `enabled` flag stops the broken query
  // entirely; the “no company yet” branch below renders an actionable CTA.
+ //
+ // v23.4.7 Phase 10 — ALSO gate the profile fetch on the cross-check above
+ // so a stale activeCompanyId never paints the wrong company's profile.
  const { data: profile, isLoading, isError } = useQuery<CompanyProfile>({
  queryKey: ["/api/companies", companyId, "profile"],
- enabled: Boolean(companyId),
+ enabled: Boolean(companyId) && (companiesQ.isLoading || activeCompanyBelongsToUser),
  });
+
+ // v23.4.7 Phase 10 — companies query loaded AND activeCompanyId is unknown
+ // to the user's company list → snap-back prompt instead of silent default.
+ if (!companiesQ.isLoading && companyId && !activeCompanyBelongsToUser) {
+ return (
+ <>
+ <PageHeader title="Company profile" description="Pick a company" />
+ <PageBody>
+ <Card>
+ <CardContent className="p-6 space-y-3" data-testid="company-profile-snapback">
+ <div className="text-sm text-muted-foreground">
+ The active company in your session no longer matches your
+ available companies. Pick a company to view its profile.
+ </div>
+ <Link href="/select-company">
+ <Button data-testid="button-pick-company">Select a company</Button>
+ </Link>
+ </CardContent>
+ </Card>
+ </PageBody>
+ </>
+ );
+ }
 
  if (!companyId) {
  return (
@@ -385,6 +437,11 @@ function CompanyWizard({
 function Step1ContactInfo({
  value, onChange,
 }: { value: CompanyProfile["contact"]; onChange: (next: CompanyProfile["contact"]) => void }) {
+ // v23.4.7 Phase 13 / BUG 030 — read the active company id so logo uploads
+ // can post to /api/founder/company/:id/logo. The hook is safe to call from
+ // a nested step component; useActiveCompany() is already used elsewhere in
+ // this file.
+ const companyId = useActiveCompanyId();
  const set = <K extends keyof CompanyProfile["contact"]>(k: K, v: CompanyProfile["contact"][K]) =>
  onChange({ ...value, [k]: v });
  return (
@@ -434,7 +491,32 @@ function Step1ContactInfo({
  Date of Incorporation / Registration <span className="text-rose-500">*</span>
  <HelpTip>Format DD-Month-YYYY. We store as ISO date in the production database.</HelpTip>
  </Label>
- <Input type="date" value={value.dateOfIncorporation} onChange={(e) => set("dateOfIncorporation", e.target.value)} data-testid="input-date-incorporation" />
+ {/* v23.4.7 Phase 4 (BUG 029): reject future dates client-side with max
+     attribute + inline error display. Server zod also rejects.            */}
+ {(() => {
+   const todayIso = new Date().toISOString().split("T")[0];
+   const isFuture = !!value.dateOfIncorporation && value.dateOfIncorporation > todayIso;
+   return (
+     <>
+       <Input
+         type="date"
+         max={todayIso}
+         value={value.dateOfIncorporation}
+         onChange={(e) => set("dateOfIncorporation", e.target.value)}
+         data-testid="input-date-incorporation"
+         aria-invalid={isFuture || undefined}
+       />
+       {isFuture && (
+         <div
+           className="text-[11px] text-rose-600"
+           data-testid="error-date-incorporation-future"
+         >
+           Date of Incorporation cannot be in the future.
+         </div>
+       )}
+     </>
+   );
+ })()}
  </div>
  </div>
 
@@ -457,17 +539,50 @@ function Step1ContactInfo({
  </div>
  </div>
 
+ {/* v23.4.7 Phase 13 / BUG 030 — logos are uploaded to the dedicated
+  * server endpoint (POST /api/founder/company/:id/logo) on file-pick,
+  * and the form state then stores ONLY the returned URL string. This
+  * eliminates the multi-MB base64 data URL that previously lived in
+  * form state and caused stale-save / focus-loss bugs. The legacy
+  * `logoDataUrl` field is preserved as a fallback when the upload
+  * fails so the user still sees a preview. */}
  <div className="space-y-1.5">
  <Label>Logo (optional)</Label>
  <div className="flex items-center gap-3">
  <div className="h-12 w-12 rounded-md bg-secondary flex items-center justify-center text-muted-foreground">
- {value.logoDataUrl ? <img src={value.logoDataUrl} alt="" className="h-12 w-12 rounded-md object-cover" /> : <Building2 className="h-5 w-5" />}
+ {value.logoDataUrl ? (
+ <img src={value.logoDataUrl} alt="" className="h-12 w-12 rounded-md object-cover" />
+ ) : (
+ <Building2 className="h-5 w-5" />
+ )}
  </div>
  <Input
- type="file" accept="image/*"
- onChange={(e) => {
+ type="file"
+ accept="image/jpeg,image/png,image/webp"
+ onChange={async (e) => {
  const f = e.target.files?.[0];
  if (!f) return;
+ // Best-effort server upload (v23.4.7 Phase 13). If it fails we
+ // fall back to the legacy FileReader path so the user still
+ // gets a preview — the form save then carries the base64 URL.
+ try {
+ const fd = new FormData();
+ fd.append("logo", f);
+ const r = await fetch(
+ `/api/founder/company/${encodeURIComponent(companyId)}/logo`,
+ { method: "POST", body: fd, credentials: "include" },
+ );
+ if (r.ok) {
+ const data = (await r.json()) as { url?: string };
+ if (data?.url) {
+ // Bust the browser cache so a same-URL replacement still re-renders.
+ set("logoDataUrl", `${data.url}?t=${Date.now()}`);
+ return;
+ }
+ }
+ } catch {
+ /* network errors fall through to the FileReader fallback */
+ }
  const reader = new FileReader();
  reader.onload = () => set("logoDataUrl", reader.result as string);
  reader.readAsDataURL(f);

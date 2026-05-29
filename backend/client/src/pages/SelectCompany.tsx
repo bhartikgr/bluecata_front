@@ -10,7 +10,7 @@
  *
  * SANDBOX-SAFE: no Web Storage APIs.
  */
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
 import { useMutation } from "@tanstack/react-query";
 import { Building2, Plus, Users, Clock, ArrowRight } from "lucide-react";
@@ -20,6 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { useEntitlement, type FounderCompany } from "@/lib/entitlement";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { NewCompanyDialog } from "@/components/NewCompanyDialog";
 
 function formatLastActive(iso: string): string {
   if (!iso) return "—";
@@ -40,6 +41,12 @@ export default function SelectCompany() {
   const [, navigate] = useLocation();
   const { data: ctx, isLoading } = useEntitlement();
   const { toast } = useToast();
+
+  // v23.4.7 Phase 2 (BUG 024): the "+ New company" tile opens the same
+  // NewCompanyDialog modal that the top-bar CompanySwitcher uses, so the
+  // founder can create a new company in-place instead of being navigated
+  // to /auth/signup (which dropped them onto a stale dashboard route).
+  const [newCompanyOpen, setNewCompanyOpen] = useState(false);
 
   const activate = useMutation({
     mutationFn: async (companyId: string) => {
@@ -153,16 +160,16 @@ export default function SelectCompany() {
             </Card>
           ))}
 
-          {/* + New company tile */}
+          {/* + New company tile (v23.4.7 Phase 2 BUG 024: opens NewCompanyDialog) */}
           <Card
             role="button"
             tabIndex={0}
             data-testid="card-new-company"
-            onClick={() => navigate("/auth/signup")}
+            onClick={() => setNewCompanyOpen(true)}
             onKeyDown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault();
-                navigate("/auth/signup");
+                setNewCompanyOpen(true);
               }
             }}
             className="cursor-pointer hover:shadow-md hover:border-primary/40 transition border-dashed"
@@ -192,6 +199,7 @@ export default function SelectCompany() {
           </Button>
         </div>
       </div>
+      <NewCompanyDialog open={newCompanyOpen} onOpenChange={setNewCompanyOpen} />
     </div>
   );
 }

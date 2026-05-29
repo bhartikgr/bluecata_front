@@ -524,18 +524,26 @@ export function registerDataroomRoutes(app: Express): void {
       const p = permissions.find((p) => p.investorId === investorId && p.folderId === f.folderId);
       if (!p?.download) return res.status(403).json({ error: "download_denied" });
     }
+    // v23.4.7 Phase 12 / BUG 027 — "view" icon in the dataroom used to
+    // download files. Clients can now pass ?disposition=inline (or
+    // ?inline=1) so the browser displays the document in-tab instead of
+    // forcing a download. The audit action is also tagged accordingly.
+    const wantInline =
+      String(req.query.disposition ?? "").toLowerCase() === "inline" ||
+      String(req.query.inline ?? "") === "1";
+    const disposition = wantInline ? "inline" : "attachment";
     // PATCH v3: stamp actor from session when available
     const auditActor = ctx.isAuthed ? ctx.identity.name : (investorId ?? "anonymous");
     const auditActorId = ctx.isAuthed ? ctx.userId : (investorId ?? "anonymous");
-    logEvent({ companyId: f.companyId, actor: auditActor, actorId: auditActorId, action: "download", targetKind: "file", targetId: f.id });
+    logEvent({ companyId: f.companyId, actor: auditActor, actorId: auditActorId, action: wantInline ? "view" : "download", targetKind: "file", targetId: f.id });
     if (!f._buf) {
       // synthesize a tiny placeholder so download succeeds for seeded files
       res.setHeader("Content-Type", "text/plain");
-      res.setHeader("Content-Disposition", `attachment; filename="${f.name}.txt"`);
+      res.setHeader("Content-Disposition", `${disposition}; filename="${f.name}.txt"`);
       return res.send(`Placeholder content for ${f.name} (Sprint 11 preview).\nsha=${f.sha256}\n`);
     }
     res.setHeader("Content-Type", f.mime);
-    res.setHeader("Content-Disposition", `attachment; filename="${f.name}"`);
+    res.setHeader("Content-Disposition", `${disposition}; filename="${f.name}"`);
     return res.send(f._buf);
   });
 

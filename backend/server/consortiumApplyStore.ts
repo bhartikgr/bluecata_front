@@ -49,7 +49,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
 
 import { requireAuth, requireAdmin } from "./lib/authMiddleware";
-import { getDb } from "./db/connection";
+import { getDb, rawDb } from "./db/connection";
 import {
   consortiumApplications as appsTable,
   partnerOrganizations as partnerOrgsTable,
@@ -692,7 +692,83 @@ export function approveApplication(
     partnerId,
   });
 
-  // Welcome stub (commsStore wire-up deferred to email infra).
+  // v23.4.7 Phase 1 (A-001): issue partner-invite redemption token and send
+  // the welcome email containing the password-setup link.
+  //
+  // CRITICAL ORDER: token is minted FIRST (durable in DB). The email send is
+  // best-effort (try/catch, log on failure, do NOT throw) so a transient SMTP
+  // outage still leaves the admin a usable invite that can be resent later.
+  // Mirrors the v23.4.6 best-effort pattern for partner-invite resend.
+  let partnerInviteTokenRaw: string | null = null;
+  let partnerInviteTokenId: string | null = null;
+  try {
+    partnerInviteTokenRaw = randomBytes(32).toString("hex");
+    const tokenHash = createHash("sha256").update(partnerInviteTokenRaw).digest("hex");
+    partnerInviteTokenId = `tk_${randomBytes(6).toString("hex")}`;
+    // 14-day expiry to match the admin user invite TTL (adminUsersRoutes).
+    const expiresAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1_000).toISOString();
+    rawDb()
+      .prepare(
+        `INSERT INTO auth_redeem_tokens (id, token_hash, email, intent, expires_at, created_at)
+         VALUES (?, ?, ?, 'partner_invite', ?, ?)`,
+      )
+      .run(partnerInviteTokenId, tokenHash, updated.contactEmail, expiresAt, now);
+  } catch (tokErr) {
+    // Token mint failure is logged but does not throw — the approval is durable.
+    log.warn(
+      "[consortium.apply] partner-invite token mint failed",
+      JSON.stringify({ applicationId: updated.id, error: (tokErr as Error).message }),
+    );
+    partnerInviteTokenRaw = null;
+  }
+
+  if (partnerInviteTokenRaw) {
+    const appUrl = (process.env.APP_URL ?? "http://localhost:5000").replace(/\/$/, "");
+    const redeemUrl = `${appUrl}/auth/redeem-partner-invite/${partnerInviteTokenRaw}`;
+    const subj = `Welcome to Capavate — set up your ${updated.organizationName} partner account`;
+    const text =
+      `Hello ${updated.contactName},\n\n` +
+      `Your application to join Capavate as a partner organization has been approved.\n\n` +
+      `Click the link below to set your password and access your partner workspace (valid for 14 days):\n\n` +
+      `${redeemUrl}\n\n` +
+      `If you have any questions, reply to this email and a Capavate admin will assist you.`;
+    const html =
+      `<p>Hello ${updated.contactName},</p>` +
+      `<p>Your application to join Capavate as a partner organization has been approved.</p>` +
+      `<p><a href="${redeemUrl}">Set your password and access your partner workspace</a></p>` +
+      `<p>Link valid for 14 days. If you have any questions, reply to this email and a Capavate admin will assist you.</p>`;
+    // Fire-and-forget — failures are logged but never thrown.
+    void sendEmail({
+      to: updated.contactEmail,
+      subject: subj,
+      text,
+      html,
+      category: "partner_welcome",
+      refId: updated.id,
+    })
+      .then((result) => {
+        log.info(
+          "[consortium.apply] welcome email dispatched",
+          JSON.stringify({
+            applicationId: updated.id,
+            tokenId: partnerInviteTokenId,
+            delivered: result.delivered,
+            mode: result.mode,
+          }),
+        );
+      })
+      .catch((emailErr: unknown) => {
+        log.warn(
+          "[consortium.apply] welcome email send failed (token still usable; admin can resend)",
+          JSON.stringify({
+            applicationId: updated.id,
+            tokenId: partnerInviteTokenId,
+            error: (emailErr as Error).message,
+          }),
+        );
+      });
+  }
+
   log.info(
     "[consortium.apply] approved",
     JSON.stringify({
@@ -700,6 +776,7 @@ export function approveApplication(
       partnerId,
       userId,
       tenantId: newTenantId,
+      partnerInviteTokenId,
     }),
   );
 

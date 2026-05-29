@@ -51,6 +51,10 @@ import { getRecentEvents, findEventsByType } from "./sprint10Telemetry";
 import { registerMultiCompanyRoutes, updateCompanyDetails } from "./multiCompanyStore";
 import { registerMembershipRoutes } from "./membershipStore";
 import { registerDataroomRoutes } from "./dataroomStore";
+// v23.4.7 Phase 13 / BUG 030 — dedicated server endpoint for company-logo
+// uploads so the founder Company-profile form no longer carries multi-MB
+// base64 data URLs in form state.
+import { registerCompanyLogoRoutes } from "./lib/companyLogoRoutes";
 import { registerReportsRoutes } from "./reportsStore";
 import { registerFounderCrmRoutes } from "./founderCrmStore";
 import { registerCaptableCommitRoutes } from "./captableCommitStore";
@@ -154,6 +158,8 @@ import { registerRoundPriceDerivationRoutes } from "./lib/roundPriceDerivation";
 import { registerSecureAuthRoutes } from "./lib/secureAuthRoutes";
 import { registerAdminUsersRoutes } from "./lib/adminUsersRoutes";
 import { registerAdminEmailRoutes } from "./lib/adminEmailRoutes";
+// v23.4.7 Phase 15 / B-101 — admin dedupe-companies cleanup endpoint.
+import { registerAdminCleanupRoutes } from "./lib/adminCleanupRoutes";
 import { realtimeStreamHandler, emitMutation } from "./lib/eventBus";
 import { BridgeOutbound } from "./lib/bridgeOutbound";
 import { csrfMiddleware } from "./lib/csrf";
@@ -313,6 +319,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   registerMembershipRoutes(app);
   registerDataroomRoutes(app);
+  registerCompanyLogoRoutes(app);
   registerReportsRoutes(app);
   registerFounderCrmRoutes(app);
   registerCaptableCommitRoutes(app);
@@ -587,6 +594,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   /* ------------ v23.4.2: admin SMTP diagnostic endpoints ------------ */
   registerAdminEmailRoutes(app);
+
+  /* ------------ v23.4.7 Phase 15 / B-101: admin dedupe-companies cleanup ------------ */
+  registerAdminCleanupRoutes(app);
 
   /* ------------ Sprint 17 D4: realtime invalidation stream ------------ */
   app.get("/api/events/stream", realtimeStreamHandler);
@@ -1572,6 +1582,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         investor: { invitedRounds: [], capTablePositions: [], state: "NONE" },
         collective: { status: "none", role: null, expiresAt: null },
         isAdmin: false,
+        // v23.4.7 Phase 6 (BUG 001) — shape parity with the authed branch.
+        hasPaidPlan: false,
       });
     }
     const userId = ctx.userId;
@@ -1655,6 +1667,31 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         ? { title: stored.title as string | null } : {}),
     };
 
+    // v23.4.7 Phase 6 (BUG 001) — derive `hasPaidPlan` so the login post-auth
+    // redirect can branch correctly. A paid plan = at least one company
+    // whose subscription is on a non-free, non-cancelled tier with billing
+    // intent (active | trialing | past_due | cancel_at_period_end). We do
+    // NOT count "pending_payment" / "cancelled" / "unpaid". `founder_free`
+    // is always excluded because BUG 031 made it the default for new
+    // companies and it is, by definition, not a paid plan.
+    let hasPaidPlan = false;
+    try {
+      const companyList = (ctx as any)?.founder?.companies ?? [];
+      for (const c of companyList) {
+        const sub = getSubscription(c.companyId);
+        if (!sub) continue;
+        if (sub.plan === "founder_free") continue;
+        if (sub.status === "active" || sub.status === "trialing" || sub.status === "past_due" || sub.status === "cancel_at_period_end") {
+          hasPaidPlan = true;
+          break;
+        }
+      }
+    } catch {
+      // Subscriptions store unavailable (early hydration / ephemeral test):
+      // fall through with hasPaidPlan=false. The client falls back to the
+      // safe default (/founder/subscribe).
+    }
+
     res.json({
       ...defaults,
       ...stored,
@@ -1667,6 +1704,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // _meStore overlay (most-recently-PATCHed wins, even before DB commit visibility)
       ...stored,
       identity: mergedIdentity,
+      hasPaidPlan,
     });
   });
 

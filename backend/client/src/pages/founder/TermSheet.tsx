@@ -794,11 +794,23 @@ export default function TermSheet() {
  />
  </div>
  </div>
- <label className="flex items-start gap-2 text-xs cursor-pointer">
+ {/* v23.4.7 Phase 11 / BUG 028 — term-sheet legal-counsel acknowledgment
+  * was rendering invisibly (white-on-white). Force a visible border + a
+  * white background on the box so the unchecked state is always obvious,
+  * regardless of the parent card's background. Adds an explicit aria-label
+  * + a stable data-testid the QA harness can target by name. */}
+ <label
+   htmlFor="legal-counsel-ack"
+   className="flex items-start gap-2 text-xs cursor-pointer"
+   data-testid="label-legal-counsel-ack"
+ >
  <Checkbox
+ id="legal-counsel-ack"
  checked={acknowledgedDraft}
  onCheckedChange={(v) => setAcknowledgedDraft(!!v)}
- data-testid="checkbox-acknowledgment"
+ aria-label="Legal Counsel Acknowledgment"
+ className="h-4 w-4 border-2 border-slate-500 bg-white data-[state=checked]:bg-primary data-[state=checked]:border-primary"
+ data-testid="checkbox-acknowledgment legal-counsel-ack"
  />
  <span className="leading-relaxed">
  I understand this term sheet is a draft and recommended for review by qualified legal counsel before signing or sending. Capavate is not a law firm.

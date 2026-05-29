@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useActiveCompanyId } from "@/lib/useActiveCompany";
@@ -21,6 +22,10 @@ export default function CRMNew() {
   // distinct from the CRM pipeline stage (lead/engaged/.../longterm). New
   // contacts always start in the "lead" pipeline stage on the server.
   const [form, setForm] = useState({ name: "", contact: "", email: "", stageFocus: "", checkSize: "", notes: "" });
+  // v23.4.7 Phase 14 / BUG 011 — founder can opt-in to sending the investor a
+  // unique-email invite with a redemption link. Default OFF so existing add
+  // flows don't suddenly start sending email.
+  const [sendInvite, setSendInvite] = useState(false);
   function update<K extends keyof typeof form>(k: K, v: string) { setForm(f => ({ ...f, [k]: v })); }
 
   const saveMut = useMutation({
@@ -39,11 +44,25 @@ export default function CRMNew() {
         stageFocus: form.stageFocus,
         checkSize: form.checkSize,
         notes: composedNotes,
+        // v23.4.7 Phase 14 / BUG 011 — opt-in invite email.
+        sendInvite,
       });
       return res.json();
     },
-    onSuccess: () => {
-      toast({ title: "Contact saved", description: "Added to your investor CRM." });
+    onSuccess: (data: { existingUser?: boolean; inviteSent?: boolean }) => {
+      // v23.4.7 Phase 14 / BUG 011 — surface a more informative toast when
+      // the server detected an existing user or successfully sent the invite
+      // email.
+      if (data?.existingUser) {
+        toast({
+          title: "Contact saved",
+          description: "This investor already has a Capavate account. Send them a connection invite from the CRM list when you're ready.",
+        });
+      } else if (data?.inviteSent) {
+        toast({ title: "Contact saved", description: "Invitation email sent." });
+      } else {
+        toast({ title: "Contact saved", description: "Added to your investor CRM." });
+      }
       queryClient.invalidateQueries({ queryKey: ["/api/founder/investor-crm", companyId] });
       navigate("/founder/crm");
     },
@@ -65,6 +84,19 @@ export default function CRMNew() {
               <div className="md:col-span-2"><Label>Typical check size</Label><Input className="mt-1" value={form.checkSize} onChange={e => update("checkSize", e.target.value)} placeholder="$1M–$3M" data-testid="input-check" /></div>
               <div className="md:col-span-2"><Label>Notes</Label><Textarea rows={4} className="mt-1" value={form.notes} onChange={e => update("notes", e.target.value)} placeholder="What signal makes this investor a good fit?" data-testid="input-notes" /></div>
             </div>
+            {/* v23.4.7 Phase 14 / BUG 011 — opt-in invitation email. */}
+            <label htmlFor="crm-send-invite" className="flex items-start gap-2 text-xs cursor-pointer pt-1">
+              <Checkbox
+                id="crm-send-invite"
+                checked={sendInvite}
+                onCheckedChange={(v) => setSendInvite(!!v)}
+                data-testid="checkbox-send-invite"
+              />
+              <span className="leading-relaxed">
+                Also send this investor an invitation email with a unique
+                redemption link to log in or register.
+              </span>
+            </label>
             <div className="flex justify-end gap-2 pt-3 border-t border-border">
               <Button variant="ghost" onClick={() => navigate("/founder/crm")}>Cancel</Button>
               <Button onClick={() => saveMut.mutate()} disabled={saveMut.isPending} className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] text-white" data-testid="button-save-crm">{saveMut.isPending ? "Saving…" : "Save contact"}</Button>

@@ -85,7 +85,16 @@ export default function Login() {
   // immediate visit to /auth/login should NOT show the login form again.
   // Probe GET /api/auth/me; on `isAuthed=true` redirect into the right portal.
   // honours ?returnTo=... if the user landed here via RequireAuth.
-  const meProbe = useQuery<{ isAuthed: boolean; isAdmin?: boolean; founder?: { companies: unknown[] }; investor?: { state?: string } }>({
+  // v23.4.7 Phase 6 (BUG 001) — widen the probe shape to include hasPaidPlan
+  // so the post-auth redirect can branch correctly. See BUG 001: a returning
+  // founder was being dumped onto /founder/subscribe because /founder/dashboard
+  // is gated by RequireActiveSubscription which redirects to /subscribe when
+  // there is no activeCompanyId. The correct landing is:
+  //   companies.length > 1  → /select-company
+  //   companies.length === 1 → /founder/dashboard
+  //   no companies, hasPaidPlan → /onboarding (post-pay, pre-company)
+  //   no companies, no paid plan → /founder/subscribe (canonical empty state)
+  const meProbe = useQuery<{ isAuthed: boolean; isAdmin?: boolean; founder?: { companies: unknown[] }; investor?: { state?: string }; hasPaidPlan?: boolean }>({
     queryKey: ["/api/auth/me", "login-redirect-probe"],
     queryFn: async () => {
       try {
@@ -109,13 +118,21 @@ export default function Login() {
     }
     // Admins never enter through the public login page.
     if (me.isAdmin) { navigate("/admin/dashboard"); return; }
-    const hasCompany = ((me.founder?.companies?.length) ?? 0) > 0;
+    const companyCount = me.founder?.companies?.length ?? 0;
     const isInvestor = me.investor?.state !== undefined && me.investor.state !== "NONE";
-    if (hasCompany) { navigate("/founder/dashboard"); return; }
+    // BUG 001 — branch on number of companies BEFORE falling through to the
+    // empty-state. Multi-company founders MUST land on /select-company so
+    // the active-company context is established before any subscription
+    // gate fires; single-company founders land on the dashboard directly.
+    if (companyCount > 1) { navigate("/select-company"); return; }
+    if (companyCount === 1) { navigate("/founder/dashboard"); return; }
     if (isInvestor) { navigate("/investor/dashboard"); return; }
-    // Authenticated user with no founder/investor state — send to founder dashboard
-    // which renders the empty-state company creation prompt (matches B-V11-1).
-    navigate("/founder/dashboard");
+    // Authenticated user with NO companies. If they’ve already paid for a
+    // plan but haven’t completed company onboarding (rare but real), send
+    // them to the onboarding wizard. Otherwise the canonical empty state
+    // is /founder/subscribe.
+    if (me.hasPaidPlan) { navigate("/onboarding"); return; }
+    navigate("/founder/subscribe");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meProbe.data]);
   const initialPortal: Portal = rawPortal === "investor" ? "investor" : "founder";
@@ -223,12 +240,15 @@ export default function Login() {
       return;
     }
     if (portal === "founder" && !isFounder && !isInvestor) {
-      // B-V11-1 fix: brand-new founder with no companies lands on the founder
-      // dashboard (which renders the empty-state company-creation prompt).
-      // Previously navigated to /auth/signup which redirected to /select-company
-      // which redirected back to /auth/signup, producing an infinite loop.
+      // v23.4.7 Phase 6 (BUG 001) — brand-new founder with no companies.
+      // RequireActiveSubscription gates /founder/dashboard and would bounce
+      // them to /founder/subscribe anyway; send them there directly so the
+      // first render is the canonical empty state, not a redirect flicker.
+      // B-V11-1 (the original loop) was caused by routing to /auth/signup;
+      // /founder/subscribe is loop-safe because it is in the isAuthRoute
+      // allowlist and renders its own empty state.
       setRole("founder");
-      navigate("/founder/dashboard");
+      navigate("/founder/subscribe");
       return;
     }
 

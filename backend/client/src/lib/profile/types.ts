@@ -327,7 +327,22 @@ export const companyContactSchema = z.object({
   phoneNumber: z.string().max(40),
   companyWebsiteUrl: z.string().url().or(z.literal("")),
   numberOfEmployees: employeeEnum.nullable(),
-  dateOfIncorporation: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).or(z.literal("")),
+  // v23.4.7 Phase 4 (BUG 029): reject future dates. Empty string is still
+  // valid (field is optional in practice — founder may fill in later).
+  dateOfIncorporation: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .or(z.literal(""))
+    .refine(
+      (s) => {
+        if (!s) return true;
+        // ISO date string compare is lexicographic and matches chronological
+        // for YYYY-MM-DD; today is the upper bound.
+        const todayIso = new Date().toISOString().split("T")[0]!;
+        return s <= todayIso;
+      },
+      { message: "Date of Incorporation cannot be in the future" },
+    ),
   oneSentenceHeadliner: z.string().max(400),
   problemStatement: z.string().max(600),
   solutionStatement: z.string().max(600),
