@@ -39,6 +39,11 @@ interface SubmitResponse {
   issues?: Array<{ message: string; path: string[] }>;
   bucket?: string;
   retryAfterMs?: number;
+  /** v23.4.6 Phase 2 (L-003) — server signals whether the confirmation
+   * email was delivered. False => show "ask admin to resend" copy. */
+  emailSent?: boolean;
+  message?: string;
+  emailFallback?: string;
 }
 
 export default function ConsortiumApplyPage() {
@@ -91,13 +96,43 @@ export default function ConsortiumApplyPage() {
   }
 
   if (result?.applicationId) {
+    // v23.4.6 Phase 2 (L-003) — explicit email-delivery state. If the server
+    // could not send the confirmation email (SMTP unavailable, etc.) we tell
+    // the applicant up-front so they aren't left wondering — the application
+    // row was still saved durably and an admin can resend.
+    const emailSent = result.emailSent !== false; // default true when omitted
     return (
       <div style={{ maxWidth: 640, margin: "60px auto", padding: 24 }}>
         <h1 style={{ fontSize: 28, fontWeight: 600 }}>Application received</h1>
-        <p style={{ marginTop: 16 }}>
+        <p style={{ marginTop: 16 }} data-testid="text-apply-confirmation">
           Thanks for your interest in joining the Capavate Consortium. Your
           application has been received and will be reviewed by our team.
         </p>
+        {emailSent ? (
+          <p
+            style={{ marginTop: 12, color: "#155724" }}
+            data-testid="text-apply-email-sent"
+          >
+            We've sent a confirmation email to your inbox.
+          </p>
+        ) : (
+          <div
+            style={{
+              marginTop: 12,
+              padding: 12,
+              background: "#fff3cd",
+              border: "1px solid #ffeeba",
+              color: "#856404",
+              borderRadius: 6,
+            }}
+            role="alert"
+            data-testid="text-apply-email-failed"
+          >
+            We couldn't send the confirmation email right now. If you don't
+            receive one within 5 minutes, ask an admin to resend it from the
+            Consortium Applications console.
+          </div>
+        )}
         <div
           style={{
             marginTop: 24,

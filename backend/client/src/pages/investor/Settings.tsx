@@ -27,7 +27,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Settings, Bell, Shield, User, CreditCard, Globe } from "lucide-react";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useRealtimeSync } from "@/lib/realtimeSync";
 import {
@@ -430,8 +430,13 @@ export default function InvestorSettings() {
                 className="text-destructive hover:text-destructive text-xs"
                 data-testid="button-sign-out"
                 onClick={async () => {
-                  // DEF-014: call logout endpoint and redirect to login.
+                  // DEF-014 + v23.4.6 Phase 3 (L-002): call logout endpoint,
+                  // invalidate the TanStack Query cache (so a stale
+                  // ["/api/auth/me"] entry can't keep the user appearing logged
+                  // in), then redirect to login via a full-page navigation so
+                  // the new request picks up the cleared Set-Cookie.
                   await apiRequest("POST", "/api/auth/logout").catch(() => {});
+                  await queryClient.resetQueries();
                   window.location.href = "/login";
                 }}
               >

@@ -60,6 +60,7 @@ import {
 import { publish as ssePublish } from "./lib/sseHub";
 import { appendAdminAudit } from "./adminPlatformStore";
 import { log } from "./lib/logger";
+import { sendEmail } from "./lib/emailSender";
 
 /* ============================================================
  * Types
@@ -336,6 +337,62 @@ export interface SubmitInput {
   referredBy?: string | null;
   sourceIp?: string | null;
   sourceUserAgent?: string | null;
+}
+
+/* ============================================================
+ * v23.4.6 Phase 2 (L-003) — Partner application ack email helper.
+ *
+ * Sends a non-blocking acknowledgement email to the partner contact AFTER
+ * submitApplication() has committed the row to the DB. The send is wrapped
+ * so any SMTP failure is logged but does NOT roll back the durable write.
+ * Callers (publicApplyHandler / resend endpoint) get an EmailDispatch result
+ * they can surface to the HTTP response so the frontend shows "if you don't
+ * receive an email within 5 minutes, ask an admin to resend."
+ * ============================================================ */
+export interface EmailDispatch {
+  emailSent: boolean;
+  error?: string;
+  fallback?: string;
+  mode?: string;
+}
+
+export async function sendApplicationAckEmail(
+  app: ConsortiumApplicationRow,
+): Promise<EmailDispatch> {
+  try {
+    const result = await sendEmail({
+      to: app.contactEmail,
+      subject: "Capavate Consortium — application received",
+      text:
+        `Hi ${app.contactName},\n\n` +
+        `Thanks for applying to join the Capavate Consortium as ${app.organizationName}.\n\n` +
+        `Application ID: ${app.id}\n` +
+        `Status: ${app.status}\n\n` +
+        `Our team will review your application and get back to you. ` +
+        `If you don't hear from us within 5 business days, reply to this email or contact the admin.\n\n` +
+        `— The Capavate team`,
+      html:
+        `<p>Hi ${app.contactName},</p>` +
+        `<p>Thanks for applying to join the Capavate Consortium as <strong>${app.organizationName}</strong>.</p>` +
+        `<p><strong>Application ID:</strong> ${app.id}<br/>` +
+        `<strong>Status:</strong> ${app.status}</p>` +
+        `<p>Our team will review your application and get back to you. ` +
+        `If you don't hear from us within 5 business days, reply to this email or contact the admin.</p>` +
+        `<p>— The Capavate team</p>`,
+      category: "consortium_apply_ack",
+      refId: app.id,
+    });
+    return {
+      emailSent: result.delivered,
+      error: result.error,
+      fallback: result.fallback,
+      mode: result.mode,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.error("[consortium.apply] ack email send threw:", message);
+    return { emailSent: false, error: message };
+  }
 }
 
 export function submitApplication(input: SubmitInput): ConsortiumApplicationRow {
@@ -787,7 +844,10 @@ export function registerConsortiumApplyRoutes(app: Express): void {
     next();
   };
 
-  const publicApplyHandler = (req: Request, res: Response): void => {
+  const publicApplyHandler = async (
+    req: Request,
+    res: Response,
+  ): Promise<void> => {
     const parsed = publicApplySchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({
@@ -801,8 +861,9 @@ export function registerConsortiumApplyRoutes(app: Express): void {
       res.status(400).json({ error: "captcha_failed" });
       return;
     }
+    let row: ConsortiumApplicationRow;
     try {
-      const row = submitApplication({
+      row = submitApplication({
         organizationName: body.organizationName,
         contactName: body.contactName,
         contactEmail: body.contactEmail,
@@ -819,14 +880,32 @@ export function registerConsortiumApplyRoutes(app: Express): void {
         sourceIp: clientIp(req),
         sourceUserAgent: (req.headers["user-agent"] as string) ?? null,
       });
-      res.status(201).json({
-        applicationId: row.id,
-        status: row.status,
-      });
     } catch (err) {
       log.error("[consortium.apply] submit failed:", err);
       res.status(500).json({ error: "submit_failed" });
+      return;
     }
+    // v23.4.6 Phase 2 (L-003) — DB write is committed at this point. Try to
+    // send the acknowledgement email; failures here MUST NOT roll back the
+    // application. The frontend renders a different copy when emailSent is
+    // false so the applicant knows to expect a delay / ask admin to resend.
+    const dispatch = await sendApplicationAckEmail(row);
+    res.status(201).json({
+      applicationId: row.id,
+      status: row.status,
+      emailSent: dispatch.emailSent,
+      ...(dispatch.emailSent
+        ? {
+            message:
+              "Application received. Check your inbox for a confirmation email.",
+          }
+        : {
+            message:
+              "Application received. We could not send the confirmation email " +
+              "right now — if you don't receive one within 5 minutes, ask an admin to resend.",
+            emailFallback: dispatch.fallback,
+          }),
+    });
   };
 
   app.post("/api/public/consortium/apply", publicApplyRateLimit, publicApplyHandler);
@@ -953,6 +1032,46 @@ export function registerConsortiumApplyRoutes(app: Express): void {
         log.error("[consortium.apply] withdraw failed:", err);
         res.status(500).json({ error: "withdraw_failed" });
       }
+    },
+  );
+
+  /* ----------------------------------------------------------
+   * v23.4.6 Phase 2 (L-003) — Admin resend ack email.
+   *
+   * Safety net for when the original SMTP send failed at submit time
+   * (network blip, SMTP misconfig, applicant typo). The DB row is the
+   * source of truth; this endpoint re-fires sendApplicationAckEmail and
+   * returns the dispatch result. It is idempotent and does NOT mutate the
+   * application row — it only sends mail.
+   * ---------------------------------------------------------- */
+  app.post(
+    "/api/admin/consortium/applications/:id/resend-email",
+    requireAuth,
+    requireAdmin,
+    async (req: Request, res: Response): Promise<void> => {
+      const ctx = (req as any).userContext;
+      const actor = ctx?.userId ?? "u_admin_unknown";
+      const id = String(req.params.id);
+      const app = getApplication(id);
+      if (!app) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      const dispatch = await sendApplicationAckEmail(app);
+      appendAdminAudit(
+        actor,
+        `consortium_application:${id}`,
+        "consortium.apply.email_resent",
+        {
+          emailSent: dispatch.emailSent,
+          error: dispatch.error,
+          mode: dispatch.mode,
+        },
+      );
+      res.json({
+        applicationId: id,
+        ...dispatch,
+      });
     },
   );
 }

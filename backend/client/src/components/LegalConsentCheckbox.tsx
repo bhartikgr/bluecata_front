@@ -105,11 +105,24 @@ export const LegalConsentCheckbox = forwardRef<LegalConsentCheckboxRef, LegalCon
           data-testid="checkbox-legal-consent"
           aria-label="Agree to legal documents"
         />
-        <Label
-          htmlFor={id}
-          className="text-xs text-[hsl(219_30%_35%)] leading-relaxed cursor-pointer select-none"
-        >
-          I have read and agree to the{" "}
+        {/* v23.4.6 Phase 1 (L-001) — the document-opener buttons are siblings
+         * of <Label>, NOT children. Nesting <button> inside <label> is invalid
+         * HTML and triggers the parent label's "toggle bound checkbox" click
+         * handler on every internal click — including clicks on the Terms /
+         * Privacy links — which silently unchecked the consent box and blocked
+         * founder signup. The <Label htmlFor={id}> now wraps ONLY the leading
+         * "I have read and agree to the" text. Each link is a separate
+         * <button type="button"> with stopPropagation + preventDefault to be
+         * defensive against any future ancestor toggle handlers.
+         */}
+        <div className="text-xs text-[hsl(219_30%_35%)] leading-relaxed select-none">
+          <Label
+            htmlFor={id}
+            className="text-xs text-[hsl(219_30%_35%)] leading-relaxed cursor-pointer select-none"
+          >
+            I have read and agree to the
+          </Label>
+          {" "}
           {docs.map((docId, i) => {
             const label = DOC_LABELS[docId] ?? docId;
             const isLast = i === docs.length - 1;
@@ -119,6 +132,7 @@ export const LegalConsentCheckbox = forwardRef<LegalConsentCheckboxRef, LegalCon
                 <button
                   type="button"
                   onClick={(e) => {
+                    e.stopPropagation();
                     e.preventDefault();
                     openDrawer(docId);
                   }}
@@ -132,7 +146,7 @@ export const LegalConsentCheckbox = forwardRef<LegalConsentCheckboxRef, LegalCon
             );
           })}
           .
-        </Label>
+        </div>
       </div>
     );
   },

@@ -88,9 +88,44 @@ export default function Signup() {
   const [duplicateEmail, setDuplicateEmail] = useState(false);
   const [legalChecked, setLegalChecked] = useStateForConsent(false);
   const legalConsentRef = useRef<LegalConsentCheckboxRef>(null);
+  // v23.4.6 Phase 6 (L-010) — post-signup interstitial state. Holds the
+  // email the account was created for so we can echo it on the
+  // "check your inbox" interstitial without depending on `email` state
+  // (which could be cleared on navigation).
+  const [signedUpAs, setSignedUpAs] = useState<string | null>(null);
+  const [requiresEmailConfirmation, setRequiresEmailConfirmation] = useState(false);
 
   const strength = useMemo(() => gradePassword(password), [password]);
   const emailValid = email.length === 0 || looksLikeEmail(email);
+
+  // v23.4.6 Phase 5 (L-006) — aggregate field validation. Mirrors the
+  // missingRequired() pattern already in client/src/pages/founder/Company.tsx
+  // (v23.4.5). The previous Signup form only surfaced ONE error at a time
+  // ("Enter your name to continue.") even when name + email + password were
+  // all blank, which forced power users to submit, fix, submit, fix in a
+  // frustrating loop. We now collect ALL blank-or-invalid required fields,
+  // render an aggregate banner listing them, AND set aria-invalid on each
+  // bad input so per-field affordances stay accurate for assistive tech.
+  const missingFields = useMemo(() => {
+    const missing: string[] = [];
+    if (name.trim().length < 2) missing.push("your name");
+    if (!looksLikeEmail(email)) missing.push("a valid work email");
+    if (password.length < 8) missing.push("a password with at least 8 characters");
+    else if (strength.score < 2)
+      missing.push("a stronger password (mix upper/lower/digits/symbols)");
+    if (!legalChecked) missing.push("the Terms and Privacy consent checkbox");
+    return missing;
+  }, [name, email, password, strength.score, legalChecked]);
+  const [aggregateError, setAggregateError] = useState<string | null>(null);
+  // Per-field validity flags exposed so individual <Input>s render their
+  // own red border + aria-invalid when the user has tried to submit.
+  const nameInvalid = name.trim().length > 0 && name.trim().length < 2;
+  const passwordInvalid = password.length > 0 && password.length < 8;
+  const showFieldErrors = aggregateError !== null;
+
+  // canSubmit is preserved as the explicit AND cascade so the existing
+  // signupCheckboxVisible regression test still pins legalChecked as the
+  // final clause. (Semantically equivalent to missingFields.length === 0.)
   const canSubmit =
     name.trim().length >= 2 &&
     looksLikeEmail(email) &&
@@ -100,7 +135,19 @@ export default function Signup() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (submitting || !canSubmit) return;
+    if (submitting) return;
+    // v23.4.6 Phase 5 — if any required fields are missing, surface ALL of
+    // them in one aggregate message instead of returning silently. This is
+    // the L-006 fix: previously the form just returned (button was disabled)
+    // which left the user with only the live "first-failing-precondition"
+    // hint. Submitting now produces an explicit, listed banner.
+    if (!canSubmit) {
+      setAggregateError(
+        `Please complete: ${missingFields.join(", ")}.`,
+      );
+      return;
+    }
+    setAggregateError(null);
     setSubmitting(true);
     setErrorMsg(null);
     setDuplicateEmail(false);
@@ -113,13 +160,29 @@ export default function Signup() {
         password,
         portal: "founder",
       });
-      await res.json();
+      const responseBody = (await res.json()) as {
+        ok?: boolean;
+        requiresEmailConfirmation?: boolean;
+      };
       await queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
       setRole("founder");
-      toast({ title: "Account created", description: "Let's set up your first company." });
       // Record legal consent after successful account creation
       legalConsentRef.current?.recordConsent().catch(() => null);
-      navigate("/founder/dashboard");
+      // v23.4.6 Phase 6 (L-010) — surface an explicit post-signup
+      // interstitial instead of silently redirecting. The interstitial
+      // tells the user (a) the account exists, (b) whether they need to
+      // confirm their email before signing in (driven by the server's
+      // `requiresEmailConfirmation` flag if present), and (c) how to
+      // continue. The current server flow auto-signs-in (sets cookie) so
+      // by default we render the "welcome — you're signed in" variant.
+      setRequiresEmailConfirmation(
+        responseBody?.requiresEmailConfirmation === true,
+      );
+      setSignedUpAs(email.trim());
+      toast({
+        title: "Account created",
+        description: "Welcome to Capavate.",
+      });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       const statusMatch = /^(\d{3}):\s*(.*)$/.exec(msg);
@@ -145,6 +208,62 @@ export default function Signup() {
     }
   }
 
+  // v23.4.6 Phase 6 (L-010) — post-signup confirmation interstitial.
+  // When `signedUpAs` is non-null the account was just created; render an
+  // explicit confirmation screen instead of redirecting silently. The copy
+  // branches on `requiresEmailConfirmation` so a future server change that
+  // requires email verification will be honored automatically.
+  if (signedUpAs !== null) {
+    return (
+      <AuthShell
+        title="Account created"
+        subtitle="Welcome to Capavate."
+      >
+        <div
+          className="space-y-4"
+          data-testid="signup-interstitial"
+          role="status"
+          aria-live="polite"
+        >
+          {requiresEmailConfirmation ? (
+            <>
+              <p data-testid="text-signup-confirm-email">
+                Check your inbox at{" "}
+                <strong>{signedUpAs}</strong> for a confirmation link
+                before signing in.
+              </p>
+              <p className="text-sm text-muted-foreground">
+                Once confirmed, return to{" "}
+                <Link
+                  href="/auth/login?portal=founder"
+                  className="text-[hsl(184_98%_22%)] hover:underline"
+                >
+                  sign in
+                </Link>
+                .
+              </p>
+            </>
+          ) : (
+            <>
+              <p data-testid="text-signup-welcome">
+                Account created — welcome,{" "}
+                <strong>{signedUpAs}</strong>. You&apos;re signed in.
+              </p>
+              <button
+                type="button"
+                onClick={() => navigate("/founder/dashboard")}
+                data-testid="button-continue-dashboard"
+                className="inline-flex h-10 items-center justify-center rounded-md bg-[hsl(184_98%_22%)] px-4 text-sm font-medium text-white hover:opacity-90"
+              >
+                Continue to your dashboard →
+              </button>
+            </>
+          )}
+        </div>
+      </AuthShell>
+    );
+  }
+
   return (
     <AuthShell
       title="Create a founder account"
@@ -166,13 +285,25 @@ export default function Signup() {
           <Input
             id="name"
             value={name}
-            onChange={(e) => setName(e.target.value)}
+            onChange={(e) => {
+              setName(e.target.value);
+              if (aggregateError) setAggregateError(null);
+            }}
             required
             autoComplete="name"
             autoFocus
             placeholder="Full name"
             data-testid="input-name"
+            aria-invalid={nameInvalid || (showFieldErrors && name.trim().length < 2)}
           />
+          {(nameInvalid || (showFieldErrors && name.trim().length < 2)) && (
+            <p
+              className="mt-1 text-xs text-red-700 flex items-center gap-1"
+              data-testid="text-name-invalid"
+            >
+              <AlertCircle className="h-3 w-3" /> Enter your name (at least 2 characters).
+            </p>
+          )}
         </div>
 
         <div>
@@ -183,12 +314,16 @@ export default function Signup() {
             id="email"
             type="email"
             value={email}
-            onChange={(e) => { setEmail(e.target.value); setDuplicateEmail(false); }}
+            onChange={(e) => {
+              setEmail(e.target.value);
+              setDuplicateEmail(false);
+              if (aggregateError) setAggregateError(null);
+            }}
             required
             autoComplete="email"
             placeholder="you@company.com"
             data-testid="input-email"
-            aria-invalid={!emailValid}
+            aria-invalid={!emailValid || (showFieldErrors && !looksLikeEmail(email))}
           />
           {!emailValid && (
             <p className="mt-1 text-xs text-red-700 flex items-center gap-1" data-testid="text-email-invalid">
@@ -205,13 +340,25 @@ export default function Signup() {
             id="password"
             type="password"
             value={password}
-            onChange={(e) => setPassword(e.target.value)}
+            onChange={(e) => {
+              setPassword(e.target.value);
+              if (aggregateError) setAggregateError(null);
+            }}
             required
             minLength={8}
             autoComplete="new-password"
             placeholder="At least 8 characters"
             data-testid="input-password"
+            aria-invalid={passwordInvalid || (showFieldErrors && password.length < 8)}
           />
+          {(passwordInvalid || (showFieldErrors && password.length < 8)) && (
+            <p
+              className="mt-1 text-xs text-red-700 flex items-center gap-1"
+              data-testid="text-password-too-short"
+            >
+              <AlertCircle className="h-3 w-3" /> Password must be at least 8 characters.
+            </p>
+          )}
           {/* Strength meter — only renders once typing starts */}
           {password.length > 0 && (
             <div className="mt-2 space-y-1" data-testid="password-strength">
@@ -232,6 +379,19 @@ export default function Signup() {
             Use 8+ characters. Mix of upper/lower case, digits, and symbols recommended.
           </p>
         </div>
+
+        {aggregateError && (
+          <div
+            role="alert"
+            className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2"
+            data-testid="text-signup-aggregate-error"
+          >
+            <div className="flex items-start gap-2">
+              <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+              <span>{aggregateError}</span>
+            </div>
+          </div>
+        )}
 
         {errorMsg && (
           <div
@@ -263,10 +423,15 @@ export default function Signup() {
           onCheckedChange={setLegalChecked}
         />
 
+        {/* v23.4.6 Phase 5 (L-006) — the submit button is NO LONGER disabled
+         * when required fields are missing. Disabling it hides the cause of
+         * the form being unresponsive; enabling it + aggregating the missing
+         * fields into an explicit banner on submit is more usable AND more
+         * accessible (screen readers announce role="alert" content). */}
         <Button
           type="submit"
           className="w-full bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
-          disabled={submitting || !canSubmit}
+          disabled={submitting}
           data-testid="button-submit-signup"
         >
           {submitting ? "Creating account…" : "Create founder account"}

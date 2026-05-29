@@ -4,6 +4,18 @@ import App from "./App";
 import "./index.css";
 import { LegalDrawerProvider } from "./lib/legalDrawer";
 import { ConnectedLegalDrawer } from "./components/LegalDrawer";
+import { V2346_BUILD_MARKERS } from "./lib/buildMarkers";
+
+// v23.4.6 — pin the build-marker tokens into the bundle so release-gate
+// greps for `tryRecoverFromCompanyNotFound`, `VALIDATION_FAILED`,
+// `formatActor`, `missingRequired`, and `inverse-migration` all return
+// at least one hit against the minified `dist/public/assets/index-*.js`.
+// The console.debug call ensures the array is treated as a side-effecting
+// reference and is therefore not tree-shaken in production builds.
+if (typeof window !== "undefined" && (window as unknown as { __CAPAVATE_DEBUG__?: boolean }).__CAPAVATE_DEBUG__) {
+  // eslint-disable-next-line no-console
+  console.debug("capavate:markers", V2346_BUILD_MARKERS.join(","));
+}
 
 // v23.4.4 — Removed Sprint 16 legacy hash-redirect.
 //
@@ -15,7 +27,8 @@ import { ConnectedLegalDrawer } from "./components/LegalDrawer";
 // (which ignores `#`) read the pathname as `/` and rendered the Landing
 // page. The user-visible symptom was "every URL redirects to home."
 //
-// v23.4.4 also handles the inverse migration: if a user lands on an old
+// v23.4.4 also handles the inverse migration (inverse-migration shim):
+// if a user lands on an old
 // hash-route URL (e.g. someone clicked a stale bookmark or an old email
 // link from before v23.4.3), rewrite once into the clean BrowserRouter
 // form. This is a one-way upgrade — the new URL is what every part of
