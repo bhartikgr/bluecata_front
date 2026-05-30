@@ -14,6 +14,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { ROUND_TYPES, INSTRUMENTS, ANTI_DILUTION_VARIANTS, ESOP_TIMING, type InstrumentValue } from "@shared/schema";
 import { ArrowLeft, ArrowRight, Check, Sparkles, Info } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
@@ -91,8 +92,20 @@ const STEPS = [
  { id: 1, title: "Round + Vehicle", desc: "Round type and instrument" },
  { id: 2, title: "Terms", desc: "Per-instrument fields" },
  { id: 3, title: "Schedule", desc: "Open + close + narrative" },
- { id: 4, title: "Review", desc: "Confirm and create" },
+ // v23.4.8 Phase 2 / BUG 012 — founder can add initial investors (CRM or manual)
+ // BEFORE the term sheet step so non-Capavate investors land on the round.
+ { id: 4, title: "Investors", desc: "Pick from CRM or add manually" },
+ { id: 5, title: "Review", desc: "Confirm and create" },
 ];
+
+// v23.4.8 Phase 2 / BUG 012 — shape sent to the PATCH endpoint.
+type WizardInitialShareholder = {
+ name: string;
+ email: string;
+ checkSize: string;
+ source: "crm" | "manual";
+ crmContactId?: string;
+};
 
 type FormShape = {
  type: string;
@@ -179,6 +192,10 @@ export default function RoundNew() {
  // Sprint 11 D4 — Warrants/ESOP attach to a parent round (no own term sheet)
  const [attachToRound, setAttachToRound] = useState<string>("");
  const [form, setForm] = useState<FormShape>(defaultForm);
+ // v23.4.8 Phase 2 / BUG 012 — initial-shareholders state (step 4).
+ const [selectedShareholders, setSelectedShareholders] = useState<WizardInitialShareholder[]>([]);
+ const [manualOpen, setManualOpen] = useState(false);
+ const [manualDraft, setManualDraft] = useState<{ name: string; email: string; checkSize: string }>({ name: "", email: "", checkSize: "" });
 
  // Defect A — use real active companyId (never hardcode co_novapay).
  const companyId = useActiveCompanyId();
@@ -231,8 +248,27 @@ export default function RoundNew() {
  };
  return (await apiRequest("POST", "/api/rounds", payload)).json();
  },
- onSuccess: (data: { id: string }) => {
+ onSuccess: async (data: { id: string }) => {
  queryClient.invalidateQueries({ queryKey: ["/api/rounds"] });
+ // v23.4.8 Phase 2 / BUG 012 — persist initial-shareholders picks against
+ // the new round via the dedicated (non-sacred) endpoint. Failure here is
+ // non-fatal: the round is already created and the picker can be revisited.
+ if (selectedShareholders.length > 0) {
+ try {
+ await apiRequest("PATCH", `/api/founder/rounds/${data.id}/initial-shareholders`, {
+ companyId,
+ shareholders: selectedShareholders.map((s) => ({
+ name: s.name,
+ email: s.email || null,
+ checkSize: s.checkSize || null,
+ source: s.source,
+ crmContactId: s.crmContactId ?? null,
+ })),
+ });
+ } catch {
+ /* non-fatal */
+ }
+ }
  toast({ title: "Round created", description: `Round ${data.id} is now active.` });
  // Sprint 27 fix: respect the user's term-sheet choice from Step 3. If they
  // picked Generate or Upload, route them straight to the term-sheet page
@@ -257,6 +293,19 @@ export default function RoundNew() {
    if (!companyId) return [];
    const r = await fetch(`/api/companies/${encodeURIComponent(companyId)}/rounds`);
    if (!r.ok) return [];
+   const data = await r.json();
+   return Array.isArray(data) ? data : [];
+  },
+  enabled: Boolean(companyId),
+ });
+
+ // v23.4.8 Phase 2 / BUG 012 — CRM contacts feed the wizard's Investors step.
+ type WizardCrmRow = { id: string; name: string; firmName?: string; email?: string; region?: string; stage?: string };
+ const crmQ = useQuery<WizardCrmRow[]>({
+  queryKey: ["/api/founder/investor-crm", companyId],
+  queryFn: async () => {
+   if (!companyId) return [];
+   const r = await apiRequest("GET", `/api/founder/investor-crm?companyId=${encodeURIComponent(companyId)}`);
    const data = await r.json();
    return Array.isArray(data) ? data : [];
   },
@@ -606,6 +655,109 @@ export default function RoundNew() {
  )}
 
  {step === 4 && (
+ <div className="space-y-4" data-testid="step-investors">
+ <div className="flex items-start justify-between gap-3">
+ <div>
+ <p className="text-sm font-semibold">Add initial shareholders</p>
+ <p className="text-xs text-muted-foreground mt-1">Pick investors from your CRM, or add non-Capavate investors manually. You can also skip this step and add them after the round is created.</p>
+ </div>
+ <div className="flex gap-2 shrink-0">
+ <Button variant="outline" size="sm" onClick={() => setManualOpen(true)} data-testid="button-add-manual-shareholder">+ Add manual investor</Button>
+ <Button variant="ghost" size="sm" onClick={() => { setSelectedShareholders([]); setStep(5); }} data-testid="button-skip-shareholders">Skip</Button>
+ </div>
+ </div>
+ <div className="grid md:grid-cols-2 gap-3">
+ <div className="rounded-md border" data-testid="crm-available-column">
+ <div className="px-3 py-2 border-b bg-secondary/30 text-xs font-semibold">Available from your CRM ({(crmQ.data ?? []).length})</div>
+ <div className="max-h-80 overflow-y-auto divide-y">
+ {(crmQ.data ?? []).length === 0 && (
+ <div className="p-3 text-xs text-muted-foreground">No CRM contacts yet — use “Add manual investor”.</div>
+ )}
+ {(crmQ.data ?? []).map((c) => {
+ const already = selectedShareholders.some((s) => s.source === "crm" && s.crmContactId === c.id);
+ return (
+ <div key={c.id} className="flex items-center justify-between px-3 py-2 text-sm" data-testid={`crm-row-${c.id}`}>
+ <div className="min-w-0">
+ <div className="font-medium truncate">{c.name}</div>
+ <div className="text-xs text-muted-foreground truncate">{c.firmName ?? "—"} · {c.email ?? "no email"}{c.stage ? ` · ${String(c.stage).replace("_", " ")}` : ""}</div>
+ </div>
+ <Button
+ size="sm"
+ variant={already ? "ghost" : "outline"}
+ disabled={already}
+ onClick={() => setSelectedShareholders((prev) => [...prev, { name: c.name, email: c.email ?? "", checkSize: "", source: "crm", crmContactId: c.id }])}
+ data-testid={`button-add-crm-${c.id}`}
+ >{already ? "Added" : "+ Add"}</Button>
+ </div>
+ );
+ })}
+ </div>
+ </div>
+ <div className="rounded-md border" data-testid="selected-column">
+ <div className="px-3 py-2 border-b bg-secondary/30 text-xs font-semibold">Selected for this round ({selectedShareholders.length})</div>
+ <div className="max-h-80 overflow-y-auto divide-y">
+ {selectedShareholders.length === 0 && (
+ <div className="p-3 text-xs text-muted-foreground">No investors yet — add some from the left or click “+ Add manual investor”.</div>
+ )}
+ {selectedShareholders.map((s, idx) => (
+ <div key={`${s.source}_${s.crmContactId ?? s.email ?? s.name}_${idx}`} className="flex items-center justify-between gap-2 px-3 py-2 text-sm" data-testid={`selected-row-${idx}`}>
+ <div className="min-w-0 flex-1">
+ <div className="font-medium truncate">{s.name} <span className="text-[10px] uppercase tracking-wide text-muted-foreground">({s.source})</span></div>
+ <div className="text-xs text-muted-foreground truncate">{s.email || "no email"}</div>
+ <Input
+ type="text"
+ inputMode="decimal"
+ className="mt-1 h-8 text-xs font-mono"
+ placeholder="Check size (USD)"
+ value={s.checkSize}
+ onChange={(e) => setSelectedShareholders((prev) => {
+ const next = prev.slice();
+ next[idx] = { ...s, checkSize: e.target.value };
+ return next;
+ })}
+ data-testid={`input-check-size-${idx}`}
+ />
+ </div>
+ <Button
+ size="sm"
+ variant="ghost"
+ onClick={() => setSelectedShareholders((prev) => prev.filter((_, i) => i !== idx))}
+ data-testid={`button-remove-${idx}`}
+ >Remove</Button>
+ </div>
+ ))}
+ </div>
+ </div>
+ </div>
+ {manualOpen && (
+ <Dialog open onOpenChange={(o) => !o && setManualOpen(false)}>
+ <DialogContent>
+ <DialogHeader><DialogTitle>Add a non-Capavate investor</DialogTitle></DialogHeader>
+ <div className="space-y-3">
+ <div><Label>Name</Label><Input className="mt-1" value={manualDraft.name} onChange={(e) => setManualDraft({ ...manualDraft, name: e.target.value })} data-testid="input-manual-name" /></div>
+ <div><Label>Email (optional)</Label><Input className="mt-1" type="email" value={manualDraft.email} onChange={(e) => setManualDraft({ ...manualDraft, email: e.target.value })} data-testid="input-manual-email" /></div>
+ <div><Label>Check size (USD, optional)</Label><Input className="mt-1" type="text" inputMode="decimal" value={manualDraft.checkSize} onChange={(e) => setManualDraft({ ...manualDraft, checkSize: e.target.value })} data-testid="input-manual-check-size" /></div>
+ </div>
+ <DialogFooter>
+ <Button variant="outline" onClick={() => setManualOpen(false)}>Cancel</Button>
+ <Button
+ disabled={!manualDraft.name.trim()}
+ onClick={() => {
+ setSelectedShareholders((prev) => [...prev, { name: manualDraft.name.trim(), email: manualDraft.email.trim(), checkSize: manualDraft.checkSize.trim(), source: "manual" }]);
+ setManualDraft({ name: "", email: "", checkSize: "" });
+ setManualOpen(false);
+ }}
+ className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+ data-testid="button-confirm-manual-shareholder"
+ >Add to round</Button>
+ </DialogFooter>
+ </DialogContent>
+ </Dialog>
+ )}
+ </div>
+ )}
+
+ {step === 5 && (
  <div className="space-y-3 text-sm">
  <h3 className="text-base font-semibold">{form.name}</h3>
  <div className="flex flex-wrap gap-2">
@@ -697,7 +849,7 @@ export default function RoundNew() {
 
  <div className="flex justify-between pt-3 border-t border-border">
  <Button variant="ghost" onClick={() => setStep(s => Math.max(1, s - 1))} disabled={step === 1} data-testid="button-prev"><ArrowLeft className="h-4 w-4 mr-2" /> Back</Button>
- {step < 4 ? (
+ {step < 5 ? (
  <Button onClick={() => setStep(s => s + 1)} className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] text-white" data-testid="button-next">Continue <ArrowRight className="h-4 w-4 ml-2" /></Button>
  ) : (
  <Button onClick={() => createRoundMut.mutate()} disabled={createRoundMut.isPending} className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" data-testid="button-create">{createRoundMut.isPending ? "Creating..." : "Create round"}</Button>

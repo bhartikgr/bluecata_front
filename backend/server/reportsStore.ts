@@ -294,6 +294,53 @@ export function registerReportsRoutes(app: Express): void {
     res.json(r);
   });
 
+  /**
+   * v23.4.8 — BUG 003/023 (Ozan, Critical):
+   * Founder must be able to EDIT a draft report before sending. Accepts a
+   * partial body { title?, period?, sections?: Array<{ id, title?, body? }> }
+   * and updates the in-memory entity (DB write-through is best-effort).
+   *
+   * Only the founder who owns the company may edit. Sent reports are frozen:
+   * status !== "draft" returns 409 conflict so the UI can disable Edit.
+   */
+  app.patch("/api/founder/reports2/:id", (req, res) => {
+    const ctx = getUserContext(req);
+    if (!ctx.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
+    const r = reports.find((x) => x.id === req.params.id);
+    if (!r) return res.status(404).json({ ok: false, error: "not_found" });
+    const ownsCompany = ctx.isAdmin || ctx.founder.companies.some((c) => c.companyId === r.companyId);
+    if (!ownsCompany) return res.status(403).json({ ok: false, error: "FOUNDER_WRONG_COMPANY" });
+    if (r.status !== "draft") {
+      return res.status(409).json({ ok: false, error: "REPORT_NOT_DRAFT", message: "Only drafts can be edited." });
+    }
+    const { title, period, sections } = req.body ?? {};
+    if (typeof title === "string" && title.trim().length > 0) r.title = title;
+    if (typeof period === "string") r.period = period;
+    if (Array.isArray(sections)) {
+      for (const patch of sections) {
+        if (!patch || typeof patch.id !== "string") continue;
+        const sec = r.sections.find((s) => s.id === patch.id);
+        if (!sec) continue;
+        if (typeof patch.title === "string" && patch.title.trim().length > 0) sec.title = patch.title;
+        if (typeof patch.body === "string") sec.body = patch.body;
+      }
+    }
+    const now = new Date().toISOString();
+    persistReportToDb(r, ctx.userId, now);
+    try {
+      appendAdminAudit(
+        ctx.userId ?? "u_unknown",
+        `company:${r.companyId}`,
+        "report.edited",
+        { reportId: r.id, fields: Object.keys(req.body ?? {}) },
+        tenantForCompany(r.companyId),
+      );
+    } catch (err) {
+      log.warn("[reportsStore.patch] audit append failed:", (err as Error).message);
+    }
+    res.json(r);
+  });
+
   app.post("/api/founder/reports2/:id/send", (req, res) => {
     const ctx = getUserContext(req);
     if (!ctx.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
@@ -345,7 +392,19 @@ export function registerReportsRoutes(app: Express): void {
       payload: { reportId: r.id, template: r.template, recipientsCount: r.recipientsCount, companyId: r.companyId },
       req,
     });
-    res.json({ ok: true, report: r, recipientCount: recipients.length, delivered, telemetry: env });
+    // v23.4.8 — BUG 003/023: surface a per-recipient delivery summary so the
+    // UI toast can show "Sent to N investors" and any failures explicitly.
+    const recipientDeliveryStatus = recipients.map((userId) => ({ userId, status: "queued" as const }));
+    res.json({
+      ok: true,
+      report: r,
+      recipientCount: recipients.length,
+      sentCount: delivered,
+      failedCount: Math.max(0, recipients.length - delivered),
+      recipients: recipientDeliveryStatus,
+      delivered,
+      telemetry: env,
+    });
   });
 
   /**

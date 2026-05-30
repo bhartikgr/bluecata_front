@@ -27,7 +27,7 @@ describe("23-May Fix 8 — Header dropdown exposes partner login", () => {
   const src = fs.readFileSync(HEADER, "utf8");
 
   it("dropdown contains a Consortium Partners item pointing to /partner/login", () => {
-    expect(src).toMatch(/href="#\/partner\/login"/);
+    expect(src).toMatch(/href="\/partner\/login"/);
     expect(src).toMatch(/Consortium Partners/);
     expect(src).toMatch(/data-testid="link-header-partner-login"/);
   });
@@ -43,16 +43,16 @@ describe("23-May Fix 8 — Footer Account column", () => {
 
   it("exposes a Partner sign-in link", () => {
     expect(src).toMatch(/data-testid="link-footer-partner-signin"/);
-    expect(src).toMatch(/href="#\/partner\/login"/);
+    expect(src).toMatch(/href="\/partner\/login"/);
   });
 
   it("exposes a partner application link", () => {
     expect(src).toMatch(/data-testid="link-footer-partner-apply"/);
-    expect(src).toMatch(/href="#\/apply\/consortium"/);
+    expect(src).toMatch(/href="\/apply\/consortium"/);
   });
 
   it("exposes an Admin link in the footer dropdown", () => {
     expect(src).toMatch(/data-testid="link-footer-admin-login"/);
-    expect(src).toMatch(/href="#\/admin\/login"/);
+    expect(src).toMatch(/href="\/admin\/login"/);
   });
 });

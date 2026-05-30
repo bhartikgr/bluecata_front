@@ -12,7 +12,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { StateBadge, EmptyState } from "@/components/common";
-import { FileText, Plus, Send, Eye, Calendar, MessageSquare, Users, Mail } from "lucide-react";
+import { FileText, Plus, Send, Eye, Calendar, MessageSquare, Users, Mail, Pencil } from "lucide-react";
 import { fmtDate, fmtDateTime, fmtPct } from "@/lib/format";
 import { useActiveCompanyId } from "@/lib/useActiveCompany";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -64,6 +64,8 @@ export default function Reports() {
   const [previewId, setPreviewId] = useState<string | null>(null);
   const [sendId, setSendId] = useState<string | null>(null);
   const [scheduleId, setScheduleId] = useState<string | null>(null);
+  // v23.4.8 — BUG 003/023: founder can edit draft subject/body before sending.
+  const [editId, setEditId] = useState<string | null>(null);
 
   const reports = reportsQ.data ?? [];
   const crm = crmQ.data ?? [];
@@ -126,6 +128,9 @@ export default function Reports() {
                       </div>
                       <div className="flex flex-wrap gap-2 shrink-0">
                         <Button size="sm" variant="ghost" onClick={() => setPreviewId(r.id)} data-testid={`button-preview-${r.id}`}><Eye className="h-3.5 w-3.5 mr-1" /> Preview</Button>
+                        {r.status === "draft" && (
+                          <Button size="sm" variant="outline" onClick={() => setEditId(r.id)} data-testid={`button-edit-${r.id}`}><Pencil className="h-3.5 w-3.5 mr-1" /> Edit</Button>
+                        )}
                         <Button size="sm" variant="ghost" onClick={() => setScheduleId(r.id)} data-testid={`button-schedule-${r.id}`}><Calendar className="h-3.5 w-3.5 mr-1" /> Schedule</Button>
                         {r.status !== "sent" && (
                           <Button size="sm" onClick={() => setSendId(r.id)} className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" data-testid={`button-send-${r.id}`}><Send className="h-3.5 w-3.5 mr-1" /> Send</Button>
@@ -151,7 +156,25 @@ export default function Reports() {
           report={reports.find(r => r.id === sendId)!}
           crm={crm}
           onClose={() => setSendId(null)}
-          onSent={() => { setSendId(null); toast({ title: "Report sent" }); queryClient.invalidateQueries({ queryKey: ["/api/founder/reports2", companyId] }); }}
+          onSent={(summary) => {
+            setSendId(null);
+            // v23.4.8 — BUG 003/023: surface explicit recipient count + any failures.
+            const failedSuffix = summary && summary.failedCount > 0 ? ` (${summary.failedCount} delivery error${summary.failedCount === 1 ? "" : "s"})` : "";
+            toast({
+              title: `Report sent to ${summary?.recipientCount ?? 0} investor${summary?.recipientCount === 1 ? "" : "s"}`,
+              description: summary?.recipientCount
+                ? `Delivery queued for ${summary.recipientCount} recipient${summary.recipientCount === 1 ? "" : "s"}${failedSuffix}.`
+                : "No recipients selected.",
+            });
+            queryClient.invalidateQueries({ queryKey: ["/api/founder/reports2", companyId] });
+          }}
+        />
+      )}
+      {editId && (
+        <EditDraftDialog
+          report={reports.find(r => r.id === editId)!}
+          onClose={() => setEditId(null)}
+          onSaved={() => { setEditId(null); toast({ title: "Draft saved", description: "Changes will be included when you send this report." }); queryClient.invalidateQueries({ queryKey: ["/api/founder/reports2", companyId] }); }}
         />
       )}
       {scheduleId && (
@@ -270,7 +293,9 @@ function PreviewDialog({ report, onClose }: { report: Report; onClose: () => voi
   );
 }
 
-function SendDialog({ report, crm, onClose, onSent }: { report: Report; crm: CrmRow[]; onClose: () => void; onSent: () => void }) {
+type SendSummary = { recipientCount: number; sentCount: number; failedCount: number };
+
+function SendDialog({ report, crm, onClose, onSent }: { report: Report; crm: CrmRow[]; onClose: () => void; onSent: (summary: SendSummary) => void }) {
   const [stageFilter, setStageFilter] = useState<string>("all");
   const [regionFilter, setRegionFilter] = useState<string>("all");
   const [selected, setSelected] = useState<Set<string>>(new Set(report.recipients.length > 0 ? report.recipients : crm.filter(c => c.stage === "invested").map(c => c.investorId)));
@@ -292,9 +317,10 @@ function SendDialog({ report, crm, onClose, onSent }: { report: Report; crm: Crm
   const sendMut = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", `/api/founder/reports2/${report.id}/send`, { recipients: Array.from(selected) });
-      return res.json();
+      return res.json() as Promise<{ recipientCount: number; sentCount: number; failedCount: number }>;
     },
-    onSuccess: onSent,
+    // v23.4.8 — BUG 003/023: forward delivery summary to caller for the toast.
+    onSuccess: (data) => onSent({ recipientCount: data?.recipientCount ?? selected.size, sentCount: data?.sentCount ?? 0, failedCount: data?.failedCount ?? 0 }),
   });
 
   const regions = Array.from(new Set(crm.map(c => c.region))).sort();
@@ -413,6 +439,85 @@ function ScheduleDialog({ report, onClose, onSaved }: { report: Report; onClose:
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button onClick={() => saveMut.mutate()} disabled={saveMut.isPending} className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" data-testid="button-confirm-schedule">Save schedule</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * v23.4.8 — BUG 003/023: EditDraftDialog
+ *
+ * Lets the founder edit a DRAFT investor report's title, period and each
+ * section's body BEFORE choosing recipients and sending. The server enforces
+ * status === "draft" (returns 409 otherwise) so this dialog is only mounted
+ * from a Draft card in the list.
+ */
+function EditDraftDialog({ report, onClose, onSaved }: { report: Report; onClose: () => void; onSaved: () => void }) {
+  const [title, setTitle] = useState(report.title);
+  const [period, setPeriod] = useState(report.period);
+  const [sectionsDraft, setSectionsDraft] = useState<Array<{ id: string; title: string; body: string }>>(
+    () => report.sections.map(s => ({ id: s.id, title: s.title, body: s.body })),
+  );
+
+  const saveMut = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("PATCH", `/api/founder/reports2/${report.id}`, {
+        title,
+        period,
+        sections: sectionsDraft,
+      });
+      return res.json();
+    },
+    onSuccess: onSaved,
+  });
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2"><FileText className="h-4 w-4" /> Edit draft</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label className="text-xs">Subject / Title</Label>
+              <Input className="mt-1" value={title} onChange={(e) => setTitle(e.target.value)} data-testid="input-edit-title" />
+            </div>
+            <div>
+              <Label className="text-xs">Period</Label>
+              <Input className="mt-1" value={period} onChange={(e) => setPeriod(e.target.value)} data-testid="input-edit-period" />
+            </div>
+          </div>
+          <div className="space-y-3">
+            {sectionsDraft.map((s, idx) => (
+              <div key={s.id} className="rounded-md border p-3" data-testid={`section-edit-${s.id}`}>
+                <Label className="text-xs">{s.title}</Label>
+                <Textarea
+                  className="mt-1 font-mono text-xs"
+                  rows={4}
+                  value={s.body}
+                  onChange={(e) => {
+                    const next = sectionsDraft.slice();
+                    next[idx] = { ...s, body: e.target.value };
+                    setSectionsDraft(next);
+                  }}
+                  data-testid={`textarea-section-${s.id}`}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} data-testid="button-edit-cancel">Cancel</Button>
+          <Button
+            onClick={() => saveMut.mutate()}
+            disabled={saveMut.isPending || !title.trim()}
+            className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+            data-testid="button-edit-save"
+          >
+            Save draft
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

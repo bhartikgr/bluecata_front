@@ -26,7 +26,7 @@ export default function Hero() {
             </p>
             <div className="hero__ctas">
               <a
-                href="#/onboarding"
+                href="/onboarding"
                 className="btn btn--primary btn--lg text-white"
               >
                 Register Your Company

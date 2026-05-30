@@ -40,6 +40,11 @@ import { incomingInvitations } from "./mockData";
 import { emitSync } from "./sprint10Telemetry";
 import { getUserContext } from "./lib/userContext";
 import type { UserContext } from "./lib/userContext";
+// v23.4.8 Phase 3 — propagate investor soft-circle decision into the
+// soft-circle store so the founder's GET /api/rounds/:id/soft-circles surface
+// sees the new commitment without a refresh hack.
+import { createSoftCircle as softCircleCreate } from "./softCircleStore";
+import { log } from "./lib/logger";
 
 /**
  * Resolves the request's UserContext, falling back to getUserContext(req)
@@ -266,6 +271,36 @@ export function registerYourDecisionRoutes(app: Express): void {
 
     const result = applyDecisionAction(rec, parsed.data);
     if (!result.ok) return res.status(409).json({ error: result.error });
+
+    // v23.4.8 Phase 3 — when an investor confirms a soft-circle decision,
+    // mirror it into the soft-circle store so founders can see it on
+    // /founder/rounds/:id (RoundDetail) without a refresh hack. Best-effort
+    // only; never fail the decision PATCH if the mirror write fails.
+    if (parsed.data.action === "soft_circle" && typeof parsed.data.amount === "number" && parsed.data.amount > 0) {
+      try {
+        const investorName = ctx.identity?.name || ctx.identity?.screenName || ctx.userId || "Investor";
+        const investorEmail = ctx.identity?.email ?? null;
+        softCircleCreate({
+          roundId: rec.roundId,
+          companyId: rec.companyId,
+          invitationId: rec.invitationId,
+          investorUserId: ctx.userId,
+          investorEmail,
+          investorName,
+          amount: parsed.data.amount,
+          currency: parsed.data.currency ?? rec.currency ?? "USD",
+          status: "intent",
+          collectiveVisible: true,
+        });
+      } catch (err) {
+        // Swallow — the decision record is still authoritative; this is a
+        // best-effort mirror for founder visibility.
+        log.warn(
+          "[yourDecisionStore] soft-circle mirror write failed:",
+          (err as Error).message,
+        );
+      }
+    }
 
     const env = emitSync({
       eventType: TELEMETRY_EVENT_BY_ACTION[parsed.data.action],

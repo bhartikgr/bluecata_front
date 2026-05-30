@@ -123,7 +123,7 @@ export default function PricingSection() {
             </div>
             <div className="pricing__card-actions">
               <a
-                href="https://capavate.com/#/onboarding"
+                href="https://capavate.com/onboarding"
                 className="btn btn--primary btn--lg text-white"
               >
                 Register Your Company
@@ -145,7 +145,7 @@ export default function PricingSection() {
                 <li>Real-time round updates</li>
               </ul>
               <a
-                href="https://capavate.com/#/onboarding?portal=investor"
+                href="https://capavate.com/onboarding?portal=investor"
                 className="btn btn--ghost btn--sm"
               >
                 Access Your Portfolio
@@ -160,7 +160,7 @@ export default function PricingSection() {
                 Volume onboarding, portfolio-wide management, and referral
                 revenue. Pricing based on number of client companies.
               </p>
-              <a href="https://capavate.com/#/apply/consortium" className="btn btn--ghost btn--sm">
+              <a href="https://capavate.com/apply/consortium" className="btn btn--ghost btn--sm">
                 Become an Ecosystem Partner
               </a>
             </div>

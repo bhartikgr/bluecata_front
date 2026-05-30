@@ -163,7 +163,7 @@ export default function Header3() {
               </button>
               <div className="dropdown__menu" id="header-signin-menu" role="menu">
                 <a
-                  href="#/auth/login?portal=investor"
+                  href="/auth/login?portal=investor"
                   className="dropdown__item"
                   data-testid="link-header-investor-login"
                 >
@@ -174,7 +174,7 @@ export default function Header3() {
                   </div>
                 </a>
                 <a
-                  href="#/auth/signup?portal=founder"
+                  href="/auth/signup?portal=founder"
                   className="dropdown__item"
                   data-testid="link-header-founder-signup"
                 >
@@ -185,7 +185,7 @@ export default function Header3() {
                   </div>
                 </a>
                 <a
-                  href="#/partner/login"
+                  href="/partner/login"
                   className="dropdown__item"
                   data-testid="link-header-partner-login"
                 >
@@ -199,7 +199,7 @@ export default function Header3() {
             </div>
 
             <a
-              href="#/onboarding"
+              href="/onboarding"
               className="btn btn--primary btn--sm text-white"
             >
               Register Your Company
@@ -254,12 +254,12 @@ export default function Header3() {
                 margin: "var(--space-2) 0",
               }}
             />
-            <a href="#/auth/login?portal=investor" data-testid="link-mobile-investor-login">For Investors</a>
-            <a href="#/auth/signup?portal=founder" data-testid="link-mobile-founder-signup">For Founders</a>
-            <a href="#/partner/login" data-testid="link-mobile-partner-login">Consortium Partner Sign In</a>
-            <a href="#/apply/consortium" data-testid="link-mobile-partner-apply">Apply: Consortium Partners</a>
+            <a href="/auth/login?portal=investor" data-testid="link-mobile-investor-login">For Investors</a>
+            <a href="/auth/signup?portal=founder" data-testid="link-mobile-founder-signup">For Founders</a>
+            <a href="/partner/login" data-testid="link-mobile-partner-login">Consortium Partner Sign In</a>
+            <a href="/apply/consortium" data-testid="link-mobile-partner-apply">Apply: Consortium Partners</a>
             <a
-              href="#/auth/signup?portal=founder"
+              href="/auth/signup?portal=founder"
               className="btn btn--primary text-white"
             >
               Register Your Company

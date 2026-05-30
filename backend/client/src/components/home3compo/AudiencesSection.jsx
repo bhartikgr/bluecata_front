@@ -280,7 +280,7 @@ function AudiencesSection() {
             </div>
             <div className="audience__cta-row">
               <a
-                href="#/onboarding"
+                href="/onboarding"
                 className="btn btn--primary text-white"
               >
                 Register Your Company

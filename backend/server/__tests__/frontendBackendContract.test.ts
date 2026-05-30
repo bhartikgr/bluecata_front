@@ -78,24 +78,23 @@ describe("Wave D — front-end ↔ back-end contract reconciliation", () => {
     });
   });
 
-  describe("ISSUE 4 — Investor card href uses hash-routed onboarding", () => {
+  describe("ISSUE 4 — Investor card href uses path-routed onboarding (Avi-preserved, v23.4.7.1)", () => {
     const src = readJsx("client/src/components/home3compo/PricingSection.jsx");
 
-    it("links to https://capavate.com/#/onboarding?portal=investor", () => {
-      expect(src).toContain('href="https://capavate.com/#/onboarding?portal=investor"');
+    it("links to https://capavate.com/onboarding?portal=investor (path-routed, no hash — Avi's permanent fix)", () => {
+      expect(src).toContain('href="https://capavate.com/onboarding?portal=investor"');
     });
 
-    it("does NOT use the broken https://capavate.com/onboarding (no hash)", () => {
-      // The string with NO hash must not appear. We allow the hash-routed form.
-      expect(src).not.toMatch(/href="https:\/\/capavate\.com\/onboarding"/);
+    it("does NOT use the legacy hash-routed https://capavate.com/#/onboarding form", () => {
+      expect(src).not.toMatch(/href="https:\/\/capavate\.com\/#\/onboarding/);
     });
   });
 
   describe("ISSUE 5 — Ecosystem Partner CTA points to apply form", () => {
     const src = readJsx("client/src/components/home3compo/PricingSection.jsx");
 
-    it("Become an Ecosystem Partner href is /#/apply/consortium", () => {
-      expect(src).toContain('href="https://capavate.com/#/apply/consortium"');
+    it("Become an Ecosystem Partner href is /apply/consortium (Avi-preserved path-routed)", () => {
+      expect(src).toContain('href="https://capavate.com/apply/consortium"');
     });
 
     it("Become an Ecosystem Partner CTA no longer dead-ends to #cta-final", () => {
@@ -123,45 +122,45 @@ describe("Wave D — front-end ↔ back-end contract reconciliation", () => {
   describe("ISSUE 7 — Footer3 has all required sign-in affordances", () => {
     const src = readJsx("client/src/components/home3compo/Footer3.jsx");
 
-    it("has founder sign-in link (/#/auth/login?portal=founder)", () => {
-      expect(src).toContain("/#/auth/login?portal=founder");
+    it("has founder sign-in link (/auth/login?portal=founder — Avi-preserved path-routed)", () => {
+      expect(src).toContain("/auth/login?portal=founder");
     });
 
-    it("has investor sign-in link (/#/auth/login?portal=investor)", () => {
-      expect(src).toContain("/#/auth/login?portal=investor");
+    it("has investor sign-in link (/auth/login?portal=investor — Avi-preserved path-routed)", () => {
+      expect(src).toContain("/auth/login?portal=investor");
     });
 
-    it("has partner sign-in link (#/partner/login)", () => {
-      expect(src).toContain("#/partner/login");
+    it("has partner sign-in link (/partner/login — Avi-preserved path-routed)", () => {
+      expect(src).toContain("/partner/login");
     });
 
-    it("has admin sign-in link (#/admin/login)", () => {
-      expect(src).toContain("#/admin/login");
+    it("has admin sign-in link (/admin/login — Avi-preserved path-routed)", () => {
+      expect(src).toContain("/admin/login");
     });
 
-    it("has apply-consortium link (#/apply/consortium)", () => {
-      expect(src).toContain("#/apply/consortium");
+    it("has apply-consortium link (/apply/consortium — Avi-preserved path-routed)", () => {
+      expect(src).toContain("/apply/consortium");
     });
   });
 
   describe("ISSUE 8 — Header3 dropdown surfaces all 3 personas", () => {
     const src = readJsx("client/src/components/home3compo/Header3.jsx");
 
-    it("dropdown has 'For Investors' linked to login?portal=investor", () => {
-      expect(src).toContain("#/auth/login?portal=investor");
+    it("dropdown has 'For Investors' linked to login?portal=investor (Avi-preserved path-routed)", () => {
+      expect(src).toContain("/auth/login?portal=investor");
       expect(src).toContain("For Investors");
     });
 
-    it("dropdown has 'For Founders' linked to signup?portal=founder", () => {
-      expect(src).toContain("#/auth/signup?portal=founder");
+    it("dropdown has 'For Founders' linked to signup?portal=founder (Avi-preserved path-routed)", () => {
+      expect(src).toContain("/auth/signup?portal=founder");
       expect(src).toContain("For Founders");
     });
 
-    it("dropdown surfaces Consortium Partners route", () => {
-      // Either /#/partner/login or /#/apply/consortium must be present —
+    it("dropdown surfaces Consortium Partners route (Avi-preserved path-routed)", () => {
+      // Either /partner/login or /apply/consortium must be present —
       // per the spec, partner-login is sufficient on the header dropdown,
       // and the mobile menu also lists the apply route.
-      expect(src).toMatch(/#\/partner\/login/);
+      expect(src).toMatch(/\/partner\/login/);
     });
 
     it("mobile menu also includes all three personas", () => {

@@ -160,6 +160,8 @@ import { registerAdminUsersRoutes } from "./lib/adminUsersRoutes";
 import { registerAdminEmailRoutes } from "./lib/adminEmailRoutes";
 // v23.4.7 Phase 15 / B-101 — admin dedupe-companies cleanup endpoint.
 import { registerAdminCleanupRoutes } from "./lib/adminCleanupRoutes";
+// v23.4.8 Phase 2 / BUG 012 — manual shareholders in round wizard (non-sacred path)
+import { registerRoundInitialShareholdersRoutes } from "./lib/roundInitialShareholdersStore";
 import { realtimeStreamHandler, emitMutation } from "./lib/eventBus";
 import { BridgeOutbound } from "./lib/bridgeOutbound";
 import { csrfMiddleware } from "./lib/csrf";
@@ -597,6 +599,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   /* ------------ v23.4.7 Phase 15 / B-101: admin dedupe-companies cleanup ------------ */
   registerAdminCleanupRoutes(app);
+  // v23.4.8 Phase 2 / BUG 012 — wizard-driven initial-shareholders capture.
+  registerRoundInitialShareholdersRoutes(app);
 
   /* ------------ Sprint 17 D4: realtime invalidation stream ------------ */
   app.get("/api/events/stream", realtimeStreamHandler);

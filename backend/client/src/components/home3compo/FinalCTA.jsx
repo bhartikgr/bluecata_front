@@ -23,7 +23,7 @@ export default function FinalCTA() {
             </p>
             <div className="cta-final__actions">
               <a
-                href="https://capavate.com/#/onboarding"
+                href="https://capavate.com/onboarding"
                 className="btn btn--primary btn--lg text-white"
               >
                 Register Your Company

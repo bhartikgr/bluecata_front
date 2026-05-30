@@ -133,7 +133,7 @@ export default function Footer3() {
                     {openFooterDropdown && (
                       <div className="dropdown__menu dropdown__menu--footer dropdown__menu--up">
                         <a
-                          href="https://capavate.com/#/auth/login?portal=investor"
+                          href="https://capavate.com/auth/login?portal=investor"
                           className="dropdown__item text-black"
                           data-testid="link-footer-investor-login"
                         >
@@ -143,7 +143,7 @@ export default function Footer3() {
                           </div>
                         </a>
                         <a
-                          href="https://capavate.com/#/auth/login?portal=founder"
+                          href="https://capavate.com/auth/login?portal=founder"
                           className="dropdown__item text-black"
                           data-testid="link-footer-founder-login"
                         >
@@ -153,7 +153,7 @@ export default function Footer3() {
                           </div>
                         </a>
                         <a
-                          href="#/partner/login"
+                          href="/partner/login"
                           className="dropdown__item text-black"
                           data-testid="link-footer-partner-login"
                         >
@@ -163,7 +163,7 @@ export default function Footer3() {
                           </div>
                         </a>
                         <a
-                          href="#/admin/login"
+                          href="/admin/login"
                           className="dropdown__item text-black"
                           data-testid="link-footer-admin-login"
                         >
@@ -177,11 +177,11 @@ export default function Footer3() {
                   </div>
                 </li>
                 <li>
-                  <a href="https://capavate.com/#/onboarding">Register</a>
+                  <a href="https://capavate.com/onboarding">Register</a>
                 </li>
                 <li>
                   <a
-                    href="#/partner/login"
+                    href="/partner/login"
                     data-testid="link-footer-partner-signin"
                   >
                     Partner Sign In
@@ -189,7 +189,7 @@ export default function Footer3() {
                 </li>
                 <li>
                   <a
-                    href="#/apply/consortium"
+                    href="/apply/consortium"
                     data-testid="link-footer-partner-apply"
                   >
                     Apply to join (Partners)
