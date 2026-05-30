@@ -30,7 +30,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
@@ -184,46 +184,51 @@ export function NewCompanyDialog({ open, onOpenChange }: NewCompanyDialogProps) 
               placeholder="San Francisco, USA"
             />
           </div>
-          {/* v23.4.7 Phase 3 (BUG 031): plan picker. Default = Free. */}
+          {/*
+           * v23.4.10 Phase 5 (J-001): plan picker. Default = Free.
+           * Replaced the v23.4.7 radio-card layout with a tighter
+           * ToggleGroup (type="single") segmented control (same pattern as
+           * v23.4.9 Phase 2 "Warrants & Options"). The old radio cards had
+           * oversized click targets (title + descriptive sub-text wrapped in
+           * a label with htmlFor), so stray clicks anywhere in the modal
+           * flipped Free->Pro. The segmented control keeps a tight click area.
+           * onValueChange is guarded against the empty string Radix emits when
+           * a user deselects the active item, so the plan can never become "".
+           */}
           <div className="space-y-2 pt-1">
             <Label className="text-sm font-medium">Plan</Label>
-            <RadioGroup
+            <ToggleGroup
+              type="single"
               value={plan}
-              onValueChange={(v) => setPlan(v as PlanPick)}
-              data-testid="radio-group-new-company-plan"
+              onValueChange={(v) => { if (v) setPlan(v as PlanPick); }}
+              data-testid="toggle-group-new-company-plan"
               className="grid grid-cols-3 gap-2"
             >
-              <label
-                htmlFor="plan-free"
-                className={`flex flex-col gap-1 rounded-md border p-2 cursor-pointer text-xs ${plan === "founder_free" ? "border-primary" : "border-border"}`}
+              <ToggleGroupItem
+                value="founder_free"
+                data-testid="toggle-plan-free"
+                className="h-auto py-2 flex flex-col gap-0.5"
               >
-                <span className="flex items-center gap-2 font-medium">
-                  <RadioGroupItem value="founder_free" id="plan-free" data-testid="radio-plan-free" />
-                  Free
-                </span>
-                <span className="text-muted-foreground">Default — recommended to start</span>
-              </label>
-              <label
-                htmlFor="plan-pro"
-                className={`flex flex-col gap-1 rounded-md border p-2 cursor-pointer text-xs ${plan === "founder_pro" ? "border-primary" : "border-border"}`}
+                <span className="font-medium text-sm">Free</span>
+                <span className="text-xs text-muted-foreground">Default — recommended</span>
+              </ToggleGroupItem>
+              <ToggleGroupItem
+                value="founder_pro"
+                data-testid="toggle-plan-pro"
+                className="h-auto py-2 flex flex-col gap-0.5"
               >
-                <span className="flex items-center gap-2 font-medium">
-                  <RadioGroupItem value="founder_pro" id="plan-pro" data-testid="radio-plan-pro" />
-                  Pro
-                </span>
-                <span className="text-muted-foreground">14-day trial, no card</span>
-              </label>
-              <label
-                htmlFor="plan-scale"
-                className={`flex flex-col gap-1 rounded-md border p-2 cursor-pointer text-xs ${plan === "founder_scale" ? "border-primary" : "border-border"}`}
+                <span className="font-medium text-sm">Pro</span>
+                <span className="text-xs text-muted-foreground">14-day trial, no card</span>
+              </ToggleGroupItem>
+              <ToggleGroupItem
+                value="founder_scale"
+                data-testid="toggle-plan-scale"
+                className="h-auto py-2 flex flex-col gap-0.5"
               >
-                <span className="flex items-center gap-2 font-medium">
-                  <RadioGroupItem value="founder_scale" id="plan-scale" data-testid="radio-plan-scale" />
-                  Scale
-                </span>
-                <span className="text-muted-foreground">Talk to sales</span>
-              </label>
-            </RadioGroup>
+                <span className="font-medium text-sm">Scale</span>
+                <span className="text-xs text-muted-foreground">Talk to sales</span>
+              </ToggleGroupItem>
+            </ToggleGroup>
           </div>
           <DialogFooter className="pt-2">
             <Button

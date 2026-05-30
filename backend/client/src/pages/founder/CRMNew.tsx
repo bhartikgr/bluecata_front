@@ -28,6 +28,22 @@ export default function CRMNew() {
   const [sendInvite, setSendInvite] = useState(false);
   function update<K extends keyof typeof form>(k: K, v: string) { setForm(f => ({ ...f, [k]: v })); }
 
+  /* ---- v23.4.9 Phase 3 — frontend required-field gating ----
+   * Mirrors the missingRequired() pattern from Company.tsx (v23.4.5 Phase 7).
+   * Shadie (BUGs 007 + 008): "Created New Investor Contact and could save it
+   * without any input." The server already returns VALIDATION_FAILED, but the
+   * frontend must block submission too. Firm name + email are the minimum
+   * required fields (email also gives the investor a usable contact channel
+   * and a target for the opt-in invite). */
+  const missingRequired = (): string[] => {
+    const missing: string[] = [];
+    if (!form.name || !form.name.trim()) missing.push("Firm name");
+    if (!form.email || !form.email.trim()) missing.push("Email");
+    return missing;
+  };
+  const requiredMissingList = missingRequired();
+  const isCrmValid = requiredMissingList.length === 0;
+
   const saveMut = useMutation({
     mutationFn: async () => {
       // B-V11-2 fix: always send pipeline stage as "lead" (the canonical
@@ -77,9 +93,9 @@ export default function CRMNew() {
           <CardHeader><CardTitle className="text-base">New contact</CardTitle></CardHeader>
           <CardContent className="space-y-4 max-w-2xl">
             <div className="grid md:grid-cols-2 gap-4">
-              <div><Label>Firm name</Label><Input className="mt-1" value={form.name} onChange={e => update("name", e.target.value)} placeholder="Firm name" data-testid="input-firm" /></div>
+              <div><Label className="flex items-center gap-1">Firm name <span className="text-rose-500">*</span></Label><Input className="mt-1" value={form.name} onChange={e => update("name", e.target.value)} placeholder="Firm name" data-testid="input-firm" /></div>
               <div><Label>Primary contact</Label><Input className="mt-1" value={form.contact} onChange={e => update("contact", e.target.value)} placeholder="Contact name" data-testid="input-contact" /></div>
-              <div><Label>Email</Label><Input className="mt-1" type="email" value={form.email} onChange={e => update("email", e.target.value)} placeholder="contact@firm.com" data-testid="input-email" /></div>
+              <div><Label className="flex items-center gap-1">Email <span className="text-rose-500">*</span></Label><Input className="mt-1" type="email" value={form.email} onChange={e => update("email", e.target.value)} placeholder="contact@firm.com" data-testid="input-email" /></div>
               <div><Label>Stage focus</Label><Input className="mt-1" value={form.stageFocus} onChange={e => update("stageFocus", e.target.value)} placeholder="Seed–Series A" data-testid="input-stage" /></div>
               <div className="md:col-span-2"><Label>Typical check size</Label><Input className="mt-1" value={form.checkSize} onChange={e => update("checkSize", e.target.value)} placeholder="$1M–$3M" data-testid="input-check" /></div>
               <div className="md:col-span-2"><Label>Notes</Label><Textarea rows={4} className="mt-1" value={form.notes} onChange={e => update("notes", e.target.value)} placeholder="What signal makes this investor a good fit?" data-testid="input-notes" /></div>
@@ -97,9 +113,29 @@ export default function CRMNew() {
                 redemption link to log in or register.
               </span>
             </label>
+            {/* v23.4.9 Phase 3 — inline required-field message, shadcn-style. */}
+            {!isCrmValid && (
+              <p className="text-xs text-rose-500" data-testid="crm-required-msg">
+                Please fill in: {requiredMissingList.join(", ")}.
+              </p>
+            )}
             <div className="flex justify-end gap-2 pt-3 border-t border-border">
               <Button variant="ghost" onClick={() => navigate("/founder/crm")}>Cancel</Button>
-              <Button onClick={() => saveMut.mutate()} disabled={saveMut.isPending} className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] text-white" data-testid="button-save-crm">{saveMut.isPending ? "Saving…" : "Save contact"}</Button>
+              <Button
+                onClick={() => {
+                  // v23.4.9 Phase 3 — guard submission even if the button is
+                  // somehow reached while invalid (mirrors Company.tsx).
+                  const missing = missingRequired();
+                  if (missing.length) {
+                    toast({ title: "Missing required fields", description: `Please fill in: ${missing.join(", ")}.`, variant: "destructive" });
+                    return;
+                  }
+                  saveMut.mutate();
+                }}
+                disabled={saveMut.isPending || !isCrmValid}
+                className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] text-white"
+                data-testid="button-save-crm"
+              >{saveMut.isPending ? "Saving…" : "Save contact"}</Button>
             </div>
           </CardContent>
         </Card>

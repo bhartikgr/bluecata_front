@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
@@ -88,6 +89,24 @@ const REGION_BLURBS: Record<string, string> = {
  AU: "Australia — Pty Ltd under Corporations Act 2001. ASIC Form 484 lodgement on share issuance, ESS startup concession under ITAA 1997 §83A-105 (no tax until disposal for < 10 yr / < $50M turnover cos), 50% CGT discount on > 12 mo individual holdings, FIRB approval for foreign investors over threshold, AFSL for SPV / fund mechanics.",
 };
 
+// v23.4.9 Phase 2 (Avi feedback #3) — surface Warrants as a top-level round
+// category. Avi (30 May 2026): "along with priced round and unpriced round,
+// there should be an option to choose warrants, but here the warrant is working
+// like a radio button." We add a 3-way segmented control ABOVE the instrument
+// list that filters which investment vehicles are shown. Each category maps to
+// a fixed set of instrument values; the first value is the default when the
+// founder switches categories.
+type RoundCategory = "priced" | "unpriced" | "warrants";
+const ROUND_CATEGORIES: { value: RoundCategory; label: string; instruments: InstrumentValue[] }[] = [
+ { value: "priced", label: "Priced Round", instruments: ["preferred", "common"] },
+ { value: "unpriced", label: "Unpriced Round", instruments: ["safe_post", "safe_pre", "convertible_note"] },
+ { value: "warrants", label: "Warrants & Options", instruments: ["warrant", "option_pool"] },
+];
+function categoryForInstrument(instrument: InstrumentValue): RoundCategory {
+ const hit = ROUND_CATEGORIES.find(c => c.instruments.includes(instrument));
+ return hit ? hit.value : "priced";
+}
+
 const STEPS = [
  { id: 1, title: "Round + Vehicle", desc: "Round type and instrument" },
  { id: 2, title: "Terms", desc: "Per-instrument fields" },
@@ -156,7 +175,13 @@ const defaultForm: FormShape = {
  region: "US",
  targetAmount: "2000000",
  preMoney: "18000000",
- pricePerShare: "1.42",
+ // v23.4.9 Phase 1 (Avi #2) — share price is DERIVED for priced rounds
+ // (pre-money ÷ shares authorized), so it must start EMPTY rather than
+ // carrying a hardcoded mock value. The previous "1.42" default was also a
+ // v23.4.5 mock-data violation that slipped through. For warrants/SAFEs the
+ // share price is an explicit input (strikePrice / valuationCap), so this
+ // pricePerShare field is never shown for them and the change is safe.
+ pricePerShare: "",
  minTicket: "50000",
  valuationCap: "8000000",
  discount: "20",
@@ -319,8 +344,60 @@ export default function RoundNew() {
 
  function update<K extends keyof FormShape>(k: K, v: FormShape[K]) { setForm(f => ({ ...f, [k]: v })); }
 
+ // v23.4.9 Phase 2 (Avi #3) — the active top-level round category is derived
+ // directly from the chosen instrument (single source of truth, no separate
+ // state to drift). Switching category resets the instrument to the first
+ // vehicle in that category and clears the auto-derived price.
+ const roundCategory: RoundCategory = categoryForInstrument(form.instrument);
+ const setRoundCategory = (next: RoundCategory) => {
+ const cat = ROUND_CATEGORIES.find(c => c.value === next);
+ if (!cat || cat.instruments.length === 0) return;
+ if (cat.instruments.includes(form.instrument)) return; // already in category
+ const firstInstrument = cat.instruments[0];
+ setForm(f => ({ ...f, instrument: firstInstrument, pricePerShare: "" }));
+ };
+
  const instrument = INSTRUMENTS.find(i => i.value === form.instrument)!;
  const usesField = (f: string) => (instrument.fields as readonly string[]).includes(f);
+ // v23.4.9 Phase 2 — vehicles shown in the instrument grid, filtered to the
+ // active category so warrants are a deliberate top-level choice rather than
+ // one radio button buried in a long list.
+ const visibleInstruments = INSTRUMENTS.filter(i =>
+ (ROUND_CATEGORIES.find(c => c.value === roundCategory)?.instruments ?? []).includes(i.value as InstrumentValue),
+ );
+
+ // v23.4.9 Phase 1 (Avi #2) — Share price auto-calculation.
+ // For PRICED rounds (Common / Preferred) the price per share is a DERIVED
+ // value, not a manual input. The cap-table engine itself derives it as
+ // pre_money_valuation ÷ fully_diluted_shares (see
+ // packages/cap-table-engine/src/captable/compute.ts), so the wizard mirrors
+ // that here for live display only — the engine remains the source of truth
+ // on commit. We use the simpler pre-money ÷ shares-authorized pair that the
+ // wizard exposes. SAFEs / Convertible Notes don't expose this field (price
+ // is set at conversion); Warrants use an explicit strikePrice that stays
+ // editable. So this read-only derivation applies ONLY to priced rounds.
+ const isPricedInstrument = form.instrument === "preferred" || form.instrument === "common";
+ const derivedPricePerShare = (() => {
+ const pre = Number(form.preMoney);
+ const shares = Number(form.sharesAuthorized);
+ if (!isPricedInstrument) return "";
+ if (!isFinite(pre) || !isFinite(shares) || shares <= 0 || pre <= 0) return "";
+ // Keep full precision as a string; the engine re-derives at 38-digit
+ // precision on commit. Trim trailing zeros for display cleanliness.
+ const v = pre / shares;
+ return Number.isInteger(v) ? String(v) : String(parseFloat(v.toFixed(6)));
+ })();
+
+ // Keep form.pricePerShare in sync with the derived value for priced rounds so
+ // the computed price is what travels to the server on commit. For warrants /
+ // SAFEs we never touch it here (the field isn't shown for them).
+ useEffect(() => {
+ if (!isPricedInstrument) return;
+ if (form.pricePerShare !== derivedPricePerShare) {
+ setForm(f => ({ ...f, pricePerShare: derivedPricePerShare }));
+ }
+ // eslint-disable-next-line react-hooks/exhaustive-deps
+ }, [isPricedInstrument, derivedPricePerShare]);
 
  // Recommended instruments for the chosen round type, marked with a Sparkles badge
  const recommended = INSTRUMENTS.filter(i => (i.suggestedFor as readonly string[]).includes(form.type)).map(i => i.value);
@@ -446,10 +523,28 @@ export default function RoundNew() {
  </div>
 
  <div>
+ {/* v23.4.9 Phase 2 (Avi #3) — top-level round-category segmented
+ control. Three deliberate choices instead of warrants hiding as one
+ radio button in a long vehicle list. */}
+ <Label>Round category</Label>
+ <Tabs
+ value={roundCategory}
+ onValueChange={(v) => setRoundCategory(v as RoundCategory)}
+ className="mt-1 mb-4"
+ >
+ <TabsList className="grid w-full grid-cols-3" data-testid="round-category-tabs">
+ {ROUND_CATEGORIES.map(cat => (
+ <TabsTrigger key={cat.value} value={cat.value} data-testid={`round-category-${cat.value}`}>
+ {cat.label}
+ </TabsTrigger>
+ ))}
+ </TabsList>
+ </Tabs>
+
  <Label>Investment vehicle</Label>
  <p className="text-xs text-muted-foreground mb-3 mt-1">Pick the instrument the engine will issue. Each vehicle exposes its own terms in Step 2.</p>
  <div className="grid md:grid-cols-2 gap-3">
- {INSTRUMENTS.map(inst => {
+ {visibleInstruments.map(inst => {
  const selected = form.instrument === inst.value;
  const isRecommended = recommended.includes(inst.value);
  return (
@@ -520,15 +615,20 @@ export default function RoundNew() {
  )}
  {usesField("pricePerShare") && (
  <div data-testid="pps-block">
- <LabelWithTip tip="Audit-grade derivation: PPS = pre_money_valuation ÷ fully_diluted_shares_pre_money. For SAFE / Convertible Note rounds this field is hidden — PPS is set at conversion, not at issue. You may override the derived value when a negotiated PPS differs from the canonical formula; the cap-table engine will use whatever you enter here.">
- <Label>Price per share (USD)</Label>
+ {/* v23.4.9 Phase 1 (Avi #2) — priced rounds: PPS is auto-calculated and
+ read-only. Avi: "the share price has to be entered manually, whereas
+ it should be calculated automatically based on the value." */}
+ <LabelWithTip tip="Calculated automatically: pre-money valuation ÷ shares authorized. Edit pre-money or shares-authorized above to change it. (SAFE / Convertible Note rounds hide this field — PPS is set at conversion, not at issue.)">
+ <Label className="flex items-center gap-1.5">Price per share (USD) <Badge variant="outline" className="text-[10px]">auto</Badge></Label>
  </LabelWithTip>
  <Input
  type="number"
  step="0.01"
- className="mt-1 font-mono"
- value={form.pricePerShare}
- onChange={e => update("pricePerShare", e.target.value)}
+ className="mt-1 font-mono bg-secondary/50"
+ value={derivedPricePerShare}
+ readOnly
+ aria-readonly="true"
+ placeholder="Enter pre-money and shares authorized"
  data-testid="input-pps"
  />
  <p className="text-[11px] text-muted-foreground mt-1 font-mono">
