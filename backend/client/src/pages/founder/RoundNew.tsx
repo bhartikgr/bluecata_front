@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
-import { useActiveCompanyId } from "@/lib/useActiveCompany";
+import { useActiveCompany, useActiveCompanyId } from "@/lib/useActiveCompany";
+import UpgradeToProInterstitial, { isPaidFounderPlan } from "@/pages/founder/UpgradeToProInterstitial";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useMutation } from "@tanstack/react-query";
 import { useQuery } from "@tanstack/react-query";
@@ -224,6 +225,17 @@ export default function RoundNew() {
 
  // Defect A — use real active companyId (never hardcode co_novapay).
  const companyId = useActiveCompanyId();
+
+ // v23.4.11 Phase 1 (B-201) — read the active company so we can plan-gate the
+ // round wizard with an explicit interstitial instead of a silent /subscribe
+ // redirect. We read from the SAME query the header/switcher uses
+ // (/api/founder/active-company) so the displayed company name + plan never
+ // drift from the top-bar, which also addresses the active-company "snap back"
+ // symptom. Hook is unconditional (no early return before it) so React hook
+ // ordering is preserved.
+ const activeCompanyQ = useActiveCompany();
+ const activeCompany = activeCompanyQ.data?.company ?? null;
+ const activePlan = activeCompany?.billing?.plan ?? null;
 
  // BUG-005: round creation requires a company. Redirect to company setup if none.
  // This guard must come before any hooks that depend on companyId to avoid
@@ -449,6 +461,23 @@ export default function RoundNew() {
  </div>
  </PageBody>
  </>
+ );
+ }
+
+ // v23.4.11 Phase 1 (B-201) — plan gate. A company exists but if it is on a
+ // Free tier the round wizard is not available. Previously the App-level
+ // RequireActiveSubscription / route logic silently bounced these founders to
+ // /founder/subscribe with no feedback. Instead we render an explicit
+ // interstitial that explains why and offers clear CTAs. This is a render-time
+ // guard (after all hooks) — never an early return before hooks. We wait for
+ // the active-company query to resolve so we never flash the gate while the
+ // real (possibly paid) plan is still loading.
+ if (!activeCompanyQ.isLoading && !isPaidFounderPlan(activePlan)) {
+ return (
+ <UpgradeToProInterstitial
+ currentPlan={activePlan ?? "Founder Free"}
+ companyName={activeCompany?.companyName ?? ""}
+ />
  );
  }
 

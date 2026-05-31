@@ -315,7 +315,17 @@ export default function FounderSubscribe() {
         return;
       }
       if (data.ok) {
+        // v23.4.11 Phase 2 (B-202) — invalidate EVERY surface that renders the
+        // plan, not just the subscription query. The company-switcher badge and
+        // the round-wizard plan gate both read /api/founder/active-company and
+        // /api/founder/companies; without these invalidations the badge stayed
+        // "FREE" after a successful upgrade even though the server had persisted
+        // founder_pro. Also refresh /api/auth/me which carries the entitlement
+        // context used by RequireActiveSubscription.
         queryClient.invalidateQueries({ queryKey: ["/api/founder/subscription"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/founder/active-company"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/founder/companies"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
         toast({ title: "Subscribed!", description: "Your subscription is now active." });
         // Record legal consent after successful subscription
         legalConsentRef.current?.recordConsent().catch(() => null);

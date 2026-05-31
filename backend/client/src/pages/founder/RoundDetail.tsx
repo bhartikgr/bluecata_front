@@ -473,12 +473,12 @@ export default function RoundDetail() {
  </div>
  <DialogFooter>
  <Button variant="ghost" onClick={() => setInviteOpen(false)}>Cancel</Button>
- <Button onClick={() => {
- const invId = `inv-${id}-${Date.now()}`;
- emit({ type: "invitation.created", payload: { invitationId: invId, roundId: id, investorId: "invitee-new" } }, { companyId: activeCompanyId, roundId: id, actorId: me.data?.id ?? "founder", actorRole: "founder" });
- toast({ title: "Invitation sent", description: "The investor will receive an email." });
- setInviteOpen(false);
- }} data-testid="button-send-invite">Send invitation</Button>
+ {/* B-303 fix v23.4.12: wire Send invitation to sendInviteMut -- button-send-invite-mutation-v23412 */}
+        <Button
+          onClick={() => sendInviteMut.mutate()}
+          disabled={sendInviteMut.isPending}
+          data-testid="button-send-invite"
+        >Send invitation</Button>
  </DialogFooter>
  </DialogContent>
  </Dialog>

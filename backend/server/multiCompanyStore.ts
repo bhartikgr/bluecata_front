@@ -588,12 +588,21 @@ export function registerMultiCompanyRoutes(app: Express): void {
   });
 
   // PATCH v3: Return only this session user's active company
+  // v23.4.11 Phase 2 (B-202): overlay billing from subscriptionsStore here too.
+  // Previously this endpoint returned the RAW inline `billing` field, which is
+  // set at company-creation time and never reconciled — so after a founder
+  // upgraded to Pro (subscription row flipped to founder_pro) the active-company
+  // payload still reported "Founder Free". The header badge + the round-wizard
+  // plan gate both read this endpoint, so the stale plan was the second half of
+  // B-202 ("Subscribed! but still FREE"). /api/founder/companies already merged;
+  // this brings the single-company endpoint to parity.
   app.get("/api/founder/active-company", (req: Request, res: Response) => {
     const ctx = getUserContext(req);
     if (!ctx.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
     const activeId = getActiveCompanyId(ctx.userId);
     const companies = getCompaniesForFounder(ctx.userId);
-    const c = companies.find((x) => x.companyId === activeId) ?? null;
+    const raw = companies.find((x) => x.companyId === activeId) ?? null;
+    const c = raw ? mergeBillingFromSubscription(raw) : null;
     res.json({ activeCompanyId: activeId, company: c });
   });
 

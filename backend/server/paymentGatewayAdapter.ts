@@ -374,7 +374,22 @@ export function registerPaymentGatewayRoutes(app: Express): void {
    */
   app.post("/api/founder/subscription/charge", async (req: Request, res: Response) => {
     let companyId = String(req.body?.companyId ?? (req as any).userContext?.founder?.activeCompanyId ?? ""); /* v14 */
-    const { pricingModelId, paymentMethod } = req.body ?? {};
+    const { pricingModelId, paymentMethod, plan: planRaw } = req.body ?? {};
+
+    // v23.4.11 Phase 2 (B-202) — the founder's SELECTED plan must be persisted.
+    // Root cause of B-202: the charge handler processed payment (chargeSubscription
+    // sets status:"active" + bumps invoicesCount) but NEVER wrote the chosen plan
+    // onto the subscription row. So a Free founder who paid for Pro saw the
+    // "Subscribed!" toast + status active, yet companies.plan stayed founder_free
+    // — badge showed FREE and /founder/rounds/new kept bouncing. We whitelist the
+    // requested plan against the Plan union (NEVER trust the body blindly) and
+    // apply it after a successful, non-3DS charge below.
+    const ALLOWED_PAID_PLANS = ["founder_pro", "founder_scale", "founder_enterprise"] as const;
+    type AllowedPaidPlan = (typeof ALLOWED_PAID_PLANS)[number];
+    const requestedPlan: AllowedPaidPlan | null =
+      typeof planRaw === "string" && (ALLOWED_PAID_PLANS as readonly string[]).includes(planRaw)
+        ? (planRaw as AllowedPaidPlan)
+        : null;
 
     // v23.4.3 BUG-001: if no companyId resolved AND founder has zero
     // companies, auto-provision a placeholder workspace so the paid
@@ -443,8 +458,26 @@ export function registerPaymentGatewayRoutes(app: Express): void {
       }
     }
 
-    const sub = getSubscription(companyId);
+    let sub = getSubscription(companyId);
     if (!sub) return res.status(404).json({ ok: false, error: "subscription_not_found" });
+
+    // v23.4.11 Phase 2 (B-202) — persist the SELECTED plan BEFORE we compute the
+    // charge so the amount, plan label and renewal all reflect the plan the
+    // founder actually bought (updateSubscription recomputes annualAmountMinor +
+    // currency from PLAN_PRICES). This is the fix for the "Subscribed! but still
+    // FREE" symptom. It is idempotent: re-charging with the same plan re-sets the
+    // same value (no duplicate rows — updateSubscription upserts the current row
+    // and the payment intent below is itself idempotent on subscriptionId+period).
+    // Skipped when no valid paid plan was supplied (legacy callers / renewals),
+    // which preserves prior behavior.
+    if (requestedPlan && sub.plan !== requestedPlan) {
+      const planUpd = updateSubscription(
+        companyId,
+        { plan: requestedPlan },
+        `founder:charge:${companyId}`,
+      );
+      if (planUpd.ok) sub = planUpd.subscription;
+    }
 
     // Derive period dates (annual billing)
     const now = new Date();
@@ -467,6 +500,15 @@ export function registerPaymentGatewayRoutes(app: Express): void {
 
       if (!result.ok && result.requires3ds) {
         return res.json({ ok: false, requires3ds: true, clientSecret: result.clientSecret });
+      }
+
+      // v23.4.11 Phase 2 (B-202) — persist the card-on-file last4 so the billing
+      // surfaces (and the company switcher badge via mergeBillingFromSubscription)
+      // reflect the real payment method. chargeSubscription already flipped
+      // status to "active"; this only records the card. Non-fatal on failure.
+      const last4 = paymentMethod?.cardLast4 ?? null;
+      if (last4) {
+        updateSubscription(companyId, { cardLast4: last4 }, `founder:charge:${companyId}`);
       }
 
       res.json({ ok: true, subscription: getSubscription(companyId), invoice: result.invoice });
