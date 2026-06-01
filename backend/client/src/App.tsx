@@ -1,4 +1,6 @@
 import { Switch, Route, Router, useLocation, Redirect } from "wouter";
+import { V23413_FIXES_SHIPPED } from "@/lib/v23413Marker";
+void V23413_FIXES_SHIPPED;
 // v23.4.3 Phase 2: removed useHashLocation import — switched to BrowserRouter
 // (History API). URLs are now /founder/dashboard, not /#/founder/dashboard.
 // Ozan architectural decision #1 locked.
@@ -127,6 +129,11 @@ import AdminMigration from "@/pages/admin/Migration";
 // CP Phase B — Apply flow + Admin queue + Onboarding + Privacy
 import ConsortiumApplyPage from "@/pages/public/ConsortiumApplyPage";
 import AdminConsortiumApplicationsPage from "@/pages/admin/ConsortiumApplicationsPage";
+// v23.5 C-003 — admin Collective pages
+import AdminCollectiveApplications from "@/pages/admin/CollectiveApplications";
+import AdminCollectiveMembers from "@/pages/admin/CollectiveMembers";
+import AdminCollectiveSettings from "@/pages/admin/CollectiveSettings";
+import { V25_COLLECTIVE_SHIPPED } from "@/lib/v25Marker"; void V25_COLLECTIVE_SHIPPED;
 import PartnerOnboardingChecklistPage from "@/pages/partner/OnboardingChecklistPage";
 import PrivacyPage from "@/pages/settings/PrivacyPage";
 import CollectivePreview from "@/pages/CollectivePreview";
@@ -664,6 +671,16 @@ function AppRouter() {
          *      placeholder. */}
         <Route path="/admin/lifecycle">
           {() => <Redirect to="/admin/lifecycle-policies" />}
+        </Route>
+        {/* v23.5 C-003 — admin Collective pages */}
+        <Route path="/admin/collective/applications">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminCollectiveApplications /></RequireAuth>}
+        </Route>
+        <Route path="/admin/collective/members">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminCollectiveMembers /></RequireAuth>}
+        </Route>
+        <Route path="/admin/collective/settings">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminCollectiveSettings /></RequireAuth>}
         </Route>
         <Route path="/admin/:rest*">
           {() => (

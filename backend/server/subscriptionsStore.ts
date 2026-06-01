@@ -50,6 +50,8 @@ export interface Subscription {
   renewsOn: string;
   /** Last 4 digits of card on file. null if no payment method. */
   cardLast4: string | null;
+  /** K-201 fix v23.4.13: card expiry in MM/YY format, null if not set. */
+  cardExpiry: string | null;
   /** Total invoices issued (paid + open). */
   invoicesCount: number;
   /** Outstanding past-due amount in minor units; absent if not past_due. */
@@ -106,6 +108,7 @@ function buildSeedRecord(
     plan: Plan;
     renewsOn: string;
     cardLast4: string | null;
+    cardExpiry?: string | null;
     invoicesCount: number;
     pastDueMinor?: number;
     trialEndsOn?: string;
@@ -130,6 +133,7 @@ const SEED_PLAN_OVERRIDES: Record<string, {
   plan: Plan;
   renewsOn: string;
   cardLast4: string | null;
+  cardExpiry?: string | null;
   invoicesCount: number;
   pastDueMinor?: number;
   trialEndsOn?: string;
@@ -238,7 +242,7 @@ export function getSubscriptionHistory(companyId: string): Subscription[] {
 /* ---------- Mutations ---------- */
 
 export type UpdateSubscriptionInput = Partial<Pick<Subscription,
-  "status" | "plan" | "renewsOn" | "cardLast4" | "invoicesCount" | "pastDueMinor" | "trialEndsOn"
+  "status" | "plan" | "renewsOn" | "cardLast4" | "cardExpiry" | "invoicesCount" | "pastDueMinor" | "trialEndsOn"
 >>;
 
 function rowToSubscription(row: any): Subscription {
@@ -250,6 +254,7 @@ function rowToSubscription(row: any): Subscription {
     currency: row.currency,
     renewsOn: row.renewsOn,
     cardLast4: row.cardLast4 ?? null,
+    cardExpiry: row.cardExpiry ?? null,
     invoicesCount: row.invoicesCount ?? 0,
     pastDueMinor: row.pastDueMinor ?? undefined,
     trialEndsOn: row.trialEndsOn ?? undefined,
@@ -455,6 +460,7 @@ export function createSubscriptionForNewCompany(
     currency: price.currency,
     renewsOn,
     cardLast4: null,
+    cardExpiry: null,
     invoicesCount: 0,
     version: 1,
     prevRevisionHash: prev,

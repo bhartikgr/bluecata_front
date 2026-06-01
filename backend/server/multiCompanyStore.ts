@@ -43,7 +43,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { withTenant, crossTenant } from "./lib/withTenant"; /* v14 Tier-1 Fix 4 — tenant scoping on writes */
 import { getUserContext } from "./lib/userContext";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
-import { createSubscriptionForNewCompany, getSubscription } from "./subscriptionsStore";
+import { createSubscriptionForNewCompany, getSubscription, updateSubscription } from "./subscriptionsStore";
 import { getDb } from "./db/connection";
 import {
   tenants as tenantsTable,
@@ -669,11 +669,17 @@ export function registerMultiCompanyRoutes(app: Express): void {
     // v23.4.7 Phase 3: trial flag only makes sense for paid plans. founder_free
     // is permanent free — no trial countdown.
     try {
-      createSubscriptionForNewCompany(companyId, {
+      const subResult = createSubscriptionForNewCompany(companyId, {
         plan: requestedPlan,
         actor: `founder:${ctx.userId}`,
         trial: requestedPlan !== "founder_free",
       });
+      // L-003 fix v23.4.13: auto-activate Free on company create
+      // founder_free has no trial and no card requirement; activate immediately
+      // so the founder is not left in pending_payment state.
+      if (subResult.ok && subResult.subscription.status === "pending_payment" && requestedPlan === "founder_free") {
+        updateSubscription(companyId, { status: "active" }, `system:auto_activate_free`);
+      }
     } catch (err) {
       // Non-fatal: log but don't block company creation. The company is still
       // usable; admin can backfill later. Telemetry will pick this up.

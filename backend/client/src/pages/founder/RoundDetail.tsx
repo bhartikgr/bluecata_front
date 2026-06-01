@@ -95,14 +95,19 @@ export default function RoundDetail() {
  const [inviteName, setInviteName] = useState("");
  const [inviteEmail, setInviteEmail] = useState("");
  const [inviteNote, setInviteNote] = useState("");
+ // select-invite-expiry fix v23.4.13
+ const [inviteExpiry, setInviteExpiry] = useState("30");
  const [revokeId, setRevokeId] = useState<string | null>(null);
  const [confirmSoftId, setConfirmSoftId] = useState<string | null>(null);
 
  // Real mutations wired to server endpoints (defects 10, 22-27)
  const sendInviteMut = useMutation({
    mutationFn: async () => {
+     // select-invite-expiry fix v23.4.13: pass expiryDays from dropdown
+     const expiryDaysVal = inviteExpiry === "never" ? null : parseInt(inviteExpiry, 10);
      const res = await apiRequest("POST", `/api/rounds/${id}/invitations`, {
        investorName: inviteName, investorEmail: inviteEmail, note: inviteNote,
+       ...(expiryDaysVal !== null ? { expiryDays: expiryDaysVal } : {}),
      });
      return res.json();
    },
@@ -110,7 +115,7 @@ export default function RoundDetail() {
      toast({ title: "Invitation sent", description: "The investor will receive an email." });
      queryClient.invalidateQueries({ queryKey: [`/api/rounds/${id}/invitations`] });
      emitMutationLocal("invitation", `inv-${Date.now()}`, "create");
-     setInviteOpen(false); setInviteName(""); setInviteEmail(""); setInviteNote("");
+     setInviteOpen(false); setInviteName(""); setInviteEmail(""); setInviteNote(""); setInviteExpiry("30");
    },
    onError: (e: Error) => toast({ title: "Failed to send", description: e.message, variant: "destructive" }),
  });
@@ -466,8 +471,8 @@ export default function RoundDetail() {
  <div><Label>Email</Label><Input className="mt-1" type="email" value={inviteEmail} onChange={e => setInviteEmail(e.target.value)} placeholder="investor@firm.com" data-testid="input-invite-email" /></div>
  <div><Label>Personal note (optional)</Label><Input className="mt-1" value={inviteNote} onChange={e => setInviteNote(e.target.value)} placeholder="Following up from our coffee at Latitude…" data-testid="input-invite-note" /></div>
  <div><Label>Expires in</Label>
- <select className="mt-1 w-full h-9 px-3 rounded-md border border-input bg-background text-sm" data-testid="select-invite-expiry">
- <option>14 days</option><option>30 days</option><option>60 days</option><option>Never</option>
+ <select className="mt-1 w-full h-9 px-3 rounded-md border border-input bg-background text-sm" data-testid="select-invite-expiry" value={inviteExpiry} onChange={e => setInviteExpiry(e.target.value)}>
+ <option value="14">14 days</option><option value="30">30 days</option><option value="60">60 days</option><option value="never">Never</option>
  </select>
  </div>
  </div>

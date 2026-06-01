@@ -72,10 +72,26 @@ export default function FounderApplyToCollective() {
   const company = activeCompanyResp?.company;
   const companyId = useActiveCompanyId();
 
+  // B-401 fix v23.4.13: use session founderId + surface errors
+  const meQ = useQuery<{ id: string; displayName?: string }>({ queryKey: ["/api/auth/me"] });
+  const sessionFounderId: string = (meQ.data as any)?.id ?? (meQ.data as any)?.userId ?? "";
+
   const crmQ = useQuery<CrmRow[]>({
     queryKey: ["/api/founder/investor-crm", companyId],
     queryFn: async () => (await apiRequest("GET", `/api/founder/investor-crm?companyId=${companyId}`)).json(),
   });
+
+  // C-006 v23.5: fetch the founder's latest application status for banner
+  const mineQ = useQuery<{ application: Application } | null>({
+    queryKey: ["/api/founder/collective/applications/mine"],
+    queryFn: async () => {
+      const res = await apiRequest("GET", "/api/founder/collective/applications/mine");
+      if (res.status === 404) return null;
+      return res.json();
+    },
+    retry: false,
+  });
+  const mineApp = (mineQ.data as any)?.application ?? null;
 
   const nominationsQ = useQuery<Nomination[]>({
     queryKey: ["/api/founder/collective/nominations", companyId],
@@ -100,6 +116,23 @@ export default function FounderApplyToCollective() {
         breadcrumbs={[{ href: "/founder/dashboard", label: "Workspace" }, { label: "Apply to Collective" }]}
       />
       <PageBody>
+        {/* C-006 v23.5 — application status banner */}
+        {mineApp && (
+          <div
+            className={`rounded-md border p-4 mb-5 flex items-start gap-3 ${mineApp.status === "rejected" ? "border-rose-200 bg-rose-50" : mineApp.status === "invited" ? "border-emerald-200 bg-emerald-50" : "border-blue-200 bg-blue-50"}`}
+            data-testid="banner-application-status"
+          >
+            <Mail className="h-5 w-5 shrink-0 mt-0.5 text-current" />
+            <div className="text-sm">
+              {mineApp.status === "submitted" && <><strong>Submitted on {new Date(mineApp.submittedAt).toLocaleDateString()}</strong> — under review.</>}
+              {mineApp.status === "reviewing" && <><strong>Under review</strong> since {new Date(mineApp.submittedAt).toLocaleDateString()}.</>}
+              {mineApp.status === "invited" && <><strong className="text-emerald-800">Accepted on {mineApp.reviewedAt ? new Date(mineApp.reviewedAt).toLocaleDateString() : "—"}</strong> — congratulations! <Link href="/collective"><span className="underline cursor-pointer">Go to Collective</span></Link></>}
+              {mineApp.status === "rejected" && <><strong className="text-rose-800">Not selected this cycle.</strong> You may apply again in the next cycle.</>}
+              {mineApp.status === "waitlisted" && <><strong>Waitlisted</strong> — you\'re on the waitlist for the next cycle.</>}
+            </div>
+          </div>
+        )}
+
         {/* Eligibility info banner */}
         <div className="rounded-md border-2 border-[hsl(184_98%_22%)]/30 bg-[hsl(184_98%_22%)]/5 p-4 mb-5" data-testid="banner-presentation-eligibility">
           <div className="flex items-start gap-3">
@@ -133,6 +166,7 @@ export default function FounderApplyToCollective() {
               companyName={company?.companyName ?? "your company"}
               companyId={companyId}
               nominations={asArray<Nomination>(nominationsQ.data)}
+              meId={sessionFounderId}
             />
           </TabsContent>
 
@@ -140,6 +174,7 @@ export default function FounderApplyToCollective() {
             <PathB
               companyId={companyId}
               applications={asArray<Application>(applicationsQ.data)}
+              meId={sessionFounderId}
             />
           </TabsContent>
         </Tabs>
@@ -301,9 +336,10 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
 
   const submitMut = useMutation({
     mutationFn: async () => {
+      // B-401 fix v23.4.13: use session founderId (meId) not a stale form default
       const res = await apiRequest("POST", "/api/founder/collective/applications", {
         companyId,
-        founderId: meId ?? companyId,
+        founderId: meId || companyId,
         pitchDeckFilename: pitchDeck,
         tractionMrr,
         tractionUsers,
@@ -313,7 +349,9 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
         coverLetter,
         feeAcknowledged,
       });
-      return res.json();
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error ?? `Server error ${res.status}`);
+      return data;
     },
     onSuccess: (data) => {
       if (data?.ok && data.application?.id) {
@@ -324,6 +362,8 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
         toast({ title: "Validation failed", description: data?.error ?? "Please review the form.", variant: "destructive" });
       }
     },
+    // B-401 fix v23.4.13: surface 4xx errors via toast instead of swallowing them
+    onError: (e: Error) => toast({ title: "Application failed", description: e.message, variant: "destructive" }),
   });
 
   if (submittedId) {
@@ -347,12 +387,30 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
     );
   }
 
-  const canSubmit =
-    pitchDeck.length > 0 &&
-    asks.length >= 20 &&
-    coverLetter.length >= 100 &&
-    feeAcknowledged &&
-    !submitMut.isPending;
+  // C-012 v23.5: client-side validation feedback (always-enabled button pattern)
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  function validateAndSubmit() {
+    const errs: Record<string, string> = {};
+    if (!pitchDeck) errs.pitchDeck = "Pitch deck filename is required.";
+    if (asks.length < 20) errs.asks = `Asks must be at least 20 characters (${asks.length}/20).`;
+    if (coverLetter.length < 100) errs.coverLetter = `Cover letter must be at least 100 characters (${coverLetter.length}/100).`;
+    if (!feeAcknowledged) errs.feeAck = "You must acknowledge the application fee.";
+    setFieldErrors(errs);
+    const errCount = Object.keys(errs).length;
+    if (errCount > 0) {
+      // field(s) need attention — C-012 v23.5
+      toast({ title: `${errCount} field${errCount !== 1 ? "s" : ""} need attention`, description: "Please review the highlighted fields below.", variant: "destructive" });
+      // Scroll to first errored field
+      const firstKey = Object.keys(errs)[0];
+      const el = document.querySelector(`[data-testid="${firstKey === "pitchDeck" ? "input-pitch-deck" : firstKey === "asks" ? "textarea-asks-direct" : firstKey === "coverLetter" ? "textarea-cover-letter" : "checkbox-fee-ack"}"]`);
+      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
+    submitMut.mutate();
+  }
+
+  const canSubmit = !submitMut.isPending;
 
   return (
     <div className="space-y-4">
@@ -442,15 +500,25 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
             </label>
           </div>
 
+          {/* C-012 v23.5 — field error summary */}
+          {Object.keys(fieldErrors).length > 0 && (
+            <div className="rounded-md border border-rose-200 bg-rose-50 p-3 text-sm" data-testid="validation-errors">
+              <strong className="text-rose-800">{Object.keys(fieldErrors).length} field{Object.keys(fieldErrors).length !== 1 ? "s" : ""} need attention:</strong>
+              <ul className="mt-1 space-y-0.5 text-rose-700 text-xs">
+                {Object.values(fieldErrors).map((msg, i) => <li key={i}>• {msg}</li>)}
+              </ul>
+            </div>
+          )}
+
           <div className="flex items-center justify-between pt-3 border-t">
             <p className="text-xs text-muted-foreground">Required: deck filename, asks (≥20), cover letter (≥100), fee acknowledgement.</p>
             <Button
               className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
               disabled={!canSubmit}
-              onClick={() => submitMut.mutate()}
+              onClick={validateAndSubmit}
               data-testid="button-submit-application"
             >
-              Submit application <ExternalLink className="h-3.5 w-3.5 ml-1" />
+              {submitMut.isPending ? "Submitting…" : "Submit application"} <ExternalLink className="h-3.5 w-3.5 ml-1" />
             </Button>
           </div>
         </CardContent>

@@ -29,7 +29,7 @@ import { getDb } from "./db/connection";
 import { roundInvitations as invitationsTable } from "../shared/schema";
 import { sendMail } from "./emailTransport";
 import { emitMutation } from "./lib/eventBus";
-import { listContactsForCompany } from "./founderCrmStore";
+import { listContactsForCompany, upsertCrmContactForInvitation } from "./founderCrmStore";
 import { log } from "./lib/logger";
 
 /* ---------- Types ---------- */
@@ -89,6 +89,8 @@ export interface CreateInvitationResult {
   emailMessageId?: string;
   /** Classification of the recipient. */
   classification: InvitationClassification;
+  /** L-006 fix v23.4.13: return redeemUrl on create. Only available at create-time; list never exposes raw tokens. */
+  redeemUrl: string;
 }
 
 /* ---------- In-memory mirror (for fast list/lookup + tests) ---------- */
@@ -219,6 +221,19 @@ export async function createInvitation(args: CreateInvitationArgs): Promise<Crea
   }
   memInvitations.push(row);
 
+  // L-010 fix v23.4.13: also create CRM contact
+  // Non-fatal: best-effort; invitation creation must not fail if CRM upsert fails.
+  try {
+    upsertCrmContactForInvitation({
+      companyId: args.companyId,
+      name: args.investorName ?? null,
+      email: investorEmail,
+      classification: classification,
+    });
+  } catch (crmErr) {
+    log.warn("[roundInvitationsStore] CRM upsert failed (non-fatal):", (crmErr as Error).message);
+  }
+
   // Send the email. The redeem link includes the RAW token, never the hash.
   // Production deploys should set INVITATION_BASE_URL.
   const baseUrl = process.env.INVITATION_BASE_URL ?? "https://app.capavate.com";
@@ -268,11 +283,16 @@ export async function createInvitation(args: CreateInvitationArgs): Promise<Crea
     tenantId: tenantId ?? undefined,
   });
 
+  // L-006 fix v23.4.13: return redeemUrl on create (raw token never stored in list view)
+  const appUrl = process.env.APP_URL ?? process.env.INVITATION_BASE_URL ?? "https://app.capavate.com";
+  const redeemUrl = `${appUrl}/invite/${encodeURIComponent(token)}`;
+
   return {
     invitation: publicView(row) as any,
     emailSent,
     emailMessageId,
     classification,
+    redeemUrl,
   };
 }
 
@@ -381,6 +401,63 @@ export function listForCompany(companyId: string): Array<Omit<RoundInvitationRow
 export function getInvitation(id: string): Omit<RoundInvitationRow, "tokenHash"> | null {
   const row = memInvitations.find((r) => r.id === id);
   return row ? publicView(row) : null;
+}
+
+/* ---------- L-009 helpers v23.4.13: bridge to authRoutes ---------- */
+
+/**
+ * L-009 helper v23.4.13: findByTokenHash
+ * Looks up the in-memory invitation row whose tokenHash equals `hash`
+ * and whose state is not yet redeemed. Returns null if not found.
+ * Uses the in-memory mirror (memInvitations) — same fast-path as all
+ * other reads in this file; DB is the source of truth at hydration only.
+ */
+export function findByTokenHash(hash: string): RoundInvitationRow | null {
+  const row = memInvitations.find((r) => r.tokenHash === hash);
+  return row ?? null;
+}
+
+/**
+ * L-009 helper v23.4.13: markInvitationRedeemed
+ * Atomically transitions the invitation to state='redeemed' (accepted)
+ * and records redeemedAt / redeemedByUserId. Returns true if a row was
+ * updated, false if the id was not found.
+ * Replicates the Drizzle transaction pattern used by redeemInvitation().
+ */
+export function markInvitationRedeemed(id: string, redeemedByUserId?: string | null): boolean {
+  const row = memInvitations.find((r) => r.id === id);
+  if (!row) return false;
+  const now = nowIso();
+  row.state = "accepted";
+  row.redeemedAt = now;
+  row.redeemedByUserId = redeemedByUserId ?? null;
+  row.updatedAt = now;
+  try {
+    const db: any = getDb();
+    db.transaction((tx: any) => {
+      tx.update(invitationsTable)
+        .set({
+          state: "accepted",
+          redeemedAt: now,
+          redeemedByUserId: redeemedByUserId ?? null,
+          updatedAt: now,
+        } as any)
+        .where(eq(invitationsTable.id, id))
+        .run();
+    });
+  } catch (err) {
+    log.warn(
+      "[roundInvitationsStore.markInvitationRedeemed] DB write failed (in-memory updated):",
+      (err as Error).message,
+    );
+  }
+  emitMutation({
+    aggregate: "invitation",
+    id: row.id,
+    change: "update",
+    tenantId: row.tenantId ?? undefined,
+  });
+  return true;
 }
 
 /* ---------- Lifecycle ---------- */

@@ -46,10 +46,11 @@ type Preview = {
 
 const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
 
+// L-007 fix v23.4.13: parse URL token + manual paste
+// App uses BrowserRouter (History API) — token is in window.location.search, not hash.
 function readToken(): string {
   if (typeof window === "undefined") return "";
-  const search = window.location.hash.split("?")[1] ?? "";
-  return new URLSearchParams(search).get("token") ?? "";
+  return new URLSearchParams(window.location.search).get("token") ?? "";
 }
 
 function daysUntil(iso: string): number {
@@ -61,7 +62,11 @@ export default function Redeem() {
   const [, navigate] = useLocation();
   const { toast } = useToast();
   const { setRole } = useRole();
-  const token = useMemo(readToken, []);
+  const urlToken = useMemo(readToken, []);
+  // L-007 fix v23.4.13: manual paste fallback for users without email link
+  const [manualToken, setManualToken] = useState("");
+  const [manualTokenSubmitted, setManualTokenSubmitted] = useState(false);
+  const token = manualTokenSubmitted && manualToken.trim() ? manualToken.trim() : urlToken;
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [agreed, setAgreed] = useState(false);
@@ -85,7 +90,7 @@ export default function Redeem() {
   });
 
   const errorState = useMemo(() => {
-    if (!token) return { kind: "missing" as const, title: "No token provided", body: "Open the secure link from your invitation email, or paste it into your browser." };
+    if (!token) return { kind: "missing" as const, title: "No token provided", body: "Open the secure link from your invitation email, or paste your token below." };
     if (previewQ.isError) {
       const e = previewQ.error as { status?: number; error?: string };
       if (e.error === "expired" || e.status === 410) {
@@ -135,6 +140,28 @@ export default function Redeem() {
         <p className="text-sm text-muted-foreground" data-testid="text-redeem-error">
           {errorState.body}
         </p>
+        {/* L-007 fix v23.4.13: manual paste field for users without the email link */}
+        {errorState.kind === "missing" && (
+          <div className="mt-4 space-y-2">
+            <Label htmlFor="manual-token">Paste your invitation token</Label>
+            <div className="flex gap-2">
+              <Input
+                id="manual-token"
+                value={manualToken}
+                onChange={e => setManualToken(e.target.value)}
+                placeholder="Paste token from invitation email"
+                data-testid="input-manual-token"
+                className="flex-1"
+              />
+              <Button
+                type="button"
+                onClick={() => { if (manualToken.trim()) setManualTokenSubmitted(true); }}
+                disabled={!manualToken.trim()}
+                data-testid="button-redeem-manual-token"
+              >Redeem</Button>
+            </div>
+          </div>
+        )}
         <div className="mt-6 flex flex-col gap-2">
           <Link href="/" data-testid="link-redeem-back-home">
             <Button variant="outline" className="w-full">Back to home</Button>

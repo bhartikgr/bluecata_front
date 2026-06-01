@@ -578,14 +578,16 @@ export function registerPaymentGatewayRoutes(app: Express): void {
    */
   app.patch("/api/founder/subscription/payment-method", (req: Request, res: Response) => {
     const companyId = String(req.body?.companyId ?? (req as any).userContext?.founder?.activeCompanyId ?? ""); /* v14 */
-    const { cardLast4, cardholderName, tokenized } = req.body ?? {};
+    const { cardLast4, cardExpiry, cardholderName, tokenized } = req.body ?? {};
     if (!cardLast4 || cardLast4.length !== 4 || !/^\d{4}$/.test(cardLast4)) {
       return res.status(400).json({ ok: false, error: "invalid_card_last4" });
     }
     if (!tokenized) {
       return res.status(400).json({ ok: false, error: "missing_payment_token" });
     }
-    const result = updateSubscription(companyId, { cardLast4 }, `founder:${companyId}`);
+    // K-201 fix v23.4.13: store cardExpiry so display shows correct expiry
+    const expiryToStore: string | null = typeof cardExpiry === "string" && /^\d{2}\/\d{2}$/.test(cardExpiry) ? cardExpiry : null;
+    const result = updateSubscription(companyId, { cardLast4, cardExpiry: expiryToStore }, `founder:${companyId}`);
     if (!result.ok) return res.status(404).json(result);
     appendAdminAudit(`founder:${companyId}`, `subscription:${companyId}`, "payment_method.changed", { cardLast4, cardholderName });
     res.json({ ok: true, subscription: result.subscription });

@@ -129,16 +129,6 @@ export function registerRoundCarryForwardRoutes(app: Express): void {
       const { companyId } = req.params;
       const roundType = req.query["roundType"] as string | undefined;
 
-      // Validate company exists
-      const company = companies.find((c) => c.id === companyId);
-      if (!company) {
-        return res.status(404).json({
-          ok: false,
-          error: "COMPANY_NOT_FOUND",
-          message: `Company ${companyId} not found.`,
-        });
-      }
-
       // Auth: must own the company (requireAuth already checked session)
       const ctx = getUserContext(req);
       const ownsCompany =
@@ -151,7 +141,16 @@ export function registerRoundCarryForwardRoutes(app: Express): void {
         });
       }
 
-      // Validate roundType
+      // B-301 fix v23.4.13: graceful empty carry-forward
+      // Newly created companies are not in the static seed `companies` array.
+      // Return 200 + empty-but-valid result shape (NOT null) so the client's
+      // `Object.keys(result.fields)` reducer keeps working. v23.4.13 follow-up
+      // (L-012 fix): use the full CarryForwardResult shape instead of null to
+      // avoid "Cannot convert undefined or null to object" on the wizard.
+      const company = companies.find((c) => c.id === companyId);
+
+      // Validate roundType (do this BEFORE the new-company shortcut so we keep
+      // returning 400 for malformed requests on both paths).
       const validTypes: RoundType[] = ["safe", "note", "priced_equity"];
       if (!roundType || !validTypes.includes(roundType as RoundType)) {
         return res.status(400).json({
@@ -159,6 +158,19 @@ export function registerRoundCarryForwardRoutes(app: Express): void {
           error: "INVALID_ROUND_TYPE",
           message: `roundType query param must be one of: ${validTypes.join(", ")}`,
         });
+      }
+
+      if (!company) {
+        const emptyResult: CarryForwardResult = {
+          companyId,
+          proposedRoundType: roundType as RoundType,
+          computedAt: new Date().toISOString(),
+          fields: {},
+          unrealizedInstruments: [],
+          warnings: ["New company — no prior rounds to carry forward."],
+          auditDigest: "",
+        };
+        return res.status(200).json({ ok: true, result: emptyResult });
       }
 
       const result: CarryForwardResult = computeCarryForwardLive({

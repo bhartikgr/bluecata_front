@@ -44,6 +44,8 @@ interface Subscription {
   currency: string;
   renewsOn: string;
   cardLast4: string | null;
+  /** K-201 fix v23.4.13: card expiry in MM/YY format */
+  cardExpiry?: string | null;
   invoicesCount: number;
   pastDueMinor?: number;
   trialEndsOn?: string;
@@ -147,9 +149,11 @@ function ChangePaymentDialog({
   const changeMut = useMutation({
     mutationFn: async () => {
       const cardLast4 = cardNumber.replace(/\D/g, "").slice(-4);
+      // K-201 fix v23.4.13: pass cardExpiry so server can store and return the correct expiry
       const res = await apiRequest("PATCH", "/api/founder/subscription/payment-method", {
         companyId,
         cardLast4,
+        cardExpiry: expiry,
         cardholderName: name,
         tokenized: `tok_${cardLast4}`,
       });
@@ -520,7 +524,8 @@ export default function FounderBilling() {
                     </div>
                     <div>
                       <div className="font-medium text-sm">•••• •••• •••• {sub.cardLast4}</div>
-                      <div className="text-[11px] text-muted-foreground">Visa · Expires 12/28</div>
+                      {/* K-201 fix v23.4.13: display actual stored expiry, not hardcoded value */}
+                      <div className="text-[11px] text-muted-foreground">Visa{sub.cardExpiry ? ` · Expires ${sub.cardExpiry}` : ""}</div>
                     </div>
                   </div>
                   <Button size="sm" variant="outline" onClick={() => setChangePaymentOpen(true)} data-testid="button-change-payment-method">

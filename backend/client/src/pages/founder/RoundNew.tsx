@@ -265,10 +265,12 @@ export default function RoundNew() {
  if (trimmed.length === 0) return null;
  return /^-?\d+$/.test(trimmed) ? trimmed : null;
  };
+ // B-302 fix v23.4.13: include name in round-create payload
  const payload = {
  companyId,
  type: form.type,
  instrument: form.instrument,
+ name: form.name || undefined,
  // Decimal-as-string values — preserved end-to-end at 38-digit precision.
  targetAmount: requiredDecimalString(form.targetAmount),
  preMoney: requiredDecimalString(form.preMoney),

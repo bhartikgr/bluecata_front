@@ -249,6 +249,18 @@ export function registerCollectiveAppRoutes(app: Express): void {
   });
 
   // Defect 58: require admin role for listing all applications
+  // C-014 v23.5: GET /api/collective/applications/mine — investor application status endpoint
+  // Must be registered before the :id route to avoid route shadowing.
+  app.get("/api/collective/applications/mine", (req: Request, res: Response) => {
+    const userId = req.userContext?.userId ?? null;
+    if (!userId) return res.status(401).json({ error: "missing_identity" });
+    const mine = applications
+      .filter(a => a.userId === userId)
+      .sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime());
+    if (mine.length === 0) return res.status(404).json({ error: "no_application_yet" });
+    return res.json({ application: mine[0] });
+  });
+
   app.get("/api/collective/applications", (req: Request, res: Response) => {
     if (!req.userContext?.isAdmin) {
       return res.status(403).json({ error: "NOT_ADMIN", message: "Admin access required." });

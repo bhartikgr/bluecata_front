@@ -174,6 +174,14 @@ const adminNav: NavGroup[] = [
     ],
   },
   {
+    title: "Collective",
+    items: [
+      { href: "/admin/collective/applications", label: "Collective Applications", icon: Inbox },
+      { href: "/admin/collective/members", label: "Collective Members", icon: Users },
+      { href: "/admin/collective/settings", label: "Collective Settings", icon: Settings },
+    ],
+  },
+  {
     title: "Bridge & Comms",
     items: [
       { href: "/admin/bridge", label: "Bridge & Outbox", icon: Network },

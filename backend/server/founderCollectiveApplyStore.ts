@@ -19,7 +19,7 @@
 import type { Express, Request, Response } from "express";
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
-import { isNull } from "drizzle-orm";
+import { isNull, eq } from "drizzle-orm";
 import { emitSync } from "./sprint10Telemetry";
 import { getCompaniesForFounder } from "./multiCompanyStore"; /* v16 F-coll-2 ownership */
 import { requireCollectiveEnabled } from "./lib/featureFlags"; /* v16 Fix 6 */
@@ -181,6 +181,12 @@ function enforceFounderOwnership(
     res.status(401).json({ error: "missing_identity" });
     return null;
   }
+  // B-401 hardening v23.4.13: derive founderId from session, don't trust client.
+  // Overwrite body.founderId with the authenticated userId so a hostile caller
+  // cannot impersonate another founder by supplying a different founderId.
+  if (req.session && (req.session as any).userId) {
+    body.founderId = (req.session as any).userId;
+  }
   if (body.founderId && body.founderId !== userId) {
     res.status(403).json({ error: "founder_mismatch", message: "body.founderId must equal the authenticated user." });
     return null;
@@ -198,7 +204,58 @@ function enforceFounderOwnership(
   return { userId };
 }
 
+// C-009 helper v23.5: expose founderCollectiveApplyStore reads to admin bridge
+export function listApplications(filter?: { status?: ApplicationStatus }): CompanyApplication[] {
+  return applications.filter(a => !filter?.status || a.status === filter.status);
+}
+
+export function getApplicationById(id: string): CompanyApplication | null {
+  return applications.find(a => a.id === id) ?? null;
+}
+
+export function setApplicationStatus(
+  id: string,
+  status: ApplicationStatus,
+  reviewedBy?: string,
+): CompanyApplication | null {
+  const idx = applications.findIndex(a => a.id === id);
+  if (idx === -1) return null;
+  const now = new Date().toISOString();
+  applications[idx] = { ...applications[idx], status, reviewedAt: now };
+  // v17 Phase B — DB write-through, mirror the existing pattern.
+  try {
+    const db: any = getDb();
+    db.transaction((tx: any) => {
+      tx.update(founderCollectiveApplicationsTable)
+        .set({ status, reviewedAt: now } as any)
+        .where(eq((founderCollectiveApplicationsTable as any).id, id))
+        .run();
+    });
+  } catch (err) {
+    log.warn("[founderCollectiveApplyStore.setApplicationStatus] DB update failed (memory only):", (err as Error).message);
+  }
+  return applications[idx];
+}
+
+// C-006 helper v23.5: return latest application for a given founderId
+export function getLatestApplicationByFounder(founderId: string): CompanyApplication | null {
+  const mine = applications
+    .filter(a => a.founderId === founderId)
+    .sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime());
+  return mine[0] ?? null;
+}
+
 export function registerFounderCollectiveApplyRoutes(app: Express): void {
+  // C-006 v23.5: GET /api/founder/collective/applications/mine — status endpoint
+  app.get("/api/founder/collective/applications/mine", (req: Request, res: Response) => {
+    const ctx = (req as Request & { userContext?: { userId?: string } }).userContext;
+    const userId = ctx?.userId ?? null;
+    if (!userId) return res.status(401).json({ error: "missing_identity" });
+    const app1 = getLatestApplicationByFounder(userId);
+    if (!app1) return res.status(404).json({ error: "no_application_yet" });
+    return res.json({ application: app1 });
+  });
+
   // Path A — investor-vouched nomination (v16 Fix 6: gated behind COLLECTIVE_ENABLED)
   app.post("/api/founder/collective/nominations", requireCollectiveEnabled, (req: Request, res: Response) => {
     const parsed = nominationSchema.safeParse(req.body);

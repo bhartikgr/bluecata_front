@@ -140,6 +140,18 @@ export default function ApplyToCollective() {
   // (Old redirect to /investor/collective is removed — that page redirects back here.)
   const isActiveMember = elig.data?.collectiveStatus === "active";
 
+  // C-014 v23.5: fetch investor's own application status for status banner
+  const mineQ = useQuery<{ application: { status: string; submittedAt: string; reviewedAt?: string } } | null>({
+    queryKey: ["/api/collective/applications/mine"],
+    queryFn: async () => {
+      const res = await fetch("/api/collective/applications/mine");
+      if (res.status === 404) return null;
+      return res.json();
+    },
+    retry: false,
+  });
+  const mineApp = (mineQ.data as any)?.application ?? null;
+
   const [form, setForm] = useState<CollectiveApplication>({
     thesis: "",
     minCheckUsd: 25_000,
@@ -233,6 +245,23 @@ export default function ApplyToCollective() {
         breadcrumbs={[{ href: "/investor/dashboard", label: "Workspace" }, { label: "Apply to Collective" }]}
       />
       <PageBody>
+        {/* C-014 v23.5 — investor application status banner */}
+        {mineApp && !isActiveMember && (
+          <div
+            className={`rounded-md border p-4 mb-5 flex items-start gap-3 text-sm ${mineApp.status === "accepted" ? "border-emerald-200 bg-emerald-50" : mineApp.status === "rejected" ? "border-rose-200 bg-rose-50" : "border-blue-200 bg-blue-50"}`}
+            data-testid="banner-investor-application-status"
+          >
+            <CheckCircle2 className="h-5 w-5 shrink-0 mt-0.5" />
+            <div>
+              {mineApp.status === "submitted" && <><strong>Application submitted</strong> on {new Date(mineApp.submittedAt).toLocaleDateString()} — under review.</>}
+              {mineApp.status === "reviewing" && <><strong>Under review</strong> since {new Date(mineApp.submittedAt).toLocaleDateString()}.</>}
+              {mineApp.status === "accepted" && <><strong className="text-emerald-800">Accepted</strong> on {mineApp.reviewedAt ? new Date(mineApp.reviewedAt).toLocaleDateString() : "—"} — your membership is being activated.</>}
+              {mineApp.status === "rejected" && <><strong className="text-rose-800">Not selected this cycle.</strong></>}
+              {mineApp.status === "waitlisted" && <><strong>Waitlisted</strong> — we\'ll notify you when a spot opens.</>}
+            </div>
+          </div>
+        )}
+
         {/* ---------------------------------------------------------------- */}
         {/* Sprint 21 Wave G — active member banner                         */}
         {/* ---------------------------------------------------------------- */}

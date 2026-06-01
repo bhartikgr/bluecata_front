@@ -55,6 +55,10 @@ export default function Signup() {
   const { setRole } = useRole();
   const { toast } = useToast();
 
+  // L-008 fix v23.4.13: gate investor signup — investors join by invitation only
+  const portalParam = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("portal") : null;
+  const isInvestorPortal = portalParam === "investor";
+
   // B-V13-1 fix (Avi's Issue 1): if the user is already authenticated, do not
   // show the signup form again — redirect to the appropriate dashboard.
   const meProbe = useQuery<{ isAuthed: boolean; isAdmin?: boolean; founder?: { companies: unknown[] }; investor?: { state?: string } }>({
@@ -259,6 +263,27 @@ export default function Signup() {
               </button>
             </>
           )}
+        </div>
+      </AuthShell>
+    );
+  }
+
+  // L-008 fix v23.4.13: render investor gate instead of signup form
+  if (isInvestorPortal) {
+    return (
+      <AuthShell title="Investor access" subtitle="Investors join by invitation">
+        <div className="space-y-4 text-sm">
+          <p className="text-muted-foreground" data-testid="text-investor-gate">
+            Investors join Capavate by invitation only. Ask the founder to send you an invitation, or open the link from your invitation email.
+          </p>
+          <div className="flex flex-col gap-2 mt-4">
+            <Link href="/auth/login?portal=investor" data-testid="link-investor-login">
+              <Button className="w-full">Sign in as investor</Button>
+            </Link>
+            <Link href="/onboarding" data-testid="link-onboarding">
+              <Button variant="outline" className="w-full">Learn about Capavate</Button>
+            </Link>
+          </div>
         </div>
       </AuthShell>
     );

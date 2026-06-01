@@ -86,6 +86,8 @@ export function NewCompanyDialog({ open, onOpenChange }: NewCompanyDialogProps) 
         /* non-fatal */
       }
       // Invalidate everything company-scoped.
+      // L-002 fix v23.4.13: also invalidate /api/auth/me so select-company page refreshes company list
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
       queryClient.invalidateQueries({ queryKey: ["/api/founder/companies"] });
       queryClient.invalidateQueries({ queryKey: ["/api/founder/active-company"] });
       queryClient.invalidateQueries({ queryKey: ["/api/founder/captable"] });

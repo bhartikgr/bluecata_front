@@ -192,13 +192,17 @@ export const ENTITY_TYPE_OPTIONS = opts([
   { value: "us_b_corp",      label: "US — B-Corp (Certified Benefit)" },
   { value: "us_pbc",         label: "US — Public Benefit Corporation" },
   // Canada
-  { value: "ca_inc_cbca",    label: "Canada — Corporation (CBCA federal)" },
-  { value: "ca_inc",         label: "Canada — Provincial Corporation" },
-  { value: "ca_ulc",         label: "Canada — Unlimited Liability Corp. (ULC)" },
-  { value: "ca_partnership", label: "Canada — Partnership" },
-  { value: "ca_lp",          label: "Canada — Limited Partnership (LP)" },
-  { value: "ca_llp",         label: "Canada — Limited Liability Partnership (LLP)" },
-  { value: "ca_coop",        label: "Canada — Co-operative" },
+  // L-004 fix v23.4.13: add jurisdiction-specific CA entity types
+  { value: "ca_inc_cbca",    label: "CA — Federal Corporation (CBCA)" },
+  { value: "ca_inc_on",      label: "CA — Ontario Corporation" },
+  { value: "ca_inc_bc",      label: "CA — BC Corporation" },
+  { value: "ca_inc",         label: "CA — Provincial Corporation" },
+  { value: "ca_ulc",         label: "CA — Unlimited Liability Corp. (ULC)" },
+  { value: "ca_partnership", label: "CA — Partnership" },
+  { value: "ca_lp",          label: "CA — Limited Partnership (LP)" },
+  { value: "ca_llp",         label: "CA — Limited Liability Partnership (LLP)" },
+  { value: "ca_sole_prop",   label: "CA — Sole Proprietorship" },
+  { value: "ca_coop",        label: "CA — Co-operative" },
   // UK
   { value: "uk_ltd",         label: "UK — Private Limited (Ltd)" },
   { value: "uk_plc",         label: "UK — Public Limited (PLC)" },
@@ -248,7 +252,7 @@ export type EntityTypeValue = typeof ENTITY_TYPE_OPTIONS[number]["value"];
 export function entityTypesForCountry(countryCode: string): typeof ENTITY_TYPE_OPTIONS[number][] {
   const map: Record<string, EntityTypeValue[]> = {
     US: ["us_c_corp", "us_s_corp", "us_llc", "us_lp", "us_llp", "us_sole_prop", "us_b_corp", "us_pbc", "other"],
-    CA: ["ca_inc_cbca", "ca_inc", "ca_ulc", "ca_partnership", "ca_lp", "ca_llp", "ca_coop", "other"],
+    CA: ["ca_inc_cbca", "ca_inc_on", "ca_inc_bc", "ca_inc", "ca_ulc", "ca_partnership", "ca_lp", "ca_llp", "ca_sole_prop", "ca_coop", "other"],
     GB: ["uk_ltd", "uk_plc", "uk_llp", "uk_lp", "uk_sole_trader", "uk_cic", "other"],
     IN: ["in_pvt_ltd", "in_public_ltd", "in_llp", "in_opc", "in_sole_prop", "in_partnership", "other"],
     JP: ["jp_kk", "jp_gk", "jp_goshi", "jp_gomei", "other"],

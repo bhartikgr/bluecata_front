@@ -495,6 +495,59 @@ export function listContactsForCompany(companyId: string): FounderCrmContact[] {
 }
 
 /**
+ * L-010 fix v23.4.13: also create CRM contact
+ * Upserts a CRM contact when an investor is invited via roundInvitationsStore.
+ * If a contact with the same email + companyId already exists, leaves it unchanged.
+ * Non-fatal: errors are swallowed so invitation creation is not blocked.
+ */
+export function upsertCrmContactForInvitation(args: {
+  companyId: string;
+  name: string | null;
+  email: string;
+  classification?: string;
+}): void {
+  if (!args.companyId || !args.email) return;
+  // Idempotent: skip if contact with same email already exists for this company
+  const existing = contacts.find(
+    (c) => c.companyId === args.companyId && c.email.toLowerCase() === args.email.toLowerCase()
+  );
+  if (existing) return;
+  const newContact: FounderCrmContact = {
+    id: `fcrm_inv_${args.companyId.slice(-4)}_${randomBytes(3).toString("hex")}`,
+    companyId: args.companyId,
+    investorId: `u_inv_${randomBytes(3).toString("hex")}`,
+    name: args.name ?? args.email.split("@")[0],
+    firmName: "—",
+    email: args.email,
+    region: "US",
+    stage: "lead",
+    ownership: { sharesUsd: 0, pct: 0 },
+    softCircleHistory: [],
+    maSignals: 0,
+    threadIds: [],
+    notes: `Auto-created from invitation (${args.classification ?? "invited"})`,
+    notesUpdatedAt: new Date().toISOString(),
+    tasks: [],
+    series: "—",
+  };
+  contacts.push(newContact);
+  // Best-effort DB write — non-fatal
+  try {
+    const db = getDb();
+    const row = contactToRow(newContact);
+    (db as any).prepare(
+      `INSERT OR IGNORE INTO founder_crm_contacts (id, tenantId, companyId, investorId, name, firmName, email, region, stage, ownership, softCircleHistory, maSignals, threadIds, notes, notesUpdatedAt, tasks, series) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    ).run(
+      row.id, row.tenantId, row.companyId, row.investorId, row.name, row.firmName, row.email,
+      row.region, row.stage, row.ownership, row.softCircleHistory, row.maSignals, row.threadIds,
+      row.notes, row.notesUpdatedAt, row.tasks, row.series
+    );
+  } catch {
+    // Non-fatal: in-memory contact is already added above.
+  }
+}
+
+/**
  * hydrateFounderCrmStore — Patch v12 Day 3 real hydrator.
  *
  * Reads every live row from founder_crm_contacts and rebuilds the

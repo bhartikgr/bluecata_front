@@ -404,8 +404,16 @@ function CompanyWizard({
  onCheckedChange={setLegalConsentChecked}
  />
  )}
+ {/* L-005 fix v23.4.13: save profile validation feedback — show count near button */}
+ {!legalConsentChecked && (
+ <p className="text-xs text-muted-foreground" data-testid="text-save-requires-consent">Please accept the terms to continue.</p>
+ )}
+ {legalConsentChecked && !isProfileValid && (
+ <p className="text-xs text-amber-700" data-testid="text-save-missing-count">{requiredMissingList.length} required field{requiredMissingList.length !== 1 ? "s" : ""} missing: {requiredMissingList.join(", ")}</p>
+ )}
  <Button
  onClick={() => {
+ if (!legalConsentChecked) { legalConsentRef.current?.recordConsent().catch(() => null); return; }
  const missing = missingRequired();
  if (missing.length) {
  toast({
@@ -413,13 +421,21 @@ function CompanyWizard({
  description: `Please fill in: ${missing.join(", ")}.`,
  variant: "destructive",
  });
+ // L-005 fix v23.4.13: scroll to first missing field
+ const firstMissingTestId = missing[0]?.toLowerCase().includes("company name") ? "input-company-name"
+ : missing[0]?.toLowerCase().includes("country of incorp") ? "picker-country-incorp"
+ : missing[0]?.toLowerCase().includes("entity") ? "select-entity-type" : null;
+ if (firstMissingTestId) {
+ const el = document.querySelector(`[data-testid="${firstMissingTestId}"]`);
+ if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+ }
  return;
  }
  saveDraft();
  legalConsentRef.current?.recordConsent().catch(() => null);
  toast({ title: "Profile saved", description: "All four steps captured. Sync to Collective queued." });
  }}
- disabled={!legalConsentChecked || !isProfileValid}
+ disabled={false}
  data-testid="button-save-profile"
  >
  <Check className="h-4 w-4 mr-1.5" /> Save profile

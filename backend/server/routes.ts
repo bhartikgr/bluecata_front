@@ -74,6 +74,9 @@ import {
   revokeInvitation as roundInvitationsRevoke,
   extendInvitation as roundInvitationsExtend,
   getInvitation as roundInvitationsGet,
+  // L-009 fix v23.4.13: bridge legacy invitationStore → roundInvitationsStore
+  findByTokenHash,
+  markInvitationRedeemed,
 } from "./roundInvitationsStore";
 import {
   createSoftCircle as softCircleCreate,
@@ -664,36 +667,74 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     preview: (rawToken: string): RedemptionPreview => {
       const hash = sha256Hex(rawToken);
       const entry = invitationStore.find(e => e.tokenHash === hash);
-      if (!entry) return { ok: false, reason: "not_found" };
-      if (entry.revoked) return { ok: false, reason: "revoked" };
-      if (entry.redeemed) return { ok: false, reason: "already_redeemed" };
-      if (Date.now() > new Date(entry.expiresAt).getTime()) return { ok: false, reason: "expired" };
-      const company = _allCompanies.find(c => c.id === entry.companyId);
-      const round = rounds.find(r => r.id === entry.roundId);
+      if (entry) {
+        // Legacy path — unchanged.
+        if (entry.revoked) return { ok: false, reason: "revoked" };
+        if (entry.redeemed) return { ok: false, reason: "already_redeemed" };
+        if (Date.now() > new Date(entry.expiresAt).getTime()) return { ok: false, reason: "expired" };
+        const company = _allCompanies.find(c => c.id === entry.companyId);
+        const round = rounds.find(r => r.id === entry.roundId);
+        return {
+          ok: true,
+          invitation: {
+            roundId: entry.roundId,
+            companyId: entry.companyId,
+            companyName: entry.companyName,
+            inviteeEmail: entry.inviteeEmail,
+            inviteeName: entry.inviteeName,
+            expiresAt: entry.expiresAt,
+            roundLabel: round ? `${round.type ?? ""}${round.targetAmount ? " · $" + (round.targetAmount/1_000_000).toFixed(1) + "M target" : ""}` : undefined,
+            founderName: company ? "Founder" : undefined,
+          },
+        };
+      }
+
+      // L-009 fix v23.4.13: bridge to roundInvitationsStore
+      const modernEntry = findByTokenHash(hash);
+      if (!modernEntry) return { ok: false, reason: "not_found" };
+      if (modernEntry.state === "revoked") return { ok: false, reason: "revoked" };
+      if (modernEntry.redeemedAt) return { ok: false, reason: "already_redeemed" };
+      if (modernEntry.expiresAt && Date.now() > new Date(modernEntry.expiresAt).getTime()) return { ok: false, reason: "expired" };
+
+      const modernCompany = _allCompanies.find(c => c.id === modernEntry.companyId);
+      const modernRound = mergeLegacyAndDbRounds().find(r => r.id === modernEntry.roundId);
       return {
         ok: true,
         invitation: {
-          roundId: entry.roundId,
-          companyId: entry.companyId,
-          companyName: entry.companyName,
-          inviteeEmail: entry.inviteeEmail,
-          inviteeName: entry.inviteeName,
-          expiresAt: entry.expiresAt,
-          roundLabel: round ? `${round.type ?? ""}${round.targetAmount ? " · $" + (round.targetAmount/1_000_000).toFixed(1) + "M target" : ""}` : undefined,
-          founderName: company ? "Founder" : undefined,
+          roundId: modernEntry.roundId,
+          companyId: modernEntry.companyId ?? "",
+          companyName: modernCompany?.name ?? "",
+          inviteeEmail: modernEntry.investorEmail,
+          inviteeName: modernEntry.investorName ?? "",
+          expiresAt: modernEntry.expiresAt ?? "",
+          roundLabel: modernRound ? `${modernRound.type ?? ""}${modernRound.targetAmount ? " · $" + (modernRound.targetAmount/1_000_000).toFixed(1) + "M target" : ""}` : undefined,
+          founderName: modernCompany ? "Founder" : undefined,
         },
       };
     },
     redeem: (rawToken: string): RedemptionResult => {
       const hash = sha256Hex(rawToken);
       const entry = invitationStore.find(e => e.tokenHash === hash);
-      if (!entry) return { ok: false, reason: "not_found" };
-      if (entry.revoked) return { ok: false, reason: "revoked" };
-      if (entry.redeemed) return { ok: false, reason: "already_redeemed" };
-      if (Date.now() > new Date(entry.expiresAt).getTime()) return { ok: false, reason: "expired" };
-      entry.redeemed = true;
-      entry.redeemedAt = new Date().toISOString();
-      return { ok: true, invitationId: entry.id, roundId: entry.roundId, companyId: entry.companyId };
+      if (entry) {
+        // Legacy path — unchanged.
+        if (entry.revoked) return { ok: false, reason: "revoked" };
+        if (entry.redeemed) return { ok: false, reason: "already_redeemed" };
+        if (Date.now() > new Date(entry.expiresAt).getTime()) return { ok: false, reason: "expired" };
+        entry.redeemed = true;
+        entry.redeemedAt = new Date().toISOString();
+        return { ok: true, invitationId: entry.id, roundId: entry.roundId, companyId: entry.companyId };
+      }
+
+      // L-009 fix v23.4.13: bridge to roundInvitationsStore
+      const modernEntry = findByTokenHash(hash);
+      if (!modernEntry) return { ok: false, reason: "not_found" };
+      if (modernEntry.state === "revoked") return { ok: false, reason: "revoked" };
+      if (modernEntry.redeemedAt) return { ok: false, reason: "already_redeemed" };
+      if (modernEntry.expiresAt && Date.now() > new Date(modernEntry.expiresAt).getTime()) return { ok: false, reason: "expired" };
+
+      const ok = markInvitationRedeemed(modernEntry.id);
+      if (!ok) return { ok: false, reason: "not_found" };
+      return { ok: true, invitationId: modernEntry.id, roundId: modernEntry.roundId, companyId: modernEntry.companyId ?? "" };
     },
   });
 
@@ -1350,12 +1391,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         expiryDays: typeof expiryDays === "number" ? expiryDays : undefined,
         invitedByUserId: check.userId,
       });
-      // CRITICAL: never return the raw token in the API response.
+      // L-006 fix v23.4.13: return redeemUrl on create so clients can display/copy it.
+      // The redeemUrl contains the raw one-time token — it is intentionally surfaced
+      // ONLY on create (single-use window). The list endpoint never exposes tokens.
       return res.json({
         ok: true,
         invitation: result.invitation,
         classification: result.classification,
         emailSent: result.emailSent,
+        redeemUrl: result.redeemUrl,
       });
     } catch (err) {
       return res.status(400).json({ ok: false, error: (err as Error).message });
