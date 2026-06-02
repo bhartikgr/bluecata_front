@@ -495,6 +495,17 @@ export function listContactsForCompany(companyId: string): FounderCrmContact[] {
 }
 
 /**
+ * B-505 fix v23.6.1 — resolve a CRM contact by the investor identity used in
+ * Message/DM deep-links (`?contactId=u_inv_*`). Matches either the contact's
+ * investorId or its primary id. Used by the comms DM-start route to provision
+ * a real comms identity for CRM-only contacts. Returns undefined if not found.
+ */
+export function findCrmContactByInvestorId(investorId: string): FounderCrmContact | undefined {
+  if (!investorId) return undefined;
+  return contacts.find((c) => c.investorId === investorId || c.id === investorId);
+}
+
+/**
  * L-010 fix v23.4.13: also create CRM contact
  * Upserts a CRM contact when an investor is invited via roundInvitationsStore.
  * If a contact with the same email + companyId already exists, leaves it unchanged.

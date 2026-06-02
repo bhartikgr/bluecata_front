@@ -260,13 +260,18 @@ describe("Sprint 18 Phase 3 — E1 dm/start", () => {
     }
   });
 
-  it("POST /api/comms/dm/start 404s for unknown target", async () => {
+  it("POST /api/comms/dm/start returns structured 422 for unknown target (B-505 v23.6.1)", async () => {
+    // B-505 fix v23.6.1: a target with no comms identity AND no founder CRM
+    // record to provision from now returns a structured 422
+    // (contact_not_provisioned) instead of a silent 404, so the client can
+    // render an actionable message.
     const app = buildApp();
     const r = await call(app, "POST", "/api/comms/dm/start", {
       body: { targetUserId: "u_does_not_exist" },
       actorId: "u_aisha_patel",
     });
-    expect(r.status).toBe(404);
+    expect(r.status).toBe(422);
+    expect(r.body.error).toBe("contact_not_provisioned");
   });
 
   it("POST /api/comms/dm/start 400s for malformed payload", async () => {

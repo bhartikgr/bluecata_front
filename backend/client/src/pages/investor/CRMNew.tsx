@@ -50,6 +50,17 @@ export default function InvestorCRMNew() {
     setTagInput("");
   }
 
+  // BUG 010 fix v23.7 — the Clear button was missing; founders had no way to
+  // reset the form short of reloading. This resets every field to its initial
+  // empty state (and the tag/platform-link sub-state).
+  function clearForm() {
+    setForm({ name: "", role: "", email: "", affiliation: "", stage: "cold" as InvestorCrmStage, notes: "" });
+    setTagInput("");
+    setTags([]);
+    setPlatformUserId("");
+    setShowPlatformLink(false);
+  }
+
   const saveMut = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/investor/crm", {
@@ -72,7 +83,11 @@ export default function InvestorCRMNew() {
     onError: (e: Error) => toast({ title: "Save failed", description: e.message, variant: "destructive" }),
   });
 
-  const canSave = form.name.trim().length > 0 && form.affiliation.trim().length > 0;
+  // BUG 007/008 fix v23.7 — name + email were not enforced. Email is now a
+  // mandatory field with format validation; Save is blocked until valid.
+  const emailValid = /\S+@\S+\.\S+/.test(form.email.trim());
+  const canSave =
+    form.name.trim().length > 0 && form.affiliation.trim().length > 0 && emailValid;
 
   return (
     <>
@@ -116,7 +131,9 @@ export default function InvestorCRMNew() {
                 />
               </div>
               <div>
-                <Label>Email</Label>
+                <Label>
+                  Email <span className="text-destructive">*</span>
+                </Label>
                 <Input
                   className="mt-1"
                   type="email"
@@ -125,6 +142,11 @@ export default function InvestorCRMNew() {
                   placeholder="sarah@example.com"
                   data-testid="input-email"
                 />
+                {form.email.trim().length > 0 && !emailValid && (
+                  <p className="text-xs text-destructive mt-1" data-testid="error-email">
+                    Enter a valid email address.
+                  </p>
+                )}
               </div>
               <div>
                 <Label>
@@ -232,6 +254,9 @@ export default function InvestorCRMNew() {
             <div className="flex justify-end gap-2 pt-3 border-t border-border">
               <Button variant="ghost" onClick={() => navigate("/investor/crm")} data-testid="button-cancel">
                 Cancel
+              </Button>
+              <Button variant="outline" type="button" onClick={clearForm} data-testid="button-clear">
+                Clear
               </Button>
               <Button
                 onClick={() => saveMut.mutate()}

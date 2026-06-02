@@ -1,6 +1,7 @@
 import { ReactNode, useState, useEffect, useCallback } from "react";
 import { Link, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
+import { useActiveCompany } from "@/lib/useActiveCompany";
 import {
   LayoutDashboard, Building2, PieChart, Briefcase, Users, FolderOpen, FileText,
   Activity, Settings, Send, Inbox, Target, UserCircle, MessageSquare, FileSignature,
@@ -72,8 +73,12 @@ type NavGroup = { title: string; items: NavItem[] };
 
 /** Sprint 19 K — Live badge counts from queries. Returns static nav with live badge overrides. */
 function useFounderNav(): NavGroup[] {
-  const roundsQ = useQuery<unknown[]>({ queryKey: ["/api/rounds"], retry: false });
-  const roundCount = (roundsQ.data?.length ?? 0) || undefined;
+  // BUG 032 fix v23.7 — the Rounds badge used GET /api/rounds, which returns
+  // rounds across ALL of a founder's companies, so the count never changed when
+  // the active company switched. Use the per-company KPI from the active-company
+  // endpoint instead so the badge reflects only the selected company's rounds.
+  const activeCompanyQ = useActiveCompany();
+  const roundCount = activeCompanyQ.data?.company?.kpi?.activeRoundsCount || undefined;
   return [
     {
       title: "Workspace",

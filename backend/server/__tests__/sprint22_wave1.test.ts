@@ -4,7 +4,7 @@
  * Tests (≥15 supertest-style assertions using node:http):
  *  1.  POST /api/comms/dm/start with valid targetUserId → ok:true + channelId
  *  2.  POST /api/comms/dm/start without auth → 401
- *  3.  POST /api/comms/dm/start with unknown targetUserId → 404
+ *  3.  POST /api/comms/dm/start with unknown targetUserId → 422 (B-505 v23.6.1)
  *  4.  POST /api/comms/dm/start called twice → same channelId (idempotent)
  *  5.  GET  /api/investor/companies/:id/co-members without auth → 401
  *  6.  GET  /api/investor/companies/:id/co-members with auth → 200 + array
@@ -130,14 +130,18 @@ describe("Sprint 22 Wave 1 — Identity + Share Fixes", () => {
     expect(status).toBe(401);
   });
 
-  it("3. POST /api/comms/dm/start with unknown targetUserId → 404", async () => {
+  it("3. POST /api/comms/dm/start with unknown targetUserId → structured 422 (B-505 v23.6.1)", async () => {
+    // B-505 fix v23.6.1: an unknown target with no comms identity and no CRM
+    // record to provision from now returns a structured 422 instead of a
+    // silent 404, so the client surfaces an actionable message.
     const { status, body } = await call(
       "POST",
       "/api/comms/dm/start",
       { actorId: INVESTOR_ID, body: { targetUserId: "m_novapay_nonexistent" } },
     );
-    expect(status).toBe(404);
+    expect(status).toBe(422);
     expect(body).toBeDefined();
+    expect(body.error).toBe("contact_not_provisioned");
   });
 
   it("4. POST /api/comms/dm/start is idempotent — same pair returns same channelId", async () => {

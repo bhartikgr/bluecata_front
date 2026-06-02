@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { StateBadge, EmptyState } from "@/components/common";
@@ -17,7 +18,19 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useActiveCompanyId } from "@/lib/useActiveCompany";
 
-type Round = { id: string; company: string; name: string; type: string; state: string; targetAmount: number; raisedAmount: number; preMoney: number | null; postMoney: number | null; pricePerShare: number | null; minTicket: number | null; closeDate: string; termsSummary?: string };
+type Round = { id: string; company: string; name: string; type: string; state: string; targetAmount: number; raisedAmount: number; preMoney: number | null; postMoney: number | null; pricePerShare: number | null; minTicket: number | null; closeDate: string; termsSummary?: string; instrument?: string | null; valuationCap?: number | null; discount?: number | null; interestRate?: number | null; maturityMonths?: number | null; strikePrice?: number | null; expiryYears?: number | null; mfn?: boolean | null };
+
+// BUG 034 — group instruments so the Edit-Terms dialog can show the right
+// field set. Priced rounds use pre/post-money + PPS; SAFEs and notes use a
+// valuation cap + discount (+ interest/maturity for notes); warrants use a
+// strike price + expiry. Anything unmatched falls back to priced fields.
+function instrumentFamily(instrument?: string | null): "priced" | "safe" | "note" | "warrant" {
+  const i = (instrument ?? "").toLowerCase();
+  if (i.includes("warrant")) return "warrant";
+  if (i.includes("note") || i.includes("convertible")) return "note";
+  if (i.includes("safe")) return "safe";
+  return "priced";
+}
 
 const CLOSED_STATES = new Set(["closed", "funded"]);
 
@@ -103,7 +116,8 @@ export default function Rounds() {
 
                         <div className="mt-4 grid grid-cols-3 gap-4 text-sm">
                           <div><div className="text-xs text-muted-foreground">Pre-money</div><div className="font-medium">{fmtUSD(r.preMoney ?? 0, { compact: true })}</div></div>
-                          <div><div className="text-xs text-muted-foreground">Post-money</div><div className="font-medium">{fmtUSD(r.postMoney ?? 0, { compact: true })}</div></div>
+                          {/* B-504 fix v23.6: post-money derived inline from pre+target instead of reading stale postMoney field */}
+                          <div><div className="text-xs text-muted-foreground">Post-money</div><div className="font-medium" data-testid={`post-money-${r.id}`}>{fmtUSD((Number(r.preMoney ?? 0) + Number(r.targetAmount ?? 0)), { compact: true })}</div></div>
                           <div><div className="text-xs text-muted-foreground">Price/share</div><div className="font-medium">${r.pricePerShare?.toFixed(2)}</div></div>
                         </div>
                       </div>
@@ -145,6 +159,10 @@ export default function Rounds() {
 
 function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void }) {
   const { toast } = useToast();
+  // BUG 034 — branch the editable field set by instrument family so SAFEs,
+  // convertible notes, and warrants no longer show meaningless priced-round
+  // fields (pre/post-money + PPS). The dialog flow is unchanged.
+  const family = instrumentFamily(round.instrument);
   const [targetAmount, setTargetAmount] = useState(round.targetAmount);
   const [preMoney, setPreMoney] = useState(round.preMoney ?? 0);
   const [postMoney, setPostMoney] = useState(round.postMoney ?? 0);
@@ -152,11 +170,33 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
   const [minTicket, setMinTicket] = useState(round.minTicket ?? 0);
   const [closeDate, setCloseDate] = useState(round.closeDate);
   const [termsSummary, setTermsSummary] = useState(round.termsSummary ?? "");
+  // Instrument extras (SAFE / note / warrant).
+  const [valuationCap, setValuationCap] = useState(round.valuationCap ?? 0);
+  const [discount, setDiscount] = useState(round.discount ?? 0);
+  const [interestRate, setInterestRate] = useState(round.interestRate ?? 0);
+  const [maturityMonths, setMaturityMonths] = useState(round.maturityMonths ?? 0);
+  const [strikePrice, setStrikePrice] = useState(round.strikePrice ?? 0);
+  const [expiryYears, setExpiryYears] = useState(round.expiryYears ?? 0);
+  // MFN (Most-Favored-Nation) — sourced from the round's extras (extras_json).
+  const [mfn, setMfn] = useState<boolean>(round.mfn === true);
 
   const saveMut = useMutation({
     mutationFn: async () => {
+      // Only send the fields relevant to this instrument family; the server
+      // PATCH ignores keys it does not recognize for the round and never
+      // performs a retroactive migration of other rounds.
+      const common = { targetAmount, minTicket, closeDate, termsSummary };
+      const byFamily: Record<string, unknown> =
+        family === "priced"
+          ? { preMoney, postMoney, pricePerShare }
+          : family === "warrant"
+            ? { strikePrice, expiryYears }
+            : family === "note"
+              ? { valuationCap, discount, interestRate, maturityMonths, mfn }
+              : { valuationCap, discount, mfn }; // safe
       const res = await apiRequest("PATCH", `/api/rounds/${round.id}/terms`, {
-        targetAmount, preMoney, postMoney, pricePerShare, minTicket, closeDate, termsSummary,
+        ...common,
+        ...byFamily,
       });
       return res.json();
     },
@@ -187,18 +227,73 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
             <Label>Min ticket (USD)</Label>
             <Input type="number" min={0} value={minTicket} onChange={e => setMinTicket(Number(e.target.value))} className="mt-1" data-testid="input-min-ticket" />
           </div>
-          <div>
-            <Label>Pre-money valuation</Label>
-            <Input type="number" min={0} value={preMoney} onChange={e => setPreMoney(Number(e.target.value))} className="mt-1" data-testid="input-pre-money" />
-          </div>
-          <div>
-            <Label>Post-money valuation</Label>
-            <Input type="number" min={0} value={postMoney} onChange={e => setPostMoney(Number(e.target.value))} className="mt-1" data-testid="input-post-money" />
-          </div>
-          <div>
-            <Label>Price per share (USD)</Label>
-            <Input type="number" step="0.0001" min={0} value={pricePerShare} onChange={e => setPricePerShare(Number(e.target.value))} className="mt-1" data-testid="input-pps" />
-          </div>
+
+          {family === "priced" && (
+            <>
+              <div>
+                <Label>Pre-money valuation</Label>
+                <Input type="number" min={0} value={preMoney} onChange={e => setPreMoney(Number(e.target.value))} className="mt-1" data-testid="input-pre-money" />
+              </div>
+              <div>
+                <Label>Post-money valuation</Label>
+                <Input type="number" min={0} value={postMoney} onChange={e => setPostMoney(Number(e.target.value))} className="mt-1" data-testid="input-post-money" />
+              </div>
+              <div>
+                <Label>Price per share (USD)</Label>
+                <Input type="number" step="0.0001" min={0} value={pricePerShare} onChange={e => setPricePerShare(Number(e.target.value))} className="mt-1" data-testid="input-pps" />
+              </div>
+            </>
+          )}
+
+          {(family === "safe" || family === "note") && (
+            <>
+              <div>
+                <Label>Valuation cap (USD)</Label>
+                <Input type="number" min={0} value={valuationCap} onChange={e => setValuationCap(Number(e.target.value))} className="mt-1" data-testid="input-valuation-cap" />
+              </div>
+              <div>
+                <Label>Discount (%)</Label>
+                <Input type="number" min={0} value={discount} onChange={e => setDiscount(Number(e.target.value))} className="mt-1" data-testid="input-discount" />
+              </div>
+            </>
+          )}
+
+          {family === "note" && (
+            <>
+              <div>
+                <Label>Interest rate (% APR)</Label>
+                <Input type="number" step="0.1" min={0} value={interestRate} onChange={e => setInterestRate(Number(e.target.value))} className="mt-1" data-testid="input-interest-rate" />
+              </div>
+              <div>
+                <Label>Maturity (months)</Label>
+                <Input type="number" min={0} value={maturityMonths} onChange={e => setMaturityMonths(Number(e.target.value))} className="mt-1" data-testid="input-maturity-months" />
+              </div>
+            </>
+          )}
+
+          {(family === "safe" || family === "note") && (
+            <div className="col-span-2 flex items-center gap-3 rounded-md border border-border p-3">
+              <Switch checked={mfn} onCheckedChange={setMfn} data-testid="switch-mfn" />
+              <div>
+                <Label className="cursor-pointer">MFN clause (Most-Favored-Nation)</Label>
+                <p className="text-xs text-muted-foreground">Investor inherits any better terms granted to a later SAFE/Note holder before the priced round.</p>
+              </div>
+            </div>
+          )}
+
+          {family === "warrant" && (
+            <>
+              <div>
+                <Label>Strike price (USD)</Label>
+                <Input type="number" step="0.01" min={0} value={strikePrice} onChange={e => setStrikePrice(Number(e.target.value))} className="mt-1" data-testid="input-strike-price" />
+              </div>
+              <div>
+                <Label>Expiry (years)</Label>
+                <Input type="number" min={0} value={expiryYears} onChange={e => setExpiryYears(Number(e.target.value))} className="mt-1" data-testid="input-expiry-years" />
+              </div>
+            </>
+          )}
+
           <div>
             <Label>Target close date</Label>
             <Input type="date" value={closeDate?.slice(0, 10)} onChange={e => setCloseDate(e.target.value)} className="mt-1" data-testid="input-close-date" />

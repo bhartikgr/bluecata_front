@@ -7,9 +7,9 @@ import { asArray } from "@/lib/safeArray";
  * Selecting a thread auto-deep-links via the existing channel layer; this
  * surface adds the cross-surface jump shortcuts the spec requires.
  */
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Link, useLocation } from "wouter";
+import { Link, useLocation, useSearch } from "wouter";
 import { MessagesPage } from "@/components/comms/MessagesPage";
 import { useToast } from "@/hooks/use-toast";
 import { CommsTiersTabs } from "@/components/comms/CommsTiersTabs";
@@ -28,12 +28,19 @@ type Round = { id: string; name: string; state: string; companyId: string };
 export default function Messages() {
   const companyId = useActiveCompanyId();
   const [, setLocation] = useLocation();
+  const searchStr = useSearch();
   const meQ = useQuery<{ id: string; displayName: string }>({ queryKey: ["/api/auth/me"] });
   const [filter, setFilter] = useState("");
   // Sprint 18 Phase 2 — T9.1 user picker for new threads.
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerQuery, setPickerQuery] = useState("");
   const { toast } = useToast();
+
+  // B-505 fix v23.6: auto-open DM for ?contactId= URL param
+  const contactIdParam = useMemo(() => {
+    const p = new URLSearchParams(searchStr);
+    return p.get("contactId") ?? "";
+  }, [searchStr]);
 
   // Sprint 18 Phase 3 E1 — actually open a DM thread when the user picks a
   // contact. Hits the existing /api/comms/dm/start endpoint (which enforces the
@@ -63,6 +70,18 @@ export default function Messages() {
     queryKey: ["/api/founder/investor-crm", companyId],
     queryFn: async () => (await apiRequest("GET", `/api/founder/investor-crm?companyId=${companyId}`)).json(),
   });
+
+  // B-505 fix v23.6: when ?contactId= is present, look up the contact in CRM
+  // and auto-start a DM thread so the conversation opens immediately.
+  useEffect(() => {
+    if (!contactIdParam || !crmQ.data) return;
+    const contact = asArray<CrmRow>(crmQ.data).find(c => c.investorId === contactIdParam);
+    if (!contact) return;
+    // Trigger DM start mutation for this contact
+    startDm.mutate(contactIdParam);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contactIdParam, crmQ.data]);
+
   const roundsQ = useQuery<Round[]>({
     queryKey: ["/api/rounds", companyId],
     queryFn: async () => (await apiRequest("GET", `/api/rounds?companyId=${companyId}`)).json(),

@@ -134,6 +134,7 @@ import AdminCollectiveApplications from "@/pages/admin/CollectiveApplications";
 import AdminCollectiveMembers from "@/pages/admin/CollectiveMembers";
 import AdminCollectiveSettings from "@/pages/admin/CollectiveSettings";
 import { V25_COLLECTIVE_SHIPPED } from "@/lib/v25Marker"; void V25_COLLECTIVE_SHIPPED;
+import { V26_FIXES_SHIPPED } from "@/lib/v26Marker"; void V26_FIXES_SHIPPED;
 import PartnerOnboardingChecklistPage from "@/pages/partner/OnboardingChecklistPage";
 import PrivacyPage from "@/pages/settings/PrivacyPage";
 import CollectivePreview from "@/pages/CollectivePreview";

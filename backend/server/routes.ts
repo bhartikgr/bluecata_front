@@ -48,7 +48,7 @@ import { setSessionCookie, clearSessionCookie, readSessionCookie } from "./lib/s
 import { revokeSession } from "./lib/sessionRevocation.js";
 import { getRecentEvents, findEventsByType } from "./sprint10Telemetry";
 // Sprint 11 — founder build
-import { registerMultiCompanyRoutes, updateCompanyDetails } from "./multiCompanyStore";
+import { registerMultiCompanyRoutes, updateCompanyDetails, getCompanyNameById, getCompanyRecordById } from "./multiCompanyStore"; // B-509/C-011 v23.6 added getCompanyNameById; v23.7.1 added getCompanyRecordById (BUG 019 follow-up)
 import { registerMembershipRoutes } from "./membershipStore";
 import { registerDataroomRoutes } from "./dataroomStore";
 // v23.4.7 Phase 13 / BUG 030 — dedicated server endpoint for company-logo
@@ -74,6 +74,7 @@ import {
   revokeInvitation as roundInvitationsRevoke,
   extendInvitation as roundInvitationsExtend,
   getInvitation as roundInvitationsGet,
+  listForInvestorEmail as roundInvitationsListForEmail, // B-509 fix v23.6
   // L-009 fix v23.4.13: bridge legacy invitationStore → roundInvitationsStore
   findByTokenHash,
   markInvitationRedeemed,
@@ -809,12 +810,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/companies/:id", requireAuth, async (req, res) => {
     const c = companies.find(c => c.id === req.params.id);
     const extra = companyDetailsExtra[req.params.id] ?? null;
-    if (!c && !extra) return res.status(404).json({ message: "Not found" });
 
     // V7 (Patch v8): replaced private _testAccess.companyProfiles.get(id) reach-in
     // with public getCompanyProfileSnapshot() accessor.
     const { getCompanyProfileSnapshot } = await import("./profileStore");
     const liveProfile = getCompanyProfileSnapshot(req.params.id);
+
+    // BUG 019 follow-up v23.7.1 — founder-created companies (POST
+    // /api/founder/companies/new) live ONLY in multiCompanyStore and do not
+    // auto-write a profile snapshot at creation time, so they still 404'd here.
+    // Resolve the membership record so a freshly-created company is a valid
+    // company too, and synthesise the shared shape from it below.
+    const mcc = getCompanyRecordById(req.params.id) ?? null;
+
+    // BUG 019 fix v23.7 — the founder "Full page" link (→ /founder/companies/:id
+    // → GET /api/companies/:id) 404'd for any company that exists only as a live
+    // profile in profileStore (e.g. companies created after server start), since
+    // the guard only consulted the legacy in-memory `companies` array and the
+    // static `companyDetailsExtra` map. A live profile is a valid company, so we
+    // now also accept it and synthesise the shared shape from it below.
+    if (!c && !extra && !liveProfile && !mcc) return res.status(404).json({ message: "Not found" });
 
     const ctx = req.userContext;
     let role: string;
@@ -841,16 +856,30 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       canSeeTermSheet = invited;
     }
 
+    // BUG 019 fix v23.7 — when the company exists only as a live profile, derive
+    // the shared display fields from that profile so the full-page view renders
+    // the real company name/description instead of the raw id.
+    const lp = liveProfile as
+      | { contact?: { companyName?: string; companyWebsiteUrl?: string; oneSentenceHeadliner?: string; logoDataUrl?: string | null };
+          legal?: { legalEntityName?: string; region?: string };
+          industry?: string }
+      | null;
+    // BUG 019 follow-up v23.7.1 — when the company exists only in
+    // multiCompanyStore (founder-created, no profile snapshot yet), fall back to
+    // its membership fields (companyName/legalName/sector/stage/hq/logoUrl) so
+    // the full-page view shows the real company instead of the raw id.
     const companyShared = c ?? {
       id: req.params.id,
-      name: extra ? extra.legalEntity.name.replace(/, (Inc|Ltd)\.?$/i, "").replace(/\s*Co\.$/, "") : req.params.id,
-      legalName: extra?.legalEntity.name ?? "",
-      sector: "",
-      stage: "",
-      hq: extra?.mailingAddress ?? "",
-      websiteUrl: "",
-      description: extra?.headliner ?? "",
-      logoUrl: null,
+      name: extra
+        ? extra.legalEntity.name.replace(/, (Inc|Ltd)\.?$/i, "").replace(/\s*Co\.$/, "")
+        : (lp?.contact?.companyName || mcc?.companyName || req.params.id),
+      legalName: extra?.legalEntity.name ?? lp?.legal?.legalEntityName ?? mcc?.legalName ?? "",
+      sector: mcc?.sector ?? "",
+      stage: mcc?.stage ?? "",
+      hq: extra?.mailingAddress ?? mcc?.hq ?? "",
+      websiteUrl: lp?.contact?.companyWebsiteUrl ?? "",
+      description: extra?.headliner ?? lp?.contact?.oneSentenceHeadliner ?? "",
+      logoUrl: lp?.contact?.logoDataUrl ?? mcc?.logoUrl ?? null,
       founded: "",
       employees: 0,
       tenantId: "",
@@ -958,17 +987,44 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
     const body = req.body ?? {};
     const updates: Record<string, unknown> = {};
-    if (typeof body.targetAmount === "number" && body.targetAmount > 0) updates.targetAmount = body.targetAmount;
-    if (typeof body.preMoney === "number" && body.preMoney >= 0) updates.preMoney = body.preMoney;
-    if (typeof body.postMoney === "number" && body.postMoney >= 0) updates.postMoney = body.postMoney;
-    // PATCH v3 Bug 4a: coerce pricePerShare from string or number; reject NaN
-    if (body.pricePerShare != null) {
-      const pps = Number(body.pricePerShare);
-      if (!isNaN(pps) && pps > 0) updates.pricePerShare = pps;
-    }
-    if (typeof body.minTicket === "number" && body.minTicket >= 0) updates.minTicket = body.minTicket;
+    // BUG 034 follow-up v23.7.1 — numeric terms (priced fields + instrument
+    // extras) must be REJECTED with 400 when present-but-invalid (NaN or
+    // negative), not silently dropped. A field absent from the body is left
+    // untouched (no retroactive migration). Returns a typed error so the client
+    // can surface which field was wrong. `numericTerm` returns true on a 400 so
+    // the caller can bail out of the handler.
+    const numericTerm = (key: string): boolean => {
+      if (body[key] == null) return false; // absent — leave untouched
+      const n = Number(body[key]);
+      if (Number.isNaN(n) || n < 0) {
+        res.status(400).json({ error: `invalid_${key}`, message: `${key} must be a non-negative number` });
+        return true;
+      }
+      updates[key] = n;
+      return false;
+    };
+    // Priced-round numeric fields.
+    if (numericTerm("targetAmount")) return;
+    if (numericTerm("preMoney")) return;
+    if (numericTerm("postMoney")) return;
+    if (numericTerm("pricePerShare")) return;
+    if (numericTerm("minTicket")) return;
     if (typeof body.closeDate === "string" && body.closeDate.length > 0) updates.closeDate = body.closeDate;
     if (typeof body.termsSummary === "string") updates.termsSummary = body.termsSummary;
+    // BUG 034 fix v23.7 — instrument-specific term extras. The Edit-Terms dialog
+    // branches its field set by instrument (SAFE / convertible note / warrant)
+    // instead of always showing priced-round fields. Persist those extras onto
+    // the round's open-ended extras (the Round type carries a [extra: string]
+    // index signature, and these values are spread back onto the round on read).
+    // v23.7.1: same non-negative validation as the priced fields (400 on NaN/neg).
+    if (numericTerm("valuationCap")) return;
+    if (numericTerm("discount")) return;
+    if (numericTerm("interestRate")) return;
+    if (numericTerm("maturityMonths")) return;
+    if (numericTerm("strikePrice")) return;
+    if (numericTerm("expiryYears")) return;
+    // MFN is a boolean SAFE/Note term carried as an extra.
+    if (typeof body.mfn === "boolean") updates.mfn = body.mfn;
     Object.assign(r, updates);
     void BridgeOutbound;
     try {
@@ -1109,7 +1165,44 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   /* ------------ investor side — requireAuth on all ------------ */
-  app.get("/api/investor/invitations", requireAuth, (_req, res) => res.json(incomingInvitations));
+  // B-509 fix v23.6: resolve company name + round label for invitee dashboard
+  app.get("/api/investor/invitations", requireAuth, (req, res) => {
+    const ctx = req.userContext ?? getUserContext(req);
+    const email = ctx.identity?.email ?? "";
+    // In demo/seed mode, serve the seeded mock data directly (already enriched).
+    if (DEMO_SEED_ENABLED || !email) return res.json(incomingInvitations);
+    // Production path: look up real invitations from roundInvitationsStore and
+    // enrich each row with human-readable company name + round label.
+    const rawInvs = roundInvitationsListForEmail(email);
+    const allRounds = roundsStoreList();
+    const enriched = rawInvs.map((inv) => {
+      const company = (_allCompanies as Array<{ id: string; name: string }>).find(c => c.id === inv.companyId);
+      // Also check real company store (production companies not in demo seed)
+      const resolvedCompanyName = company?.name ?? getCompanyNameById(inv.companyId ?? "");
+      const round = allRounds.find(r => r.id === inv.roundId);
+      return {
+        ...inv,
+        company: {
+          id: inv.companyId ?? "",
+          name: resolvedCompanyName ?? inv.companyId ?? "",
+          sector: "",
+        },
+        round: {
+          id: inv.roundId,
+          name: round?.name ?? `Round ${inv.roundId}`,
+          type: round?.type ?? "unknown",
+        },
+        state: inv.state,
+        receivedAt: inv.createdAt ?? inv.sentAt ?? new Date().toISOString(),
+        expiresAt: inv.expiresAt ?? new Date(Date.now() + 14 * 86400000).toISOString(),
+        targetAmount: round?.targetAmount ?? 0,
+        raisedAmount: round?.raisedAmount ?? 0,
+        minTicket: (round?.minTicket ?? 0) as number,
+        preMoney: (round?.preMoney ?? 0) as number,
+      };
+    });
+    res.json(enriched);
+  });
   app.get("/api/investor/invitations/:id", requireAuth, (req, res) => {
     const i = incomingInvitations.find(i => i.id === req.params.id);
     if (!i) return res.status(404).json({ message: "Not found" });
@@ -1770,6 +1863,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       stage:       req.body?.stage,
       hq:          req.body?.hq,
       role:        req.body?.role,
+      // BUG 017 fix v23.7 — persist the Settings → Company currency selection.
+      defaultCurrency: req.body?.defaultCurrency,
     });
     emitMutation({ aggregate: "round", id, change: "update" });
     if (updated) {

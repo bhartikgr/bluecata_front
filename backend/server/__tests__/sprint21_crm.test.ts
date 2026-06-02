@@ -172,7 +172,7 @@ describe("Sprint 21 Wave D — Investor CRM", () => {
   it("DELETE /api/investor/crm/:id removes a contact", async () => {
     // Create a disposable contact first
     const create = await call("POST", "/api/investor/crm", {
-      body: { name: "Temp Contact", affiliation: "TempCo" },
+      body: { name: "Temp Contact", email: "temp@example.com", affiliation: "TempCo" },
       userId: "u_test_investor",
     });
     secondContactId = create.body.id;

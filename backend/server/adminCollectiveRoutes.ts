@@ -40,6 +40,9 @@ import * as collectiveMembershipStore from "./collectiveMembershipStore";
 import { upsertActiveMembership, deactivateMembership } from "./membershipStore"; /* v16 F-coll-X3 dual-write */
 import { emitBridgeEvent } from "./bridgeStore";
 import { emitNotification } from "./notificationsStore";
+// C-011 fix v23.6: enrich admin applications list with resolved names
+import { getCompanyNameById } from "./multiCompanyStore";
+import { getUserContextForId } from "./lib/userContext";
 
 export function registerAdminCollectiveRoutes(app: Express): void {
   /**
@@ -63,7 +66,29 @@ export function registerAdminCollectiveRoutes(app: Express): void {
       .sort((a, b) =>
         new Date((b.submittedAt ?? 0)).getTime() - new Date((a.submittedAt ?? 0)).getTime()
       );
-    res.json({ items: merged, count: merged.length });
+    // C-011 fix v23.6: enrich admin applications list with resolved names
+    const enriched = merged.map((app) => {
+      const companyId = (app as any).companyId as string | undefined;
+      const founderId = (app as any).founderId as string | undefined;
+      const userId = (app as any).userId as string | undefined;
+      // Resolve company name: try multiCompanyStore (all real companies)
+      const companyName = companyId ? getCompanyNameById(companyId) : undefined;
+      // Resolve founder name: try userContext for founderId or userId
+      let founderName: string | undefined;
+      try {
+        const uid = founderId ?? userId;
+        if (uid) {
+          const uctx = getUserContextForId(uid);
+          founderName = uctx?.identity?.name || undefined;
+        }
+      } catch { /* non-fatal — founderName stays undefined */ }
+      return {
+        ...app,
+        companyName: companyName ?? companyId,
+        founderName: founderName ?? founderId ?? userId,
+      };
+    });
+    res.json({ items: enriched, count: enriched.length });
   });
 
   /**

@@ -50,6 +50,9 @@ import { publish as ssePublish } from "./lib/sseHub";
 import { emitNotification } from "./notificationsStore";
 import { resolvePersonaId } from "./lib/userContext";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
+// B-505 fix v23.6.1 — resolve founder CRM contacts that have not yet been
+// provisioned into the comms layer, so "Message" never dead-ends on a 404.
+import { findCrmContactByInvestorId } from "./founderCrmStore";
 /* v17 Phase B — Collective-channel slice write-through to DB. */
 import { isNull } from "drizzle-orm";
 import { getDb } from "./db/connection";
@@ -1441,8 +1444,43 @@ export function registerCommsRoutes(app: Express): void {
     try { ({ actorId, ip, ua } = actorOf(req)); } catch { return res.status(401).json({ message: "Unauthenticated" }); }
     const parsed = dmStartSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: "Invalid", issues: parsed.error.issues });
-    const target = COMMS_USERS[parsed.data.targetUserId];
-    if (!target) return res.status(404).json({ message: "Target user not found" });
+    let target = COMMS_USERS[parsed.data.targetUserId];
+    // B-505 fix v23.6.1 — CRM-only contacts (e.g. invited investors who haven't
+    // fully onboarded into the comms layer) are absent from COMMS_USERS. The
+    // founder owns the CRM record, so a founder-initiated DM is authorized by
+    // that ownership relationship. Auto-provision a minimal comms identity from
+    // the REAL stored name + email (no mock/placeholder data) so the thread
+    // opens instead of 404-ing.
+    let authorizedViaCrm = false;
+    if (!target) {
+      const crm = findCrmContactByInvestorId(parsed.data.targetUserId);
+      if (crm && crm.email) {
+        const provisioned: UserRef = {
+          id: parsed.data.targetUserId,
+          legalName: crm.name && crm.name.trim().length > 0 ? crm.name : crm.email,
+          email: crm.email,
+          visibility: { screenName: crm.firmName && crm.firmName !== "—" ? crm.firmName : crm.name, visibleToCoMembers: true, visibleToCollectiveNetwork: false },
+          capTables: crm.companyId ? [crm.companyId] : [],
+          collectiveChapters: [],
+          roles: ["investor"],
+        };
+        COMMS_USERS[parsed.data.targetUserId] = provisioned;
+        target = provisioned;
+        // The CRM ownership relationship itself authorizes the DM, independent
+        // of the visibility resolver's shared-cap-table / collective rules
+        // (which may not be populated for this actor outside demo-seed mode).
+        authorizedViaCrm = true;
+      }
+    }
+    if (!target) {
+      // No comms identity and no CRM record to provision from — structured 422
+      // (not a silent 404) so the client renders an actionable message.
+      return res.status(422).json({
+        ok: false,
+        error: "contact_not_provisioned",
+        message: "Cannot start DM until this contact accepts their invitation.",
+      });
+    }
     const me = viewerOf(actorId);
     const shared = sharedContextBetween(me, target);
     const r = resolveDisplayIdentity({
@@ -1452,7 +1490,7 @@ export function registerCommsRoutes(app: Express): void {
       authorVisibility: target.visibility,
       context: { sharedCapTables: shared.capTables, sharedCollectiveChapters: shared.chapters },
     });
-    if (!r.canSendDm) {
+    if (!r.canSendDm && !authorizedViaCrm) {
       emitOutbox("dm.channel.blocked", actorId, ip, ua, {
         fromUserId: actorId, toUserId: target.id,
         reason: shared.capTables.length === 0 && shared.chapters.length === 0 ? "no_shared_context" : "no_visibility",

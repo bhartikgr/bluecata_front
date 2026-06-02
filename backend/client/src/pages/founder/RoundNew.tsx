@@ -174,8 +174,14 @@ const defaultForm: FormShape = {
  instrument: "safe_post",
  name: "",
  region: "US",
- targetAmount: "2000000",
- preMoney: "18000000",
+ // BUG 033 fix v23.7 — monetary/numeric/date inputs start EMPTY. The previous
+ // hardcoded figures (target "2000000", pre-money "18000000", etc.) were mock
+ // placeholders that pre-filled the wizard with fictional deal economics. Real
+ // founders must enter their own values; guidance is carried by the field
+ // placeholders, not by seeded state. Enum/boolean UX defaults (type,
+ // instrument, region, mfn, anti-dilution, etc.) are intentionally preserved.
+ targetAmount: "",
+ preMoney: "",
  // v23.4.9 Phase 1 (Avi #2) — share price is DERIVED for priced rounds
  // (pre-money ÷ shares authorized), so it must start EMPTY rather than
  // carrying a hardcoded mock value. The previous "1.42" default was also a
@@ -183,27 +189,27 @@ const defaultForm: FormShape = {
  // share price is an explicit input (strikePrice / valuationCap), so this
  // pricePerShare field is never shown for them and the change is safe.
  pricePerShare: "",
- minTicket: "50000",
- valuationCap: "8000000",
- discount: "20",
- interestRate: "6",
- maturityMonths: "24",
+ minTicket: "",
+ valuationCap: "",
+ discount: "",
+ interestRate: "",
+ maturityMonths: "",
  mfn: true,
  liqPrefMultiple: "1",
  participating: false,
  capParticipation: "",
  antiDilution: "broad_based_wa",
- strikePrice: "1.00",
- expiryYears: "10",
+ strikePrice: "",
+ expiryYears: "",
  cashlessAllowed: true,
- poolSize: "10",
+ poolSize: "",
  poolTiming: "pre_money",
- vestingMonths: "48",
- cliffMonths: "12",
+ vestingMonths: "",
+ cliffMonths: "",
  jurisdictionVariant: "us_iso",
- sharesAuthorized: "1000000",
- openDate: "2026-05-15",
- closeDate: "2026-07-15",
+ sharesAuthorized: "",
+ openDate: "",
+ closeDate: "",
  notes: "",
  useOfProceeds: "",
  tranches: false,

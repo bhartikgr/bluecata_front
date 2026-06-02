@@ -9,8 +9,11 @@ import { describe, it, expect } from "vitest";
 import {
   getUserContextForId,
   computeInvestorState,
+  resolveCompanyName,
+  resolveRoundName,
   type InvestorState,
 } from "../lib/userContext";
+import { createRound } from "../roundsStore";
 
 describe("Sprint 15 / UserContext — persona resolution", () => {
   it("returns founder context for u_maya_chen with 3 companies + active selection", () => {
@@ -136,5 +139,45 @@ describe("Sprint 15 / UserContext — collective overlay coherence", () => {
   it("founder personas have collective.status === 'none' (founder collective is per-company)", () => {
     const ctx = getUserContextForId("u_maya_chen");
     expect(ctx.collective.status).toBe("none");
+  });
+});
+
+// B-509 fix v23.6.1 — invited-round name resolution.
+// The investor dashboard previously rendered raw `co_*` ids and the literal
+// "Invited Round". buildInvitedRounds now resolves human-readable names via
+// these exported helpers (multiCompanyStore.getCompanyNameById +
+// roundsStore.getRoundById). These assert real resolution and safe fallbacks.
+describe("B-509 — buildInvitedRounds name resolution", () => {
+  it("resolves a known company name from the company store (not the raw id)", () => {
+    const name = resolveCompanyName("co_novapay");
+    expect(name).toBe("NovaPay AI");
+    expect(name).not.toBe("co_novapay");
+  });
+
+  it("falls back to a truncated company id (never the full raw id) when unknown", () => {
+    const unknown = "co_deadbeefdeadbeef";
+    const name = resolveCompanyName(unknown);
+    expect(name).toBe("Company co_deadb");
+    expect(name).not.toBe(unknown);
+  });
+
+  it("resolves a real round name from roundsStore.getRoundById", () => {
+    const round = createRound({
+      companyId: "co_novapay",
+      name: "Series B — B-509 resolution test",
+      type: "priced",
+    });
+    const name = resolveRoundName(round.id);
+    expect(name).toBe("Series B — B-509 resolution test");
+  });
+
+  it("falls back to a truncated round id when the round is unknown", () => {
+    const name = resolveRoundName("rnd_unknownxyz");
+    expect(name).toBe("Round rnd_unkn");
+    expect(name).not.toBe("Invited Round");
+  });
+
+  it("uses the literal 'Invited Round' only when roundId is missing", () => {
+    expect(resolveRoundName("")).toBe("Invited Round");
   });
 });

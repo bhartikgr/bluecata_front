@@ -259,6 +259,43 @@ function CompanyWizard({
  const requiredMissingList = missingRequired();
  const isProfileValid = requiredMissingList.length === 0;
 
+ /* ---- BUG 006 fix v23.7 — enforce the (*) fields on "Continue" ----
+  * Previously the Continue button only advanced the wizard; founders could
+  * skip past every required field and the gaps were only ever caught (for the
+  * three industry fields) on the final save. We now validate the (*) fields of
+  * the CURRENT step before allowing advancement, mirroring the asterisks shown
+  * in each step's form. The final-save gate (missingRequired) is unchanged. */
+ const missingForStep = (s: number): string[] => {
+   const missing: string[] = [];
+   const need = (cond: boolean, label: string) => { if (cond) missing.push(label); };
+   if (s === 1) {
+     need(!contact.companyName?.trim(), "Name of Company");
+     need(!contact.companyEmail?.trim(), "Company Email");
+     need(!contact.industry, "Industry");
+     need(!contact.phoneNumber?.trim(), "Phone");
+     need(!contact.companyWebsiteUrl?.trim(), "Company Website / URL");
+     need(!contact.numberOfEmployees, "Number of Employees");
+     need(!contact.dateOfIncorporation?.trim(), "Date of Incorporation");
+     need(!contact.oneSentenceHeadliner?.trim(), "One-sentence headliner");
+     need(!contact.problemStatement?.trim(), "Problem statement");
+     need(!contact.solutionStatement?.trim(), "Solution statement");
+   } else if (s === 2) {
+     need(!address.street?.trim(), "Street");
+     need(!address.countryCode, "Country");
+     need(!address.stateProvince?.trim(), "State / Province");
+     need(!address.city?.trim(), "City");
+     need(!address.postalCode?.trim(), "Postal Code / Zip");
+   } else if (s === 3) {
+     need(!legal.articlesFileName?.trim(), "Articles of Incorporation");
+     need(!legal.legalEntityName?.trim(), "Legal Entity Name");
+     need(!legal.countryOfIncorporationCode, "Country of Incorporation");
+     need(!legal.entityType, "Type of Entity");
+     need(legal.isPubliclyTraded === null || legal.isPubliclyTraded === undefined, "Public exchange?");
+     need(!legal.registeredOfficeAddress?.trim(), "Registered Office Address");
+   }
+   return missing;
+ };
+
  const saveDraft = () => {
  if (debounceRef.current) clearTimeout(debounceRef.current);
  const missing = missingRequired();
@@ -274,7 +311,19 @@ function CompanyWizard({
  toast({ title: "Saved", description: "Draft saved. Investor surfaces will refresh on next view." });
  };
 
- const goNext = () => setStep(Math.min(4, step + 1) as 1 | 2 | 3 | 4);
+ const goNext = () => {
+   // BUG 006 fix v23.7 — block advancement until this step's (*) fields are filled.
+   const missing = missingForStep(step);
+   if (missing.length) {
+     toast({
+       title: "Missing required fields",
+       description: `Please fill in: ${missing.join(", ")}.`,
+       variant: "destructive",
+     });
+     return;
+   }
+   setStep(Math.min(4, step + 1) as 1 | 2 | 3 | 4);
+ };
  const goBack = () => setStep(Math.max(1, step - 1) as 1 | 2 | 3 | 4);
 
  return (
@@ -564,12 +613,23 @@ function Step1ContactInfo({
   * fails so the user still sees a preview. */}
  <div className="space-y-1.5">
  <Label>Logo (optional)</Label>
+ {/* BUG 030 fix v23.7 — the persisted logo "disappeared" because the only
+  * preview was the freshly-picked file; on a later visit the file input is
+  * empty so the founder couldn't tell their saved logo was still there. We
+  * now always render the persisted `logoDataUrl` as a labelled "Current
+  * logo" thumbnail next to the picker, so the saved upload stays visible
+  * even when the file input is empty. */}
  <div className="flex items-center gap-3">
- <div className="h-12 w-12 rounded-md bg-secondary flex items-center justify-center text-muted-foreground">
+ <div className="flex flex-col items-center gap-1">
+ <div className="h-12 w-12 rounded-md bg-secondary flex items-center justify-center text-muted-foreground overflow-hidden" data-testid="logo-preview">
  {value.logoDataUrl ? (
- <img src={value.logoDataUrl} alt="" className="h-12 w-12 rounded-md object-cover" />
+ <img src={value.logoDataUrl} alt="Current company logo" className="h-12 w-12 rounded-md object-cover" data-testid="img-current-logo" />
  ) : (
  <Building2 className="h-5 w-5" />
+ )}
+ </div>
+ {value.logoDataUrl && (
+ <span className="text-[10px] text-muted-foreground" data-testid="label-current-logo">Current logo</span>
  )}
  </div>
  <Input

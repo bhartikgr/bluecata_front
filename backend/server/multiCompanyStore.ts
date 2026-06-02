@@ -82,6 +82,13 @@ export type FounderCompanyMembership = {
   sector: string;
   stage: string;
   hq: string;
+  /**
+   * BUG 017 fix v23.7 — per-company default currency. Persisted in-memory so
+   * Settings → Company currency selection round-trips through
+   * GET /api/founder/active-company and /api/founder/companies. No retroactive
+   * migration: existing rounds keep whatever currency they were created with.
+   */
+  defaultCurrency?: string;
 };
 
 // PATCH v3: Per-user company registry. Keyed by userId.
@@ -206,6 +213,38 @@ export function getCompaniesForFounder(userId?: string): FounderCompanyMembershi
   // Legacy no-arg call: return demo founder companies (backward compat for tests)
   if (!userId) return USER_COMPANIES.get("u_maya_chen") ?? [];
   return USER_COMPANIES.get(userId) ?? [];
+}
+
+/**
+ * B-509 / C-011 fix v23.6: look up a company name by companyId across all
+ * cached USER_COMPANIES entries. Returns undefined if not found.
+ */
+export function getCompanyNameById(companyId: string): string | undefined {
+  // Use Array.from for TS compat (downlevelIteration not required)
+  for (const companies of Array.from(USER_COMPANIES.values())) {
+    const found = (companies as FounderCompanyMembership[]).find(
+      (c: FounderCompanyMembership) => c.companyId === companyId
+    );
+    if (found) return found.companyName;
+  }
+  return undefined;
+}
+
+/**
+ * BUG 019 follow-up v23.7.1 — look up the full membership record by companyId
+ * across all cached USER_COMPANIES entries. Founder-created companies live only
+ * in multiCompanyStore (no profile snapshot at creation time), so GET
+ * /api/companies/:id needs this to resolve them instead of 404-ing.
+ * Returns undefined if not found.
+ */
+export function getCompanyRecordById(companyId: string): FounderCompanyMembership | undefined {
+  for (const companies of Array.from(USER_COMPANIES.values())) {
+    const found = (companies as FounderCompanyMembership[]).find(
+      (c: FounderCompanyMembership) => c.companyId === companyId
+    );
+    if (found) return found;
+  }
+  return undefined;
 }
 
 /**
@@ -396,7 +435,7 @@ export function addCompanyForFounder(userId: string, company: FounderCompanyMemb
  */
 export function updateCompanyDetails(
   companyId: string,
-  patch: Partial<Pick<FounderCompanyMembership, "companyName" | "legalName" | "sector" | "stage" | "hq" | "role">>,
+  patch: Partial<Pick<FounderCompanyMembership, "companyName" | "legalName" | "sector" | "stage" | "hq" | "role" | "defaultCurrency">>,
 ): FounderCompanyMembership | null {
   for (const [userId, companies] of USER_COMPANIES.entries()) {
     const idx = companies.findIndex((c) => c.companyId === companyId);
@@ -410,6 +449,7 @@ export function updateCompanyDetails(
       ...(typeof patch.stage       === "string" ? { stage: patch.stage } : {}),
       ...(typeof patch.hq          === "string" ? { hq: patch.hq } : {}),
       ...(typeof patch.role        === "string" ? { role: patch.role } : {}),
+      ...(typeof patch.defaultCurrency === "string" && patch.defaultCurrency.trim() ? { defaultCurrency: patch.defaultCurrency.trim() } : {}),
     };
 
     // DB write-through: update companies row. company_members.role updated

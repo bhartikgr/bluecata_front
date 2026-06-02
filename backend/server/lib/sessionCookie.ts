@@ -23,6 +23,19 @@ const isProductionHttps =
   process.env.NODE_ENV === "production" || process.env.FORCE_SECURE_COOKIE === "1";
 
 /**
+ * BUG 014 fix v23.7 — persistent session lifetime.
+ *
+ * The session cookie was previously set with no `maxAge`/`expires`, which makes
+ * it a *browser-session* cookie: it is dropped the moment the tab/window closes
+ * (and, in the sandbox proxy, after the browsing context is recycled). Founders
+ * reported being "logged out for no reason" — they were simply losing the
+ * cookie whenever the browser session ended. We now give the cookie an explicit
+ * 14-day max-age (matching the documented refresh-token TTL in auth.ts) so the
+ * session persists across restarts and idle periods until real expiry/logout.
+ */
+const SESSION_COOKIE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
+
+/**
  * Set the session cookie. In production (HTTPS) we use the `__Host-` prefix
  * which requires `Secure`, `Path=/`, and no `Domain` attribute. In dev we
  * fall back to the plain cookie name so HTTP `127.0.0.1` still works.
@@ -34,12 +47,14 @@ export function setSessionCookie(res: Response, value: string): void {
       secure: true,
       sameSite: "lax",
       path: "/",
+      maxAge: SESSION_COOKIE_MAX_AGE_MS,
     });
   } else {
     res.cookie(LEGACY_SESSION_COOKIE, value, {
       httpOnly: true,
       sameSite: "lax",
       path: "/",
+      maxAge: SESSION_COOKIE_MAX_AGE_MS,
     });
   }
 }

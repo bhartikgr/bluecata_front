@@ -358,6 +358,15 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
         setSubmittedId(data.application.id);
         toast({ title: "Application submitted", description: "Telemetry collective_company_application_submitted emitted." });
         queryClient.invalidateQueries({ queryKey: ["/api/founder/collective/applications", companyId] });
+        // C-006-refresh fix v23.6.1: invalidate /mine after submit so the status
+        // banner updates immediately without a manual page reload. refetchType:
+        // "all" forces a refetch even if the banner query was last resolved to a
+        // 404→null (inactive/idle observer), which is exactly the pre-first-
+        // application state where the banner was previously stuck until reload.
+        queryClient.invalidateQueries({
+          queryKey: ["/api/founder/collective/applications/mine"],
+          refetchType: "all",
+        });
       } else {
         toast({ title: "Validation failed", description: data?.error ?? "Please review the form.", variant: "destructive" });
       }

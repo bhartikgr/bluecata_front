@@ -665,6 +665,15 @@ export function registerInvestorCrmRoutes(app: Express): void {
     if (!name.trim()) {
       return res.status(400).json({ error: "name is required" });
     }
+    // BUG 007/008 fix v23.7 — email is now mandatory and format-checked so the
+    // form can no longer save a contact with no reachable address.
+    const emailTrimmed = typeof email === "string" ? email.trim() : "";
+    if (!emailTrimmed) {
+      return res.status(400).json({ error: "email is required" });
+    }
+    if (!/\S+@\S+\.\S+/.test(emailTrimmed)) {
+      return res.status(400).json({ error: "email is invalid" });
+    }
 
     const contact: InvestorCrmContact = {
       id: uid(),
@@ -672,7 +681,7 @@ export function registerInvestorCrmRoutes(app: Express): void {
       platformUserId: typeof platformUserId === "string" && platformUserId.trim() ? platformUserId.trim() : undefined,
       name: name.trim(),
       role,
-      email,
+      email: emailTrimmed,
       affiliation,
       stage: stage as InvestorCrmStage,
       tags: Array.isArray(tags) ? tags : [],
@@ -685,7 +694,7 @@ export function registerInvestorCrmRoutes(app: Express): void {
       // Legacy compat
       companyName: affiliation,
       founderName: name,
-      founderEmail: email,
+      founderEmail: emailTrimmed,
       notesUpdatedAt: now(),
     };
 

@@ -13,7 +13,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectGroup, SelectLabel, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { TIMEZONES_IANA, detectBrowserTimezone } from "@/lib/timezones";
-import { User, Building2, Users, CreditCard, Receipt, Bell, Database, Check, X, Download, Trash2, Lock, Plus, ShieldAlert, ShieldCheck, Globe, MapPin, Settings2, DollarSign, TrendingUp, Gavel, Activity, Send, CheckCircle2, AlertCircle } from "lucide-react";
+import { User, Building2, Users, CreditCard, Receipt, Bell, Database, Check, X, Download, Trash2, Lock, Plus, ShieldAlert, ShieldCheck, Globe, MapPin, Settings2, DollarSign, TrendingUp, Gavel, Activity, Send, CheckCircle2, AlertCircle, ArrowRight } from "lucide-react";
 import { LEGAL_DOCS } from "@/lib/legalDocs";
 import type { LegalDoc } from "@/lib/legalDocs";
 import { useLegalDrawer } from "@/lib/legalDrawer";
@@ -23,7 +23,7 @@ import { validateScreenName } from "@/lib/privacy/visibility";
 import { useActiveCompany, useActiveCompanyId } from "@/lib/useActiveCompany";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { fmtUSD } from "@/lib/format";
-import { PaymentSurface } from "@/components/PaymentSurface";
+import { Link } from "wouter";
 import { FINANCIAL_FIELD_COPY, getFieldsForStage } from "@/lib/financialFieldCopy";
 import { Slider } from "@/components/ui/slider";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
@@ -418,9 +418,30 @@ export default function Settings() {
               title="Billing"
               body="Payment methods, invoice history, and billing-contact emails. PCI-DSS scope is limited — card data never touches Capavate servers. Receipts are exported as audit-grade PDFs with hash verification."
             />
-            <div className="mb-4">
-              <PaymentSurface customerId={companyId} kind="subscription" demoMode={true} />
-            </div>
+            {/* BUG 016 fix v23.7 — the billing tab previously embedded the
+             * PaymentSurface in demo mode, which surfaced a "Demo" badge and a
+             * placeholder charge form to founders. Until a real Stripe billing
+             * relationship is connected we show an honest connect-account CTA
+             * instead of any demo wording or a non-functional charge form. */}
+            <Card className="mb-4" data-testid="card-billing-connect">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <CreditCard className="h-4 w-4" /> Payment method
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-sm text-muted-foreground mb-3">
+                  Connect your Stripe account in Billing &amp; Plans to manage your
+                  subscription and payment method. Your workspace stays fully
+                  functional until billing is activated.
+                </p>
+                <Link href="/founder/billing">
+                  <Button variant="outline" size="sm" data-testid="button-connect-billing">
+                    Go to Billing &amp; Plans <ArrowRight className="h-3.5 w-3.5 ml-1.5" />
+                  </Button>
+                </Link>
+              </CardContent>
+            </Card>
             <div className="grid md:grid-cols-3 gap-4">
               <Card className="md:col-span-2">
                 <CardHeader><CardTitle className="text-base">Recent invoices</CardTitle></CardHeader>

@@ -19,8 +19,11 @@
  *   - New users get ZERO companies — no NovaPay/Arboreal leakage.
  */
 import type { Request } from "express";
-import { getCompaniesForFounder, getActiveCompanyId, type FounderCompanyMembership } from "../multiCompanyStore";
+import { getCompaniesForFounder, getActiveCompanyId, getCompanyNameById, type FounderCompanyMembership } from "../multiCompanyStore";
 import { getMembership } from "../membershipStore";
+// B-509 fix v23.6.1 — resolve human-readable round names for invited rounds.
+// roundsStore is SACRED (read-only): we only call the existing getRoundById getter.
+import { getRoundById } from "../roundsStore";
 import { incomingInvitations, currentInvestor as DEMO_INVESTOR } from "../mockData";
 // Patch v6 — persist credentials via userCredentialsStore so login works across restarts.
 import { storeCredential, lookupByEmail } from "../userCredentialsStore";
@@ -263,16 +266,38 @@ function buildFounderCompanies(userId: string): FounderCompany[] {
   }));
 }
 
+// B-509 fix v23.6.1 — name resolvers for invited rounds.
+// Resolve a company name from the real company store; fall back to a
+// truncated id (never the full raw co_* id) so the UI never shows the raw id.
+export function resolveCompanyName(companyId: string): string {
+  const name = getCompanyNameById(companyId);
+  if (name && name.trim().length > 0) return name;
+  return `Company ${companyId.slice(0, 8)}`;
+}
+
+// Resolve a round name from the SACRED roundsStore (read-only getter). Only
+// fall back to the literal "Invited Round" when there is no roundId at all.
+export function resolveRoundName(roundId: string): string {
+  if (!roundId) return "Invited Round";
+  const round = getRoundById(roundId);
+  if (round && typeof round.name === "string" && round.name.trim().length > 0) {
+    return round.name;
+  }
+  return `Round ${roundId.slice(0, 8)}`;
+}
+
 function buildInvitedRounds(persona: PersonaSeed): InvitedRound[] {
   // Defect 83: runtime-registered (redeemed) users get their seeded invitation records
   const runtimeInvs = RUNTIME_INVITATIONS[persona.userId];
   if (runtimeInvs && runtimeInvs.length > 0) {
+    // B-509 fix v23.6.1 — resolve real company + round names instead of raw ids.
+    // Falls back to a truncated id (never the full raw id) when unresolved.
     return runtimeInvs.map((ri) => ({
       invitationId: ri.invitationId,
       roundId: ri.roundId,
       companyId: ri.companyId,
-      companyName: ri.companyId, // simplified — no company name store yet
-      roundName: "Invited Round",
+      companyName: resolveCompanyName(ri.companyId),
+      roundName: resolveRoundName(ri.roundId),
       state: "pending",
       receivedAt: new Date().toISOString(),
       expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),

@@ -557,6 +557,18 @@ export async function hydrateRoundInvitationsStore(): Promise<void> {
   }
 }
 
+/**
+ * B-509 fix v23.6: list all non-revoked invitations for a given investor email.
+ * Used by /api/investor/invitations to return real DB-backed records in
+ * production (non-demo) mode.
+ */
+export function listForInvestorEmail(email: string): Array<Omit<RoundInvitationRow, "tokenHash">> {
+  const normalized = email.trim().toLowerCase();
+  return memInvitations
+    .filter((r) => r.investorEmail.trim().toLowerCase() === normalized && r.state !== "revoked")
+    .map(publicView);
+}
+
 /* ---------- Test helpers ---------- */
 
 export const _testAccessInvitations = {
