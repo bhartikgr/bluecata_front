@@ -51,7 +51,7 @@ type Nomination = {
 
 type Application = {
   id: string; companyId: string; pitchDeckFilename: string;
-  status: "submitted" | "reviewing" | "invited" | "rejected" | "waitlisted";
+  status: "submitted" | "reviewing" | "invited" | "accepted" | "rejected" | "waitlisted";
   submittedAt: string;
 };
 
@@ -119,14 +119,14 @@ export default function FounderApplyToCollective() {
         {/* C-006 v23.5 — application status banner */}
         {mineApp && (
           <div
-            className={`rounded-md border p-4 mb-5 flex items-start gap-3 ${mineApp.status === "rejected" ? "border-rose-200 bg-rose-50" : mineApp.status === "invited" ? "border-emerald-200 bg-emerald-50" : "border-blue-200 bg-blue-50"}`}
+            className={`rounded-md border p-4 mb-5 flex items-start gap-3 ${mineApp.status === "rejected" ? "border-rose-200 bg-rose-50" : (mineApp.status === "invited" || mineApp.status === "accepted") ? "border-emerald-200 bg-emerald-50" : "border-blue-200 bg-blue-50"}`}
             data-testid="banner-application-status"
           >
             <Mail className="h-5 w-5 shrink-0 mt-0.5 text-current" />
             <div className="text-sm">
               {mineApp.status === "submitted" && <><strong>Submitted on {new Date(mineApp.submittedAt).toLocaleDateString()}</strong> — under review.</>}
               {mineApp.status === "reviewing" && <><strong>Under review</strong> since {new Date(mineApp.submittedAt).toLocaleDateString()}.</>}
-              {mineApp.status === "invited" && <><strong className="text-emerald-800">Accepted on {mineApp.reviewedAt ? new Date(mineApp.reviewedAt).toLocaleDateString() : "—"}</strong> — congratulations! <Link href="/collective"><span className="underline cursor-pointer">Go to Collective</span></Link></>}
+              {(mineApp.status === "invited" || mineApp.status === "accepted") && <><strong className="text-emerald-800">Accepted on {mineApp.reviewedAt ? new Date(mineApp.reviewedAt).toLocaleDateString() : "—"}</strong> — congratulations! <Link href="/collective"><span className="underline cursor-pointer">Go to Collective</span></Link></>}
               {mineApp.status === "rejected" && <><strong className="text-rose-800">Not selected this cycle.</strong> You may apply again in the next cycle.</>}
               {mineApp.status === "waitlisted" && <><strong>Waitlisted</strong> — you\'re on the waitlist for the next cycle.</>}
             </div>

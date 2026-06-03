@@ -16,6 +16,8 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 
 interface MemberRow {
   userId: string;
+  userName?: string;
+  userEmail?: string;
   status: "active" | "suspended";
   tier: "standard" | "plus";
   activatedAt: string;
@@ -85,7 +87,8 @@ export default function CollectiveMembers() {
               <table className="w-full text-sm" data-testid="members-table">
                 <thead>
                   <tr className="border-b bg-slate-50 text-left text-xs text-muted-foreground uppercase tracking-wide">
-                    <th className="px-4 py-2">User ID</th>
+                    <th className="px-4 py-2">Name</th>
+                    <th className="px-4 py-2">Email</th>
                     <th className="px-4 py-2">Tier</th>
                     <th className="px-4 py-2">Active Since</th>
                     <th className="px-4 py-2">Status</th>
@@ -95,7 +98,11 @@ export default function CollectiveMembers() {
                 <tbody>
                   {members.map((m) => (
                     <tr key={m.userId} className="border-b hover:bg-slate-50" data-testid={`row-${m.userId}`}>
-                      <td className="px-4 py-2 font-mono text-xs">{m.userId}</td>
+                      <td className="px-4 py-2">
+                        <div className="font-medium" data-testid={`member-name-${m.userId}`}>{m.userName || "—"}</div>
+                        <div className="font-mono text-[10px] text-muted-foreground">{m.userId}</div>
+                      </td>
+                      <td className="px-4 py-2" data-testid={`member-email-${m.userId}`}>{m.userEmail || "—"}</td>
                       <td className="px-4 py-2 capitalize">{m.tier}</td>
                       <td className="px-4 py-2">{fmtDate(m.activatedAt)}</td>
                       <td className="px-4 py-2">

@@ -224,7 +224,14 @@ export default function Login() {
     }
 
     const isFounder  = ctx.founder.companies.length > 0;
-    const isInvestor = ctx.investor.state !== "NONE";
+    // v23.8 W-7: a freshly-created investor has state "NONE" until they redeem
+    // an invite, but they may already hold pending round invitations or
+    // cap-table positions. Treat any of those as "is an investor" so they land
+    // on /investor/dashboard instead of being bounced to /founder/subscribe.
+    const isInvestor =
+      ctx.investor.state !== "NONE" ||
+      ctx.investor.invitedRounds.length > 0 ||
+      ctx.investor.capTablePositions.length > 0;
 
     // Honour the chosen portal if the account supports it.
     if (portal === "investor" && isInvestor) {

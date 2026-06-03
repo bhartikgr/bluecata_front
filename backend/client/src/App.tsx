@@ -133,6 +133,7 @@ import AdminConsortiumApplicationsPage from "@/pages/admin/ConsortiumApplication
 import AdminCollectiveApplications from "@/pages/admin/CollectiveApplications";
 import AdminCollectiveMembers from "@/pages/admin/CollectiveMembers";
 import AdminCollectiveSettings from "@/pages/admin/CollectiveSettings";
+import AdminCollectiveWaitlist from "@/pages/admin/CollectiveWaitlist";
 import { V25_COLLECTIVE_SHIPPED } from "@/lib/v25Marker"; void V25_COLLECTIVE_SHIPPED;
 import { V26_FIXES_SHIPPED } from "@/lib/v26Marker"; void V26_FIXES_SHIPPED;
 import PartnerOnboardingChecklistPage from "@/pages/partner/OnboardingChecklistPage";
@@ -170,7 +171,7 @@ seedSprint3Telemetry();
 const INACTIVE_STATUSES = new Set(["pending_payment", "past_due", "canceled", "cancelled", "paused", "unpaid"]);
 
 function RequireActiveSubscription({ children }: { children: ReactNode }) {
-  const { data: entCtx } = useEntitlement();
+  const { data: entCtx, isLoading: entLoading } = useEntitlement();
   // Patch v4: no demo fallback. If user has no active company, send them to
   // /founder/subscribe (which handles the empty state) instead of querying
   // for a hardcoded "co_novapay" subscription.
@@ -193,6 +194,18 @@ function RequireActiveSubscription({ children }: { children: ReactNode }) {
     staleTime: 0,
     retry: false,
   });
+
+  // v23.8 W-1: wait for the entitlement context before deciding. On a hard
+  // navigation `useEntitlement()` is still loading, so `companyId` is "" and the
+  // old code redirected every founder route to /founder/subscribe. Hold on a
+  // skeleton until /api/auth/me resolves.
+  if (entLoading || entCtx === undefined) {
+    return (
+      <div className="p-6" data-testid="subscription-gate-entitlement-loading">
+        <div className="h-4 w-32 bg-muted animate-pulse rounded" />
+      </div>
+    );
+  }
 
   // No active company yet (fresh user) — route to subscribe/onboarding
   if (!companyId) {
@@ -682,6 +695,9 @@ function AppRouter() {
         </Route>
         <Route path="/admin/collective/settings">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminCollectiveSettings /></RequireAuth>}
+        </Route>
+        <Route path="/admin/collective/waitlist">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminCollectiveWaitlist /></RequireAuth>}
         </Route>
         <Route path="/admin/:rest*">
           {() => (

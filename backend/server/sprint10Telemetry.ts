@@ -37,7 +37,7 @@ export function emitSync<T>(opts: {
     occurredAt: new Date().toISOString(),
     tenantId: opts.tenantId ?? "tnt_capavate_us",
     actor: {
-      userId: opts.actorUserId ?? "u_investor_demo",
+      userId: opts.actorUserId ?? "u_unknown",
       ip: opts.req?.ip,
     },
     payload: opts.payload,

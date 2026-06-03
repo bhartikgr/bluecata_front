@@ -24,7 +24,7 @@ import type { Express, Request, Response } from "express";
 import { randomBytes } from "node:crypto";
 import { isNull } from "drizzle-orm";
 import { emitSync } from "./sprint10Telemetry";
-import { getUserContext } from "./lib/userContext";
+import { getUserContext, getUserContextForId } from "./lib/userContext";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 // Patch v10 — F9 investor-update fanout
 import { listMembersForCompany } from "./membershipStore";
@@ -341,6 +341,34 @@ export function registerReportsRoutes(app: Express): void {
     res.json(r);
   });
 
+  /**
+   * v23.8 W-5/BUG-003 — recipient picker source of truth.
+   * Returns the current cap-table members (userId + display name/email) for
+   * this report's company. The Send dialog uses this so the chosen recipient
+   * ids ALWAYS match what /send validates against (no CRM investorId mismatch).
+   */
+  app.get("/api/founder/reports2/:id/recipients", (req, res) => {
+    const ctx = getUserContext(req);
+    if (!ctx.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
+    const r = reports.find((x) => x.id === req.params.id);
+    if (!r) return res.status(404).json({ ok: false, error: "not_found" });
+    const ownsCompany = ctx.isAdmin || ctx.founder.companies.some((c) => c.companyId === r.companyId);
+    if (!ownsCompany) return res.status(403).json({ ok: false, error: "FOUNDER_WRONG_COMPANY" });
+    const members = listMembersForCompany(r.companyId).map((m) => {
+      let name = "";
+      let email = "";
+      try {
+        const uc = getUserContextForId(m.userId);
+        name = uc.identity.name ?? "";
+        email = uc.identity.email ?? "";
+      } catch {
+        // best-effort enrichment; id still usable as recipient
+      }
+      return { userId: m.userId, name, email, ownershipPct: m.ownershipPct };
+    });
+    res.json(members);
+  });
+
   app.post("/api/founder/reports2/:id/send", (req, res) => {
     const ctx = getUserContext(req);
     if (!ctx.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
@@ -352,10 +380,20 @@ export function registerReportsRoutes(app: Express): void {
 
     // Recipient list: explicit body.recipients OR everyone on the cap table.
     const bodyRecipients: string[] = Array.isArray(req.body?.recipients) ? req.body.recipients : [];
+    const capTableMemberIds = new Set(listMembersForCompany(r.companyId).map((m) => m.userId));
     let recipients = bodyRecipients;
     if (recipients.length === 0) {
       // Patch v10 (B-F9) — default to cap-table membership truth.
-      recipients = listMembersForCompany(r.companyId).map((m) => m.userId);
+      recipients = Array.from(capTableMemberIds);
+    } else {
+      // v23.8 W-5/BUG-003 — when the founder explicitly chooses recipients via
+      // the picker, every id must be a current cap-table member. Reject the
+      // send (400) if any recipient is not on the cap table, so a report can
+      // never be delivered to a non-holder.
+      const invalid = recipients.filter((id) => !capTableMemberIds.has(id));
+      if (invalid.length > 0) {
+        return res.status(400).json({ ok: false, error: "INVALID_RECIPIENTS", invalid });
+      }
     }
     r.recipients = recipients;
     r.recipientsCount = recipients.length;

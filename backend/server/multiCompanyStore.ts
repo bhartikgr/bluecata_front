@@ -53,6 +53,22 @@ import {
 } from "../shared/schema";
 import { log } from "./lib/logger";
 
+/**
+ * v23.8 D1/W-11 — derive a legal name from a display name without doubling an
+ * existing corporate suffix. "NovaPay Inc." must not become "NovaPay Inc., Inc.".
+ * If the trimmed name already ends in a recognized suffix we keep it as-is;
+ * otherwise we append ", Inc." as before.
+ */
+const CORP_SUFFIX_RE =
+  /\b(inc|incorporated|corp|corporation|co|llc|l\.?l\.?c|ltd|limited|plc|s\.?a|gmbh|ag|n\.?v|b\.?v|pty\.?\s*ltd|pte\.?\s*ltd|llp|lp)\.?$/i;
+
+export function deriveLegalName(name: string): string {
+  const trimmed = (name ?? "").trim();
+  if (!trimmed) return trimmed;
+  if (CORP_SUFFIX_RE.test(trimmed)) return trimmed;
+  return `${trimmed}, Inc.`;
+}
+
 export type FounderCompanyMembership = {
   companyId: string;
   companyName: string;
@@ -182,7 +198,7 @@ function dbRowToMembership(coRow: any, memRow: any): FounderCompanyMembership {
   return {
     companyId: coRow.id,
     companyName: coRow.name,
-    legalName: coRow.legalName ?? `${coRow.name}, Inc.`,
+    legalName: coRow.legalName ?? deriveLegalName(coRow.name),
     logoUrl: coRow.logoUrl ?? null,
     role,
     lastActiveAt: memRow?.lastActiveAt ?? new Date().toISOString(),
@@ -245,6 +261,23 @@ export function getCompanyRecordById(companyId: string): FounderCompanyMembershi
     if (found) return found;
   }
   return undefined;
+}
+
+/**
+ * v23.8 W-8 — aggregate every company across all founders' USER_COMPANIES
+ * registries, deduped by companyId (the same company may appear under several
+ * co-founder userIds). The admin Companies panel previously read only the
+ * static `canonicalCompanies` array, which is empty in production, so it always
+ * showed 0 rows. This returns the real founder-created companies as well.
+ */
+export function getAllCompanies(): FounderCompanyMembership[] {
+  const byId = new Map<string, FounderCompanyMembership>();
+  for (const companies of Array.from(USER_COMPANIES.values())) {
+    for (const c of companies as FounderCompanyMembership[]) {
+      if (!byId.has(c.companyId)) byId.set(c.companyId, c);
+    }
+  }
+  return Array.from(byId.values());
 }
 
 /**
@@ -687,7 +720,7 @@ export function registerMultiCompanyRoutes(app: Express): void {
     const newCompany: FounderCompanyMembership = {
       companyId,
       companyName: name,
-      legalName: legalName ?? `${name}, Inc.`,
+      legalName: legalName ?? deriveLegalName(name),
       logoUrl: null,
       role: "founder",
       lastActiveAt: new Date().toISOString(),

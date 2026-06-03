@@ -39,10 +39,18 @@ export default function CRMNew() {
     const missing: string[] = [];
     if (!form.name || !form.name.trim()) missing.push("Firm name");
     if (!form.email || !form.email.trim()) missing.push("Email");
+    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) missing.push("a valid email");
     return missing;
   };
   const requiredMissingList = missingRequired();
   const isCrmValid = requiredMissingList.length === 0;
+
+  // v23.8 W-4 — Clear button resets the form (matches the v23.7 investor CRM
+  // pattern). Also clears the opt-in invite toggle so a fresh entry starts clean.
+  const clearForm = () => {
+    setForm({ name: "", contact: "", email: "", stageFocus: "", checkSize: "", notes: "" });
+    setSendInvite(false);
+  };
 
   const saveMut = useMutation({
     mutationFn: async () => {
@@ -121,6 +129,7 @@ export default function CRMNew() {
             )}
             <div className="flex justify-end gap-2 pt-3 border-t border-border">
               <Button variant="ghost" onClick={() => navigate("/founder/crm")}>Cancel</Button>
+              <Button variant="outline" onClick={clearForm} data-testid="button-clear-crm">Clear</Button>
               <Button
                 onClick={() => {
                   // v23.4.9 Phase 3 — guard submission even if the button is

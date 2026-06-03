@@ -32,7 +32,10 @@ import { DEFAULT_CHAPTER_ID, DEFAULT_CHAPTER_TENANT_ID } from "./lib/chapterDefa
 import { log } from "./lib/logger";
 
 export type NominationStatus = "pending_vouch" | "vouched" | "reviewing" | "invited" | "presented" | "declined";
-export type ApplicationStatus = "submitted" | "reviewing" | "invited" | "rejected" | "waitlisted";
+// v23.8 W-21: "accepted" added so admin approval of a founder Path B application
+// uses the same status semantic as the admin filter tab / member badge. "invited"
+// is retained for backward compatibility with any rows persisted before v23.8.
+export type ApplicationStatus = "submitted" | "reviewing" | "invited" | "accepted" | "rejected" | "waitlisted";
 
 export type CompanyNomination = {
   id: string;

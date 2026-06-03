@@ -31,8 +31,6 @@ type Report = {
   schedule: { cron: string; cadence: string; nextSendAt: string; enabled: boolean } | null;
 };
 
-type CrmRow = { id: string; investorId: string; name: string; firmName: string; region: string; stage: string; series?: string };
-
 const TEMPLATES = [
   { id: "monthly_kpi", label: "Monthly KPI" },
   { id: "quarterly_update", label: "Quarterly Update" },
@@ -56,11 +54,6 @@ export default function Reports() {
     queryKey: ["/api/founder/reports2", companyId],
     queryFn: async () => (await apiRequest("GET", `/api/founder/reports2?companyId=${companyId}`)).json(),
   });
-  const crmQ = useQuery<CrmRow[]>({
-    queryKey: ["/api/founder/investor-crm", companyId],
-    queryFn: async () => (await apiRequest("GET", `/api/founder/investor-crm?companyId=${companyId}`)).json(),
-  });
-
   const [previewId, setPreviewId] = useState<string | null>(null);
   const [sendId, setSendId] = useState<string | null>(null);
   const [scheduleId, setScheduleId] = useState<string | null>(null);
@@ -68,7 +61,6 @@ export default function Reports() {
   const [editId, setEditId] = useState<string | null>(null);
 
   const reports = reportsQ.data ?? [];
-  const crm = crmQ.data ?? [];
 
   const totalSent = reports.filter(r => r.status === "sent").length;
   const totalReads = reports.reduce((sum, r) => sum + r.readReceipts.reduce((s, rr) => s + rr.reads, 0), 0);
@@ -154,7 +146,6 @@ export default function Reports() {
       {sendId && (
         <SendDialog
           report={reports.find(r => r.id === sendId)!}
-          crm={crm}
           onClose={() => setSendId(null)}
           onSent={(summary) => {
             setSendId(null);
@@ -295,19 +286,33 @@ function PreviewDialog({ report, onClose }: { report: Report; onClose: () => voi
 
 type SendSummary = { recipientCount: number; sentCount: number; failedCount: number };
 
-function SendDialog({ report, crm, onClose, onSent }: { report: Report; crm: CrmRow[]; onClose: () => void; onSent: (summary: SendSummary) => void }) {
-  const [stageFilter, setStageFilter] = useState<string>("all");
-  const [regionFilter, setRegionFilter] = useState<string>("all");
-  const [selected, setSelected] = useState<Set<string>>(new Set(report.recipients.length > 0 ? report.recipients : crm.filter(c => c.stage === "invested").map(c => c.investorId)));
+type CapTableHolder = { userId: string; name: string; email: string; ownershipPct: number };
 
-  const filtered = useMemo(() => crm.filter(c =>
-    (stageFilter === "all" || c.stage === stageFilter) &&
-    (regionFilter === "all" || c.region === regionFilter)
-  ), [crm, stageFilter, regionFilter]);
+function SendDialog({ report, onClose, onSent }: { report: Report; onClose: () => void; onSent: (summary: SendSummary) => void }) {
+  // v23.8 W-5/BUG-003 — recipients come from the cap-table holders endpoint,
+  // NOT the CRM. The chosen userIds therefore always match what /send
+  // validates against, so a valid pick can never 400 (INVALID_RECIPIENTS).
+  const holdersQ = useQuery<CapTableHolder[]>({
+    queryKey: ["/api/founder/reports2", report.id, "recipients"],
+    queryFn: async () => (await apiRequest("GET", `/api/founder/reports2/${report.id}/recipients`)).json(),
+  });
+  const holders = holdersQ.data ?? [];
+  const [selected, setSelected] = useState<Set<string>>(new Set(report.recipients));
+  const [initialized, setInitialized] = useState(false);
+
+  // Default-select every current cap-table holder once they load (unless the
+  // report already carries an explicit recipient list).
+  useMemo(() => {
+    if (initialized || holders.length === 0) return;
+    if (report.recipients.length === 0) {
+      setSelected(new Set(holders.map(h => h.userId)));
+    }
+    setInitialized(true);
+  }, [holders, initialized, report.recipients.length]);
 
   const toggleAll = () => {
-    const allIds = filtered.map(c => c.investorId);
-    const allSelected = allIds.every(id => selected.has(id));
+    const allIds = holders.map(h => h.userId);
+    const allSelected = allIds.length > 0 && allIds.every(id => selected.has(id));
     const next = new Set(selected);
     if (allSelected) allIds.forEach(id => next.delete(id));
     else allIds.forEach(id => next.add(id));
@@ -323,9 +328,6 @@ function SendDialog({ report, crm, onClose, onSent }: { report: Report; crm: Crm
     onSuccess: (data) => onSent({ recipientCount: data?.recipientCount ?? selected.size, sentCount: data?.sentCount ?? 0, failedCount: data?.failedCount ?? 0 }),
   });
 
-  const regions = Array.from(new Set(crm.map(c => c.region))).sort();
-  const stages = ["lead", "engaged", "soft_circle", "invested", "longterm"];
-
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
@@ -333,53 +335,39 @@ function SendDialog({ report, crm, onClose, onSent }: { report: Report; crm: Crm
           <DialogTitle className="flex items-center gap-2"><Send className="h-4 w-4" /> Send "{report.title}"</DialogTitle>
         </DialogHeader>
         <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Label className="text-xs">Stage</Label>
-              <Select value={stageFilter} onValueChange={setStageFilter}>
-                <SelectTrigger className="mt-1" data-testid="select-stage"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All stages</SelectItem>
-                  {stages.map(s => <SelectItem key={s} value={s}>{s.replace("_", " ")}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <Label className="text-xs">Region</Label>
-              <Select value={regionFilter} onValueChange={setRegionFilter}>
-                <SelectTrigger className="mt-1" data-testid="select-region"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All regions</SelectItem>
-                  {regions.map(r => <SelectItem key={r} value={r}>{r}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
+          <p className="text-xs text-muted-foreground">
+            Reports can only be sent to current cap-table holders. Choose who receives this update below.
+          </p>
 
           <div className="rounded-md border">
             <div className="flex items-center justify-between px-3 py-2 border-b bg-secondary/20">
-              <div className="text-xs font-semibold flex items-center gap-1"><Users className="h-3 w-3" /> {selected.size} selected · {filtered.length} matching</div>
-              <Button size="sm" variant="ghost" onClick={toggleAll} data-testid="button-toggle-all">Toggle filtered</Button>
+              <div className="text-xs font-semibold flex items-center gap-1"><Users className="h-3 w-3" /> {selected.size} selected · {holders.length} on cap table</div>
+              <Button size="sm" variant="ghost" onClick={toggleAll} data-testid="button-toggle-all">Toggle all</Button>
             </div>
             <div className="max-h-72 overflow-y-auto">
-              {filtered.map(c => (
-                <label key={c.investorId} className="flex items-center gap-3 px-3 py-2 hover:bg-secondary/30 cursor-pointer text-sm">
+              {holders.map(h => (
+                <label key={h.userId} className="flex items-center gap-3 px-3 py-2 hover:bg-secondary/30 cursor-pointer text-sm">
                   <Checkbox
-                    checked={selected.has(c.investorId)}
+                    checked={selected.has(h.userId)}
                     onCheckedChange={(v) => {
                       const next = new Set(selected);
-                      if (v) next.add(c.investorId); else next.delete(c.investorId);
+                      if (v) next.add(h.userId); else next.delete(h.userId);
                       setSelected(next);
                     }}
-                    data-testid={`checkbox-recipient-${c.investorId}`}
+                    data-testid={`checkbox-recipient-${h.userId}`}
                   />
                   <div className="flex-1 min-w-0">
-                    <div className="font-medium truncate">{c.name}</div>
-                    <div className="text-xs text-muted-foreground truncate">{c.firmName} · {c.region} · {c.stage.replace("_", " ")}</div>
+                    <div className="font-medium truncate">{h.name || h.email || h.userId}</div>
+                    <div className="text-xs text-muted-foreground truncate">{h.email || h.userId} · {fmtPct(h.ownershipPct)} ownership</div>
                   </div>
                 </label>
               ))}
-              {filtered.length === 0 && <div className="p-4 text-xs text-muted-foreground text-center">No investors match those filters.</div>}
+              {holdersQ.isLoading && <div className="p-4 text-xs text-muted-foreground text-center">Loading cap-table holders…</div>}
+              {!holdersQ.isLoading && holders.length === 0 && (
+                <div className="p-4 text-xs text-muted-foreground text-center" data-testid="recipients-empty-state">
+                  No one is on the cap table yet. Add holders before sending a report.
+                </div>
+              )}
             </div>
           </div>
         </div>

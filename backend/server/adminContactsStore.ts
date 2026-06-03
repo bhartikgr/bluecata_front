@@ -24,6 +24,7 @@ import {
   contactRevisions as contactRevisionsTable,
 } from "../shared/schema";
 import { log } from "./lib/logger";
+import { getRedeemedRecords } from "./roundInvitationsStore"; // v23.8 W-9 — surface real investors
 
 // Patch v12 Day 2 Wave 2 — adminContactsStore is HIGH-CARE hybrid:
 //   - Source of truth = SQLite `contacts` + `contact_revisions` tables.
@@ -1136,7 +1137,72 @@ export function registerAdminContactsRoutes(app: Express): void {
   app.get("/api/admin/contacts", (req: Request, res: Response) => {
     const { kind, status, verification, region, search } = req.query as Record<string, string>;
     const results = listContacts({ kind, status, verification, region, search });
-    res.json({ total: results.length, contacts: results });
+
+    // v23.8 W-9: the CRM `contacts` map is empty in production (demo-only seed),
+    // so the admin Investors panel showed 0 rows. Surface REAL investors who
+    // have redeemed a round invitation. These derived rows are read-only
+    // augmentations (id prefix `derived_inv_`), deduped by email against the
+    // managed CRM contacts so a manually-added contact always wins.
+    const knownEmails = new Set(results.map((c) => c.email.toLowerCase()));
+    const derived: AdminContact[] = [];
+    if (!kind || kind === "investor") {
+      const now = new Date().toISOString();
+      const seenDerived = new Set<string>();
+      for (const inv of getRedeemedRecords()) {
+        const email = (inv.investorEmail ?? "").toLowerCase().trim();
+        if (!email || knownEmails.has(email) || seenDerived.has(email)) continue;
+        seenDerived.add(email);
+        derived.push({
+          id: `derived_inv_${inv.id}`,
+          kind: "investor",
+          legalName: inv.investorName || inv.investorEmail,
+          displayName: inv.investorName || inv.investorEmail,
+          email: inv.investorEmail,
+          type: "angel",
+          status: "active",
+          verification: "unverified",
+          hqCity: "",
+          hqCountry: "US",
+          region: "US",
+          aumMinor: null,
+          aumCurrency: "USD",
+          checkSizeMinMinor: null,
+          checkSizeMaxMinor: null,
+          industries: [],
+          stages: [],
+          companyIds: inv.companyId ? [inv.companyId] : [],
+          partnerWeight: null,
+          partnerSince: null,
+          phone: null,
+          website: null,
+          linkedinUrl: null,
+          tags: ["round-invitation"],
+          notes: "Derived from a redeemed round invitation (read-only).",
+          createdAt: inv.redeemedAt ?? inv.createdAt ?? now,
+          updatedAt: inv.redeemedAt ?? inv.updatedAt ?? now,
+          createdBy: "system",
+          updatedBy: "system",
+          version: 0,
+          prevRevisionHash: "",
+          revisionHash: "",
+        } as AdminContact);
+      }
+    }
+
+    // Apply the same simple filters to derived rows so the response is coherent.
+    let derivedFiltered = derived;
+    if (region) derivedFiltered = derivedFiltered.filter((c) => c.region === region);
+    if (status) derivedFiltered = derivedFiltered.filter((c) => c.status === status);
+    if (verification) derivedFiltered = derivedFiltered.filter((c) => c.verification === verification);
+    if (search) {
+      const q = search.toLowerCase();
+      derivedFiltered = derivedFiltered.filter(
+        (c) => c.legalName.toLowerCase().includes(q) || c.email.toLowerCase().includes(q),
+      );
+    }
+
+    const merged = [...results, ...derivedFiltered];
+    res.json({ total: merged.length, contacts: merged });
   });
 
   // ── POST /api/admin/contacts ───────────────────────────────

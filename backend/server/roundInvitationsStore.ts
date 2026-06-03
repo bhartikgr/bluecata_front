@@ -236,7 +236,7 @@ export async function createInvitation(args: CreateInvitationArgs): Promise<Crea
 
   // Send the email. The redeem link includes the RAW token, never the hash.
   // Production deploys should set INVITATION_BASE_URL.
-  const baseUrl = process.env.INVITATION_BASE_URL ?? "https://app.capavate.com";
+  const baseUrl = process.env.INVITATION_BASE_URL ?? process.env.APP_URL ?? "https://capavate.com";
   const link = `${baseUrl}/invitations/redeem?token=${encodeURIComponent(token)}`;
   let emailSent = false;
   let emailMessageId: string | undefined;
@@ -284,7 +284,7 @@ export async function createInvitation(args: CreateInvitationArgs): Promise<Crea
   });
 
   // L-006 fix v23.4.13: return redeemUrl on create (raw token never stored in list view)
-  const appUrl = process.env.APP_URL ?? process.env.INVITATION_BASE_URL ?? "https://app.capavate.com";
+  const appUrl = process.env.APP_URL ?? process.env.INVITATION_BASE_URL ?? "https://capavate.com";
   const redeemUrl = `${appUrl}/invite/${encodeURIComponent(token)}`;
 
   return {
@@ -401,6 +401,18 @@ export function listForCompany(companyId: string): Array<Omit<RoundInvitationRow
 export function getInvitation(id: string): Omit<RoundInvitationRow, "tokenHash"> | null {
   const row = memInvitations.find((r) => r.id === id);
   return row ? publicView(row) : null;
+}
+
+/**
+ * v23.8 W-9 — return every invitation that has been redeemed/accepted. The
+ * admin Investors panel uses this to surface REAL investors (those who have
+ * accepted a round invite) instead of only the demo-seeded CRM contacts, which
+ * are empty in production.
+ */
+export function getRedeemedRecords(): Array<Omit<RoundInvitationRow, "tokenHash">> {
+  return memInvitations
+    .filter((r) => r.state === "accepted" || r.redeemedAt != null)
+    .map(publicView);
 }
 
 /* ---------- L-009 helpers v23.4.13: bridge to authRoutes ---------- */

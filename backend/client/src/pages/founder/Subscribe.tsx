@@ -25,7 +25,7 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { Input } from "@/components/ui/input";
 import {
   CheckCircle2, Lock, CreditCard, ShieldCheck, Sparkles,
-  Building2, Zap, Star, Crown, ExternalLink,
+  Building2, Zap, Star, Crown, ExternalLink, LogOut,
 } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -345,6 +345,26 @@ export default function FounderSubscribe() {
   return (
     <div className="min-h-screen bg-[hsl(210_20%_98%)] flex items-start justify-center py-12 px-4">
       <div className="w-full max-w-4xl">
+        {/* v23.8 C3/W-6 (BUG-014) — a founder who lands on the subscription
+            gate must be able to leave without subscribing. Without this they
+            were trapped on this page with no way to sign out. */}
+        <div className="flex justify-end mb-2">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            data-testid="button-subscribe-signout"
+            onClick={async () => {
+              try {
+                await apiRequest("POST", "/api/auth/logout");
+              } catch { /* non-fatal — cookie cleared server-side on next probe */ }
+              await queryClient.resetQueries();
+              window.location.href = "/login";
+            }}
+          >
+            <LogOut className="h-3.5 w-3.5 mr-1.5" /> Sign out
+          </Button>
+        </div>
         {/* Header */}
         <div className="text-center mb-8">
           <div className="flex items-center justify-center gap-2 mb-3">

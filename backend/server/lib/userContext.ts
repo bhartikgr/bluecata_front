@@ -30,7 +30,8 @@ import { storeCredential, lookupByEmail } from "../userCredentialsStore";
 // Patch v12 (DB-10) — INSERT users row BEFORE user_credentials so the FK
 // ordering is correct (when foreign key enforcement is turned on the row
 // already exists). This also lets `users.email` participate in admin lookups.
-import { getDb } from "../db/connection";
+import { getDb, rawDb } from "../db/connection";
+import { hashPassword } from "./auth"; // v23.8 W-10 — auth_users password hash
 // Wave C FIX C1 (W-2) — Server-side session revocation: cookies whose userId
 // has been added to the revocation set (via /api/auth/logout) must no longer
 // authenticate, even if the cookie value itself is otherwise valid.
@@ -328,11 +329,11 @@ function buildCapTablePositions(persona: PersonaSeed): CapTablePosition[] {
 }
 
 function buildCollectiveOverlay(persona: PersonaSeed): UserContext["collective"] {
-  if (!persona.isInvestor) {
-    // Founders use multiCompanyStore.collective per-company; the user-level
-    // collective overlay is for investor-side logic only here.
-    return { status: "none", role: null, expiresAt: null };
-  }
+  // v23.8 W-13: previously this early-returned `status:"none"` for any
+  // non-investor persona, so a founder whose Collective application the admin
+  // approved never saw their membership in /api/auth/me. The membership store
+  // (written by admin approval via upsertActiveMembership) already holds the
+  // correct record for founders AND investors, so read it for all personas.
   const m = getMembership(persona.userId);
   if (!m) return { status: "none", role: null, expiresAt: null };
   let status: CollectiveStatus = "none";
@@ -510,6 +511,25 @@ export function registerFounderUser(args: {
   } catch (err) {
     // Non-fatal; in-memory path still works for the current process.
     log.warn("[userContext] storeCredential failed (non-fatal):", (err as Error).message);
+  }
+  // v23.8 W-10 — also write an auth_users row so the admin Users panel
+  // (adminUsersRoutes.listAll reads auth_users) shows real signups instead of
+  // 0 entries. This does NOT affect login: verifyPassword reads
+  // RUNTIME_PASSWORDS + userCredentialsStore, never auth_users. The hash is a
+  // scrypt `s2$...` string (password_hash is NOT NULL in the schema).
+  try {
+    const adb = rawDb();
+    adb
+      .prepare(
+        `INSERT INTO auth_users (id, email, password_hash, password_algo, role, status, created_at)
+         VALUES (?, ?, ?, 'scrypt', 'founder', 'active', ?)
+         ON CONFLICT(id) DO NOTHING`,
+      )
+      .run(userId, normalizedEmail, hashPassword(args.password), new Date().toISOString());
+  } catch (err) {
+    // Non-fatal — the admin panel enrichment is best-effort; signup/login must
+    // never fail because of an auth_users write hiccup.
+    log.warn("[userContext] auth_users INSERT failed (non-fatal):", (err as Error).message);
   }
   return { userId, alreadyExisted: false };
 }

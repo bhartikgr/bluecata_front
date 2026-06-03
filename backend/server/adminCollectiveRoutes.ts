@@ -43,6 +43,7 @@ import { emitNotification } from "./notificationsStore";
 // C-011 fix v23.6: enrich admin applications list with resolved names
 import { getCompanyNameById } from "./multiCompanyStore";
 import { getUserContextForId } from "./lib/userContext";
+import { lookupByUserId } from "./userCredentialsStore"; // v23.8 W-14 member enrichment
 
 export function registerAdminCollectiveRoutes(app: Express): void {
   /**
@@ -98,7 +99,29 @@ export function registerAdminCollectiveRoutes(app: Express): void {
    */
   app.get("/api/admin/collective/members", requireAdmin, (_req: Request, res: Response) => {
     const members = collectiveMembershipStore.listActive();
-    res.json({ items: members, count: members.length });
+    // v23.8 W-14: enrich each row with userName + userEmail so the admin UI can
+    // show real identities instead of raw opaque user IDs. Personas resolve via
+    // getUserContextForId; real signups via the credential store.
+    const items = members.map((m) => {
+      let userName = "";
+      let userEmail = "";
+      try {
+        const ident = getUserContextForId(m.userId).identity;
+        userName = ident.name ?? "";
+        userEmail = ident.email ?? "";
+      } catch { /* non-fatal */ }
+      if (!userEmail) {
+        try {
+          const cred = lookupByUserId(m.userId);
+          if (cred) {
+            userEmail = cred.email;
+            if (!userName) userName = cred.name ?? "";
+          }
+        } catch { /* non-fatal */ }
+      }
+      return { ...m, userName, userEmail };
+    });
+    res.json({ items, count: items.length });
   });
 
   app.post("/api/admin/collective/applications/:id/approve", requireAdmin, (req: AugReq, res: Response) => {
@@ -138,7 +161,9 @@ export function registerAdminCollectiveRoutes(app: Express): void {
     if (!modernApp) {
       return res.status(404).json({ ok: false, error: "APPLICATION_NOT_FOUND" });
     }
-    const updated = founderApply.setApplicationStatus(id, "invited", adminUserId);
+    // v23.8 W-21: use "accepted" (not "invited") so the status matches the
+    // admin filter tab and downstream founder dashboard / member badge.
+    const updated = founderApply.setApplicationStatus(id, "accepted", adminUserId);
     const userId = modernApp.founderId;
     const membership = collectiveMembershipStore.activate(userId, adminUserId);
     try { upsertActiveMembership(userId); } catch { /* non-fatal */ }

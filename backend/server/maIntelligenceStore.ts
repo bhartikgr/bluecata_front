@@ -204,7 +204,9 @@ export function registerMaIntelligenceRoutes(app: Express): void {
       id,
       createdAt: new Date().toISOString(),
       threadId: `ch_ma_${parsed.data.companyId}_${id}`,
-      investorUserId: "u_investor_demo",
+      // v23.8 D2/W-18 — attribute to the authenticated session user, not a
+      // synthetic demo investor.
+      investorUserId: req.userContext?.userId ?? "u_unknown",
     };
     initiatives.push(initiative);
     const eventType = parsed.data.initiativeType === "lead_initiative"

@@ -152,6 +152,24 @@ export default function ApplyToCollective() {
   });
   const mineApp = (mineQ.data as any)?.application ?? null;
 
+  // v23.8 C4/W-15 — during invite-only beta the rest of the Collective is
+  // gated off and signups land on the WAITLIST store instead of the
+  // applications store. Surface the requester's own waitlist status so they
+  // are not left wondering whether their signup was received.
+  const waitlistMineQ = useQuery<{ items: Array<{ id: string; kind: string; status: string; createdAt: string }>; count: number }>({
+    queryKey: ["/api/collective/waitlist/mine"],
+    queryFn: async () => {
+      const res = await fetch("/api/collective/waitlist/mine");
+      if (!res.ok) return { items: [], count: 0 };
+      return res.json();
+    },
+    retry: false,
+  });
+  const myWaitlist = waitlistMineQ.data?.items ?? [];
+  const latestWaitlist = myWaitlist.length
+    ? [...myWaitlist].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))[0]
+    : null;
+
   const [form, setForm] = useState<CollectiveApplication>({
     thesis: "",
     minCheckUsd: 25_000,
@@ -214,28 +232,25 @@ export default function ApplyToCollective() {
     setStep((s) => Math.min(7, s + 1));
   }
 
-  // Sprint 21 Wave G — derive eligibility checks from live UserContext (same as old Collective.tsx)
-  const eligChecks = ctx ? [
-    { label: "Accreditation verified", ok: ctx.investor.state !== "NONE" },
-    { label: "KYC documents on file", ok: ctx.investor.capTablePositions.length > 0 },
-    { label: "Investor profile complete", ok: true },
-    { label: "At least one Capavate primary investment", ok: ctx.investor.capTablePositions.length > 0 },
-    { label: "Risk acknowledgements signed", ok: ctx.collective.status !== "none" },
-  ] : [
-    { label: "Accreditation verified by third party", ok: true },
-    { label: "KYC documents on file (passport · 2026)", ok: true },
-    { label: "Investor profile complete (sectors, stage, ticket)", ok: true },
-    { label: "At least one Capavate primary investment", ok: true },
-    { label: "Risk acknowledgements signed", ok: true },
+  // v23.8 W-12: eligibility checks reflect REAL user state only. Previously a
+  // null `ctx` fell back to an all-green hardcoded list, misrepresenting an
+  // unverified investor as fully accredited/KYC'd. Now we read the actual
+  // checks from GET /api/collective/eligibility (`passes`), falling back to
+  // the live UserContext, and default to NOT-passed (never green) when neither
+  // source has loaded.
+  const passes = elig.data?.passes ?? {};
+  const eligChecks = [
+    { label: "Accreditation verified", ok: Boolean(passes.accreditation ?? (ctx ? ctx.investor.state !== "NONE" : false)) },
+    { label: "KYC documents on file", ok: Boolean(passes.kyc ?? (ctx ? ctx.investor.capTablePositions.length > 0 : false)) },
+    { label: "Investor profile complete", ok: Boolean(passes.profile ?? (ctx ? ctx.investor.state !== "NONE" : false)) },
+    { label: "At least one Capavate primary investment", ok: Boolean(passes.primaryInvestment ?? (ctx ? ctx.investor.capTablePositions.length > 0 : false)) },
+    { label: "Risk acknowledgements signed", ok: Boolean(passes.riskAck ?? (ctx ? ctx.collective.status !== "none" : false)) },
   ];
 
-  // Active deals from live data or fallback
-  const activeDeals = collective.data?.activeDeals ?? [
-    { id: "dsc-08", label: "Helia AI Seed screening room · 6 days left to vote", daysLeft: 6, type: "DSC-08" },
-    { id: "spv-14", label: "Tideline Pay Series A co-invest SPV · subscriptions close May 22", daysLeft: 12, type: "SPV-14" },
-    { id: "chtr", label: "Toronto chapter · monthly meeting May 14 · 6 founders pitching", daysLeft: 4, type: "CHTR" },
-    { id: "ma", label: "3 acquisition signals matched to your portfolio holdings", daysLeft: 0, type: "M&A" },
-  ];
+  // v23.8 W-12: only real deals from /api/collective/network. No hardcoded
+  // "DSC-08 Helia AI / SPV-14 Tideline Pay / CHTR" placeholders — those were
+  // shown to every investor regardless of state (material misrepresentation).
+  const activeDeals = collective.data?.activeDeals ?? [];
 
   return (
     <>
@@ -258,6 +273,21 @@ export default function ApplyToCollective() {
               {mineApp.status === "accepted" && <><strong className="text-emerald-800">Accepted</strong> on {mineApp.reviewedAt ? new Date(mineApp.reviewedAt).toLocaleDateString() : "—"} — your membership is being activated.</>}
               {mineApp.status === "rejected" && <><strong className="text-rose-800">Not selected this cycle.</strong></>}
               {mineApp.status === "waitlisted" && <><strong>Waitlisted</strong> — we\'ll notify you when a spot opens.</>}
+            </div>
+          </div>
+        )}
+
+        {/* v23.8 C4/W-15 — waitlist status banner (invite-only beta path) */}
+        {latestWaitlist && !mineApp && !isActiveMember && (
+          <div
+            className={`rounded-md border p-4 mb-5 flex items-start gap-3 text-sm ${latestWaitlist.status === "accepted" ? "border-emerald-200 bg-emerald-50" : latestWaitlist.status === "declined" ? "border-rose-200 bg-rose-50" : "border-blue-200 bg-blue-50"}`}
+            data-testid="banner-investor-waitlist-status"
+          >
+            <CheckCircle2 className="h-5 w-5 shrink-0 mt-0.5" />
+            <div>
+              {latestWaitlist.status === "waitlist" && <><strong>You're on the waitlist</strong> — joined {new Date(latestWaitlist.createdAt).toLocaleDateString()}. We'll be in touch as we open chapter access.</>}
+              {latestWaitlist.status === "accepted" && <><strong className="text-emerald-800">Accepted from the waitlist</strong> — your membership is being activated.</>}
+              {latestWaitlist.status === "declined" && <><strong className="text-rose-800">Not selected this cycle.</strong></>}
             </div>
           </div>
         )}
@@ -392,14 +422,21 @@ export default function ApplyToCollective() {
                 <Vote className="h-4 w-4 text-[hsl(var(--highlight))]" /> What's waiting for you
               </h3>
               {/* Sprint 20 Wave 2 — live data from /api/collective/network (defect 42) */}
-              <ul className="space-y-3 text-sm">
-                {activeDeals.map((deal) => (
-                  <li key={deal.id} className="flex items-start gap-2" data-testid={`deal-${deal.id}`}>
-                    <span className="text-xs font-mono mt-0.5 text-muted-foreground w-12 shrink-0">{deal.type}</span>
-                    <span className="flex-1">{deal.label}</span>
-                  </li>
-                ))}
-              </ul>
+              {/* v23.8 W-12 — real deals only; clean empty/gated state otherwise. */}
+              {activeDeals.length > 0 ? (
+                <ul className="space-y-3 text-sm">
+                  {activeDeals.map((deal) => (
+                    <li key={deal.id} className="flex items-start gap-2" data-testid={`deal-${deal.id}`}>
+                      <span className="text-xs font-mono mt-0.5 text-muted-foreground w-12 shrink-0">{deal.type}</span>
+                      <span className="flex-1">{deal.label}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm text-muted-foreground" data-testid="deals-empty-state">
+                  Apply and get accepted to see active deals, co-invest SPVs, and chapter events curated for you.
+                </p>
+              )}
             </CardContent>
           </Card>
         </div>

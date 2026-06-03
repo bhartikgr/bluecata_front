@@ -182,6 +182,7 @@ const adminNav: NavGroup[] = [
     title: "Collective",
     items: [
       { href: "/admin/collective/applications", label: "Collective Applications", icon: Inbox },
+      { href: "/admin/collective/waitlist", label: "Collective Waitlist", icon: History },
       { href: "/admin/collective/members", label: "Collective Members", icon: Users },
       { href: "/admin/collective/settings", label: "Collective Settings", icon: Settings },
     ],

@@ -28,6 +28,28 @@ import { FINANCIAL_FIELD_COPY, getFieldsForStage } from "@/lib/financialFieldCop
 import { Slider } from "@/components/ui/slider";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 
+/**
+ * v23.8 C6/W-17 — derive a default ISO-4217 currency from a free-text HQ /
+ * region string ("Hong Kong" → HKD, "London, UK" → GBP). Used only as the
+ * picker's default when the company has no stored defaultCurrency. Returns
+ * null when nothing matches so the existing USD default stands.
+ */
+export function deriveCurrencyFromRegion(region: string | null | undefined): string | null {
+  if (!region) return null;
+  const r = region.toLowerCase();
+  if (/hong kong|\bhk\b/.test(r)) return "HKD";
+  if (/singapore|\bsg\b/.test(r)) return "SGD";
+  if (/\b(united kingdom|england|scotland|wales|uk|gb|london)\b/.test(r)) return "GBP";
+  if (/\bcanada\b|, ?(ab|bc|on|qc|ns|mb|sk)\b/.test(r)) return "CAD";
+  if (/\baustralia\b|\bau\b|sydney|melbourne/.test(r)) return "AUD";
+  if (/\bjapan\b|\bjp\b|tokyo/.test(r)) return "JPY";
+  if (/\bindia\b|\bin\b|bangalore|mumbai/.test(r)) return "INR";
+  if (/\bswitzerland\b|zurich|geneva/.test(r)) return "CHF";
+  if (/\b(germany|france|spain|italy|netherlands|ireland|eu|euro)\b|berlin|paris|amsterdam/.test(r)) return "EUR";
+  if (/\bunited states\b|\bus\b|\busa\b|, ?[a-z]{2}$/.test(r)) return "USD";
+  return null;
+}
+
 type PricingFeature = { key: string; label: string; included: boolean; limit?: string };
 type PricingTier = { id: string; name: string; monthlyUsd: number; annualUsd: number; blurb: string; features: PricingFeature[]; billingCycle?: "annual" | "monthly" | "one_time"; annualPriceCents?: number; displayPrice?: string };
 
@@ -79,8 +101,16 @@ export default function Settings() {
     if (company?.companyName !== undefined) setCoDisplayName(company.companyName ?? "");
     if (company?.legalName   !== undefined) setCoLegalName(company.legalName ?? "");
     const cur = (company as { defaultCurrency?: string } | undefined)?.defaultCurrency;
+    // v23.8 C6/W-17 — when no currency is stored, derive a sensible default
+    // from the company HQ/region (HK→HKD, CA→CAD, GB/UK→GBP, …) instead of
+    // always falling back to USD.
     if (cur) setCoCurrency(cur);
-  }, [company?.companyName, company?.legalName, (company as { defaultCurrency?: string } | undefined)?.defaultCurrency]);
+    else {
+      const hq = (company as { hq?: string } | undefined)?.hq;
+      const derived = deriveCurrencyFromRegion(hq);
+      if (derived) setCoCurrency(derived);
+    }
+  }, [company?.companyName, company?.legalName, (company as { defaultCurrency?: string } | undefined)?.defaultCurrency, (company as { hq?: string } | undefined)?.hq]);
 
   // ----- Wave B FIX 6 (F-BUG-009) -----
   // Pre-populate the Profile tab inputs (Display name / Email / Title) from

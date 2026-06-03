@@ -764,7 +764,16 @@ function Step3LegalEntity({
  Country of Incorporation <span className="text-rose-500">*</span>
  <HelpTip>Drives the engine region used across cap-table, rounds, and term-sheet templates.</HelpTip>
  </Label>
- <CountryPicker value={value.countryOfIncorporationCode} onChange={(c) => set("countryOfIncorporationCode", c)} testId="picker-country-incorp" />
+ <CountryPicker value={value.countryOfIncorporationCode} onChange={(c) => {
+ // v23.8 W-2 — when the jurisdiction changes, an entityType picked for the
+ // prior country may not exist in the new country's list. Radix Select then
+ // renders the placeholder ("appears not selected") while state still holds
+ // the orphaned value, so save complained "Entity type missing"/mismatched.
+ // Clear the orphaned value atomically so the displayed and submitted values
+ // always agree.
+ const stillValid = entityTypesForCountry(c).some((o) => o.value === value.entityType);
+ onChange({ ...value, countryOfIncorporationCode: c, entityType: stillValid ? value.entityType : null });
+ }} testId="picker-country-incorp" />
  </div>
  <div className="space-y-1.5">
  <Label className="flex items-center gap-1">Type of Entity <span className="text-rose-500">*</span></Label>

@@ -143,8 +143,8 @@ export function isEligibleForCollective(userId?: string): EligibilityResult {
     if (m) {
       investorOnCapTable = m.capTablePositions.length > 0;
     } else {
-      // Fallback for unknown personas (e.g. u_investor_demo, test actors):
-      // use the global investorPortfolio as a proxy for "has any position".
+      // Fallback for unknown personas (test actors): use the global
+      // investorPortfolio as a proxy for "has any position".
       investorOnCapTable = (investorPortfolio.length ?? 0) > 0;
     }
   } else {
@@ -168,8 +168,10 @@ export function isEligibleForCollective(userId?: string): EligibilityResult {
 
 export function registerCollectiveAppRoutes(app: Express): void {
   app.get("/api/collective/eligibility", (req: Request, res: Response) => {
-    // Use req.userContext userId if available (Defect 14 fix)
-    const userId = (req.userContext?.userId) ?? (req.query.userId as string | undefined) ?? "u_investor_demo";
+    // Use req.userContext userId if available (Defect 14 fix). v23.8 D2/W-18 —
+    // no `u_investor_demo` synthetic fallback; an unauthenticated check passes
+    // undefined and hits the anonymous-eligibility branch.
+    const userId = (req.userContext?.userId) ?? (req.query.userId as string | undefined);
     res.json(isEligibleForCollective(userId));
   });
 

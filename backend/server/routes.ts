@@ -48,7 +48,7 @@ import { setSessionCookie, clearSessionCookie, readSessionCookie } from "./lib/s
 import { revokeSession } from "./lib/sessionRevocation.js";
 import { getRecentEvents, findEventsByType } from "./sprint10Telemetry";
 // Sprint 11 — founder build
-import { registerMultiCompanyRoutes, updateCompanyDetails, getCompanyNameById, getCompanyRecordById } from "./multiCompanyStore"; // B-509/C-011 v23.6 added getCompanyNameById; v23.7.1 added getCompanyRecordById (BUG 019 follow-up)
+import { registerMultiCompanyRoutes, updateCompanyDetails, getCompanyNameById, getCompanyRecordById, getAllCompanies } from "./multiCompanyStore"; // B-509/C-011 v23.6 added getCompanyNameById; v23.7.1 added getCompanyRecordById (BUG 019 follow-up); v23.8 added getAllCompanies (W-8)
 import { registerMembershipRoutes } from "./membershipStore";
 import { registerDataroomRoutes } from "./dataroomStore";
 // v23.4.7 Phase 13 / BUG 030 — dedicated server endpoint for company-logo
@@ -2290,7 +2290,36 @@ function registerAdminCompaniesFullRoute(app: Express) {
     const subs = new Map<string, Subscription>();
     for (const s of listSubscriptions()) subs.set(s.companyId, s);
 
-    const rows: AdminCompanyFullRow[] = canonicalCompanies.map((c) => {
+    // v23.8 W-8: the admin panel previously read only `canonicalCompanies`
+    // (static, empty in production). Merge in real founder-created companies
+    // from multiCompanyStore so the panel reflects production data. Deduped by
+    // id; canonical entries win when both exist.
+    type CompanyStub = { id: string; name: string; legalName: string; region?: string; sector: string; stage: string; hq: string; maScore?: number };
+    const stubById = new Map<string, CompanyStub>();
+    for (const mc of getAllCompanies()) {
+      stubById.set(mc.companyId, {
+        id: mc.companyId,
+        name: mc.companyName,
+        legalName: mc.legalName,
+        sector: mc.sector,
+        stage: mc.stage,
+        hq: mc.hq,
+      });
+    }
+    for (const c of canonicalCompanies) {
+      stubById.set(c.id, {
+        id: c.id,
+        name: c.name,
+        legalName: c.legalName,
+        region: (c as { region?: string }).region,
+        sector: c.sector,
+        stage: c.stage,
+        hq: c.hq,
+        maScore: (c as { maScore?: number }).maScore,
+      });
+    }
+
+    const rows: AdminCompanyFullRow[] = Array.from(stubById.values()).map((c) => {
       const companyRounds = canonicalRounds.filter((r) => r.companyId === c.id);
       const closedRounds = companyRounds.filter((r) => r.state === "closed" || r.state === "funded");
       const activeRounds = companyRounds.filter((r) => r.state !== "closed" && r.state !== "funded");

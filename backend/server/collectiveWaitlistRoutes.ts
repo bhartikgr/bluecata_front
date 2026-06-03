@@ -22,6 +22,7 @@ import {
   createWaitlistEntry,
   reviewWaitlistEntry,
   listWaitlist,
+  listWaitlistForUser,
   getWaitlistEntry,
   type WaitlistKind,
   type WaitlistStatus,
@@ -106,6 +107,18 @@ export function registerCollectiveWaitlistRoutes(app: Express): void {
         payload: { rationale: typeof body.rationale === "string" ? body.rationale : "" },
       });
       res.status(201).json({ ok: true, waitlistId: entry.id, message: THANK_YOU });
+    },
+  );
+
+  /* ---------- v23.8 C4/W-15 — the requester's own waitlist status ---------- */
+  app.get(
+    "/api/collective/waitlist/mine",
+    requireAuth,
+    (req: Request, res: Response) => {
+      const userId = req.userContext?.userId;
+      if (!userId) return res.status(401).json({ error: "missing_identity" });
+      const items = listWaitlistForUser(userId);
+      res.json({ items, count: items.length });
     },
   );
 

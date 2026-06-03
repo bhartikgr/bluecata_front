@@ -53,8 +53,16 @@ describe("v23.4.8 Phase 1 — Reports list exposes Edit affordance + recipient p
   });
 
   it("Send dialog includes the per-row checkbox and explicit send count (BUG 023)", () => {
-    expect(REPORTS).toMatch(/data-testid=\{`checkbox-recipient-\$\{c\.investorId\}`\}/);
+    // v23.8 W-5/BUG-003 — recipients are now sourced from cap-table HOLDERS
+    // (userId), not CRM rows (investorId), so the picked ids always match the
+    // server's cap-table validation.
+    expect(REPORTS).toMatch(/data-testid=\{`checkbox-recipient-\$\{h\.userId\}`\}/);
     expect(REPORTS).toMatch(/Send to \{selected\.size\}/);
+  });
+
+  it("Send dialog sources recipients from the cap-table holders endpoint (W-5)", () => {
+    expect(REPORTS).toMatch(/\/recipients/);
+    expect(REPORTS).toMatch(/CapTableHolder/);
   });
 
   it("send-success toast shows EXPLICIT recipient count, including failure suffix", () => {

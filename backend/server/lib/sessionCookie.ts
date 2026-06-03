@@ -29,11 +29,17 @@ const isProductionHttps =
  * it a *browser-session* cookie: it is dropped the moment the tab/window closes
  * (and, in the sandbox proxy, after the browsing context is recycled). Founders
  * reported being "logged out for no reason" — they were simply losing the
- * cookie whenever the browser session ended. We now give the cookie an explicit
- * 14-day max-age (matching the documented refresh-token TTL in auth.ts) so the
- * session persists across restarts and idle periods until real expiry/logout.
+ * cookie whenever the browser session ended. We give the cookie an explicit
+ * max-age so the session persists across restarts and idle periods until real
+ * expiry/logout.
+ *
+ * v23.8 C3/E3 (BUG-014) — the lifetime is now a bounded 4 hours (14400s). A
+ * shared or abandoned browser no longer keeps a founder authenticated
+ * indefinitely; the founder re-authenticates after the window. Express's
+ * `maxAge` is in milliseconds, but the emitted `Set-Cookie` header expresses
+ * `Max-Age` in SECONDS, so 4h surfaces as `Max-Age=14400`.
  */
-const SESSION_COOKIE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
+const SESSION_COOKIE_MAX_AGE_MS = 4 * 60 * 60 * 1000; // 4 hours == 14400s
 
 /**
  * Set the session cookie. In production (HTTPS) we use the `__Host-` prefix

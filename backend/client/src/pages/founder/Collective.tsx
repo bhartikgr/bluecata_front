@@ -31,7 +31,7 @@ export default function Collective() {
   const statusBadge = (() => {
     const apps = applicationsQ.data ?? [];
     const noms = nominationsQ.data ?? [];
-    if (apps.some(a => a.status === "invited") || noms.some(n => n.status === "vouched")) return { label: "Active member", className: "bg-emerald-100 text-emerald-800 border-emerald-300" };
+    if (apps.some(a => a.status === "invited" || a.status === "accepted") || noms.some(n => n.status === "vouched")) return { label: "Active member", className: "bg-emerald-100 text-emerald-800 border-emerald-300" };
     if (apps.length > 0 || noms.length > 0) return { label: "Pending review", className: "bg-amber-100 text-amber-800 border-amber-300" };
     return { label: "Not applied", className: "bg-secondary text-muted-foreground border-border" };
   })();
