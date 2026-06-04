@@ -43,6 +43,15 @@ const PUBLIC_API_PREFIXES = [
   // its body via publicApplySchema (returning 400 on bad input), so adding
   // the alias to the public bypass list is the minimal, surgical fix.
   "/api/consortium-applications",
+  // v23.9.1 fix A1 (AV-04 / AV-05) — investor onboarding via invitation token.
+  // The token IS the credential, so these MUST be reachable without a session.
+  // v23.9 removed a duplicate route registration but missed this second gate:
+  // the fall-through `requireAuth` below intercepted the redeem/check before
+  // reaching the public handler at routes.ts:1367, returning a spurious 401.
+  // Listed as exact paths (not an `/api/invitations/` prefix) so future
+  // authenticated `/api/invitations/*` routes are not accidentally exposed.
+  "/api/invitations/check",        // pre-validation, public
+  "/api/invitations/redeem",       // public account creation via token
 ];
 
 /** Apply auth middleware to every request before it reaches a route handler. */

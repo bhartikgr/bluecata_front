@@ -20,6 +20,14 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 const CSRF_BYPASS = [
   /^\/?api\/auth\/(login|signup|redeem|forgot|csrf|me)(\/|$)/,
   /^\/?auth\/(login|signup|redeem|forgot|csrf|me)(\/|$)/,
+  // v23.9.1 fix A1 (AV-04 / AV-05) — public invitation onboarding. The token
+  // IS the credential and the caller has no prior session, so a double-submit
+  // CSRF check (which requires an existing session, csrf.ts:47) can only 403
+  // here — defeating onboarding. Same class as /api/auth/redeem above, which
+  // is already exempt. The handlers are rate-limited per-IP (routes.ts:1342,
+  // 1367) and validate the token themselves, so this is the minimal fix.
+  /^\/?api\/invitations\/(check|redeem)(\/|$)/,
+  /^\/?invitations\/(check|redeem)(\/|$)/,
   /^\/?api\/bridge\//,             // outbound/inbound webhooks have their own HMAC
   /^\/?bridge\//,
   /^\/?api\/notifications\/stream/, // SSE doesn't carry a body

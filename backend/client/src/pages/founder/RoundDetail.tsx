@@ -246,6 +246,24 @@ export default function RoundDetail() {
  {/* Sprint 5 — Round lifecycle progress indicator (NVCA flow: terms → invitation → soft-circle → docs → signing → funded → closed) */}
  <RoundLifecycleProgress state={r.state} />
 
+ {/* v23.9 C5 — read-only pipeline funnel sourced from GET /api/rounds/:id
+ `pipeline`. Visibility only: it summarises invitation + soft-circle counts
+ and does not drive the flow. */}
+ {Array.isArray((r as any).pipeline) && (r as any).pipeline.length > 0 && (
+ <div className="flex flex-wrap gap-2" data-testid="round-pipeline">
+ {((r as any).pipeline as Array<{ stage: string; label: string; count: number }>).map((p) => (
+ <div
+ key={p.stage}
+ data-testid={`pipeline-${p.stage}`}
+ className="flex items-center gap-2 rounded-md border border-border bg-secondary/40 px-3 py-1.5 text-xs"
+ >
+ <span className="text-muted-foreground">{p.label}</span>
+ <span className="font-semibold font-mono">{p.count}</span>
+ </div>
+ ))}
+ </div>
+ )}
+
  {/* Sprint 5 — Lead investor + co-investor block */}
  <LeadAndCoInvestors round={r} softCircles={softs.data ?? []} />
 

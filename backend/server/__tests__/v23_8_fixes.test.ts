@@ -94,9 +94,12 @@ describe("v23.8 E3/BUG-014 — session cookie bounded to 4 hours", () => {
 
 /* ------------------------------- E4 -------------------------------- */
 describe("v23.8 E4 — /api/health reports the package.json version", () => {
-  it("package.json is bumped to 23.8.0", () => {
+  it("package.json is bumped to 23.9.2", () => {
+    // Version pin follows the active release. Bumped 23.9.1 → 23.9.2 in the
+    // v23.9.2 A1 hotfix (modern-store redeem bridge); the /api/health handler
+    // reads this value at runtime.
     const pkg = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf8"));
-    expect(pkg.version).toBe("23.8.0");
+    expect(pkg.version).toBe("23.9.2");
   });
   it("routes.ts health handler reads version from package.json (no 0.0.0 literal in the response)", () => {
     const r = srcServer("routes.ts");

@@ -229,6 +229,7 @@ export async function createInvitation(args: CreateInvitationArgs): Promise<Crea
       name: args.investorName ?? null,
       email: investorEmail,
       classification: classification,
+      roundId: args.roundId,
     });
   } catch (crmErr) {
     log.warn("[roundInvitationsStore] CRM upsert failed (non-fatal):", (crmErr as Error).message);
@@ -401,6 +402,15 @@ export function listForCompany(companyId: string): Array<Omit<RoundInvitationRow
 export function getInvitation(id: string): Omit<RoundInvitationRow, "tokenHash"> | null {
   const row = memInvitations.find((r) => r.id === id);
   return row ? publicView(row) : null;
+}
+
+/**
+ * v23.9 A3/W-9 — every invitation (any state). The admin Investors panel
+ * aggregates these (deduped by email) into the real investor directory so it
+ * no longer ships hard-coded sample investors.
+ */
+export function listAllInvitations(): Array<Omit<RoundInvitationRow, "tokenHash">> {
+  return memInvitations.map(publicView);
 }
 
 /**

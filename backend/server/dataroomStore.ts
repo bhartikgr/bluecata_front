@@ -483,7 +483,14 @@ export function registerDataroomRoutes(app: Express): void {
     const ownsCompany = ctx.founder.companies.some((c) => c.companyId === companyId) || ctx.isAdmin;
     if (!ownsCompany) return res.status(403).json({ ok: false, error: "FOUNDER_WRONG_COMPANY" });
 
-    const folderIdForFile = String(req.body?.folderId ?? (folders.find((fl) => fl.companyId === companyId)?.id ?? ""));
+    // v23.9 B4/BUG-036 — require an explicit folder. The old default silently
+    // dropped uploads from the "All" tab into the first folder, so founders lost
+    // track of where files landed. Reject the upload instead and make the client
+    // pick a folder.
+    const folderIdForFile = String(req.body?.folderId ?? "").trim();
+    if (!folderIdForFile) {
+      return res.status(400).json({ error: "folder_required", message: "Select a folder before uploading" });
+    }
     const sha = createHash("sha256").update(r.file.buffer).digest("hex").slice(0, 16);
 
     // PATCH v3: uploadedBy comes from session identity, not hardcoded "Maya Chen"

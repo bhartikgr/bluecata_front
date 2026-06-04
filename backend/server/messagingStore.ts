@@ -292,6 +292,21 @@ function isChapterAdminOrPlatformAdmin(userId: string, chapterId: string, req: R
  * CROSS-TENANT (admin) — justified because chapter_memberships is the
  * authoritative cross-tenant index.
  */
+/**
+ * v23.9 B1/AV-19 — whether `caller` may message `other` directly. The old
+ * code only allowed DMs between two users who shared a Collective chapter,
+ * which blocked the common case (a founder DMing their own investor, or two
+ * founders with a CRM relationship). One-on-one direct messages between any
+ * two authenticated users are now allowed by default; the chapter requirement
+ * is retained only for broadcast/group channels (handled at the call sites).
+ */
+function canDirectMessage(callerUserId: string, otherUserId: string): boolean {
+  if (!callerUserId || !otherUserId) return false;
+  if (callerUserId === otherUserId) return true;
+  // A shared chapter is still sufficient; but a direct DM no longer requires it.
+  return true;
+}
+
 function sharesAnyChapterMembership(callerUserId: string, otherUserId: string): boolean {
   if (callerUserId === otherUserId) return true;
   try {
@@ -801,8 +816,18 @@ export function registerMessagingRoutes(app: Express): void {
       }
     }
 
-    // For direct/group: caller must share a chapter with every recipient.
-    if (channelType === "direct" || channelType === "group") {
+    // v23.9 B1/AV-19 — direct 1-on-1 DMs are allowed between any authenticated
+    // users (the prior shared-chapter requirement blocked founder↔investor and
+    // founder↔founder DMs). Group channels still require a shared chapter so a
+    // user can't pull arbitrary strangers into a multi-party thread.
+    if (channelType === "direct") {
+      for (const r of parsed.data.recipients) {
+        if (!canDirectMessage(caller, r) && !isPlatformAdmin(req)) {
+          res.status(403).json({ error: "CANNOT_DM_RECIPIENT", recipient: r });
+          return;
+        }
+      }
+    } else if (channelType === "group") {
       for (const r of parsed.data.recipients) {
         if (!sharesAnyChapterMembership(caller, r) && !isPlatformAdmin(req)) {
           res.status(403).json({ error: "NO_SHARED_CHAPTER", recipient: r });
@@ -991,8 +1016,20 @@ export function registerMessagingRoutes(app: Express): void {
       res.status(403).json({ error: "NOT_CHAPTER_MEMBER" });
       return;
     }
+    // v23.9 B1/AV-19 — a chapter-less thread with a single other participant is
+    // a direct 1-on-1 DM; allow it between any authenticated users. Group/
+    // chapter threads (chapter_id present, or >1 participant) still require a
+    // shared chapter membership.
+    const isDirectDm = !parsed.data.chapter_id && parsed.data.participants.length <= 1;
     // Membership check on participants: caller must share a chapter with each.
     for (const p of parsed.data.participants) {
+      if (isDirectDm) {
+        if (!canDirectMessage(caller, p) && !isPlatformAdmin(req)) {
+          res.status(403).json({ error: "CANNOT_DM_PARTICIPANT", participant: p });
+          return;
+        }
+        continue;
+      }
       if (!sharesAnyChapterMembership(caller, p) && !isPlatformAdmin(req)) {
         res.status(403).json({ error: "NO_SHARED_CHAPTER", participant: p });
         return;

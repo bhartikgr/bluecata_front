@@ -216,6 +216,45 @@ const defaultForm: FormShape = {
  tranchesPlan: "",
 };
 
+// v23.9 C3 — a numeric input that displays a thousands-separated value while
+// storing the raw, comma-free string. The server (POST /api/rounds) strips
+// commas/whitespace/$ defensively (v23.9 A2), but formatting the display here
+// makes large currency figures readable as the founder types. The stored
+// `value` stays a plain numeric string so downstream parsing is unchanged.
+function formatWithCommas(raw: string): string {
+ if (raw == null || raw === "") return "";
+ const negative = raw.trim().startsWith("-");
+ const cleaned = raw.replace(/[^\d.]/g, "");
+ if (cleaned === "") return negative ? "-" : "";
+ const [intPart, ...rest] = cleaned.split(".");
+ const grouped = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+ const decimal = rest.length > 0 ? "." + rest.join("") : (cleaned.endsWith(".") ? "." : "");
+ return (negative ? "-" : "") + grouped + decimal;
+}
+
+function FormattedNumberInput(props: {
+ value: string;
+ onChange: (raw: string) => void;
+ className?: string;
+ placeholder?: string;
+ "data-testid"?: string;
+}) {
+ const { value, onChange, ...rest } = props;
+ return (
+ <Input
+ type="text"
+ inputMode="decimal"
+ value={formatWithCommas(value)}
+ onChange={(e) => {
+ // Strip grouping so the stored value is a clean numeric string.
+ const raw = e.target.value.replace(/[,\s$]/g, "");
+ onChange(raw);
+ }}
+ {...rest}
+ />
+ );
+}
+
 export default function RoundNew() {
  const { toast } = useToast();
  const [, navigate] = useLocation();
@@ -224,6 +263,11 @@ export default function RoundNew() {
  // Sprint 11 D4 — Warrants/ESOP attach to a parent round (no own term sheet)
  const [attachToRound, setAttachToRound] = useState<string>("");
  const [form, setForm] = useState<FormShape>(defaultForm);
+ // v23.9 C1 — when the founder manually edits the auto-derived price per share,
+ // this flag stops the auto-sync effect from clobbering their value. Reset
+ // whenever the instrument changes (priced ↔ non-priced) so the default
+ // behaviour is always "auto" for a fresh instrument choice.
+ const [pricePerShareOverridden, setPricePerShareOverridden] = useState(false);
  // v23.4.8 Phase 2 / BUG 012 — initial-shareholders state (step 4).
  const [selectedShareholders, setSelectedShareholders] = useState<WizardInitialShareholder[]>([]);
  const [manualOpen, setManualOpen] = useState(false);
@@ -375,6 +419,7 @@ export default function RoundNew() {
  if (cat.instruments.includes(form.instrument)) return; // already in category
  const firstInstrument = cat.instruments[0];
  setForm(f => ({ ...f, instrument: firstInstrument, pricePerShare: "" }));
+ setPricePerShareOverridden(false);
  };
 
  const instrument = INSTRUMENTS.find(i => i.value === form.instrument)!;
@@ -413,11 +458,14 @@ export default function RoundNew() {
  // SAFEs we never touch it here (the field isn't shown for them).
  useEffect(() => {
  if (!isPricedInstrument) return;
+ // v23.9 C1 — respect a manual override: once the founder types their own
+ // price, the auto-derivation no longer overwrites it.
+ if (pricePerShareOverridden) return;
  if (form.pricePerShare !== derivedPricePerShare) {
  setForm(f => ({ ...f, pricePerShare: derivedPricePerShare }));
  }
  // eslint-disable-next-line react-hooks/exhaustive-deps
- }, [isPricedInstrument, derivedPricePerShare]);
+ }, [isPricedInstrument, derivedPricePerShare, pricePerShareOverridden]);
 
  // Recommended instruments for the chosen round type, marked with a Sparkles badge
  const recommended = INSTRUMENTS.filter(i => (i.suggestedFor as readonly string[]).includes(form.type)).map(i => i.value);
@@ -589,6 +637,7 @@ export default function RoundNew() {
  key={inst.value}
  role="button"
  tabIndex={0}
+ aria-pressed={selected}
  onClick={() => update("instrument", inst.value)}
  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); update("instrument", inst.value); } }}
  data-testid={`instrument-${inst.value}`}
@@ -642,11 +691,11 @@ export default function RoundNew() {
  {step === 2 && (
  <div className="grid md:grid-cols-2 gap-5">
  {usesField("targetAmount") && (
- <div><LabelWithTip tip="How much new money you want this round to bring in. Investors look at progress vs. this number to decide whether to commit."><Label>Target raise (USD)</Label></LabelWithTip><Input type="number" className="mt-1 font-mono" value={form.targetAmount} onChange={e => update("targetAmount", e.target.value)} data-testid="input-target" /></div>
+ <div><LabelWithTip tip="How much new money you want this round to bring in. Investors look at progress vs. this number to decide whether to commit."><Label>Target raise (USD)</Label></LabelWithTip><FormattedNumberInput className="mt-1 font-mono" value={form.targetAmount} onChange={v => update("targetAmount", v)} data-testid="input-target" /></div>
  )}
  {usesField("preMoney") && (
  <>
- <div><LabelWithTip tip="The agreed value of your company BEFORE the new money lands. Pre-money + new money = post-money."><Label>Pre-money valuation (USD)</Label></LabelWithTip><Input type="number" className="mt-1 font-mono" value={form.preMoney} onChange={e => update("preMoney", e.target.value)} data-testid="input-pre" /></div>
+ <div><LabelWithTip tip="The agreed value of your company BEFORE the new money lands. Pre-money + new money = post-money."><Label>Pre-money valuation (USD)</Label></LabelWithTip><FormattedNumberInput className="mt-1 font-mono" value={form.preMoney} onChange={v => update("preMoney", v)} data-testid="input-pre" /></div>
  <div><LabelWithTip tip="Calculated automatically: pre-money + target raise. This is the company's valuation immediately after the round closes."><Label>Implied post-money</Label></LabelWithTip><Input className="mt-1 font-mono bg-secondary/50" value={`$${post.toLocaleString()}`} readOnly data-testid="input-post" /></div>
  </>
  )}
@@ -655,29 +704,47 @@ export default function RoundNew() {
  {/* v23.4.9 Phase 1 (Avi #2) — priced rounds: PPS is auto-calculated and
  read-only. Avi: "the share price has to be entered manually, whereas
  it should be calculated automatically based on the value." */}
- <LabelWithTip tip="Calculated automatically: pre-money valuation ÷ shares authorized. Edit pre-money or shares-authorized above to change it. (SAFE / Convertible Note rounds hide this field — PPS is set at conversion, not at issue.)">
- <Label className="flex items-center gap-1.5">Price per share (USD) <Badge variant="outline" className="text-[10px]">auto</Badge></Label>
+ <LabelWithTip tip="Calculated automatically: pre-money valuation ÷ shares authorized. Edit pre-money or shares-authorized above to change it, or click Override to enter a price manually. (SAFE / Convertible Note rounds hide this field — PPS is set at conversion, not at issue.)">
+ <Label className="flex items-center gap-1.5">Price per share (USD) <Badge variant="outline" className="text-[10px]">{pricePerShareOverridden ? "manual" : "auto"}</Badge></Label>
  </LabelWithTip>
  <Input
  type="number"
  step="0.01"
- className="mt-1 font-mono bg-secondary/50"
- value={derivedPricePerShare}
- readOnly
- aria-readonly="true"
+ className={`mt-1 font-mono ${pricePerShareOverridden ? "" : "bg-secondary/50"}`}
+ value={pricePerShareOverridden ? form.pricePerShare : derivedPricePerShare}
+ readOnly={!pricePerShareOverridden}
+ aria-readonly={!pricePerShareOverridden}
+ onChange={pricePerShareOverridden ? (e => update("pricePerShare", e.target.value)) : undefined}
  placeholder="Enter pre-money and shares authorized"
  data-testid="input-pps"
  />
- <p className="text-[11px] text-muted-foreground mt-1 font-mono">
+ <div className="flex items-center justify-between mt-1">
+ <p className="text-[11px] text-muted-foreground font-mono">
  PPS = pre_money_valuation ÷ fully_diluted_shares_pre_money
  </p>
+ <button
+ type="button"
+ className="text-[11px] text-primary underline-offset-2 hover:underline"
+ onClick={() => {
+ setPricePerShareOverridden(prev => {
+ const next = !prev;
+ // Returning to auto re-syncs to the derived value immediately.
+ if (!next) setForm(f => ({ ...f, pricePerShare: derivedPricePerShare }));
+ return next;
+ });
+ }}
+ data-testid="btn-pps-override"
+ >
+ {pricePerShareOverridden ? "Use auto" : "Override"}
+ </button>
+ </div>
  </div>
  )}
  {usesField("sharesAuthorized") && (
  <div><LabelWithTip tip="How many new shares this issuance creates. For a Foundation round, this is your founder allocation. For a warrant or option grant, it's the underlying share count."><Label>Shares authorized</Label></LabelWithTip><Input type="number" className="mt-1 font-mono" value={form.sharesAuthorized} onChange={e => update("sharesAuthorized", e.target.value)} data-testid="input-shares" /></div>
  )}
  {usesField("valuationCap") && (
- <div><LabelWithTip tip="The maximum valuation at which this SAFE/Note converts to shares. Lower cap = more dilution to founders, more upside for the investor. Most early SAFEs use $5M–$15M caps."><Label>Valuation cap (USD)</Label></LabelWithTip><Input type="number" className="mt-1 font-mono" value={form.valuationCap} onChange={e => update("valuationCap", e.target.value)} data-testid="input-cap" /></div>
+ <div><LabelWithTip tip="The maximum valuation at which this SAFE/Note converts to shares. Lower cap = more dilution to founders, more upside for the investor. Most early SAFEs use $5M–$15M caps."><Label>Valuation cap (USD)</Label></LabelWithTip><FormattedNumberInput className="mt-1 font-mono" value={form.valuationCap} onChange={v => update("valuationCap", v)} data-testid="input-cap" /></div>
  )}
  {usesField("discount") && (
  <div><LabelWithTip tip="Percentage off the priced-round share price the SAFE/Note investor gets. 20% means they pay $0.80 for what new investors pay $1.00. Standard range is 10–25%."><Label>Discount (%)</Label></LabelWithTip><Input type="number" className="mt-1 font-mono" value={form.discount} onChange={e => update("discount", e.target.value)} data-testid="input-disc" /></div>

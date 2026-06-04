@@ -2,6 +2,8 @@ import type { Express, Request, Response } from "express";
 import type { Server } from "node:http";
 import multer from "multer";
 import { createHash, randomBytes } from "node:crypto";
+import path from "node:path";
+import { readFileSync } from "node:fs";
 import {
   companies,
   securities,
@@ -57,7 +59,8 @@ import { registerDataroomRoutes } from "./dataroomStore";
 import { registerCompanyLogoRoutes } from "./lib/companyLogoRoutes";
 import { registerReportsRoutes } from "./reportsStore";
 import { registerFounderCrmRoutes } from "./founderCrmStore";
-import { registerCaptableCommitRoutes } from "./captableCommitStore";
+import { registerCaptableCommitRoutes, getLedger } from "./captableCommitStore";
+import { closeRoundCascadeStandalone } from "./lib/roundCloseCascade";
 import { registerTermSheetRoutes } from "./termSheetStore";
 import { registerAdminPricingRoutes } from "./adminPricingStore";
 import { registerBridgeRoutes } from "./bridgeStore";
@@ -616,7 +619,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   /* ------------ Pass 4: /api/healthz production healthcheck (PUBLIC — no auth) ------------ */
   const SERVER_START = Date.now();
-  const { version } = (() => { try { return require("../package.json") as { version: string }; } catch { return { version: "0.0.0" }; } })();
+  // v23.9 A6 — read package.json by absolute path. esbuild mangles the bundled
+  // `require("../package.json")` (it resolves relative to the source tree, not
+  // dist/), which made the prod bundle report version "0.0.0". readFileSync is
+  // preserved verbatim by esbuild, so __dirname (dist/ in prod) resolves the
+  // shipped package.json correctly.
+  const version = (() => {
+    try {
+      const pkg = JSON.parse(readFileSync(path.resolve(__dirname, "..", "package.json"), "utf8"));
+      if (pkg.version) return pkg.version as string;
+    } catch { /* try sibling path below */ }
+    try {
+      const pkg = JSON.parse(readFileSync(path.resolve(__dirname, "package.json"), "utf8"));
+      if (pkg.version) return pkg.version as string;
+    } catch { /* keep 0.0.0 */ }
+    return "0.0.0";
+  })();
   app.get("/api/healthz", (_req, res) => {
     const dbOk = (() => { try { getDb(); return true; } catch { return false; } })();
     const bridgeOutboxBacklog = getOutbox().filter(e => e.status === "queued" || e.status === "delivering").length;
@@ -973,8 +991,27 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(403).json({ ok: false, error: "NOT_AUTHORIZED_FOR_ROUND", message: "You must own this company or be on its cap table to view this round." });
       }
     }
+    // v23.9 C5 — additive `pipeline` array for the RoundDetail timeline. This is
+    // a VISIBILITY-only projection of existing invitation + soft-circle state; it
+    // does not drive or alter the funding flow. Each stage carries a count so the
+    // UI can render a funnel without fanning out to multiple endpoints.
+    let pipeline: Array<{ stage: string; label: string; count: number }> = [];
+    try {
+      const invites = roundInvitationsListForRound(r.id);
+      const circles = softCircleListForRound(r.id);
+      const invitedCount = invites.length;
+      const redeemedCount = invites.filter((i) => (i as { redeemedAt?: string | null }).redeemedAt).length;
+      const softCircledCount = circles.length;
+      const validatedCount = circles.filter((s) => (s as { state?: string }).state === "validated").length;
+      pipeline = [
+        { stage: "invited", label: "Invited", count: invitedCount },
+        { stage: "redeemed", label: "Joined", count: redeemedCount },
+        { stage: "soft_circled", label: "Soft-circled", count: softCircledCount },
+        { stage: "validated", label: "Validated", count: validatedCount },
+      ];
+    } catch { /* pipeline is best-effort; never block the round read */ }
     // PATCH v3 Bug 4a: coerce pricePerShare to number
-    res.json({ ...r, pricePerShare: r.pricePerShare != null ? Number(r.pricePerShare) : null, company: companies.find(c => c.id === r.companyId)?.name });
+    res.json({ ...r, pricePerShare: r.pricePerShare != null ? Number(r.pricePerShare) : null, company: companies.find(c => c.id === r.companyId)?.name, pipeline });
   });
 
   /* Sprint 18 T5.1 — Edit Terms (active rounds only) — requireAuth */
@@ -1336,29 +1373,65 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!raw) return res.status(400).json({ ok: false, reason: "missing_token" });
     const hash = sha256Hex(raw);
     const entry = invitationStore.find(e => e.tokenHash === hash);
-    if (!entry) return res.status(404).json({ ok: false, reason: "not_found" });
-    if (entry.revoked) return res.status(409).json({ ok: false, reason: "revoked" });
-    if (entry.redeemed) return res.status(409).json({ ok: false, reason: "already_redeemed" });
-    if (Date.now() > new Date(entry.expiresAt).getTime())
+    if (entry) {
+      // ---- Legacy path (in-memory invitationStore) — unchanged. ----
+      if (entry.revoked) return res.status(409).json({ ok: false, reason: "revoked" });
+      if (entry.redeemed) return res.status(409).json({ ok: false, reason: "already_redeemed" });
+      if (Date.now() > new Date(entry.expiresAt).getTime())
+        return res.status(410).json({ ok: false, reason: "expired" });
+      entry.redeemed = true;
+      entry.redeemedAt = new Date().toISOString();
+      const personaId = registerPersona({
+        email: entry.inviteeEmail,
+        name: entry.inviteeName,
+        password: String(body.password ?? "changeme"),
+        invitationId: entry.id,
+        roundId: entry.roundId,
+        companyId: entry.companyId,
+      });
+      setSessionCookie(res, personaId);
+      const ctx = getUserContextForId(personaId);
+      return res.json({
+        ok: true,
+        invitationId: entry.id,
+        roundId: entry.roundId,
+        companyId: entry.companyId,
+        redirectTo: `/investor/invitations/${entry.id}`,
+        ctx,
+      });
+    }
+
+    // ---- Modern path: bridge to roundInvitationsStore (mirror the L-009 fix
+    // v23.4.13 pattern at routes.ts:747). Tokens created by the canonical
+    // founder flow (POST /api/rounds/:id/invitations) live in the DB-backed
+    // store, not invitationStore, so without this bridge every legitimately
+    // issued invitation returned 404 not_found. ----
+    const modernEntry = findByTokenHash(hash);
+    if (!modernEntry) return res.status(404).json({ ok: false, reason: "not_found" });
+    if (modernEntry.state === "revoked") return res.status(409).json({ ok: false, reason: "revoked" });
+    if (modernEntry.redeemedAt || modernEntry.state === "accepted")
+      return res.status(409).json({ ok: false, reason: "already_redeemed" });
+    if (modernEntry.expiresAt && Date.now() > new Date(modernEntry.expiresAt).getTime())
       return res.status(410).json({ ok: false, reason: "expired" });
-    entry.redeemed = true;
-    entry.redeemedAt = new Date().toISOString();
+
     const personaId = registerPersona({
-      email: entry.inviteeEmail,
-      name: entry.inviteeName,
+      email: modernEntry.investorEmail,
+      name: modernEntry.investorName ?? modernEntry.investorEmail.split("@")[0],
       password: String(body.password ?? "changeme"),
-      invitationId: entry.id,
-      roundId: entry.roundId,
-      companyId: entry.companyId,
+      invitationId: modernEntry.id,
+      roundId: modernEntry.roundId,
+      companyId: modernEntry.companyId ?? "",
     });
+    const marked = markInvitationRedeemed(modernEntry.id, personaId);
+    if (!marked) return res.status(404).json({ ok: false, reason: "not_found" });
     setSessionCookie(res, personaId);
     const ctx = getUserContextForId(personaId);
     return res.json({
       ok: true,
-      invitationId: entry.id,
-      roundId: entry.roundId,
-      companyId: entry.companyId,
-      redirectTo: `/investor/invitations/${entry.id}`,
+      invitationId: modernEntry.id,
+      roundId: modernEntry.roundId,
+      companyId: modernEntry.companyId ?? "",
+      redirectTo: `/investor/invitations/${modernEntry.id}`,
       ctx,
     });
   });
@@ -1534,25 +1607,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     return res.json({ ok: true, invId });
   });
 
-  // Investor — redeem an invitation by raw token from the email.
-  // POST /api/invitations/redeem { token: "..." }. requireAuth ensures we
-  // bind the redemption to a logged-in user; the raw token is single-use.
-  app.post("/api/invitations/redeem", requireAuth, (req, res) => {
-    const ctx = getUserContext(req);
-    if (!ctx?.userId) return res.status(401).json({ ok: false, error: "unauthenticated" });
-    const { token } = req.body ?? {};
-    if (!token || typeof token !== "string") {
-      return res.status(400).json({ ok: false, error: "missing_token" });
-    }
-    try {
-      const result = roundInvitationsRedeem({ token, redeemedByUserId: ctx.userId });
-      return res.json({ ok: true, invitation: result.invitation });
-    } catch (err) {
-      const msg = (err as Error).message;
-      const status = msg === "invalid_token" ? 404 : msg === "already_redeemed" || msg === "expired" || msg === "revoked" || msg === "declined" ? 410 : 400;
-      return res.status(status).json({ ok: false, error: msg });
-    }
-  });
+  // v23.9 A1/AV-04/AV-05: the duplicate `requireAuth`-gated
+  // POST /api/invitations/redeem that previously lived here shadowed the
+  // public handler at the top of this file (Express picks the last-registered
+  // route), so every invited investor hit a 401. The public redeem handler
+  // (which mints the session — the token IS the login) is the correct one.
 
   // Soft-circle endpoints — requireAuth + DB-backed + SSE.
   app.post("/api/rounds/:id/soft-circle", requireAuth, (req, res) => {
@@ -1594,8 +1653,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/rounds/:id/term-sheet/send", requireAuth, (req, res) => {
     const { id } = req.params;
     const { invitationIds } = req.body ?? {};
+    const sentTo = Array.isArray(invitationIds) ? invitationIds.length : 0;
     emitMutation({ aggregate: "round", id, change: "update" });
-    res.json({ ok: true, roundId: id, sentTo: invitationIds?.length ?? 0 });
+    // v23.9 B8: sending a term sheet with an empty pipeline is a no-op, not an
+    // error — surface a warning so the founder UI can explain why nothing went
+    // out instead of falsely reporting success.
+    if (sentTo === 0) {
+      return res.json({
+        ok: true,
+        roundId: id,
+        sentTo: 0,
+        warning: "no_recipients_in_pipeline",
+        message: "No recipients in the pipeline — invite investors before sending a term sheet.",
+      });
+    }
+    res.json({ ok: true, roundId: id, sentTo });
   });
 
   app.get("/api/rounds/:id/term-sheet/pdf", requireAuth, (req, res) => {
@@ -1850,7 +1922,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // Companies PATCH — requireAuth
-  app.patch("/api/companies/:id", requireAuth, (req, res) => {
+  const patchCompanyHandler = (req: import("express").Request, res: import("express").Response) => {
     const { id } = req.params;
     // B-V11-5 fix: actually persist the patch into USER_COMPANIES so the next
     // GET /api/founder/active-company / /api/founder/companies returns the
@@ -1872,7 +1944,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
     // Unknown company id: fall back to legacy stub shape so existing tests pass.
     res.json({ ok: true, id, updated: req.body });
-  });
+  };
+  app.patch("/api/companies/:id", requireAuth, patchCompanyHandler);
+  // v23.9 C6 — founder-namespaced alias. The Settings → Company form and the
+  // founder app conventionally hit /api/founder/companies/:id; this points it at
+  // the same write-through handler so both paths persist identically.
+  app.patch("/api/founder/companies/:id", requireAuth, patchCompanyHandler);
 
   // Founder privacy — no auth gate (open by design; used by tests with unknown userId)
   app.put("/api/founder/privacy", (req, res) => {
@@ -2022,6 +2099,39 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!ownsCompany) {
       return res.status(403).json({ ok: false, error: "FOUNDER_WRONG_COMPANY", message: "You do not own this company." });
     }
+    // v23.9 A2/AV-03 — numeric coercion + validation. The round-form sends
+    // human-typed money strings ("500,000", "$1,000,000"); a bare Number()
+    // on those yields NaN which used to reach roundsStore and surface as a
+    // 500 ROUND_PERSIST_FAILED. Negatives were silently accepted. Strip
+    // thousands separators / currency symbols, then reject NaN or negative
+    // with a typed 400 so the client can highlight the offending field. A
+    // field that is absent (null/undefined/"") is left untouched.
+    const coerceNumeric = (key: string): boolean => {
+      const raw = body[key];
+      if (raw == null || raw === "") return false; // absent — leave untouched
+      const n = Number(String(raw).replace(/[,\s$]/g, ""));
+      if (Number.isNaN(n) || n < 0) {
+        res.status(400).json({ error: `invalid_${key}`, message: `${key === "targetAmount" ? "Target amount" : key} must be a positive number` });
+        return true;
+      }
+      body[key] = n;
+      return false;
+    };
+    for (const key of [
+      "targetAmount", "preMoney", "postMoney", "pricePerShare", "valuationCap",
+      "discount", "interestRate", "maturityMonths", "strikePrice", "expiryYears",
+      "minTicket", "sharesAuthorized", "poolSize",
+    ]) {
+      if (coerceNumeric(key)) return;
+    }
+    // v23.9 B3/BUG-039 — a round must not close before it opens.
+    if (typeof body.openDate === "string" && body.openDate && typeof body.closeDate === "string" && body.closeDate) {
+      const open = new Date(body.openDate).getTime();
+      const close = new Date(body.closeDate).getTime();
+      if (Number.isFinite(open) && Number.isFinite(close) && close < open) {
+        return res.status(400).json({ error: "invalid_closeDate", message: "Close date must be on or after the open date." });
+      }
+    }
     // Persist via roundsStore (DB + cache) — captures the canonical Round
     // columns and stashes the long-tail Round-form fields into extras_json.
     const KNOWN_COLS = new Set([
@@ -2075,6 +2185,67 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     emitMutation({ aggregate: "round", id: newRound.id, change: "create" });
     // Note: roundsStore.createRound already emits the B-V11-7 audit event.
     res.json({ ok: true, ...legacyShape });
+  });
+
+  /* ------------------------------------------------------------------
+   * v23.9 B2/AV-20 — round close. Founder-owned. Flips the round to
+   * "closed", runs the existing (sacred) close cascade, and returns the
+   * updated round plus a cap-table snapshot. The cascade is called via its
+   * existing standalone wrapper — roundCloseCascade.ts is NOT modified.
+   * ------------------------------------------------------------------ */
+  function capTableSnapshotForCompany(companyId: string | null) {
+    if (!companyId) return [];
+    return getLedger()
+      .filter((e: any) => (e.companyId ?? e.company_id) === companyId)
+      .map((e: any) => ({
+        holderId: e.holderUserId ?? e.holder_user_id ?? null,
+        holderName: e.holderName ?? e.holder_name ?? null,
+        securityType: e.securityType ?? e.security_type ?? null,
+        shares: e.shares ?? null,
+        amountUsd: e.amountUsd ?? e.amount_usd ?? null,
+      }));
+  }
+
+  // GET — confirmation-page data for the close dialog.
+  app.get("/api/rounds/:id/close", requireAuth, (req, res) => {
+    const check = requireFounderOwnsRound(req, res);
+    if (!check.ok || !check.companyId) return;
+    const id = paramStr(req.params.id);
+    const round = mergeLegacyAndDbRounds().find((r: any) => r.id === id);
+    if (!round) return res.status(404).json({ ok: false, error: "round_not_found" });
+    res.json({
+      ok: true,
+      round,
+      alreadyClosed: round.state === "closed" || round.state === "funded",
+      capTable: capTableSnapshotForCompany(check.companyId),
+    });
+  });
+
+  app.post("/api/rounds/:id/close", requireAuth, (req, res) => {
+    const check = requireFounderOwnsRound(req, res);
+    if (!check.ok || !check.companyId) return;
+    const id = paramStr(req.params.id);
+    const closedAt = new Date().toISOString();
+    // Run the sacred cascade (DB write-through + offer lapsing + notifications).
+    const result = closeRoundCascadeStandalone(id, {
+      reason: "manual_close",
+      actorUserId: check.userId ?? null,
+    });
+    // Mirror into the legacy in-memory `rounds` array so existing read-paths
+    // reflect the closed state without a wide refactor.
+    const legacy = (rounds as unknown as any[]).find((r) => r.id === id);
+    if (legacy) {
+      legacy.state = "closed";
+      legacy.closedAt = closedAt;
+    }
+    emitMutation({ aggregate: "round", id, change: "update" });
+    const round = mergeLegacyAndDbRounds().find((r: any) => r.id === id);
+    res.json({
+      ok: true,
+      round: round ? { ...round, state: "closed", closedAt } : { id, state: "closed", closedAt },
+      cascade: result,
+      capTable: capTableSnapshotForCompany(check.companyId),
+    });
   });
 
   /* ------------ generic mock POST endpoints (requireAuth) ------------ */
@@ -2181,6 +2352,89 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(scoped);
   });
 
+  // v23.9 C4 — founder dashboard aggregate. Stitches together the active
+  // company record, its KPI block, the company's rounds, a derived recent
+  // activity feed, and contextual CTAs. All data is read from existing live
+  // stores; nothing is fabricated. The client home page renders this in one
+  // request instead of fanning out to companies + rounds + activity.
+  app.get("/api/founder/dashboard", requireAuth, (req, res) => {
+    const ctx = req.userContext;
+    if (!ctx?.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
+    const activeCompanyId = ctx.founder?.activeCompanyId
+      ?? (typeof req.query.companyId === "string" ? req.query.companyId : null);
+    const company = activeCompanyId ? getCompanyRecordById(activeCompanyId) ?? null : null;
+
+    const kpis = company?.kpi ?? {
+      capTableHolders: 0,
+      activeRoundsCount: 0,
+      raisedThisYearUsd: 0,
+      dataroomFiles: 0,
+      pendingSoftCircles: 0,
+      ownershipPct: 0,
+    };
+
+    const companyRounds = activeCompanyId
+      ? canonicalRounds.filter((r) => r.companyId === activeCompanyId)
+      : [];
+    const recentRounds = companyRounds
+      .slice()
+      .sort((a, b) => {
+        const at = new Date((a as { openDate?: string }).openDate ?? 0).getTime();
+        const bt = new Date((b as { openDate?: string }).openDate ?? 0).getTime();
+        return bt - at;
+      })
+      .slice(0, 5)
+      .map((r) => ({
+        id: r.id,
+        name: (r as { name?: string }).name ?? r.id,
+        state: (r as { state?: string }).state ?? "draft",
+        targetAmount: (r as { targetAmount?: number }).targetAmount ?? null,
+        openDate: (r as { openDate?: string }).openDate ?? null,
+        closeDate: (r as { closeDate?: string }).closeDate ?? null,
+      }));
+
+    const recentActivity = recentRounds.map((r) => ({
+      kind: "round",
+      refId: r.id,
+      label: `Round ${r.name} — ${r.state}`,
+      at: r.closeDate ?? r.openDate ?? null,
+    }));
+
+    const ctas: Array<{ id: string; label: string; href: string }> = [];
+    if (!company) {
+      ctas.push({ id: "create_company", label: "Create your company", href: "/founder/companies/new" });
+    } else {
+      if (kpis.activeRoundsCount === 0) {
+        ctas.push({ id: "open_round", label: "Open a round", href: "/founder/rounds/new" });
+      }
+      if (kpis.dataroomFiles === 0) {
+        ctas.push({ id: "upload_dataroom", label: "Upload to your data room", href: "/founder/dataroom" });
+      }
+      if (kpis.pendingSoftCircles > 0) {
+        ctas.push({ id: "review_soft_circles", label: "Review soft circles", href: "/founder/rounds" });
+      }
+    }
+
+    res.json({
+      company: company
+        ? {
+            id: company.companyId,
+            name: company.companyName,
+            legalName: company.legalName,
+            sector: company.sector,
+            stage: company.stage,
+            hq: company.hq,
+            collective: company.collective ?? { status: "none" },
+            billing: company.billing ?? null,
+          }
+        : null,
+      kpis,
+      recentRounds,
+      recentActivity,
+      ctas,
+    });
+  });
+
   return httpServer;
 }
 
@@ -2284,7 +2538,7 @@ interface AdminCompanyFullRow {
 }
 
 function registerAdminCompaniesFullRoute(app: Express) {
-  app.get("/api/admin/companies/full", requireAdmin, (_req: Request, res: Response) => {
+  const adminCompaniesFullHandler = (_req: Request, res: Response) => {
     const now = Date.now();
     const THIRTY_DAYS = 30 * 86_400_000;
     const subs = new Map<string, Subscription>();
@@ -2381,5 +2635,11 @@ function registerAdminCompaniesFullRoute(app: Express) {
     });
 
     res.json({ rows });
-  });
+  };
+  app.get("/api/admin/companies/full", requireAdmin, adminCompaniesFullHandler);
+  // v23.9 B7: bare alias so clients that hit /api/admin/companies (without the
+  // /full suffix) get the same merged company list. Registered before the
+  // partnerRoutes :id route would shadow it (Express matches static paths and
+  // /:id distinctly, so the bare collection path is unambiguous).
+  app.get("/api/admin/companies", requireAdmin, adminCompaniesFullHandler);
 }

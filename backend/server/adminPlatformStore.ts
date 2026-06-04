@@ -20,6 +20,7 @@ import { ALL_NOTIFICATION_KINDS } from "./notificationsStore";
 import { listSubscriptions } from "./subscriptionsStore";
 import { getLedger } from "./captableCommitStore";
 import { listActive as listActiveCollectiveMembers } from "./collectiveMembershipStore";
+import { listAllInvitations } from "./roundInvitationsStore";
 import { getRecentEvents } from "./sprint10Telemetry";
 // Patch v12 Day 2 Wave 1 — audit_log + recon_runs + founder_tiers DB-backed.
 import { getDb } from "./db/connection";
@@ -885,16 +886,71 @@ export function registerAdminPlatformRoutes(app: Express): void {
   });
 
   /* ====== Investors ====== */
+  // v23.9 A3/W-9 — real investor directory (no mock data). Aggregate every
+  // investor the platform actually knows about: round invitees (email/name +
+  // accept state) and active Collective members. Dedupe by email (falling back
+  // to userId). The shape matches the prior API contract the admin UI consumes.
   app.get("/api/admin/investors", (_req: Request, res: Response) => {
-    res.json({
-      items: [
-        { id: "u_aisha_patel", name: "Aisha Patel · Hydra Ventures", tier: "Standard", region: "UK", checkSize: 250_000, score: 88, committed: 2_400_000, funded: 1_900_000, irrPct: 22.4, vip: true, status: "active" },
-        { id: "u_moss_dawn", name: "Moss & Dawn", tier: "Plus", region: "US", checkSize: 500_000, score: 82, committed: 3_500_000, funded: 2_900_000, irrPct: 18.1, vip: true, status: "active" },
-        { id: "u_lapsed_lp", name: "Cascadia LP", tier: "Standard", region: "US", checkSize: 100_000, score: 41, committed: 800_000, funded: 800_000, irrPct: 4.0, vip: false, status: "lapsed" },
-        { id: "u_no_position", name: "Onlooker Angel", tier: "Individual", region: "AU", checkSize: 25_000, score: 18, committed: 0, funded: 0, irrPct: 0, vip: false, status: "no_position" },
-        { id: "u_p_y_combinator", name: "Y Combinator", tier: "Plus", region: "US", checkSize: 125_000, score: 95, committed: 1_500_000, funded: 1_500_000, irrPct: 27.8, vip: true, status: "active" },
-      ],
-    });
+    const byKey = new Map<string, {
+      id: string; name: string; tier: string; region: string | null;
+      checkSize: number; score: number; committed: number; funded: number;
+      irrPct: number; vip: boolean; status: string; email: string | null;
+    }>();
+
+    for (const inv of listAllInvitations()) {
+      const email = (inv.investorEmail ?? "").toLowerCase();
+      const key = email || inv.redeemedByUserId || inv.id;
+      if (!key) continue;
+      const redeemed = inv.state === "accepted" || inv.redeemedAt != null;
+      const existing = byKey.get(key);
+      const status = redeemed ? "active" : "invited";
+      if (!existing) {
+        byKey.set(key, {
+          id: inv.redeemedByUserId ?? `inv_${inv.id}`,
+          name: inv.investorName || inv.investorEmail || "Investor",
+          tier: "Standard",
+          region: null,
+          checkSize: 0,
+          score: 0,
+          committed: 0,
+          funded: 0,
+          irrPct: 0,
+          vip: false,
+          status,
+          email: inv.investorEmail ?? null,
+        });
+      } else if (redeemed && existing.status !== "active") {
+        existing.status = "active";
+        if (inv.redeemedByUserId) existing.id = inv.redeemedByUserId;
+      }
+    }
+
+    for (const m of listActiveCollectiveMembers()) {
+      const key = m.userId;
+      const existing = byKey.get(key) ?? Array.from(byKey.values()).find((v) => v.id === m.userId);
+      if (existing) {
+        existing.status = "active";
+        existing.tier = m.tier === "plus" ? "Plus" : "Standard";
+        existing.vip = m.tier === "plus";
+      } else {
+        byKey.set(key, {
+          id: m.userId,
+          name: m.userId,
+          tier: m.tier === "plus" ? "Plus" : "Standard",
+          region: null,
+          checkSize: 0,
+          score: 0,
+          committed: 0,
+          funded: 0,
+          irrPct: 0,
+          vip: m.tier === "plus",
+          status: "active",
+          email: null,
+        });
+      }
+    }
+
+    res.json({ items: Array.from(byKey.values()) });
   });
   app.get("/api/admin/investors/:id", (req: Request, res: Response) => {
     res.json({

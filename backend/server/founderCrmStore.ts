@@ -255,6 +255,10 @@ export function registerFounderCrmRoutes(app: Express): void {
     return typeof s === "string" && VALID_STAGES.has(s) ? s : "lead";
   }
 
+  function normalizeRegion(r: unknown): string {
+    return typeof r === "string" ? r.trim().toUpperCase() : "US";
+  }
+
   // POST /api/founder/investor-crm — create contact
   // v23.4.7 Phase 14 / BUG 011 — the founder can now optionally have the new
   // investor receive an invitation email with a redemption link. The endpoint
@@ -291,7 +295,7 @@ export function registerFounderCrmRoutes(app: Express): void {
       name: req.body?.name ?? "New contact",
       firmName: req.body?.firmName ?? "—",
       email: req.body?.email ?? "",
-      region: req.body?.region ?? "US",
+      region: normalizeRegion(req.body?.region ?? "US"),
       stage: normalizeStage(req.body?.stage) as FounderCrmContact["stage"],
       ownership: { sharesUsd: 0, pct: 0 },
       softCircleHistory: [], maSignals: 0, threadIds: [],
@@ -391,7 +395,7 @@ export function registerFounderCrmRoutes(app: Express): void {
     if (typeof req.body?.name === "string" && req.body.name.trim().length > 0) c.name = req.body.name.trim();
     if (typeof req.body?.firmName === "string") c.firmName = req.body.firmName.trim() || "—";
     if (typeof req.body?.email === "string") c.email = req.body.email.trim();
-    if (typeof req.body?.region === "string") c.region = req.body.region.trim();
+    if (typeof req.body?.region === "string") c.region = normalizeRegion(req.body.region);
     if (typeof req.body?.series === "string") c.series = req.body.series.trim() || "—";
     if (req.body?.task) {
       c.tasks.push({ id: `tsk_${randomBytes(3).toString("hex")}`, text: req.body.task.text, due: req.body.task.due, status: "open" });
@@ -516,6 +520,7 @@ export function upsertCrmContactForInvitation(args: {
   name: string | null;
   email: string;
   classification?: string;
+  roundId?: string | null;
 }): void {
   if (!args.companyId || !args.email) return;
   // Idempotent: skip if contact with same email already exists for this company
@@ -523,6 +528,10 @@ export function upsertCrmContactForInvitation(args: {
     (c) => c.companyId === args.companyId && c.email.toLowerCase() === args.email.toLowerCase()
   );
   if (existing) return;
+  // v23.9 B9: record the originating round in the note so the founder CRM shows
+  // why the contact appeared. The schema has no tags/affiliation columns, so the
+  // round linkage lives in the human-readable note.
+  const roundSuffix = args.roundId ? ` — round ${args.roundId}` : "";
   const newContact: FounderCrmContact = {
     id: `fcrm_inv_${args.companyId.slice(-4)}_${randomBytes(3).toString("hex")}`,
     companyId: args.companyId,
@@ -536,7 +545,7 @@ export function upsertCrmContactForInvitation(args: {
     softCircleHistory: [],
     maSignals: 0,
     threadIds: [],
-    notes: `Auto-created from invitation (${args.classification ?? "invited"})`,
+    notes: `Auto-created from round invitation (${args.classification ?? "invited"})${roundSuffix}`,
     notesUpdatedAt: new Date().toISOString(),
     tasks: [],
     series: "—",
@@ -556,6 +565,55 @@ export function upsertCrmContactForInvitation(args: {
   } catch {
     // Non-fatal: in-memory contact is already added above.
   }
+}
+
+/**
+ * v23.9 C8/CP-6 — seed a consortium partner into a founder's CRM when the
+ * company is linked to that partner (A4). Idempotent by email + companyId.
+ * The partner is recorded as a longterm-stage relationship so it reads as a
+ * standing sponsor rather than a fresh lead.
+ */
+export function upsertInvestorContactFromPartner(
+  companyId: string,
+  partner: { partnerId: string; name: string; email: string; region?: string | null },
+): void {
+  if (!companyId) return;
+  const email = partner.email ?? "";
+  const existing = contacts.find(
+    (c) => c.companyId === companyId &&
+      (c.investorId === partner.partnerId || (email && c.email.toLowerCase() === email.toLowerCase())),
+  );
+  if (existing) return;
+  const newContact: FounderCrmContact = {
+    id: `fcrm_cp_${companyId.slice(-4)}_${randomBytes(3).toString("hex")}`,
+    companyId,
+    investorId: partner.partnerId,
+    name: partner.name || email.split("@")[0] || "Consortium Partner",
+    firmName: partner.name || "—",
+    email,
+    region: partner.region || "US",
+    stage: "longterm",
+    ownership: { sharesUsd: 0, pct: 0 },
+    softCircleHistory: [],
+    maSignals: 0,
+    threadIds: [],
+    notes: "Consortium partner (sponsor)",
+    notesUpdatedAt: new Date().toISOString(),
+    tasks: [],
+    series: "—",
+  };
+  contacts.push(newContact);
+  try {
+    const db = getDb();
+    const row = contactToRow(newContact);
+    (db as any).prepare(
+      `INSERT OR IGNORE INTO founder_crm_contacts (id, tenantId, companyId, investorId, name, firmName, email, region, stage, ownership, softCircleHistory, maSignals, threadIds, notes, notesUpdatedAt, tasks, series) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    ).run(
+      row.id, row.tenantId, row.companyId, row.investorId, row.name, row.firmName, row.email,
+      row.region, row.stage, row.ownership, row.softCircleHistory, row.maSignals, row.threadIds,
+      row.notes, row.notesUpdatedAt, row.tasks, row.series,
+    );
+  } catch { /* non-fatal */ }
 }
 
 /**

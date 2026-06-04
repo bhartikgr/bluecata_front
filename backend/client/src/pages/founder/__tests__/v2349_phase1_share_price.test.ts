@@ -31,15 +31,24 @@ describe("v23.4.9 Phase 1 — share price is derived & read-only for priced roun
     expect(ROUND_NEW).toMatch(/pre\s*\/\s*shares/);
   });
 
-  it("renders the price-per-share input as read-only and bound to the derived value", () => {
-    // The PPS input must be read-only and show the derived value, not allow
-    // free manual entry for priced rounds.
+  it("defaults the price-per-share input to the derived value and read-only, with an opt-in manual override (v23.9 C1 / BUG-038)", () => {
+    // v23.9 C1 (BUG-038): the PPS input is auto-derived AND read-only BY
+    // DEFAULT, but the founder can opt into manual entry via the
+    // `pricePerShareOverridden` flag. When NOT overridden it shows the derived
+    // value and stays read-only (preserving Avi's v23.4.9 auto-calc feedback);
+    // when overridden it becomes editable and bound to form.pricePerShare.
     const ppsBlock = ROUND_NEW.slice(
       ROUND_NEW.indexOf('data-testid="pps-block"'),
-      ROUND_NEW.indexOf('data-testid="input-pps"') + 200,
+      ROUND_NEW.indexOf('data-testid="btn-pps-override"') + 60,
     );
-    expect(ppsBlock).toMatch(/value=\{derivedPricePerShare\}/);
-    expect(ppsBlock).toMatch(/readOnly/);
+    // Value falls back to the derived value when not overridden.
+    expect(ppsBlock).toMatch(/derivedPricePerShare/);
+    // Read-only is now gated on the override flag rather than hardcoded.
+    expect(ppsBlock).toMatch(/readOnly=\{!pricePerShareOverridden\}/);
+    // An explicit override affordance exists.
+    expect(ppsBlock).toMatch(/data-testid="btn-pps-override"/);
+    // The auto-derivation effect respects the override flag.
+    expect(ROUND_NEW).toMatch(/if \(pricePerShareOverridden\) return;/);
   });
 
   it("explains the auto-calculation in the field tooltip", () => {

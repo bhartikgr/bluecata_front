@@ -37,8 +37,14 @@ import {
   partnerDealPromotionsStore,
   PromotionConflictError,
   ALL_PIPELINE_STAGES,
+  hashInviteToken,
 } from "./partnerWorkspaceStore";
 import { getAllContacts, listContacts, updateContact, createContact } from "./adminContactsStore";
+import { registerPersona, getUserContextForId } from "./lib/userContext";
+import { setSessionCookie } from "./lib/sessionCookie";
+import { getCompanyRecordById } from "./multiCompanyStore";
+import { linkConsortiumPartner, unlinkConsortiumPartner, getConsortiumPartnerId } from "./consortiumLinkStore";
+import { upsertInvestorContactFromPartner } from "./founderCrmStore";
 
 /* ============================================================
  * Helpers
@@ -72,6 +78,55 @@ export function registerPartnerRoutes(app: Express): void {
     const c = getAllContacts().find((x) => x.id === String(req.params.id) && x.kind === "consortium_partner");
     if (!c) return res.status(404).json({ error: "PARTNER_NOT_FOUND" });
     res.json({ partner: c });
+  });
+
+  /* ------------------------------------------------------------------
+   * v23.9 A4/CP-5 — link a Capavate company to a consortium partner.
+   * ------------------------------------------------------------------ */
+  app.get("/api/admin/companies/:id", requireAdmin, (req: Request, res: Response) => {
+    const companyId = String(req.params.id);
+    const rec = getCompanyRecordById(companyId);
+    if (!rec) return res.status(404).json({ error: "COMPANY_NOT_FOUND" });
+    const consortiumPartnerId = getConsortiumPartnerId(companyId);
+    const consortiumPartner = consortiumPartnerId
+      ? getAllContacts().find((c) => c.id === consortiumPartnerId && c.kind === "consortium_partner") ?? null
+      : null;
+    res.json({ company: { ...rec, consortiumPartnerId, consortiumPartner } });
+  });
+
+  app.post("/api/admin/companies/:id/consortium-partner", requireAdmin, (req: Request, res: Response) => {
+    const actor = String((req.userContext?.userId) ?? "");
+    if (!actor) return res.status(401).json({ error: "missing_identity" });
+    const companyId = String(req.params.id);
+    const partnerId = String((req.body ?? {}).partnerId ?? "");
+    if (!partnerId) return badRequest(res, "partnerId required");
+    const company = getCompanyRecordById(companyId);
+    if (!company) return res.status(404).json({ error: "COMPANY_NOT_FOUND" });
+    const partner = getAllContacts().find((c) => c.id === partnerId && c.kind === "consortium_partner");
+    if (!partner) return res.status(404).json({ error: "PARTNER_NOT_FOUND" });
+    linkConsortiumPartner(companyId, partnerId);
+    // v23.9 C8/CP-6 — surface the sponsor in the founder's CRM.
+    try {
+      upsertInvestorContactFromPartner(companyId, {
+        partnerId: partner.id,
+        name: partner.displayName || partner.legalName,
+        email: partner.email ?? "",
+        region: (partner as { region?: string }).region ?? null,
+      });
+    } catch { /* non-fatal — link still succeeds */ }
+    appendAdminAudit(actor, `company:${companyId}`, "company.consortium_partner_linked", { partnerId });
+    res.json({ ok: true, company: { ...company, consortiumPartnerId: partnerId, consortiumPartner: partner } });
+  });
+
+  app.delete("/api/admin/companies/:id/consortium-partner", requireAdmin, (req: Request, res: Response) => {
+    const actor = String((req.userContext?.userId) ?? "");
+    if (!actor) return res.status(401).json({ error: "missing_identity" });
+    const companyId = String(req.params.id);
+    const company = getCompanyRecordById(companyId);
+    if (!company) return res.status(404).json({ error: "COMPANY_NOT_FOUND" });
+    const removed = unlinkConsortiumPartner(companyId);
+    appendAdminAudit(actor, `company:${companyId}`, "company.consortium_partner_unlinked", { removed });
+    res.json({ ok: true, company: { ...company, consortiumPartnerId: null, consortiumPartner: null } });
   });
 
   app.post("/api/admin/partners", requireAdmin, (req: Request, res: Response) => {
@@ -779,17 +834,46 @@ export function registerPartnerRoutes(app: Express): void {
   );
 
   /* ============================================================
-   * Magic-link redemption (auth-required)
+   * Magic-link redemption
+   * v23.9 A5/CP-3 — PUBLIC. A freshly-invited consortium partner has no
+   * account yet, so requiring auth here was a bootstrapping deadlock (they
+   * could never onboard). The signed invite token IS the credential: we look
+   * it up, mint/resolve a persona seeded from the invited email, set the
+   * session cookie, then redeem — mirroring the public /api/auth/redeem flow.
    * ============================================================ */
 
-  app.post("/api/auth/redeem-partner-invite/:token", requireAuth, (req: Request, res: Response) => {
-    const ctx = getUserContext(req);
-    if (!ctx.isAuthed) return res.status(401).json({ error: "AUTH_REQUIRED" });
+  app.post("/api/auth/redeem-partner-invite/:token", (req: Request, res: Response) => {
+    const token = String(req.params.token ?? "");
+    if (!token) return res.status(400).json({ error: "MISSING_TOKEN" });
+
+    // Resolve the invitation up-front so we know which email to mint against.
+    const pending = partnerInvitationStore.findByTokenHash(hashInviteToken(token));
+    if (!pending) return res.status(404).json({ error: "PARTNER_INVITATION_INVALID_TOKEN" });
+    if (pending.redeemedAt) return res.status(409).json({ error: "PARTNER_INVITATION_ALREADY_REDEEMED" });
+    if (Date.parse(pending.expiresAt) < Date.now()) return res.status(410).json({ error: "PARTNER_INVITATION_EXPIRED" });
+
+    // If the caller is already authenticated, redeem as that user; otherwise
+    // the token mints the partner's account (the token is single-use, so this
+    // is safe — only the email-holder ever receives it).
+    const existing = getUserContext(req);
+    const userId = existing.isAuthed
+      ? existing.userId
+      : registerPersona({
+          email: pending.invitedEmail,
+          name: pending.invitedEmail,
+          password: "changeme",
+          invitationId: pending.id,
+          roundId: "",
+          companyId: "",
+        });
+
     const ip = (req.ip ?? "").toString();
     const ua = String(req.headers["user-agent"] ?? "");
     try {
-      const inv = partnerInvitationStore.redeem(String(req.params.token), ctx.userId, { ip, ua });
-      res.json({ ok: true, partnerId: inv.partnerId, subRole: inv.subRole });
+      const inv = partnerInvitationStore.redeem(token, userId, { ip, ua });
+      if (!existing.isAuthed) setSessionCookie(res, userId);
+      const ctx = getUserContextForId(userId);
+      res.json({ ok: true, partnerId: inv.partnerId, subRole: inv.subRole, ctx });
     } catch (e) {
       const msg = (e as Error).message;
       if (msg === "PARTNER_INVITATION_EXPIRED") return res.status(410).json({ error: msg });

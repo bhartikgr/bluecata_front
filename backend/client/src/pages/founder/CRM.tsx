@@ -452,7 +452,7 @@ export default function FounderInvestorCRM() {
               <SelectTrigger className="w-40" data-testid="filter-region"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All regions</SelectItem>
-                {REGIONS_ALL.map(r => <SelectItem key={r.code} value={r.code}>{r.flag} {r.code}</SelectItem>)}
+                {REGIONS_ALL.map(r => <SelectItem key={r.code} value={r.code}>{r.flag} {r.name}</SelectItem>)}
               </SelectContent>
             </Select>
           </CardContent>

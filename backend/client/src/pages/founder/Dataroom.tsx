@@ -104,7 +104,10 @@ export default function Dataroom() {
       if (!companyId) throw new Error("No active company");
       const fd = new FormData();
       fd.append("file", file);
-      fd.append("folderId", activeFolder ?? folders[0]?.id ?? "");
+      // v23.9 B4/BUG-036 — never silently pick the first folder. The upload
+      // button is disabled on the "All" tab, but guard here too.
+      if (!activeFolder) throw new Error("Select a folder before uploading");
+      fd.append("folderId", activeFolder);
       fd.append("companyId", companyId);
       const r = await fetch(`/api/founder/dataroom/files`, { method: "POST", body: fd });
       if (!r.ok) throw new Error(`upload ${r.status}`);
@@ -143,7 +146,7 @@ export default function Dataroom() {
         actions={
           <>
             <Button variant="outline" onClick={() => setNewFolderOpen(true)} data-testid="button-new-folder"><Plus className="h-4 w-4 mr-2" /> New folder</Button>
-            <Button onClick={onUploadClick} className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" data-testid="button-upload">
+            <Button onClick={onUploadClick} disabled={!activeFolder} title={!activeFolder ? "Select a folder before uploading" : undefined} className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white disabled:opacity-50" data-testid="button-upload">
               <Upload className="h-4 w-4 mr-2" /> Upload
             </Button>
             <input
