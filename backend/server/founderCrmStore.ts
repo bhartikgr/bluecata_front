@@ -234,6 +234,27 @@ function ensureCompanyId(req: Request, res: Response): string | null {
   return id;
 }
 
+/**
+ * B10 (v24.0 LOCKDOWN) — tenant guard for per-id CRM mutations.
+ *
+ * Before v24.0, PATCH/DELETE /api/founder/investor-crm/:id loaded the contact
+ * by global id and mutated it with no check that the contact's company belongs
+ * to the caller (CAP-P0 cross-tenant mutate). This verifies the contact's
+ * companyId is owned by the caller (or caller is admin). Returns true when the
+ * caller may mutate; otherwise writes a 404 (not 403, to avoid id enumeration)
+ * and returns false.
+ */
+function callerOwnsContactCompany(req: Request, res: Response, contactCompanyId: string): boolean {
+  const ctx = (req as any).userContext;
+  if (ctx?.isAdmin) return true;
+  const companies: Array<{ companyId: string }> = Array.isArray(ctx?.founder?.companies)
+    ? ctx.founder.companies
+    : [];
+  if (companies.some((c) => c.companyId === contactCompanyId)) return true;
+  res.status(404).json({ error: "not_found" });
+  return false;
+}
+
 export function registerFounderCrmRoutes(app: Express): void {
   // GET /api/founder/investor-crm — list contacts (per authenticated founder's company)
   app.get("/api/founder/investor-crm", requireAuth, (req: Request, res: Response) => {
@@ -390,6 +411,9 @@ export function registerFounderCrmRoutes(app: Express): void {
   app.patch("/api/founder/investor-crm/:id", requireAuth, (req: Request, res: Response) => {
     const c = contacts.find((x) => x.id === req.params.id);
     if (!c) return res.status(404).json({ error: "not_found" });
+    // B10 (v24.0) — verify the contact's company belongs to the caller before
+    // any mutation, closing the cross-tenant CRM mutate hole.
+    if (!callerOwnsContactCompany(req, res, c.companyId)) return;
     if (typeof req.body?.stage === "string") c.stage = normalizeStage(req.body.stage) as FounderCrmContact["stage"];
     if (typeof req.body?.notes === "string") { c.notes = req.body.notes; c.notesUpdatedAt = new Date().toISOString(); }
     if (typeof req.body?.name === "string" && req.body.name.trim().length > 0) c.name = req.body.name.trim();
@@ -444,6 +468,9 @@ export function registerFounderCrmRoutes(app: Express): void {
     const idx = contacts.findIndex((x) => x.id === req.params.id);
     if (idx < 0) return res.status(404).json({ error: "not_found" });
     const c = contacts[idx];
+    // B10 (v24.0) — verify the contact's company belongs to the caller before
+    // soft-deleting, closing the cross-tenant CRM mutate hole.
+    if (!callerOwnsContactCompany(req, res, c.companyId)) return;
     // Remove from in-memory cache.
     contacts.splice(idx, 1);
     // Write-through soft-delete to DB (tenant-scoped).
@@ -496,6 +523,19 @@ export const _testAccessFounderCrm = { contacts };
 export function listContactsForCompany(companyId: string): FounderCrmContact[] {
   if (!companyId) return [];
   return contacts.filter((c) => c.companyId === companyId);
+}
+
+/**
+ * B4 (v24.0 LOCKDOWN) — list every CRM contact across all companies the
+ * founder owns. Used by the legacy GET /api/crm route, which previously
+ * returned a global mock list to any authenticated user. `ownedCompanyIds`
+ * is the caller's owned-company set (from userContext.founder.companies);
+ * pass an empty set for a non-founder to get no rows.
+ */
+export function listByFounder(ownedCompanyIds: Iterable<string>): FounderCrmContact[] {
+  const owned = new Set<string>(ownedCompanyIds);
+  if (owned.size === 0) return [];
+  return contacts.filter((c) => owned.has(c.companyId));
 }
 
 /**

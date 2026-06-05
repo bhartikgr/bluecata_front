@@ -160,7 +160,9 @@ import EventsCalendarPage from "@/pages/collective/EventsCalendarPage";
 import LeaderboardPage from "@/pages/collective/LeaderboardPage";
 
 // Bootstrap demo telemetry once at app load
-seedSprint3Telemetry();
+if (import.meta.env.MODE !== "production") {
+  seedSprint3Telemetry();
+}
 
 /* ---------- Sprint 28 Billing — Subscription gate HOC ----------
  * Wraps any founder route that requires an active subscription.
@@ -404,6 +406,8 @@ function AppRouter() {
         <Route path="/auth/redeem" component={Redeem} />
         {/* v23.4.1 Task C — Consortium Partner set-password invite link (public) */}
         <Route path="/set-password" component={SetPasswordPage} />
+        {/* A1 (v24.0) — alias for cached forgot-password email links that point to /auth/set-password */}
+        <Route path="/auth/set-password" component={SetPasswordPage} />
 
         {/* Sprint 27 — dedicated admin login (public) */}
         <Route path="/admin/login" component={AdminLogin} />

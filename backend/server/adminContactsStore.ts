@@ -559,6 +559,70 @@ export function getAllContacts(): AdminContact[] {
   return Array.from(contacts.values());
 }
 
+/**
+ * A8 (v24.0) — idempotently create (or return) an active consortium_partner
+ * admin contact for an approved partner application. requirePartnerAuth uses
+ * this contact (looked up by the team member's partnerId) as the source of
+ * truth for partner-workspace access, so consortium approval must create it.
+ *
+ * Returns the existing active contact if one with the same email already
+ * exists; otherwise creates a fresh one. Never throws on duplicate.
+ */
+export function upsertConsortiumPartner(
+  data: {
+    legalName: string;
+    email: string;
+    website?: string | null;
+    partnerType?: PartnerType | null;
+    regionCode?: string | null;
+    hqCountry?: string | null;
+  },
+  actor: string,
+): AdminContact {
+  const emailLc = (data.email || "").toLowerCase();
+  const existing = Array.from(contacts.values()).find(
+    (c) => c.kind === "consortium_partner" && c.email.toLowerCase() === emailLc && c.status === "active",
+  );
+  if (existing) return existing;
+  return createContact(
+    {
+      kind: "consortium_partner",
+      legalName: data.legalName,
+      displayName: data.legalName,
+      email: data.email,
+      type: "partner_org" as ContactType,
+      status: "active",
+      verification: "verified",
+      hqCity: "",
+      hqCountry: data.hqCountry ?? "",
+      region: data.regionCode ?? "OTHER",
+      aumMinor: null,
+      aumCurrency: "USD",
+      checkSizeMinMinor: null,
+      checkSizeMaxMinor: null,
+      industries: [],
+      stages: [],
+      companyIds: [],
+      partnerWeight: null,
+      partnerSince: new Date().toISOString(),
+      phone: null,
+      website: data.website ?? null,
+      linkedinUrl: null,
+      tags: [],
+      notes: "Provisioned by consortium application approval (v24.0 A8).",
+      tier: "catalyst",
+      tierSince: new Date().toISOString(),
+      foundingMember: false,
+      partnerType: data.partnerType ?? null,
+      regionCode: data.regionCode ?? null,
+      preferredPayoutCurrency: "USD",
+      configJson: null,
+      isSeed: false,
+    } as unknown as Omit<AdminContact, "id" | "createdAt" | "updatedAt" | "version" | "prevRevisionHash" | "revisionHash">,
+    actor,
+  );
+}
+
 export function seedContacts(): void {
   if (seeded) return;
   seeded = true;

@@ -151,10 +151,15 @@ export default function SetPasswordPage() {
       setDone(true);
       toast({ title: "Password set", description: "Redirecting to login…" });
 
-      // Determine redirect based on role in response
+      // A3 (v24.0) — redirect to the correct persona login based on the redeemed role.
+      // Founders and investors must NOT be stranded on /partner/login.
       const role = (body as { role?: string }).role ?? "investor";
       const redirectTo =
-        role === "admin" ? "/admin/dashboard" : "/partner/login";
+        role === "admin"
+          ? "/admin/login"
+          : role === "partner"
+            ? "/partner/login"
+            : /* founder | investor | anything else */ "/auth/login";
 
       setTimeout(() => {
         navigate(redirectTo);

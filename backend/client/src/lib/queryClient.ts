@@ -172,11 +172,22 @@ export const getQueryFn: <T>(options: {
       return null;
     }
 
-    // Sprint 16 hotfix — deploy proxy can return non-JSON or {"detail":"Not Found"}
-    // for endpoints not wired in the static proxy. Treat any non-OK as null so
-    // consumers see undefined data instead of an error-shaped object that crashes
-    // when iterated.
+    // v24.0 E8 — surface errors in production. Previously ANY non-OK response
+    // returned null, silently hiding 4xx/5xx and masking real failures from
+    // users (and from us). In production we now throw an ApiError so the UI's
+    // error boundaries / query error states engage. In dev we KEEP the
+    // null-fallback to preserve debug ergonomics (deploy-proxy 404s etc.).
     if (!res.ok) {
+      if (import.meta.env.MODE === "production") {
+        let payload: unknown = null;
+        try { payload = await res.clone().json(); } catch { /* non-JSON body */ }
+        throw new ApiError(
+          res.status,
+          friendlyMessageForStatus(res.status),
+          null,
+          payload,
+        );
+      }
       return null;
     }
     try {

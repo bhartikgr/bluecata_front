@@ -198,6 +198,10 @@ export function registerAdminCollectiveRoutes(app: Express): void {
     if (legacyApp) {
       const updated = legacySetApplicationStatus(id, "rejected");
       try { deactivateMembership(legacyApp.userId); } catch { /* non-fatal */ }
+      // v24.0 E2: rejection must deactivate BOTH stores (mirror of approval's
+      // dual-write). Approval dual-writes membership; rejection previously only
+      // single-wrote the legacy store, leaving the modern store active.
+      try { collectiveMembershipStore.deactivate(legacyApp.userId, adminUserId); } catch { /* non-fatal */ }
       try {
         emitBridgeEvent({
           eventType: "collective.member.updated",
@@ -217,6 +221,8 @@ export function registerAdminCollectiveRoutes(app: Express): void {
     const updated = founderApply.setApplicationStatus(id, "rejected", adminUserId);
     const userId = modernApp.founderId;
     try { deactivateMembership(userId); } catch { /* non-fatal */ }
+    // v24.0 E2: rejection must deactivate BOTH stores (mirror of approval).
+    try { collectiveMembershipStore.deactivate(userId, adminUserId); } catch { /* non-fatal */ }
     try {
       emitBridgeEvent({
         eventType: "collective.member.updated",

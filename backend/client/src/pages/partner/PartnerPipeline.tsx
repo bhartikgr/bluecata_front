@@ -70,7 +70,7 @@ export default function PartnerPipeline() {
       return res.json();
     },
     onSuccess: () => {
-      toast({ title: "Promoted to Collective Deal Room", description: "Deal is now visible to all Collective members." });
+      toast({ title: "Promoted to Collective Deal Room", description: "Submitted for Collective review. Visible once admin approves." });
       queryClient.invalidateQueries({ queryKey: ["/api/partner/me/promotions"] });
       setPromoteDeal(null);
       setModalNotes("");
@@ -193,7 +193,7 @@ export default function PartnerPipeline() {
           <DialogHeader>
             <DialogTitle>Promote to Collective Deal Room</DialogTitle>
             <DialogDescription>
-              This deal will become visible to all Collective members immediately.
+              This deal will be submitted for Collective admin review.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">

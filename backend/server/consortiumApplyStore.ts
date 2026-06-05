@@ -61,6 +61,11 @@ import { publish as ssePublish } from "./lib/sseHub";
 import { appendAdminAudit } from "./adminPlatformStore";
 import { log } from "./lib/logger";
 import { sendEmail } from "./lib/emailSender";
+// A8 (v24.0) — approval must also provision the partner-workspace authz records
+// (admin consortium_partner contact + owner team membership) so the approved
+// partner can actually reach /api/partner/me. requirePartnerAuth reads these.
+import { partnerTeamStore } from "./partnerWorkspaceStore";
+import { upsertConsortiumPartner } from "./adminContactsStore";
 
 /* ============================================================
  * Types
@@ -95,6 +100,8 @@ export interface ConsortiumApplicationRow {
   contactEmail: string;
   contactPhone: string | null;
   organizationName: string;
+  /** v24.0 E4: backward-compat alias of organizationName for the admin client. */
+  orgName?: string;
   website: string | null;
   jurisdiction: string;
   partnerType: PartnerType;
@@ -152,6 +159,9 @@ function rowToApp(r: any): ConsortiumApplicationRow {
     contactEmail: r.contact_email ?? r.contactEmail,
     contactPhone: r.contact_phone ?? r.contactPhone ?? null,
     organizationName: r.organization_name ?? r.organizationName,
+    // v24.0 E4: admin Consortium client reads `orgName`; server historically
+    // emitted only `organizationName`. Emit BOTH for backward compatibility.
+    orgName: r.organization_name ?? r.organizationName,
     website: r.website ?? null,
     jurisdiction: r.jurisdiction ?? "",
     partnerType: (r.partner_type ?? r.partnerType) as PartnerType,
@@ -500,6 +510,41 @@ export function getApplication(id: string): ConsortiumApplicationRow | null {
   return appsCache.get(id) ?? null;
 }
 
+/* ============================================================
+ * v24.0 E5 — reusable partner-invite token minting.
+ *
+ * Extracted from approveApplication's inline minting so the admin
+ * /invite-link and /resend-invite endpoints can re-mint a fresh, valid
+ * partner_invite token (sha256 of raw, intent='partner_invite', 14-day TTL)
+ * for an already-approved application. Returns the RAW token (caller builds
+ * the redeem URL) plus the expiry, or null if the DB write fails.
+ * ============================================================ */
+export function mintPartnerInviteToken(
+  applicationId: string,
+): { rawToken: string; tokenId: string; expiresAt: string } | null {
+  const app = appsCache.get(applicationId);
+  if (!app) return null;
+  try {
+    const rawToken = randomBytes(32).toString("hex");
+    const tokenHash = createHash("sha256").update(rawToken).digest("hex");
+    const tokenId = `tk_${randomBytes(6).toString("hex")}`;
+    const expiresAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1_000).toISOString();
+    rawDb()
+      .prepare(
+        `INSERT INTO auth_redeem_tokens (id, token_hash, email, intent, expires_at, created_at)
+         VALUES (?, ?, ?, 'partner_invite', ?, ?)`,
+      )
+      .run(tokenId, tokenHash, app.contactEmail, expiresAt, nowIso());
+    return { rawToken, tokenId, expiresAt };
+  } catch (err) {
+    log.warn(
+      "[consortium.apply] mintPartnerInviteToken failed",
+      JSON.stringify({ applicationId, error: (err as Error).message }),
+    );
+    return null;
+  }
+}
+
 export function listApplications(filters: {
   status?: AppStatus;
   partnerType?: PartnerType;
@@ -691,6 +736,32 @@ export function approveApplication(
     applicationId: updated.id,
     partnerId,
   });
+
+  // A8 (v24.0) — provision the partner-workspace authorization records that
+  // requirePartnerAuth needs: an active consortium_partner admin contact and an
+  // owner/managing-partner team membership for the approved user. Without these
+  // the approved partner's session exists but /api/partner/me returns 403.
+  // Idempotent (safe on re-approval) and non-fatal (logged, never throws) so a
+  // transient failure cannot roll back the durable DB provisioning above.
+  try {
+    const partnerContact = upsertConsortiumPartner(
+      {
+        legalName: updated.organizationName,
+        email: updated.contactEmail,
+        website: updated.website ?? null,
+        partnerType: (updated.partnerType as any) ?? null,
+        regionCode: null,
+        hqCountry: updated.jurisdiction ?? null,
+      },
+      actorUserId,
+    );
+    partnerTeamStore.upsertOwner(userId, partnerContact.id, "managing_partner");
+  } catch (provErr) {
+    log.warn(
+      "[consortium.apply] partner-workspace authz provisioning failed",
+      JSON.stringify({ applicationId: updated.id, error: (provErr as Error).message }),
+    );
+  }
 
   // v23.4.7 Phase 1 (A-001): issue partner-invite redemption token and send
   // the welcome email containing the password-setup link.
@@ -1149,6 +1220,101 @@ export function registerConsortiumApplyRoutes(app: Express): void {
         applicationId: id,
         ...dispatch,
       });
+    },
+  );
+
+  // v24.0 E5 — GET /invite-link: re-mint a fresh partner_invite token for an
+  // approved application and return the redeemable URL. Re-minting (rather than
+  // returning a stale token) guarantees the link is valid again.
+  app.get(
+    "/api/admin/consortium/applications/:id/invite-link",
+    requireAuth,
+    requireAdmin,
+    (req: Request, res: Response): void => {
+      const application = getApplication(String(req.params.id));
+      if (!application) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      if (application.status !== "approved") {
+        res.status(409).json({ error: "not_approved" });
+        return;
+      }
+      const result = mintPartnerInviteToken(application.id);
+      if (!result) {
+        res.status(500).json({ error: "mint_failed" });
+        return;
+      }
+      const appUrl = (process.env.APP_URL ?? "http://localhost:5000").replace(/\/$/, "");
+      res.json({
+        ok: true,
+        inviteUrl: `${appUrl}/auth/redeem-partner-invite/${result.rawToken}`,
+        expiresAt: result.expiresAt,
+      });
+    },
+  );
+
+  // v24.0 E5 — POST /resend-invite: re-mint a fresh partner_invite token and
+  // re-send the welcome email containing the new redeem link.
+  app.post(
+    "/api/admin/consortium/applications/:id/resend-invite",
+    requireAuth,
+    requireAdmin,
+    async (req: Request, res: Response): Promise<void> => {
+      const ctx = (req as any).userContext;
+      const actor = ctx?.userId ?? "u_admin_unknown";
+      const application = getApplication(String(req.params.id));
+      if (!application) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      if (application.status !== "approved") {
+        res.status(409).json({ error: "not_approved" });
+        return;
+      }
+      const result = mintPartnerInviteToken(application.id);
+      if (!result) {
+        res.status(500).json({ error: "mint_failed" });
+        return;
+      }
+      const appUrl = (process.env.APP_URL ?? "http://localhost:5000").replace(/\/$/, "");
+      const redeemUrl = `${appUrl}/auth/redeem-partner-invite/${result.rawToken}`;
+      const subj = `Welcome to Capavate — set up your ${application.organizationName} partner account`;
+      const text =
+        `Hello ${application.contactName},\n\n` +
+        `Your application to join Capavate as a partner organization has been approved.\n\n` +
+        `Click the link below to set your password and access your partner workspace (valid for 14 days):\n\n` +
+        `${redeemUrl}\n\n` +
+        `If you have any questions, reply to this email and a Capavate admin will assist you.`;
+      const html =
+        `<p>Hello ${application.contactName},</p>` +
+        `<p>Your application to join Capavate as a partner organization has been approved.</p>` +
+        `<p><a href="${redeemUrl}">Set your password and access your partner workspace</a></p>` +
+        `<p>Link valid for 14 days.</p>`;
+      // Best-effort send — the token is already durable, so a transient SMTP
+      // failure still leaves the admin a usable link (via /invite-link).
+      let emailSent = false;
+      let emailError: string | null = null;
+      try {
+        const r = await sendEmail({
+          to: application.contactEmail,
+          subject: subj,
+          text,
+          html,
+          category: "partner_welcome",
+          refId: application.id,
+        });
+        emailSent = Boolean(r.delivered);
+      } catch (e) {
+        emailError = (e as Error).message;
+      }
+      appendAdminAudit(
+        actor,
+        `consortium_application:${application.id}`,
+        "consortium.apply.invite_resent",
+        { emailSent, error: emailError, tokenId: result.tokenId },
+      );
+      res.json({ ok: true, resent: true, emailSent, expiresAt: result.expiresAt });
     },
   );
 }

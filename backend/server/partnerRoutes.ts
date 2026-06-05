@@ -39,8 +39,10 @@ import {
   ALL_PIPELINE_STAGES,
   hashInviteToken,
 } from "./partnerWorkspaceStore";
-import { getAllContacts, listContacts, updateContact, createContact } from "./adminContactsStore";
+import { getAllContacts, listContacts, updateContact, createContact, upsertConsortiumPartner } from "./adminContactsStore";
 import { registerPersona, getUserContextForId } from "./lib/userContext";
+import { rawDb } from "./db/connection";
+import { createHash } from "node:crypto";
 import { setSessionCookie } from "./lib/sessionCookie";
 import { getCompanyRecordById } from "./multiCompanyStore";
 import { linkConsortiumPartner, unlinkConsortiumPartner, getConsortiumPartnerId } from "./consortiumLinkStore";
@@ -848,7 +850,64 @@ export function registerPartnerRoutes(app: Express): void {
 
     // Resolve the invitation up-front so we know which email to mint against.
     const pending = partnerInvitationStore.findByTokenHash(hashInviteToken(token));
-    if (!pending) return res.status(404).json({ error: "PARTNER_INVITATION_INVALID_TOKEN" });
+    if (!pending) {
+      // A7 (v24.0) — consortium-approval fallback. Approved-partner invites are
+      // minted into auth_redeem_tokens (intent='partner_invite', sha256 of raw),
+      // a DIFFERENT store/hash scheme than partnerInvitationStore team invites.
+      // Without this branch every approved-partner link returned
+      // PARTNER_INVITATION_INVALID_TOKEN. Look the token up there and consume it.
+      try {
+        const approvalHash = createHash("sha256").update(token).digest("hex");
+        const db = rawDb();
+        const row = db
+          .prepare(
+            `SELECT id, email, intent, consumed_at, expires_at FROM auth_redeem_tokens WHERE token_hash = ? AND intent = 'partner_invite'`,
+          )
+          .get(approvalHash) as
+          | { id: string; email: string; intent: string; consumed_at: string | null; expires_at: string }
+          | undefined;
+        if (!row) return res.status(404).json({ error: "PARTNER_INVITATION_INVALID_TOKEN" });
+        if (row.consumed_at) return res.status(409).json({ error: "PARTNER_INVITATION_ALREADY_REDEEMED" });
+        if (new Date(row.expires_at).getTime() < Date.now())
+          return res.status(410).json({ error: "PARTNER_INVITATION_EXPIRED" });
+
+        // Mint/resolve the persona for the invited email and consume the token.
+        const existingCtx = getUserContext(req);
+        const approvedUserId = existingCtx.isAuthed
+          ? existingCtx.userId
+          : registerPersona({
+              email: row.email,
+              name: row.email,
+              // Strong random password (C15) — the partner can re-set via the
+              // set-password flow; the single-use token is the real credential.
+              password: createHash("sha256").update(`${token}:${Date.now()}:${Math.random()}`).digest("hex"),
+              invitationId: row.id,
+              roundId: "",
+              companyId: "",
+            });
+        db.prepare(`UPDATE auth_redeem_tokens SET consumed_at = ? WHERE id = ?`).run(new Date().toISOString(), row.id);
+
+        // Ensure partner-workspace authz records exist (idempotent with A8). The
+        // approval path already creates these, but guarantee it here so redeem
+        // never lands the user in a 403 partner workspace.
+        let partnerId: string | null = null;
+        try {
+          const contact = upsertConsortiumPartner({ legalName: row.email, email: row.email }, approvedUserId);
+          partnerTeamStore.upsertOwner(approvedUserId, contact.id, "managing_partner");
+          partnerId = contact.id;
+        } catch (authzErr) {
+          // Non-fatal: an existing membership (from approval) still authorizes.
+          const existingMember = partnerTeamStore.findByUserId(approvedUserId);
+          partnerId = existingMember?.partnerId ?? null;
+        }
+
+        if (!existingCtx.isAuthed) setSessionCookie(res, approvedUserId);
+        const ctx = getUserContextForId(approvedUserId);
+        return res.json({ ok: true, partnerId, subRole: "managing_partner", ctx });
+      } catch (fallbackErr) {
+        return res.status(404).json({ error: "PARTNER_INVITATION_INVALID_TOKEN" });
+      }
+    }
     if (pending.redeemedAt) return res.status(409).json({ error: "PARTNER_INVITATION_ALREADY_REDEEMED" });
     if (Date.parse(pending.expiresAt) < Date.now()) return res.status(410).json({ error: "PARTNER_INVITATION_EXPIRED" });
 

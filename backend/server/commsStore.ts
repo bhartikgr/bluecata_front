@@ -59,6 +59,34 @@ import { getDb } from "./db/connection";
 import { collectiveChannelPosts as collectiveChannelPostsTable } from "@shared/schema";
 import { DEFAULT_CHAPTER_ID, DEFAULT_CHAPTER_TENANT_ID } from "./lib/chapterDefaults";
 import { log } from "./lib/logger";
+// v24.0 C13: badge propagation reads from the LIVE membership store, not the
+// static COMMS_USERS seed. Imported namespaced so we can fall back gracefully.
+import * as collectiveMembershipStore from "./collectiveMembershipStore";
+// v24.0 E7: partner detection for role-aware DM notification links.
+import { partnerTeamStore } from "./partnerWorkspaceStore";
+import { getUserContextForId } from "./lib/userContext";
+
+/* v24.0 E7 — role-aware messages path for in-app notification deep links.
+ * Mirrors the existing founder-vs-investor logic at the thread-reply site,
+ * extended to route consortium partners to /partner/messages. Resolution
+ * order: partner (active team membership) → founder (owns a company) → investor
+ * (default). Best-effort: any resolver failure falls back to /investor. */
+function messagesPathForUser(userId: string, threadId: string): string {
+  try {
+    if (partnerTeamStore.findByUserId(userId)) {
+      return `/partner/messages?thread=${threadId}`;
+    }
+  } catch { /* fall through */ }
+  try {
+    const ctx = getUserContextForId(userId);
+    if (ctx.founder?.companies?.length) {
+      return `/founder/messages?thread=${threadId}`;
+    }
+  } catch { /* fall through */ }
+  // Fall back to the static COMMS_USERS role hint if context unavailable.
+  const isFounder = COMMS_USERS[userId]?.roles.includes("founder") ?? false;
+  return `/${isFounder ? "founder" : "investor"}/messages?thread=${threadId}`;
+}
 
 /* ==================================================================== */
 /* DEMO USERS — the cast for Sprint 9                                    */
@@ -714,6 +742,43 @@ function channelIsVisibleToViewer(channel: Channel, viewerUserId: string): boole
   return channel.participantUserIds.includes(viewerUserId);
 }
 
+/**
+ * B14 (v24.0 LOCKDOWN) — canonical visibility gate for comms mutations.
+ *
+ * Before v24.0, every comms mutation (star / reaction / read / like / comment /
+ * share) loaded the message or post by id and mutated it WITHOUT checking that
+ * the caller can actually see the channel it lives in. Any authenticated user
+ * could like/comment/react on a private DM, cap-table, or soft-circle post by
+ * guessing its id. These helpers mirror the exact gate the read feed already
+ * uses (`channelIsVisibleToViewer`) so reads and writes are consistent.
+ *
+ * Each returns true when the actor may mutate. On failure it writes the
+ * appropriate status (404 for missing target, 403 for not-visible) and returns
+ * false; callers must `return` immediately.
+ */
+function canMutateMessage(res: Response, messageId: string, actorId: string): boolean {
+  const m = messages.get(messageId);
+  if (!m) { res.status(404).json({ message: "Not found" }); return false; }
+  const ch = channels.get(m.channelId);
+  // A message with no resolvable channel is treated as not-visible (fail safe).
+  if (!ch || !channelIsVisibleToViewer(ch, actorId)) {
+    res.status(403).json({ message: "Not visible to you" });
+    return false;
+  }
+  return true;
+}
+
+function canMutatePost(res: Response, postId: string, actorId: string): boolean {
+  const p = posts.get(postId);
+  if (!p) { res.status(404).json({ message: "Not found" }); return false; }
+  const ch = channels.get(p.channelId);
+  if (!ch || !channelIsVisibleToViewer(ch, actorId)) {
+    res.status(403).json({ message: "Not visible to you" });
+    return false;
+  }
+  return true;
+}
+
 /** Idempotency middleware — read header + dedupe. */
 function withIdempotency(req: Request, res: Response, key: string, fn: () => unknown): unknown {
   const k = req.header("Idempotency-Key");
@@ -865,7 +930,14 @@ function projectPost(post: Post, viewerUserId: string): PostView {
     isAnon = r.isAnonymous;
     const author = COMMS_USERS[post.authorUserId];
     location = author?.location ?? "";
-    cangel = author?.capavateAngelNetwork ?? false;
+    // v24.0 C13: derive the Capavate Angel Network badge from live membership
+    // state. Fall back to the static COMMS_USERS field only if the live store
+    // is unavailable (e.g. not yet hydrated / import missing).
+    if (collectiveMembershipStore && typeof collectiveMembershipStore.isActive === "function") {
+      cangel = collectiveMembershipStore.isActive(post.authorUserId);
+    } else {
+      cangel = author?.capavateAngelNetwork ?? false;
+    }
     role = author?.roles.includes("founder") ? "Founder"
       : author?.roles.includes("investor") ? "Investor"
       : "Member";
@@ -956,8 +1028,8 @@ export function registerCommsRoutes(app: Express): void {
       // Sprint 19 A / defect 8 — emit in-app notification for each non-author participant.
       // DEF-031: Use role-aware link so investors are not sent to /founder/ path.
       for (const uid of ch.participantUserIds.filter((u) => u !== actorId)) {
-        const recipientIsFounder = COMMS_USERS[uid]?.roles.includes("founder") ?? false;
-        const link = `/${recipientIsFounder ? "founder" : "investor"}/messages?thread=${ch.id}`;
+        // v24.0 E7: use the shared role-aware resolver (founder/investor/partner).
+        const link = messagesPathForUser(uid, ch.id);
         try {
           emitNotification({
             userId: uid,
@@ -1007,16 +1079,16 @@ export function registerCommsRoutes(app: Express): void {
   /* ---- Star / unstar ---- */
   app.post("/api/comms/messages/:id/star", (req, res) => {
     const { actorId, ip, ua } = actorOf(req);
-    const m = messages.get(req.params.id);
-    if (!m) return res.status(404).json({ message: "Not found" });
+    if (!canMutateMessage(res, req.params.id, actorId)) return; // B14
+    const m = messages.get(req.params.id)!;
     if (!m.starredByUserIds.includes(actorId)) m.starredByUserIds.push(actorId);
     emitOutbox("message.starred", actorId, ip, ua, { messageId: m.id, channelId: m.channelId, userId: actorId });
     res.json({ ok: true, starred: true });
   });
   app.delete("/api/comms/messages/:id/star", (req, res) => {
     const { actorId, ip, ua } = actorOf(req);
-    const m = messages.get(req.params.id);
-    if (!m) return res.status(404).json({ message: "Not found" });
+    if (!canMutateMessage(res, req.params.id, actorId)) return; // B14
+    const m = messages.get(req.params.id)!;
     m.starredByUserIds = m.starredByUserIds.filter((u) => u !== actorId);
     emitOutbox("message.unstarred", actorId, ip, ua, { messageId: m.id, channelId: m.channelId, userId: actorId });
     res.json({ ok: true, starred: false });
@@ -1025,8 +1097,8 @@ export function registerCommsRoutes(app: Express): void {
   /* ---- Reactions ---- */
   app.post("/api/comms/messages/:id/reactions", (req, res) => {
     const { actorId, ip, ua } = actorOf(req);
-    const m = messages.get(req.params.id);
-    if (!m) return res.status(404).json({ message: "Not found" });
+    if (!canMutateMessage(res, req.params.id, actorId)) return; // B14
+    const m = messages.get(req.params.id)!;
     const parsed = messageReactionSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: "Invalid", issues: parsed.error.issues });
     const emoji = parsed.data.emoji;
@@ -1038,8 +1110,8 @@ export function registerCommsRoutes(app: Express): void {
   });
   app.delete("/api/comms/messages/:id/reactions", (req, res) => {
     const { actorId, ip, ua } = actorOf(req);
-    const m = messages.get(req.params.id);
-    if (!m) return res.status(404).json({ message: "Not found" });
+    if (!canMutateMessage(res, req.params.id, actorId)) return; // B14
+    const m = messages.get(req.params.id)!;
     const emoji = String(req.query.emoji ?? "");
     if (!emoji) return res.status(400).json({ message: "emoji required" });
     const r = m.reactions.find((x) => x.emoji === emoji);
@@ -1054,6 +1126,10 @@ export function registerCommsRoutes(app: Express): void {
     const { actorId } = actorOf(req);
     const ch = channels.get(req.params.id);
     if (!ch) return res.status(404).json({ message: "Not found" });
+    // B14 (v24.0 LOCKDOWN) — only a channel participant may mark it read.
+    if (!channelIsVisibleToViewer(ch, actorId)) {
+      return res.status(403).json({ message: "Not visible to you" });
+    }
     for (const m of messages.values()) {
       if (m.channelId !== ch.id) continue;
       if (!m.readByUserIds.includes(actorId)) m.readByUserIds.push(actorId);
@@ -1352,8 +1428,8 @@ export function registerCommsRoutes(app: Express): void {
   /* ---- Posts: like / unlike ---- */
   app.post("/api/comms/posts/:id/like", (req, res) => {
     const { actorId, ip, ua } = actorOf(req);
-    const p = posts.get(req.params.id);
-    if (!p) return res.status(404).json({ message: "Not found" });
+    if (!canMutatePost(res, req.params.id, actorId)) return; // B14
+    const p = posts.get(req.params.id)!;
     if (!p.likedByUserIds.includes(actorId)) p.likedByUserIds.push(actorId);
     emitOutbox("post.liked", actorId, ip, ua, { postId: p.id, userId: actorId });
     // Sprint 19 A — propagate to all feed caches.
@@ -1362,8 +1438,8 @@ export function registerCommsRoutes(app: Express): void {
   });
   app.delete("/api/comms/posts/:id/like", (req, res) => {
     const { actorId, ip, ua } = actorOf(req);
-    const p = posts.get(req.params.id);
-    if (!p) return res.status(404).json({ message: "Not found" });
+    if (!canMutatePost(res, req.params.id, actorId)) return; // B14
+    const p = posts.get(req.params.id)!;
     p.likedByUserIds = p.likedByUserIds.filter((u) => u !== actorId);
     emitOutbox("post.unliked", actorId, ip, ua, { postId: p.id, userId: actorId });
     emitMutation({ aggregate: "post", id: p.id, change: "update" });
@@ -1396,8 +1472,8 @@ export function registerCommsRoutes(app: Express): void {
   /* ---- Posts: comments ---- */
   app.post("/api/comms/posts/:id/comments", (req, res) => {
     const { actorId, ip, ua } = actorOf(req);
-    const p = posts.get(req.params.id);
-    if (!p) return res.status(404).json({ message: "Not found" });
+    if (!canMutatePost(res, req.params.id, actorId)) return; // B14
+    const p = posts.get(req.params.id)!;
     const parsed = postCommentCreateSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: "Invalid", issues: parsed.error.issues });
     const cid = `c_${randomBytes(6).toString("hex")}`;
@@ -1415,8 +1491,8 @@ export function registerCommsRoutes(app: Express): void {
   /* ---- Posts: share ---- */
   app.post("/api/comms/posts/:id/share", (req, res) => {
     const { actorId, ip, ua } = actorOf(req);
-    const p = posts.get(req.params.id);
-    if (!p) return res.status(404).json({ message: "Not found" });
+    if (!canMutatePost(res, req.params.id, actorId)) return; // B14
+    const p = posts.get(req.params.id)!;
     p.shareCount += 1;
     emitOutbox("post.shared", actorId, ip, ua, { postId: p.id, userId: actorId });
     emitMutation({ aggregate: "post", id: p.id, change: "update" });
@@ -1521,7 +1597,9 @@ export function registerCommsRoutes(app: Express): void {
         kind: "message.received",
         title: `${COMMS_USERS[actorId]?.legalName ?? actorId} opened a DM`,
         body: "A new direct message thread was started with you.",
-        link: `/founder/messages?thread=${id}`,
+        // v24.0 E7: role-aware link — was hard-coded to /founder regardless of
+        // the recipient's role.
+        link: messagesPathForUser(target.id, id),
       });
     } catch { /* noop */ }
     res.json({ ok: true, channelId: id, channel: projectChannel(ch, actorId) });

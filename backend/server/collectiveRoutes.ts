@@ -28,12 +28,26 @@ import { getAuditLog } from "./adminPlatformStore";
 import { getOutbox } from "./bridgeStore";
 import { computeCompositeForCompany, computeAllComposites, computeAutoTier } from "./dscScoringEngine";
 import { emitBridgeEvent } from "./bridgeStore";
-import { companies as canonicalCompanies, softCircles as canonicalSoftCircles, rounds as canonicalRounds } from "./mockData";
+// v24.0 C12: mockData import removed. Collective surfaces must read from live
+// stores only. These fallback collections are intentionally EMPTY — when live
+// projections are sparse, the response is empty (no synthetic/mock data).
+type CanonicalCompany = {
+  id: string; name?: string; sector?: string | null; stage?: string | null;
+  description?: string | null; logoUrl?: string | null;
+  employees?: number | null; hq?: string | null;
+};
+type CanonicalSoftCircle = { id: string; roundId?: string; amount?: number; companyId?: string };
+type CanonicalRound = { id: string; companyId?: string; name?: string; targetAmountUsd?: number };
+const canonicalCompanies: CanonicalCompany[] = [];
+const canonicalSoftCircles: CanonicalSoftCircle[] = [];
+const canonicalRounds: CanonicalRound[] = [];
 // v15 P0-11 — Collective surface MUST read live soft circles from the
 // DB-backed softCircleStore (was previously reading only mockData).
 import { listForCollective as listSoftCirclesForCollective } from "./softCircleStore";
 import { getRecentEvents } from "./sprint10Telemetry";
 import { requireCollectiveMember } from "./lib/requireCollectiveMember"; /* v14 Tier-1 Fix 3 */
+import { getUserContext } from "./lib/userContext"; /* B12 (v24.0) tenant filter */
+import { founderOwnedCompanyIds as tenantFounderOwnedCompanyIds, investorVisibleCompanyIds as tenantInvestorVisibleCompanyIds } from "./lib/tenantAuth"; /* B12 (v24.0) */
 
 /* ============================================================
  * Helper: safe division
@@ -90,7 +104,12 @@ export function registerTransactionPrepRecomputeListener(): void {
   _listenerRegistered = true;
 
   onMutation((evt) => {
-    if (evt.aggregate !== "transaction_prep" && evt.change !== "update") return;
+    // E1 (v24.0 LOCKDOWN) — the guard must SKIP any event that is not BOTH a
+    // transaction_prep aggregate AND an update. Using `&&` only skipped events
+    // that were neither, so the listener fired on unrelated mutations (e.g.
+    // company/round updates) and recomputed DSC spuriously. `||` correctly
+    // bails unless both conditions hold.
+    if (evt.aggregate !== "transaction_prep" || evt.change !== "update") return;
     const companyId = evt.id;
     if (!companyId) return;
 
@@ -782,8 +801,39 @@ export function registerCollectiveRoutes(app: Express): void {
       outbox = [];
     }
 
+    // B12 (v24.0 LOCKDOWN) — tenant isolation. Previously the activity feed
+    // returned EVERY bridge-outbox event to any collective member, and trusted
+    // the client-supplied companyId/userId filters as the only scoping (which
+    // a caller could simply omit to see everything). It also leaked raw
+    // `actor`/`payload` envelope fields. We now:
+    //   1. compute the caller's accessible companyIds (owned + visible; admin
+    //      sees all),
+    //   2. drop any event whose aggregateId is a company the caller cannot see,
+    //   3. strip raw actor/payload from the member-facing response.
+    const ctx = getUserContext(req);
+    const isAdmin = !!ctx?.isAdmin;
+    const accessible = new Set<string>();
+    if (ctx) {
+      tenantFounderOwnedCompanyIds(ctx).forEach((id) => accessible.add(id));
+      tenantInvestorVisibleCompanyIds(ctx).forEach((id) => accessible.add(id));
+    }
+    // A company-scoped event is one whose aggregateKind is "company"; only
+    // those are gated by company visibility. Non-company aggregates (platform
+    // level) remain visible to any collective member.
+    const callerVisible = (e: (typeof outbox)[number]): boolean => {
+      if (isAdmin) return true;
+      const kind = e.envelope.aggregateKind;
+      const aggId = e.envelope.aggregateId;
+      if (kind === "company") return !!aggId && accessible.has(aggId);
+      // For non-company aggregates, only surface events the caller actually
+      // acted on or that reference one of their accessible companies in the id.
+      if (e.envelope.actor?.userId && ctx?.userId && e.envelope.actor.userId === ctx.userId) return true;
+      return !!aggId && accessible.has(aggId);
+    };
+
     let events = outbox
       .filter((entry) => COLLECTIVE_RELEVANT_EVENT_TYPES.has(entry.envelope.eventType as string))
+      .filter(callerVisible)
       .sort((a, b) => b.envelope.occurredAt.localeCompare(a.envelope.occurredAt));
 
     if (companyId) {
@@ -793,14 +843,14 @@ export function registerCollectiveRoutes(app: Express): void {
       events = events.filter((e) => e.envelope.actor?.userId === userId || e.envelope.aggregateId === userId);
     }
 
+    // B12 — member-facing projection: NO raw actor/payload. Surface only a
+    // coarse actor label and an event summary the UI needs.
     const feed = events.slice(0, limit).map((entry) => ({
       eventId: entry.envelope.eventId,
       eventType: entry.envelope.eventType,
       aggregateId: entry.envelope.aggregateId,
       aggregateKind: entry.envelope.aggregateKind,
       occurredAt: entry.envelope.occurredAt,
-      actor: entry.envelope.actor,
-      payload: entry.envelope.payload,
       status: entry.status,
     }));
 

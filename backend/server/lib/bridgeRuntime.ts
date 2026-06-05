@@ -28,6 +28,7 @@ import {
 } from "../bridgeStore";
 
 import { dispatchInbound } from "./bridgeInbound";
+import { requireAdmin } from "./authMiddleware"; // B16 (v24.0) — lock bridge runtime ops to admins
 
 const COLLECTIVE_WEBHOOK_URL = process.env.COLLECTIVE_WEBHOOK_URL ?? "";
 const COLLECTIVE_WEBHOOK_SECRET = process.env.COLLECTIVE_WEBHOOK_SECRET ?? "";
@@ -81,15 +82,21 @@ export async function deliverOnce(): Promise<{ delivered: number; deadLettered: 
         return { ok: false, status: 0 };
       }
     }
-    // Mock: deliver to in-process handler emulating Collective receiver.
-    const ok = mockReceive(env, hmac);
-    if (ok) {
-      recordLatency(Date.now() - occurredAt);
-      lastSuccessAt = new Date().toISOString();
-      lastDeliveredEventId = env.eventId;
+    // v24.0 C14: in-process mock receiver is DEV-ONLY. In production the mock
+    // delivery path is disabled (no synthetic delivery emulation).
+    if (process.env.NODE_ENV !== "production") {
+      // Mock: deliver to in-process handler emulating Collective receiver.
+      const ok = mockReceive(env, hmac);
+      if (ok) {
+        recordLatency(Date.now() - occurredAt);
+        lastSuccessAt = new Date().toISOString();
+        lastDeliveredEventId = env.eventId;
+      }
+      void start; // suppress unused
+      return { ok, status: ok ? 200 : 500 };
     }
     void start; // suppress unused
-    return { ok, status: ok ? 200 : 500 };
+    return { ok: false, status: 501 };
   });
 }
 
@@ -134,7 +141,7 @@ export function bridgeHealth() {
     ? Math.max(0, Date.parse(lastSuccessAt) - Date.parse(outbox[outbox.length - 1].envelope.occurredAt))
     : 0;
   return {
-    mode: LIVE_MODE ? "live" : "mock",
+    mode: LIVE_MODE ? "live" : (process.env.NODE_ENV === "production" ? "disabled" : "mock"),
     outboundQueueDepth: queued,
     dlqDepth: dlq,
     lastSuccessAt,
@@ -179,18 +186,25 @@ export function replayFrom(cursorEventId: string | null): { requeued: number } {
 }
 
 export function registerBridgeRuntimeRoutes(app: Express): void {
+  // B16 (v24.0 LOCKDOWN) — every bridge runtime/operations endpoint was PUBLIC,
+  // exposing replay cursors, outbound counters, and drain/replay triggers to
+  // any caller (a remote attacker could replay or drain the bridge). All of
+  // these are admin-only operational endpoints; the ONLY exception is
+  // /api/bridge/inbound, which is a signed webhook (HMAC-verified below) and
+  // must remain reachable by the external bridge without an admin session.
+
   // Health
-  app.get("/api/bridge/health", (_req: Request, res: Response) => {
+  app.get("/api/bridge/health", requireAdmin, (_req: Request, res: Response) => {
     res.json(bridgeHealth());
   });
 
   // Cursor
-  app.get("/api/bridge/cursor", (_req: Request, res: Response) => {
+  app.get("/api/bridge/cursor", requireAdmin, (_req: Request, res: Response) => {
     res.json(getBridgeCursor());
   });
 
   // Replay
-  app.post("/api/bridge/replay-from", (req: Request, res: Response) => {
+  app.post("/api/bridge/replay-from", requireAdmin, (req: Request, res: Response) => {
     const cursor = (req.query.cursor as string | undefined) ?? null;
     res.json(replayFrom(cursor));
   });
@@ -221,18 +235,18 @@ export function registerBridgeRuntimeRoutes(app: Express): void {
   });
 
   // Trigger drain (for tests & demo). Production runs the drainer on a timer.
-  app.post("/api/bridge/drain", async (_req: Request, res: Response) => {
+  app.post("/api/bridge/drain", requireAdmin, async (_req: Request, res: Response) => {
     const out = await deliverOnce();
     res.json({ ...out, ...bridgeHealth() });
   });
 
   // Outbound counters
-  app.get("/api/bridge/outbound-counts", (_req: Request, res: Response) => {
+  app.get("/api/bridge/outbound-counts", requireAdmin, (_req: Request, res: Response) => {
     res.json(outboundCounts());
   });
 
   // Per-event type list
-  app.get("/api/bridge/event-types", (_req: Request, res: Response) => {
+  app.get("/api/bridge/event-types", requireAdmin, (_req: Request, res: Response) => {
     res.json({ outbound: ALL_OUTBOUND_EVENT_TYPES, inbound: ALL_INBOUND_EVENT_TYPES });
   });
 }

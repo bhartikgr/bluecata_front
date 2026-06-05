@@ -10,7 +10,6 @@ import {
   rounds,
   roundInvitations,
   softCircles,
-  crmInvestors,
   incomingInvitations,
   investorSoftCircles,
   portfolio,
@@ -58,7 +57,7 @@ import { registerDataroomRoutes } from "./dataroomStore";
 // base64 data URLs in form state.
 import { registerCompanyLogoRoutes } from "./lib/companyLogoRoutes";
 import { registerReportsRoutes } from "./reportsStore";
-import { registerFounderCrmRoutes } from "./founderCrmStore";
+import { registerFounderCrmRoutes, listByFounder as crmListByFounder } from "./founderCrmStore";
 import { registerCaptableCommitRoutes, getLedger } from "./captableCommitStore";
 import { closeRoundCascadeStandalone } from "./lib/roundCloseCascade";
 import { registerTermSheetRoutes } from "./termSheetStore";
@@ -86,6 +85,7 @@ import {
   createSoftCircle as softCircleCreate,
   validateSoftCircle as softCircleValidate,
   listForRound as softCircleListForRound,
+  listForCompany as softCircleListForCompany, // C6 (v24.0): admin aggregate from real store
 } from "./softCircleStore";
 import { configureSubscriptionsStore, registerSubscriptionRoutes, listSubscriptions, updateSubscription, getSubscription, createSubscriptionForNewCompany, type Subscription } from "./subscriptionsStore";
 import { configurePricingModelStore, registerPricingModelRoutes } from "./pricingModelStore";
@@ -182,6 +182,16 @@ import { getOutbox } from "./bridgeStore";
 import { loadUserContext, requireEntitlement } from "./lib/requireEntitlement";
 import { registerPersona } from "./lib/userContext";
 import { getUserContextForId, getUserContext } from "./lib/userContext";
+// B (v24.0) — canonical tenant-isolation helpers.
+import {
+  canAccessCompany as tenantCanAccessCompany,
+  requireCanAccessCompany,
+  requireFounderOwnsCompany as tenantRequireFounderOwnsCompany,
+  requireFounderOwnsRound as tenantRequireFounderOwnsRound,
+  requireInvestorCanViewRound,
+  founderOwnedCompanyIds as tenantFounderOwnedCompanyIds,
+  investorVisibleCompanyIds as tenantInvestorVisibleCompanyIds,
+} from "./lib/tenantAuth";
 import { companies as _allCompanies } from "./mockData";
 // Sprint-fix: production auth middleware
 import { requireAuth, requireAdmin, requireAuthenticated } from "./lib/authMiddleware";
@@ -624,16 +634,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // dist/), which made the prod bundle report version "0.0.0". readFileSync is
   // preserved verbatim by esbuild, so __dirname (dist/ in prod) resolves the
   // shipped package.json correctly.
+  // v24.0 D1: version resolver priority order. APP_VERSION env wins so the
+  // deploy script can guarantee the shipped version regardless of bundle
+  // layout. Never silently return "0.0.0" — log loudly and return "unknown".
   const version = (() => {
+    if (process.env.APP_VERSION) return process.env.APP_VERSION;
     try {
       const pkg = JSON.parse(readFileSync(path.resolve(__dirname, "..", "package.json"), "utf8"));
       if (pkg.version) return pkg.version as string;
-    } catch { /* try sibling path below */ }
+    } catch {}
     try {
       const pkg = JSON.parse(readFileSync(path.resolve(__dirname, "package.json"), "utf8"));
       if (pkg.version) return pkg.version as string;
-    } catch { /* keep 0.0.0 */ }
-    return "0.0.0";
+    } catch {}
+    log.error({ route: "health.version", errorType: "version_unresolved", message: "FAILED to resolve version — APP_VERSION env unset and package.json not found" });
+    return "unknown";
   })();
   app.get("/api/healthz", (_req, res) => {
     const dbOk = (() => { try { getDb(); return true; } catch { return false; } })();
@@ -820,7 +835,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   /* ------------ founder side — auth required ------------ */
-  app.get("/api/companies", requireAuth, (_req, res) => res.json(companies));
+  // B1 (v24.0 LOCKDOWN) — tenant isolation. Previously returned the full
+  // company list to ANY authenticated user. Now scope by entitlement:
+  //   admin    → all companies
+  //   founder  → only companies the founder owns
+  //   investor → only companies they can view (cap-table positions + invited
+  //              rounds' companies)
+  app.get("/api/companies", requireAuth, (req, res) => {
+    const ctx = req.userContext ?? getUserContext(req);
+    if (ctx?.isAdmin) return res.json(companies);
+    const allowed = new Set<string>();
+    tenantFounderOwnedCompanyIds(ctx).forEach((id) => allowed.add(id));
+    tenantInvestorVisibleCompanyIds(ctx).forEach((id) => allowed.add(id));
+    res.json(companies.filter((c) => allowed.has((c as { id: string }).id)));
+  });
 
   /* Sprint 7 — access-aware company-details payload.
    * Auth required. Founders/admins see everything; investors see only invited companies.
@@ -1016,6 +1044,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   /* Sprint 18 T5.1 — Edit Terms (active rounds only) — requireAuth */
   app.patch("/api/rounds/:id/terms", requireAuth, (req, res) => {
+    // B7 (v24.0 LOCKDOWN) — only the founder who owns the round's company (or
+    // admin) may edit terms. Previously any authenticated user could PATCH.
+    const check = requireFounderOwnsRound(req, res);
+    if (!check.ok) return;
     /* 23-May Fix 3 — same legacy/db merge fix as GET /api/rounds/:id. */
     const r = mergeLegacyAndDbRounds().find((rr: any) => rr.id === req.params.id);
     if (!r) return res.status(404).json({ message: "Not found" });
@@ -1075,6 +1107,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.get("/api/rounds/:id/invitations", requireAuth, (req, res) => {
+    // B2 (v24.0) — only the round's founder (or admin) may list its invitations.
+    const check = requireFounderOwnsRound(req, res);
+    if (!check.ok) return;
     // v15 P0-4 — union live DB-backed invitations with any legacy seed rows.
     // The raw token is never present here — listForRound returns public views.
     const rid = typeof req.params.id === "string" ? req.params.id : String(req.params.id ?? "");
@@ -1084,6 +1119,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json([...seed.filter((i) => !liveIds.has(i.id)), ...live]);
   });
   app.get("/api/rounds/:id/soft-circles", requireAuth, (req, res) => {
+    // B3 (v24.0) — only the round's founder (or admin) may list its soft-circles.
+    const check = requireFounderOwnsRound(req, res);
+    if (!check.ok) return;
     // v15 P0-9 — union live DB-backed circles with the seed list.
     const rid = typeof req.params.id === "string" ? req.params.id : String(req.params.id ?? "");
     const live = softCircleListForRound(rid);
@@ -1092,7 +1130,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json([...seed.filter((s) => !liveIds.has(s.id)), ...live]);
   });
 
-  app.get("/api/crm", requireAuth, (_req, res) => res.json(crmInvestors));
+  // B4/C2 (v24.0 LOCKDOWN) — the legacy CRM list returned a global mock array
+  // (`crmInvestors`) to any authenticated user. Now scope by the caller:
+  //   admin   → may pass ?founderId to inspect; otherwise own owned companies
+  //   founder → contacts across the companies they own (real founderCrmStore)
+  //   other   → empty list
+  app.get("/api/crm", requireAuth, (req, res) => {
+    const ctx = req.userContext ?? getUserContext(req);
+    const owned = tenantFounderOwnedCompanyIds(ctx);
+    res.json(crmListByFounder(owned));
+  });
 
   // Defect 57 fix: require ?companyId= and filter results; auth check.
   app.get("/api/dataroom", requireAuth, (req, res) => {
@@ -1100,6 +1147,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!companyId) {
       return res.status(400).json({ error: "MISSING_COMPANY_ID", message: "?companyId= is required." });
     }
+    // B5 (v24.0) — caller must own the company (founder/admin) OR have an active
+    // entitlement to it (investor cap-table position / invitation). Previously
+    // any authenticated user could read any company's dataroom by passing its id.
+    const access = requireCanAccessCompany(req, res, companyId);
+    if (!access.ok) return;
     const files = dataroomFiles.filter(f => f.companyId === companyId);
     res.json(files);
   });
@@ -1242,13 +1294,50 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
   app.get("/api/investor/invitations/:id", requireAuth, (req, res) => {
     const i = incomingInvitations.find(i => i.id === req.params.id);
-    if (!i) return res.status(404).json({ message: "Not found" });
-    res.json(i);
+    if (i) return res.json(i);
+    // A6 (v24.0) — modern fallback: after redeeming a canonical founder invite,
+    // the detail record lives in roundInvitationsStore, not the static
+    // incomingInvitations fixture. Read it by id and verify the current user's
+    // email matches the invitation so one investor cannot read another's.
+    const modern = roundInvitationsGet(req.params.id);
+    if (!modern) return res.status(404).json({ message: "Not found" });
+    const ctx = req.userContext ?? getUserContext(req);
+    const callerEmail = (ctx.identity?.email ?? "").toLowerCase();
+    const inviteEmail = (modern.investorEmail ?? "").toLowerCase();
+    if (!callerEmail || callerEmail !== inviteEmail) {
+      // Do not reveal existence to non-owners.
+      return res.status(404).json({ message: "Not found" });
+    }
+    const allRounds = roundsStoreList();
+    const round = allRounds.find(r => r.id === modern.roundId);
+    return res.json({
+      ...modern,
+      company: {
+        id: modern.companyId ?? "",
+        name: getCompanyNameById(modern.companyId ?? "") ?? modern.companyId ?? "",
+        sector: "",
+      },
+      round: {
+        id: modern.roundId,
+        name: round?.name ?? `Round ${modern.roundId}`,
+        type: round?.type ?? "unknown",
+      },
+      state: modern.state,
+      receivedAt: modern.createdAt ?? modern.sentAt ?? new Date().toISOString(),
+      expiresAt: modern.expiresAt ?? new Date(Date.now() + 14 * 86400000).toISOString(),
+      targetAmount: round?.targetAmount ?? 0,
+      raisedAmount: round?.raisedAmount ?? 0,
+      minTicket: (round?.minTicket ?? 0) as number,
+      preMoney: (round?.preMoney ?? 0) as number,
+    });
   });
   app.get("/api/investor/soft-circles", requireAuth, (_req, res) => res.json(investorSoftCircles));
-  app.get("/api/investor/portfolio", requireAuth, (_req, res) => res.json(portfolio));
-  app.get("/api/investor/watchlist", requireAuth, (_req, res) => res.json(watchlist));
-  app.get("/api/investor/discover", requireAuth, (_req, res) => res.json(discover));
+  // C3 (v24.0): real portfolio/watchlist/discover stores are not yet wired.
+  // Return an empty array (200) rather than synthetic mock data so investors
+  // never see fabricated positions. When the real stores land, swap these in.
+  app.get("/api/investor/portfolio", requireAuth, (_req, res) => res.json([]));
+  app.get("/api/investor/watchlist", requireAuth, (_req, res) => res.json([]));
+  app.get("/api/investor/discover", requireAuth, (_req, res) => res.json([]));
 
   /* ------------ Sprint 7: rich investor surface — requireAuth ------------ */
   // Patch v9 (P0-6): /api/investor/me derives identity from req.session.userId.
@@ -1280,7 +1369,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
   });
   app.get("/api/investor/portfolio2", requireAuth, (_req, res) => res.json(investorPortfolio));
-  app.get("/api/investor/activity", requireAuth, (_req, res) => res.json(investorActivity));
+  // C3 (v24.0): activity feed not yet backed by a real store — return empty
+  // array (200), never synthetic activity rows.
+  app.get("/api/investor/activity", requireAuth, (_req, res) => res.json([]));
 
   /* ------------ Sprint 7: invitation token endpoints ------------ */
 
@@ -1346,20 +1437,42 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!raw) return res.status(404).json({ valid: false });
     const hash = sha256Hex(raw);
     const entry = invitationStore.find(e => e.tokenHash === hash);
-    if (!entry) return res.status(404).json({ valid: false });
-    if (entry.revoked) return res.json({ valid: false, reason: "revoked" });
-    if (entry.redeemed) return res.json({ valid: false, reason: "already_redeemed" });
-    if (Date.now() > new Date(entry.expiresAt).getTime())
+    if (entry) {
+      if (entry.revoked) return res.json({ valid: false, reason: "revoked" });
+      if (entry.redeemed) return res.json({ valid: false, reason: "already_redeemed" });
+      if (Date.now() > new Date(entry.expiresAt).getTime())
+        return res.json({ valid: false, reason: "expired" });
+      return res.json({
+        valid: true,
+        roundId: entry.roundId,
+        companyId: entry.companyId,
+        companyName: entry.companyName,
+        inviteeEmail: entry.inviteeEmail,
+        inviteeName: entry.inviteeName,
+        expiresAt: entry.expiresAt,
+        prefilledScreenName: entry.prefilledScreenName,
+      });
+    }
+    // A4 (v24.0) — modern fallback: tokens issued by the canonical founder flow
+    // (POST /api/rounds/:id/invitations) live in roundInvitationsStore, not the
+    // legacy invitationStore. Mirror the redeem-handler bridge on the check side
+    // so a legitimately issued invitation never validates as 404/invalid.
+    const modernEntry = findByTokenHash(hash);
+    if (!modernEntry) return res.status(404).json({ valid: false });
+    if (modernEntry.state === "revoked") return res.json({ valid: false, reason: "revoked" });
+    if (modernEntry.redeemedAt || modernEntry.state === "accepted")
+      return res.json({ valid: false, reason: "already_redeemed" });
+    if (modernEntry.expiresAt && Date.now() > new Date(modernEntry.expiresAt).getTime())
       return res.json({ valid: false, reason: "expired" });
     return res.json({
       valid: true,
-      roundId: entry.roundId,
-      companyId: entry.companyId,
-      companyName: entry.companyName,
-      inviteeEmail: entry.inviteeEmail,
-      inviteeName: entry.inviteeName,
-      expiresAt: entry.expiresAt,
-      prefilledScreenName: entry.prefilledScreenName,
+      roundId: modernEntry.roundId,
+      companyId: modernEntry.companyId ?? "",
+      companyName: getCompanyNameById(modernEntry.companyId ?? "") ?? "",
+      inviteeEmail: modernEntry.investorEmail,
+      inviteeName: modernEntry.investorName ?? "",
+      expiresAt: modernEntry.expiresAt,
+      prefilledScreenName: undefined,
     });
   });
 
@@ -1511,6 +1624,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   }
 
   // Inline ownership check: caller must be a founder of the round's company.
+  // B2/B3/B7 (v24.0) — delegate to the canonical tenant-auth helper so the
+  // round-ownership rule is identical everywhere. companyIdForRound here uses
+  // the local resolver (which also covers seed rounds for tests); fall back to
+  // the canonical helper when the local resolver finds the company.
   function requireFounderOwnsRound(req: import("express").Request, res: import("express").Response): { ok: boolean; companyId?: string; userId?: string } {
     const roundId = paramStr(req.params.id);
     const cid = roundId ? companyIdForRound(roundId) : null;
@@ -1518,18 +1635,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.status(404).json({ ok: false, error: "round_not_found" });
       return { ok: false };
     }
-    const ctx = getUserContext(req);
-    if (!ctx || !ctx.userId) {
-      res.status(401).json({ ok: false, error: "unauthenticated" });
-      return { ok: false };
-    }
-    if (ctx.isAdmin) return { ok: true, companyId: cid, userId: ctx.userId };
-    const owns = (ctx.founder?.companies ?? []).some((c: any) => c.companyId === cid);
-    if (!owns) {
-      res.status(403).json({ ok: false, error: "not_founder_of_company", companyId: cid });
-      return { ok: false };
-    }
-    return { ok: true, companyId: cid, userId: ctx.userId };
+    return tenantRequireFounderOwnsCompany(req, res, cid);
   }
 
   // Founder — create a new invitation. Sends email, NEVER returns raw token.
@@ -1581,6 +1687,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const invId = paramStr(req.params.invId);
     const inv = roundInvitationsGet(invId);
     if (!inv) return res.status(404).json({ ok: false, error: "invitation_not_found" });
+    // B11 (v24.0 LOCKDOWN) — the parent-round ownership check above does NOT
+    // guarantee the child invitation belongs to that round/company. Without
+    // this, a founder who owns round X could act on an invitation belonging to
+    // round Y by passing Y's invId. Assert the child matches the authorized
+    // round AND company; otherwise 404 (avoid id enumeration).
+    if (inv.roundId !== paramStr(req.params.id) || (check.companyId && inv.companyId !== check.companyId)) {
+      return res.status(404).json({ ok: false, error: "invitation_not_found" });
+    }
     emitMutation({ aggregate: "invitation", id: invId, change: "update", tenantId: inv.tenantId ?? undefined });
     return res.json({ ok: true, invitation: inv });
   });
@@ -1590,6 +1704,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const check = requireFounderOwnsRound(req, res);
     if (!check.ok || !check.userId) return;
     const invId = paramStr(req.params.invId);
+    // B11 (v24.0 LOCKDOWN) — verify the child invitation belongs to the
+    // authorized round/company BEFORE mutating it.
+    const existing = roundInvitationsGet(invId);
+    if (!existing) return res.status(404).json({ ok: false, error: "invitation_not_found" });
+    if (existing.roundId !== paramStr(req.params.id) || (check.companyId && existing.companyId !== check.companyId)) {
+      return res.status(404).json({ ok: false, error: "invitation_not_found" });
+    }
     const { expiryDays } = req.body ?? {};
     const extendDays = typeof expiryDays === "number" && expiryDays > 0 ? expiryDays : 14;
     roundInvitationsExtend(invId, extendDays, check.userId);
@@ -1603,6 +1724,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const check = requireFounderOwnsRound(req, res);
     if (!check.ok || !check.userId) return;
     const invId = paramStr(req.params.invId);
+    // B11 (v24.0 LOCKDOWN) — verify the child invitation belongs to the
+    // authorized round/company BEFORE revoking it.
+    const existing = roundInvitationsGet(invId);
+    if (!existing) return res.status(404).json({ ok: false, error: "invitation_not_found" });
+    if (existing.roundId !== paramStr(req.params.id) || (check.companyId && existing.companyId !== check.companyId)) {
+      return res.status(404).json({ ok: false, error: "invitation_not_found" });
+    }
     roundInvitationsRevoke(invId, check.userId);
     return res.json({ ok: true, invId });
   });
@@ -1671,28 +1799,59 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.get("/api/rounds/:id/term-sheet/pdf", requireAuth, (req, res) => {
-    const { id } = req.params;
-    const pdfContent = `%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> >>\nendobj\n4 0 obj\n<< /Length 44 >>\nstream\nBT /F1 12 Tf 100 700 Td (Term Sheet ${id}) Tj ET\nendstream\nendobj\nxref\n0 5\n0000000000 65535 f\n0000000009 00000 n\n0000000058 00000 n\n0000000115 00000 n\n0000000300 00000 n\ntrailer << /Size 5 /Root 1 0 R >>\nstartxref\n395\n%%EOF`;
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename="term-sheet-${id}.pdf"`);
-    res.send(Buffer.from(pdfContent));
+    const id = paramStr(req.params.id);
+    // B6 (v24.0 LOCKDOWN) — ownership/visibility check: caller must own or be
+    // entitled to view the round's company before any term-sheet output.
+    const access = requireInvestorCanViewRound(req, res, id);
+    if (!access.ok) return;
+    // C7 (v24.0 LOCKDOWN) — this endpoint previously shipped a hard-coded
+    // placeholder PDF to customers. There is no real term-sheet PDF renderer
+    // wired yet, so we MUST NOT hand a fake document to a customer. Return
+    // 501 not_implemented until a real generator is connected (flagged in the
+    // v24.0 report — real PDF generation is larger than this wave).
+    res.status(501).json({
+      ok: false,
+      error: "not_implemented",
+      feature: "term_sheet_pdf",
+      message: "Term-sheet PDF generation is not yet available.",
+    });
   });
 
   // Cap-table PDF — requireAuth
   app.get("/api/companies/:id/cap-table/pdf", requireAuth, (req, res) => {
-    const { id } = req.params;
-    const pdfContent = `%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> >>\nendobj\n4 0 obj\n<< /Length 54 >>\nstream\nBT /F1 12 Tf 100 700 Td (Cap Table Snapshot ${id}) Tj ET\nendstream\nendobj\nxref\n0 5\n0000000000 65535 f\n0000000009 00000 n\n0000000058 00000 n\n0000000115 00000 n\n0000000300 00000 n\ntrailer << /Size 5 /Root 1 0 R >>\nstartxref\n405\n%%EOF`;
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename="cap-table-${id}.pdf"`);
-    res.send(Buffer.from(pdfContent));
+    const id = paramStr(req.params.id);
+    // B6 (v24.0 LOCKDOWN) — ownership/visibility check on the company.
+    const access = requireCanAccessCompany(req, res, id);
+    if (!access.ok) return;
+    // C7 (v24.0 LOCKDOWN) — no fake placeholder PDF. Return 501 until a real
+    // cap-table PDF renderer is wired (flagged in the v24.0 report).
+    res.status(501).json({
+      ok: false,
+      error: "not_implemented",
+      feature: "cap_table_pdf",
+      message: "Cap-table PDF generation is not yet available.",
+    });
   });
 
   // Securities POST — requireAuth
   app.post("/api/companies/:id/securities", requireAuth, (req, res) => {
-    const { id } = req.params;
+    const id = paramStr(req.params.id);
+    // B9 (v24.0 LOCKDOWN) — only the founder who owns the company (or admin)
+    // may add a security. Previously any authenticated user could POST.
+    const check = tenantRequireFounderOwnsCompany(req, res, id);
+    if (!check.ok) return;
     const { kind, principal, terms } = req.body ?? {};
     const sec = { id: `sec-${Date.now()}`, companyId: id, kind, principal, terms, issuedAt: new Date().toISOString() };
-    emitMutation({ aggregate: "round", id, change: "update" });
+    // B9 — persist so the matching GET /api/companies/:id/securities reflects
+    // the new row within this process. NOTE (flagged in report): the audit's
+    // proposed `captableCommitStore.appendSecurity()` does not exist; wiring
+    // securities through the SACRED cap-table engine ledger is larger than this
+    // wave, so we persist into the in-process securities store here and flag
+    // durable engine-backed persistence for v24.1.
+    (securities as unknown as Array<typeof sec>).push(sec);
+    // B8/B9 — emit the correct aggregate. A securities mutation is a company
+    // event, not a round event.
+    emitMutation({ aggregate: "company", id, change: "update" });
     res.json({ ok: true, security: sec });
   });
 
@@ -1923,7 +2082,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // Companies PATCH — requireAuth
   const patchCompanyHandler = (req: import("express").Request, res: import("express").Response) => {
-    const { id } = req.params;
+    const id = paramStr(req.params.id);
+    // B8 (v24.0 LOCKDOWN) — ownership check. Previously ANY authenticated user
+    // could PATCH any company. Only the founder who owns the company (or admin)
+    // may mutate it.
+    const check = tenantRequireFounderOwnsCompany(req, res, id);
+    if (!check.ok) return;
     // B-V11-5 fix: actually persist the patch into USER_COMPANIES so the next
     // GET /api/founder/active-company / /api/founder/companies returns the
     // updated display name + legal name. Previously this was a no-op stub
@@ -1938,7 +2102,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // BUG 017 fix v23.7 — persist the Settings → Company currency selection.
       defaultCurrency: req.body?.defaultCurrency,
     });
-    emitMutation({ aggregate: "round", id, change: "update" });
+    // B8 (v24.0 LOCKDOWN) — emit the CORRECT aggregate. A company PATCH is a
+    // company event; it was previously (incorrectly) emitted as "round".
+    emitMutation({ aggregate: "company", id, change: "update" });
     if (updated) {
       return res.json({ ok: true, id, company: updated });
     }
@@ -1987,22 +2153,28 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/founder/team", (req, res) => {
     const ctx = req.userContext;
     if (!ctx?.isAuthed) {
-      return res.json({ ok: true, team: { seats: 1, used: 0, members: [] } });
+      return res.json({ ok: true, team: { seats: 0, used: 0, members: [] } });
     }
+    // C8 (v24.0): there is no real multi-seat founder team store yet, so we do
+    // NOT fabricate a seat allowance (previously a hard-coded `seats: 5`). The
+    // only real, verifiable member is the authenticated founder; seats/used are
+    // derived from the actual member list rather than invented. When a real
+    // team store lands, swap the members source here.
+    const members = [
+      {
+        id: ctx.userId,
+        name: ctx.identity.name,
+        email: ctx.identity.email,
+        role: "founder",
+        status: "active",
+      },
+    ];
     res.json({
       ok: true,
       team: {
-        seats: 5,
-        used: 1,
-        members: [
-          {
-            id: ctx.userId,
-            name: ctx.identity.name,
-            email: ctx.identity.email,
-            role: "founder",
-            status: "active",
-          },
-        ],
+        seats: members.length,
+        used: members.length,
+        members,
       },
     });
   });
@@ -2264,6 +2436,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   /* ------------ Avi 22-May Issue 2: PPS derivation helpers (UI advisory) ------------ */
   registerRoundPriceDerivationRoutes(app);
 
+  // C4 (v24.0): these endpoints were never implemented — they returned a
+  // fake `{ ok: true }` to the client, silently swallowing the request and
+  // making the UI appear to succeed while nothing was persisted. Per the
+  // v24.0 lockdown rule (NO fake success), return 501 not_implemented with a
+  // clear feature-flag message until a real handler is wired.
   for (const path of [
     "/api/rounds/:id/invitations/bulk",
     "/api/crm",
@@ -2273,7 +2450,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     "/api/investor/invitations/:id/decline",
     "/api/investor/invitations/:id/soft-circle",
   ]) {
-    app.post(path, requireAuth, (_req, res) => res.json({ ok: true }));
+    app.post(path, requireAuth, (_req, res) =>
+      res.status(501).json({
+        ok: false,
+        error: "not_implemented",
+        message: `Endpoint ${path} is not implemented yet and is disabled in v24.0. No data was changed.`,
+      }),
+    );
   }
 
   /* ------------------------------------------------------------------
@@ -2373,8 +2556,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       ownershipPct: 0,
     };
 
+    // C5 (v24.0): read real rounds from roundsStore (SQL-backed) for the active
+    // company instead of the canonical mock array, so the founder dashboard
+    // reflects actual data. Empty when the company has no rounds yet.
     const companyRounds = activeCompanyId
-      ? canonicalRounds.filter((r) => r.companyId === activeCompanyId)
+      ? roundsStoreForCompany(activeCompanyId)
       : [];
     const recentRounds = companyRounds
       .slice()
@@ -2574,7 +2760,10 @@ function registerAdminCompaniesFullRoute(app: Express) {
     }
 
     const rows: AdminCompanyFullRow[] = Array.from(stubById.values()).map((c) => {
-      const companyRounds = canonicalRounds.filter((r) => r.companyId === c.id);
+      // C6 (v24.0): read rounds + soft-circles from the real stores
+      // (roundsStore / softCircleStore) instead of the canonical mock arrays so
+      // the admin company aggregate reflects production data.
+      const companyRounds = roundsStoreForCompany(c.id);
       const closedRounds = companyRounds.filter((r) => r.state === "closed" || r.state === "funded");
       const activeRounds = companyRounds.filter((r) => r.state !== "closed" && r.state !== "funded");
 
@@ -2584,8 +2773,7 @@ function registerAdminCompaniesFullRoute(app: Express) {
         return sum + Math.round(raw * 100);
       }, 0);
 
-      const roundIds = new Set(companyRounds.map((r) => r.id));
-      const allSoftCircles = canonicalSoftCircles.filter((sc) => roundIds.has(sc.roundId));
+      const allSoftCircles = softCircleListForCompany(c.id);
       const softCircles30d = allSoftCircles.filter((sc) => now - new Date(sc.createdAt).getTime() < THIRTY_DAYS);
       const softCircle30dAmountMinor = softCircles30d.reduce(
         (sum, sc) => sum + Math.round((sc.amount ?? 0) * 100),

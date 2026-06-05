@@ -111,19 +111,23 @@ export default function InvestorSignup() {
 
  const redeem = useMutation<{ ok: boolean; redirectTo?: string; reason?: string }, Error>({
  mutationFn: async () => {
- // Defect 62: upload kycFile as multipart/form-data so the server receives the binary.
- const fd = new FormData();
- fd.append("token", token ?? "");
- fd.append("fullName", fullName);
- fd.append("phone", phone);
- fd.append("country", country);
- fd.append("investorType", investorType);
- fd.append("accredited", accredited);
- fd.append("screenName", screenName);
- fd.append("visibleCo", String(visibleCo));
- fd.append("visibleNet", String(visibleNet));
- if (kycFile) fd.append("kycFile", kycFile);
- const r = await apiRequest("POST", "/api/invitations/redeem", fd as unknown as Record<string, unknown>);
+ // A5 (v24.0): apiRequest JSON-stringifies its body, so a FormData payload
+ // collapsed to `{}` server-side and the redeem handler returned missing_token.
+ // Send the JSON shape the server reads at routes.ts: { token, profile, password }.
+ // The token IS the auth; KYC binary upload is handled separately post-redeem.
+ const r = await apiRequest("POST", "/api/invitations/redeem", {
+ token: token ?? "",
+ profile: {
+ fullName,
+ phone,
+ country,
+ investorType,
+ accredited,
+ screenName,
+ visibleCo,
+ visibleNet,
+ },
+ });
  return r.json();
  },
  onSuccess: (data) => {

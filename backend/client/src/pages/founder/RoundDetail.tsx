@@ -88,7 +88,7 @@ export default function RoundDetail() {
  const round = useQuery<Round>({ queryKey: ["/api/rounds", id] });
  const invs = useQuery<Invitation[]>({ queryKey: [`/api/rounds/${id}/invitations`] });
  const softs = useQuery<SoftCircle[]>({ queryKey: [`/api/rounds/${id}/soft-circles`] });
- const me = useQuery<{ id: string; displayName: string; role: string }>({ queryKey: ["/api/auth/me"] });
+ const me = useQuery<{ id: string; displayName: string; role: string; identity?: { email?: string; name?: string } }>({ queryKey: ["/api/auth/me"] });
 
  const [inviteOpen, setInviteOpen] = useState(false);
  const [bulkOpen, setBulkOpen] = useState(false);
@@ -475,6 +475,7 @@ export default function RoundDetail() {
  softName={asArray<SoftCircle>(softs.data).find(s => s.id === confirmSoftId)?.investorName}
  softAmount={asArray<SoftCircle>(softs.data).find(s => s.id === confirmSoftId)?.amount}
  roundId={id}
+ signerEmail={me.data?.identity?.email ?? ""}
  onClose={() => setConfirmSoftId(null)}
  />
 
@@ -893,8 +894,8 @@ function DocumentsTab({ roundId, softs, navigate }: { roundId: string; softs: So
 }
 
 /* Sprint 6 — Founder soft-circle confirmation dialog. SES e-sig + chained signature. */
-function FounderConfirmDialog({ open, softId, softName, softAmount, roundId, onClose }:
- { open: boolean; softId: string | null; softName?: string; softAmount?: number; roundId: string; onClose: () => void }) {
+function FounderConfirmDialog({ open, softId, softName, softAmount, roundId, signerEmail, onClose }:
+ { open: boolean; softId: string | null; softName?: string; softAmount?: number; roundId: string; signerEmail: string; onClose: () => void }) {
  const { toast } = useToast();
  const saveSoftCircleSig = useTermSheetStore.getState().saveSoftCircleSig;
  const existing = useTermSheetStore.getState().softCircleSigs[softId ?? ""];
@@ -911,7 +912,10 @@ function FounderConfirmDialog({ open, softId, softName, softAmount, roundId, onC
  documentId: softId,
  documentType: "softcircle",
  signerName: name.trim(),
- signerEmail: "avi@capavate.demo",
+ // C11 (v24.0): use the actual logged-in founder's email from /api/auth/me
+ // instead of the hard-coded demo persona, so the SES signature record is
+ // attributed to the real signer.
+ signerEmail: signerEmail,
  signerRole: "founder",
  intentText: "I confirm receipt and acceptance of this soft-circle indication of interest.",
  ipAddress: meta.ipAddress,

@@ -457,6 +457,22 @@ export const partnerTeamStore = {
     return teamMembers.find((m) => m.userId === userId && m.status === "active") ?? null;
   },
 
+  /**
+   * A8 (v24.0) — idempotently bind a user as an owner/managing-partner of an
+   * admin-contact partner record. Consortium approval calls this so the
+   * approved partner passes requirePartnerAuth (which requires an active
+   * partner_team_members row whose partnerId is an active consortium_partner
+   * admin contact). Safe to call repeatedly: returns the existing active
+   * membership if one already exists.
+   */
+  upsertOwner(userId: string, partnerId: string, subRole: SubRole = "managing_partner"): PartnerTeamMember {
+    requirePid(partnerId);
+    if (!userId) throw new Error("USER_ID_REQUIRED");
+    const existing = teamMembers.find((m) => m.partnerId === partnerId && m.userId === userId && m.status === "active");
+    if (existing) return existing;
+    return this.add(partnerId, userId, subRole, userId, {});
+  },
+
   countActiveSeats(partnerId: string): number {
     requirePid(partnerId);
     return teamMembers.filter((m) => m.partnerId === partnerId && m.status === "active").length;

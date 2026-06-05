@@ -24,7 +24,6 @@ import {
   type CollectiveAppStatus,
   collectiveApps as collectiveAppsTable,
 } from "@shared/schema";
-import { investorPortfolio, currentInvestor } from "./mockData";
 import { emitSync } from "./sprint10Telemetry";
 import { getMembership } from "./membershipStore";
 import { requireCollectiveEnabled } from "./lib/featureFlags"; /* v16 Fix 6 */
@@ -135,26 +134,36 @@ export type EligibilityResult = {
 };
 
 export function isEligibleForCollective(userId?: string): EligibilityResult {
-  // Defect 14 fix: use per-user membership to determine cap-table status.
-  // Previously voided userId and always read global investorPortfolio.
+  // v24.0 C12: eligibility derives ONLY from live membership data. No
+  // mock-backed fallback (investorPortfolio/currentInvestor removed). When no
+  // live portfolio data is available, the caller is ineligible with reason
+  // "no_portfolio_data" rather than synthetic signals.
   let investorOnCapTable = false;
+  let vouchedByPartner = false;
+  let hasLiveData = false;
   if (userId) {
     const m = getMembership(userId);
     if (m) {
+      hasLiveData = true;
       investorOnCapTable = m.capTablePositions.length > 0;
-    } else {
-      // Fallback for unknown personas (test actors): use the global
-      // investorPortfolio as a proxy for "has any position".
-      investorOnCapTable = (investorPortfolio.length ?? 0) > 0;
+      vouchedByPartner = Boolean((m as { vouchedByPartner?: boolean }).vouchedByPartner);
     }
-  } else {
-    // Fallback for anonymous eligibility checks (e.g., admin preview).
-    investorOnCapTable = (investorPortfolio.length ?? 0) > 0;
   }
-  const founderOfCompany = false;            // demo investor isn't a founder
+  if (!hasLiveData) {
+    // No live portfolio data — not mock-backed. Ineligible.
+    return {
+      eligible: false,
+      reasons: ["no_portfolio_data"],
+      passes: {
+        investorOnCapTable: false,
+        founderOfCompany: false,
+        signatoryOnCompany: false,
+        vouchedByPartner: false,
+      },
+    };
+  }
+  const founderOfCompany = false;            // not exposed in membership projection
   const signatoryOnCompany = false;          // not exposed in preview
-  // Vouched flag is read from currentInvestor profile if present
-  const vouchedByPartner = Boolean((currentInvestor as { vouchedByPartner?: boolean }).vouchedByPartner);
   const passes = { investorOnCapTable, founderOfCompany, signatoryOnCompany, vouchedByPartner };
   const eligible = Object.values(passes).some(Boolean);
   const reasons: string[] = [];
@@ -271,8 +280,25 @@ export function registerCollectiveAppRoutes(app: Express): void {
   });
 
   app.get("/api/collective/applications/:id", (req: Request, res: Response) => {
+    // B13 (v24.0 LOCKDOWN) — this detail route was registered BEFORE the
+    // `app.use("/api/collective", requireAuthenticated)` guard in routes.ts, so
+    // it ran with NO authentication and NO handler-level check: any caller
+    // (even anonymous) could read any application by guessing its id, exposing
+    // another investor's thesis, check sizes, and jurisdiction. We cannot move
+    // the whole registration behind the guard without breaking the
+    // intentionally-anonymous `/eligibility` and public application-submit
+    // paths, so we add an explicit owner-or-admin check here.
+    const userId = req.userContext?.userId ?? null;
+    if (!userId || !req.userContext?.isAuthed) {
+      return res.status(401).json({ error: "NOT_AUTHED", message: "Sign in to view this application." });
+    }
     const a = applications.find((x) => x.id === req.params.id);
+    // Return 404 (not 403) for both "missing" and "not yours" to avoid leaking
+    // which application ids exist.
     if (!a) return res.status(404).json({ error: "application_not_found" });
+    if (!req.userContext?.isAdmin && a.userId !== userId) {
+      return res.status(404).json({ error: "application_not_found" });
+    }
     res.json(a);
   });
 }

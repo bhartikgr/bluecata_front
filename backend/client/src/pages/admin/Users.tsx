@@ -54,7 +54,8 @@ export default function AdminUsers() {
     },
     onSuccess: (data) => {
       toast({ title: "User invited", description: `Invite token issued for ${data.user.email}` });
-      setRedeemLink(`/auth/redeem?token=${data.redeemToken}`);
+      // A2 (v24.0) — invite tokens live in auth_redeem_tokens and are consumed by the set-password flow.
+      setRedeemLink(`/set-password?token=${data.redeemToken}`);
       setInviteOpen(false);
       setInviteEmail(""); setInviteName("");
       queryClient.invalidateQueries({ queryKey: ["/api/admin/users"] });
@@ -88,7 +89,8 @@ export default function AdminUsers() {
       return res.json() as Promise<{ redeemToken: string }>;
     },
     onSuccess: (data) => {
-      setRedeemLink(`/auth/redeem?token=${data.redeemToken}`);
+      // A2 (v24.0) — reset tokens are consumed by the set-password flow, not the invitation redeem flow.
+      setRedeemLink(`/set-password?token=${data.redeemToken}`);
       toast({ title: "Reset link generated", description: "Copy the token from the dialog." });
     },
   });

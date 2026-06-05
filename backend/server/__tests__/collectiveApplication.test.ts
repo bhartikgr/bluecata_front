@@ -11,11 +11,20 @@ import { isEligibleForCollective } from "../collectiveAppStore";
 import { collectiveApplicationSchema } from "../../shared/schema";
 
 describe("isEligibleForCollective", () => {
-  it("returns eligible=true when investor has portfolio (preview)", () => {
+  // v24.0 C12: eligibility no longer falls back to the investorPortfolio /
+  // currentInvestor MOCK. When no LIVE membership data is available the caller
+  // is ineligible with reason "no_portfolio_data" (not synthetic signals).
+  it("returns eligible=false + no_portfolio_data when no live membership exists", () => {
     const r = isEligibleForCollective("u_investor_demo");
-    expect(r.eligible).toBe(true);
-    expect(r.passes.investorOnCapTable).toBe(true);
-    expect(r.reasons.length).toBeGreaterThan(0);
+    expect(r.eligible).toBe(false);
+    expect(r.passes.investorOnCapTable).toBe(false);
+    expect(r.reasons).toContain("no_portfolio_data");
+  });
+
+  it("anonymous / undefined caller is ineligible (no_portfolio_data)", () => {
+    const r = isEligibleForCollective(undefined);
+    expect(r.eligible).toBe(false);
+    expect(r.reasons).toContain("no_portfolio_data");
   });
 });
 
