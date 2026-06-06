@@ -2188,18 +2188,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
    */
   app.get("/api/founder/team/members", (req, res) => {
     const ctx = req.userContext;
+    // v24.1 Bug L (BUG 040) — Settings.tsx reads `teamQ.data?.members`, so a
+    // bare top-level array meant the list was ALWAYS empty (even the founder's
+    // own row never showed). Return the documented `{ members: [...] }` shape.
     if (!ctx?.isAuthed) {
-      return res.json([]);
+      return res.json({ members: [] });
     }
-    res.json([
-      {
-        id: ctx.userId,
-        name: ctx.identity.name,
-        email: ctx.identity.email,
-        role: "founder",
-        status: "active",
-      },
-    ]);
+    res.json({
+      members: [
+        {
+          id: ctx.userId,
+          name: ctx.identity.name,
+          email: ctx.identity.email,
+          role: "founder",
+          status: "active",
+          joined: "",
+        },
+      ],
+    });
   });
 
   // Billing plan switch — requireAuth
@@ -2209,15 +2215,28 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // Team invitations — requireAuth
-  app.post("/api/founder/team/invitations", requireAuth, (req, res) => {
-    const inv = { id: `ti-${Date.now()}`, ...req.body, sentAt: new Date().toISOString() };
-    res.json({ ok: true, invitation: inv });
-  });
+  // v24.1 Bug L (BUG 040) — these were fake-success handlers: they echoed a
+  // synthetic invitation/removal but persisted NOTHING, so the founder saw
+  // "Invitation sent" / "Member removed" toasts while the team list never
+  // changed. Per the v24 lockdown "NO new mocks" rule, return 501 until a real
+  // multi-member team store is built (deferred to v24.2). Settings.tsx already
+  // surfaces a clean "Invite failed"/"Remove failed" toast on a non-2xx.
+  app.post("/api/founder/team/invitations", requireAuth, (_req, res) =>
+    res.status(501).json({
+      ok: false,
+      error: "not_implemented",
+      message: "Team member invitations are not implemented yet (deferred to v24.2). No data was changed.",
+    }),
+  );
 
   // Team member remove — requireAuth
-  app.delete("/api/founder/team/members/:id", requireAuth, (req, res) => {
-    res.json({ ok: true, removed: req.params.id });
-  });
+  app.delete("/api/founder/team/members/:id", requireAuth, (_req, res) =>
+    res.status(501).json({
+      ok: false,
+      error: "not_implemented",
+      message: "Team member removal is not implemented yet (deferred to v24.2). No data was changed.",
+    }),
+  );
 
   // M&A initiative respond/decline — requireAuth
   app.post("/api/investor/ma/initiatives/:id/respond", requireAuth, (req, res) => {
@@ -2304,6 +2323,96 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(400).json({ error: "invalid_closeDate", message: "Close date must be on or after the open date." });
       }
     }
+
+    // v24.1 Bug B (Avi #2) — required-field validation. Previously the only
+    // checks were companyId ownership + per-field NaN/negative coercion, so a
+    // blank name became "Untitled round", target 0 was accepted, and instrument
+    // type / per-instrument terms were never enforced. We now return a typed
+    // 400 { error: "validation_failed", fieldErrors } so the wizard can
+    // highlight the offending fields.
+    {
+      const fieldErrors: Record<string, string> = {};
+      // After coerceNumeric() above, numeric body fields are JS numbers (or
+      // left as null/""/string when absent). Re-read defensively.
+      const num = (k: string): number | null => {
+        const v = (body as Record<string, unknown>)[k];
+        if (v == null || v === "") return null;
+        const n = typeof v === "number" ? v : Number(String(v).replace(/[,\s$]/g, ""));
+        return Number.isFinite(n) ? n : null;
+      };
+      const future = (k: string): boolean => {
+        const v = (body as Record<string, unknown>)[k];
+        if (typeof v !== "string" || !v) return false;
+        const t = new Date(v).getTime();
+        return Number.isFinite(t) && t > Date.now();
+      };
+
+      // name non-empty
+      if (!body.name || String(body.name).trim().length === 0) {
+        fieldErrors.name = "Round name is required.";
+      }
+      // targetAmount > 0
+      const targetAmount = num("targetAmount");
+      if (targetAmount == null || targetAmount <= 0) {
+        fieldErrors.targetAmount = "Target amount must be greater than 0.";
+      }
+      // instrument is one of the supported wizard values. NOTE (v24.1 deviations,
+      // see V24_1_REPORT.md):
+      //  (1) The spec's coarse list (priced/safe/...) doesn't match the wizard's
+      //      actual InstrumentValue set, so we validate the REAL values the
+      //      client sends to avoid rejecting legitimate rounds.
+      //  (2) instrument is validated ONLY WHEN PROVIDED. The v24.0 contract
+      //      (proven by existing roundDetailLoad/roundPersistenceProof tests)
+      //      allows omitting instrument, so requiring it would regress passing
+      //      tests. The wizard always sends it; this guards malformed values.
+      //  (3) Per-instrument *term* checks fire ONLY for fields the caller
+      //      actually supplied ("in body"), so we surface a clear error for a
+      //      supplied-but-bad value without forcing fields the v24.0 callers
+      //      legitimately omit (e.g. a priced round saved without sharesAuthorized).
+      const VALID_INSTRUMENTS = new Set([
+        "preferred", "common", "safe_post", "safe_pre", "convertible_note",
+        "warrant", "option_pool",
+      ]);
+      const has = (k: string): boolean => {
+        const v = (body as Record<string, unknown>)[k];
+        return v != null && v !== "";
+      };
+      const instrumentProvided = has("instrument");
+      const instrument = typeof body.instrument === "string" ? body.instrument : "";
+      if (instrumentProvided && !VALID_INSTRUMENTS.has(instrument)) {
+        fieldErrors.instrument = "Choose a valid investment instrument.";
+      } else if (instrumentProvided) {
+        // Per-instrument term requirements — only reject SUPPLIED-but-invalid
+        // values (a supplied field that is <= 0 / not in the future).
+        if (instrument === "preferred" || instrument === "common") {
+          if (has("preMoney") && (num("preMoney") ?? 0) <= 0) fieldErrors.preMoney = "Pre-money valuation must be greater than 0 for a priced round.";
+          if (has("pricePerShare") && (num("pricePerShare") ?? 0) <= 0) fieldErrors.pricePerShare = "Price per share must be greater than 0 for a priced round.";
+          if (has("sharesAuthorized") && (num("sharesAuthorized") ?? 0) <= 0) fieldErrors.sharesAuthorized = "Shares outstanding/authorized must be greater than 0 for a priced round.";
+        } else if (instrument === "safe_post" || instrument === "safe_pre" || instrument === "convertible_note") {
+          // SAFE / note: if either cap or discount is supplied, at least one must be > 0.
+          if (has("valuationCap") || has("discount")) {
+            const cap = num("valuationCap") ?? 0;
+            const disc = num("discount") ?? 0;
+            if (cap <= 0 && disc <= 0) {
+              fieldErrors.valuationCap = "Provide a valuation cap or a discount greater than 0.";
+            }
+          }
+          if (has("maturityDate") && !future("maturityDate")) fieldErrors.maturityDate = "Maturity date must be in the future.";
+          if (has("maturityMonths") && (num("maturityMonths") ?? 0) <= 0) fieldErrors.maturityMonths = "Maturity (months) must be greater than 0.";
+        } else if (instrument === "warrant") {
+          if (has("strikePrice") && (num("strikePrice") ?? 0) <= 0) fieldErrors.strikePrice = "Strike price must be greater than 0.";
+          if (has("sharesAuthorized") && (num("sharesAuthorized") ?? 0) <= 0) fieldErrors.sharesAuthorized = "Warrant share count must be greater than 0.";
+          if (has("expiryDate") && !future("expiryDate")) fieldErrors.expiryDate = "Expiry date must be in the future.";
+          if (has("expiryYears") && (num("expiryYears") ?? 0) <= 0) fieldErrors.expiryYears = "Expiry (years) must be greater than 0.";
+        } else if (instrument === "option_pool") {
+          if (has("poolSize") && (num("poolSize") ?? 0) <= 0) fieldErrors.poolSize = "Option pool size must be greater than 0.";
+        }
+      }
+
+      if (Object.keys(fieldErrors).length > 0) {
+        return res.status(400).json({ error: "validation_failed", fieldErrors });
+      }
+    }
     // Persist via roundsStore (DB + cache) — captures the canonical Round
     // columns and stashes the long-tail Round-form fields into extras_json.
     const KNOWN_COLS = new Set([
@@ -2315,6 +2424,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     for (const [k, v] of Object.entries(body)) {
       if (!KNOWN_COLS.has(k) && k !== "id" && k !== "raisedAmount") extras[k] = v;
     }
+    // v24.1 Bug C (Avi #3) — derive postMoney when the client omits it so the
+    // edit dialog no longer shows 0 for post-money valuation prefs. The create
+    // wizard previews preMoney + targetAmount but never persisted it.
+    const _validPreMoney =
+      body.preMoney != null && body.preMoney !== "" && Number(body.preMoney) > 0;
+    const _validTarget =
+      body.targetAmount != null && body.targetAmount !== "" && Number(body.targetAmount) > 0;
+    const derivedPostMoney =
+      body.postMoney ??
+      (_validPreMoney && _validTarget
+        ? Number(body.preMoney) + Number(body.targetAmount)
+        : null);
     let newRound;
     try {
       newRound = roundsStoreCreate({
@@ -2324,7 +2445,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         state: body.state ?? "draft",
         targetAmount: Number(body.targetAmount ?? 0),
         preMoney: body.preMoney ?? null,
-        postMoney: body.postMoney ?? null,
+        postMoney: derivedPostMoney,
         pricePerShare: body.pricePerShare ?? null,
         minTicket: body.minTicket ?? null,
         closeDate: body.closeDate ?? null,

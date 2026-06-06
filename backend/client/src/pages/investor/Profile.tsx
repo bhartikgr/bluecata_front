@@ -91,12 +91,13 @@ export default function Profile() {
   const { data: entCtx, isLoading: entLoading } = useEntitlement();
   const INVESTOR_ID = entCtx?.userId;
 
-  const { data: profile, isLoading: profileLoading } = useQuery<InvestorProfile>({
+  const { data: profile, isLoading: profileLoading, isError } = useQuery<InvestorProfile>({
     queryKey: ["/api/investors", INVESTOR_ID, "profile"],
     enabled: !!INVESTOR_ID,
   });
 
-  if (entLoading || !INVESTOR_ID || profileLoading || !profile) {
+  // v24.1 Bug E: while we are genuinely still loading, show the skeleton.
+  if (entLoading || !INVESTOR_ID || profileLoading) {
     return (
       <>
         <PageHeader title="Investor profile" description="Loading…" />
@@ -105,6 +106,34 @@ export default function Profile() {
             <div className="h-6 w-48 bg-muted animate-pulse rounded" />
             <div className="h-4 w-72 bg-muted animate-pulse rounded" />
             <div className="h-4 w-60 bg-muted animate-pulse rounded" />
+          </div>
+        </PageBody>
+      </>
+    );
+  }
+
+  // v24.1 Bug E: render a real error state instead of an INFINITE skeleton when
+  // the query resolved but returned no profile (getQueryFn maps non-2xx to null).
+  // After the v24.1 synthesis fix this 404 should not happen for the
+  // authenticated investor, but we no longer trap the user in a loading spinner.
+  if (isError || !profile) {
+    return (
+      <>
+        <PageHeader title="Investor profile" description="We couldn't load your profile" />
+        <PageBody>
+          <div className="max-w-md space-y-3" data-testid="profile-error">
+            <p className="text-sm text-muted-foreground">
+              We couldn't load your investor profile right now. This can happen if
+              your account is still being set up. Please refresh the page, and if the
+              problem persists, contact your administrator.
+            </p>
+            <button
+              type="button"
+              className="text-sm font-medium underline hover:text-foreground"
+              onClick={() => window.location.reload()}
+            >
+              Refresh
+            </button>
           </div>
         </PageBody>
       </>

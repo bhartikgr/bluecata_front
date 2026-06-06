@@ -40,7 +40,7 @@ import { appendAdminAudit } from "./adminPlatformStore";
 // a new investor to their CRM. The email send is best-effort (DB-first
 // pattern); failures are logged but do not block the contact creation.
 import { sendEmail } from "./lib/emailSender";
-import { getDb } from "./db/connection";
+import { getDb, rawDb } from "./db/connection";
 import { withTenant, crossTenant } from "./lib/withTenant"; /* v14 Tier-1 Fix 4 — tenant scoping on writes */
 import { founderCrmContacts as founderCrmContactsTable } from "../shared/schema";
 import { log } from "./lib/logger";
@@ -311,7 +311,12 @@ export function registerFounderCrmRoutes(app: Express): void {
 
     const c: FounderCrmContact = {
       id: `fcrm_${randomBytes(3).toString("hex")}`,
-      companyId: req.body?.companyId ?? companyId,
+      // v24.1 Bug J (BUG 043) — always bind the contact to the authenticated
+      // founder's company (resolved by ensureCompanyId above). Trusting a
+      // caller-supplied body.companyId let a contact be written under a
+      // different company than the session owner, defeating the per-company
+      // dedupe and leaking rows across tenants.
+      companyId,
       investorId: req.body?.investorId ?? `u_${randomBytes(3).toString("hex")}`,
       name: req.body?.name ?? "New contact",
       firmName: req.body?.firmName ?? "—",
@@ -563,9 +568,42 @@ export function upsertCrmContactForInvitation(args: {
   roundId?: string | null;
 }): void {
   if (!args.companyId || !args.email) return;
-  // Idempotent: skip if contact with same email already exists for this company
+  const normalizedEmail = args.email.trim().toLowerCase();
+  // v24.1 Bug J (BUG 043) — dedupe was in-memory only. The CRM read cache is
+  // not always hydrated when an invitation fires (e.g. right after a restart,
+  // before hydrateFounderCrmStore runs, or in a worker that never loaded the
+  // founder's contacts), so the in-memory `contacts.find` missed an existing
+  // row and we inserted a SECOND contact for the same email. Because the table
+  // PK is `id` (random per call) and there is NO unique index on email, the
+  // prior `INSERT OR IGNORE` never collapsed the duplicate. Fix: check the
+  // authoritative DB keyed by (company_id, LOWER(TRIM(email))) first, then the
+  // cache. Query-then-insert is fine here — invitations are not high-contention
+  // and SQLite serializes writes.
+  try {
+    // Use rawDb() (the better-sqlite3 driver) — getDb() returns the drizzle
+    // wrapper which has NO .prepare(), so the previous getDb()-based guard was
+    // always false and the authoritative DB dedupe silently no-op'd. rawDb()
+    // exposes prepare/get/run synchronously.
+    const driver = rawDb() as unknown as { prepare?: (sql: string) => { get: (...a: unknown[]) => unknown } };
+    if (driver && typeof driver.prepare === "function") {
+      const dbRow = driver.prepare(
+        `SELECT id FROM founder_crm_contacts WHERE company_id = ? AND LOWER(TRIM(email)) = ? LIMIT 1`,
+      ).get(args.companyId, normalizedEmail) as { id: string } | undefined;
+      if (dbRow?.id) {
+        // Already present in the authoritative store — do NOT insert a duplicate.
+        // The read cache will pick this row up on the next hydrateFounderCrmStore
+        // pass; we deliberately avoid hand-building a cache entry from a raw
+        // SELECT * (snake_case columns) which would not match rowToContact's
+        // camelCase expectations.
+        return;
+      }
+    }
+  } catch (err) {
+    log.warn("[upsertCrmContactForInvitation] DB dedupe lookup failed:", (err as Error).message);
+  }
+  // Secondary in-memory guard (covers no-DB/test paths and same-process races).
   const existing = contacts.find(
-    (c) => c.companyId === args.companyId && c.email.toLowerCase() === args.email.toLowerCase()
+    (c) => c.companyId === args.companyId && c.email.trim().toLowerCase() === normalizedEmail
   );
   if (existing) return;
   // v23.9 B9: record the originating round in the note so the founder CRM shows

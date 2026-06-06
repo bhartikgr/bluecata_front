@@ -718,6 +718,81 @@ function Step3LegalEntity({
 }: { value: CompanyProfile["legal"]; onChange: (next: CompanyProfile["legal"]) => void }) {
  const set = <K extends keyof CompanyProfile["legal"]>(k: K, v: CompanyProfile["legal"][K]) => onChange({ ...value, [k]: v });
  const allowedEntities = entityTypesForCountry(value.countryOfIncorporationCode);
+ // v24.1 Bug G (BUG 037) — the Articles-of-Incorporation picker used to only
+ // copy the filename + size into local form state; the actual bytes were never
+ // persisted, so a founder who "uploaded" their articles had nothing stored.
+ // Wire the picker to the existing dataroom upload pipeline
+ // (POST /api/founder/dataroom/files, multipart). We find-or-create a "Legal
+ // Documents" folder for the company, push the real file through, and record
+ // the server-computed sha256 into the existing articlesFileSha256 field. No
+ // new schema fields and no mock: if the upload fails we surface the error and
+ // do NOT pretend the document was stored.
+ const companyId = useActiveCompanyId();
+ const [articlesUploading, setArticlesUploading] = useState(false);
+ const [articlesError, setArticlesError] = useState<string | null>(null);
+
+ /** Resolve (or create) the company's "Legal Documents" dataroom folder id. */
+ async function resolveLegalFolderId(): Promise<string> {
+ const listRes = await fetch(
+ `/api/founder/dataroom/folders?companyId=${encodeURIComponent(companyId)}`,
+ { credentials: "include" },
+ );
+ if (listRes.ok) {
+ const folders = (await listRes.json()) as Array<{ id: string; name: string }>;
+ const existing = folders.find((f) => /legal/i.test(f.name));
+ if (existing) return existing.id;
+ }
+ const createRes = await fetch("/api/founder/dataroom/folders", {
+ method: "POST",
+ headers: { "Content-Type": "application/json" },
+ credentials: "include",
+ body: JSON.stringify({ name: "Legal Documents", companyId }),
+ });
+ if (!createRes.ok) throw new Error("folder_create_failed");
+ const folder = (await createRes.json()) as { id: string };
+ return folder.id;
+ }
+
+ async function uploadArticles(file: File): Promise<void> {
+ if (!companyId) {
+ setArticlesError("No active company — open a company before uploading.");
+ return;
+ }
+ setArticlesUploading(true);
+ setArticlesError(null);
+ try {
+ const folderId = await resolveLegalFolderId();
+ const fd = new FormData();
+ fd.append("file", file);
+ fd.append("companyId", companyId);
+ fd.append("folderId", folderId);
+ const r = await fetch("/api/founder/dataroom/files", {
+ method: "POST",
+ body: fd,
+ credentials: "include",
+ });
+ if (!r.ok) {
+ let detail = `Upload failed (HTTP ${r.status})`;
+ try {
+ const body = (await r.json()) as { error?: string; message?: string };
+ detail = body.message || body.error || detail;
+ } catch { /* non-JSON error body */ }
+ throw new Error(detail);
+ }
+ const data = (await r.json()) as { file?: { sha256?: string; sizeBytes?: number; name?: string } };
+ // Persist real, server-confirmed metadata into existing schema fields.
+ onChange({
+ ...value,
+ articlesFileName: data.file?.name ?? file.name,
+ articlesFileSizeBytes: data.file?.sizeBytes ?? file.size,
+ articlesFileSha256: data.file?.sha256 ?? null,
+ });
+ } catch (err) {
+ setArticlesError((err as Error).message || "Upload failed");
+ } finally {
+ setArticlesUploading(false);
+ }
+ }
  return (
  <Card>
  <CardHeader>
@@ -734,18 +809,28 @@ function Step3LegalEntity({
  <div className="space-y-1.5">
  <Label className="flex items-center gap-1">Upload Articles of Incorporation <span className="text-rose-500">*</span></Label>
  <Input
- type="file" accept="application/pdf"
+ type="file"
+ accept="application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+ disabled={articlesUploading}
  onChange={(e) => {
  const f = e.target.files?.[0];
  if (!f) return;
- set("articlesFileName", f.name);
- set("articlesFileSizeBytes", f.size);
+ void uploadArticles(f);
  }}
  data-testid="input-articles"
  />
- {value.articlesFileName && (
- <div className="text-xs text-muted-foreground flex items-center gap-1.5">
+ {articlesUploading && (
+ <div className="text-xs text-muted-foreground flex items-center gap-1.5" data-testid="articles-uploading">
+ <Upload className="h-3 w-3 animate-pulse" /> Uploading…
+ </div>
+ )}
+ {!articlesUploading && articlesError && (
+ <div className="text-xs text-rose-600" data-testid="articles-error">{articlesError}</div>
+ )}
+ {!articlesUploading && !articlesError && value.articlesFileName && (
+ <div className="text-xs text-muted-foreground flex items-center gap-1.5" data-testid="articles-uploaded">
  <Upload className="h-3 w-3" /> {value.articlesFileName} · {Math.round((value.articlesFileSizeBytes ?? 0) / 1024)} KB
+ {value.articlesFileSha256 && <span className="text-[10px] opacity-70">· sha {value.articlesFileSha256.slice(0, 8)}</span>}
  </div>
  )}
  </div>

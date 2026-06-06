@@ -52,6 +52,17 @@ const PUBLIC_API_PREFIXES = [
   // authenticated `/api/invitations/*` routes are not accidentally exposed.
   "/api/invitations/check",        // pre-validation, public
   "/api/invitations/redeem",       // public account creation via token
+  // v24.1 hotfix — /api/auth/secure/redeem MUST be reachable without a session.
+  // The token IS the credential (same pattern as /api/auth/redeem above).
+  // Without this, the forgot-password + set-password + admin-reset flows all
+  // return 401 at the route guard BEFORE the token-validation handler runs.
+  // Smoke-caught by the main agent: POST /api/auth/secure/redeem -> 401.
+  // The handler at server/lib/secureAuthRoutes.ts:139 already does the token
+  // hash lookup + intent branching + bcrypt verification; it is safe to be
+  // public-facing (rate-limited per-IP via the limiter in the handler).
+  "/api/auth/secure/redeem",
+  // CSRF for this path is already exempt via the /api/auth/redeem regex in
+  // server/lib/csrf.ts:CSRF_BYPASS (matches /api/auth/redeem/ prefix).
 ];
 
 /** Apply auth middleware to every request before it reaches a route handler. */

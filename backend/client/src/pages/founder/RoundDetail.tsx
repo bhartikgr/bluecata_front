@@ -1160,9 +1160,17 @@ function CommitPipeline({ roundId, companyId }: { roundId: string; companyId: st
         </div>
 
         {isEmpty && (
-          <div className="text-xs text-muted-foreground rounded-md bg-secondary/30 p-3">
+          <div className="text-xs text-muted-foreground rounded-md bg-secondary/30 p-3" data-testid="ledger-empty-state">
             <Info className="h-3 w-3 inline mr-1" />
-            No ledger entries yet for this round. As investors progress through invitation → soft-circle → signing → wire-funded, they appear here. Once funded, click "Commit funded" to atomically write them to the cap table.
+            {/* v24.1 Bug F (BUG 039) — the old copy told founders to "click Commit
+                funded" even when the only button is disabled, and Avi went looking
+                for a non-existent admin "permission option". There is no admin
+                permission grant: the founder-side "Commit funded → cap-table"
+                button below is the only action, and it stays disabled until at
+                least one investor reaches the wire-funded step (and any
+                compliance hold is cleared). Explain that directly instead of
+                implying a hidden permission. */}
+            No funded entries yet for this round. Investors appear here as they move through invitation → soft-circle → signing → wire-funded. The “Commit funded → cap-table” button below stays disabled until at least one investor reaches the wire-funded step and any compliance hold is cleared — there is no separate permission to enable; once a funded entry exists, the button activates for you to write it to the cap table.
           </div>
         )}
 

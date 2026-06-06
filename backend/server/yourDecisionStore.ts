@@ -37,6 +37,9 @@ import {
   type YourDecisionState,
 } from "@shared/schema";
 import { incomingInvitations } from "./mockData";
+// v24.1 Bug D: modern (redeemed) round invitations live in roundInvitationsStore,
+// not in the static incomingInvitations mock. Bridge them so soft-circle works.
+import { getInvitation as getModernInvitation } from "./roundInvitationsStore";
 import { emitSync } from "./sprint10Telemetry";
 import { getUserContext } from "./lib/userContext";
 import type { UserContext } from "./lib/userContext";
@@ -75,24 +78,59 @@ export type DecisionRecord = {
 
 const records = new Map<string, DecisionRecord>();
 
+/**
+ * v24.1 Bug D: map a modern InvitationState (roundInvitationsStore) onto a
+ * YourDecision state. The modern store has no soft_circled/confirmed/etc., so
+ * unknown/"sent" states fall back to "pending".
+ */
+function mapModernInvitationState(state: string): YourDecisionState {
+  if ((YOUR_DECISION_STATES as readonly string[]).includes(state)) {
+    return state as YourDecisionState;
+  }
+  // "sent" (and anything else not in the decision chart) starts at pending.
+  return "pending";
+}
+
 function ensureRecord(invitationId: string): DecisionRecord | null {
   if (records.has(invitationId)) return records.get(invitationId)!;
   const inv = incomingInvitations.find((i) => i.id === invitationId);
-  if (!inv) return null;
-  const initialState = (YOUR_DECISION_STATES as readonly string[]).includes(inv.state)
-    ? (inv.state as YourDecisionState)
-    : "pending";
-  const rec: DecisionRecord = {
-    invitationId: inv.id,
-    roundId: inv.round.id,
-    companyId: inv.company.id,
-    state: initialState,
-    history: [],
-    // Demo MIM: a few seeded peer commits per round
-    mim: seedMim(inv.round.id),
-  };
-  records.set(invitationId, rec);
-  return rec;
+  if (inv) {
+    const initialState = (YOUR_DECISION_STATES as readonly string[]).includes(inv.state)
+      ? (inv.state as YourDecisionState)
+      : "pending";
+    const rec: DecisionRecord = {
+      invitationId: inv.id,
+      roundId: inv.round.id,
+      companyId: inv.company.id,
+      state: initialState,
+      history: [],
+      // Demo MIM: a few seeded peer commits per round
+      mim: seedMim(inv.round.id),
+    };
+    records.set(invitationId, rec);
+    return rec;
+  }
+
+  // v24.1 Bug D: fall back to the modern round-invitations store. Investors who
+  // redeemed a round invite (the production path) have no static record, so the
+  // soft-circle PATCH used to 404 even though the investor was authorized.
+  const modern = getModernInvitation(invitationId);
+  if (modern) {
+    const rec: DecisionRecord = {
+      invitationId: modern.id,
+      roundId: modern.roundId,
+      companyId: modern.companyId ?? "",
+      state: mapModernInvitationState(modern.state),
+      viewedAt: modern.viewedAt ?? undefined,
+      history: [],
+      mim: seedMim(modern.roundId),
+    };
+    // Cache so subsequent GET/PATCH calls return the same authoritative record.
+    records.set(invitationId, rec);
+    return rec;
+  }
+
+  return null;
 }
 
 function seedMim(roundId: string): DecisionRecord["mim"] {

@@ -148,19 +148,34 @@ export function registerSecureAuthRoutes(app: Express): void {
     if (!row) return res.status(400).json({ error: "token_invalid" });
     if (row.consumed_at) return res.status(409).json({ error: "token_consumed" });
     if (new Date(row.expires_at).getTime() < Date.now()) return res.status(400).json({ error: "token_expired" });
-    db.prepare(`UPDATE auth_redeem_tokens SET consumed_at = ? WHERE id = ?`).run(new Date().toISOString(), row.id);
-    // Create or update user
+    // v24.1 Bug A: branch on intent BEFORE consuming the token so we don't burn
+    // a reset token when there is no user to reset.
     const existing = db.prepare(`SELECT id, role FROM auth_users WHERE email = ?`).get(row.email) as
       | { id: string; role: string }
       | undefined;
+    if (row.intent === "reset" && !existing) {
+      // A reset-intent token must NEVER create a brand new user (and must not
+      // silently mint a `founder`). Surface a clear error and leave the token
+      // unconsumed so the operator can investigate.
+      return res.status(400).json({ error: "no_user_for_reset" });
+    }
+    db.prepare(`UPDATE auth_redeem_tokens SET consumed_at = ? WHERE id = ?`).run(new Date().toISOString(), row.id);
     const hash = hashPassword(password);
     let userId: string, role: string;
     if (existing) {
+      // reset / invite / partner_invite for an already-provisioned user:
+      // update the password, keep the user's existing role.
       db.prepare(`UPDATE auth_users SET password_hash = ?, password_algo = 'scrypt-sha256' WHERE id = ?`).run(hash, existing.id);
       userId = existing.id; role = existing.role;
     } else {
+      // New user creation only happens for invite-style intents.
+      // v24.1 Bug A: do NOT default to `founder`. Invite tokens are minted by
+      // the founder CRM (investor invites) and admin user-invite flows; the
+      // token table (sacred schema) carries no role column, so we default to
+      // the least-privileged sensible role `investor`. partner_invite keeps
+      // the existing partner role path.
       userId = `usr_${crypto.randomBytes(8).toString("hex")}`;
-      role = "founder";
+      role = row.intent === "partner_invite" ? "partner" : "investor";
       db.prepare(
         `INSERT INTO auth_users (id, email, password_hash, password_algo, role, status, failed_attempts, created_at)
          VALUES (?, ?, ?, 'scrypt-sha256', ?, 'active', 0, ?)`

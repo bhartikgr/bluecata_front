@@ -238,7 +238,10 @@ export async function createInvitation(args: CreateInvitationArgs): Promise<Crea
   // Send the email. The redeem link includes the RAW token, never the hash.
   // Production deploys should set INVITATION_BASE_URL.
   const baseUrl = process.env.INVITATION_BASE_URL ?? process.env.APP_URL ?? "https://capavate.com";
-  const link = `${baseUrl}/invitations/redeem?token=${encodeURIComponent(token)}`;
+  // v24.1 Bug I+K (BUG 042): canonical client route is /auth/redeem (App.tsx:406).
+  // The legacy /invitations/redeem path is not registered in the SPA and produced
+  // the "we don't recognise this invitation" error for Avi #4/#5/#10.
+  const link = `${baseUrl}/auth/redeem?token=${encodeURIComponent(token)}`;
   let emailSent = false;
   let emailMessageId: string | undefined;
   if (!args.dryRun) {
@@ -286,6 +289,13 @@ export async function createInvitation(args: CreateInvitationArgs): Promise<Crea
 
   // L-006 fix v23.4.13: return redeemUrl on create (raw token never stored in list view)
   const appUrl = process.env.APP_URL ?? process.env.INVITATION_BASE_URL ?? "https://capavate.com";
+  // v24.1 Bug I+K (BUG 042): the create-response redeemUrl was ALREADY a working
+  // SPA route — `/invite/<token>` redirects to the canonical `/auth/redeem`
+  // (client/src/App.tsx:826 → LegacyInviteRedirect → App.tsx:299-305). The only
+  // broken link was the EMAIL template at line ~244 which used the unregistered
+  // `/invitations/redeem` path; that is the one we fixed. We deliberately KEEP
+  // `/invite/<token>` here so the documented L-006 contract (and the v23.9.2 /
+  // v2413 redeem-bridge tests that parse `.../invite/<64-hex>`) stay green.
   const redeemUrl = `${appUrl}/invite/${encodeURIComponent(token)}`;
 
   return {

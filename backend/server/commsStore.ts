@@ -736,10 +736,98 @@ function unreadCount(channelId: string, viewerUserId: string): number {
   return n;
 }
 
-function channelIsVisibleToViewer(channel: Channel, viewerUserId: string): boolean {
+/**
+ * Minimal view of the request's UserContext that the comms membership check
+ * needs. Threaded in from route handlers (req.userContext) so the gate can
+ * reason about LIVE relationships, not only the static participant list.
+ */
+type CommsMembershipCtx = {
+  userId: string;
+  founder?: { companies?: Array<{ companyId: string }> };
+  investor?: {
+    capTablePositions?: Array<{ companyId: string }>;
+    invitedRounds?: Array<{ companyId: string; roundId: string }>;
+  };
+} | null | undefined;
+
+/**
+ * v24.1 Bug H — derived (live-relationship) membership check.
+ *
+ * v24.0 lockdown made comms visibility participant-list ONLY. Runtime investors
+ * and founders provisioned via invitation redemption are never added to
+ * `participantUserIds`, so legitimate users saw an empty channel list or got
+ * "403 Not a member of this channel". This helper grants access only after a
+ * server-side validation of the ACTUAL relationship between the actor and the
+ * channel's company/round:
+ *
+ *   • Founder of the channel's company        → all access
+ *   • Investor holding a cap-table position    → company channels (cap_table,
+ *     in the channel's company                   soft_circle, company_followers)
+ *   • Investor with a redeemed/invited round    → company-related channels for
+ *     in the channel's company                    that company (and matching round
+ *                                                  for soft_circle)
+ *   • DM participant                            → handled by the static list
+ *
+ * Tenant isolation is NOT weakened: access is granted ONLY when the actor's own
+ * userContext proves the relationship to the SAME companyId (and roundId for
+ * soft_circle). `network` channels remain participant-only (no company anchor).
+ */
+function derivedMembership(channel: Channel, ctx: CommsMembershipCtx): boolean {
+  if (!ctx?.userId) return false;
+  const companyId = channel.companyId;
+  // network + dm channels have no company anchor — never derive membership.
+  if (!companyId) return false;
+  if (channel.kind === "dm" || channel.kind === "network") return false;
+
+  // Founder of the channel's company → full access.
+  const isFounderOfCompany = (ctx.founder?.companies ?? []).some(
+    (c) => c.companyId === companyId,
+  );
+  if (isFounderOfCompany) return true;
+
+  // Investor holding a cap-table position in the channel's company.
+  const hasCapTablePosition = (ctx.investor?.capTablePositions ?? []).some(
+    (p) => p.companyId === companyId,
+  );
+  if (hasCapTablePosition) return true;
+
+  // Investor with a redeemed/invited round for the channel's company.
+  const invited = ctx.investor?.invitedRounds ?? [];
+  if (channel.kind === "soft_circle") {
+    // soft_circle is round-scoped: require a matching roundId when present.
+    return invited.some(
+      (r) =>
+        r.companyId === companyId &&
+        (!channel.roundId || r.roundId === channel.roundId),
+    );
+  }
+  // cap_table / company_followers: company-level relationship is enough.
+  return invited.some((r) => r.companyId === companyId);
+}
+
+function channelIsVisibleToViewer(
+  channel: Channel,
+  viewerUserId: string,
+  ctx?: CommsMembershipCtx,
+): boolean {
   // For DMs / cap-table / soft-circle channels: must be a participant.
   // For company_followers + network: same — participant means follower / connection.
-  return channel.participantUserIds.includes(viewerUserId);
+  if (channel.participantUserIds.includes(viewerUserId)) return true;
+  // v24.1 Bug H: fall back to a live-relationship check for runtime users who
+  // were never written into the static participant list.
+  if (ctx && derivedMembership(channel, ctx)) {
+    // Backfill so subsequent reads/writes are O(1) and consistent.
+    if (!channel.participantUserIds.includes(viewerUserId)) {
+      channel.participantUserIds.push(viewerUserId);
+    }
+    return true;
+  }
+  return false;
+}
+
+/** Pull the comms membership context off the request (set by loadUserContext). */
+function membershipCtxOf(req: Request): CommsMembershipCtx {
+  return (req as Request & { userContext?: CommsMembershipCtx }).userContext;
 }
 
 /**
@@ -960,8 +1048,9 @@ export function registerCommsRoutes(app: Express): void {
   /* ---- Channels list ---- */
   app.get("/api/comms/channels", (req, res) => {
     const { actorId } = actorOf(req);
+    const ctx = membershipCtxOf(req); // v24.1 Bug H: live-relationship fallback
     const role = String(req.query.role ?? "investor"); // founder | investor | admin
-    const visible = Array.from(channels.values()).filter((c) => channelIsVisibleToViewer(c, actorId));
+    const visible = Array.from(channels.values()).filter((c) => channelIsVisibleToViewer(c, actorId, ctx));
     // Filter by role-relevance.
     const filtered = visible.filter((c) => {
       if (role === "founder") {
@@ -980,9 +1069,10 @@ export function registerCommsRoutes(app: Express): void {
   /* ---- Channel detail ---- */
   app.get("/api/comms/channels/:id", (req, res) => {
     const { actorId } = actorOf(req);
+    const ctx = membershipCtxOf(req); // v24.1 Bug H
     const ch = channels.get(req.params.id);
     if (!ch) return res.status(404).json({ message: "Channel not found" });
-    if (!channelIsVisibleToViewer(ch, actorId))
+    if (!channelIsVisibleToViewer(ch, actorId, ctx))
       return res.status(403).json({ message: "Not a member of this channel" });
     const view = projectChannel(ch, actorId);
     const msgs: MessageView[] = [];
@@ -998,9 +1088,10 @@ export function registerCommsRoutes(app: Express): void {
   /* ---- Send message ---- */
   app.post("/api/comms/channels/:id/messages", (req, res) => {
     const { actorId, ip, ua } = actorOf(req);
+    const ctx = membershipCtxOf(req); // v24.1 Bug H
     const ch = channels.get(req.params.id);
     if (!ch) return res.status(404).json({ message: "Channel not found" });
-    if (!channelIsVisibleToViewer(ch, actorId))
+    if (!channelIsVisibleToViewer(ch, actorId, ctx))
       return res.status(403).json({ message: "Not a member of this channel" });
     const parsed = messageCreateSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: "Invalid message", issues: parsed.error.issues });

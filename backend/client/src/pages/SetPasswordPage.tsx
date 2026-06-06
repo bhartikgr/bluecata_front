@@ -51,10 +51,22 @@ function readTokenFromUrl(): string {
   return "";
 }
 
+// v24.1 Bug A: client-side password rules MUST match the server gate in
+// server/lib/auth.ts:passwordIsStrong (length >= 10, uppercase, lowercase,
+// number, not a common prefix). Previously the client only checked length+match,
+// so the server rejected with 400 weak_password after the user submitted.
 function passwordStrengthHint(pw: string): string | null {
   if (pw.length === 0) return null;
   if (pw.length < 10) return "Password must be at least 10 characters.";
+  if (!/[A-Z]/.test(pw)) return "Add an uppercase letter.";
+  if (!/[a-z]/.test(pw)) return "Add a lowercase letter.";
+  if (!/[0-9]/.test(pw)) return "Add a number.";
+  if (/^(password|123456|qwerty|letmein)/i.test(pw)) return "Password is too common.";
   return null;
+}
+
+function passwordMeetsPolicy(pw: string): boolean {
+  return passwordStrengthHint(pw) === null && pw.length >= 10;
 }
 
 export default function SetPasswordPage() {
@@ -73,7 +85,7 @@ export default function SetPasswordPage() {
   const mismatch = confirm.length > 0 && password !== confirm;
   const canSubmit =
     token.length >= 32 &&
-    password.length >= 10 &&
+    passwordMeetsPolicy(password) &&
     password === confirm &&
     !submitting;
 
@@ -136,8 +148,17 @@ export default function SetPasswordPage() {
             "This link has already been used. Try logging in, or contact your admin if you need a new link.",
           );
         } else if (errCode === "weak_password") {
+          // Surface the exact server reason (e.g. "Add an uppercase letter").
           setError(
             `Password too weak: ${(body as { reason?: string }).reason ?? "choose a stronger password."}`,
+          );
+        } else if (errCode === "no_user_for_reset") {
+          setError(
+            "We couldn't find an account for this reset link. Contact your admin to get a new invite.",
+          );
+        } else if (errCode === "token_invalid") {
+          setError(
+            "This link is invalid. Please check your email for the correct link, or contact your admin.",
           );
         } else {
           setError(

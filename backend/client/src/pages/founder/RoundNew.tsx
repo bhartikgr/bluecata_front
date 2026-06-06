@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
 import { useActiveCompany, useActiveCompanyId } from "@/lib/useActiveCompany";
 import UpgradeToProInterstitial, { isPaidFounderPlan } from "@/pages/founder/UpgradeToProInterstitial";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, queryClient, ApiError } from "@/lib/queryClient";
 import { useMutation } from "@tanstack/react-query";
 import { useQuery } from "@tanstack/react-query";
 import type { CompanyProfile } from "@/lib/profile/types";
@@ -368,7 +368,24 @@ export default function RoundNew() {
  navigate(`/founder/rounds/${data.id}`);
  }
  },
- onError: () => toast({ title: "Failed to create round", variant: "destructive" }),
+ onError: (err: unknown) => {
+  // v24.1 Bug B (Avi #2): surface server field-level validation errors so the
+  // founder learns exactly which field is wrong instead of a generic toast.
+  if (err instanceof ApiError && err.code === "validation_failed") {
+   const payload = err.payload as { fieldErrors?: Record<string, string> } | undefined;
+   const fe = payload?.fieldErrors;
+   if (fe && Object.keys(fe).length > 0) {
+    const lines = Object.entries(fe).map(([field, reason]) => `• ${field}: ${reason}`);
+    toast({
+     title: "Please fix the highlighted fields",
+     description: lines.join("\n"),
+     variant: "destructive",
+    });
+    return;
+   }
+  }
+  toast({ title: "Failed to create round", variant: "destructive" });
+ },
  });
 
  // Sprint 8 — default round wizard region from the live company profile so a

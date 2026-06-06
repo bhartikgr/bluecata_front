@@ -46,6 +46,9 @@ import { getCompanyProfile as getLegacyCompanyProfile } from "./companyProfileSt
 // brand-new founder (or a freshly-created company) does not lock the Company
 // page on an infinite "Loading company profile…" spinner.
 import { makeEmptyCompanyProfile } from "./lib/emptyCompanyProfile";
+// v24.1 Bug E — synthesise an empty investor profile for the authenticated
+// investor when no row exists yet (e.g. runtime-redeemed investors).
+import { makeEmptyInvestorProfile } from "./lib/emptyInvestorProfile";
 import { getDb } from "./db/connection";
 import { companies as companiesTable } from "../shared/schema";
 import { eq, isNull, and } from "drizzle-orm";
@@ -394,8 +397,28 @@ export function registerProfileRoutes(app: Express): void {
   app.get("/api/investors/:id/profile", (req, res) => {
     const id = req.params.id;
     const p = investorProfiles.get(id);
-    if (!p) return res.status(404).json({ message: "Investor profile not found" });
-    return res.json(p);
+    if (p) return res.json(p);
+
+    // v24.1 Bug E: synthesise + persist a schema-complete blank profile when the
+    // AUTHENTICATED INVESTOR owns the requested id. This fixes the infinite
+    // skeleton for runtime-redeemed investors who never got an investorProfiles
+    // row. Tenant isolation is preserved: only the owner (id === userId) — or an
+    // admin — triggers synthesis; everyone else still gets a 404.
+    const ctxInv = (req as Request & {
+      userContext?: { userId?: string; isAdmin?: boolean; identity?: { email?: string } };
+    }).userContext;
+    const ownsId = !!ctxInv?.userId && ctxInv.userId === id;
+    if (ownsId || ctxInv?.isAdmin) {
+      const tenantId = SEED_INVESTOR_PROFILE.tenantId;
+      const email = ctxInv?.identity?.email ?? "";
+      const synthesized = makeEmptyInvestorProfile(id, tenantId, email);
+      // Server-side persistence so subsequent GETs return it without re-synthesis
+      // and so the PATCH ownership path finds an existing row.
+      investorProfiles.set(id, synthesized);
+      return res.json(synthesized);
+    }
+
+    return res.status(404).json({ message: "Investor profile not found" });
   });
 
   app.patch("/api/investors/:id/profile", (req, res) => {

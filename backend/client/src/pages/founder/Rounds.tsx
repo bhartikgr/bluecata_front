@@ -165,7 +165,11 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
   const family = instrumentFamily(round.instrument);
   const [targetAmount, setTargetAmount] = useState(round.targetAmount);
   const [preMoney, setPreMoney] = useState(round.preMoney ?? 0);
-  const [postMoney, setPostMoney] = useState(round.postMoney ?? 0);
+  // v24.1 Bug C (Avi #3): for legacy rows that persisted a null post-money,
+  // fall back to the derived preMoney + targetAmount so the dialog never shows 0.
+  const [postMoney, setPostMoney] = useState(
+    round.postMoney ?? ((round.preMoney || 0) + (round.targetAmount || 0)),
+  );
   const [pricePerShare, setPricePerShare] = useState(round.pricePerShare ?? 0);
   const [minTicket, setMinTicket] = useState(round.minTicket ?? 0);
   const [closeDate, setCloseDate] = useState(round.closeDate);
