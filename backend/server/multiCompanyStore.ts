@@ -44,7 +44,7 @@ import { withTenant, crossTenant } from "./lib/withTenant"; /* v14 Tier-1 Fix 4 
 import { getUserContext } from "./lib/userContext";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 import { createSubscriptionForNewCompany, getSubscription, updateSubscription } from "./subscriptionsStore";
-import { getDb } from "./db/connection";
+import { getDb, rawDb } from "./db/connection";
 import {
   tenants as tenantsTable,
   companies as companiesTable,
@@ -186,6 +186,48 @@ USER_ACTIVE_COMPANY.set("u_maya_chen", "co_novapay");
 /* DB row → membership mapping                                          */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* v24.2 Bug 6 — default-currency durable side table                   */
+/*                                                                     */
+/* The Settings → Company "default currency" selection was mirrored     */
+/* into the in-memory USER_COMPANIES cache only; it was dropped from    */
+/* the DB write-through (the `updates` object omitted it) and never     */
+/* re-hydrated on restart, so a page reload reverted it. We cannot add  */
+/* a column to the sacred `companies` table, so a dedicated side table  */
+/* (`company_default_currency`) keyed by companyId stores it instead.   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Durably persist a company's default currency. Throws on DB failure so
+ * the caller can surface a 500 and AVOID updating the in-memory cache
+ * (no silent divergence between cache and durable store).
+ */
+export function writeDefaultCurrency(companyId: string, tenantId: string, currency: string): void {
+  const db = rawDb();
+  db.prepare(
+    `INSERT INTO company_default_currency (company_id, tenant_id, currency, updated_at, deleted_at)
+     VALUES (?, ?, ?, ?, NULL)
+     ON CONFLICT(company_id) DO UPDATE SET
+       tenant_id = excluded.tenant_id,
+       currency = excluded.currency,
+       updated_at = excluded.updated_at,
+       deleted_at = NULL`,
+  ).run(companyId, tenantId, currency, new Date().toISOString());
+}
+
+/** Read a company's durable default currency, or null if none stored. */
+export function readDefaultCurrency(companyId: string): string | null {
+  try {
+    const db = rawDb();
+    const row = db.prepare(
+      `SELECT currency FROM company_default_currency WHERE company_id = ? AND deleted_at IS NULL`,
+    ).get(companyId) as { currency?: string } | undefined;
+    return row?.currency ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function dbRowToMembership(coRow: any, memRow: any): FounderCompanyMembership {
   // The DB only stores a subset of FounderCompanyMembership fields. KPI,
   // collective, and billing default to zero/empty — mergeBillingFromSubscription
@@ -215,6 +257,12 @@ function dbRowToMembership(coRow: any, memRow: any): FounderCompanyMembership {
     sector: coRow.sector ?? "",
     stage: coRow.stage ?? "",
     hq: coRow.hq ?? "",
+    // v24.2 Bug 6 — re-hydrate the durable default currency on boot so a page
+    // reload keeps the founder's saved Settings → Company currency selection.
+    ...((): { defaultCurrency?: string } => {
+      const cur = readDefaultCurrency(coRow.id);
+      return cur ? { defaultCurrency: cur } : {};
+    })(),
   };
 }
 
@@ -521,8 +569,24 @@ export function updateCompanyDetails(
             .run();
         }
       });
+
+      // v24.2 Bug 6 — persist the default currency to its durable side table
+      // INSIDE the same try so a DB failure is treated as fatal (see catch).
+      // The currency was previously dropped from the DB write entirely (the
+      // `updates` object above never included it) so it never survived a
+      // restart. We write only when the patch actually carries a non-blank
+      // currency, so blank/whitespace patches are a no-op (matching the
+      // in-memory mirror semantics above).
+      if (typeof patch.defaultCurrency === "string" && patch.defaultCurrency.trim()) {
+        writeDefaultCurrency(companyId, tenantId, next.defaultCurrency!);
+      }
     } catch (err) {
-      log.warn("[multiCompanyStore.updateCompanyDetails] DB write failed (non-fatal):", (err as Error).message);
+      // v24.2 Bug 6 — DB write failure is now FATAL: we re-throw so the route
+      // returns 500 and the in-memory cache is NOT updated. Silently updating
+      // the cache after a failed DB write produced the "saves, then reverts on
+      // reload" bug (cache and durable store diverged).
+      log.error("[multiCompanyStore.updateCompanyDetails] DB write failed (fatal):", (err as Error).message);
+      throw new Error(`company_details_db_write_failed: ${(err as Error).message}`);
     }
 
     companies[idx] = next;

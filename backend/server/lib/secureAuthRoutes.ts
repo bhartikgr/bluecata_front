@@ -27,6 +27,7 @@ import {
 import { recordAuthFailure, isLockedOut, clearAuthFailures } from "./rateLimit";
 import { validateBody, Email } from "./inputValidation";
 import { parseCookie } from "./csrf";
+import { setPassword as setUserCredential } from "../userCredentialsStore";
 
 const SignupBody = z.object({
   email: Email,
@@ -163,9 +164,6 @@ export function registerSecureAuthRoutes(app: Express): void {
     const hash = hashPassword(password);
     let userId: string, role: string;
     if (existing) {
-      // reset / invite / partner_invite for an already-provisioned user:
-      // update the password, keep the user's existing role.
-      db.prepare(`UPDATE auth_users SET password_hash = ?, password_algo = 'scrypt-sha256' WHERE id = ?`).run(hash, existing.id);
       userId = existing.id; role = existing.role;
     } else {
       // New user creation only happens for invite-style intents.
@@ -176,6 +174,26 @@ export function registerSecureAuthRoutes(app: Express): void {
       // the existing partner role path.
       userId = `usr_${crypto.randomBytes(8).toString("hex")}`;
       role = row.intent === "partner_invite" ? "partner" : "investor";
+    }
+
+    // v24.2 Bug 1+2 fix — Password persistence root cause.
+    // The browser login form posts to /api/auth/login, whose handler reads the
+    // bcrypt hash from the `user_credentials` table (via lookupByEmail). The
+    // pre-v24.2 redeem path wrote ONLY auth_users.password_hash, so a reset/
+    // invite password never worked at the browser login form.
+    //
+    // Write order (per spec): user_credentials FIRST (the path /api/auth/login
+    // reads), then auth_users. If the auth_users write fails, the user can
+    // still log in via the working browser path. setUserCredential throws on
+    // DB failure, so a user_credentials failure aborts before token-consume is
+    // committed downstream. We persist the SAME plaintext into bcrypt here.
+    setUserCredential({ userId, email: row.email, plainText: password });
+
+    if (existing) {
+      // reset / invite / partner_invite for an already-provisioned user:
+      // update the password, keep the user's existing role.
+      db.prepare(`UPDATE auth_users SET password_hash = ?, password_algo = 'scrypt-sha256' WHERE id = ?`).run(hash, existing.id);
+    } else {
       db.prepare(
         `INSERT INTO auth_users (id, email, password_hash, password_algo, role, status, failed_attempts, created_at)
          VALUES (?, ?, ?, 'scrypt-sha256', ?, 'active', 0, ?)`

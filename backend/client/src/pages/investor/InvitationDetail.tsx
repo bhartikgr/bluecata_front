@@ -20,7 +20,7 @@ import {
 import { StateBadge } from "@/components/common";
 import { GlossaryLink } from "@/components/Glossary";
 import { HelpTip } from "@/components/HelpTip";
-import { ArrowLeft, FileText, Eye, Download, ShieldCheck, Check, X, Layers, PieChart as PieIcon, Building2, Info, Hash, Undo2 } from "lucide-react";
+import { ArrowLeft, FileText, Eye, Download, ShieldCheck, Check, X, Layers, PieChart as PieIcon, Building2, Info, Hash, Undo2, Wallet, Copy } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { fmtUSD, fmtPct, fmtDate, fmtNum, fmtBytes } from "@/lib/format";
 import { useToast } from "@/hooks/use-toast";
@@ -29,7 +29,7 @@ import { useEffect } from "react";
 import { signSES, captureSessionMetadata } from "@/lib/esign/ses";
 import { useTermSheetStore } from "@/lib/termsheet/store";
 import { useEntitlement } from "@/lib/entitlement";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, ApiError } from "@/lib/queryClient";
 // Sprint 21 Wave B components
 import InvestmentHistoryPanel from "@/components/investor/InvestmentHistoryPanel";
 import CoSoftCircleBox from "@/components/investor/CoSoftCircleBox";
@@ -58,6 +58,18 @@ type Inv = {
 };
 type Sec = { id: string; holderName: string; holderType: string; instrument: string; series: string | null; shares: number; investmentAmount: number | null };
 type DR = { id: string; category: string; name: string; sizeBytes: number; uploadedAt: string };
+// v24.3 — wire-transfer instructions published by the founder for this round.
+type WireInstructions = {
+ roundId: string;
+ bankName: string;
+ accountName: string;
+ accountNumber: string;
+ routingNumber: string | null;
+ swift: string | null;
+ reference: string | null;
+ notes: string | null;
+ updatedAt: string;
+};
 
 const INSTRUMENT_COLORS: Record<string, string> = {
  common: "hsl(219 45% 30%)", preferred: "hsl(184 98% 28%)", safe: "hsl(333 75% 40%)",
@@ -215,6 +227,44 @@ export default function InvitationDetail() {
    decisionRecord.data?.record?.state === "confirmed" ||
    decisionRecord.data?.record?.state === "signed" ||
    decisionRecord.data?.record?.state === "funded";
+
+ // v24.3 — a CONFIRMED (signed) soft-circle means the investor now needs the
+ // founder's wire instructions so they know where to send funds. Also treat
+ // downstream states (signed/funded) as confirmed for visibility.
+ const isConfirmed =
+   decisionRecord.data?.record?.state === "confirmed" ||
+   decisionRecord.data?.record?.state === "signed" ||
+   decisionRecord.data?.record?.state === "funded";
+
+ const wireInstr = useQuery<WireInstructions | null>({
+   queryKey: [`/api/investor/rounds/${roundId}/wire-instructions`],
+   queryFn: async () => {
+     // Use apiRequest so the session cookie travels with the call and the
+     // proxy prefix is applied. A 404 ("founder hasn't shared yet") is a
+     // normal empty state, so we catch it rather than surfacing an error.
+     try {
+       const res = await apiRequest("GET", `/api/investor/rounds/${roundId}/wire-instructions`);
+       const json = await res.json();
+       return (json?.wireInstructions ?? null) as WireInstructions | null;
+     } catch (err) {
+       if (err instanceof ApiError && err.status === 404) return null;
+       throw err;
+     }
+   },
+   enabled: !!roundId && isConfirmed,
+   retry: false,
+ });
+
+ const copyAccountNumber = useCallback(() => {
+   const acct = wireInstr.data?.accountNumber;
+   if (!acct) return;
+   try {
+     navigator.clipboard?.writeText(acct);
+     toast({ title: "Copied", description: "Account number copied to clipboard." });
+   } catch {
+     toast({ title: "Copy failed", description: "Select and copy the account number manually.", variant: "destructive" });
+   }
+ }, [wireInstr.data, toast]);
 
  // B5: handler for the Soft-Circle button — navigates to Your Decision tab + scrolls
  const handleSoftCircleClick = () => {
@@ -547,6 +597,51 @@ export default function InvitationDetail() {
      {/* TAB 5 — YOUR DECISION */}
      <TabsContent value="decision" className="space-y-5">
       <TabIntro>Indicate interest with a soft-circle amount or decline politely. Soft-circles are non-binding indications of interest — not contracts.</TabIntro>
+
+      {/* v24.3 — Wire Transfer Instructions. Shown once the soft-circle is
+          CONFIRMED (signed), so the investor knows where to send funds.
+          Addresses Avi's main v24.3 complaint. */}
+      {isConfirmed && (
+       <Card className="border-[hsl(184_98%_22%)]/40" data-testid="card-wire-instructions-investor">
+        <CardHeader className="pb-3">
+         <CardTitle className="text-base flex items-center gap-2"><Wallet className="h-4 w-4" /> Wire Transfer Instructions</CardTitle>
+        </CardHeader>
+        <CardContent className="text-sm">
+         {wireInstr.isLoading ? (
+          <div className="text-muted-foreground">Loading…</div>
+         ) : wireInstr.data ? (
+          <div className="space-y-3" data-testid="investor-wire-display">
+           <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-2">
+            <div><span className="text-muted-foreground">Bank</span><div className="font-medium">{wireInstr.data.bankName}</div></div>
+            <div><span className="text-muted-foreground">Account name</span><div className="font-medium">{wireInstr.data.accountName}</div></div>
+            <div>
+             <span className="text-muted-foreground">Account number</span>
+             <div className="font-mono flex items-center gap-2">
+              <span data-testid="investor-wire-accountNumber">{wireInstr.data.accountNumber}</span>
+              <Button size="sm" variant="ghost" className="h-6 px-2" onClick={copyAccountNumber} data-testid="button-copy-account-number">
+               <Copy className="h-3.5 w-3.5 mr-1" /> Copy
+              </Button>
+             </div>
+            </div>
+            {wireInstr.data.routingNumber && <div><span className="text-muted-foreground">Routing</span><div className="font-mono">{wireInstr.data.routingNumber}</div></div>}
+            {wireInstr.data.swift && <div><span className="text-muted-foreground">SWIFT/BIC</span><div className="font-mono">{wireInstr.data.swift}</div></div>}
+            {wireInstr.data.reference && <div><span className="text-muted-foreground">Reference</span><div className="font-medium">{wireInstr.data.reference}</div></div>}
+           </div>
+           {wireInstr.data.notes && (
+            <div className="p-3 rounded-md bg-secondary/40 border border-border text-xs">
+             <span className="font-semibold">Note from the founder: </span>{wireInstr.data.notes}
+            </div>
+           )}
+           <div className="text-xs text-muted-foreground">Always confirm these details with the founder via Messages before sending a wire.</div>
+          </div>
+         ) : (
+          <div className="text-muted-foreground" data-testid="investor-wire-empty">
+           The founder hasn't shared wire instructions yet. Reach out via Messages.
+          </div>
+         )}
+        </CardContent>
+       </Card>
+      )}
 
       {/* B3: Previous engagement history panel ABOVE the decision form */}
       {companyId && (

@@ -35,6 +35,11 @@ import { clearRevocation } from "./sessionRevocation";
 // password is correct.
 import { authLoginRateLimit, authSignupRateLimit } from "./rateLimit";
 import { DEMO_SEED_ENABLED } from "./demoGate";
+// v24.2 Bug 1+2 — legacy /api/auth/redeem persisted passwords only to the
+// in-memory RUNTIME_PASSWORDS map via registerPersona, so a redeemed password
+// stopped working after a server restart. /api/auth/login falls back to the
+// durable user_credentials store; persist there too for durability.
+import { setPassword as setUserCredential } from "../userCredentialsStore";
 
 /* ---------- email -> persona resolution ---------- */
 // Patch v4: demo-persona email maps only when demo seed is enabled.
@@ -250,7 +255,14 @@ export function registerAuthShellRoutes(app: Express, redemption: {
       const authRow = db.prepare(`SELECT id, email FROM auth_users WHERE lower(email) = ?`).get(email) as
         | { id: string; email: string } | undefined;
       const personaEmail = Object.entries(EMAIL_TO_PERSONA).find(([e]) => e.toLowerCase() === email);
-      const userExists = !!authRow || !!personaEmail;
+      // v24.2 E2E-discovered bug: /api/auth/signup creates RUNTIME_PERSONAS +
+      // user_credentials rows, NOT auth_users. The pre-v24.2 check above missed
+      // real signed-up founders, so they got "if account exists" generic message
+      // but no reset token — forgot-password silently failed for them.
+      // Fix: ALSO check user_credentials (the durable table /api/auth/login reads).
+      const credRow = db.prepare(`SELECT email FROM user_credentials WHERE lower(email) = ?`).get(email) as
+        | { email: string } | undefined;
+      const userExists = !!authRow || !!personaEmail || !!credRow;
       if (userExists) {
         // Mint a 24-hour reset token.
         const tokenRaw  = crypto.randomBytes(32).toString("hex");
@@ -277,8 +289,15 @@ export function registerAuthShellRoutes(app: Express, redemption: {
         } catch (emailErr) {
           log.warn("[auth/forgot] email send failed (token still minted)", { error: (emailErr as Error).message });
         }
-        // Non-production: return the link for local testing.
-        if (process.env.NODE_ENV !== "production") {
+        // Non-production OR explicit opt-in: return the link for local testing.
+        // v24.2: NODE_ENV is hardcoded to "production" at bundle time via
+        // esbuild's `define`, so the first branch is always false at runtime.
+        // The RETURN_DEV_RESET_URL=1 escape hatch lets admins (Avi) test the
+        // forgot-password flow end-to-end on prod-like envs WITHOUT having
+        // SMTP wired yet — the URL comes back in the response body for the
+        // admin user to copy into a fresh browser. Disable by removing the
+        // env var (default is disabled).
+        if (process.env.NODE_ENV !== "production" || process.env.RETURN_DEV_RESET_URL === "1") {
           return res.json({ ...RESPONSE, devResetUrl: resetUrl });
         }
       }
@@ -335,6 +354,23 @@ export function registerAuthShellRoutes(app: Express, redemption: {
       roundId: r.roundId,
       companyId: r.companyId,
     });
+
+    // v24.2 Bug 1+2 fix — also persist the password into the durable
+    // user_credentials store that /api/auth/login reads (via lookupByEmail
+    // fallback), so the redeemed password survives a server restart instead
+    // of living only in the in-process RUNTIME_PASSWORDS map.
+    try {
+      setUserCredential({
+        userId: personaId,
+        email: inviteeEmail,
+        name: inviteeName,
+        plainText: body.password,
+      });
+    } catch (err) {
+      // Non-fatal — the in-memory RUNTIME_PASSWORDS path still works for the
+      // current process; durability is best-effort on the legacy route.
+      log.warn("[authRoutes] legacy redeem setUserCredential failed (non-fatal):", (err as Error).message);
+    }
 
     // Set session cookie so subsequent requests pick up the real persona
     setSessionCookie(res, personaId);

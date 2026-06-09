@@ -123,6 +123,8 @@ import AdminPricingModelDetail from "@/pages/admin/PricingModelDetail";
 // Sprint 28 Billing — founder subscription + billing pages
 import FounderSubscribe from "@/pages/founder/Subscribe";
 import FounderBilling from "@/pages/founder/Billing";
+// v24.2 Airwallex wiring — hosted-checkout return landing (polls activation).
+import BillingReturn from "@/pages/founder/BillingReturn";
 import AdminInvestorDetail from "@/pages/admin/InvestorDetail";
 import AdminSync from "@/pages/admin/Sync";
 import AdminMigration from "@/pages/admin/Migration";
@@ -439,6 +441,11 @@ function AppRouter() {
         </Route>
         <Route path="/founder/billing">
           {() => <RequireAuth><FounderBilling /></RequireAuth>}
+        </Route>
+        {/* v24.2 Airwallex wiring — return from hosted checkout; NOT subscription-gated
+            (the plan may still be activating when the browser lands here). */}
+        <Route path="/founder/billing/return">
+          {() => <RequireAuth><BillingReturn /></RequireAuth>}
         </Route>
 
         {/* Gated founder routes — require auth + active subscription */}

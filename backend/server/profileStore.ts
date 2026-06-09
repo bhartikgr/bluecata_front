@@ -49,7 +49,7 @@ import { makeEmptyCompanyProfile } from "./lib/emptyCompanyProfile";
 // v24.1 Bug E — synthesise an empty investor profile for the authenticated
 // investor when no row exists yet (e.g. runtime-redeemed investors).
 import { makeEmptyInvestorProfile } from "./lib/emptyInvestorProfile";
-import { getDb } from "./db/connection";
+import { getDb, rawDb } from "./db/connection";
 import { companies as companiesTable } from "../shared/schema";
 import { eq, isNull, and } from "drizzle-orm";
 import { log as profileLog } from "./lib/logger";
@@ -57,6 +57,45 @@ import { log as profileLog } from "./lib/logger";
 /* ---------------- Stores ---------------- */
 const companyProfiles = new Map<string, CompanyProfile>();
 const investorProfiles = new Map<string, InvestorProfile>();
+
+/* ------------------------------------------------------------------ */
+/* v24.2 Bug 6 — durable persistence for the profileStore CompanyProfile */
+/*                                                                     */
+/* Previously PATCH /api/companies/:id/profile only wrote the rich      */
+/* CompanyProfile into the in-memory `companyProfiles` Map, so any      */
+/* process restart reverted a founder's saved sector/contact/legal      */
+/* edits. We now write-through to a dedicated side table FIRST; only    */
+/* when the durable write succeeds do we update the cache, and a DB     */
+/* failure surfaces as a 500 (no silent cache/DB divergence).           */
+/* ------------------------------------------------------------------ */
+
+/** Persist a CompanyProfile durably. Throws on DB failure (route → 500). */
+function writeProfileDurable(companyId: string, profile: CompanyProfile): void {
+  const db = rawDb();
+  db.prepare(
+    `INSERT INTO profilestore_company_profile (company_id, tenant_id, profile_json, updated_at, deleted_at)
+     VALUES (?, ?, ?, ?, NULL)
+     ON CONFLICT(company_id) DO UPDATE SET
+       tenant_id = excluded.tenant_id,
+       profile_json = excluded.profile_json,
+       updated_at = excluded.updated_at,
+       deleted_at = NULL`,
+  ).run(companyId, profile.tenantId ?? "tenant_unknown", JSON.stringify(profile), new Date().toISOString());
+}
+
+/** Read a durably-stored CompanyProfile, or null if none/parse failure. */
+function readProfileDurable(companyId: string): CompanyProfile | null {
+  try {
+    const db = rawDb();
+    const row = db.prepare(
+      `SELECT profile_json FROM profilestore_company_profile WHERE company_id = ? AND deleted_at IS NULL`,
+    ).get(companyId) as { profile_json?: string } | undefined;
+    if (!row?.profile_json) return null;
+    return JSON.parse(row.profile_json) as CompanyProfile;
+  } catch {
+    return null;
+  }
+}
 
 companyProfiles.set(SEED_COMPANY_PROFILE.id, SEED_COMPANY_PROFILE);
 investorProfiles.set(SEED_INVESTOR_PROFILE.id, SEED_INVESTOR_PROFILE);
@@ -215,7 +254,18 @@ export function registerProfileRoutes(app: Express): void {
     if (!id || id.trim() === "") {
       return res.status(400).json({ message: "companyId required" });
     }
-    const p = companyProfiles.get(id);
+    // v24.2 Bug 6 — durable read-through: if the in-memory cache is cold (e.g.
+    // after a process restart) but a durable profile exists, re-hydrate it into
+    // the cache so the founder's saved edits survive a reload. DB takes priority
+    // over a stale/seed cache only when the cache has no entry.
+    let p = companyProfiles.get(id);
+    if (!p) {
+      const durable = readProfileDurable(id);
+      if (durable) {
+        companyProfiles.set(id, durable);
+        p = durable;
+      }
+    }
     if (!p) {
       // V2 (Patch v8): fall back to the Sprint 29 companyProfileStore so a
       // founder edit (which writes to that store) is visible to investors
@@ -290,7 +340,16 @@ export function registerProfileRoutes(app: Express): void {
 
   app.patch("/api/companies/:id/profile", (req, res) => {
     const id = req.params.id;
-    const current = companyProfiles.get(id);
+    // v24.2 Bug 6 — durable read-through so a PATCH after a restart merges into
+    // the founder's last-saved profile rather than 404ing on a cold cache.
+    let current = companyProfiles.get(id);
+    if (!current) {
+      const durable = readProfileDurable(id);
+      if (durable) {
+        companyProfiles.set(id, durable);
+        current = durable;
+      }
+    }
     if (!current) return res.status(404).json({ ok: false, error: "COMPANY_NOT_FOUND", message: `Company ${id} not found.` });
 
     // v14 Tier-1 Fix 2 — ownership: founder of this company or admin only.
@@ -334,6 +393,18 @@ export function registerProfileRoutes(app: Express): void {
     }
 
     patched.updatedAt = nowIso();
+
+    // v24.2 Bug 6 — DB-FIRST write-through. Persist the patched profile to its
+    // durable side table BEFORE touching the in-memory cache. If the durable
+    // write fails we return 500 and leave the cache untouched, so the client is
+    // never told a save succeeded that did not actually persist (the root cause
+    // of "edit reverts on reload").
+    try {
+      writeProfileDurable(id, patched);
+    } catch (err) {
+      profileLog.error("[profileStore] PATCH /api/companies/:id/profile durable write failed:", (err as Error).message);
+      return res.status(500).json({ ok: false, error: "PROFILE_PERSIST_FAILED", message: (err as Error).message });
+    }
     companyProfiles.set(id, patched);
 
     const changedFields = diffChangedFields(current, patched);
@@ -584,5 +655,16 @@ export const _testAccess = { companyProfiles, investorProfiles, outbox, auditEnt
  * for legacy entries (see GET /api/companies/:id/profile fallback).
  */
 export function getCompanyProfileSnapshot(companyId: string): unknown | null {
-  return companyProfiles.get(companyId) ?? null;
+  // v24.2 Bug 6 — merge in-memory + durable, with the durable store taking
+  // priority on a cold cache (hydration). When both exist the in-memory copy is
+  // authoritative for the current process (it is updated atomically after every
+  // successful durable write), so we return it; otherwise fall back to durable.
+  const mem = companyProfiles.get(companyId);
+  if (mem) return mem;
+  const durable = readProfileDurable(companyId);
+  if (durable) {
+    companyProfiles.set(companyId, durable);
+    return durable;
+  }
+  return null;
 }

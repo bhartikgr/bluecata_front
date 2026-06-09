@@ -4,25 +4,19 @@
  * - Loads pending subscription from GET /api/founder/subscription
  * - Plan selector: founder_free / founder_pro (default) / founder_scale / founder_enterprise
  *   with monthly-equivalent muted text under annual price
- * - Card brand auto-detected via BIN sniff (Visa / MC / Amex)
- * - Luhn check on submit
- * - Expiry future-date validation
- * - Billing zip required
- * - Inline validation toasts
- * - 3DS required → <RequiresThreeDS> card
- * - Success → invalidate /api/founder/subscription, toast "Subscribed", navigate to /founder/dashboard
+ * - v24.2 Airwallex wiring: paid plans no longer collect a card in-app. The
+ *   "Continue to Airwallex" button mints a real PaymentIntent via
+ *   POST /api/billing/plan and redirects to the Airwallex hosted page.
+ *   Card data never touches Capavate (PCI-DSS).
+ * - Free path unchanged: POST /api/founder/subscription/activate-free, then
+ *   invalidate plan surfaces and navigate to /founder/dashboard.
  */
 import { useState } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { z } from "zod";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { Input } from "@/components/ui/input";
 import {
   CheckCircle2, Lock, CreditCard, ShieldCheck, Sparkles,
   Building2, Zap, Star, Crown, ExternalLink, LogOut,
@@ -86,122 +80,17 @@ const PLANS = [
   },
 ];
 
-/* ---------- BIN sniff for card brand ---------- */
-function detectCardBrand(cardNumber: string): "visa" | "mastercard" | "amex" | "unknown" {
-  const digits = cardNumber.replace(/\D/g, "");
-  if (/^4/.test(digits)) return "visa";
-  if (/^5[1-5]/.test(digits) || /^2[2-7]/.test(digits)) return "mastercard";
-  if (/^3[47]/.test(digits)) return "amex";
-  return "unknown";
-}
-
-/* ---------- Luhn check ---------- */
-function luhnCheck(cardNumber: string): boolean {
-  const digits = cardNumber.replace(/\D/g, "");
-  if (digits.length < 12) return false;
-  let sum = 0;
-  let alt = false;
-  for (let i = digits.length - 1; i >= 0; i--) {
-    let n = parseInt(digits[i], 10);
-    if (alt) {
-      n *= 2;
-      if (n > 9) n -= 9;
-    }
-    sum += n;
-    alt = !alt;
-  }
-  return sum % 10 === 0;
-}
-
-/* ---------- Expiry future-date validation ---------- */
-function isExpiryFuture(expiry: string): boolean {
-  const match = expiry.match(/^(\d{2})\/(\d{2})$/);
-  if (!match) return false;
-  const month = parseInt(match[1], 10);
-  const year = parseInt(match[2], 10) + 2000;
-  if (month < 1 || month > 12) return false;
-  const now = new Date();
-  const expiryDate = new Date(year, month, 1); // first day of month after expiry
-  return expiryDate > now;
-}
-
-/* ---------- Form schema with custom refinements ---------- */
-const paymentSchema = z
-  .object({
-    cardholderName: z.string().min(2, "Cardholder name required"),
-    cardNumber: z.string().min(12, "Card number required").max(19),
-    expiry: z.string().regex(/^\d{2}\/\d{2}$/, "Format: MM/YY"),
-    cvc: z.string().min(3, "CVC required").max(4),
-    billingZip: z.string().min(3, "Billing zip required"),
-  })
-  .refine((data) => luhnCheck(data.cardNumber), {
-    message: "Invalid card number (Luhn check failed)",
-    path: ["cardNumber"],
-  })
-  .refine((data) => isExpiryFuture(data.expiry), {
-    message: "Card has expired",
-    path: ["expiry"],
-  });
-
-type PaymentFormValues = z.infer<typeof paymentSchema>;
-
 /* ---------- Helpers ---------- */
+// v24.2 Airwallex wiring: in-app card collection (BIN sniff, Luhn, expiry
+// validation, 3DS placeholder) was REMOVED. Card data is now collected on the
+// Airwallex hosted payment page, so none of that client-side card logic is
+// needed here anymore.
 function fmtMoney(minor: number, currency = "USD"): string {
   try {
     return new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 0 }).format(minor / 100);
   } catch {
     return `${currency} ${(minor / 100).toFixed(0)}`;
   }
-}
-
-function maskCard(value: string): string {
-  return value.replace(/\D/g, "").slice(0, 16).replace(/(.{4})/g, "$1 ").trim();
-}
-
-const BRAND_COLORS: Record<string, string> = {
-  visa: "text-blue-700",
-  mastercard: "text-orange-600",
-  amex: "text-emerald-700",
-};
-const BRAND_LABELS: Record<string, string> = {
-  visa: "Visa",
-  mastercard: "Mastercard",
-  amex: "Amex",
-  unknown: "",
-};
-
-/* ---------- RequiresThreeDS placeholder ---------- */
-function RequiresThreeDS({ onCancel }: { onCancel: () => void }) {
-  return (
-    <Card className="border-amber-200 bg-amber-50" data-testid="card-3ds-required">
-      <CardContent className="pt-4 space-y-3">
-        <div className="flex items-center gap-2 text-amber-800 font-semibold text-sm">
-          <ShieldCheck className="h-4 w-4" />
-          3DS verification required
-        </div>
-        <p className="text-xs text-amber-700">
-          Your bank requires additional authentication to complete this payment.
-          Click the button below to open the verification window.
-        </p>
-        <div className="flex gap-2">
-          <Button
-            size="sm"
-            className="bg-amber-700 hover:bg-amber-800 text-white"
-            onClick={() => {
-              // In production: opens the 3DS iframe/redirect URL from the gateway.
-              window.alert("3DS redirect simulation — in production this opens your bank's authentication page.");
-            }}
-            data-testid="button-open-3ds"
-          >
-            <ExternalLink className="h-3.5 w-3.5 mr-1.5" />Open verification
-          </Button>
-          <Button size="sm" variant="outline" onClick={onCancel} data-testid="button-cancel-3ds">
-            Cancel
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
-  );
 }
 
 /* ---------- Plan card ---------- */
@@ -263,8 +152,6 @@ export default function FounderSubscribe() {
   const companyId = entCtx?.founder?.activeCompanyId ?? "";
 
   const [selectedPlan, setSelectedPlan] = useState("founder_pro");
-  const [requires3ds, setRequires3ds] = useState(false);
-  const [cardBrand, setCardBrand] = useState<ReturnType<typeof detectCardBrand>>("unknown");
 
   const { data: subData } = useQuery<{ ok: boolean; subscription: Subscription }>({
     queryKey: ["/api/founder/subscription", companyId],
@@ -272,46 +159,30 @@ export default function FounderSubscribe() {
     retry: false,
   });
 
-  const form = useForm<PaymentFormValues>({
-    resolver: zodResolver(paymentSchema),
-    defaultValues: {
-      cardholderName: "",
-      cardNumber: "",
-      expiry: "",
-      cvc: "",
-      billingZip: "",
-    },
-  });
-
-  const chargeMut = useMutation({
-    mutationFn: async (values: PaymentFormValues) => {
-      // Patch v6 — Free plan flow: route to /activate-free which auto-creates
-      // a company if needed (fresh signups don't have one yet) and activates
-      // a Founder Free subscription without requiring a card.
+  // v24.2 Airwallex wiring — the paid path no longer collects a card in-app.
+  // It mints a real Airwallex PaymentIntent via POST /api/billing/plan and
+  // redirects to the Airwallex hosted payment page (card data never touches
+  // Capavate). The free path is unchanged (no card, no charge).
+  const checkoutMut = useMutation({
+    mutationFn: async () => {
       if (selectedPlan === "founder_free") {
         const res = await apiRequest("POST", "/api/founder/subscription/activate-free", {});
         return res.json();
       }
-      const cardLast4 = values.cardNumber.replace(/\s/g, "").slice(-4);
-      const res = await apiRequest("POST", "/api/founder/subscription/charge", {
+      // The single Capavate commercial tier is annual ($840/yr/company). Paid
+      // plan keys all map to that tier for the hosted-checkout PaymentIntent.
+      const res = await apiRequest("POST", "/api/billing/plan", {
+        tierId: "founder_capavate_annual",
         companyId,
-        pricingModelId: selectedPlan === "founder_pro" ? "pm_founder_pro_v1"
-          : selectedPlan === "founder_free" ? "pm_founder_free_v1"
-          : selectedPlan,
-        plan: selectedPlan,
-        paymentMethod: {
-          tokenized: `tok_${cardLast4}`,
-          cardLast4,
-          cardholderName: values.cardholderName,
-          billingZip: values.billingZip,
-        },
+        billingCycle: "annual",
       });
       return res.json();
     },
     onSuccess: (data) => {
-      if (data.requires3ds) {
-        setRequires3ds(true);
-        toast({ title: "Verification required", description: "Your bank requires 3D Secure authentication.", variant: "destructive" });
+      if (data?.hostedPaymentPageUrl) {
+        // Record legal consent before leaving for the hosted page.
+        legalConsentRef.current?.recordConsent().catch(() => null);
+        window.location.href = data.hostedPaymentPageUrl;
         return;
       }
       if (data.ok) {
@@ -334,7 +205,14 @@ export default function FounderSubscribe() {
         toast({ title: "Payment failed", description: data.error ?? "Please try again.", variant: "destructive" });
       }
     },
-    onError: (e: Error) => toast({ title: "Payment failed", description: e.message, variant: "destructive" }),
+    onError: (e: any) => {
+      const code = e?.code ?? "";
+      if (code === "gateway_not_configured" || e?.message?.includes("gateway_not_configured")) {
+        toast({ title: "Payment gateway not configured", description: "Contact your administrator to enable payments.", variant: "destructive" });
+      } else {
+        toast({ title: "Payment failed", description: e?.message ?? "Please try again.", variant: "destructive" });
+      }
+    },
   });
 
   const selectedPlanObj = PLANS.find(p => p.key === selectedPlan)!;
@@ -436,124 +314,48 @@ export default function FounderSubscribe() {
                   </div>
                 </div>
 
-                {requires3ds ? (
-                  <RequiresThreeDS onCancel={() => setRequires3ds(false)} />
-                ) : isFree ? (
+                {isFree ? (
                   <Button
                     className="w-full bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_17%)] text-white"
-                    onClick={() => chargeMut.mutate({
-                      cardholderName: "Free",
-                      cardNumber: "4111111111111111", // valid Luhn Visa test card
-                      expiry: "12/99",
-                      cvc: "000",
-                      billingZip: "00000",
-                    })}
-                    disabled={chargeMut.isPending}
+                    onClick={() => checkoutMut.mutate()}
+                    disabled={checkoutMut.isPending}
                     data-testid="button-activate-free"
                   >
                     Activate free plan
                   </Button>
                 ) : (
-                  <Form {...form}>
-                    <form onSubmit={form.handleSubmit(
-                      (v) => chargeMut.mutate(v),
-                      (errors) => {
-                        const first = Object.values(errors)[0];
-                        if (first?.message) {
-                          toast({ title: "Validation error", description: String(first.message), variant: "destructive" });
-                        }
-                      }
-                    )} className="space-y-3">
-                      <FormField control={form.control} name="cardholderName" render={({ field }) => (
-                        <FormItem>
-                          <FormLabel className="text-xs">Cardholder name</FormLabel>
-                          <FormControl>
-                            <Input placeholder="Name on card" {...field} data-testid="input-cardholder-name" />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )} />
-                      <FormField control={form.control} name="cardNumber" render={({ field }) => (
-                        <FormItem>
-                          <FormLabel className="text-xs">
-                            Card number
-                            {cardBrand !== "unknown" && (
-                              <span className={`ml-2 text-[10px] font-semibold ${BRAND_COLORS[cardBrand] ?? ""}`}>
-                                {BRAND_LABELS[cardBrand]}
-                              </span>
-                            )}
-                          </FormLabel>
-                          <FormControl>
-                            <Input
-                              placeholder="4242 4242 4242 4242"
-                              {...field}
-                              value={maskCard(field.value)}
-                              onChange={e => {
-                                const raw = e.target.value.replace(/\s/g, "");
-                                field.onChange(raw);
-                                setCardBrand(detectCardBrand(raw));
-                              }}
-                              data-testid="input-card-number"
-                            />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )} />
-                      <div className="grid grid-cols-2 gap-2">
-                        <FormField control={form.control} name="expiry" render={({ field }) => (
-                          <FormItem>
-                            <FormLabel className="text-xs">Expiry</FormLabel>
-                            <FormControl>
-                              <Input
-                                placeholder="MM/YY"
-                                maxLength={5}
-                                {...field}
-                                onChange={e => {
-                                  const v = e.target.value.replace(/\D/g, "");
-                                  field.onChange(v.length > 2 ? `${v.slice(0, 2)}/${v.slice(2, 4)}` : v);
-                                }}
-                                data-testid="input-expiry"
-                              />
-                            </FormControl>
-                            <FormMessage />
-                          </FormItem>
-                        )} />
-                        <FormField control={form.control} name="cvc" render={({ field }) => (
-                          <FormItem>
-                            <FormLabel className="text-xs">CVC</FormLabel>
-                            <FormControl>
-                              <Input placeholder="•••" maxLength={4} type="password" {...field} data-testid="input-cvc" />
-                            </FormControl>
-                            <FormMessage />
-                          </FormItem>
-                        )} />
+                  // v24.2 Airwallex wiring — no in-app card form. Card details
+                  // are collected on the Airwallex hosted page (PCI-DSS: card
+                  // data never touches Capavate). The button mints a real
+                  // PaymentIntent and redirects the founder to checkout.
+                  <div className="space-y-3">
+                    <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900 flex items-start gap-2" data-testid="banner-hosted-checkout">
+                      <ShieldCheck className="h-4 w-4 shrink-0 mt-0.5" />
+                      <div>
+                        You’ll be redirected to our payment provider (Airwallex)
+                        to enter your card securely. Card details never touch
+                        Capavate servers.
                       </div>
-                      <FormField control={form.control} name="billingZip" render={({ field }) => (
-                        <FormItem>
-                          <FormLabel className="text-xs">Billing zip / postal code</FormLabel>
-                          <FormControl>
-                            <Input placeholder="ZIP / Postal code" {...field} data-testid="input-billing-zip" />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )} />
-                      <LegalConsentCheckbox
-                        ref={legalConsentRef}
-                        docs={["terms", "privacy"]}
-                        context="new_company"
-                        required
-                        onCheckedChange={setLegalChecked}
-                      />
-                      <Button
-                        type="submit"
-                        className="w-full bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_17%)] text-white"
-                        disabled={chargeMut.isPending || !legalChecked}
-                        data-testid="button-subscribe"
-                      >
-                        {chargeMut.isPending ? "Processing…" : `Subscribe — ${fmtMoney(selectedPlanObj.annualMinor, selectedPlanObj.currency)}/yr`}
-                      </Button>
-                    </form>
-                  </Form>
+                    </div>
+                    <LegalConsentCheckbox
+                      ref={legalConsentRef}
+                      docs={["terms", "privacy"]}
+                      context="new_company"
+                      required
+                      onCheckedChange={setLegalChecked}
+                    />
+                    <Button
+                      type="button"
+                      className="w-full bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_17%)] text-white"
+                      disabled={checkoutMut.isPending || !legalChecked}
+                      onClick={() => checkoutMut.mutate()}
+                      data-testid="button-subscribe"
+                    >
+                      {checkoutMut.isPending ? "Redirecting…" : (
+                        <>Continue to Airwallex <ExternalLink className="h-3.5 w-3.5 ml-1.5" /></>
+                      )}
+                    </Button>
+                  </div>
                 )}
 
                 {/* Trust signals */}

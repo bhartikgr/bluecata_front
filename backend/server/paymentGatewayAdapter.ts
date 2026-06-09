@@ -38,6 +38,17 @@ import {
 import { verifyWebhookSignature as verifyAirwallexSig } from "./lib/airwallexGateway";
 import { verifyWebhookSignature as verifyStripeSig } from "./lib/stripeGateway";
 import { log } from "./lib/logger";
+// v24.2 Airwallex wiring — the per-gateway webhook now flips the Capavate
+// checkout-subscription record (minted by POST /api/billing/plan) from pending
+// to active on a confirmed payment. This is the ONLY place that activates a
+// subscription: Airwallex is the source of truth.
+import {
+  getByPaymentIntent as getCapSubByPaymentIntent,
+  getByMerchantOrderId as getCapSubByMerchantOrderId,
+  activateByPaymentIntent as activateCapSub,
+  failByPaymentIntent as failCapSub,
+} from "./subscriptionStore";
+import { emitBillingEvent } from "./lib/billingEvents";
 
 /* ---------- Types ---------- */
 
@@ -660,6 +671,44 @@ export function registerPaymentGatewayRoutes(app: Express): void {
     // Normalise type into the legacy dispatch verbs.
     const isSuccess = /succeed|paid|captured|completed/i.test(type) || /SUCCEEDED|succeeded/.test(status ?? "");
     const isFailure = /fail|declined|errored|cancelled/i.test(type) || /FAILED|failed/.test(status ?? "");
+
+    // v24.2 Airwallex wiring — flip the Capavate checkout subscription. The
+    // record was minted PENDING by POST /api/billing/plan keyed on the
+    // PaymentIntent id; on `payment_intent.succeeded` we flip it to active and
+    // emit a billing event so downstream consumers (entitlements refresh, etc.)
+    // can react. We resolve the row by intentId first, then by
+    // merchant_order_id (Airwallex puts it on data.object.merchant_order_id,
+    // which the normaliser above maps into `companyId`).
+    let capSub = getCapSubByPaymentIntent(intentId);
+    if (!capSub && companyId) capSub = getCapSubByMerchantOrderId(companyId);
+    if (capSub) {
+      if (isSuccess) {
+        const activated = activateCapSub(capSub.paymentIntentId);
+        if (activated) {
+          emitBillingEvent({
+            kind: "subscription.activated",
+            paymentIntentId: activated.paymentIntentId,
+            companyId: activated.companyId,
+            tierId: activated.tierId,
+            userId: activated.userId,
+            gateway,
+          });
+        }
+      } else if (isFailure) {
+        const failed = failCapSub(capSub.paymentIntentId);
+        if (failed && failed.status === "failed") {
+          emitBillingEvent({
+            kind: "subscription.failed",
+            paymentIntentId: failed.paymentIntentId,
+            companyId: failed.companyId,
+            tierId: failed.tierId,
+            userId: failed.userId,
+            gateway,
+          });
+        }
+      }
+    }
+
     if (isSuccess && companyId) {
       const sub = getSubscription(companyId);
       if (sub?.status === "past_due") {

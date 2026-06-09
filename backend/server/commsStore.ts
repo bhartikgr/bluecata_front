@@ -53,6 +53,14 @@ import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 // B-505 fix v23.6.1 — resolve founder CRM contacts that have not yet been
 // provisioned into the comms layer, so "Message" never dead-ends on a 404.
 import { findCrmContactByInvestorId } from "./founderCrmStore";
+// v24.2 Bug 5 — derivedMembership must consult DURABLE relationship stores,
+// not only the runtime/static UserContext arrays. Secure-invite-redeemed users
+// have empty ctx.investor.invitedRounds (those are RUNTIME-only), so we also
+// query the persisted soft-circle, round-invitation, and company-membership
+// stores keyed by userId/email.
+import * as softCircleStore from "./softCircleStore";
+import * as roundInvitationsStore from "./roundInvitationsStore";
+import { getCompaniesForFounder } from "./multiCompanyStore";
 /* v17 Phase B — Collective-channel slice write-through to DB. */
 import { isNull } from "drizzle-orm";
 import { getDb } from "./db/connection";
@@ -743,6 +751,9 @@ function unreadCount(channelId: string, viewerUserId: string): number {
  */
 type CommsMembershipCtx = {
   userId: string;
+  // v24.2 Bug 5 — email is needed to query durable round-invitation rows for
+  // secure-redeemed users whose invitedRounds array is empty.
+  identity?: { email?: string };
   founder?: { companies?: Array<{ companyId: string }> };
   investor?: {
     capTablePositions?: Array<{ companyId: string }>;
@@ -785,6 +796,17 @@ function derivedMembership(channel: Channel, ctx: CommsMembershipCtx): boolean {
   );
   if (isFounderOfCompany) return true;
 
+  // v24.2 Bug 5 — DURABLE founder-membership fallback. The runtime ctx.founder
+  // array can be empty for users hydrated outside the demo persona seed; the
+  // multiCompanyStore is the authoritative company_members source.
+  try {
+    if (getCompaniesForFounder(ctx.userId).some((c) => c.companyId === companyId)) {
+      return true;
+    }
+  } catch {
+    // Store unavailable — fall through to investor checks.
+  }
+
   // Investor holding a cap-table position in the channel's company.
   const hasCapTablePosition = (ctx.investor?.capTablePositions ?? []).some(
     (p) => p.companyId === companyId,
@@ -792,17 +814,76 @@ function derivedMembership(channel: Channel, ctx: CommsMembershipCtx): boolean {
   if (hasCapTablePosition) return true;
 
   // Investor with a redeemed/invited round for the channel's company.
+  // v24.2 Bug 5 — do NOT return early on a miss here; an empty invitedRounds
+  // array is the NORMAL state for secure-invite-redeemed users, so we must
+  // fall through to the durable-store fallback below.
   const invited = ctx.investor?.invitedRounds ?? [];
   if (channel.kind === "soft_circle") {
     // soft_circle is round-scoped: require a matching roundId when present.
-    return invited.some(
-      (r) =>
-        r.companyId === companyId &&
-        (!channel.roundId || r.roundId === channel.roundId),
-    );
+    if (
+      invited.some(
+        (r) =>
+          r.companyId === companyId &&
+          (!channel.roundId || r.roundId === channel.roundId),
+      )
+    ) {
+      return true;
+    }
+  } else if (invited.some((r) => r.companyId === companyId)) {
+    // cap_table / company_followers: company-level relationship is enough.
+    return true;
   }
-  // cap_table / company_followers: company-level relationship is enough.
-  return invited.some((r) => r.companyId === companyId);
+
+  // v24.2 Bug 5 — DURABLE fallback. Secure-invite-redeemed users do NOT have a
+  // RUNTIME persona, so ctx.investor.invitedRounds is empty even though they
+  // have a real, persisted relationship to the company/round. Consult the
+  // durable stores by userId + email. Tenant isolation is preserved: every
+  // match still requires the SAME companyId (and roundId for soft_circle), so
+  // investor B can never derive access to investor A's channels.
+  try {
+    // (a) Soft-circle relation, keyed by investorUserId.
+    const circles = softCircleStore.listForInvestor(ctx.userId);
+    if (channel.kind === "soft_circle") {
+      if (
+        circles.some(
+          (c) =>
+            c.companyId === companyId &&
+            (!channel.roundId || c.roundId === channel.roundId),
+        )
+      ) {
+        return true;
+      }
+    } else if (circles.some((c) => c.companyId === companyId)) {
+      return true;
+    }
+  } catch {
+    // Store unavailable in this process — fall through to the next check.
+  }
+
+  try {
+    // (b) Durable round invitations, keyed by investor email.
+    const email = ctx.identity?.email;
+    if (email) {
+      const invites = roundInvitationsStore.listForInvestorEmail(email);
+      if (channel.kind === "soft_circle") {
+        if (
+          invites.some(
+            (i) =>
+              i.companyId === companyId &&
+              (!channel.roundId || i.roundId === channel.roundId),
+          )
+        ) {
+          return true;
+        }
+      } else if (invites.some((i) => i.companyId === companyId)) {
+        return true;
+      }
+    }
+  } catch {
+    // Store unavailable — fall through.
+  }
+
+  return false;
 }
 
 function channelIsVisibleToViewer(
@@ -1699,10 +1780,13 @@ export function registerCommsRoutes(app: Express): void {
   /* ---- Cap-table channel access (per-company) ---- */
   app.get("/api/comms/cap-table/:companyId", (req, res) => {
     const { actorId } = actorOf(req);
+    // v24.2 Bug 5 — pass ctx so derivedMembership (durable stores) runs;
+    // secure-redeemed users were otherwise denied (isMember:false).
+    const ctx = membershipCtxOf(req);
     const id = capTableChannelId(req.params.companyId);
     const ch = channels.get(id);
     if (!ch) return res.json({ exists: false });
-    const isMember = channelIsVisibleToViewer(ch, actorId);
+    const isMember = channelIsVisibleToViewer(ch, actorId, ctx);
     if (!isMember) return res.json({ exists: true, isMember: false });
     const view = projectChannel(ch, actorId);
     const lastMessages: MessageView[] = [];
@@ -1722,10 +1806,12 @@ export function registerCommsRoutes(app: Express): void {
   /* ---- Soft-circle channel access (per-round) ---- */
   app.get("/api/comms/soft-circle/:roundId", (req, res) => {
     const { actorId } = actorOf(req);
+    // v24.2 Bug 5 — pass ctx so derivedMembership (durable stores) runs.
+    const ctx = membershipCtxOf(req);
     const id = softCircleChannelId(req.params.roundId);
     const ch = channels.get(id);
     if (!ch) return res.json({ exists: false });
-    const isMember = channelIsVisibleToViewer(ch, actorId);
+    const isMember = channelIsVisibleToViewer(ch, actorId, ctx);
     if (!isMember) return res.json({ exists: true, isMember: false });
     const view = projectChannel(ch, actorId);
     const lastMessages: MessageView[] = [];
@@ -1802,9 +1888,11 @@ export function registerCommsRoutes(app: Express): void {
   /* ---- E2: typing indicator pulse ---- */
   app.post("/api/comms/channels/:id/typing", (req, res) => {
     const { actorId, ip, ua } = actorOf(req);
+    // v24.2 Bug 5 — pass ctx so derivedMembership (durable stores) runs.
+    const ctx = membershipCtxOf(req);
     const ch = channels.get(req.params.id);
     if (!ch) return res.status(404).json({ message: "Not found" });
-    if (!channelIsVisibleToViewer(ch, actorId))
+    if (!channelIsVisibleToViewer(ch, actorId, ctx))
       return res.status(403).json({ message: "Not a member" });
     emitOutbox("channel.typing", actorId, ip, ua, { channelId: ch.id, userId: actorId, ts: nowIso() });
     res.json({ ok: true, ts: nowIso() });
@@ -1813,9 +1901,11 @@ export function registerCommsRoutes(app: Express): void {
   /* ---- E2: read-receipts — list of who has read up to which message ---- */
   app.get("/api/comms/channels/:id/read-receipts", (req, res) => {
     const { actorId } = actorOf(req);
+    // v24.2 Bug 5 — pass ctx so derivedMembership (durable stores) runs.
+    const ctx = membershipCtxOf(req);
     const ch = channels.get(req.params.id);
     if (!ch) return res.status(404).json({ message: "Not found" });
-    if (!channelIsVisibleToViewer(ch, actorId))
+    if (!channelIsVisibleToViewer(ch, actorId, ctx))
       return res.status(403).json({ message: "Not a member" });
     // For each participant, the latest message they have read in this channel.
     const lastReadByUser: Record<string, string> = {};

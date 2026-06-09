@@ -45,6 +45,9 @@ import {
   captableCommits as captableCommitsTable,
   fundedQueue as fundedQueueTable,
 } from "../shared/schema";
+// v24.2 Bug 3 — Wire-Funded action reads the durable soft-circle row to build
+// the funded-queue entry and advances its status.
+import { getSoftCircle, updateSoftCircleStatus } from "./softCircleStore";
 import { log } from "./lib/logger";
 
 export type CommitState =
@@ -654,6 +657,98 @@ export function registerCaptableCommitRoutes(app: Express): void {
       res.json({ entries, count: entries.length });
     });
   });
+
+  // v24.2 Bug 3 — Wire-Funded action. The founder marks a CONFIRMED soft-circle
+  // as wired/funded, which enqueues it into the funded-queue ready for the
+  // existing commit-funded-batch step (which is left untouched). This is the
+  // server half of the missing "Mark Wire Funded" button on RoundDetail.
+  //
+  // Ownership is derived from the soft-circle row's OWN companyId (not a
+  // client-supplied body field) so a forged companyId cannot escalate; we then
+  // assert the authenticated caller founds that company (admin bypasses).
+  app.post(
+    "/api/founder/rounds/:roundId/soft-circle/:scId/wire-funded",
+    requireAuth,
+    (req: Request, res: Response) => {
+      let id;
+      try { id = requireIdentity(req); }
+      catch (e) {
+        const err = e as { status?: number; code?: string; message?: string };
+        return res.status(err.status ?? 401).json({ ok: false, error: err.code ?? "UNAUTHORIZED", message: err.message ?? "Sign in to continue." });
+      }
+
+      // Cast req.params values to String to satisfy strict tsc — Express types
+      // params as string | string[] when array-style query/wildcard routes exist.
+      const roundId = String(req.params.roundId);
+      const scId = String(req.params.scId);
+      const sc = getSoftCircle(scId);
+      // 404 when the soft-circle does not exist OR belongs to a different round
+      // (prevents cross-round id confusion).
+      if (!sc || sc.roundId !== roundId) {
+        return res.status(404).json({ ok: false, error: "SOFT_CIRCLE_NOT_FOUND", message: `Soft-circle ${scId} not found on round ${roundId}.` });
+      }
+
+      const companyId = sc.companyId ?? "";
+      // Tenant isolation: the caller must found the company that owns the
+      // soft-circle. A founder of another company gets 403, not 404, so the
+      // existence of the row is not leaked across tenants only when owned.
+      if (!companyId) {
+        return res.status(409).json({ ok: false, error: "SOFT_CIRCLE_NO_COMPANY", message: "Soft-circle is not associated with a company." });
+      }
+      if (!id.isAdmin) {
+        const ownsCompany = id.ctx.founder.companies.some((c) => c.companyId === companyId);
+        if (!ownsCompany) {
+          return res.status(403).json({ ok: false, error: "FOUNDER_WRONG_COMPANY", message: "You are not a founder of this company." });
+        }
+      }
+
+      // State guard: only a CONFIRMED soft-circle may be wired/funded. Anything
+      // else (intent / committed / declined) is an invalid transition.
+      if (sc.status !== "confirmed") {
+        return res.status(400).json({
+          ok: false,
+          error: "INVALID_SOFT_CIRCLE_STATE",
+          message: `Soft-circle must be 'confirmed' to mark as wire-funded (current: '${sc.status}').`,
+          status: sc.status,
+        });
+      }
+
+      // Compliance hold blocks funding the same way it blocks commits.
+      const tenantForHold = tenantForCompany(companyId);
+      if (getComplianceHoldForTenant(tenantForHold)) {
+        return res.status(409).json({ ok: false, error: "compliance_hold_active", tenantId: tenantForHold, message: "Funding is blocked until admin resolves the hold." });
+      }
+
+      // Build the funded-queue entry from the durable soft-circle. invitationId
+      // falls back to the soft-circle id when no invitation is linked. Shares
+      // may be supplied by the caller (post-priced rounds); default "0" lets the
+      // commit step recompute/reconcile.
+      const rawShares = (req.body as { shares?: unknown } | undefined)?.shares;
+      const shares = rawShares === undefined || rawShares === null ? "0" : String(rawShares);
+      const entry: FundedEntry = {
+        invitationId: sc.invitationId ?? sc.id,
+        roundId: sc.roundId,
+        companyId,
+        investorId: sc.investorUserId ?? sc.investorEmail ?? sc.id,
+        amount: String(sc.amount),
+        currency: sc.currency,
+        shares,
+      };
+
+      try {
+        enqueueFunded(entry);
+      } catch (err) {
+        return res.status(500).json({ ok: false, error: "FUNDED_ENQUEUE_FAILED", message: (err as Error).message });
+      }
+
+      // Advance the soft-circle so the UI reflects the funded state. Non-fatal:
+      // the funded-queue row is the source of truth for the commit step.
+      try { updateSoftCircleStatus(scId, "confirmed"); } catch { /* best-effort */ }
+
+      BridgeOutbound.capTableMutated(companyId, { roundId: sc.roundId, txCount: 0, ledgerSeq: -1, hash: "wire_funded_enqueued" });
+      return res.status(200).json({ ok: true, entry });
+    },
+  );
 
   // Batch commit — all-or-nothing inside a SINGLE outer transaction so a
   // single failure rolls back ALL inserts.

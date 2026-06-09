@@ -306,6 +306,32 @@ export function storeCredential(args: {
 }
 
 /**
+ * v24.2 Bug 1+2 — convenience wrapper that persists a plaintext password
+ * for a given user into the canonical `user_credentials` store (bcrypt cost
+ * 12 in prod, 4 in test via storeCredential → hashPassword). This is the
+ * single durable credential path that `/api/auth/login` reads through
+ * `lookupByEmail`. Redeem/reset/invite routes MUST call this so the new
+ * password actually works at the browser login form, not just at
+ * `/api/auth/secure/login` (which reads auth_users).
+ *
+ * Throws if the DB write fails (storeCredential rethrows db_write_failed) so
+ * callers can order writes safely (user_credentials first, then auth_users).
+ */
+export function setPassword(args: {
+  userId: string;
+  email: string;
+  name?: string;
+  plainText: string;
+}): void {
+  storeCredential({
+    userId: args.userId,
+    email: args.email,
+    name: args.name,
+    password: args.plainText,
+  });
+}
+
+/**
  * Look up a credential by email.
  * Returns a CredentialHandle with a verifyPassword() method, or null if not found.
  *

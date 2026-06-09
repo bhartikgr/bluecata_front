@@ -49,7 +49,7 @@ import { setSessionCookie, clearSessionCookie, readSessionCookie } from "./lib/s
 import { revokeSession } from "./lib/sessionRevocation.js";
 import { getRecentEvents, findEventsByType } from "./sprint10Telemetry";
 // Sprint 11 — founder build
-import { registerMultiCompanyRoutes, updateCompanyDetails, getCompanyNameById, getCompanyRecordById, getAllCompanies } from "./multiCompanyStore"; // B-509/C-011 v23.6 added getCompanyNameById; v23.7.1 added getCompanyRecordById (BUG 019 follow-up); v23.8 added getAllCompanies (W-8)
+import { registerMultiCompanyRoutes, updateCompanyDetails, getCompanyNameById, getCompanyRecordById, getAllCompanies, addCompanyForFounder } from "./multiCompanyStore"; // B-509/C-011 v23.6 added getCompanyNameById; v23.7.1 added getCompanyRecordById (BUG 019 follow-up); v23.8 added getAllCompanies (W-8); v24.2 E2E fix added addCompanyForFounder (founder-creates-company auto-registers ownership)
 import { registerMembershipRoutes } from "./membershipStore";
 import { registerDataroomRoutes } from "./dataroomStore";
 // v23.4.7 Phase 13 / BUG 030 — dedicated server endpoint for company-logo
@@ -87,6 +87,9 @@ import {
   listForRound as softCircleListForRound,
   listForCompany as softCircleListForCompany, // C6 (v24.0): admin aggregate from real store
 } from "./softCircleStore";
+// v24.3 — investor-side wire-fund instructions. Founder publishes bank wire
+// details per round; the investor reads them once their soft-circle is signed.
+import { setWireInstructions, getWireInstructions } from "./wireInstructionsStore";
 import { configureSubscriptionsStore, registerSubscriptionRoutes, listSubscriptions, updateSubscription, getSubscription, createSubscriptionForNewCompany, type Subscription } from "./subscriptionsStore";
 import { configurePricingModelStore, registerPricingModelRoutes } from "./pricingModelStore";
 import { emitBridgeEvent } from "./bridgeStore";
@@ -327,11 +330,46 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
    * Emits audit-log entry + bridge event subscription.auto_created_on_company_create.
    */
   app.post("/api/founder/companies", requireAuth, (req: import("express").Request, res: import("express").Response) => {
-    const { companyId, companyName, plan } = req.body ?? {};
+    const { companyId, companyName, plan, legalName } = req.body ?? {};
     if (!companyId || !companyName) {
       return res.status(400).json({ ok: false, error: "companyId and companyName are required" });
     }
-    const actor = String((req as any).userContext?.identity?.email ?? (req as any).userContext?.userId ?? `founder:${companyId}`); /* v14 */
+    const ctx = (req as any).userContext;
+    const userId: string | undefined = ctx?.userId ?? ctx?.identity?.id ?? ctx?.id;
+    const actor = String(ctx?.identity?.email ?? userId ?? `founder:${companyId}`); /* v14 */
+
+    // v24.2 E2E-discovered bug: this handler created the subscription but
+    // NEVER registered the founder as the company's owner in multiCompanyStore.
+    // A founder could create a company then was immediately rejected by
+    // requireFounderOwnsCompany on the very next PATCH ("not_founder_of_company").
+    // Fix: register the founder via addCompanyForFounder so ownedCompanyIds
+    // resolution finds the company on subsequent reads/writes.
+    if (userId) {
+      try {
+        addCompanyForFounder(userId, {
+          companyId,
+          companyName,
+          legalName: legalName ?? companyName,
+          logoUrl: null,
+          role: "founder",
+          lastActiveAt: new Date().toISOString(),
+          kpi: {
+            capTableHolders: 0, activeRoundsCount: 0, raisedThisYearUsd: 0,
+            dataroomFiles: 0, pendingSoftCircles: 0, ownershipPct: 100,
+          },
+          collective: { status: "none" },
+          billing: { plan: "Founder Free" },
+        } as any);
+      } catch (e) {
+        // Non-fatal — subscription still created. Log so we can audit.
+        log.error({
+          route: "POST /api/founder/companies",
+          errorType: "addCompanyForFounder_failed",
+          message: (e as Error).message,
+        });
+      }
+    }
+
     const result = createSubscriptionForNewCompany(companyId, { plan, actor });
     res.status(201).json({ ok: true, companyId, companyName, subscription: result.subscription, subscriptionCreated: result.created });
   });
@@ -677,6 +715,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const { getHydrateProgress } = await import("./lib/hydrateStores");
       hydrateState = getHydrateProgress().state;
     } catch { /* ignore */ }
+    // v24.3 — surface which integrations are actually wired so the admin can
+    // see at a glance what's configured (Avi's ops pain: "is SMTP / dev-reset /
+    // Airwallex live on this box?"). All booleans; never leaks secret values.
+    let airwallexConfigured = false;
+    try {
+      // Prefer the canonical readiness probe (checks AIRWALLEX_API_KEY +
+      // AIRWALLEX_CLIENT_ID); fall back to a bare env probe if it throws.
+      const { isGatewayReady } = await import("./lib/paymentGatewayResolver");
+      airwallexConfigured = Boolean(isGatewayReady("airwallex"));
+    } catch {
+      airwallexConfigured = !!process.env.AIRWALLEX_API_KEY;
+    }
+    const featureFlags = {
+      smtpConfigured: !!process.env.SMTP_HOST,
+      devResetUrlEnabled: process.env.RETURN_DEV_RESET_URL === "1",
+      airwallexConfigured,
+    };
     res.json({
       status: dbOk && (hydrateState === "ok" || hydrateState === "partial") ? "ok" : "degraded",
       db: dbOk ? "connected" : "down",
@@ -686,6 +741,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       build_time: process.env.BUILD_TIME ?? null,
       uptime_s: Math.floor((Date.now() - SERVER_START) / 1000),
       version,
+      featureFlags,
       timestamp: new Date().toISOString(),
     });
   });
@@ -900,6 +956,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       canSeeDataroom = invited;
       canSeeSoftCircle = invited;
       canSeeTermSheet = invited;
+
+      // v24.3 E2E-discovered P0: tenant isolation gap. Prior to this guard,
+      // ANY authenticated user (e.g. founder B) could GET /api/companies/A's-id
+      // and receive the full company name/legalName/hq/etc. in the response
+      // body. The `access` block reported canSee*=false but the company data
+      // was still returned. That's a real cross-tenant leak — returns now 404
+      // (not 403) so we don't even leak the existence of the company id.
+      // The original v24.0 B-group fixes had hardened other endpoints (e.g.
+      // /api/dataroom, /api/crm) but missed this one because the handler
+      // pre-dated those fixes and was never re-audited.
+      if (!invited) {
+        return res.status(404).json({ ok: false, error: "not_found" });
+      }
     }
 
     // BUG 019 fix v23.7 — when the company exists only as a live profile, derive
@@ -1128,6 +1197,132 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const seed = softCircles.filter(s => s.roundId === rid);
     const liveIds = new Set(live.map((s) => s.id));
     res.json([...seed.filter((s) => !liveIds.has(s.id)), ...live]);
+  });
+
+  /* ====================================================================
+   * v24.3 — Investor-side wire-fund instructions (Avi's main complaint).
+   *
+   * v24.2 added a FOUNDER-side "Mark wire funded" button. Avi correctly noted
+   * the INVESTOR also needs visibility: once a soft-circle is `confirmed`
+   * (signed), the investor must see WHERE to wire the funds. These endpoints
+   * let the founder publish bank wire instructions per round and let an
+   * entitled investor read them.
+   *
+   * Ownership model:
+   *   - POST/GET founder routes: caller must FOUND the round's company.
+   *   - GET investor route: caller must have a soft-circle in the round (any
+   *     status) OR an active invitation to it.
+   *
+   * Persistence: round_wire_instructions table via wireInstructionsStore
+   * (CREATE TABLE IF NOT EXISTS; shared/schema.ts untouched).
+   * ==================================================================== */
+
+  // Local founder-ownership check keyed on :roundId (the canonical helper
+  // requireFounderOwnsRound reads req.params.id; these routes use :roundId).
+  function requireFounderOwnsRoundParam(
+    req: import("express").Request,
+    res: import("express").Response,
+  ): { ok: boolean; companyId?: string; userId?: string } {
+    const roundId = paramStr(req.params.roundId);
+    const cid = roundId ? companyIdForRound(roundId) : null;
+    if (!cid) {
+      res.status(404).json({ ok: false, error: "round_not_found" });
+      return { ok: false };
+    }
+    return tenantRequireFounderOwnsCompany(req, res, cid);
+  }
+
+  // Founder — set (upsert) wire instructions for a round.
+  app.post("/api/founder/rounds/:roundId/wire-instructions", requireAuth, (req, res) => {
+    const check = requireFounderOwnsRoundParam(req, res);
+    if (!check.ok) return;
+    const roundId = paramStr(req.params.roundId);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const str = (v: unknown): string => (typeof v === "string" ? v.trim() : "");
+    const optStr = (v: unknown): string | null => {
+      const s = typeof v === "string" ? v.trim() : "";
+      return s.length > 0 ? s : null;
+    };
+    const bankName = str(body.bankName);
+    const accountName = str(body.accountName);
+    const accountNumber = str(body.accountNumber);
+    // Validation: bankName + accountName + accountNumber are required.
+    if (!bankName || !accountName || !accountNumber) {
+      return res.status(400).json({
+        ok: false,
+        error: "missing_required_fields",
+        message: "bankName, accountName and accountNumber are required.",
+      });
+    }
+    const row = setWireInstructions({
+      roundId,
+      bankName,
+      accountName,
+      accountNumber,
+      routingNumber: optStr(body.routingNumber),
+      swift: optStr(body.swift),
+      reference: optStr(body.reference),
+      notes: optStr(body.notes),
+    });
+    return res.json({ ok: true, wireInstructions: row });
+  });
+
+  // Founder — read back the wire instructions they set.
+  app.get("/api/founder/rounds/:roundId/wire-instructions", requireAuth, (req, res) => {
+    const check = requireFounderOwnsRoundParam(req, res);
+    if (!check.ok) return;
+    const roundId = paramStr(req.params.roundId);
+    const row = getWireInstructions(roundId);
+    if (!row) return res.status(404).json({ ok: false, error: "wire_instructions_not_set" });
+    return res.json({ ok: true, wireInstructions: row });
+  });
+
+  // Investor — read the wire instructions for a round they are entitled to.
+  // Entitlement: a soft-circle in the round (any status) OR an active
+  // invitation. Anonymous → 401 (requireAuth). Not entitled → 403.
+  app.get("/api/investor/rounds/:roundId/wire-instructions", requireAuth, (req, res) => {
+    const ctx = req.userContext ?? getUserContext(req);
+    if (!ctx?.isAuthed || !ctx.userId) {
+      return res.status(401).json({ ok: false, error: "unauthenticated" });
+    }
+    const roundId = paramStr(req.params.roundId);
+    if (!roundId) return res.status(404).json({ ok: false, error: "round_not_found" });
+
+    // Admins may always read.
+    let entitled = ctx.isAdmin;
+
+    // Soft-circle in this round matching the caller (by userId or email).
+    if (!entitled) {
+      const email = (ctx.identity?.email ?? "").toLowerCase();
+      const circles = softCircleListForRound(roundId);
+      entitled = circles.some(
+        (c) =>
+          (c.investorUserId && c.investorUserId === ctx.userId) ||
+          (c.investorEmail && email && c.investorEmail.toLowerCase() === email),
+      );
+    }
+
+    // Active invitation: either the resolved invitedRounds overlay or a
+    // DB-backed invitation by email that targets this round.
+    if (!entitled) {
+      entitled = (ctx.investor?.invitedRounds ?? []).some((r) => r.roundId === roundId);
+    }
+    if (!entitled) {
+      const email = ctx.identity?.email ?? "";
+      if (email) {
+        const invs = roundInvitationsListForEmail(email);
+        entitled = invs.some((i) => i.roundId === roundId && i.state !== "revoked");
+      }
+    }
+
+    if (!entitled) {
+      return res.status(403).json({ ok: false, error: "not_entitled", message: "You do not have access to this round's wire instructions." });
+    }
+
+    const row = getWireInstructions(roundId);
+    if (!row) return res.status(404).json({ ok: false, error: "wire_instructions_not_set" });
+    // Demo mode: account number returned as-is (flagged in the v24.3 report).
+    return res.json({ ok: true, wireInstructions: row });
   });
 
   // B4/C2 (v24.0 LOCKDOWN) — the legacy CRM list returned a global mock array
@@ -2092,16 +2287,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // GET /api/founder/active-company / /api/founder/companies returns the
     // updated display name + legal name. Previously this was a no-op stub
     // that returned ok:true without writing anywhere.
-    const updated = updateCompanyDetails(id, {
-      companyName: typeof req.body?.name === "string" ? req.body.name : req.body?.companyName,
-      legalName:   req.body?.legalName,
-      sector:      req.body?.sector,
-      stage:       req.body?.stage,
-      hq:          req.body?.hq,
-      role:        req.body?.role,
-      // BUG 017 fix v23.7 — persist the Settings → Company currency selection.
-      defaultCurrency: req.body?.defaultCurrency,
-    });
+    // v24.2 Bug 6 — updateCompanyDetails now throws on DB write failure (it no
+    // longer silently updates the in-memory cache after a failed durable
+    // write). Surface that as a 500 so the client does not optimistically
+    // believe a save succeeded that did not actually persist.
+    let updated;
+    try {
+      updated = updateCompanyDetails(id, {
+        companyName: typeof req.body?.name === "string" ? req.body.name : req.body?.companyName,
+        legalName:   req.body?.legalName,
+        sector:      req.body?.sector,
+        stage:       req.body?.stage,
+        hq:          req.body?.hq,
+        role:        req.body?.role,
+        // BUG 017 fix v23.7 — persist the Settings → Company currency selection.
+        defaultCurrency: req.body?.defaultCurrency,
+      });
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: "COMPANY_PERSIST_FAILED", message: (err as Error).message });
+    }
     // B8 (v24.0 LOCKDOWN) — emit the CORRECT aggregate. A company PATCH is a
     // company event; it was previously (incorrectly) emitted as "round".
     emitMutation({ aggregate: "company", id, change: "update" });
@@ -2208,10 +2412,125 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
   });
 
-  // Billing plan switch — requireAuth
-  app.post("/api/billing/plan", requireAuth, (req, res) => {
-    const { planId, companyId: cId } = req.body ?? {};
-    res.json({ ok: true, planId, companyId: cId });
+  // Billing plan switch — requireAuth.
+  //
+  // v24.2 Airwallex wiring (Avi's bug): this endpoint used to be a pure echo
+  // stub — it returned { ok:true } WITHOUT ever calling Airwallex, so a founder
+  // who "paid" saw a success while no PaymentIntent existed and nothing showed
+  // up in the Airwallex dashboard. It now mints a real Airwallex PaymentIntent,
+  // records a PENDING subscription (the gateway is the source of truth — the
+  // local row only flips to active when the signed webhook confirms), and hands
+  // the client the hosted-payment-page URL so card data NEVER touches Capavate
+  // (PCI-DSS scope is preserved per the Settings billing-tab design intent).
+  app.post("/api/billing/plan", requireAuth, async (req, res) => {
+    try {
+      const ctx = req.userContext;
+      if (!ctx?.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
+      const { tierId, companyId, billingCycle = "monthly" } = req.body ?? {};
+      if (!tierId || !companyId) {
+        return res.status(400).json({ ok: false, error: "validation_failed", message: "tierId + companyId required" });
+      }
+
+      // Verify the caller actually owns the company (tenant isolation).
+      const owns = (ctx.founder?.companies ?? []).some(
+        (c: any) => (c.companyId ?? c.id) === companyId,
+      );
+      if (!owns) {
+        return res.status(403).json({ ok: false, error: "not_owner" });
+      }
+
+      // Resolve tier price from the pricing-tier store (adapter over PRICING_TIERS).
+      const tier = (await import("./pricingTiersStore")).getById(tierId);
+      if (!tier) return res.status(404).json({ ok: false, error: "tier_not_found" });
+
+      const amountMinor = billingCycle === "annual" ? tier.annualPriceCents : tier.monthlyPriceCents;
+      const currency = tier.currency ?? "USD";
+      if (!amountMinor || amountMinor <= 0) {
+        return res.status(400).json({ ok: false, error: "invalid_tier_price" });
+      }
+
+      // Mint an Airwallex PaymentIntent.
+      const { createPaymentIntent, AirwallexNotConfiguredError } = await import("./lib/airwallexGateway");
+      const merchantOrderId = `cap_sub_${companyId}_${tierId}_${Date.now()}`;
+      const idempotencyKey = `idem_${ctx.userId}_${tierId}_${Date.now()}`;
+
+      let intent;
+      try {
+        intent = await createPaymentIntent({
+          amountMinor,
+          currency,
+          merchantOrderId,
+          customerId: ctx.userId,
+          description: `Capavate ${tier.name} (${billingCycle})`,
+          metadata: { companyId, tierId, userId: ctx.userId, billingCycle },
+          idempotencyKey,
+        });
+      } catch (e) {
+        if (e instanceof AirwallexNotConfiguredError) {
+          return res.status(503).json({
+            ok: false,
+            error: "gateway_not_configured",
+            message: "Airwallex credentials are not set. Contact your administrator.",
+          });
+        }
+        throw e;
+      }
+
+      // Persist a PENDING subscription so we don't lose track if the webhook is
+      // slow. Status flips to "active" only when payment_intent.succeeded lands.
+      (await import("./subscriptionStore")).recordPendingSubscription({
+        companyId,
+        tierId,
+        userId: ctx.userId,
+        billingCycle,
+        paymentIntentId: intent.id,
+        amountMinor,
+        currency,
+        merchantOrderId,
+      });
+
+      // The Airwallex hosted page redirects the founder back to BillingReturn.tsx
+      // (/founder/billing/return) with the PaymentIntent id, where the client
+      // polls /api/founder/subscription/status until the webhook flips the
+      // subscription to active. Honour an explicit origin override (PUBLIC_APP_URL)
+      // for deployed environments; fall back to the request's own origin.
+      const appOrigin =
+        process.env.PUBLIC_APP_URL ??
+        `${req.protocol}://${req.get("host") ?? "localhost"}`;
+      const returnUrl = `${appOrigin.replace(/\/$/, "")}/founder/billing/return?paymentIntentId=${encodeURIComponent(intent.id)}`;
+
+      // Return what the client needs to drive the Airwallex hosted payment page.
+      res.json({
+        ok: true,
+        paymentIntentId: intent.id,
+        clientSecret: intent.client_secret,
+        amountMinor,
+        currency,
+        merchantOrderId,
+        status: intent.status,
+        returnUrl,
+        hostedPaymentPageUrl: `https://checkout.airwallex.com/checkout?intent_id=${intent.id}&client_secret=${encodeURIComponent(intent.client_secret ?? "")}&return_url=${encodeURIComponent(returnUrl)}`,
+      });
+    } catch (err: any) {
+      log.error("[billing/plan] error:", err);
+      res.status(500).json({ ok: false, error: "server_error", message: err?.message });
+    }
+  });
+
+  // v24.2 Airwallex wiring — subscription status poll (drives BillingReturn.tsx
+  // after the founder returns from the Airwallex hosted page).
+  app.get("/api/founder/subscription/status", requireAuth, async (req, res) => {
+    const { paymentIntentId } = req.query;
+    if (!paymentIntentId) {
+      return res.status(400).json({ ok: false, error: "missing_paymentIntentId" });
+    }
+    const sub = (await import("./subscriptionStore")).getByPaymentIntent(String(paymentIntentId));
+    if (!sub) return res.status(404).json({ ok: false, error: "not_found" });
+    // Verify the caller owns the subscription.
+    if (sub.userId !== req.userContext?.userId) {
+      return res.status(403).json({ ok: false, error: "not_owner" });
+    }
+    res.json({ ok: true, status: sub.status, tierId: sub.tierId, activatedAt: sub.activatedAt });
   });
 
   // Team invitations — requireAuth

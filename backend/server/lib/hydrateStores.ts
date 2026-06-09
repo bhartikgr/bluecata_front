@@ -31,6 +31,9 @@
 
 import { hydrateUserCredentialsStore } from "../userCredentialsStore";
 import { hydrateSubscriptionsStore as realHydrateSubscriptions } from "../subscriptionsStore";
+// v24.2 Airwallex wiring — Capavate checkout-subscription store (DB-backed,
+// keyed by PaymentIntent id). Sync hydrate wrapped to the async contract below.
+import { hydrateSubscriptionStore as realHydrateCapavateSubscription } from "../subscriptionStore";
 import { hydrateMultiCompanyStore as realHydrateMultiCompany } from "../multiCompanyStore";
 import { hydrateCompanyProfileStore as realHydrateCompanyProfile } from "../companyProfileStore";
 import { hydrateAdminPlatformStore as realHydrateAdminPlatform } from "../adminPlatformStore";
@@ -114,6 +117,9 @@ const STORES = [
 const HYDRATE_ORDER: Array<{ name: string; fn: () => Promise<void> }> = [
   { name: "userCredentialsStore", fn: hydrateUserCredentialsStore },
   { name: "subscriptionsStore",   fn: realHydrateSubscriptions },
+  // v24.2 Airwallex wiring — rebuild the Capavate checkout-subscription cache
+  // from capavate_subscriptions so pending/active rows survive a restart.
+  { name: "capavateSubscriptionStore", fn: async () => { realHydrateCapavateSubscription(); } },
   { name: "multiCompanyStore",    fn: realHydrateMultiCompany },
   // Patch v12 Day 2 Wave 1: companyProfile + adminPlatform DB-backed hybrid.
   // companyProfile after multiCompany because profile maps to co_<id> created

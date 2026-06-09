@@ -703,6 +703,28 @@ function buildProductionTableStatements(): string[] {
       updated_by TEXT NOT NULL,
       deleted_at TEXT
     );`,
+    // v24.2 Bug 6 — durable storage for the Settings → Company default currency.
+    // Deliberately a side table (NOT a column on the sacred `companies` table).
+    `CREATE TABLE IF NOT EXISTS company_default_currency (
+      company_id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      currency TEXT NOT NULL,
+      updated_at TEXT,
+      deleted_at TEXT
+    );`,
+    // v24.2 Bug 6 — durable storage for the rich profileStore CompanyProfile
+    // (the Sprint-8 production-shape profile edited via PATCH
+    // /api/companies/:id/profile). This is distinct from the hash-chained
+    // company_profile_extended table owned by companyProfileStore; we store
+    // the full client-shaped JSON so a restart re-hydrates the founder's
+    // saved profile (sector, contact, legal, etc.).
+    `CREATE TABLE IF NOT EXISTS profilestore_company_profile (
+      company_id TEXT PRIMARY KEY NOT NULL,
+      tenant_id TEXT NOT NULL,
+      profile_json TEXT NOT NULL,
+      updated_at TEXT,
+      deleted_at TEXT
+    );`,
     `CREATE TABLE IF NOT EXISTS recon_runs (
       id TEXT PRIMARY KEY NOT NULL,
       tenant_id TEXT NOT NULL,

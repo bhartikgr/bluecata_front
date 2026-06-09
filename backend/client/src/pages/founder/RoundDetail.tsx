@@ -22,7 +22,7 @@ import CloseRoundPanel from "@/components/CloseRoundPanel";
 import { emit } from "@/lib/sprint3";
 import { fmtUSD, fmtPct, fmtDate, timeAgo, fmtNum, safeToFixed } from "@/lib/format";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, queryClient, ApiError } from "@/lib/queryClient";
 import { runEngine, projectPostClose, type ApiSecurity } from "@/lib/engineDemo";
 import { currencySymbol, fmtCurrency } from "@/lib/currency";
 import { Progress } from "@/components/ui/progress";
@@ -53,6 +53,18 @@ type Round = {
 };
 type Invitation = { id: string; investorEmail: string; investorName: string; state: string; sentAt: string; viewedAt: string | null; expiresAt: string };
 type SoftCircle = { id: string; investorName: string; amount: number; status: string; createdAt: string };
+// v24.3 — wire-transfer instructions published by the founder per round.
+type WireInstructions = {
+ roundId: string;
+ bankName: string;
+ accountName: string;
+ accountNumber: string;
+ routingNumber: string | null;
+ swift: string | null;
+ reference: string | null;
+ notes: string | null;
+ updatedAt: string;
+};
 
 /* Sprint 4 — lifecycle state explainer text. */
 const ROUND_STATE_GUIDE: Record<string, { title: string; body: string }> = {
@@ -99,6 +111,12 @@ export default function RoundDetail() {
  const [inviteExpiry, setInviteExpiry] = useState("30");
  const [revokeId, setRevokeId] = useState<string | null>(null);
  const [confirmSoftId, setConfirmSoftId] = useState<string | null>(null);
+ // v24.3 — wire-transfer instructions (founder publishes; investor reads).
+ const [wireDlgOpen, setWireDlgOpen] = useState(false);
+ const [wireForm, setWireForm] = useState({
+   bankName: "", accountName: "", accountNumber: "",
+   routingNumber: "", swift: "", reference: "", notes: "",
+ });
 
  // Real mutations wired to server endpoints (defects 10, 22-27)
  const sendInviteMut = useMutation({
@@ -156,6 +174,80 @@ export default function RoundDetail() {
      queryClient.invalidateQueries({ queryKey: [`/api/rounds/${id}/soft-circles`] });
    },
  });
+
+ // v24.2 Bug 3 — wire-funded action: founder marks a confirmed soft-circle as
+ // wire-funded, which enqueues it onto the cap-table funded queue.
+ const wireFundedMut = useMutation({
+   mutationFn: async (scId: string) =>
+     (await apiRequest("POST", `/api/founder/rounds/${id}/soft-circle/${scId}/wire-funded`, {})).json(),
+   onSuccess: (_d, scId) => {
+     toast({ title: "Wire funded", description: "Added to the cap-table funded queue." });
+     emitMutationLocal("round", scId, "update");
+     queryClient.invalidateQueries({ queryKey: [`/api/rounds/${id}/soft-circles`] });
+     queryClient.invalidateQueries({ queryKey: ["/api/founder/captable/funded-queue"] });
+   },
+   onError: (e: Error) => toast({ title: "Failed to mark funded", description: e.message, variant: "destructive" }),
+ });
+
+ // v24.3 — fetch the founder's published wire instructions for this round.
+ // 404 (none set yet) is treated as "no instructions" rather than an error.
+ const wireInstr = useQuery<WireInstructions | null>({
+   queryKey: [`/api/founder/rounds/${id}/wire-instructions`],
+   queryFn: async () => {
+     // v15 P0-13 — use apiRequest so the session cookie (cap_uid) travels with
+     // the call and the proxy prefix is applied. apiRequest throws on non-2xx,
+     // so we catch the 404 "not set yet" case and treat it as an empty state
+     // (the founder simply hasn't published wire instructions for this round).
+     try {
+       const res = await apiRequest("GET", `/api/founder/rounds/${id}/wire-instructions`);
+       const json = await res.json();
+       return (json?.wireInstructions ?? null) as WireInstructions | null;
+     } catch (err) {
+       if (err instanceof ApiError && err.status === 404) return null;
+       throw err;
+     }
+   },
+   retry: false,
+ });
+
+ const saveWireMut = useMutation({
+   mutationFn: async () => {
+     const res = await apiRequest("POST", `/api/founder/rounds/${id}/wire-instructions`, {
+       bankName: wireForm.bankName,
+       accountName: wireForm.accountName,
+       accountNumber: wireForm.accountNumber,
+       routingNumber: wireForm.routingNumber || undefined,
+       swift: wireForm.swift || undefined,
+       reference: wireForm.reference || undefined,
+       notes: wireForm.notes || undefined,
+     });
+     const json = await res.json();
+     if (!res.ok || json?.ok === false) {
+       throw new Error(json?.message ?? "Could not save wire instructions.");
+     }
+     return json;
+   },
+   onSuccess: () => {
+     toast({ title: "Wire instructions saved", description: "Investors with a signed soft-circle can now see where to wire." });
+     queryClient.invalidateQueries({ queryKey: [`/api/founder/rounds/${id}/wire-instructions`] });
+     setWireDlgOpen(false);
+   },
+   onError: (e: Error) => toast({ title: "Failed to save", description: e.message, variant: "destructive" }),
+ });
+
+ function openWireDialog() {
+   const w = wireInstr.data;
+   setWireForm({
+     bankName: w?.bankName ?? "",
+     accountName: w?.accountName ?? "",
+     accountNumber: w?.accountNumber ?? "",
+     routingNumber: w?.routingNumber ?? "",
+     swift: w?.swift ?? "",
+     reference: w?.reference ?? "",
+     notes: w?.notes ?? "",
+   });
+   setWireDlgOpen(true);
+ }
 
  function emitMutationLocal(aggregate: string, entityId: string, change: string) {
    // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -339,6 +431,37 @@ export default function RoundDetail() {
  </TabsContent>
 
  <TabsContent value="soft">
+ {/* v24.3 — Wire Transfer Instructions. Founder publishes the company's
+     bank details so investors with a signed (confirmed) soft-circle know
+     where to send the funds. Addresses Avi's main v24.3 complaint. */}
+ <Card className="mb-4" data-testid="card-wire-instructions-founder">
+ <CardHeader className="pb-3 flex flex-row items-center justify-between space-y-0">
+ <CardTitle className="text-base flex items-center gap-2"><Wallet className="h-4 w-4" /> Wire Transfer Instructions</CardTitle>
+ <Button size="sm" variant="outline" onClick={openWireDialog} data-testid="button-edit-wire-instructions">
+ {wireInstr.data ? <><FileText className="h-3.5 w-3.5 mr-1" /> Edit</> : <><Plus className="h-3.5 w-3.5 mr-1" /> Set instructions</>}
+ </Button>
+ </CardHeader>
+ <CardContent>
+ {wireInstr.isLoading ? (
+ <div className="text-sm text-muted-foreground">Loading…</div>
+ ) : wireInstr.data ? (
+ <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-2 text-sm" data-testid="founder-wire-display">
+ <div><span className="text-muted-foreground">Bank</span><div className="font-medium">{wireInstr.data.bankName}</div></div>
+ <div><span className="text-muted-foreground">Account name</span><div className="font-medium">{wireInstr.data.accountName}</div></div>
+ <div><span className="text-muted-foreground">Account number</span><div className="font-mono">{wireInstr.data.accountNumber}</div></div>
+ {wireInstr.data.routingNumber && <div><span className="text-muted-foreground">Routing</span><div className="font-mono">{wireInstr.data.routingNumber}</div></div>}
+ {wireInstr.data.swift && <div><span className="text-muted-foreground">SWIFT/BIC</span><div className="font-mono">{wireInstr.data.swift}</div></div>}
+ {wireInstr.data.reference && <div><span className="text-muted-foreground">Reference</span><div className="font-medium">{wireInstr.data.reference}</div></div>}
+ {wireInstr.data.notes && <div className="sm:col-span-2"><span className="text-muted-foreground">Notes</span><div>{wireInstr.data.notes}</div></div>}
+ </div>
+ ) : (
+ <div className="text-sm text-muted-foreground" data-testid="founder-wire-empty">
+ No wire instructions set yet. Investors with a signed soft-circle won't see where to wire until you add them.
+ </div>
+ )}
+ </CardContent>
+ </Card>
+
  <Card>
  <CardHeader className="pb-3 flex flex-row items-center justify-between space-y-0">
  <CardTitle className="text-base">Soft-circle commitments</CardTitle>
@@ -378,6 +501,11 @@ export default function RoundDetail() {
  <Check className="h-3.5 w-3.5 mr-1" /> Confirm
  </Button>
  )}
+ {s.status === "confirmed" && (
+ <Button size="sm" variant="outline" onClick={() => wireFundedMut.mutate(s.id)} disabled={wireFundedMut.isPending} data-testid={`button-wire-funded-${s.id}`}>
+ <Wallet className="h-3.5 w-3.5 mr-1" /> Mark wire funded
+ </Button>
+ )}
  <Button size="sm" variant="ghost" data-testid={`button-view-${s.id}`}><Eye className="h-3.5 w-3.5" /></Button>
  </div>
  </td>
@@ -399,6 +527,57 @@ export default function RoundDetail() {
  <div className="mt-4">
  <SoftCircleChannelCard roundId={id} roundName={r.name} basePath="/founder/messages" />
  </div>
+
+ {/* v24.3 — Wire instructions edit dialog. */}
+ <Dialog open={wireDlgOpen} onOpenChange={setWireDlgOpen}>
+ <DialogContent data-testid="dialog-wire-instructions">
+ <DialogHeader>
+ <DialogTitle>Wire Transfer Instructions</DialogTitle>
+ </DialogHeader>
+ <div className="space-y-3">
+ <div>
+ <Label htmlFor="wire-bank">Bank name *</Label>
+ <Input id="wire-bank" data-testid="input-wire-bankName" value={wireForm.bankName} onChange={(e) => setWireForm({ ...wireForm, bankName: e.target.value })} placeholder="e.g. First Republic Bank" />
+ </div>
+ <div>
+ <Label htmlFor="wire-acctname">Account name *</Label>
+ <Input id="wire-acctname" data-testid="input-wire-accountName" value={wireForm.accountName} onChange={(e) => setWireForm({ ...wireForm, accountName: e.target.value })} placeholder="Beneficiary / company legal name" />
+ </div>
+ <div>
+ <Label htmlFor="wire-acctnum">Account number *</Label>
+ <Input id="wire-acctnum" data-testid="input-wire-accountNumber" value={wireForm.accountNumber} onChange={(e) => setWireForm({ ...wireForm, accountNumber: e.target.value })} />
+ </div>
+ <div className="grid grid-cols-2 gap-3">
+ <div>
+ <Label htmlFor="wire-routing">Routing number</Label>
+ <Input id="wire-routing" data-testid="input-wire-routingNumber" value={wireForm.routingNumber} onChange={(e) => setWireForm({ ...wireForm, routingNumber: e.target.value })} />
+ </div>
+ <div>
+ <Label htmlFor="wire-swift">SWIFT/BIC</Label>
+ <Input id="wire-swift" data-testid="input-wire-swift" value={wireForm.swift} onChange={(e) => setWireForm({ ...wireForm, swift: e.target.value })} />
+ </div>
+ </div>
+ <div>
+ <Label htmlFor="wire-ref">Reference</Label>
+ <Input id="wire-ref" data-testid="input-wire-reference" value={wireForm.reference} onChange={(e) => setWireForm({ ...wireForm, reference: e.target.value })} placeholder="What investors should put on the wire" />
+ </div>
+ <div>
+ <Label htmlFor="wire-notes">Notes</Label>
+ <Input id="wire-notes" data-testid="input-wire-notes" value={wireForm.notes} onChange={(e) => setWireForm({ ...wireForm, notes: e.target.value })} placeholder="Optional instructions for investors" />
+ </div>
+ </div>
+ <DialogFooter>
+ <Button variant="ghost" onClick={() => setWireDlgOpen(false)} data-testid="button-wire-cancel">Cancel</Button>
+ <Button
+ onClick={() => saveWireMut.mutate()}
+ disabled={saveWireMut.isPending || !wireForm.bankName.trim() || !wireForm.accountName.trim() || !wireForm.accountNumber.trim()}
+ data-testid="button-wire-save"
+ >
+ {saveWireMut.isPending ? "Saving…" : "Save instructions"}
+ </Button>
+ </DialogFooter>
+ </DialogContent>
+ </Dialog>
  </TabsContent>
 
  <TabsContent value="terms">

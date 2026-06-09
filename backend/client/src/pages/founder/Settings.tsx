@@ -181,10 +181,38 @@ export default function Settings() {
     onError: () => toast({ title: "Save failed", variant: "destructive" }),
   });
 
+  // v24.2 Airwallex wiring — switching a plan now mints a real Airwallex
+  // PaymentIntent server-side and redirects the founder to the Airwallex hosted
+  // payment page. Card data NEVER touches Capavate (PCI-DSS scope preserved per
+  // the billing-tab design intent). The plan only flips to active after the
+  // signed payment_intent.succeeded webhook confirms — the previous behaviour
+  // (optimistic "Plan updated" toast with no payment) was the root of Avi's bug.
   const switchPlanMut = useMutation({
-    mutationFn: async (tierId: string) => (await apiRequest("POST", "/api/billing/plan", { companyId, tierId })).json(),
-    onSuccess: (_, tierId) => { setActiveTier(tierId); queryClient.invalidateQueries({ queryKey: ["/api/founder/subscription"] }); toast({ title: "Plan updated" }); },
-    onError: () => toast({ title: "Plan change failed", variant: "destructive" }),
+    mutationFn: async (tierId: string) => {
+      // apiRequest throws an ApiError (carrying the server's `error` code) on a
+      // non-2xx response, so a 503 gateway_not_configured surfaces in onError.
+      const r = await apiRequest("POST", "/api/billing/plan", { tierId, companyId, billingCycle: billingPeriod });
+      return r.json();
+    },
+    onSuccess: (data: any, tierId: string) => {
+      if (data?.hostedPaymentPageUrl) {
+        // Redirect to the Airwallex hosted page for actual card collection.
+        window.location.href = data.hostedPaymentPageUrl;
+        return;
+      }
+      // Fallback for already-paid / zero-amount scenarios.
+      setActiveTier(tierId);
+      queryClient.invalidateQueries({ queryKey: ["/api/founder/subscription"] });
+      toast({ title: "Plan updated" });
+    },
+    onError: (err: any) => {
+      const code = err?.code ?? "";
+      if (code === "gateway_not_configured" || err?.message?.includes("gateway_not_configured")) {
+        toast({ title: "Payment gateway not configured. Contact your administrator.", variant: "destructive" });
+      } else {
+        toast({ title: "Plan change failed", variant: "destructive" });
+      }
+    },
   });
 
   const inviteMemberMut = useMutation({
