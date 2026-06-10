@@ -13,6 +13,10 @@ import { HashChain, registerChain } from "./lib/hashChain";
 import { withTrace } from "./lib/trace";
 import { emitSync } from "./sprint10Telemetry";
 import { BridgeOutbound } from "./lib/bridgeOutbound";
+// v24.4.1 — RAM→DB migration. Warm-intro requests now persist to
+// `intro_requests` so they survive restart.
+import { rawDb } from "./db/connection";
+import { log } from "./lib/logger";
 
 export const TARGET_KINDS = ["acquirer", "investor", "expert"] as const;
 export type TargetKind = (typeof TARGET_KINDS)[number];
@@ -54,6 +58,45 @@ export const introRequestPatchSchema = z.object({
 });
 
 const items = new Map<string, IntroRequest>();
+
+/** Write-through to durable `intro_requests` table. */
+function persistIntroRequest(r: IntroRequest): void {
+  try {
+    rawDb().prepare(
+      `INSERT INTO intro_requests (id, requester_company_id, status, request_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         status = excluded.status,
+         request_json = excluded.request_json,
+         updated_at = excluded.updated_at`,
+    ).run(r.id, r.requesterCompanyId, r.status, JSON.stringify(r), r.createdAt, r.updatedAt);
+  } catch (err) {
+    log.warn("[introRequestStore] write-through failed:", (err as Error).message);
+  }
+}
+
+/** v24.4.1 — rebuild the in-memory cache from durable rows on boot. */
+export async function hydrateIntroRequestStore(): Promise<void> {
+  try {
+    const rows = rawDb()
+      .prepare(`SELECT id, request_json FROM intro_requests`)
+      .all() as Array<{ id: string; request_json: string }>;
+    items.clear();
+    for (const r of rows) {
+      try {
+        const req = JSON.parse(r.request_json) as IntroRequest;
+        items.set(r.id, req);
+      } catch (parseErr) {
+        log.warn(`[hydrate] introRequestStore: skipping ${r.id} — ${(parseErr as Error).message}`);
+      }
+    }
+    if (rows.length > 0) {
+      log.info(`[hydrate] introRequestStore: ${rows.length} requests loaded`);
+    }
+  } catch (err) {
+    log.warn("[hydrate] introRequestStore: DB read failed:", (err as Error).message);
+  }
+}
 export const introChain = registerChain(new HashChain<{ id: string; status: IntroStatus; ts: string }>("intro_requests"));
 
 export function listIntroRequests(filter?: { companyId?: string }): IntroRequest[] {
@@ -81,6 +124,7 @@ export function createIntroRequest(input: z.infer<typeof introRequestCreateSchem
       updatedAt: now,
     };
     items.set(id, req);
+    persistIntroRequest(req);
     introChain.append({ id, status: "pending", ts: now });
     emitSync({
       eventType: "crm_intro_requested",
@@ -101,6 +145,7 @@ export function updateIntroRequest(id: string, patch: z.infer<typeof introReques
     r.status = patch.status;
     r.declineReason = patch.declineReason;
     r.updatedAt = new Date().toISOString();
+    persistIntroRequest(r);
     introChain.append({ id, status: patch.status, ts: r.updatedAt });
     const evtMap: Record<typeof patch.status, string> = {
       accepted: "crm_intro_accepted",
@@ -121,6 +166,7 @@ export function updateIntroRequest(id: string, patch: z.infer<typeof introReques
 export function __clearIntroRequests(): void {
   items.clear();
   introChain.__clear();
+  try { rawDb().prepare(`DELETE FROM intro_requests`).run(); } catch { /* table may not exist in tests */ }
 }
 
 export function registerIntroRequestRoutes(app: Express): void {

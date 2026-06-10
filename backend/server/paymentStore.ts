@@ -18,6 +18,13 @@ import Decimal from "decimal.js";
 import { HashChain, registerChain } from "./lib/hashChain";
 import { withTrace } from "./lib/trace";
 import { emitSync } from "./sprint10Telemetry";
+// v24.4.1 — RAM→DB migration. Note: this is the legacy v14 payment ledger,
+// which is separate from subscriptionsStore (v23 hash-chained subscription
+// orders) and the v24.2 Airwallex-backed subscriptionStore. All three coexist
+// for backwards-compat; this migration ensures the legacy ledger survives
+// restart for any code still calling it.
+import { rawDb } from "./db/connection";
+import { log } from "./lib/logger";
 
 export const PAYMENT_KINDS = [
   "collective_membership",
@@ -49,6 +56,46 @@ export interface PaymentEntry {
 
 const ledger = new Map<string, PaymentEntry>();
 const intentIndex = new Map<string, string>(); // intentId → entryId
+
+/** Write-through to durable `payment_ledger` table. */
+function persistPaymentEntry(entry: PaymentEntry): void {
+  try {
+    rawDb().prepare(
+      `INSERT INTO payment_ledger (id, intent_id, customer_id, state, entry_json, ts)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         state = excluded.state,
+         entry_json = excluded.entry_json`,
+    ).run(entry.id, entry.intentId, entry.customerId, entry.state, JSON.stringify(entry), entry.ts);
+  } catch (err) {
+    log.warn("[paymentStore] write-through failed:", (err as Error).message);
+  }
+}
+
+/** v24.4.1 — rebuild both Maps from durable rows on boot. */
+export async function hydratePaymentStore(): Promise<void> {
+  try {
+    const rows = rawDb()
+      .prepare(`SELECT id, intent_id, entry_json FROM payment_ledger`)
+      .all() as Array<{ id: string; intent_id: string; entry_json: string }>;
+    ledger.clear();
+    intentIndex.clear();
+    for (const r of rows) {
+      try {
+        const entry = JSON.parse(r.entry_json) as PaymentEntry;
+        ledger.set(r.id, entry);
+        intentIndex.set(r.intent_id, r.id);
+      } catch (parseErr) {
+        log.warn(`[hydrate] paymentStore: skipping ${r.id} — ${(parseErr as Error).message}`);
+      }
+    }
+    if (rows.length > 0) {
+      log.info(`[hydrate] paymentStore: ${rows.length} entries loaded`);
+    }
+  } catch (err) {
+    log.warn("[hydrate] paymentStore: DB read failed:", (err as Error).message);
+  }
+}
 export const paymentChain = registerChain(new HashChain<{
   id: string; intentId: string; kind: PaymentKind; amountCents: number; state: PaymentState; ts: string;
 }>("payments"));
@@ -100,6 +147,7 @@ export function chargeOrIdempotent(input: z.infer<typeof paymentChargeSchema>): 
     };
     ledger.set(id, entry);
     intentIndex.set(input.intentId, id);
+    persistPaymentEntry(entry);
     paymentChain.append({ id, intentId: entry.intentId, kind: entry.kind, amountCents: entry.amountCents, state: entry.state, ts: entry.ts });
     emitSync({
       eventType: "payment_charged",
@@ -128,6 +176,7 @@ export function __clearPayments(): void {
   ledger.clear();
   intentIndex.clear();
   paymentChain.__clear();
+  try { rawDb().prepare(`DELETE FROM payment_ledger`).run(); } catch { /* table may not exist in tests */ }
 }
 
 export function registerPaymentRoutes(app: Express): void {

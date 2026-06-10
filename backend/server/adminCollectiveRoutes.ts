@@ -43,7 +43,7 @@ import { emitNotification } from "./notificationsStore";
 // C-011 fix v23.6: enrich admin applications list with resolved names
 import { getCompanyNameById } from "./multiCompanyStore";
 import { getUserContextForId } from "./lib/userContext";
-import { lookupByUserId } from "./userCredentialsStore"; // v23.8 W-14 member enrichment
+import { lookupByUserId, lookupByEmail } from "./userCredentialsStore"; // v23.8 W-14 member enrichment; v24.4 bootstrap
 
 export function registerAdminCollectiveRoutes(app: Express): void {
   /**
@@ -122,6 +122,121 @@ export function registerAdminCollectiveRoutes(app: Express): void {
       return { ...m, userName, userEmail };
     });
     res.json({ items, count: items.length });
+  });
+
+  /**
+   * v24.4 — Bootstrap a Collective member directly (Shadie design gap).
+   *
+   * POST /api/admin/collective/members/bootstrap
+   *   Body: { userId?: string; email?: string; tier?: string }
+   *
+   * Resolves a user by id or email and activates Collective membership WITHOUT
+   * an application, solving the first-member / chicken-and-egg problem. Emits
+   * the SAME dual-write + bridge/notification side effects as the approval path
+   * so downstream consumers stay consistent.
+   *
+   * Note: collectiveMembershipStore.activate accepts tier "standard" | "plus"
+   * (default "standard"). We accept any string body and coerce to a valid tier.
+   */
+  app.post("/api/admin/collective/members/bootstrap", requireAdmin, (req: AugReq, res: Response) => {
+    const adminUserId = req.userContext?.userId ?? "";
+    if (!adminUserId) return res.status(401).json({ error: "missing_identity" });
+
+    const body = req.body ?? {};
+    const rawUserId = typeof body.userId === "string" ? body.userId.trim() : "";
+    const rawEmail = typeof body.email === "string" ? body.email.trim() : "";
+    if (!rawUserId && !rawEmail) {
+      return res.status(400).json({ ok: false, error: "missing_user", message: "Provide userId or email." });
+    }
+
+    // Resolve the target userId. Prefer an explicit userId; otherwise look up by
+    // email via the durable credential store.
+    let userId = rawUserId;
+    if (!userId && rawEmail) {
+      const cred = lookupByEmail(rawEmail);
+      if (!cred) {
+        return res.status(404).json({ ok: false, error: "USER_NOT_FOUND", message: `No user for email ${rawEmail}.` });
+      }
+      userId = cred.userId;
+    }
+    if (!userId) {
+      return res.status(404).json({ ok: false, error: "USER_NOT_FOUND" });
+    }
+
+    // Coerce tier to a valid value ("standard" | "plus"); default "standard".
+    const tier: "standard" | "plus" = body.tier === "plus" ? "plus" : "standard";
+
+    const membership = collectiveMembershipStore.activate(userId, adminUserId, tier);
+    try { upsertActiveMembership(userId); } catch { /* non-fatal */ }
+    try {
+      emitBridgeEvent({
+        eventType: "collective.member.updated",
+        aggregateId: userId,
+        aggregateKind: "investor",
+        payload: { userId, status: "active", activatedBy: adminUserId, bootstrap: true, tier },
+      });
+    } catch { /* non-fatal */ }
+    try {
+      emitNotification({
+        userId,
+        kind: "collective.membership_approved",
+        title: "You're in — welcome to the Collective.",
+        body: "An administrator has activated your Capavate Collective membership.",
+        link: "/collective",
+      });
+    } catch { /* non-fatal */ }
+    return res.json({ ok: true, membership });
+  });
+
+  /**
+   * POST /api/admin/collective/members/:userId/suspend
+   *
+   * v24.4.1 Bug 4 — the collective-membership store had a `deactivate()` method
+   * since sprint 23 but no HTTP entry-point ever exposed it. Admins could grant
+   * membership but never revoke it via the API. This route closes that gap.
+   *
+   * Body is optional: `{ reason?: string }` is recorded in audit_log if present.
+   * The route is idempotent — suspending an already-suspended member returns 200
+   * with the current row (no-op) so callers can safely retry. Emits a
+   * collective.member.updated bridge event so downstream consumers stay in sync.
+   */
+  app.post("/api/admin/collective/members/:userId/suspend", requireAdmin, (req: AugReq, res: Response) => {
+    const adminUserId = req.userContext?.userId ?? "";
+    if (!adminUserId) return res.status(401).json({ error: "missing_identity" });
+
+    const targetUserId = String(req.params.userId || "").trim();
+    if (!targetUserId) {
+      return res.status(400).json({ ok: false, error: "missing_user", message: "userId path parameter is required." });
+    }
+
+    const membership = collectiveMembershipStore.deactivate(targetUserId, adminUserId);
+    if (!membership) {
+      return res.status(404).json({ ok: false, error: "MEMBERSHIP_NOT_FOUND", message: `No collective membership for ${targetUserId}.` });
+    }
+
+    try {
+      emitBridgeEvent({
+        eventType: "collective.member.updated",
+        aggregateId: targetUserId,
+        aggregateKind: "investor",
+        payload: { userId: targetUserId, status: "suspended", deactivatedBy: adminUserId },
+      });
+    } catch { /* non-fatal */ }
+    try {
+      // Reuse the existing `membership.lapsed` notification kind — it's the
+      // closest semantic match in the canonical enum and avoids growing the
+      // shared NotificationKind union (which is wired into the email-cadence
+      // and SSE filter switches).
+      emitNotification({
+        userId: targetUserId,
+        kind: "membership.lapsed",
+        title: "Your Collective membership has been paused.",
+        body: "An administrator has suspended your Capavate Collective membership. Reach out to support if you have questions.",
+        link: "/collective",
+      });
+    } catch { /* non-fatal */ }
+
+    return res.json({ ok: true, membership });
   });
 
   app.post("/api/admin/collective/applications/:id/approve", requireAdmin, (req: AugReq, res: Response) => {

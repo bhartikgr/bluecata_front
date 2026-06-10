@@ -94,15 +94,16 @@ describe("v23.8 E3/BUG-014 — session cookie bounded to 4 hours", () => {
 
 /* ------------------------------- E4 -------------------------------- */
 describe("v23.8 E4 — /api/health reports the package.json version", () => {
-  it("package.json is bumped to 24.3.0", () => {
+  it("package.json is bumped to 24.4.0", () => {
     // Version pin follows the active release. Bumped 23.9.2 → 24.0.0 in the
     // v24.0 release (Group B tenant-isolation lockdown + Group C/D fixes), then
     // 24.0.0 → 24.1.0 in the v24.1 lockdown patch (Bugs A–M), then
     // 24.1.0 → 24.2.0 in the v24.2 Airwallex billing wiring, then
-    // 24.2.0 → 24.3.0 in the v24.3 investor wire-fund instructions wave; the
+    // 24.2.0 → 24.3.0 in the v24.3 investor wire-fund instructions wave, then
+    // 24.3.0 → 24.4.0 in the v24.4 launch-readiness fixes wave; the
     // /api/health handler reads this value at runtime.
     const pkg = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf8"));
-    expect(pkg.version).toBe("24.3.0");
+    expect(pkg.version).toBe("24.4.0");
   });
   it("routes.ts health handler reads version from package.json (no 0.0.0 literal in the response)", () => {
     const r = srcServer("routes.ts");

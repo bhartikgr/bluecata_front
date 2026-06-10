@@ -97,6 +97,72 @@ function readProfileDurable(companyId: string): CompanyProfile | null {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* v24.4.1 — durable persistence for investorProfiles                  */
+/*                                                                     */
+/* Mirrors writeProfileDurable/readProfileDurable. The investorProfiles */
+/* Map was pure-RAM through v24.4: every server restart wiped investor */
+/* edits (privacy, KYC, accreditation). This closes that gap.          */
+/* ------------------------------------------------------------------ */
+
+/** Persist an InvestorProfile durably. Logged on failure; cache stays in sync. */
+function writeInvestorProfileDurable(investorId: string, profile: InvestorProfile): void {
+  try {
+    const db = rawDb();
+    db.prepare(
+      `INSERT INTO profilestore_investor_profile (investor_id, profile_json, updated_at, deleted_at)
+       VALUES (?, ?, ?, NULL)
+       ON CONFLICT(investor_id) DO UPDATE SET
+         profile_json = excluded.profile_json,
+         updated_at = excluded.updated_at,
+         deleted_at = NULL`,
+    ).run(investorId, JSON.stringify(profile), new Date().toISOString());
+  } catch (err) {
+    profileLog.warn("[profileStore] investor write-through failed:", (err as Error).message);
+  }
+}
+
+/** Read a durably-stored InvestorProfile, or null if none/parse failure. */
+function readInvestorProfileDurable(investorId: string): InvestorProfile | null {
+  try {
+    const db = rawDb();
+    const row = db.prepare(
+      `SELECT profile_json FROM profilestore_investor_profile WHERE investor_id = ? AND deleted_at IS NULL`,
+    ).get(investorId) as { profile_json?: string } | undefined;
+    if (!row?.profile_json) return null;
+    return JSON.parse(row.profile_json) as InvestorProfile;
+  } catch {
+    return null;
+  }
+}
+
+/** v24.4.1 — rebuild the investorProfiles cache from durable rows on boot. */
+export async function hydrateProfileStore(): Promise<void> {
+  try {
+    const db = rawDb();
+    // Investor profiles. (Company profiles are already loaded on demand via
+    // readProfileDurable; no eager hydration needed.)
+    const rows = db
+      .prepare(`SELECT investor_id, profile_json FROM profilestore_investor_profile WHERE deleted_at IS NULL`)
+      .all() as Array<{ investor_id: string; profile_json: string }>;
+    // Don't clear() — SEED_INVESTOR_PROFILE was set at module load and may
+    // already be in the Map. Just overlay durable rows on top so any DB row
+    // wins over the seed for the same id.
+    for (const r of rows) {
+      try {
+        investorProfiles.set(r.investor_id, JSON.parse(r.profile_json) as InvestorProfile);
+      } catch (parseErr) {
+        profileLog.warn(`[hydrate] profileStore: skipping investor ${r.investor_id} — ${(parseErr as Error).message}`);
+      }
+    }
+    if (rows.length > 0) {
+      profileLog.info(`[hydrate] profileStore: ${rows.length} investor profiles loaded`);
+    }
+  } catch (err) {
+    profileLog.warn("[hydrate] profileStore: DB read failed:", (err as Error).message);
+  }
+}
+
 companyProfiles.set(SEED_COMPANY_PROFILE.id, SEED_COMPANY_PROFILE);
 investorProfiles.set(SEED_INVESTOR_PROFILE.id, SEED_INVESTOR_PROFILE);
 
@@ -254,17 +320,30 @@ export function registerProfileRoutes(app: Express): void {
     if (!id || id.trim() === "") {
       return res.status(400).json({ message: "companyId required" });
     }
-    // v24.2 Bug 6 — durable read-through: if the in-memory cache is cold (e.g.
-    // after a process restart) but a durable profile exists, re-hydrate it into
-    // the cache so the founder's saved edits survive a reload. DB takes priority
-    // over a stale/seed cache only when the cache has no entry.
-    let p = companyProfiles.get(id);
-    if (!p) {
-      const durable = readProfileDurable(id);
-      if (durable) {
-        companyProfiles.set(id, durable);
-        p = durable;
-      }
+    // v24.4 Bug D — DB-FIRST read precedence.
+    //
+    // Precedence (highest to lowest):
+    //   1. Durable DB row (profilestore_company_profile) — the source of truth
+    //      for any profile a founder has actually saved, including the seeded
+    //      `co-fixture` company. This MUST win over the in-memory seed so real
+    //      edits are never masked by SEED_COMPANY_PROFILE after a restart.
+    //   2. In-memory cache / seed map (companyProfiles) — preserves the
+    //      co-fixture demo profile when no durable row exists yet.
+    //   3. Legacy companyProfileStore fallback (below).
+    //   4. Synthesised empty profile for a known-but-unprofiled company (below).
+    //
+    // Prior to v24.4 the in-memory map was read FIRST, so a durable saved row
+    // for a seeded company (e.g. co-fixture) was masked by the seed.
+    let p: CompanyProfile | undefined;
+    const durable = readProfileDurable(id);
+    if (durable) {
+      // DB wins. Refresh the cache so subsequent GETs stay fast.
+      companyProfiles.set(id, durable);
+      p = durable;
+    } else {
+      // No durable row — fall back to the in-memory cache / seed map (preserves
+      // co-fixture demo behavior).
+      p = companyProfiles.get(id);
     }
     if (!p) {
       // V2 (Patch v8): fall back to the Sprint 29 companyProfileStore so a
@@ -486,6 +565,7 @@ export function registerProfileRoutes(app: Express): void {
       // Server-side persistence so subsequent GETs return it without re-synthesis
       // and so the PATCH ownership path finds an existing row.
       investorProfiles.set(id, synthesized);
+      writeInvestorProfileDurable(String(id), synthesized);
       return res.json(synthesized);
     }
 
@@ -530,6 +610,7 @@ export function registerProfileRoutes(app: Express): void {
 
     patched.updatedAt = nowIso();
     investorProfiles.set(id, patched);
+    writeInvestorProfileDurable(String(id), patched as unknown as InvestorProfile);
 
     const changedFields = diffChangedFields(current, patched);
     const { actorId, ip } = actorOf(req);
@@ -578,6 +659,7 @@ export function registerProfileRoutes(app: Express): void {
     const patched = applyProfilePatch(current, { visibility: { ...current.visibility, ...parsed.data } });
     patched.updatedAt = nowIso();
     investorProfiles.set(id, patched);
+    writeInvestorProfileDurable(String(id), patched as unknown as InvestorProfile);
 
     const changedFields = diffChangedFields(current, patched);
     const { actorId, ip } = actorOf(req);
@@ -621,6 +703,7 @@ export function registerProfileRoutes(app: Express): void {
       updatedAt: nowIso(),
     };
     investorProfiles.set(id, patched);
+    writeInvestorProfileDurable(String(id), patched as unknown as InvestorProfile);
 
     const { actorId, ip } = actorOf(req);
     emitOutbox(

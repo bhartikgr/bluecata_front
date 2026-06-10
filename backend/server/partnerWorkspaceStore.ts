@@ -24,7 +24,7 @@ import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 import { appendAdminAudit } from "./adminPlatformStore";
 import { emitBridgeEvent } from "./bridgeStore";
 import { getById as getContactById, _registerSeedPartner, TIER_RANK, TIER_SEAT_LIMITS, type PartnerTier, type PartnerSubRole } from "./adminContactsStoreShim";
-import { getDb } from "./db/connection";
+import { getDb, rawDb } from "./db/connection";
 import { pAll } from "./db/portable"; /* Wave H Track A — Postgres compatibility */
 import { partnerDealPromotions as partnerDealPromotionsTable } from "@shared/schema";
 import { DEFAULT_CHAPTER_ID, DEFAULT_CHAPTER_TENANT_ID } from "./lib/chapterDefaults";
@@ -386,6 +386,201 @@ const dealPromotions: PartnerDealPromotion[] = [];
 const dealPromotionsHistory: PartnerDealPromotion[] = [];
 
 /* ============================================================
+ * v24.4.1 — RAM→DB write-through persistence layer.
+ *
+ * Until v24.4.1, six partner workspace collections were pure RAM:
+ *   - teamMembers     → partner_team_members
+ *   - teamInvitations → partner_team_invitations
+ *   - notes           → partner_notes
+ *   - tasks           → partner_tasks
+ *   - files           → partner_files
+ *   - workspaceSettings → partner_workspace_settings
+ *
+ * Every restart wiped all six — partner_team_members lost meant approved
+ * partners couldn't access /api/partner/me/*, notes/tasks/files disappeared,
+ * settings reverted to defaults. This was Avi's #1 production complaint.
+ *
+ * The pattern: read path stays in-memory caches (zero behavioural change for
+ * existing callers); writes flow through to SQLite tables inside the same
+ * function call. On boot, hydratePartnerWorkspaceStoreV241() rebuilds the
+ * caches from the durable tables.
+ *
+ * The legacy spv/fund/attribution/pipeline arrays are NOT migrated here —
+ * those code paths are dead in production (replaced by spvFundStore and
+ * partnerWorkspaceV19Store, both DB-backed since v19/CP-028). They're
+ * documented in V24_4_1_STORE_AUDIT.md for a future cleanup wave.
+ * ============================================================ */
+
+function persistTeamMember(m: PartnerTeamMember): void {
+  try {
+    rawDb().prepare(
+      `INSERT INTO partner_team_members (id, partner_id, user_id, sub_role, status, joined_at, removed_at, created_by, is_seed, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         sub_role = excluded.sub_role,
+         status = excluded.status,
+         removed_at = excluded.removed_at,
+         updated_at = excluded.updated_at`,
+    ).run(m.id, m.partnerId, m.userId, m.subRole, m.status, m.joinedAt, m.removedAt ?? null, m.createdBy, m.isSeed ? 1 : 0, new Date().toISOString());
+  } catch (err) {
+    log.warn("[partnerWorkspaceStore] teamMember write-through failed:", (err as Error).message);
+  }
+}
+
+function persistTeamInvitation(inv: PartnerTeamInvitation): void {
+  try {
+    rawDb().prepare(
+      `INSERT INTO partner_team_invitations (id, partner_id, invitation_json, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         invitation_json = excluded.invitation_json,
+         updated_at = excluded.updated_at`,
+    ).run(inv.id, inv.partnerId, JSON.stringify(inv), new Date().toISOString());
+  } catch (err) {
+    log.warn("[partnerWorkspaceStore] teamInvitation write-through failed:", (err as Error).message);
+  }
+}
+
+function persistNote(n: PartnerNote): void {
+  try {
+    rawDb().prepare(
+      `INSERT INTO partner_notes (id, partner_id, note_json, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         note_json = excluded.note_json,
+         updated_at = excluded.updated_at`,
+    ).run(n.id, n.partnerId, JSON.stringify(n), new Date().toISOString());
+  } catch (err) {
+    log.warn("[partnerWorkspaceStore] note write-through failed:", (err as Error).message);
+  }
+}
+
+function persistTask(t: PartnerTask): void {
+  try {
+    rawDb().prepare(
+      `INSERT INTO partner_tasks (id, partner_id, task_json, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         task_json = excluded.task_json,
+         updated_at = excluded.updated_at`,
+    ).run(t.id, t.partnerId, JSON.stringify(t), new Date().toISOString());
+  } catch (err) {
+    log.warn("[partnerWorkspaceStore] task write-through failed:", (err as Error).message);
+  }
+}
+
+function persistFile(f: PartnerFile): void {
+  try {
+    rawDb().prepare(
+      `INSERT INTO partner_files (id, partner_id, file_json, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         file_json = excluded.file_json,
+         updated_at = excluded.updated_at`,
+    ).run(f.id, f.partnerId, JSON.stringify(f), new Date().toISOString());
+  } catch (err) {
+    log.warn("[partnerWorkspaceStore] file write-through failed:", (err as Error).message);
+  }
+}
+
+function persistWorkspaceSettings(partnerId: string, s: PartnerWorkspaceSettings): void {
+  try {
+    rawDb().prepare(
+      `INSERT INTO partner_workspace_settings (partner_id, settings_json, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(partner_id) DO UPDATE SET
+         settings_json = excluded.settings_json,
+         updated_at = excluded.updated_at`,
+    ).run(partnerId, JSON.stringify(s), new Date().toISOString());
+  } catch (err) {
+    log.warn("[partnerWorkspaceStore] workspaceSettings write-through failed:", (err as Error).message);
+  }
+}
+
+/** v24.4.1 — rebuild all 6 in-memory caches from durable rows on boot. */
+export async function hydratePartnerWorkspaceStoreV241(): Promise<void> {
+  const db = rawDb();
+  try {
+    // teamMembers
+    {
+      const rows = db.prepare(
+        `SELECT id, partner_id, user_id, sub_role, status, joined_at, removed_at, created_by, is_seed FROM partner_team_members`,
+      ).all() as Array<{
+        id: string; partner_id: string; user_id: string; sub_role: string; status: string;
+        joined_at: string; removed_at: string | null; created_by: string; is_seed: number;
+      }>;
+      teamMembers.length = 0;
+      for (const r of rows) {
+        teamMembers.push({
+          id: r.id,
+          partnerId: r.partner_id,
+          userId: r.user_id,
+          subRole: r.sub_role as SubRole,
+          status: r.status as "active" | "removed",
+          joinedAt: r.joined_at,
+          removedAt: r.removed_at,
+          createdBy: r.created_by,
+          isSeed: !!r.is_seed,
+        });
+      }
+      if (rows.length > 0) log.info(`[hydrate] partnerWorkspaceStore: ${rows.length} team_members loaded`);
+    }
+    // teamInvitations
+    {
+      const rows = db.prepare(`SELECT id, invitation_json FROM partner_team_invitations`).all() as Array<{ id: string; invitation_json: string }>;
+      teamInvitations.length = 0;
+      for (const r of rows) {
+        try { teamInvitations.push(JSON.parse(r.invitation_json) as PartnerTeamInvitation); }
+        catch (e) { log.warn(`[hydrate] skip invitation ${r.id}: ${(e as Error).message}`); }
+      }
+      if (rows.length > 0) log.info(`[hydrate] partnerWorkspaceStore: ${rows.length} team_invitations loaded`);
+    }
+    // notes
+    {
+      const rows = db.prepare(`SELECT id, note_json FROM partner_notes`).all() as Array<{ id: string; note_json: string }>;
+      notes.length = 0;
+      for (const r of rows) {
+        try { notes.push(JSON.parse(r.note_json) as PartnerNote); }
+        catch (e) { log.warn(`[hydrate] skip note ${r.id}: ${(e as Error).message}`); }
+      }
+      if (rows.length > 0) log.info(`[hydrate] partnerWorkspaceStore: ${rows.length} notes loaded`);
+    }
+    // tasks
+    {
+      const rows = db.prepare(`SELECT id, task_json FROM partner_tasks`).all() as Array<{ id: string; task_json: string }>;
+      tasks.length = 0;
+      for (const r of rows) {
+        try { tasks.push(JSON.parse(r.task_json) as PartnerTask); }
+        catch (e) { log.warn(`[hydrate] skip task ${r.id}: ${(e as Error).message}`); }
+      }
+      if (rows.length > 0) log.info(`[hydrate] partnerWorkspaceStore: ${rows.length} tasks loaded`);
+    }
+    // files
+    {
+      const rows = db.prepare(`SELECT id, file_json FROM partner_files`).all() as Array<{ id: string; file_json: string }>;
+      files.length = 0;
+      for (const r of rows) {
+        try { files.push(JSON.parse(r.file_json) as PartnerFile); }
+        catch (e) { log.warn(`[hydrate] skip file ${r.id}: ${(e as Error).message}`); }
+      }
+      if (rows.length > 0) log.info(`[hydrate] partnerWorkspaceStore: ${rows.length} files loaded`);
+    }
+    // workspaceSettings
+    {
+      const rows = db.prepare(`SELECT partner_id, settings_json FROM partner_workspace_settings`).all() as Array<{ partner_id: string; settings_json: string }>;
+      workspaceSettings.clear();
+      for (const r of rows) {
+        try { workspaceSettings.set(r.partner_id, JSON.parse(r.settings_json) as PartnerWorkspaceSettings); }
+        catch (e) { log.warn(`[hydrate] skip workspaceSettings ${r.partner_id}: ${(e as Error).message}`); }
+      }
+      if (rows.length > 0) log.info(`[hydrate] partnerWorkspaceStore: ${rows.length} workspaceSettings loaded`);
+    }
+  } catch (err) {
+    log.warn("[hydrate] partnerWorkspaceStore v24.4.1: DB read failed:", (err as Error).message);
+  }
+}
+
+/* ============================================================
  * Guard helpers
  * ============================================================ */
 
@@ -432,6 +627,7 @@ export const partnerTeamStore = {
       isSeed: !!opts.isSeed,
     };
     teamMembers.push(tm);
+    persistTeamMember(tm);
     audit(createdBy, `partner:${partnerId}`, "partner.team_member.added", { userId, subRole });
     emit("partner.team_member_added", partnerId, { partnerId, userId, subRole, idempotencyKey: `${partnerId}|${userId}` });
     return tm;
@@ -443,6 +639,7 @@ export const partnerTeamStore = {
     if (!m) return null;
     m.status = "removed";
     m.removedAt = new Date().toISOString();
+    persistTeamMember(m);
     audit(removedBy, `partner:${partnerId}`, "partner.team_member.removed", { userId });
     emit("partner.team_member_removed", partnerId, { partnerId, userId, removedAt: m.removedAt, idempotencyKey: `${partnerId}|${userId}|${m.removedAt}` });
     return m;
@@ -454,7 +651,39 @@ export const partnerTeamStore = {
   },
 
   findByUserId(userId: string): PartnerTeamMember | null {
-    return teamMembers.find((m) => m.userId === userId && m.status === "active") ?? null;
+    const cached = teamMembers.find((m) => m.userId === userId && m.status === "active");
+    if (cached) return cached;
+    // v24.4.1 cross-process safety: a sibling process (e.g.
+    // create_partner_admin.ts CLI) may have written a new active row that the
+    // running server has not yet hydrated into RAM. Fall through to DB so the
+    // workspace becomes reachable without a server restart. On hit, prime the
+    // RAM cache so subsequent reads stay in-process fast.
+    try {
+      const row = rawDb().prepare(
+        `SELECT id, partner_id, user_id, sub_role, status, joined_at, removed_at, created_by, is_seed
+           FROM partner_team_members
+          WHERE user_id = ? AND status = 'active'
+          LIMIT 1`,
+      ).get(userId) as Record<string, unknown> | undefined;
+      if (!row) return null;
+      const tm: PartnerTeamMember = {
+        id: String(row.id),
+        partnerId: String(row.partner_id),
+        userId: String(row.user_id),
+        subRole: String(row.sub_role) as SubRole,
+        status: "active",
+        joinedAt: String(row.joined_at),
+        removedAt: row.removed_at ? String(row.removed_at) : null,
+        createdBy: String(row.created_by),
+        isSeed: Boolean(row.is_seed),
+      };
+      // Prime cache (avoid duplicate if a concurrent path inserted).
+      if (!teamMembers.find((m) => m.id === tm.id)) teamMembers.push(tm);
+      return tm;
+    } catch (err) {
+      log.warn("[partnerWorkspaceStore.findByUserId] DB fallback failed:", (err as Error).message);
+      return null;
+    }
   },
 
   /**
@@ -519,6 +748,7 @@ export const partnerInvitationStore = {
       isSeed: !!opts.isSeed,
     };
     teamInvitations.push(inv);
+    persistTeamInvitation(inv);
     audit(createdBy, `partner:${partnerId}`, "partner.team_invitation.created", { email: inv.invitedEmail, subRole });
     return { invitation: inv, plainToken };
   },
@@ -547,6 +777,7 @@ export const partnerInvitationStore = {
     inv.redeemedUserId = redeemingUserId;
     inv.ipLogged = opts.ip ?? inv.ipLogged;
     inv.uaLogged = opts.ua ?? inv.uaLogged;
+    persistTeamInvitation(inv);
     // Add the user to the team
     partnerTeamStore.add(inv.partnerId, redeemingUserId, inv.subRole, redeemingUserId);
     audit(redeemingUserId, `partner:${inv.partnerId}`, "partner.team_invitation.redeemed", { invitationId: inv.id });
@@ -806,6 +1037,7 @@ export const partnerNotesStore = {
     };
     note.revisionHash = computeRevisionHash(note as unknown as Record<string, unknown>);
     notes.push(note);
+    persistNote(note);
     notesHistory.push({ ...note });
     audit(actor, `partner:${partnerId}`, "partner.note.created", { noteId: note.id, scope: note.scope });
     return note;
@@ -828,6 +1060,7 @@ export const partnerNotesStore = {
     };
     next.revisionHash = computeRevisionHash(next as unknown as Record<string, unknown>);
     Object.assign(n, next);
+    persistNote(n);
     notesHistory.push({ ...next });
     audit(actor, `partner:${partnerId}`, "partner.note.updated", { noteId, changes: Object.keys(patch) });
     return next;
@@ -868,6 +1101,7 @@ export const partnerTasksStore = {
       isSeed: false,
     };
     tasks.push(t);
+    persistTask(t);
     audit(actor, `partner:${partnerId}`, "partner.task.created", { taskId: t.id });
     return t;
   },
@@ -877,6 +1111,7 @@ export const partnerTasksStore = {
     if (!t) throw new Error("TASK_NOT_FOUND");
     Object.assign(t, patch);
     if (patch.status === "done" && !t.completedAt) t.completedAt = new Date().toISOString();
+    persistTask(t);
     audit(actor, `partner:${partnerId}`, "partner.task.updated", { taskId, changes: Object.keys(patch) });
     return t;
   },
@@ -901,6 +1136,7 @@ export const partnerFilesStore = {
       isSeed: false,
     };
     files.push(f);
+    persistFile(f);
     audit(actor, `partner:${partnerId}`, "partner.file.uploaded", { fileId: f.id, fileName: f.fileName });
     return f;
   },
@@ -943,6 +1179,7 @@ export const partnerWorkspaceSettingsStore = {
       };
       s.revisionHash = computeRevisionHash(s as unknown as Record<string, unknown>);
       workspaceSettings.set(partnerId, s);
+      persistWorkspaceSettings(partnerId, s);
     }
     return s;
   },
@@ -969,6 +1206,7 @@ export const partnerWorkspaceSettingsStore = {
     };
     next.revisionHash = computeRevisionHash(next as unknown as Record<string, unknown>);
     workspaceSettings.set(partnerId, next);
+    persistWorkspaceSettings(partnerId, next);
     audit(actor, `partner:${partnerId}`, "partner.workspace_settings.updated", { changes: Object.keys(patch) });
     return next;
   },

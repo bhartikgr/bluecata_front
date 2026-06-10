@@ -101,12 +101,18 @@ export default function RoundDetail() {
  const invs = useQuery<Invitation[]>({ queryKey: [`/api/rounds/${id}/invitations`] });
  const softs = useQuery<SoftCircle[]>({ queryKey: [`/api/rounds/${id}/soft-circles`] });
  const me = useQuery<{ id: string; displayName: string; role: string; identity?: { email?: string; name?: string } }>({ queryKey: ["/api/auth/me"] });
+ // v24.4 BUG 044 — CRM contacts so the invite dialog can pick an existing
+ // investor instead of always retyping name/email.
+ const crmContacts = useQuery<Array<{ id: string; name: string; email: string; firmName?: string }>>({ queryKey: ["/api/founder/crm/contacts"] });
 
  const [inviteOpen, setInviteOpen] = useState(false);
  const [bulkOpen, setBulkOpen] = useState(false);
  const [inviteName, setInviteName] = useState("");
  const [inviteEmail, setInviteEmail] = useState("");
  const [inviteNote, setInviteNote] = useState("");
+ // v24.4 BUG 044 — invite source: pick from CRM, or add a brand-new investor.
+ const [inviteSource, setInviteSource] = useState<"crm" | "new">("crm");
+ const [inviteCrmId, setInviteCrmId] = useState("");
  // select-invite-expiry fix v23.4.13
  const [inviteExpiry, setInviteExpiry] = useState("30");
  const [revokeId, setRevokeId] = useState<string | null>(null);
@@ -665,8 +671,46 @@ export default function RoundDetail() {
  <DialogTitle>Invite an investor</DialogTitle>
  </DialogHeader>
  <div className="space-y-3">
+ {/* v24.4 BUG 044 — CRM picker. Choose an existing contact or add new. */}
+ <div>
+ <Label>Investor</Label>
+ <select
+ className="mt-1 w-full h-9 px-3 rounded-md border border-input bg-background text-sm"
+ data-testid="select-invite-source"
+ value={inviteSource === "new" ? "__new__" : inviteCrmId}
+ onChange={e => {
+ const v = e.target.value;
+ if (v === "__new__") {
+ setInviteSource("new");
+ setInviteCrmId("");
+ setInviteName("");
+ setInviteEmail("");
+ } else {
+ setInviteSource("crm");
+ setInviteCrmId(v);
+ const c = asArray<{ id: string; name: string; email: string }>(crmContacts.data).find(x => x.id === v);
+ if (c) { setInviteName(c.name ?? ""); setInviteEmail(c.email ?? ""); }
+ }
+ }}
+ >
+ <option value="" disabled>Select from CRM…</option>
+ {asArray<{ id: string; name: string; email: string; firmName?: string }>(crmContacts.data).map(c => (
+ <option key={c.id} value={c.id}>{c.name}{c.email ? ` — ${c.email}` : ""}</option>
+ ))}
+ <option value="__new__">+ Add new investor</option>
+ </select>
+ </div>
+ {inviteSource === "new" && (
+ <>
  <div><Label>Investor name</Label><Input className="mt-1" value={inviteName} onChange={e => setInviteName(e.target.value)} placeholder="Investor name" data-testid="input-invite-name" /></div>
  <div><Label>Email</Label><Input className="mt-1" type="email" value={inviteEmail} onChange={e => setInviteEmail(e.target.value)} placeholder="investor@firm.com" data-testid="input-invite-email" /></div>
+ </>
+ )}
+ {inviteSource === "crm" && inviteCrmId && (
+ <div className="text-sm text-muted-foreground" data-testid="crm-selected-summary">
+ Inviting <strong>{inviteName || "—"}</strong>{inviteEmail ? ` (${inviteEmail})` : ""}
+ </div>
+ )}
  <div><Label>Personal note (optional)</Label><Input className="mt-1" value={inviteNote} onChange={e => setInviteNote(e.target.value)} placeholder="Following up from our coffee at Latitude…" data-testid="input-invite-note" /></div>
  <div><Label>Expires in</Label>
  <select className="mt-1 w-full h-9 px-3 rounded-md border border-input bg-background text-sm" data-testid="select-invite-expiry" value={inviteExpiry} onChange={e => setInviteExpiry(e.target.value)}>
@@ -1080,11 +1124,13 @@ function FounderConfirmDialog({ open, softId, softName, softAmount, roundId, sig
  const existing = useTermSheetStore.getState().softCircleSigs[softId ?? ""];
  const [name, setName] = useState("");
  const [ack, setAck] = useState(false);
+ const [submitting, setSubmitting] = useState(false);
 
- function handleConfirm() {
+ async function handleConfirm() {
  if (!softId) return;
  if (!name.trim()) { toast({ title: "Type your name", variant: "destructive" }); return; }
  if (!ack) { toast({ title: "Confirm acceptance", variant: "destructive" }); return; }
+ if (submitting) return;
  const meta = captureSessionMetadata();
  const prevHash = existing?.signature.hash ?? "0".repeat(64);
  const sig: SESSignature = signSES({
@@ -1116,6 +1162,27 @@ function FounderConfirmDialog({ open, softId, softName, softAmount, roundId, sig
  });
  }
  emit({ type: "softcircle.confirmed", payload: { softCircleId: softId } }, { companyId: "co-acme", roundId, actorId: "founder-avi", actorRole: "founder" });
+
+ // v24.4 Bug E — after the local SES signature succeeds, ALSO persist the
+ // status transition on the server so the soft-circle flips from "intent"
+ // to "confirmed" (which gates downstream "Mark wire funded"). On a non-OK
+ // response we surface an error toast and keep the dialog open so the founder
+ // can retry; we do NOT silently close.
+ setSubmitting(true);
+ try {
+ await apiRequest("POST", `/api/rounds/${roundId}/soft-circle/${softId}/validate`, {});
+ } catch (err) {
+ setSubmitting(false);
+ toast({
+ title: "Could not confirm on server",
+ description: err instanceof ApiError ? err.message : "Please try again.",
+ variant: "destructive",
+ });
+ return;
+ }
+ // Refresh the soft-circles list so s.status reflects the server transition.
+ queryClient.invalidateQueries({ queryKey: [`/api/rounds/${roundId}/soft-circles`] });
+ setSubmitting(false);
  toast({ title: "Soft-circle confirmed", description: `Signature hash ${sig.hash.slice(0, 12)}…` });
  setName(""); setAck(false);
  onClose();

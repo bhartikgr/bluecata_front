@@ -577,6 +577,20 @@ export function listApplications(filters: {
  * is the provisioning step that *creates* the new partner tenant. The
  * caller MUST be a platform admin (enforced at the route).
  * ============================================================ */
+// v24.4.1 Bug 2 follow-up — admins approving a partner application can read
+// back the raw partner-invite redemption URL (never persisted; in-memory only,
+// cleared on next approval of the same application). This gives admins a
+// reliable way to manually re-share the link if SMTP fails. The token itself
+// is still stored as a SHA-256 hash in `auth_redeem_tokens`; we never write
+// the raw token to durable storage. Keyed by application id; one entry per
+// active approval window.
+const RECENT_APPROVAL_REDEEM_URLS = new Map<string, string>();
+
+/** v24.4.1 — admin-only read of the most recent approval redemption URL. */
+export function getRecentApprovalRedeemUrl(applicationId: string): string | null {
+  return RECENT_APPROVAL_REDEEM_URLS.get(applicationId) ?? null;
+}
+
 export function approveApplication(
   id: string,
   actorUserId: string,
@@ -752,6 +766,13 @@ export function approveApplication(
         partnerType: (updated.partnerType as any) ?? null,
         regionCode: null,
         hqCountry: updated.jurisdiction ?? null,
+        // v24.4.1 Bug 3 — keep the adminContactsStore id aligned with the
+        // partner_organizations.id (and the application's provisionedPartnerId).
+        // Without this, /api/admin/partners (reads adminContactsStore) returns
+        // a different id than the one stored on the approved application,
+        // breaking scripts/create_partner_admin.ts and any downstream lookup
+        // that uses provisionedPartnerId as the canonical partner identifier.
+        preferredId: partnerId,
       },
       actorUserId,
     );
@@ -796,6 +817,11 @@ export function approveApplication(
   if (partnerInviteTokenRaw) {
     const appUrl = (process.env.APP_URL ?? "http://localhost:5000").replace(/\/$/, "");
     const redeemUrl = `${appUrl}/auth/redeem-partner-invite/${partnerInviteTokenRaw}`;
+    // v24.4.1 — stash the raw URL so the HTTP review endpoint can return it
+    // to the approving admin. In-memory only; this is the same window in which
+    // the welcome email is dispatched, so the token's confidentiality model is
+    // unchanged (single-use, 14d expiry, sha-hashed at rest).
+    RECENT_APPROVAL_REDEEM_URLS.set(updated.id, redeemUrl);
     const subj = `Welcome to Capavate — set up your ${updated.organizationName} partner account`;
     const text =
       `Hello ${updated.contactName},\n\n` +
@@ -1135,7 +1161,15 @@ export function registerConsortiumApplyRoutes(app: Express): void {
                 actor,
                 parsed.data.review_notes,
               );
-        res.json({ application: updated });
+        // v24.4.1 Bug 2 follow-up — surface the partner-invite redemption URL
+        // to the approving admin so they can manually re-share it if SMTP fails.
+        // Only populated for approvals where a fresh token was minted; null
+        // otherwise (idempotent re-approval or any path where token mint failed).
+        const partnerInviteRedeemUrl =
+          parsed.data.status === "approved"
+            ? getRecentApprovalRedeemUrl(String(req.params.id))
+            : null;
+        res.json({ application: updated, partnerInviteRedeemUrl });
       } catch (err) {
         const msg = (err as Error).message;
         if (msg === "APPLICATION_NOT_FOUND") {

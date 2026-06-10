@@ -163,6 +163,8 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
   // convertible notes, and warrants no longer show meaningless priced-round
   // fields (pre/post-money + PPS). The dialog flow is unchanged.
   const family = instrumentFamily(round.instrument);
+  // v24.4 BUG 049 — round name is editable after creation.
+  const [name, setName] = useState(round.name ?? "");
   const [targetAmount, setTargetAmount] = useState(round.targetAmount);
   const [preMoney, setPreMoney] = useState(round.preMoney ?? 0);
   // v24.1 Bug C (Avi #3): for legacy rows that persisted a null post-money,
@@ -189,7 +191,9 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
       // Only send the fields relevant to this instrument family; the server
       // PATCH ignores keys it does not recognize for the round and never
       // performs a retroactive migration of other rounds.
-      const common = { targetAmount, minTicket, closeDate, termsSummary };
+      // v24.4 BUG 049 — include the (trimmed) round name. The server rejects an
+      // empty name with 400, so guard client-side too.
+      const common = { name: name.trim(), targetAmount, minTicket, closeDate, termsSummary };
       const byFamily: Record<string, unknown> =
         family === "priced"
           ? { preMoney, postMoney, pricePerShare }
@@ -223,6 +227,10 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
           <DialogTitle>Edit terms — {round.name}</DialogTitle>
         </DialogHeader>
         <div className="grid grid-cols-2 gap-3">
+          <div className="col-span-2">
+            <Label>Round name</Label>
+            <Input value={name} onChange={e => setName(e.target.value)} className="mt-1" data-testid="input-round-name" placeholder="e.g. Seed, Series A" />
+          </div>
           <div>
             <Label>Target amount (USD)</Label>
             <Input type="number" min={0} value={targetAmount} onChange={e => setTargetAmount(Number(e.target.value))} className="mt-1" data-testid="input-target" />

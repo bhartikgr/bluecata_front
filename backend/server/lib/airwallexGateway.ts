@@ -24,7 +24,7 @@
  * behind `AIRWALLEX_REAL_NETWORK=1` for staging/prod parity tests.
  */
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { getGatewayCredentials } from "./paymentGatewayResolver";
+import { getGatewayCredentials, getAirwallexMode } from "./paymentGatewayResolver";
 
 export interface AirwallexCreatePaymentIntentInput {
   amountMinor: number;
@@ -89,9 +89,15 @@ function ensureConfigured(): { apiKey: string; clientId: string; apiBase: string
 }
 
 function shouldUseStubMode(): boolean {
-  // Real network calls only when explicitly enabled. This keeps the test
-  // suite hermetic and lets staging override.
-  return process.env.AIRWALLEX_REAL_NETWORK !== "1";
+  // v24.4 Bug A — mode-based switching replaces the old binary REAL_NETWORK flag.
+  //   stub → no network (hermetic).
+  //   test → REAL network against the demo base URL.
+  //   live → REAL network against production.
+  // Defaults to `test` when AIRWALLEX_API_KEY is present, else `stub` (see
+  // getAirwallexMode in paymentGatewayResolver). Per Avi: "make it always test
+  // mode until tested fully" — i.e. real network defaults to the demo endpoint,
+  // never live, unless AIRWALLEX_MODE=live + a key is explicitly set.
+  return getAirwallexMode() === "stub";
 }
 
 function nowIso(): string {

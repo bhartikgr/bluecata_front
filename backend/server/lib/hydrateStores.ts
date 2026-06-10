@@ -78,6 +78,17 @@ import { hydrateSpvFundStore as realHydrateSpvFund } from "../spvFundStore";
 import { stitchPartnerCrmChain } from "./partnerCrmChainStitch";
 // CP Phase B — consortium apply DB-backed hydrator.
 import { hydrateConsortiumApplyStore as realHydrateConsortiumApply } from "../consortiumApplyStore";
+// v24.4.1 — RAM→DB migration hydrators. Six new stores moving from pure RAM
+// to hybrid DB-backed cache. Each hydrator is best-effort and non-fatal on
+// failure (boot continues; the in-memory cache stays empty until a write).
+import { hydrateWelcomeStore as realHydrateWelcome } from "../welcomeStore";
+import { hydrateTransactionPrepStore as realHydrateTransactionPrep } from "../transactionPrepStore";
+import { hydrateIntroRequestStore as realHydrateIntroRequest } from "../introRequestStore";
+import { hydratePaymentStore as realHydratePayment } from "../paymentStore";
+import { hydrateProfileStore as realHydrateProfileStoreInvestor } from "../profileStore";
+// v24.4.1 — partnerWorkspaceStore RAM→DB (6 new tables: team_members,
+// team_invitations, notes, tasks, files, workspace_settings).
+import { hydratePartnerWorkspaceStoreV241 as realHydratePartnerWorkspaceV241 } from "../partnerWorkspaceStore";
 import { log } from "./logger";
 
 const STORES = [
@@ -219,6 +230,18 @@ const HYDRATE_ORDER: Array<{ name: string; fn: () => Promise<void> }> = [
       }
     },
   },
+  // v24.4.1 — RAM→DB migrations. Each runs after all earlier stores because
+  // they reference only user_id / partner_id which are warm by now. Order
+  // within this block is arbitrary (no cross-deps). Failure is non-fatal.
+  { name: "welcomeStore",                fn: realHydrateWelcome },
+  { name: "transactionPrepStore",        fn: realHydrateTransactionPrep },
+  { name: "introRequestStore",           fn: realHydrateIntroRequest },
+  { name: "paymentStore",                fn: realHydratePayment },
+  { name: "profileStore (investor)",     fn: realHydrateProfileStoreInvestor },
+  // v24.4.1 — partnerWorkspaceStore (team, notes, tasks, files, settings).
+  // Runs after partnerWorkspaceV19Store and partnerWorkspaceCollective so
+  // the partner identities and workspace context are already warm.
+  { name: "partnerWorkspaceStore (v24.4.1)", fn: realHydratePartnerWorkspaceV241 },
 ];
 
 /** Stub hydrate factory — used for stores not yet migrated to DB-backed hybrid. */

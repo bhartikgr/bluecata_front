@@ -669,8 +669,23 @@ export function registerPaymentGatewayRoutes(app: Express): void {
     });
 
     // Normalise type into the legacy dispatch verbs.
-    const isSuccess = /succeed|paid|captured|completed/i.test(type) || /SUCCEEDED|succeeded/.test(status ?? "");
-    const isFailure = /fail|declined|errored|cancelled/i.test(type) || /FAILED|failed/.test(status ?? "");
+    //
+    // v24.4 Bug A — Airwallex MUST NOT reuse the broad Stripe-style event-type
+    // matching for success. Airwallex intermediate states such as
+    // REQUIRES_PAYMENT_METHOD / REQUIRES_CONFIRMATION can carry success-looking
+    // event-type strings, which would otherwise activate paid subscriptions on
+    // an incomplete payment. For Airwallex we activate ONLY when the normalized
+    // payment-intent status is EXACTLY "SUCCEEDED".
+    const normalizedStatus = (status ?? "").trim().toUpperCase();
+    let isSuccess: boolean;
+    let isFailure: boolean;
+    if (gateway === "airwallex") {
+      isSuccess = normalizedStatus === "SUCCEEDED";
+      isFailure = normalizedStatus === "FAILED" || normalizedStatus === "CANCELLED";
+    } else {
+      isSuccess = /succeed|paid|captured|completed/i.test(type) || /SUCCEEDED|succeeded/.test(status ?? "");
+      isFailure = /fail|declined|errored|cancelled/i.test(type) || /FAILED|failed/.test(status ?? "");
+    }
 
     // v24.2 Airwallex wiring — flip the Capavate checkout subscription. The
     // record was minted PENDING by POST /api/billing/plan keyed on the

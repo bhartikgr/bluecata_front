@@ -123,6 +123,10 @@ import { registerCompanyProfileRoutes } from "./companyProfileStore";
 import { registerStripeWebhookRoute } from "./stripeGatewayAdapter";
 // Wave C-3 + C-4 — Collective Shell + M&A Intelligence
 import { registerCollectiveRoutes } from "./collectiveRoutes";
+// v24.4.1 Bug 1 — Sprint 20 Wave 2 routes (collective network, investor CRM,
+// portfolio marks, tax export, mute-author, report) were defined but never
+// wired in v20. Adding the registration call here closes the dead-spot.
+import { registerSprint20Wave2Routes } from "./sprint20Wave2Routes";
 import { registerAdminCollectiveRoutes } from "./adminCollectiveRoutes";
 import { registerAdminDscRoutes } from "./adminDscRoutes";
 // v17 Phase C — Founder accept/decline offers + DSC vote public endpoint.
@@ -472,6 +476,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.use("/api/collective", requireAuthenticated);
   registerCollectiveRoutes(app);
   registerCollectiveSettingsRoutes(app);
+  // v24.4.1 Bug 1 — register the Sprint 20 Wave 2 surface (collective network,
+  // investor CRM, portfolio marks, tax export, mute-author, report). Must come
+  // AFTER requireAuthenticated mounts on /api/collective so the gate runs first.
+  registerSprint20Wave2Routes(app);
 
   /* ------------ 23-May Fix 1B — Mount-level admin guard ------------
    *
@@ -719,11 +727,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // see at a glance what's configured (Avi's ops pain: "is SMTP / dev-reset /
     // Airwallex live on this box?"). All booleans; never leaks secret values.
     let airwallexConfigured = false;
+    // v24.4 Bug A — surface the resolved Airwallex operating mode (stub|test|live).
+    let airwallexMode: "stub" | "test" | "live" = "stub";
     try {
       // Prefer the canonical readiness probe (checks AIRWALLEX_API_KEY +
       // AIRWALLEX_CLIENT_ID); fall back to a bare env probe if it throws.
-      const { isGatewayReady } = await import("./lib/paymentGatewayResolver");
+      const { isGatewayReady, getAirwallexMode } = await import("./lib/paymentGatewayResolver");
       airwallexConfigured = Boolean(isGatewayReady("airwallex"));
+      airwallexMode = getAirwallexMode();
     } catch {
       airwallexConfigured = !!process.env.AIRWALLEX_API_KEY;
     }
@@ -731,6 +742,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       smtpConfigured: !!process.env.SMTP_HOST,
       devResetUrlEnabled: process.env.RETURN_DEV_RESET_URL === "1",
       airwallexConfigured,
+      airwallexMode,
     };
     res.json({
       status: dbOk && (hydrateState === "ok" || hydrateState === "partial") ? "ok" : "degraded",
@@ -1149,6 +1161,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (numericTerm("minTicket")) return;
     if (typeof body.closeDate === "string" && body.closeDate.length > 0) updates.closeDate = body.closeDate;
     if (typeof body.termsSummary === "string") updates.termsSummary = body.termsSummary;
+    // v24.4 BUG 049 — allow editing the round name after creation. Reject an
+    // explicit empty/blank name (400); a name absent from the body is left
+    // untouched. Trimmed before persisting so accidental whitespace is dropped.
+    if (body.name !== undefined) {
+      if (typeof body.name !== "string" || body.name.trim().length === 0) {
+        return res.status(400).json({ error: "invalid_name", message: "name must be a non-empty string" });
+      }
+      updates.name = body.name.trim();
+    }
     // BUG 034 fix v23.7 — instrument-specific term extras. The Edit-Terms dialog
     // branches its field set by instrument (SAFE / convertible note / warrant)
     // instead of always showing priced-round fields. Persist those extras onto

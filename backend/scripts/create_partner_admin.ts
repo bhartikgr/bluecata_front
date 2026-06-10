@@ -50,6 +50,11 @@ import {
 } from "../shared/schema";
 import { storeCredential } from "../server/userCredentialsStore";
 import { getById as getPartnerById } from "../server/adminContactsStoreShim";
+// v24.4.1 Bug 2 — the script spawns a fresh Node process with an EMPTY
+// in-memory contacts map. Without hydrating from the DB first, the script
+// cannot see partners that were created at runtime via the consortium-apply
+// approval flow. Hydrate before the getById() lookup below.
+import { hydrateAdminContactsStore } from "../server/adminContactsStore";
 import { partnerTeamStore, type SubRole } from "../server/partnerWorkspaceStore";
 
 const VALID_SUB_ROLES: ReadonlySet<SubRole> = new Set<SubRole>([
@@ -272,6 +277,11 @@ export async function createPartnerAdmin(args: Args): Promise<{
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   try {
+    // v24.4.1 Bug 2 — load the durable contacts cache from the database so
+    // runtime-approved partners (HTTP review path) are visible to getById().
+    // Idempotent and safe to re-run.
+    await hydrateAdminContactsStore();
+
     const result = await createPartnerAdmin(args);
     const verb = result.created
       ? "CREATED"

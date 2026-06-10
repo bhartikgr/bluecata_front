@@ -226,6 +226,17 @@ function CompanyWizard({
  queryClient.invalidateQueries({ queryKey: [`/api/companies/${profile.id}/securities`] });
  queryClient.invalidateQueries({ queryKey: ["/api/rounds"] });
  },
+ // v24.4 Bug D — surface persistence failures prominently. Previously the
+ // "Saved" toast fired synchronously after .mutate(), so a failed PATCH still
+ // told the founder their changes were saved (dishonest toast).
+ onError: (err: unknown) => {
+ toast({
+ title: "Save failed",
+ description:
+ err instanceof Error ? err.message : "Your changes were NOT saved. Please try again.",
+ variant: "destructive",
+ });
+ },
  });
 
  /* ---- Debounced auto-save: 800 ms after last change ---- */
@@ -307,8 +318,16 @@ function CompanyWizard({
  });
  return;
  }
- patchMutation.mutate({ contact, address, legal, ma });
+ // v24.4 Bug D — honest toast: only confirm "Saved" on actual mutation
+ // success. Failure is surfaced by the mutation's onError handler above.
+ patchMutation.mutate(
+ { contact, address, legal, ma },
+ {
+ onSuccess: () => {
  toast({ title: "Saved", description: "Draft saved. Investor surfaces will refresh on next view." });
+ },
+ },
+ );
  };
 
  const goNext = () => {

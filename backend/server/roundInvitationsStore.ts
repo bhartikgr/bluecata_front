@@ -30,6 +30,8 @@ import { roundInvitations as invitationsTable } from "../shared/schema";
 import { sendMail } from "./emailTransport";
 import { emitMutation } from "./lib/eventBus";
 import { listContactsForCompany, upsertCrmContactForInvitation } from "./founderCrmStore";
+import { getCompanyNameById } from "./multiCompanyStore";
+import { getRoundById } from "./roundsStore";
 import { log } from "./lib/logger";
 
 /* ---------- Types ---------- */
@@ -238,6 +240,21 @@ export async function createInvitation(args: CreateInvitationArgs): Promise<Crea
   // Send the email. The redeem link includes the RAW token, never the hash.
   // Production deploys should set INVITATION_BASE_URL.
   const baseUrl = process.env.INVITATION_BASE_URL ?? process.env.APP_URL ?? "https://capavate.com";
+  // v24.4 BUG 047 + 048 — resolve company + round display names so the subject
+  // is unique per deal. A unique subject (a) gives investors the deal context
+  // they were missing, and (b) prevents email clients from threading unrelated
+  // invitations into a single conversation. Lookups are best-effort; if either
+  // store misses we fall back to neutral labels rather than failing the send.
+  let companyName = "a company";
+  let roundName = "a funding round";
+  try {
+    const resolvedCompany = getCompanyNameById(args.companyId);
+    if (resolvedCompany && resolvedCompany.trim()) companyName = resolvedCompany.trim();
+  } catch { /* non-fatal */ }
+  try {
+    const resolvedRound = getRoundById(args.roundId);
+    if (resolvedRound?.name && resolvedRound.name.trim()) roundName = resolvedRound.name.trim();
+  } catch { /* non-fatal */ }
   // v24.1 Bug I+K (BUG 042): canonical client route is /auth/redeem (App.tsx:406).
   // The legacy /invitations/redeem path is not registered in the SPA and produced
   // the "we don't recognise this invitation" error for Avi #4/#5/#10.
@@ -248,15 +265,16 @@ export async function createInvitation(args: CreateInvitationArgs): Promise<Crea
     try {
       const result = await sendMail({
         to: investorEmail,
-        subject: `You're invited to join a round on Capavate`,
+        // v24.4 BUG 047 + 048 — unique per-deal subject with company + round name.
+        subject: `[Capavate] You're invited to ${companyName} — ${roundName}`,
         html:
           `<p>Hi ${args.investorName ?? "there"},</p>` +
-          `<p>You've been invited to participate in a funding round.</p>` +
+          `<p>You've been invited to participate in <strong>${roundName}</strong> at <strong>${companyName}</strong>.</p>` +
           `<p><a href="${link}">Click here to view the invitation</a></p>` +
           (args.note ? `<p>Note from the founder: ${args.note}</p>` : "") +
           `<p>This invitation expires in ${args.expiryDays ?? 14} days.</p>`,
         text:
-          `You've been invited to participate in a funding round on Capavate.\n` +
+          `You've been invited to participate in ${roundName} at ${companyName} on Capavate.\n` +
           `View it here: ${link}\n` +
           (args.note ? `Note: ${args.note}\n` : "") +
           `This invitation expires in ${args.expiryDays ?? 14} days.`,

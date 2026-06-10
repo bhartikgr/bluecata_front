@@ -6,11 +6,13 @@
  */
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { Users, RefreshCw, UserX } from "lucide-react";
+import { Users, RefreshCw, UserX, UserPlus } from "lucide-react";
 import { PageBody, PageHeader } from "@/components/AppShell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 
@@ -33,6 +35,8 @@ function fmtDate(iso: string) {
 export default function CollectiveMembers() {
   const { toast } = useToast();
   const [deactivatingId, setDeactivatingId] = useState<string | null>(null);
+  // v24.4 — bootstrap-member form state.
+  const [bootstrapEmail, setBootstrapEmail] = useState("");
 
   const { data, isLoading, isError, refetch } = useQuery<{ items: MemberRow[]; count: number }>({
     queryKey: ["/api/admin/collective/members"],
@@ -48,6 +52,24 @@ export default function CollectiveMembers() {
       setDeactivatingId(null);
     },
     onError: () => toast({ variant: "destructive", title: "Deactivate failed", description: "Please try again. If the issue persists, contact support." }),
+  });
+
+  // v24.4 — bootstrap a Collective member directly by email (Shadie design gap:
+  // first-member chicken-and-egg). Calls the new admin endpoint.
+  const bootstrapMutation = useMutation({
+    mutationFn: async (email: string) =>
+      (await apiRequest("POST", "/api/admin/collective/members/bootstrap", { email })).json(),
+    onSuccess: () => {
+      toast({ title: "Member activated", description: "Collective membership bootstrapped." });
+      setBootstrapEmail("");
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/collective/members"] });
+    },
+    onError: (err: unknown) =>
+      toast({
+        variant: "destructive",
+        title: "Activate failed",
+        description: err instanceof Error ? err.message : "Could not bootstrap that member.",
+      }),
   });
 
   const members = data?.items ?? [];
@@ -69,6 +91,39 @@ export default function CollectiveMembers() {
             <RefreshCw className="h-3.5 w-3.5 mr-1" /> Refresh
           </Button>
         </div>
+
+        {/* v24.4 — Bootstrap member card (Shadie design gap). */}
+        <Card className="mb-4" data-testid="card-bootstrap-member">
+          <CardContent className="p-4">
+            <div className="flex items-center gap-2 mb-2 text-sm font-medium">
+              <UserPlus className="h-4 w-4" /> Bootstrap member
+            </div>
+            <p className="text-xs text-muted-foreground mb-3">
+              Activate a Collective membership directly for an existing user (no application required).
+            </p>
+            <div className="flex items-end gap-2">
+              <div className="flex-1">
+                <Label htmlFor="bootstrap-email">User email</Label>
+                <Input
+                  id="bootstrap-email"
+                  type="email"
+                  className="mt-1"
+                  value={bootstrapEmail}
+                  onChange={(e) => setBootstrapEmail(e.target.value)}
+                  placeholder="investor@firm.com"
+                  data-testid="input-bootstrap-email"
+                />
+              </div>
+              <Button
+                onClick={() => bootstrapEmail.trim() && bootstrapMutation.mutate(bootstrapEmail.trim())}
+                disabled={!bootstrapEmail.trim() || bootstrapMutation.isPending}
+                data-testid="button-bootstrap-activate"
+              >
+                Activate
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
 
         <Card>
           <CardContent className="p-0">

@@ -51,7 +51,34 @@ import { log } from "./logger";
  * `getDbUserRole(userId)` reads `users.role` directly from the DB so
  * login can honor production admin users. Returns null on any error.
  * ---------------------------------------------------------------- */
-function getDbUserRole(userId: string): string | null {
+/**
+ * v24.4 Bug C — read the durable role written to `auth_users` by the secure
+ * redeem path (`server/lib/secureAuthRoutes.ts`). Invite-created investors get
+ * `auth_users.role = 'investor'`; this is the durable source of truth for their
+ * persona after logout/restart. Matches by id OR (lowercased) email so the
+ * lookup works whether we have the userId, the email, or both. Returns null on
+ * any error or miss.
+ */
+function getAuthUsersRole(opts: { userId?: string; email?: string }): string | null {
+  try {
+    const adb = rawDb();
+    const emailLower = (opts.email ?? "").trim().toLowerCase();
+    const row = adb
+      .prepare(`SELECT role FROM auth_users WHERE lower(email) = ? OR id = ? LIMIT 1`)
+      .get(emailLower, opts.userId ?? "") as { role?: string } | undefined;
+    const role = row?.role ?? null;
+    return typeof role === "string" && role.trim() ? role.trim() : null;
+  } catch (err) {
+    log.warn({
+      route: "userContext.getAuthUsersRole",
+      errorType: "db_read_failed",
+      message: (err as Error).message,
+    });
+    return null;
+  }
+}
+
+function getDbUserRole(userId: string, email?: string): string | null {
   try {
     const db = getDb();
     // CROSS-TENANT (admin) — login predates tenant resolution; this is
@@ -62,14 +89,19 @@ function getDbUserRole(userId: string): string | null {
       .where(eq(usersTable.id, userId))
       .all() as Array<{ role: string }>;
     const role = rows[0]?.role ?? null;
-    return typeof role === "string" ? role : null;
+    if (typeof role === "string" && role.trim()) return role.trim();
+    // v24.4 Bug C — fall back to the durable auth_users.role when the legacy
+    // `users` table has nothing (e.g. invite-created investors are written to
+    // auth_users by the secure redeem path, not to `users`).
+    return getAuthUsersRole({ userId, email });
   } catch (err) {
     log.warn({
       route: "userContext.getDbUserRole",
       errorType: "db_read_failed",
       message: (err as Error).message,
     });
-    return null;
+    // Best-effort durable fallback even if the drizzle read threw.
+    return getAuthUsersRole({ userId, email });
   }
 }
 
@@ -560,17 +592,24 @@ export function verifyPassword(email: string, password: string): string | null {
       // the production path Avi needs: insert a users row with role='admin'
       // (via scripts/create_admin.ts) + the matching credential, and login
       // grants admin access.
-      const dbRole = getDbUserRole(uid);
+      // v24.4 Bug C — hydrate role from durable sources (users.role, then
+      // auth_users.role) BEFORE synthesizing the default founder persona.
+      // Invite-created investors are written to auth_users.role='investor' by
+      // the secure redeem path; without this, normal login after logout/restart
+      // rebuilds them as founder and routes them to the wrong dashboard.
+      const dbRole = getDbUserRole(uid, normalized);
       const isAdmin = dbRole === "admin";
+      const isInvestorRole = dbRole === "investor";
       if (!PERSONAS[uid] && !RUNTIME_PERSONAS[uid]) {
         RUNTIME_PERSONAS[uid] = {
           userId: uid,
           email: normalized,
           name: cred.name ?? normalized,
-          // Admins are neither founders nor investors. Non-admins default to
-          // founder (matches the prior behavior; investors enter via /redeem).
-          isFounder: !isAdmin,
-          isInvestor: false,
+          // Admins are neither founders nor investors. Investors (durable
+          // auth_users.role='investor') get an investor persona. Everyone else
+          // defaults to founder (matches the prior behavior).
+          isFounder: !isAdmin && !isInvestorRole,
+          isInvestor: isInvestorRole,
           isAdmin,
           hasInvitations: false,
         };
@@ -578,6 +617,15 @@ export function verifyPassword(email: string, password: string): string | null {
         // Re-login of an existing runtime persona whose DB role was upgraded
         // to admin after first signup. Promote the in-memory persona.
         RUNTIME_PERSONAS[uid] = { ...RUNTIME_PERSONAS[uid]!, isAdmin: true, isFounder: false };
+      } else if (
+        RUNTIME_PERSONAS[uid] &&
+        isInvestorRole &&
+        (!RUNTIME_PERSONAS[uid]!.isInvestor || RUNTIME_PERSONAS[uid]!.isFounder)
+      ) {
+        // Re-login of a runtime persona whose durable role is investor but whose
+        // in-memory persona was synthesized as founder. Correct it so the user
+        // lands on the investor dashboard.
+        RUNTIME_PERSONAS[uid] = { ...RUNTIME_PERSONAS[uid]!, isInvestor: true, isFounder: false };
       }
       RUNTIME_PASSWORDS[uid] = password;
       return uid;

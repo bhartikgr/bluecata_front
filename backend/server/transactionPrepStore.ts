@@ -16,6 +16,12 @@ import { randomBytes } from "node:crypto";
 import { HashChain, registerChain } from "./lib/hashChain";
 import { withTrace } from "./lib/trace";
 import { emitSync } from "./sprint10Telemetry";
+// v24.4.1 — RAM→DB migration. The channel cache is rebuilt from
+// `transaction_prep_channels` at boot via hydrateTransactionPrepStore(),
+// and every mutator writes through to the DB so an Avi restart never loses
+// in-flight M&A channels.
+import { rawDb } from "./db/connection";
+import { log } from "./lib/logger";
 
 export const TRANSACTION_PREP_THREADS = [
   "ip_dd_readiness", "customer_contracts_readiness", "financial_audit_readiness",
@@ -42,6 +48,51 @@ export interface TransactionPrepChannel {
 }
 
 const channels = new Map<string, TransactionPrepChannel>();
+
+/** Write-through: serialize the channel and UPSERT into the durable table. */
+function persistChannel(ch: TransactionPrepChannel): void {
+  try {
+    rawDb().prepare(
+      `INSERT INTO transaction_prep_channels (id, company_id, channel_json, archived_at, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         channel_json = excluded.channel_json,
+         archived_at  = excluded.archived_at,
+         updated_at   = excluded.updated_at`,
+    ).run(
+      ch.id,
+      ch.companyId,
+      JSON.stringify(ch),
+      ch.archivedAt ?? null,
+      new Date().toISOString(),
+    );
+  } catch (err) {
+    log.warn("[transactionPrepStore] write-through failed:", (err as Error).message);
+  }
+}
+
+/** v24.4.1 — rebuild the in-memory channel cache from the durable table. */
+export async function hydrateTransactionPrepStore(): Promise<void> {
+  try {
+    const rows = rawDb()
+      .prepare(`SELECT id, channel_json FROM transaction_prep_channels`)
+      .all() as Array<{ id: string; channel_json: string }>;
+    channels.clear();
+    for (const r of rows) {
+      try {
+        const ch = JSON.parse(r.channel_json) as TransactionPrepChannel;
+        channels.set(r.id, ch);
+      } catch (parseErr) {
+        log.warn(`[hydrate] transactionPrepStore: skipping ${r.id} — ${(parseErr as Error).message}`);
+      }
+    }
+    if (rows.length > 0) {
+      log.info(`[hydrate] transactionPrepStore: ${rows.length} channels loaded`);
+    }
+  } catch (err) {
+    log.warn("[hydrate] transactionPrepStore: DB read failed:", (err as Error).message);
+  }
+}
 export const transactionPrepChain = registerChain(new HashChain<{
   channelId: string;
   companyId: string;
@@ -76,6 +127,7 @@ export function createChannel(input: { companyId: string; founderUserId: string;
       createdAt: new Date().toISOString(),
     };
     channels.set(id, ch);
+    persistChannel(ch);
     transactionPrepChain.append({ channelId: id, companyId: ch.companyId, event: "created", ts: ch.createdAt });
     emitSync({
       eventType: "transaction_prep_channel_created",
@@ -94,6 +146,7 @@ export function archiveChannel(channelId: string, reason: "not_pursuing" | "tran
   return withTrace("comms.transaction_prep.archive", "1.0.0", "US", () => {
     ch.archivedAt = new Date().toISOString();
     ch.archiveReason = reason;
+    persistChannel(ch);
     transactionPrepChain.append({ channelId, companyId: ch.companyId, event: "archived", ts: ch.archivedAt! });
     emitSync({
       eventType: "transaction_prep_channel_archived",
@@ -111,6 +164,7 @@ export function addMember(channelId: string, userId: string): TransactionPrepCha
   if (!ch || ch.archivedAt) return ch;
   if (ch.memberUserIds.includes(userId)) return ch;
   ch.memberUserIds.push(userId);
+  persistChannel(ch);
   transactionPrepChain.append({ channelId, companyId: ch.companyId, event: "member_added", ts: new Date().toISOString() });
   return ch;
 }
@@ -118,6 +172,7 @@ export function addMember(channelId: string, userId: string): TransactionPrepCha
 export function __clearTransactionPrep(): void {
   channels.clear();
   transactionPrepChain.__clear();
+  try { rawDb().prepare(`DELETE FROM transaction_prep_channels`).run(); } catch { /* table may not exist in tests */ }
 }
 
 export function registerTransactionPrepRoutes(app: Express): void {

@@ -350,9 +350,16 @@ export function verifyChain(contactId: string): { ok: boolean; brokenAtVersion?:
 
 export function createContact(
   data: Omit<AdminContact, "id" | "createdAt" | "updatedAt" | "version" | "prevRevisionHash" | "revisionHash">,
-  actor: string
+  actor: string,
+  // v24.4.1 Bug 3 — optional preferred id (callers like consortium-apply
+  // approval want the adminContacts id to match the partner_organizations id
+  // so /api/admin/partners and /api/partner/me agree on a single partner id).
+  // When omitted, a fresh id is generated as before. The id must use the
+  // canonical `ac_<kind>_<hex>` format; if the supplied id collides with an
+  // existing contact, we fall back to newId() rather than overwriting.
+  preferredId?: string | null,
 ): AdminContact {
-  const id = newId(data.kind);
+  const id = (preferredId && !contacts.has(preferredId)) ? preferredId : newId(data.kind);
   const now = new Date().toISOString();
   const prevRevisionHash = "0".repeat(64);
 
@@ -576,6 +583,11 @@ export function upsertConsortiumPartner(
     partnerType?: PartnerType | null;
     regionCode?: string | null;
     hqCountry?: string | null;
+    // v24.4.1 Bug 3 — allow the caller to supply the id of the adminContacts
+    // row so callers (e.g. consortium application approval) can keep their
+    // partner identifier aligned with their own provisioning records. When
+    // omitted, a fresh id is generated as before.
+    preferredId?: string | null;
   },
   actor: string,
 ): AdminContact {
@@ -620,6 +632,7 @@ export function upsertConsortiumPartner(
       isSeed: false,
     } as unknown as Omit<AdminContact, "id" | "createdAt" | "updatedAt" | "version" | "prevRevisionHash" | "revisionHash">,
     actor,
+    data.preferredId ?? null,
   );
 }
 

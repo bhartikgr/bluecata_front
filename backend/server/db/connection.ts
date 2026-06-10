@@ -2113,6 +2113,140 @@ function buildCreateTableStatements(): string[] {
       last_error TEXT
     );`,
 
+    // ============================================================
+    // v24.4.1 — 6-store RAM→DB migration. Tables below are created on
+    // every boot via `CREATE TABLE IF NOT EXISTS` so Avi's deploy needs no
+    // separate migration step. Each table corresponds to one previously
+    // pure-RAM store. Read paths stay in-memory caches; writes flow to both.
+    // ============================================================
+
+    // welcomeStore — per-user welcome-ack flag.
+    `CREATE TABLE IF NOT EXISTS welcome_acks (
+      user_id    TEXT PRIMARY KEY NOT NULL,
+      ack        INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL
+    );`,
+
+    // transactionPrepStore — M&A transaction-prep channels (one per company,
+    // 30 thread anchors each). Stored as JSON blob keyed by channel id; the
+    // duplicate company_id column is indexed for the getChannelByCompany() path.
+    `CREATE TABLE IF NOT EXISTS transaction_prep_channels (
+      id           TEXT PRIMARY KEY NOT NULL,
+      company_id   TEXT NOT NULL,
+      channel_json TEXT NOT NULL,
+      archived_at  TEXT,
+      updated_at   TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_txprep_company ON transaction_prep_channels(company_id);`,
+
+    // introRequestStore — warm-intro requests routed through the CRM action
+    // drawer. Stored as JSON blob keyed by request id.
+    `CREATE TABLE IF NOT EXISTS intro_requests (
+      id                   TEXT PRIMARY KEY NOT NULL,
+      requester_company_id TEXT NOT NULL,
+      status               TEXT NOT NULL,
+      request_json         TEXT NOT NULL,
+      created_at           TEXT NOT NULL,
+      updated_at           TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_intro_req_company ON intro_requests(requester_company_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_intro_req_status ON intro_requests(status);`,
+
+    // paymentStore — legacy v14 unified ledger (collective memberships,
+    // founder subscriptions, company billing, refunds, prorations). Stored as
+    // JSON blob keyed by entry id; intentId is unique-indexed for the
+    // idempotency lookup path.
+    `CREATE TABLE IF NOT EXISTS payment_ledger (
+      id          TEXT PRIMARY KEY NOT NULL,
+      intent_id   TEXT NOT NULL UNIQUE,
+      customer_id TEXT NOT NULL,
+      state       TEXT NOT NULL,
+      entry_json  TEXT NOT NULL,
+      ts          TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_payment_customer ON payment_ledger(customer_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_payment_state ON payment_ledger(state);`,
+
+    // profileStore.investorProfiles — mirror of the existing
+    // profilestore_company_profile table from v24.2 Bug 6. The company-profile
+    // side is already DB-backed; this closes the investor side. Storing as JSON
+    // blob preserves the rich InvestorProfile shape (nested visibility, KYC
+    // documents array, accreditation status, etc.) without flattening to columns.
+    `CREATE TABLE IF NOT EXISTS profilestore_investor_profile (
+      investor_id  TEXT PRIMARY KEY NOT NULL,
+      profile_json TEXT NOT NULL,
+      updated_at   TEXT NOT NULL,
+      deleted_at   TEXT
+    );`,
+
+    // ============================================================
+    // partnerWorkspaceStore — v24.4.1 RAM→DB migration. Six in-memory
+    // collections become durable so Avi's restarts no longer wipe partner
+    // workspaces.
+    // ============================================================
+
+    // partner_team_members: who has access to which partner workspace, with
+    // sub-role and active/removed status. Critical for requirePartnerAuth.
+    `CREATE TABLE IF NOT EXISTS partner_team_members (
+      id          TEXT PRIMARY KEY NOT NULL,
+      partner_id  TEXT NOT NULL,
+      user_id     TEXT NOT NULL,
+      sub_role    TEXT NOT NULL,
+      status      TEXT NOT NULL DEFAULT 'active',
+      joined_at   TEXT NOT NULL,
+      removed_at  TEXT,
+      created_by  TEXT NOT NULL,
+      is_seed     INTEGER NOT NULL DEFAULT 0,
+      updated_at  TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_ptm_partner ON partner_team_members(partner_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_ptm_user ON partner_team_members(user_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_ptm_status ON partner_team_members(status);`,
+
+    // partner_team_invitations: magic-link invites (single-use, 7d expiry).
+    `CREATE TABLE IF NOT EXISTS partner_team_invitations (
+      id              TEXT PRIMARY KEY NOT NULL,
+      partner_id      TEXT NOT NULL,
+      invitation_json TEXT NOT NULL,
+      updated_at      TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_pti_partner ON partner_team_invitations(partner_id);`,
+
+    // partner_notes: workspace-level notes (created/edited by team members).
+    `CREATE TABLE IF NOT EXISTS partner_notes (
+      id         TEXT PRIMARY KEY NOT NULL,
+      partner_id TEXT NOT NULL,
+      note_json  TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_pnote_partner ON partner_notes(partner_id);`,
+
+    // partner_tasks: workspace task tracker.
+    `CREATE TABLE IF NOT EXISTS partner_tasks (
+      id         TEXT PRIMARY KEY NOT NULL,
+      partner_id TEXT NOT NULL,
+      task_json  TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_ptask_partner ON partner_tasks(partner_id);`,
+
+    // partner_files: workspace file uploads.
+    `CREATE TABLE IF NOT EXISTS partner_files (
+      id         TEXT PRIMARY KEY NOT NULL,
+      partner_id TEXT NOT NULL,
+      file_json  TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_pfile_partner ON partner_files(partner_id);`,
+
+    // partner_workspace_settings: per-partner workspace settings (currency,
+    // branding, etc.).
+    `CREATE TABLE IF NOT EXISTS partner_workspace_settings (
+      partner_id    TEXT PRIMARY KEY NOT NULL,
+      settings_json TEXT NOT NULL,
+      updated_at    TEXT NOT NULL
+    );`,
+
     `CREATE INDEX IF NOT EXISTS idx_sync_company_tenant ON sync_company(tenant_id);`,
     `CREATE INDEX IF NOT EXISTS idx_sync_investor_email ON sync_investor(email);`,
     `CREATE INDEX IF NOT EXISTS idx_sync_round_company ON sync_round(company_id);`,

@@ -12,7 +12,7 @@ import { PageBody, PageHeader } from "@/components/AppShell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Sparkles, Users, ShieldCheck, ArrowUpRight, Check, Building2, ExternalLink } from "lucide-react";
+import { Sparkles, Users, ShieldCheck, ArrowUpRight, Check, Building2 } from "lucide-react";
 import { Link } from "wouter";
 
 export default function Collective() {
@@ -69,21 +69,20 @@ export default function Collective() {
                   Learn about applying to present <ArrowUpRight className="h-4 w-4 ml-2" />
                 </Button>
               </Link>
-              <a
-                href="https://capavate.com/collective"
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex"
-              >
+              {/* v24.4 BUG 050 — link to the internal membership route instead of
+                  an external capavate.com page that can 404 independently of the
+                  SPA. /collective/membership exists in App.tsx and navigates
+                  within the SPA. */}
+              <Link href="/collective/membership" className="inline-flex">
                 <Button
                   variant="outline"
                   className="bg-transparent border-white/40 text-white hover:bg-white/10 hover:text-white h-11 px-6"
                   data-testid="button-membership-info"
                 >
                   About Collective membership (for investors){" "}
-                  <ExternalLink className="h-4 w-4 ml-2" />
+                  <ArrowUpRight className="h-4 w-4 ml-2" />
                 </Button>
-              </a>
+              </Link>
             </div>
           </div>
         </Card>

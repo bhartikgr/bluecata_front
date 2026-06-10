@@ -195,8 +195,13 @@ export function registerAuthShellRoutes(app: Express, redemption: {
   // Wave C FIX C4 (Ozan, 24-May-2026) — per-IP signup rate limiter
   // (5/hour/IP) to slow bulk account creation from a single network.
   app.post("/api/auth/signup", authSignupRateLimit, async (req: Request, res: Response) => {
-    const body = (req.body ?? {}) as { email?: string; name?: string; password?: string; portal?: string };
-    if (body.portal === "investor") {
+    const body = (req.body ?? {}) as { email?: string; name?: string; password?: string; portal?: string; role?: string };
+    // v24.4 Bug C hardening: reject any investor-flavoured signup attempt.
+    // Investors join Capavate ONLY by redeeming invitations (registerPersona),
+    // never via the public /api/auth/signup endpoint. Block both `portal`
+    // and `role` discriminators so callers can't get a founder persona while
+    // self-identifying as an investor.
+    if (body.portal === "investor" || body.role === "investor") {
       return res.status(403).json({
         ok: false,
         error: "INVESTOR_SIGNUP_DISALLOWED",

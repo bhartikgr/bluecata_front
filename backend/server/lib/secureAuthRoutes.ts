@@ -160,7 +160,6 @@ export function registerSecureAuthRoutes(app: Express): void {
       // unconsumed so the operator can investigate.
       return res.status(400).json({ error: "no_user_for_reset" });
     }
-    db.prepare(`UPDATE auth_redeem_tokens SET consumed_at = ? WHERE id = ?`).run(new Date().toISOString(), row.id);
     const hash = hashPassword(password);
     let userId: string, role: string;
     if (existing) {
@@ -176,17 +175,21 @@ export function registerSecureAuthRoutes(app: Express): void {
       role = row.intent === "partner_invite" ? "partner" : "investor";
     }
 
+    // v24.4 Bug B hardening — transaction-safe ordering.
+    // Previously the token was consumed (UPDATE auth_redeem_tokens.consumed_at)
+    // BEFORE the credential write. If the credential write then failed, the
+    // user was stranded with a consumed single-use token and no working
+    // credential. The fix is to REORDER: persist the durable credential +
+    // auth_users row FIRST (both idempotent on email/id), and only consume the
+    // token AFTER those writes succeed. If any write throws, the token stays
+    // unconsumed so the user can retry the same redeem link.
+    //
     // v24.2 Bug 1+2 fix — Password persistence root cause.
     // The browser login form posts to /api/auth/login, whose handler reads the
     // bcrypt hash from the `user_credentials` table (via lookupByEmail). The
     // pre-v24.2 redeem path wrote ONLY auth_users.password_hash, so a reset/
-    // invite password never worked at the browser login form.
-    //
-    // Write order (per spec): user_credentials FIRST (the path /api/auth/login
-    // reads), then auth_users. If the auth_users write fails, the user can
-    // still log in via the working browser path. setUserCredential throws on
-    // DB failure, so a user_credentials failure aborts before token-consume is
-    // committed downstream. We persist the SAME plaintext into bcrypt here.
+    // invite password never worked at the browser login form. We persist the
+    // SAME plaintext into bcrypt here. setUserCredential throws on DB failure.
     setUserCredential({ userId, email: row.email, plainText: password });
 
     if (existing) {
@@ -199,6 +202,12 @@ export function registerSecureAuthRoutes(app: Express): void {
          VALUES (?, ?, ?, 'scrypt-sha256', ?, 'active', 0, ?)`
       ).run(userId, row.email, hash, role, new Date().toISOString());
     }
+
+    // Durable writes succeeded — NOW consume the single-use token. If this
+    // throws (it should not), the credential is already usable via the browser
+    // login path, so the user is never stranded.
+    db.prepare(`UPDATE auth_redeem_tokens SET consumed_at = ? WHERE id = ?`).run(new Date().toISOString(), row.id);
+
     const sess = createSession(userId, req.ip, req.headers["user-agent"] as string | undefined);
     const jwt = signJwt({ sub: userId, role, sid: sess.id });
     setSessionCookies(res, sess.id, jwt, sess.csrfToken);
