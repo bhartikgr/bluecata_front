@@ -59,6 +59,19 @@ function setAck(userId: string, ack: boolean): void {
   }
 }
 
+/**
+ * v24.5 GAP-6 — Public API for /api/welcome/ack routes.
+ * `ack(userId)` writes the acknowledgement (idempotent).
+ * `getAck(userId)` reads the current state.
+ */
+export function ack(userId: string): void {
+  setAck(userId, true);
+}
+
+export function getAck(userId: string): boolean {
+  return ackByUser.get(userId) === true;
+}
+
 export function registerWelcomeRoutes(app: Express): void {
   app.get("/api/founder/welcome", async (req: Request, res: Response) => {
     const ctx = await getUserContext(req);

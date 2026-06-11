@@ -47,6 +47,7 @@ import type { UserContext } from "./lib/userContext";
 // soft-circle store so the founder's GET /api/rounds/:id/soft-circles surface
 // sees the new commitment without a refresh hack.
 import { createSoftCircle as softCircleCreate } from "./softCircleStore";
+import { setSoftCircleSource } from "./track4Routes";
 import { log } from "./lib/logger";
 
 /**
@@ -318,7 +319,7 @@ export function registerYourDecisionRoutes(app: Express): void {
       try {
         const investorName = ctx.identity?.name || ctx.identity?.screenName || ctx.userId || "Investor";
         const investorEmail = ctx.identity?.email ?? null;
-        softCircleCreate({
+        const newSc = softCircleCreate({
           roundId: rec.roundId,
           companyId: rec.companyId,
           invitationId: rec.invitationId,
@@ -330,6 +331,8 @@ export function registerYourDecisionRoutes(app: Express): void {
           status: "intent",
           collectiveVisible: true,
         });
+        // D3: attribute to collective channel (investor acting via their decision surface)
+        try { setSoftCircleSource(newSc.id, "collective", ctx.userId ?? null); } catch { /* best-effort */ }
       } catch (err) {
         // Swallow — the decision record is still authoritative; this is a
         // best-effort mirror for founder visibility.

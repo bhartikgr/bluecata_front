@@ -34,8 +34,82 @@ import { eq } from "drizzle-orm";
 import { emitMutation } from "./lib/eventBus";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 import { getDb } from "./db/connection";
+import { rawDb } from "./db/connection";
 import { bridgeOutbox as bridgeOutboxTable } from "@shared/schema";
 import { log } from "./lib/logger";
+
+/* ============================================================
+ * v24.5 GAP-2 — Bridge event history (circular buffer, 1000 rows)
+ *
+ * A durable audit log of delivered/dead-letter bridge events so admins
+ * can inspect past events even after the outbox drain removes them.
+ * Uses a raw SQLite table (NOT in shared/schema.ts — sacred file)
+ * created idempotently at module load via CREATE TABLE IF NOT EXISTS.
+ * ============================================================ */
+
+const HISTORY_MAX_ROWS = 1000;
+
+/** Idempotently create the bridge_event_history table. */
+function ensureHistoryTable(): void {
+  try {
+    rawDb().exec(
+      `CREATE TABLE IF NOT EXISTS bridge_event_history (
+        id           TEXT PRIMARY KEY,
+        event_type   TEXT NOT NULL,
+        aggregate_id TEXT NOT NULL,
+        aggregate_kind TEXT NOT NULL,
+        envelope_json TEXT NOT NULL,
+        hmac         TEXT NOT NULL,
+        status       TEXT NOT NULL,
+        attempts     INTEGER NOT NULL DEFAULT 0,
+        last_error   TEXT,
+        enqueued_at  TEXT NOT NULL,
+        resolved_at  TEXT NOT NULL
+      )`,
+    );
+  } catch (err) {
+    log.warn("[bridgeStore] ensureHistoryTable failed:", (err as Error).message);
+  }
+}
+
+// Ensure the table exists at module load time.
+try { ensureHistoryTable(); } catch { /* non-fatal */ }
+
+/** Insert an outbox entry into bridge_event_history before drain removes it. */
+function insertBridgeHistory(entry: OutboxEntry): void {
+  try {
+    const db = rawDb();
+    db.prepare(
+      `INSERT OR IGNORE INTO bridge_event_history
+         (id, event_type, aggregate_id, aggregate_kind, envelope_json, hmac,
+          status, attempts, last_error, enqueued_at, resolved_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      entry.envelope.eventId,
+      entry.envelope.eventType,
+      entry.envelope.aggregateId,
+      entry.envelope.aggregateKind,
+      JSON.stringify(entry.envelope),
+      entry.hmac,
+      entry.status,
+      entry.attempts,
+      entry.lastError ?? null,
+      entry.enqueuedAt,
+      new Date().toISOString(),
+    );
+    // Prune to last HISTORY_MAX_ROWS (circular buffer semantics).
+    db.prepare(
+      `DELETE FROM bridge_event_history
+        WHERE id IN (
+          SELECT id FROM bridge_event_history
+          ORDER BY resolved_at DESC
+          LIMIT -1 OFFSET ?
+        )`,
+    ).run(HISTORY_MAX_ROWS);
+  } catch (err) {
+    log.warn("[bridgeStore] insertBridgeHistory failed:", (err as Error).message);
+  }
+}
 
 /**
  * Wave C / FIX C3 (Ozan, 24-May-2026) — bridge_outbox DB write-through.
@@ -162,6 +236,8 @@ export type OutboundEventType =
   // Wave C-3 — Collective shell + Deal Room
   | "collective.member.updated"
   | "collective.deal_room.opened"
+  // v25.0 Track 2 B1 — Collective interest threads
+  | "collective.interest.created"
   // Wave C-4 — DSC scoring engine
   | "dsc.score.recomputed"
   // Foundation — Partner CRM + SPV/Fund record-keeping
@@ -294,6 +370,7 @@ export const ALL_OUTBOUND_EVENT_TYPES: OutboundEventType[] = [
   // Wave C-3 — Collective shell + Deal Room
   "collective.member.updated",
   "collective.deal_room.opened",
+  "collective.interest.created",
   // Wave C-4 — DSC scoring engine
   "dsc.score.recomputed",
   // Foundation — Partner CRM + SPV/Fund record-keeping
@@ -410,6 +487,13 @@ export async function drainOutbox(deliver: (env: BridgeEnvelope, hmac: string) =
         e.status = "queued";
         e.nextRetryAt = now + Math.min(60_000, Math.pow(2, e.attempts) * 1000);
       }
+    }
+    // v24.5 GAP-2 — INSERT into history BEFORE the outbox entry is
+    // considered ephemeral. We record every terminal transition
+    // (delivered or dead_letter) so the circular-buffer audit log
+    // captures every event the worker processes.
+    if (e.status === "delivered" || e.status === "dead_letter") {
+      insertBridgeHistory(e);
     }
     // Wave C FIX C3 — mirror status change into DB (best-effort).
     persistOutboxUpdate(e);
@@ -710,6 +794,43 @@ export function registerBridgeRoutes(app: Express): void {
     const { resetDemoState } = await import("../scripts/reset-demo");
     const summary = resetDemoState();
     res.json({ ok: summary.ok, summary, outbox: outbox.length, inbox: inbox.length });
+  });
+
+  // v24.5 GAP-2 — Admin-visible bridge event history (circular buffer, 1000 rows).
+  // Returns the last N resolved events from bridge_event_history.
+  // Default N = 100; override via ?limit= (max 1000).
+  app.get("/api/admin/bridge/history", (_req: Request, res: Response) => {
+    const rawLimit = _req.query.limit;
+    const limitNum = Math.min(
+      1000,
+      Math.max(1, parseInt(typeof rawLimit === "string" ? rawLimit : "100", 10) || 100),
+    );
+    try {
+      const rows = rawDb().prepare(
+        `SELECT id, event_type, aggregate_id, aggregate_kind, status, attempts,
+                last_error, enqueued_at, resolved_at
+           FROM bridge_event_history
+          ORDER BY resolved_at DESC
+          LIMIT ?`,
+      ).all(limitNum) as Array<Record<string, unknown>>;
+      res.json({
+        total: rows.length,
+        limit: limitNum,
+        entries: rows.map((r) => ({
+          eventId:       r.id,
+          eventType:     r.event_type,
+          aggregateId:   r.aggregate_id,
+          aggregateKind: r.aggregate_kind,
+          status:        r.status,
+          attempts:      r.attempts,
+          lastError:     r.last_error ?? null,
+          enqueuedAt:    r.enqueued_at,
+          resolvedAt:    r.resolved_at,
+        })),
+      });
+    } catch (err) {
+      res.status(500).json({ error: "history_unavailable", detail: (err as Error).message });
+    }
   });
 
   // Verify chain integrity

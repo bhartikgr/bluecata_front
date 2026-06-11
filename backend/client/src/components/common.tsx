@@ -50,6 +50,8 @@ const STATE_COLORS: Record<string, string> = {
  // soft circle
  intent: "bg-amber-100 text-amber-900 border-amber-300/50",
  confirmed: "bg-blue-100 text-blue-900 border-blue-300/50",
+ // v24.4.2 Bug H — "wired" is the funded-but-not-yet-committed state
+ wired: "bg-violet-100 text-violet-900 border-violet-300/50",
  committed: "bg-emerald-100 text-emerald-900 border-emerald-300/50",
  // crm
  active: "bg-emerald-100 text-emerald-900 border-emerald-300/50",

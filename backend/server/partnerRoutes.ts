@@ -20,7 +20,7 @@ import { requirePartnerAuth, assertSubRole, assertTier, assertTierSeats } from "
 import { getUserContext } from "./lib/userContext";
 import { appendAdminAudit } from "./adminPlatformStore";
 import { emitBridgeEvent } from "./bridgeStore";
-import { TIER_RANK, type PartnerTier, type PartnerType, type PartnerSubRole } from "./adminContactsStoreShim";
+import { TIER_RANK, type PartnerTier, type PartnerType, type PartnerSubRole, getById } from "./adminContactsStoreShim";
 import {
   partnerTeamStore,
   partnerInvitationStore,
@@ -234,6 +234,97 @@ export function registerPartnerRoutes(app: Express): void {
     } catch {
       res.status(404).json({ error: "PARTNER_NOT_FOUND" });
     }
+  });
+
+  /**
+   * GET /api/admin/partners/:partnerId/workspace/audit
+   *
+   * v24.5 GAP-4 — Read-only audit snapshot of a partner workspace.
+   * Admin-only. Returns team_members + notes + tasks + files from the DB
+   * even when the partner status is "archived". Does NOT enforce any
+   * partner-side workspace gate so archived partners remain fully auditable.
+   *
+   * Implementation note: the in-memory stores (loaded by
+   * hydratePartnerWorkspaceStoreV241) already hold data for all partners
+   * regardless of archive status. We also do a direct DB read so the
+   * response stays correct after a restart even if the in-memory state
+   * was not re-populated (e.g. a hot-swap deploy where only the new DB
+   * row was written by a sibling process). The DB layer is the source of
+   * truth; in-memory results supplement it.
+   */
+  app.get("/api/admin/partners/:partnerId/workspace/audit", requireAdmin, (req: Request, res: Response) => {
+    const partnerId = String(req.params.partnerId || "").trim();
+    if (!partnerId) return res.status(400).json({ error: "partnerId_required" });
+
+    // Verify the partner exists in adminContactsStore (any status, including archived).
+    const contact = getById(partnerId);
+    if (!contact || contact.kind !== "consortium_partner") {
+      return res.status(404).json({ error: "PARTNER_NOT_FOUND", partnerId });
+    }
+
+    // Read workspace data from in-memory stores (hydrated from DB on boot).
+    const teamMembers = partnerTeamStore.listByPartner(partnerId);
+    const notes       = partnerNotesStore.listByPartner(partnerId);
+    const tasks       = partnerTasksStore.listByPartner(partnerId);
+    const files       = partnerFilesStore.listByPartner(partnerId);
+
+    // Supplement with a direct DB read so archived partners that were
+    // never loaded into RAM (e.g. archived before server boot) are covered.
+    let dbTeamMembers: unknown[] = [];
+    let dbNotes:       unknown[] = [];
+    let dbTasks:       unknown[] = [];
+    let dbFiles:       unknown[] = [];
+    try {
+      const db = rawDb();
+      dbTeamMembers = (db.prepare(
+        `SELECT id, partner_id, user_id, sub_role, status, joined_at, removed_at FROM partner_team_members WHERE partner_id = ?`,
+      ).all(partnerId) as unknown[]) ?? [];
+      dbNotes = (db.prepare(
+        `SELECT id, partner_id, note_json FROM partner_notes WHERE partner_id = ?`,
+      ).all(partnerId) as Array<{ note_json: string }>).map((r) => {
+        try { return JSON.parse(r.note_json); } catch { return r; }
+      });
+      dbTasks = (db.prepare(
+        `SELECT id, partner_id, task_json FROM partner_tasks WHERE partner_id = ?`,
+      ).all(partnerId) as Array<{ task_json: string }>).map((r) => {
+        try { return JSON.parse(r.task_json); } catch { return r; }
+      });
+      dbFiles = (db.prepare(
+        `SELECT id, partner_id, file_json FROM partner_files WHERE partner_id = ?`,
+      ).all(partnerId) as Array<{ file_json: string }>).map((r) => {
+        try { return JSON.parse(r.file_json); } catch { return r; }
+      });
+    } catch { /* DB may not be available — use in-memory data only */ }
+
+    // Deduplicate: prefer in-memory rows (which carry richer runtime fields),
+    // then append DB-only rows not yet in RAM.
+    const memTeamIds = new Set(teamMembers.map((m) => m.id));
+    const memNoteIds = new Set(notes.map((n) => n.id));
+    const memTaskIds = new Set(tasks.map((t) => t.id));
+    const memFileIds = new Set(files.map((f) => f.id));
+
+    return res.json({
+      ok: true,
+      partnerId,
+      partnerStatus: contact.status,
+      auditedAt: new Date().toISOString(),
+      teamMembers: [
+        ...teamMembers,
+        ...(dbTeamMembers as Array<{ id?: string }>).filter((r) => r.id && !memTeamIds.has(r.id)),
+      ],
+      notes: [
+        ...notes,
+        ...(dbNotes as Array<{ id?: string }>).filter((r) => r.id && !memNoteIds.has(r.id)),
+      ],
+      tasks: [
+        ...tasks,
+        ...(dbTasks as Array<{ id?: string }>).filter((r) => r.id && !memTaskIds.has(r.id)),
+      ],
+      files: [
+        ...files,
+        ...(dbFiles as Array<{ id?: string }>).filter((r) => r.id && !memFileIds.has(r.id)),
+      ],
+    });
   });
 
   app.post("/api/admin/partners/:id/attributions", requireAdmin, (req: Request, res: Response) => {
@@ -599,6 +690,31 @@ export function registerPartnerRoutes(app: Express): void {
     },
   );
 
+  app.delete(
+    "/api/partner/me/notes/:id",
+    requirePartnerAuth,
+    assertSubRole("managing_partner", "associate"),
+    (req: Request, res: Response) => {
+      const ctx = req.partnerContext!;
+      // Notes are soft-deleted by overwriting body to indicate deletion.
+      // Full delete: remove from store by filtering out (store.listByPartner excludes it).
+      // For now, just mark it archived by patching an internal flag.
+      // The store doesn't support hard delete — we zero out the body as a tombstone.
+      try {
+        const note = partnerNotesStore.update(
+          ctx.partnerId,
+          String(req.params.id),
+          { body: "[DELETED]", title: "[DELETED]", scope: "general" },
+          ctx.userId,
+          ctx.partnerSubRole === "managing_partner",
+        );
+        res.json({ ok: true, note });
+      } catch (e) {
+        res.status(404).json({ error: (e as Error).message });
+      }
+    },
+  );
+
   app.patch(
     "/api/partner/me/notes/:id",
     requirePartnerAuth,
@@ -621,7 +737,7 @@ export function registerPartnerRoutes(app: Express): void {
   app.post(
     "/api/partner/me/tasks",
     requirePartnerAuth,
-    assertSubRole("managing_partner", "associate", "bd", "analyst"),
+    assertSubRole("managing_partner", "associate", "bd"),
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       // analyst cannot assign to other users
@@ -633,6 +749,21 @@ export function registerPartnerRoutes(app: Express): void {
       res.status(201).json({ task: t });
     },
   );
+  app.delete(
+    "/api/partner/me/tasks/:id",
+    requirePartnerAuth,
+    assertSubRole("managing_partner", "associate"),
+    (req: Request, res: Response) => {
+      const ctx = req.partnerContext!;
+      try {
+        const t = partnerTasksStore.update(ctx.partnerId, String(req.params.id), { status: "cancelled" }, ctx.userId);
+        res.json({ ok: true, task: t });
+      } catch (e) {
+        res.status(404).json({ error: (e as Error).message });
+      }
+    },
+  );
+
   app.patch(
     "/api/partner/me/tasks/:id",
     requirePartnerAuth,
@@ -712,7 +843,7 @@ export function registerPartnerRoutes(app: Express): void {
   app.post(
     "/api/partner/me/spvs",
     requirePartnerAuth,
-    assertSubRole("managing_partner", "associate"),
+    assertSubRole("managing_partner"),
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       const { spvName, jurisdiction, vintage, currency, status, targetCompanyId, entityStructure, externalAdminProvider, externalAdminRef, notes } = req.body ?? {};
@@ -754,7 +885,7 @@ export function registerPartnerRoutes(app: Express): void {
   app.post(
     "/api/partner/me/spvs/:id/positions",
     requirePartnerAuth,
-    assertSubRole("managing_partner", "associate"),
+    assertSubRole("managing_partner"),
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       const { lpContactId, positionAmountMinor, currency, positionStatus, fxRateToSpvBase, notes } = req.body ?? {};
@@ -821,7 +952,7 @@ export function registerPartnerRoutes(app: Express): void {
   app.post(
     "/api/partner/me/funds/:id/commitments",
     requirePartnerAuth,
-    assertSubRole("managing_partner", "associate"),
+    assertSubRole("managing_partner"),
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       const { lpContactId, commitmentMinor, currency, isRolling, rollingPeriod, fxRateToFundBase, notes } = req.body ?? {};
@@ -832,6 +963,36 @@ export function registerPartnerRoutes(app: Express): void {
         const c = partnerFundsStore.pledge(ctx.partnerId, String(req.params.id), { lpContactId, commitmentMinor, currency, isRolling, rollingPeriod, fxRateToFundBase, notes }, ctx.userId);
         res.status(201).json({ commitment: c });
       } catch (e) { res.status(400).json({ error: (e as Error).message }); }
+    },
+  );
+
+  /* ==========================================================
+   * SPV capital-calls + distributions (managing_partner only)
+   * These are financial actions and require the strictest gate.
+   * ========================================================== */
+  app.post(
+    "/api/partner/me/spvs/:id/capital-calls",
+    requirePartnerAuth,
+    assertSubRole("managing_partner"),
+    (req: Request, res: Response) => {
+      const ctx = req.partnerContext!;
+      const spv = partnerSpvStore.getById(ctx.partnerId, String(req.params.id));
+      if (!spv) return res.status(404).json({ error: "SPV_NOT_FOUND" });
+      // Capital-call record stub — persisted to DB in a future milestone;
+      // the subrole gate is the P1 enforcement goal for v25.0.
+      res.status(201).json({ ok: true, spvId: spv.id, action: "capital_call_recorded", note: "Gate enforced; full capital-call ledger in roadmap." });
+    },
+  );
+
+  app.post(
+    "/api/partner/me/spvs/:id/distributions",
+    requirePartnerAuth,
+    assertSubRole("managing_partner"),
+    (req: Request, res: Response) => {
+      const ctx = req.partnerContext!;
+      const spv = partnerSpvStore.getById(ctx.partnerId, String(req.params.id));
+      if (!spv) return res.status(404).json({ error: "SPV_NOT_FOUND" });
+      res.status(201).json({ ok: true, spvId: spv.id, action: "distribution_recorded", note: "Gate enforced; full distribution ledger in roadmap." });
     },
   );
 

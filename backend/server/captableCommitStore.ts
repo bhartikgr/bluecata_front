@@ -743,7 +743,10 @@ export function registerCaptableCommitRoutes(app: Express): void {
 
       // Advance the soft-circle so the UI reflects the funded state. Non-fatal:
       // the funded-queue row is the source of truth for the commit step.
-      try { updateSoftCircleStatus(scId, "confirmed"); } catch { /* best-effort */ }
+      // v24.4.2 Bug H — was incorrectly updating to "confirmed" (NO-OP since status
+      // was already "confirmed"). Changed to "wired" so the UI row transitions to
+      // wired and the "Mark wire funded" button disappears.
+      try { updateSoftCircleStatus(scId, "wired"); } catch { /* best-effort */ }
 
       BridgeOutbound.capTableMutated(companyId, { roundId: sc.roundId, txCount: 0, ledgerSeq: -1, hash: "wire_funded_enqueued" });
       return res.status(200).json({ ok: true, entry });

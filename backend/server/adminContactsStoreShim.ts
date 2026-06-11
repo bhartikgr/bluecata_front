@@ -24,6 +24,24 @@ export function getById(contactId: string): AdminContact | null {
 }
 
 /**
+ * v24.5 GAP-5 — Find a consortium_partner contact by its email address.
+ * Used by create_partner_admin.ts as a fallback when the --partnerId
+ * lookup fails (e.g. the contact email was reused from a prior approval
+ * and the script received the approval-returned id which differs from
+ * the reused-contact id stored in adminContactsStore).
+ */
+export function findContactByEmail(email: string): AdminContact | null {
+  if (!email) return null;
+  const normalized = email.trim().toLowerCase();
+  const map = _testContacts.getContacts();
+  if (!map) return null;
+  for (const contact of Array.from(map.values())) {
+    if (contact.email.toLowerCase() === normalized) return contact;
+  }
+  return null;
+}
+
+/**
  * Test/demo-only seed injector. Used by partnerWorkspaceStore.seedTestPartnerSandbox
  * to install a stable-ID consortium_partner record. NEVER called in production
  * (the caller gates on DEMO_SEED_ENABLED).

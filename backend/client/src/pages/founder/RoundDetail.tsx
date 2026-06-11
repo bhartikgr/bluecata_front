@@ -191,6 +191,9 @@ export default function RoundDetail() {
      emitMutationLocal("round", scId, "update");
      queryClient.invalidateQueries({ queryKey: [`/api/rounds/${id}/soft-circles`] });
      queryClient.invalidateQueries({ queryKey: ["/api/founder/captable/funded-queue"] });
+     // v24.4.2 Bug H — also invalidate the ledger so CommitPipeline’s
+     // counts.funded gate re-evaluates and enables the Commit button.
+     queryClient.invalidateQueries({ queryKey: ["/api/founder/captable/ledger"] });
    },
    onError: (e: Error) => toast({ title: "Failed to mark funded", description: e.message, variant: "destructive" }),
  });
@@ -1321,6 +1324,21 @@ function CommitPipeline({ roundId, companyId }: { roundId: string; companyId: st
     },
   });
 
+  // v24.4.2 Bug H — funded-queue is the source of truth for the Commit button
+  // gate. The button must enable as soon as wire-funded enqueues an entry (the
+  // ledger has no "funded" entries until after commit, so counts.funded from
+  // ledger was always 0).
+  const fundedQueue = useQuery<{ entries: any[]; count: number }>({
+    queryKey: ["/api/founder/captable/funded-queue", companyId, roundId],
+    queryFn: async () => {
+      const res = await apiRequest(
+        "GET",
+        `/api/founder/captable/funded-queue?companyId=${encodeURIComponent(companyId)}&roundId=${encodeURIComponent(roundId)}`,
+      );
+      return res.json();
+    },
+  });
+
   const STAGES = [
     { id: "invited", label: "Invited", icon: Send },
     { id: "viewed", label: "Viewed", icon: Eye },
@@ -1330,11 +1348,18 @@ function CommitPipeline({ roundId, companyId }: { roundId: string; companyId: st
     { id: "committed", label: "Committed to cap-table", icon: ShieldCheck },
   ];
 
-  // Synthesize stage counts from ledger entries
+  // Synthesize stage counts from ledger entries.
+  // v24.4.2 Bug H — was using e.stage (undefined) — ledger entries expose
+  // the field as e.state. Fixed to use e.state so visual pipeline counts
+  // reflect actual ledger state transitions.
   const counts: Record<string, number> = { invited: 0, viewed: 0, soft_circle: 0, signed: 0, funded: 0, committed: 0 };
   for (const e of ledger.data?.entries ?? []) {
-    if (e.stage && counts[e.stage] !== undefined) counts[e.stage] += 1;
+    const stage = e.state ?? e.stage;
+    if (stage && counts[stage] !== undefined) counts[stage] += 1;
   }
+  // Funded-queue count drives the Commit button gate (funded-queue entries
+  // exist before the ledger records a "funded" state).
+  const fundedQueueCount = fundedQueue.data?.count ?? (fundedQueue.data?.entries?.length ?? 0);
   // If empty (early sprint state), show placeholder counts derived from active state
   const isEmpty = (ledger.data?.entries?.length ?? 0) === 0;
 
@@ -1363,6 +1388,7 @@ function CommitPipeline({ roundId, companyId }: { roundId: string; companyId: st
           toast({ title: "Funded entries committed", description: `${n} ${n === 1 ? "entry" : "entries"} committed to cap-table` });
         }
         ledger.refetch();
+        fundedQueue.refetch();
       } else {
         const errMsg = data.message ?? data.reason ?? data.error ?? "Commit blocked";
         toast({ title: "Commit blocked", description: String(errMsg), variant: "destructive" });
@@ -1431,7 +1457,7 @@ function CommitPipeline({ roundId, companyId }: { roundId: string; companyId: st
           <div className="flex-1" />
           <Button
             size="sm"
-            disabled={ledger.data?.complianceHold || counts.funded === 0}
+            disabled={ledger.data?.complianceHold || fundedQueueCount === 0}
             className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
             onClick={commitFunded}
             data-testid="button-commit-funded"

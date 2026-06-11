@@ -19,8 +19,16 @@ export const SESSION_COOKIE = "__Host-cap_uid";
 /** Legacy cookie name — read-only fallback for HTTP dev sessions. */
 export const LEGACY_SESSION_COOKIE = "cap_uid";
 
+// v25.0 fix: allow the test harness to explicitly opt OUT of the Secure/__Host-
+// cookie path when running production builds against http://127.0.0.1:5000. Without
+// this, the production build sets `__Host-cap_uid; Secure` which any browser (incl.
+// Playwright) refuses to store on HTTP origins — every DOM test then hits 401 on
+// API fallbacks. ALLOW_INSECURE_COOKIE=1 forces the legacy `cap_uid` (no Secure).
+// Production deployments behind HTTPS leave this unset and continue to receive
+// the hardened __Host- cookie automatically.
 const isProductionHttps =
-  process.env.NODE_ENV === "production" || process.env.FORCE_SECURE_COOKIE === "1";
+  (process.env.NODE_ENV === "production" || process.env.FORCE_SECURE_COOKIE === "1") &&
+  process.env.ALLOW_INSECURE_COOKIE !== "1";
 
 /**
  * BUG 014 fix v23.7 — persistent session lifetime.

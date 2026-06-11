@@ -28,7 +28,8 @@ import { log } from "./lib/logger";
 
 /* ---------- Types ---------- */
 
-export type SoftCircleStatus = "intent" | "confirmed" | "committed" | "declined";
+// v24.4.2 Bug H — added "wired" terminal state: intent → confirmed → wired → committed
+export type SoftCircleStatus = "intent" | "confirmed" | "wired" | "committed" | "declined";
 
 export interface SoftCircleRow {
   id: string;

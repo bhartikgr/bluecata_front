@@ -9,6 +9,7 @@
  */
 import type { Express, Request, Response } from "express";
 
+/* eslint-disable @typescript-eslint/no-unused-vars */
 export type CollectiveDeal = {
   id: string;
   companyName: string;
@@ -67,17 +68,14 @@ const ELIGIBILITY_CHECKS: EligibilityCheck[] = [
 ];
 
 export function registerCollectiveNetworkRoutes(app: Express): void {
-  // GET /api/collective/network — live deal + eligibility data
-  app.get("/api/collective/network", (_req: Request, res: Response) => {
-    return res.json({
-      activeDeals: ACTIVE_DEALS,
-      eligibilityChecks: ELIGIBILITY_CHECKS,
-    });
-  });
+  // NOTE (v25.0 Track 2 B4): The /api/collective/network graph-payload handler
+  // is now registered in collectiveInterestStore.ts (registerCollectiveInterestRoutes)
+  // which runs BEFORE sprint20Wave2Routes. The old stub (ACTIVE_DEALS / ELIGIBILITY_CHECKS)
+  // is intentionally not re-registered here to avoid shadowing the live graph handler.
 
   // GET /api/investor/companies/:id/co-members — investors on the same cap table
   // Returns an empty array by default; a future sprint will hydrate from the cap table.
-  app.get("/api/investor/companies/:id/co-members", (req: Request, res: Response) => {
+  app.get("/api/investor/companies/:id/co-members", (_req: Request, res: Response) => {
     // Intentionally returns [] for now — Wave 3 will join against captable positions.
     return res.json([]);
   });

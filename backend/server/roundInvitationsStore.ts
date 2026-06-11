@@ -25,7 +25,7 @@
  */
 import { createHash, randomBytes } from "crypto";
 import { and, eq, isNull } from "drizzle-orm";
-import { getDb } from "./db/connection";
+import { getDb, rawDb } from "./db/connection";
 import { roundInvitations as invitationsTable } from "../shared/schema";
 import { sendMail } from "./emailTransport";
 import { emitMutation } from "./lib/eventBus";
@@ -186,35 +186,41 @@ export async function createInvitation(args: CreateInvitationArgs): Promise<Crea
     updatedAt: createdAt,
   };
 
-  // Persist atomically inside a Drizzle transaction. Drizzle invokes the
-  // callback — DO NOT add a trailing `()`.
+  // Persist atomically. v25.0 fix: use raw SQL because the Drizzle schema (sacred
+  // shared/schema.ts) declares only the base columns; the v15 additive columns
+  // (tenant_id, company_id, classification, token_hash, invited_by_user_id, note,
+  // redeemed_at, redeemed_by_user_id, created_at, updated_at) exist in the DB via
+  // PRAGMA-guarded ALTERs in connection.ts but are silently dropped by Drizzle's
+  // .values({ tokenHash: ... }). Raw SQL writes them correctly so /api/investor/
+  // invitations/:token/kyc can find the row by token_hash (B-J7-5).
   try {
-    const db: any = getDb();
-    db.transaction((tx: any) => {
-      tx.insert(invitationsTable)
-        .values({
-          id: row.id,
-          roundId: row.roundId,
-          investorEmail: row.investorEmail,
-          investorName: row.investorName ?? null,
-          state: row.state,
-          expiresAt: row.expiresAt,
-          sentAt: row.sentAt,
-          viewedAt: row.viewedAt,
-          // v15 additive columns (present on production + after ALTERs).
-          tenantId: row.tenantId,
-          companyId: row.companyId,
-          classification: row.classification,
-          tokenHash: row.tokenHash,
-          invitedByUserId: row.invitedByUserId,
-          note: row.note,
-          redeemedAt: null,
-          redeemedByUserId: null,
-          createdAt: row.createdAt,
-          updatedAt: row.updatedAt,
-        } as any)
-        .run();
-    });
+    const db = rawDb();
+    db.prepare(
+      `INSERT INTO round_invitations (
+         id, round_id, investor_email, investor_name, state, expires_at, sent_at, viewed_at,
+         tenant_id, company_id, classification, token_hash, invited_by_user_id, note,
+         redeemed_at, redeemed_by_user_id, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      row.id,
+      row.roundId,
+      row.investorEmail,
+      row.investorName ?? null,
+      row.state,
+      row.expiresAt,
+      row.sentAt,
+      row.viewedAt,
+      row.tenantId,
+      row.companyId,
+      row.classification,
+      row.tokenHash,
+      row.invitedByUserId,
+      row.note,
+      null,
+      null,
+      row.createdAt,
+      row.updatedAt,
+    );
   } catch (err) {
     log.warn(
       "[roundInvitationsStore.createInvitation] DB write failed (continuing with in-memory only):",

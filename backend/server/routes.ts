@@ -38,7 +38,7 @@ import { registerCrmRoutes } from "./crmStore";
 import { registerCollectiveAppRoutes } from "./collectiveAppStore";
 import { registerFounderCollectiveApplyRoutes } from "./founderCollectiveApplyStore";
 import { registerCollectiveWaitlistRoutes } from "./collectiveWaitlistRoutes"; /* v16 Fix 6 */
-import { registerWelcomeRoutes } from "./welcomeStore";
+import { registerWelcomeRoutes, ack as welcomeAck, getAck as getWelcomeAck } from "./welcomeStore";
 import { registerNetworkPostsRoutes } from "./networkPostsStore";
 import { registerBulkMessageRoutes } from "./bulkMessageStore";
 import { registerPortfolioAnalyticsRoutes } from "./portfolioAnalyticsStore";
@@ -67,6 +67,7 @@ import { registerNotificationsRoutes } from "./notificationsStore";
 import { registerEmailRoutes } from "./emailStore";
 import { registerEmailCampaignRoutes, registerEmailTransportRoutes } from "./emailCampaignStore";
 import { registerAdminPlatformRoutes, appendAdminAudit, getAuditLog } from "./adminPlatformStore";
+import { registerAdminV25Routes } from "./adminV25Store";
 import { createRound as roundsStoreCreate, getRoundsForCompany as roundsStoreForCompany, listRounds as roundsStoreList, getRoundById as roundsStoreGetById } from "./roundsStore";
 // v15 P0-4..P0-11 — real invitation + soft-circle stores.
 import {
@@ -111,6 +112,8 @@ import { configureInvoiceStore, registerInvoiceRoutes } from "./invoiceStore";
 import { registerAdminContactsRoutes } from "./adminContactsStore";
 // Patch v6 — Partner CRM
 import { registerPartnerRoutes } from "./partnerRoutes";
+// v25.0 Track 3 — Consortium Partner endpoints C1–C5 + subrole enforcement C6
+import { registerPartnerConsortiumRoutes } from "./partnerConsortiumRoutes";
 import { seedTestPartnerSandbox } from "./partnerWorkspaceStore";
 // Sprint 28 Wave 6 — Notification Campaigns
 import { registerNotificationCampaignRoutes } from "./notificationCampaignStore";
@@ -123,6 +126,7 @@ import { registerCompanyProfileRoutes } from "./companyProfileStore";
 import { registerStripeWebhookRoute } from "./stripeGatewayAdapter";
 // Wave C-3 + C-4 — Collective Shell + M&A Intelligence
 import { registerCollectiveRoutes } from "./collectiveRoutes";
+import { registerCollectiveInterestRoutes } from "./collectiveInterestStore"; /* v25.0 Track 2 B */
 // v24.4.1 Bug 1 — Sprint 20 Wave 2 routes (collective network, investor CRM,
 // portfolio marks, tax export, mute-author, report) were defined but never
 // wired in v20. Adding the registration call here closes the dead-spot.
@@ -166,6 +170,8 @@ import { registerSprint21InvitationsRoutes } from "./sprint21InvitationsRoutes";
 // Sprint 21 Wave C — Portfolio overhaul
 import { registerSprint21PortfolioRoutes } from "./sprint21PortfolioRoutes";
 import { registerSprint22Routes } from "./sprint22Routes";
+import { registerTrack1Routes } from "./track1Routes";
+import { registerTrack4Routes, setSoftCircleSource } from "./track4Routes";
 import { registerRoundCarryForwardRoutes } from "./roundCarryForwardRoutes";
 // Avi 22-May Issue 2 — PPS derivation helper routes.
 import { registerRoundPriceDerivationRoutes } from "./lib/roundPriceDerivation";
@@ -321,6 +327,32 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
    * Stays available regardless of COLLECTIVE_ENABLED. */
   registerCollectiveWaitlistRoutes(app);
   registerWelcomeRoutes(app);
+
+  /* v24.5 GAP-6 — /api/welcome/ack routes (user-context required).
+   *
+   * POST /api/welcome/ack — body: {}, requires auth, records acknowledgement.
+   * GET  /api/welcome/ack — requires auth, returns {acknowledged: boolean}.
+   *
+   * These are distinct from the existing /api/founder/welcome routes:
+   *   - They are role-agnostic (any authed user may ack, not just founders).
+   *   - They are DB-backed (welcomeStore write-through to welcome_acks).
+   *   - They satisfy the L-J48-1 gap-closure journey.
+   */
+  app.post("/api/welcome/ack", requireAuth, (req, res) => {
+    const ctx = req.userContext;
+    const userId = ctx?.userId;
+    if (!userId) return res.status(401).json({ ok: false, error: "missing_identity" });
+    welcomeAck(userId);
+    return res.json({ ok: true });
+  });
+
+  app.get("/api/welcome/ack", requireAuth, (req, res) => {
+    const ctx = req.userContext;
+    const userId = ctx?.userId;
+    if (!userId) return res.status(401).json({ ok: false, error: "missing_identity" });
+    return res.json({ acknowledged: getWelcomeAck(userId) });
+  });
+
   registerNetworkPostsRoutes(app);
   registerBulkMessageRoutes(app);
   registerPortfolioAnalyticsRoutes(app);
@@ -396,6 +428,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   registerNotificationsRoutes(app);
   registerEmailRoutes(app);
   registerAdminPlatformRoutes(app);
+  registerAdminV25Routes(app);
 
   /* ------------ Sprint 28 Wave 3 — production subscriptions store ------------ */
   configureSubscriptionsStore({
@@ -446,6 +479,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   /* ------------ Sprint 28 Wave 4: Admin Contacts CRM ------------ */
   registerAdminContactsRoutes(app);
+  // v25.0 Track 3 — register new C1-C5 endpoints BEFORE legacy partnerRoutes
+  // so they shadow any old GET /api/partner/me/clients stub.
+  registerPartnerConsortiumRoutes(app);
   registerPartnerRoutes(app);
   // Patch v6 — seed TEST PARTNER sandbox under demo gate only.
   // Production NEVER seeds (DEMO_SEED_ENABLED already enforces production exclusion).
@@ -475,6 +511,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // session. Anonymous callers get 401 {"error":"AUTH_REQUIRED"}.
   app.use("/api/collective", requireAuthenticated);
   registerCollectiveRoutes(app);
+  registerCollectiveInterestRoutes(app); /* v25.0 Track 2 B1/B2/B4 */
   registerCollectiveSettingsRoutes(app);
   // v24.4.1 Bug 1 — register the Sprint 20 Wave 2 surface (collective network,
   // investor CRM, portfolio marks, tax export, mute-author, report). Must come
@@ -1977,6 +2014,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         status: typeof body.status === "string" ? body.status : "intent",
         collectiveVisible: body.collectiveVisible !== false,
       });
+      // D3: Wire source attribution
+      try {
+        const srcType = (body.sourceType === "partner" || body.sourceType === "collective") ? body.sourceType : "direct";
+        const srcId = typeof body.sourceId === "string" ? body.sourceId : null;
+        setSoftCircleSource(sc.id, srcType as "direct" | "partner" | "collective", srcId);
+      } catch { /* best-effort */ }
       return res.json({ ok: true, softCircle: sc });
     } catch (err) {
       return res.status(400).json({ ok: false, error: (err as Error).message });
@@ -2439,6 +2482,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // stub — it returned { ok:true } WITHOUT ever calling Airwallex, so a founder
   // who "paid" saw a success while no PaymentIntent existed and nothing showed
   // up in the Airwallex dashboard. It now mints a real Airwallex PaymentIntent,
+  // GET /api/billing/tiers — returns configured pricing tiers for the billing checkout UI.
+  // v25.0 Gap: the test suite calls GET /api/billing/tiers to resolve a tier id before
+  // creating a checkout session. This endpoint exposes the same tiers as
+  // GET /api/admin/pricing-tiers but is accessible to authenticated founders.
+  app.get("/api/billing/tiers", requireAuth, async (req, res) => {
+    try {
+      const { listTiers } = await import("./pricingTiersStore");
+      return res.json({ ok: true, tiers: listTiers() });
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: "TIERS_UNAVAILABLE" });
+    }
+  });
+
   // records a PENDING subscription (the gateway is the source of truth — the
   // local row only flips to active when the signed webhook confirms), and hands
   // the client the hosted-payment-page URL so card data NEVER touches Capavate
@@ -2499,7 +2555,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       // Persist a PENDING subscription so we don't lose track if the webhook is
       // slow. Status flips to "active" only when payment_intent.succeeded lands.
-      (await import("./subscriptionStore")).recordPendingSubscription({
+      const subStore = await import("./subscriptionStore");
+      subStore.recordPendingSubscription({
         companyId,
         tierId,
         userId: ctx.userId,
@@ -2520,6 +2577,35 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         `${req.protocol}://${req.get("host") ?? "localhost"}`;
       const returnUrl = `${appOrigin.replace(/\/$/, "")}/founder/billing/return?paymentIntentId=${encodeURIComponent(intent.id)}`;
 
+      // v24.4.2 Bug F — STUB MODE AUTO-PROGRESSION
+      // When AIRWALLEX_REAL_NETWORK=0 (mode=stub), no real webhook will ever
+      // arrive. The stub intent is already "SUCCEEDED", so activate the
+      // subscription immediately and skip the Airwallex-hosted checkout page
+      // redirect (which would 404 with a stub intent id). Instead, return the
+      // returnUrl as the hostedPaymentPageUrl so the client navigates directly
+      // to BillingReturn which polls and finds the subscription active.
+      const { getAirwallexMode: getMode } = await import("./lib/paymentGatewayResolver");
+      const airwallexMode = getMode();
+      if (airwallexMode === "stub") {
+        // Activate immediately — stub is deterministically SUCCEEDED.
+        subStore.activateByPaymentIntent(intent.id);
+        log.info(`[billing/plan] stub mode: auto-activated subscription ${intent.id}`);
+        // Return returnUrl as hostedPaymentPageUrl so PaymentSurface redirects
+        // to BillingReturn, which will see status=active and redirect to dashboard.
+        return res.json({
+          ok: true,
+          paymentIntentId: intent.id,
+          clientSecret: intent.client_secret,
+          amountMinor,
+          currency,
+          merchantOrderId,
+          status: "SUCCEEDED",
+          stubMode: true,
+          returnUrl,
+          hostedPaymentPageUrl: returnUrl,
+        });
+      }
+
       // Return what the client needs to drive the Airwallex hosted payment page.
       res.json({
         ok: true,
@@ -2534,6 +2620,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       });
     } catch (err: any) {
       log.error("[billing/plan] error:", err);
+      // v24.4.2 Bug G — surface Airwallex network errors clearly so the UI
+      // shows a helpful message rather than a blank page or generic 500.
+      const isNetworkError = err?.cause?.code === "ECONNREFUSED" ||
+        err?.cause?.code === "ENOTFOUND" ||
+        /fetch failed|network/i.test(err?.message ?? "");
+      if (isNetworkError) {
+        return res.status(503).json({
+          ok: false,
+          error: "gateway_network_error",
+          message: "Airwallex gateway is unreachable. Check AIRWALLEX_API_BASE and network connectivity.",
+        });
+      }
       res.status(500).json({ ok: false, error: "server_error", message: err?.message });
     }
   });
@@ -2890,6 +2988,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   /* ------------ Sprint 22 Wave 2: missing endpoint stubs ------------ */
   registerSprint22Routes(app);
+
+  /* ------------ v25.0 Track 1: Capavate core endpoints (A1–A8) ------------ */
+  registerTrack1Routes(app);
+
+  /* ------------ v25.0 Track 4: Cross-component data flow (D1–D3, F1) ------------ */
+  registerTrack4Routes(app);
 
   /* ------------ Patch 2: Round Carry-Forward (investor-grade) ------------ */
   registerRoundCarryForwardRoutes(app);

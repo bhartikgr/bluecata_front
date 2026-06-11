@@ -531,6 +531,66 @@ export function listContactsForCompany(companyId: string): FounderCrmContact[] {
 }
 
 /**
+ * v25.0 B-J5-3 fix — Insert a contact directly into founderCrmStore (both DB and
+ * in-memory cache). Used by the CRM CSV import handler (track1Routes) so that
+ * imported contacts are visible via GET /api/founder/crm/contacts which reads
+ * from this store.
+ *
+ * Skips duplicates (same companyId + email). Returns the new contact or null
+ * if skipped.
+ */
+export function insertContactForImport(args: {
+  companyId: string;
+  email: string;
+  name?: string;
+  firmName?: string;
+  stage?: string;
+  series?: string;
+}): FounderCrmContact | null {
+  if (!args.companyId || !args.email) return null;
+  const normalizedEmail = args.email.trim().toLowerCase();
+  // Dedupe check
+  const existing = contacts.find(
+    (c) => c.companyId === args.companyId && c.email.trim().toLowerCase() === normalizedEmail
+  );
+  if (existing) return null;
+  const newContact: FounderCrmContact = {
+    id: `fcrm_imp_${randomBytes(4).toString("hex")}`,
+    companyId: args.companyId,
+    investorId: `u_imp_${randomBytes(4).toString("hex")}`,
+    name: args.name ?? args.email.split("@")[0],
+    firmName: args.firmName ?? "—",
+    email: args.email,
+    region: "US",
+    stage: (args.stage as FounderCrmContact["stage"]) ?? "lead",
+    ownership: { sharesUsd: 0, pct: 0 },
+    softCircleHistory: [],
+    maSignals: 0,
+    threadIds: [],
+    notes: "Imported via CSV",
+    notesUpdatedAt: new Date().toISOString(),
+    tasks: [],
+    series: args.series ?? "—",
+  };
+  // DB write first (same pattern as POST handler)
+  try {
+    const db = getDb();
+    const row = contactToRow(newContact);
+    (db as any).prepare(
+      `INSERT OR IGNORE INTO founder_crm_contacts (id, tenantId, companyId, investorId, name, firmName, email, region, stage, ownership, softCircleHistory, maSignals, threadIds, notes, notesUpdatedAt, tasks, series) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    ).run(
+      row.id, row.tenantId, row.companyId, row.investorId, row.name, row.firmName, row.email,
+      row.region, row.stage, row.ownership, row.softCircleHistory, row.maSignals, row.threadIds,
+      row.notes, row.notesUpdatedAt, row.tasks, row.series
+    );
+  } catch (err) {
+    log.warn("[insertContactForImport] DB write failed:", (err as Error).message);
+  }
+  contacts.push(newContact);
+  return newContact;
+}
+
+/**
  * B4 (v24.0 LOCKDOWN) — list every CRM contact across all companies the
  * founder owns. Used by the legacy GET /api/crm route, which previously
  * returned a global mock list to any authenticated user. `ownedCompanyIds`

@@ -114,6 +114,8 @@ import AdminTelemetry from "@/pages/admin/Telemetry";
 // Sprint 12 — new admin + cross-role pages
 import NotificationCenter from "@/pages/NotificationCenter";
 import AdminBridge from "@/pages/admin/Bridge";
+import AdminBridgeHistory from "@/pages/admin/BridgeHistory";
+import AdminPartnerDetail from "@/pages/admin/PartnerDetail";
 import AdminEmail from "@/pages/admin/Email";
 import AdminEmailComposer from "@/pages/admin/EmailComposer";
 import AdminNotifications from "@/pages/admin/Notifications";
@@ -600,6 +602,14 @@ function AppRouter() {
         </Route>
         <Route path="/admin/bridge">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminBridge /></RequireAuth>}
+        </Route>
+        {/* v25.0 Track 5 — E8: Bridge Event History */}
+        <Route path="/admin/bridge-history">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminBridgeHistory /></RequireAuth>}
+        </Route>
+        {/* v25.0 Track 5 — E7: Admin Partner Detail */}
+        <Route path="/admin/partners/:id">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminPartnerDetail /></RequireAuth>}
         </Route>
         <Route path="/admin/sync">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminSync /></RequireAuth>}

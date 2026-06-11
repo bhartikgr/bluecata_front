@@ -34,6 +34,10 @@
 import type { Request, Response, NextFunction } from "express";
 import * as collectiveMembershipStore from "../collectiveMembershipStore";
 import { getMembership } from "../membershipStore";
+// v24.5 GAP-3 — DB-fallback for admin role check so admins whose
+// RUNTIME_PERSONAS entry was not yet built (e.g. first request in a
+// fresh process after create_admin.ts ran) still pass through.
+import { rawDb } from "../db/connection";
 
 type V14Ctx = {
   userId?: string;
@@ -41,6 +45,17 @@ type V14Ctx = {
   identity?: { email?: string };
   collective?: { status?: string };
 };
+
+/** v24.5 GAP-3 — Check DB for admin role when in-memory persona says false. */
+function isDbAdmin(userId: string): boolean {
+  try {
+    const row = rawDb().prepare(
+      `SELECT role FROM users WHERE id = ? LIMIT 1`,
+    ).get(userId) as { role?: string } | undefined;
+    if (row?.role === "admin") return true;
+  } catch { /* non-fatal */ }
+  return false;
+}
 
 export function requireCollectiveMember(req: Request, res: Response, next: NextFunction): void {
   const ctx = (req as Request & { userContext?: V14Ctx }).userContext;
@@ -50,7 +65,9 @@ export function requireCollectiveMember(req: Request, res: Response, next: NextF
     return;
   }
   // Admins bypass — they need read access for moderation.
-  if (ctx?.isAdmin) {
+  // v24.5 GAP-3: also check DB for admin role in case the in-memory persona
+  // was not yet built (fresh process after create_admin.ts ran, before login).
+  if (ctx?.isAdmin || isDbAdmin(userId)) {
     next();
     return;
   }

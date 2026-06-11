@@ -19,6 +19,7 @@
 import type { Express, Request, Response } from "express";
 import { onMutation } from "./lib/eventBus";
 import { getCompanyProfile, getAllProfiles } from "./companyProfileStore";
+import { getListedCompanyIds } from "./collectiveInterestStore";
 import { partnerDealPromotionsStore } from "./partnerWorkspaceStore";
 import { getSubscription } from "./subscriptionsStore";
 import { getLatestForCompany, listFeedback, ingestDscScores } from "./dscFeedbackStore";
@@ -359,7 +360,39 @@ export function registerCollectiveRoutes(app: Express): void {
     // Fall back to canonical companies if profileMap is sparse
     const canonicalById = new Map(canonicalCompanies.map((c) => [c.id, c]));
 
-    const result = allProfiles.map((p) => {
+    // v25.0 Track 2 B3: union the profile-derived list with explicitly-listed
+    // companies from collective_directory_listings (written on admin approval).
+    // This ensures auto-enrollment works even when the founder's profile isn't
+    // populated in companyProfileStore yet.
+    const listedIds = getListedCompanyIds();
+    const profileIdSet = new Set(allProfiles.map((p) => p.companyId));
+    const augmented = [
+      ...allProfiles,
+      ...Array.from(listedIds)
+        .filter((id) => !profileIdSet.has(id))
+        .map((id) => {
+          const canonical = canonicalById.get(id);
+          return {
+            companyId: id,
+            companyName: canonical?.name ?? id,
+            founderName: undefined,
+            sector: canonical?.sector ?? null,
+            stage: canonical?.stage ?? null,
+            tagline: canonical?.description?.slice(0, 120) ?? null,
+            logoUrl: canonical?.logoUrl ?? null,
+            linkedinUrl: null,
+            crunchbaseUrl: null,
+            pitchbookUrl: null,
+            transactionPrepStatus: null,
+            jurisdiction: (canonical as unknown as { jurisdiction?: string })?.jurisdiction ?? null,
+            incorporationJurisdiction: (canonical as unknown as { jurisdiction?: string })?.jurisdiction ?? null,
+            employees: canonical?.employees ?? null,
+            hqAddress: canonical?.hq ?? null,
+          } as unknown as ReturnType<typeof getAllProfiles>[number];
+        }),
+    ];
+
+    const result = augmented.map((p) => {
       const canonical = canonicalById.get(p.companyId);
       const dscFeedback = getLatestForCompany(p.companyId);
       const composite = computeCompositeForCompany(p.companyId);

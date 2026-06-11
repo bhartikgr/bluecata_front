@@ -668,6 +668,49 @@ export function registerPersona(args: {
   };
   RUNTIME_INVITATIONS[userId] = [{ invitationId: args.invitationId, roundId: args.roundId, companyId: args.companyId }];
   RUNTIME_PASSWORDS[userId] = args.password;
+  // v25.0 RAM→DB fix: persist invitation-redeemed investor credentials via
+  // userCredentialsStore (bcrypt-hashed, survives restart). Without this,
+  // investors created via /api/invitations/redeem cannot log in after a
+  // server restart (J47/J48 durability tests).
+  try {
+    storeCredential({
+      userId,
+      email: args.email.trim().toLowerCase(),
+      name: args.name,
+      password: args.password,
+    });
+  } catch (err) {
+    log.warn("[userContext.registerPersona] storeCredential failed (non-fatal):", (err as Error).message);
+  }
+  // Also persist the auth_users row with role='investor' so post-restart
+  // verifyPassword() correctly classifies the user as an investor (see
+  // getDbUserRole path in verifyPassword above).
+  try {
+    const adb = rawDb();
+    adb
+      .prepare(
+        `INSERT INTO auth_users (id, email, password_hash, password_algo, role, status, created_at)
+         VALUES (?, ?, ?, 'scrypt', 'investor', 'active', ?)
+         ON CONFLICT(id) DO NOTHING`,
+      )
+      .run(userId, args.email.trim().toLowerCase(), hashPassword(args.password), new Date().toISOString());
+  } catch (err) {
+    log.warn("[userContext.registerPersona] auth_users INSERT failed (non-fatal):", (err as Error).message);
+  }
+  // Also persist a users row so admin user listings and the founder.companies
+  // computation from DB still discover the investor record.
+  try {
+    const adb = rawDb();
+    adb
+      .prepare(
+        `INSERT INTO users (id, tenant_id, email, name, role, is_demo)
+         VALUES (?, ?, ?, ?, 'investor', 0)
+         ON CONFLICT(id) DO NOTHING`,
+      )
+      .run(userId, "tenant_capavate", args.email.trim().toLowerCase(), args.name);
+  } catch {
+    /* best-effort */
+  }
   return userId;
 }
 

@@ -70,6 +70,12 @@ export function PaymentSurface({
         const msg = "Payment gateway is not configured. Contact your administrator.";
         setErrorMsg(msg);
         toast.error({ title: "Payment gateway not configured", description: msg });
+      } else if (code === "gateway_network_error" || err?.message?.includes("gateway_network_error") || err?.message?.includes("unreachable")) {
+        // v24.4.2 Bug G — surface clear error when AIRWALLEX_REAL_NETWORK=1 but
+        // credentials are stale or the network is unreachable.
+        const msg = err?.message ?? "Airwallex gateway is unreachable. Check credentials and AIRWALLEX_API_BASE.";
+        setErrorMsg(msg);
+        toast.error({ title: "Gateway unreachable", description: msg });
       } else {
         const msg = err?.message ?? "Could not reach the payment gateway.";
         setErrorMsg(msg);

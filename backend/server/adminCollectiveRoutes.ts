@@ -44,6 +44,7 @@ import { emitNotification } from "./notificationsStore";
 import { getCompanyNameById } from "./multiCompanyStore";
 import { getUserContextForId } from "./lib/userContext";
 import { lookupByUserId, lookupByEmail } from "./userCredentialsStore"; // v23.8 W-14 member enrichment; v24.4 bootstrap
+import { upsertDirectoryListing, removeDirectoryListing } from "./collectiveInterestStore"; /* v25.0 Track 2 B3 */
 
 export function registerAdminCollectiveRoutes(app: Express): void {
   /**
@@ -282,6 +283,12 @@ export function registerAdminCollectiveRoutes(app: Express): void {
     const userId = modernApp.founderId;
     const membership = collectiveMembershipStore.activate(userId, adminUserId);
     try { upsertActiveMembership(userId); } catch { /* non-fatal */ }
+    // v25.0 Track 2 B3 — Auto-enroll the founder's company into the directory.
+    try {
+      upsertDirectoryListing(modernApp.companyId, id, {
+        stage: undefined, sector: undefined, chapter: undefined,
+      });
+    } catch { /* non-fatal */ }
     try {
       emitBridgeEvent({
         eventType: "collective.member.updated",
@@ -338,6 +345,8 @@ export function registerAdminCollectiveRoutes(app: Express): void {
     try { deactivateMembership(userId); } catch { /* non-fatal */ }
     // v24.0 E2: rejection must deactivate BOTH stores (mirror of approval).
     try { collectiveMembershipStore.deactivate(userId, adminUserId); } catch { /* non-fatal */ }
+    // v25.0 Track 2 B3 — Remove the founder's company from the directory on rejection.
+    try { removeDirectoryListing(modernApp.companyId); } catch { /* non-fatal */ }
     try {
       emitBridgeEvent({
         eventType: "collective.member.updated",

@@ -316,6 +316,15 @@ function applyV12AdditiveAlters(db: any) {
     // ---- Wave C FIX C2 — migration 0050 (users profile durability columns). ----
     ["users", "ALTER TABLE users ADD COLUMN title TEXT"],
     ["users", "ALTER TABLE users ADD COLUMN display_name TEXT"],
+    // ---- v25.0 Track 1 A7 — soft_circles reject columns. ----
+    ["soft_circles", "ALTER TABLE soft_circles ADD COLUMN rejected_at TEXT"],
+    ["soft_circles", "ALTER TABLE soft_circles ADD COLUMN rejected_reason TEXT"],
+    // ---- v25.0 Track 3 C1 — soft_circles partner-sourcing columns. ----
+    ["soft_circles", "ALTER TABLE soft_circles ADD COLUMN source_type TEXT"],
+    ["soft_circles", "ALTER TABLE soft_circles ADD COLUMN source_id TEXT"],
+    // ---- v25.0 Track 3 C5 — partners active_fund_id for multi-fund switching. ----
+    // Applied via ALTER TABLE IF NOT EXISTS; error silently swallowed for duplicate column.
+    ["contacts", "ALTER TABLE contacts ADD COLUMN active_fund_id TEXT"],
   ];
   for (const [table, sql] of alters) {
     try {
@@ -2247,6 +2256,41 @@ function buildCreateTableStatements(): string[] {
       updated_at    TEXT NOT NULL
     );`,
 
+    // ============================================================
+    // v25.0 Track 2 — Collective B Endpoints
+    // ============================================================
+
+    // B1 — collective_interest_threads: tracks expressed interest from
+    // a Collective member toward a founder's company.
+    `CREATE TABLE IF NOT EXISTS collective_interest_threads (
+      id                         TEXT PRIMARY KEY NOT NULL,
+      company_id                 TEXT NOT NULL,
+      collective_member_user_id  TEXT NOT NULL,
+      initial_message            TEXT,
+      status                     TEXT NOT NULL DEFAULT 'open',
+      created_at                 TEXT NOT NULL,
+      last_message_at            TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_cit_company ON collective_interest_threads(company_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_cit_member ON collective_interest_threads(collective_member_user_id);`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_cit_dedup ON collective_interest_threads(company_id, collective_member_user_id) WHERE status != 'closed';`,
+
+    // B3 — collective_directory_listings: founder companies auto-enrolled
+    // after Collective application approval. The GET /api/collective/companies
+    // endpoint filters to listed companies only.
+    `CREATE TABLE IF NOT EXISTS collective_directory_listings (
+      id              TEXT PRIMARY KEY NOT NULL,
+      company_id      TEXT NOT NULL UNIQUE,
+      application_id  TEXT NOT NULL,
+      chapter         TEXT,
+      stage           TEXT,
+      sector          TEXT,
+      listed_at       TEXT NOT NULL,
+      status          TEXT NOT NULL DEFAULT 'listed'
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_cdl_company ON collective_directory_listings(company_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_cdl_status ON collective_directory_listings(status);`,
+
     `CREATE INDEX IF NOT EXISTS idx_sync_company_tenant ON sync_company(tenant_id);`,
     `CREATE INDEX IF NOT EXISTS idx_sync_investor_email ON sync_investor(email);`,
     `CREATE INDEX IF NOT EXISTS idx_sync_round_company ON sync_round(company_id);`,
@@ -2254,6 +2298,203 @@ function buildCreateTableStatements(): string[] {
     `CREATE INDEX IF NOT EXISTS idx_sync_post_channel ON sync_post(channel_id);`,
     `CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);`,
     `CREATE INDEX IF NOT EXISTS idx_auth_redeem_email ON auth_redeem_tokens(email);`,
+
+    // ============================================================
+    // v25.0 Track 1 — Capavate core endpoints (A1-A8)
+    // ============================================================
+
+    // A2: term_sheets — generated term sheet docs (markdown + PDF)
+    `CREATE TABLE IF NOT EXISTS term_sheets (
+      id          TEXT PRIMARY KEY NOT NULL,
+      round_id    TEXT NOT NULL,
+      owner_id    TEXT NOT NULL,
+      format      TEXT NOT NULL,
+      content_md  TEXT NOT NULL,
+      created_at  TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_term_sheets_round ON term_sheets(round_id);`,
+
+    // A4: data_room_files — round-scoped file attachments with base64 content
+    `CREATE TABLE IF NOT EXISTS data_room_files (
+      id             TEXT PRIMARY KEY NOT NULL,
+      round_id       TEXT NOT NULL,
+      owner_id       TEXT NOT NULL,
+      filename       TEXT NOT NULL,
+      content_base64 TEXT NOT NULL,
+      mime_type      TEXT NOT NULL,
+      uploaded_at    TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_drf_round ON data_room_files(round_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_drf_owner ON data_room_files(owner_id);`,
+
+    // A4: data_room_grants — token-gated access grants for data room files
+    `CREATE TABLE IF NOT EXISTS data_room_grants (
+      id          TEXT PRIMARY KEY NOT NULL,
+      file_id     TEXT NOT NULL,
+      investor_id TEXT NOT NULL,
+      token       TEXT NOT NULL UNIQUE,
+      expires_at  TEXT NOT NULL,
+      created_at  TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_drg_file ON data_room_grants(file_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_drg_token ON data_room_grants(token);`,
+
+    // A5: investor_kyc — KYC attestation records for investors
+    `CREATE TABLE IF NOT EXISTS investor_kyc (
+      id                TEXT PRIMARY KEY NOT NULL,
+      investor_id       TEXT NOT NULL,
+      accredited        INTEGER NOT NULL DEFAULT 0,
+      jurisdiction      TEXT NOT NULL,
+      source_of_funds   TEXT NOT NULL,
+      attestations_json TEXT NOT NULL,
+      created_at        TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_ikyc_investor ON investor_kyc(investor_id);`,
+
+    // A6: document_signatures — signature records for documents
+    `CREATE TABLE IF NOT EXISTS document_signatures (
+      id             TEXT PRIMARY KEY NOT NULL,
+      document_id    TEXT NOT NULL,
+      signer_id      TEXT NOT NULL,
+      signature_text TEXT NOT NULL,
+      signed_at      TEXT NOT NULL,
+      ip_address     TEXT
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_docsig_document ON document_signatures(document_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_docsig_signer ON document_signatures(signer_id);`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_docsig_unique ON document_signatures(document_id, signer_id);`,
+
+    // A8: round_updates — founder update broadcasts per round
+    `CREATE TABLE IF NOT EXISTS round_updates (
+      id           TEXT PRIMARY KEY NOT NULL,
+      round_id     TEXT NOT NULL,
+      author_id    TEXT NOT NULL,
+      title        TEXT NOT NULL,
+      body         TEXT NOT NULL,
+      visibility   TEXT NOT NULL DEFAULT 'all',
+      published_at TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_rupd_round ON round_updates(round_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_rupd_author ON round_updates(author_id);`,
+
+    // v25.0 Track 5 — E2: admin_compliance_holds (id-keyed, full audit trail)
+    `CREATE TABLE IF NOT EXISTS admin_compliance_holds (
+      id          TEXT PRIMARY KEY NOT NULL,
+      tenant_type TEXT NOT NULL,
+      tenant_id   TEXT NOT NULL,
+      reason      TEXT NOT NULL,
+      placed_by   TEXT NOT NULL,
+      placed_at   TEXT NOT NULL,
+      removed_at  TEXT,
+      removed_by  TEXT
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_ach_tenant ON admin_compliance_holds(tenant_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_ach_active ON admin_compliance_holds(tenant_id, removed_at);`,
+
+    // v25.0 Track 5 — E3: billing_disputes
+    `CREATE TABLE IF NOT EXISTS billing_disputes (
+      id               TEXT PRIMARY KEY NOT NULL,
+      subscription_id  TEXT NOT NULL,
+      amount_minor     INTEGER NOT NULL,
+      reason           TEXT NOT NULL,
+      customer_notes   TEXT,
+      status           TEXT NOT NULL DEFAULT 'open',
+      created_by       TEXT NOT NULL,
+      created_at       TEXT NOT NULL,
+      resolved_at      TEXT,
+      resolved_by      TEXT,
+      resolution_notes TEXT
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_bd_sub ON billing_disputes(subscription_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_bd_status ON billing_disputes(status);`,
+
+    // v25.0 Track 5 — E4: tenant_deletion_audit
+    `CREATE TABLE IF NOT EXISTS tenant_deletion_audit (
+      id                 TEXT PRIMARY KEY NOT NULL,
+      tenant_type        TEXT NOT NULL,
+      tenant_id          TEXT NOT NULL,
+      deleted_by         TEXT NOT NULL,
+      deleted_at         TEXT NOT NULL,
+      audit_payload_json TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_tda_tenant ON tenant_deletion_audit(tenant_id);`,
+
+    // v25.0 Track 5 — E5: email_campaigns_v25 + email_campaign_v25_recipients
+    `CREATE TABLE IF NOT EXISTS email_campaigns_v25 (
+      id              TEXT PRIMARY KEY NOT NULL,
+      name            TEXT NOT NULL,
+      cohort_filter   TEXT NOT NULL,
+      subject         TEXT NOT NULL,
+      body_text       TEXT NOT NULL,
+      body_html       TEXT NOT NULL,
+      sent_by         TEXT NOT NULL,
+      sent_at         TEXT NOT NULL,
+      queued_count    INTEGER NOT NULL DEFAULT 0,
+      delivered_count INTEGER NOT NULL DEFAULT 0
+    );`,
+    `CREATE TABLE IF NOT EXISTS email_campaign_v25_recipients (
+      id           TEXT PRIMARY KEY NOT NULL,
+      campaign_id  TEXT NOT NULL,
+      user_id      TEXT NOT NULL,
+      email        TEXT NOT NULL,
+      queued_at    TEXT NOT NULL,
+      delivered_at TEXT,
+      failed_at    TEXT,
+      fail_reason  TEXT
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_ecr_campaign ON email_campaign_v25_recipients(campaign_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_ecr_user ON email_campaign_v25_recipients(user_id);`,
+
+    // v25.0 Track 5 — E6: region_toggles
+    `CREATE TABLE IF NOT EXISTS region_toggles (
+      region     TEXT PRIMARY KEY NOT NULL,
+      enabled    INTEGER NOT NULL DEFAULT 1,
+      toggled_at TEXT NOT NULL,
+      toggled_by TEXT NOT NULL,
+      reason     TEXT
+    );`,
+
+    // v25.0 Track 3 — C2: partner_billing_entries
+    // Auto-populated when a deal is funded via partner channel.
+    // Idempotent: deal_ref UNIQUE enforces no double-counting.
+    `CREATE TABLE IF NOT EXISTS partner_billing_entries (
+      id                  TEXT PRIMARY KEY NOT NULL,
+      partner_id          TEXT NOT NULL,
+      deal_ref            TEXT NOT NULL UNIQUE,
+      amount_funded_minor INTEGER NOT NULL DEFAULT 0,
+      tier_at_funding     TEXT NOT NULL,
+      commission_pct      REAL NOT NULL,
+      commission_minor    INTEGER NOT NULL DEFAULT 0,
+      status              TEXT NOT NULL DEFAULT 'pending',
+      paid_at             TEXT,
+      created_at          TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_pbe_partner ON partner_billing_entries(partner_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_pbe_status  ON partner_billing_entries(partner_id, status);`,
+
+    // v25.0 Track 3 — C3: partner_sourced_investors
+    // Links investors to the partner that sourced them via partner-channel invitation.
+    `CREATE TABLE IF NOT EXISTS partner_sourced_investors (
+      id          TEXT PRIMARY KEY NOT NULL,
+      partner_id  TEXT NOT NULL,
+      investor_id TEXT NOT NULL,
+      sourced_at  TEXT NOT NULL,
+      status      TEXT NOT NULL DEFAULT 'active'
+    );`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS uq_psi_partner_investor ON partner_sourced_investors(partner_id, investor_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_psi_partner ON partner_sourced_investors(partner_id);`,
+
+    // v25.0 Track 3 — C4: partner_sourced_founders
+    // Companies the partner has sourced or co-sourced.
+    `CREATE TABLE IF NOT EXISTS partner_sourced_founders (
+      id         TEXT PRIMARY KEY NOT NULL,
+      partner_id TEXT NOT NULL,
+      company_id TEXT NOT NULL,
+      sourced_at TEXT NOT NULL,
+      status     TEXT NOT NULL DEFAULT 'active'
+    );`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS uq_psf_partner_company ON partner_sourced_founders(partner_id, company_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_psf_partner ON partner_sourced_founders(partner_id);`,
   ];
 }
 

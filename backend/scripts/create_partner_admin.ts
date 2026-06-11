@@ -49,7 +49,7 @@ import {
   auditLog as auditLogTable,
 } from "../shared/schema";
 import { storeCredential } from "../server/userCredentialsStore";
-import { getById as getPartnerById } from "../server/adminContactsStoreShim";
+import { getById as getPartnerById, findContactByEmail } from "../server/adminContactsStoreShim";
 // v24.4.1 Bug 2 — the script spawns a fresh Node process with an EMPTY
 // in-memory contacts map. Without hydrating from the DB first, the script
 // cannot see partners that were created at runtime via the consortium-apply
@@ -88,7 +88,10 @@ function parseArgs(argv: string[]): Args {
   const usage =
     "Usage: npx tsx scripts/create_partner_admin.ts " +
     "--email=<email> --password=<password> --partnerId=<tenant_cp_*> " +
-    "[--subRole=managing_partner|associate|bd|analyst|viewer] [--name=<name>] [--userId=<id>]";
+    "[--subRole=managing_partner|associate|bd|analyst|viewer] [--name=<name>] [--userId=<id>]\n" +
+    "  v24.5 GAP-5: if --partnerId lookup fails, the script falls back to\n" +
+    "  looking up the contact by --email in adminContactsStore.\n" +
+    "  Useful when re-onboarding a previously-archived partner with the same email.";
 
   if (!email || !password || !partnerId) {
     console.error(usage);
@@ -140,7 +143,27 @@ export async function createPartnerAdmin(args: Args): Promise<{
   // NOT create one here — that path is reserved for the consortium application
   // review flow so the audit trail (application → review → org creation)
   // stays intact.
-  const partner = getPartnerById(args.partnerId);
+  //
+  // v24.5 GAP-5 — Email-based fallback: when a contact email already exists
+  // from a prior approval, the consortium-apply approval flow reuses that
+  // contact but may return a different ID to the caller. If getPartnerById
+  // fails, try to resolve the contact by the --email argument so operators
+  // can re-onboard a previously-archived partner without needing to know
+  // the canonical contact id.
+  let partner = getPartnerById(args.partnerId);
+  if (!partner || partner.kind !== "consortium_partner") {
+    // Fallback: look up by the admin email supplied via --email.
+    const byEmail = findContactByEmail(args.email);
+    if (byEmail && byEmail.kind === "consortium_partner") {
+      console.warn(
+        `[create_partner_admin] --partnerId=${args.partnerId} not found; ` +
+        `falling back to email-matched contact id=${byEmail.id} (${byEmail.displayName ?? byEmail.legalName})`,
+      );
+      partner = byEmail;
+      // Repoint args.partnerId so downstream writes use the canonical id.
+      args = { ...args, partnerId: byEmail.id };
+    }
+  }
   if (!partner || partner.kind !== "consortium_partner") {
     throw new Error(
       "Partner organization not found — admin must approve consortium application first",

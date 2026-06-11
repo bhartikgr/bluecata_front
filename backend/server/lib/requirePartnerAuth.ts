@@ -103,6 +103,42 @@ export function assertTier(minTier: PartnerTier) {
 }
 
 /**
+ * requirePartnerSubrole — Gap C6 subrole middleware.
+ *
+ * Wire directly on any endpoint that needs a subrole gate. Returns 403
+ * with error SUBROLE_FORBIDDEN when the caller's subRole is not in
+ * the `allowedSubroles` array. Requires requirePartnerAuth to have run
+ * first (so req.partnerContext is populated).
+ *
+ * Example:
+ *   app.get('/api/partner/me/billing',
+ *     requirePartnerAuth,
+ *     requirePartnerSubrole(['managing_partner']),
+ *     handler);
+ */
+import type { SubRole } from "../partnerWorkspaceStore";
+
+export function requirePartnerSubrole(allowedSubroles: SubRole[]) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if (!req.partnerContext) {
+      res.status(401).json({ error: "PARTNER_AUTH_REQUIRED" });
+      return;
+    }
+    const actual = req.partnerContext.partnerSubRole as SubRole;
+    if (!allowedSubroles.includes(actual)) {
+      res.status(403).json({
+        error: "SUBROLE_FORBIDDEN",
+        message: `SubRole '${actual}' is not permitted. Required: ${allowedSubroles.join(" | ")}.`,
+        required: allowedSubroles,
+        actual,
+      });
+      return;
+    }
+    next();
+  };
+}
+
+/**
  * Check that the partner has at least one open seat (counting active members
  * + pending invitations). Throws `PARTNER_TIER_SEAT_LIMIT_REACHED` if not.
  *

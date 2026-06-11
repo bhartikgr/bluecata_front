@@ -152,6 +152,47 @@ export function get(userId: string): CollectiveMembershipRow | null {
 }
 
 export function listActive(): CollectiveMembershipRow[] {
+  // v24.5 GAP-1 fix: DB-fallback pattern (mirrors partnerTeamStore.findByUserId
+  // from v24.4.1). The in-memory Map may be stale if:
+  //   (a) The bootstrap activate() DB write succeeded but the Map.set() was
+  //       somehow skipped (e.g. the server process received the write from a
+  //       concurrent CLI invocation), or
+  //   (b) The previous boot's hydration ran before a bootstrap POST was
+  //       processed and the Map was not refreshed.
+  // Strategy: read the DB, merge any rows not already present in the Map,
+  // then return all active rows. Map stays as fast read-cache; DB is the
+  // authoritative source for list operations.
+  try {
+    const db: any = getDb();
+    const rows = db
+      .select()
+      .from(collectiveMembershipsTable)
+      .all() as any[];
+    for (const r of rows) {
+      const userId = r.user_id ?? r.userId;
+      if (!userId) continue;
+      // Only import rows that are not yet reflected in the Map (or are
+      // more recent than what the Map has) so we don't overwrite a
+      // valid in-process deactivation.
+      if (!memberships.has(userId)) {
+        const status = (r.status ?? "active") as "active" | "suspended";
+        const row: CollectiveMembershipRow = {
+          userId,
+          status,
+          tier: (r.tier ?? "standard") as "standard" | "plus",
+          activatedAt: r.activated_at ?? r.activatedAt ?? new Date().toISOString(),
+          activatedBy: r.activated_by ?? r.activatedBy ?? "",
+          deactivatedAt: r.deactivated_at ?? r.deactivatedAt ?? null,
+          deactivatedBy: r.deactivated_by ?? r.deactivatedBy ?? null,
+          chapterId: r.chapter_id ?? r.chapterId,
+          tenantId: r.tenant_id ?? r.tenantId,
+        };
+        memberships.set(userId, row);
+      }
+    }
+  } catch {
+    // Non-fatal: fall through to Map-only read if DB is unavailable.
+  }
   return Array.from(memberships.values()).filter((m) => m.status === "active");
 }
 

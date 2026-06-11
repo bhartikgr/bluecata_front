@@ -586,8 +586,13 @@ export const spvFundStore = {
     formedAt?: string | null;
     closesAt?: string | null;
     terms?: Record<string, unknown>;
+    /** v24.5 GAP-7 — optional override id (used by shadowPersistFromLegacy
+     * to preserve the legacy pspv_* id so commitments/capital-calls/
+     * distributions routes can look up by the same id they received from
+     * POST /api/partner/me/spvs). */
+    _overrideId?: string;
   }): SpvRow {
-    const id = newId("spv");
+    const id = args._overrideId ?? newId("spv");
     const now = nowIso();
     const tenantId = tenantForPartner(args.partnerId);
     const payload = {
@@ -1113,7 +1118,13 @@ export const spvFundStore = {
     status?: string;
   }): SpvRow | null {
     try {
-      // Idempotency check: any existing SPV with same (partnerId, name) wins.
+      // v24.5 GAP-7 idempotency check: if a row with the SAME legacy id already
+      // exists in spvsCache, return it immediately (handles retry after restart).
+      const byLegacyId = spvsCache.get(args.legacyId);
+      if (byLegacyId) return byLegacyId;
+      // Secondary idempotency: any existing SPV with same (partnerId, name).
+      // (Pre-v24.5 behaviour: the row was created with a generated id, not the
+      // legacy id. We still respect it to avoid duplicate rows on upgrade.)
       for (const r of Array.from(spvsCache.values())) {
         if (r.partnerId === args.partnerId && r.name === args.name) return r;
       }
@@ -1123,6 +1134,11 @@ export const spvFundStore = {
         args.status === "closed" ? "active" :
         args.status === "wound_down" ? "wound_down" :
         "forming";
+      // v24.5 GAP-7 KEY FIX: pass the legacy pspv_* id as _overrideId so the
+      // spvFundStore row carries the SAME id the legacy partnerSpvStore
+      // returned to the caller. This makes GET commitments/capital-calls/
+      // distributions work immediately after POST /api/partner/me/spvs without
+      // any id translation layer.
       return spvFundStore.createSpv({
         partnerId: args.partnerId,
         name: args.name,
@@ -1132,6 +1148,7 @@ export const spvFundStore = {
         targetMinor: args.targetMinor ?? 0,
         gpUserId: args.gpUserId ?? null,
         formedAt: args.formedAt ?? null,
+        _overrideId: args.legacyId,
       });
     } catch (e) {
       log.warn(errorMeta("spv.shadowPersist", e, { partnerId: args.partnerId, name: args.name }));
@@ -1153,14 +1170,16 @@ export const spvFundStore = {
     amountMinor: number;
   }): SpvCommitmentRow | null {
     try {
-      // Pick the most recent shadow SPV for this partner that matches the
-      // legacy id by storing legacyId into the SPV `terms` blob on creation
-      // (not done here for backward compat). Fallback: pick the most recent
-      // SPV for the partner. If none, skip silently.
-      let target: SpvRow | null = null;
-      for (const r of Array.from(spvsCache.values())) {
-        if (r.partnerId !== args.partnerId) continue;
-        if (!target || r.createdAt > target.createdAt) target = r;
+      // v24.5 GAP-7: try the legacySpvId directly first (now that
+      // shadowPersistFromLegacy preserves the pspv_* id as the spvsCache key).
+      let target: SpvRow | null = spvsCache.get(args.legacySpvId) ?? null;
+      if (target && target.partnerId !== args.partnerId) target = null;
+      // Fallback: pick the most recent SPV for the partner.
+      if (!target) {
+        for (const r of Array.from(spvsCache.values())) {
+          if (r.partnerId !== args.partnerId) continue;
+          if (!target || r.createdAt > target.createdAt) target = r;
+        }
       }
       if (!target) return null;
       // Idempotency check.
