@@ -1,0 +1,102 @@
+/**
+ * Singapore VCC default formula set.
+ * Citations: ACRA, MAS guidelines, IRAS Section 13H tax incentive.
+ */
+import type { FormulaRecord } from "../types.js";
+const def = (formula: string, where?: Record<string, string>) => ({ formula, ...(where ? { where } : {}) });
+
+export const SG_FORMULAS: FormulaRecord[] = [
+  {
+    id: "safe.postmoney.conversion",
+    name: "SAFE post-money conversion (SG)",
+    region: "SG",
+    version: "1.0.0",
+    status: "active",
+    category: "safe_conversion",
+    citation: { source: "ACRA company law + YC post-money mechanics", url: "https://www.acra.gov.sg/" },
+    definition: def("SAFE Shares = Purchase Amount / min(capPrice, discountPrice)"),
+  },
+  {
+    id: "safe.premoney.conversion",
+    name: "SAFE pre-money conversion (SG)",
+    region: "SG",
+    version: "1.0.0",
+    status: "active",
+    category: "safe_conversion",
+    citation: { source: "ACRA + YC SAFE primer (pre-money)", url: "https://www.acra.gov.sg/" },
+    definition: def("SAFE Shares = Purchase Amount / Conversion Price"),
+  },
+  {
+    id: "note.conversion",
+    name: "Convertible Note conversion (SG)",
+    region: "SG",
+    version: "1.0.0",
+    status: "active",
+    category: "note_conversion",
+    citation: { source: "SG market practice; SVCA model docs", url: "https://www.svca.org.sg/" },
+    definition: def("(Principal + Interest) / min(discountPrice, capPrice)"),
+  },
+  {
+    id: "antiDilution.fullRatchet",
+    name: "Anti-dilution: Full-Ratchet (SG)",
+    region: "SG",
+    version: "1.0.0",
+    status: "active",
+    category: "anti_dilution",
+    citation: { source: "SVCA model preferred terms", url: "https://www.svca.org.sg/" },
+    definition: def("NCP = NIP"),
+  },
+  {
+    id: "antiDilution.broadBased",
+    name: "Anti-dilution: Broad-Based WA (SG)",
+    region: "SG",
+    version: "1.0.0",
+    status: "active",
+    category: "anti_dilution",
+    citation: { source: "SVCA broad-based WA", url: "https://www.svca.org.sg/" },
+    definition: def("NCP = OCP × (A+B)/(A+C)"),
+  },
+  {
+    id: "antiDilution.narrowBased",
+    name: "Anti-dilution: Narrow-Based WA (SG)",
+    region: "SG",
+    version: "1.0.0",
+    status: "active",
+    category: "anti_dilution",
+    citation: { source: "SVCA narrow-based WA", url: "https://www.svca.org.sg/" },
+    definition: def("NCP = OCP × (A_narrow+B)/(A_narrow+C)"),
+  },
+  {
+    id: "esop.topup",
+    name: "ESOP top-up (SG, MAS-aligned)",
+    region: "SG",
+    version: "1.0.0",
+    status: "active",
+    category: "esop_topup",
+    citation: {
+      source: "MAS guidance on share-based comp + IRAS s13H VCC tax incentive",
+      url: "https://www.mas.gov.sg/",
+    },
+    definition: def("T = (P×(existing+newInv) − pool) / (1−P)"),
+  },
+  {
+    id: "waterfall.liquidation",
+    name: "Liquidation Waterfall (SG VCC)",
+    region: "SG",
+    version: "1.0.0",
+    status: "active",
+    category: "waterfall",
+    citation: { source: "SG Variable Capital Company Act + SVCA model", url: "https://www.svca.org.sg/" },
+    definition: def("Senior pref → preference → participation/cap → common"),
+  },
+  {
+    id: "ownership.percent",
+    name: "Ownership % (SG)",
+    region: "SG",
+    version: "1.0.0",
+    status: "active",
+    category: "ownership",
+    citation: { source: "SVCA cap table convention", url: "https://www.svca.org.sg/" },
+    definition: def("ownership_i = shares_i / Σ shares"),
+  },
+];
