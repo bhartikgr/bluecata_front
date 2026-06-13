@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Search, Users } from "lucide-react";
+import { safeExternalHref } from "@/lib/safeUrl"; /* v25.17 Lane D NC3 — block javascript: URL XSS */
 
 interface Member {
   id: string;
@@ -251,11 +252,12 @@ export default function CollectiveMembers() {
                     </span>
                   </div>
                 )}
-                {selectedMember.website && (
+                {/* v25.17 Lane D NC3 — only render link when URL has http/https protocol */}
+                {safeExternalHref(selectedMember.website) && (
                   <a
-                    href={selectedMember.website}
+                    href={safeExternalHref(selectedMember.website)!}
                     target="_blank"
-                    rel="noreferrer"
+                    rel="noopener noreferrer"
                     className="text-xs text-[#8E2A4E] hover:underline block"
                     data-testid="link-detail-website"
                   >

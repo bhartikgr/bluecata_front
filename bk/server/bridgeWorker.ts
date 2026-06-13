@@ -10,7 +10,7 @@
  *   - This ensures horizontal scaling without duplicate drains.
  */
 
-import { drainOutbox } from "./bridgeStore";
+import { deliverOnce } from "./lib/bridgeRuntime";
 import { log } from "./lib/logger";
 
 let workerInterval: ReturnType<typeof setInterval> | null = null;
@@ -18,13 +18,14 @@ let workerInterval: ReturnType<typeof setInterval> | null = null;
 const DRAIN_INTERVAL_MS = 5_000;
 
 /**
- * Default deliver function — in production, replace with HTTP call to the Collective endpoint.
- * In sandbox, it simulates a 200 OK for all events.
+ * v25.16 NC1 (cross-comp) — the worker previously called drainOutbox() with a
+ * hardcoded stub that returned { ok: true, status: 200 } and never actually
+ * POSTed to the Collective webhook. Now we delegate to deliverOnce() in
+ * lib/bridgeRuntime, which performs the real HTTP POST when
+ * COLLECTIVE_WEBHOOK_URL is set, falls back to the in-process mock receiver in
+ * non-production, and returns { ok: false, status: 501 } in production when
+ * the env var is missing (so we don't pretend events were delivered).
  */
-async function defaultDeliver(_env: unknown, _hmac: string): Promise<{ ok: boolean; status: number }> {
-  // In production this would POST to process.env.BRIDGE_ENDPOINT_URL
-  return { ok: true, status: 200 };
-}
 
 /** Start the worker. Safe to call multiple times — only one interval runs at a time. */
 export function startBridgeWorker(): void {
@@ -35,7 +36,7 @@ export function startBridgeWorker(): void {
   log.info(`[bridge-worker] starting — drain interval ${DRAIN_INTERVAL_MS}ms`);
   workerInterval = setInterval(async () => {
     try {
-      const result = await drainOutbox(defaultDeliver);
+      const result = await deliverOnce();
       if (result.delivered > 0 || result.deadLettered > 0) {
         log.info(
           `[bridge-worker] drained ${result.delivered} events` +
@@ -64,5 +65,5 @@ export function isBridgeWorkerRunning(): boolean {
 
 /** For tests: trigger a single drain tick synchronously. */
 export async function tickBridgeWorker(): Promise<{ delivered: number; deadLettered: number }> {
-  return drainOutbox(defaultDeliver);
+  return deliverOnce();
 }

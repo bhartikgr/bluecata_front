@@ -51,7 +51,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
 
 import { requireAuth } from "./lib/authMiddleware";
-import { requirePartnerAuth } from "./lib/requirePartnerAuth";
+import { requirePartnerAuth, assertSubRole } from "./lib/requirePartnerAuth"; /* v25.14 NL5 */
 import { partnerTeamStore } from "./partnerWorkspaceStore";
 import { getDb } from "./db/connection";
 import {
@@ -506,17 +506,33 @@ function findDealByIdAnyTenant(id: string): DealRow | null {
 export async function hydratePartnerWorkspaceV19Store(): Promise<void> {
   try {
     const db: any = getDb();
-    const pRows = db.select().from(portfolioTable).all() as any[];
+    // v25.14 NL4 — exclude soft-deleted rows from hydration. Reads still
+    // filter via the route handlers, but keeping tombstones out of the
+    // cache reduces memory + closes a window where direct cache.get(id)
+    // calls would surface deleted rows.
+    const pRows = db
+      .select()
+      .from(portfolioTable)
+      .where(isNull(portfolioTable.deletedAt))
+      .all() as any[];
     for (const r of pRows) {
       const row = rowToPortfolio(r);
       portfolioCache.set(row.id, row);
     }
-    const cRows = db.select().from(crmTable).all() as any[];
+    const cRows = db
+      .select()
+      .from(crmTable)
+      .where(isNull(crmTable.deletedAt))
+      .all() as any[];
     for (const r of cRows) {
       const row = rowToCrm(r);
       crmCache.set(row.id, row);
     }
-    const dRows = db.select().from(dealsTable).all() as any[];
+    const dRows = db
+      .select()
+      .from(dealsTable)
+      .where(isNull(dealsTable.deletedAt))
+      .all() as any[];
     for (const r of dRows) {
       const row = rowToDeal(r);
       dealsCache.set(row.id, row);
@@ -541,7 +557,10 @@ export async function hydratePartnerWorkspaceV19Store(): Promise<void> {
 export function registerPartnerWorkspaceV19Routes(app: Express): void {
   /* ===================== Portfolio ===================== */
 
-  app.post("/api/partner/portfolio", requirePartnerAuth, (req, res) => {
+  // v25.14 NL5 — was missing the assertSubRole gate. Restrict portfolio
+  // creation to roles allowed to record investments (managing_partner /
+  // associate / bd). Viewers and analysts are now correctly 403'd.
+  app.post("/api/partner/portfolio", requirePartnerAuth, assertSubRole("managing_partner", "associate", "bd"), (req, res) => {
     const ctx = req.partnerContext!;
     const parsed = portfolioCreateSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -610,7 +629,13 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
     res.status(201).json({ ok: true, portfolio: row });
   });
 
-  app.get("/api/partner/portfolio", requireAuth, (req, res) => {
+  // v25.14 NH5 — was requireAuth (any session); allowed founders/investors
+  // to enumerate any partner's portfolio with ?partner_id=. Switched to
+  // requirePartnerAuth so only active partner team members can list (the
+  // visibility filter below remains intact for cross-partner queries).
+  // Collective members reading a public portfolio go through the dedicated
+  // /api/collective/portfolio surface, not this one.
+  app.get("/api/partner/portfolio", requirePartnerAuth, (req, res) => {
     const ctxUserId = (req as Request & { userContext?: { userId?: string; isAdmin?: boolean } }).userContext?.userId;
     if (!ctxUserId) {
       res.status(401).json({ error: "AUTH_REQUIRED" });
@@ -634,18 +659,25 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
     const tm = partnerTeamStore.findByUserId(ctxUserId);
     const partnerId = req.partnerContext?.partnerId ?? tm?.partnerId;
     const filterPartnerId = (req.query.partner_id as string | undefined) ?? null;
+    /* v25.12 NM-8 — visibility "collective" must mean visible only to active
+     * Collective members. Previously this branch returned `true` for any
+     * authenticated user, which leaked Collective portfolio entries to
+     * non-members. Admin still bypasses for support. */
+    const ctxFull = (req as Request & { userContext?: { isAdmin?: boolean; collective?: { status?: string } } }).userContext;
+    const isCollectiveMember = !!(ctxFull?.collective?.status === "active" || ctxFull?.isAdmin);
     const filtered = rows.filter((r) => {
       if (filterPartnerId && r.partnerId !== filterPartnerId) return false;
       if (partnerId && r.partnerId === partnerId) return true; // own rows
       if (r.visibility === "public") return true;
-      if (r.visibility === "collective") return true; // shared with all Collective members
+      if (r.visibility === "collective") return isCollectiveMember;
       return false;
     });
     filtered.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     res.json({ portfolio: filtered, count: filtered.length });
   });
 
-  app.get("/api/partner/portfolio/:id", requireAuth, (req, res) => {
+  // v25.14 NH5 — see comment on the list endpoint above; same fix.
+  app.get("/api/partner/portfolio/:id", requirePartnerAuth, (req, res) => {
     const ctxUserId = (req as Request & { userContext?: { userId?: string } }).userContext?.userId;
     if (!ctxUserId) {
       res.status(401).json({ error: "AUTH_REQUIRED" });
@@ -669,7 +701,8 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
     res.json({ portfolio: row });
   });
 
-  app.patch("/api/partner/portfolio/:id", requirePartnerAuth, (req, res) => {
+  /* v25.16 NH3 — was missing assertSubRole gate; viewers/analysts could PATCH. */
+  app.patch("/api/partner/portfolio/:id", requirePartnerAuth, assertSubRole("managing_partner", "associate", "bd"), (req, res) => {
     const ctx = req.partnerContext!;
     const row = findPortfolioByIdAnyTenant(String(req.params.id));
     if (!row || row.deletedAt) {
@@ -739,7 +772,10 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
     res.json({ ok: true, portfolio: next });
   });
 
-  app.delete("/api/partner/portfolio/:id", requirePartnerAuth, (req, res) => {
+  /* v25.23 NH-H fix — was missing assertSubRole gate on DELETE; viewers/analysts
+   * could soft-delete portfolio entries they could not create or edit (PARTIAL
+   * FIX of v25.16 NH3 which gated POST/PATCH but missed DELETE). */
+  app.delete("/api/partner/portfolio/:id", requirePartnerAuth, assertSubRole("managing_partner", "associate", "bd"), (req, res) => {
     const ctx = req.partnerContext!;
     const row = findPortfolioByIdAnyTenant(String(req.params.id));
     if (!row || row.deletedAt) {
@@ -781,7 +817,8 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
 
   /* ===================== CRM contacts ===================== */
 
-  app.post("/api/partner/crm/contacts", requirePartnerAuth, (req, res) => {
+  // v25.14 NL5 — see portfolio comment above.
+  app.post("/api/partner/crm/contacts", requirePartnerAuth, assertSubRole("managing_partner", "associate", "bd"), (req, res) => {
     const ctx = req.partnerContext!;
     const parsed = crmCreateSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -888,7 +925,8 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
     res.json({ contact: row });
   });
 
-  app.patch("/api/partner/crm/contacts/:id", requirePartnerAuth, (req, res) => {
+  /* v25.16 NH3 — was missing assertSubRole gate; viewers/analysts could PATCH. */
+  app.patch("/api/partner/crm/contacts/:id", requirePartnerAuth, assertSubRole("managing_partner", "associate", "bd"), (req, res) => {
     const ctx = req.partnerContext!;
     const row = findCrmByIdAnyTenant(String(req.params.id));
     if (!row || row.deletedAt) {
@@ -964,7 +1002,9 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
     res.json({ ok: true, contact: next });
   });
 
-  app.delete("/api/partner/crm/contacts/:id", requirePartnerAuth, (req, res) => {
+  /* v25.23 NH-H fix — was missing assertSubRole gate on DELETE; viewers/analysts
+   * could soft-delete CRM contacts they could not create or edit. */
+  app.delete("/api/partner/crm/contacts/:id", requirePartnerAuth, assertSubRole("managing_partner", "associate", "bd"), (req, res) => {
     const ctx = req.partnerContext!;
     const row = findCrmByIdAnyTenant(String(req.params.id));
     if (!row || row.deletedAt) {
@@ -1021,7 +1061,8 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
 
   /* ===================== Deal pipeline ===================== */
 
-  app.post("/api/partner/deals", requirePartnerAuth, (req, res) => {
+  // v25.14 NL5 — see portfolio comment above.
+  app.post("/api/partner/deals", requirePartnerAuth, assertSubRole("managing_partner", "associate", "bd"), (req, res) => {
     const ctx = req.partnerContext!;
     const parsed = dealCreateSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -1117,7 +1158,8 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
     res.json({ deal: row });
   });
 
-  app.patch("/api/partner/deals/:id", requirePartnerAuth, (req, res) => {
+  /* v25.16 NH3 — was missing assertSubRole gate; viewers/analysts could PATCH. */
+  app.patch("/api/partner/deals/:id", requirePartnerAuth, assertSubRole("managing_partner", "associate", "bd"), (req, res) => {
     const ctx = req.partnerContext!;
     const row = findDealByIdAnyTenant(String(req.params.id));
     if (!row || row.deletedAt) {

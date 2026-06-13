@@ -301,7 +301,7 @@ export default function AskExpertPage(): JSX.Element | null {
           </Card>
         ) : (
           listQ.data?.questions?.map((q) => (
-            <Link key={q.id} href={`/collective/ask/${q.id}`}>
+            <Link key={q.id} href={`/collective/questions/${q.id}`}>
               <Card className="hover:bg-accent/40 transition cursor-pointer">
                 <CardHeader className="pb-2">
                   <CardTitle className="text-base flex items-start gap-2">

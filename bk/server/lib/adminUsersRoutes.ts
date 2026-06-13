@@ -110,6 +110,24 @@ export function registerAdminUsersRoutes(app: Express): void {
       role: body.role ?? existing.role,
       mfa: body.mfa ?? existing.mfa,
     };
+    /* v25.18 Lane D NC2 (hard close) — server-side self-lockout + last-admin guard.
+       v25.17 added a client `isSelf()` guard, but the server PATCH was still wide
+       open. Reject (a) any patch from an admin against their own row that would
+       demote them or suspend them, and (b) any patch that would leave zero active
+       admins on the platform. */
+    const actor = actorIdFromReq(req);
+    const isSelf = !!actor && actor === id;
+    const wouldDemote = updated.role !== "admin" && existing.role === "admin";
+    const wouldSuspend = updated.status !== "active" && existing.status === "active";
+    if (isSelf && (wouldDemote || wouldSuspend)) {
+      return res.status(409).json({ error: "cannot_modify_self", message: "You cannot demote or suspend your own admin account." });
+    }
+    if (wouldDemote || wouldSuspend) {
+      const activeAdmins = listAll().filter((u) => u.role === "admin" && u.status === "active" && u.id !== id).length;
+      if (activeAdmins === 0) {
+        return res.status(409).json({ error: "last_active_admin", message: "Refusing to leave the platform with zero active admins." });
+      }
+    }
     userMap.set(id, updated);
     // Mirror to auth_users when present
     rawDb().prepare(`UPDATE auth_users SET status = ?, role = ? WHERE id = ?`).run(updated.status, updated.role, id);

@@ -203,7 +203,19 @@ export default function CapTable() {
  const blob = new Blob([lines.join("\n")], { type: "text/csv" });
  const url = URL.createObjectURL(blob);
  const a = document.createElement("a");
- a.href = url; a.download = `novapay-captable-${asOf}.csv`; a.click();
+ /* v25.11 NM-4 — the previous filename `novapay-captable-...` hard-coded a
+  * demo company slug, so every founder's export downloaded as a competitor
+  * company's filename. Derive a safe slug from the active company name; if
+  * unavailable, fall back to `captable-<companyId>` rather than to any
+  * persona slug. */
+ const co = activeCompanyQ.data?.company;
+ const rawSlug = (co?.companyName || co?.legalName || companyId || "captable").toString();
+ const safeSlug = rawSlug
+   .toLowerCase()
+   .replace(/[^a-z0-9]+/g, "-")
+   .replace(/^-+|-+$/g, "")
+   .slice(0, 40) || "captable";
+ a.href = url; a.download = `${safeSlug}-captable-${asOf}.csv`; a.click();
  URL.revokeObjectURL(url);
  toast({ title: "Cap table exported", description: "Downloaded as CSV." });
  }
@@ -275,7 +287,11 @@ export default function CapTable() {
  <Button variant="outline" onClick={exportCSV} data-testid="button-export-csv"><Download className="h-4 w-4 mr-2" /> CSV</Button>
  <Button variant="outline" onClick={exportPDFSnapshot} data-testid="button-export-pdf"><FileIcon className="h-4 w-4 mr-2" /> PDF snapshot</Button>
  <Button variant="outline" onClick={exportXLSX} data-testid="button-export-xlsx"><FileSpreadsheet className="h-4 w-4 mr-2" /> Excel</Button>
- {(canAccessAntiDil.allow || true) && <Button variant="outline" onClick={() => setShowAntiDil(true)} data-testid="button-anti-dilution"><Calculator className="h-4 w-4 mr-2" /> Anti-dilution</Button>}
+ {/* v25.19 Lane 3 NH1 (hard close) — the pre-v25.19 gate was `(canAccessAntiDil.allow || true)`,
+     which short-circuited the plan gate so EVERY founder (even free plan) saw
+     the anti-dilution button. Removing the `|| true` restores the entitlement
+     gate as designed. */}
+ {canAccessAntiDil.allow && <Button variant="outline" onClick={() => setShowAntiDil(true)} data-testid="button-anti-dilution"><Calculator className="h-4 w-4 mr-2" /> Anti-dilution</Button>}
  <Button variant="outline" onClick={() => setShowBulkMsg(true)} data-testid="button-bulk-message"><SendIcon className="h-4 w-4 mr-2" /> Bulk message</Button>
  <Button variant="outline" onClick={exportPDFSnapshot} data-testid="button-print" className="hidden md:inline-flex"><Printer className="h-4 w-4 mr-2" /> Print</Button>
  <Button onClick={() => setShowAddSecurity(true)} className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] text-white" data-testid="button-add-security">
@@ -558,6 +574,24 @@ export default function CapTable() {
 
  {/* Sprint 11 D3 — Bulk message */}
  <BulkMessageDialog open={showBulkMsg} onClose={() => setShowBulkMsg(false)} rows={enrichedRows} toast={toast} />
+
+ {/* v25.11 NC-1 fix — the AddSecurityDialog component existed (line 991+) but was
+  * never mounted in the JSX tree, so clicking "Add security" set state but no
+  * dialog rendered. Mounting it here closes the silent-dead-button gap. The
+  * cap-table list query is invalidated on success so the new row appears
+  * without a page reload. */}
+ {showAddSecurity && (
+   <AddSecurityDialog
+     companyId={companyId}
+     onClose={() => setShowAddSecurity(false)}
+     onSuccess={() => {
+       setShowAddSecurity(false);
+       queryClient.invalidateQueries({ queryKey: ["/api/companies", companyId, "securities"] });
+       queryClient.invalidateQueries({ queryKey: ["/api/companies", companyId, "cap-table"] });
+       toast({ title: "Security added", description: "Cap table will refresh." });
+     }}
+   />
+ )}
  </>
  );
 }

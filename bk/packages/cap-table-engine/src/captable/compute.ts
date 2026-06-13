@@ -127,19 +127,61 @@ export function computeCapTable(opts: ComputeOptions): CapTableResult {
       // Resolve MFN
       const resolvedSafes = safes.map((s) => applyMfn(s, { candidates: safes }));
       const companyCap = currentFullyDilutedShares(ledger.filter((s) => s.kind !== "safe" && s.kind !== "note"));
+
+      /* v25.20 Lane 2 NC1 (hard close) — post-money SAFE cap denominator.
+
+         Empirically proven bug: a $1M post-money SAFE at $10M cap produced
+         900,000 shares / 8.65% instead of the correct 1,000,000 / 10%.
+
+         Root cause: every SAFE conversion in the loop below was using the
+         SAME `companyCap` (the pre-SAFE fully-diluted count). For a YC
+         post-money SAFE, the cap denominator must INCLUDE the SAFE's own
+         shares (and all other post-money SAFEs converting at the same time).
+
+         YC formula:
+           sharesIssued = SAFE_amount * S0 / (cap - sum(post_money_SAFE_amounts))
+         where S0 is the pre-SAFE fully-diluted count, and the sum is over
+         all post-money SAFEs at THIS conversion event.
+
+         For pre-money SAFEs the original denominator (`companyCap`) is
+         correct — the SAFE shares are an additional pool on top. */
+      const totalPostMoneySafeAmt = resolvedSafes
+        .filter((s) => s.safe?.type === "post_money_cap")
+        .reduce((acc, s) => acc.add(D(s.investmentAmount ?? "0")), D(0));
+
+      /* v25.20 Lane 2 NC1 — companyCap is a BigInt; convert to Decimal for math. */
+      const companyCapDecimal = D(companyCap.toString());
+
       for (const safe of resolvedSafes) {
         if (!safe.safe) continue;
         const f = resolveFormula(
           safe.safe.type === "post_money_cap" ? "safe.postmoney.conversion" : "safe.premoney.conversion",
           region,
         );
+        /* v25.20 Lane 2 NC1: pick the right denominator per SAFE type. */
+        const safeCap = D(safe.safe.cap ?? "0");
+        let denominator = companyCap.toString();
+        if (safe.safe.type === "post_money_cap" && safeCap.gt(0)) {
+          // Effective cap (cap − sum of post-money SAFE $) so that
+          // companyCap / effectiveCap == correct expansion factor.
+          const effectiveCap = safeCap.minus(totalPostMoneySafeAmt);
+          if (effectiveCap.gt(0)) {
+            // Re-base companyCapitalization so the leaf function's
+            // `capPrice = cap / companyCap` works out to:
+            //   cap_real / (companyCap_real * cap_real/effectiveCap)
+            //     = effectiveCap / companyCap_real
+            //     = (cap - sum_safes) / S0   -- the correct post-money price.
+            const rebased = companyCapDecimal.mul(safeCap).div(effectiveCap);
+            denominator = rebased.toFixed(0);
+          }
+        }
         const result = convertSafeToPreferred({
           purchaseAmount: safe.investmentAmount ?? "0",
           capType: safe.safe.type,
           cap: safe.safe.cap,
           discount: safe.safe.discount,
           seriesPricePerShare: pps.toFixed(),
-          companyCapitalization: companyCap.toString(),
+          companyCapitalization: denominator,
           formulaId: f.id,
           formulaVersion: f.version,
           region,

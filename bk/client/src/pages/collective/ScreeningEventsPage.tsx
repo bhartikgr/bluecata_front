@@ -25,6 +25,8 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+/* v25.12 NH4 — toast errors on RSVP / cancel / create mutations. */
+import { useToast } from "@/hooks/use-toast";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
@@ -327,6 +329,11 @@ function EventRow(props: {
   const isOrganizer = ev.organizerUserId === myUserId;
   const canCancel = (canAdmin || isOrganizer) && ev.status !== "cancelled";
 
+  /* v25.12 NH4 — toast helper. */
+  const { toast } = useToast();
+  const onErr = (label: string) => (e: Error) =>
+    toast({ variant: "destructive", title: `${label} failed`, description: e.message });
+
   const rsvpMut = useMutation({
     mutationFn: async (rsvp: RsvpStatus) => {
       const res = await apiRequest(
@@ -342,6 +349,7 @@ function EventRow(props: {
       });
       onChange();
     },
+    onError: onErr("RSVP"),
   });
 
   const cancelMut = useMutation({
@@ -358,6 +366,7 @@ function EventRow(props: {
       });
       onChange();
     },
+    onError: onErr("Cancel event"),
   });
 
   return (
@@ -384,15 +393,34 @@ function EventRow(props: {
         ) : null}
 
         <div className="flex flex-wrap gap-2">
-          <a
-            href={`/api/collective/screening-events/${ev.id}/ics`}
-            download={`capavate-event-${ev.id}.ics`}
+          {/* v25.12 NL3 — use a programmatic fetch with credentials: "include"
+           * so the session cookie is sent even under SameSite=Strict.
+           * The plain anchor download could 401 in stricter cookie policies. */}
+          <button
+            type="button"
+            onClick={async () => {
+              try {
+                const res = await fetch(`/api/collective/screening-events/${ev.id}/ics`, { credentials: "include" });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const blob = await res.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `capavate-event-${ev.id}.ics`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(url);
+              } catch (e) {
+                toast({ variant: "destructive", title: "Could not download ICS", description: (e as Error).message });
+              }
+            }}
             className="inline-flex items-center text-xs px-3 py-1.5 rounded border border-[#8E2A4E]/30 text-[#8E2A4E] hover:bg-[#8E2A4E]/5"
             data-testid={`ics-download-${ev.id}`}
           >
             <Download className="w-3 h-3 mr-1" />
             Add to calendar (.ics)
-          </a>
+          </button>
           <Button
             variant="outline"
             size="sm"
@@ -517,6 +545,9 @@ function CreateEventDialog(props: {
     return null;
   }, [title, companyId, scheduledForLocal]);
 
+  /* v25.12 NH4 — toast helper inside CreateEventDialog scope. */
+  const { toast: toastCreate } = useToast();
+
   const createMut = useMutation({
     mutationFn: async () => {
       const scheduled_for = Math.floor(
@@ -547,6 +578,8 @@ function CreateEventDialog(props: {
     onSuccess: () => {
       onCreated();
     },
+    onError: (e: Error) =>
+      toastCreate({ variant: "destructive", title: "Create event failed", description: e.message }),
   });
 
   return (

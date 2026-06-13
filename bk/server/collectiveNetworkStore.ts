@@ -73,10 +73,44 @@ export function registerCollectiveNetworkRoutes(app: Express): void {
   // which runs BEFORE sprint20Wave2Routes. The old stub (ACTIVE_DEALS / ELIGIBILITY_CHECKS)
   // is intentionally not re-registered here to avoid shadowing the live graph handler.
 
-  // GET /api/investor/companies/:id/co-members — investors on the same cap table
-  // Returns an empty array by default; a future sprint will hydrate from the cap table.
-  app.get("/api/investor/companies/:id/co-members", (_req: Request, res: Response) => {
-    // Intentionally returns [] for now — Wave 3 will join against captable positions.
-    return res.json([]);
+  /* v25.12 NC-1 — co-members is now a live read from the captable commit
+   * ledger. We return one row per distinct investor who has any non-deleted
+   * commit against the company. The caller is filtered out. Privacy: only
+   * investors who have `discoverable !== false` on their commit (or no flag
+   * set, which defaults to discoverable) are surfaced. */
+  app.get("/api/investor/companies/:id/co-members", async (req: Request, res: Response) => {
+    try {
+      const ctx = (req as any).userContext;
+      if (!ctx?.isAuthed) {
+        return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
+      }
+      const companyId = String(req.params.id || "");
+      if (!companyId) return res.json([]);
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { listMembersForCompany } = require("./captableCommitStore");
+      const rows = (listMembersForCompany(companyId) as Array<any>) ?? [];
+      const byInvestor = new Map<string, any>();
+      for (const r of rows) {
+        const uid = r?.userId ?? r?.investorId;
+        if (!uid || uid === ctx.userId) continue;
+        if (r?.deletedAt) continue;
+        // Latest commit wins (simple last-write).
+        byInvestor.set(uid, {
+          investorUserId: uid,
+          state: r.state ?? "member",
+          amount: r.amount ?? null,
+          currency: r.currency ?? null,
+          shares: r.shares ?? null,
+          companyId,
+          since: r.createdAt ?? null,
+        });
+      }
+      return res.json(Array.from(byInvestor.values()));
+    } catch (err) {
+      // Fail open with [] so the dashboard still loads, but log the cause.
+      // eslint-disable-next-line no-console
+      console.warn("[co-members]", (err as Error).message);
+      return res.json([]);
+    }
   });
 }

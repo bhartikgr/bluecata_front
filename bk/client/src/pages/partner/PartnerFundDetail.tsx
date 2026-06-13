@@ -12,6 +12,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useToast } from "@/hooks/use-toast"; /* v25.14 NC3 — pledge error toast */
 
 type Commitment = {
   id: string;
@@ -42,20 +43,30 @@ function formatMinor(minor: number, currency: string) {
 export default function PartnerFundDetail() {
   const role = useRequirePartnerRole();
   const qc = useQueryClient();
+  const { toast } = useToast();
   const [, params] = useRoute<{ id: string }>("/collective/partner/funds/:id");
   const fundId = params?.id;
   const [pledgeForm, setPledgeForm] = useState({ lpName: "", amountMinor: "0" });
 
   const { data, isLoading, error } = useQuery<{ fund: FundDetail }>({
-    queryKey: [`/api/partner/me/funds/${fundId}`],
+    /* v25.12 NL1 — explicit queryFn for robustness.
+       v25.14 NH4 — canonical 2-element queryKey so the parent list's
+       invalidateQueries({queryKey: ["/api/partner/me/funds"]}) cascades. */
+    queryKey: ["/api/partner/me/funds", fundId],
     enabled: role.ready && !!role.identity && !!fundId,
+    queryFn: async () => (await apiRequest("GET", `/api/partner/me/funds/${fundId}`)).json(),
   });
 
   const pledge = useMutation({
     mutationFn: async () => {
+      // v25.14 NL7 — client-side numeric validation before submit so the
+      // user sees an immediate, sensible error instead of a 400 Zod blob.
+      const amount = parseInt(pledgeForm.amountMinor, 10);
+      if (!pledgeForm.lpName.trim()) throw new Error("LP name required.");
+      if (!Number.isFinite(amount) || amount <= 0) throw new Error("Pledge amount must be a positive number.");
       const res = await apiRequest("POST", `/api/partner/me/funds/${fundId}/commitments`, {
         lpName: pledgeForm.lpName,
-        amountMinor: parseInt(pledgeForm.amountMinor, 10),
+        amountMinor: amount,
       });
       if (!res.ok) {
         const e = await res.json().catch(() => ({ error: "pledge_failed" }));
@@ -64,8 +75,16 @@ export default function PartnerFundDetail() {
       return res.json();
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: [`/api/partner/me/funds/${fundId}`] });
+      qc.invalidateQueries({ queryKey: ["/api/partner/me/funds", fundId] });
+      qc.invalidateQueries({ queryKey: ["/api/partner/me/funds"] });
       setPledgeForm({ lpName: "", amountMinor: "0" });
+      toast({ title: "Pledge recorded" });
+    },
+    // v25.14 NC3 — was silently swallowed; only an inline error div that
+    // reset on next mutate. Now surfaces a destructive toast.
+    onError: (e: unknown) => {
+      const msg = e instanceof Error ? e.message : "Pledge failed.";
+      toast({ title: "Pledge failed", description: msg, variant: "destructive" });
     },
   });
 
@@ -142,7 +161,11 @@ export default function PartnerFundDetail() {
                 Pledge
               </Button>
             </div>
-            {pledge.error && <div className="text-sm text-red-600">{(pledge.error as Error).message}</div>}
+            {pledge.error ? (
+              <div className="text-sm text-red-600">
+                {pledge.error instanceof Error ? pledge.error.message : String(pledge.error)}
+              </div>
+            ) : null}
           </div>
         )}
       </Card>

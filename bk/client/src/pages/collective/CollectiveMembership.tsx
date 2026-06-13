@@ -72,10 +72,16 @@ export default function CollectiveMembership() {
             <p className="text-xs mt-1">
               Contact your Collective administrator to set up your membership.
             </p>
+            {/* v25.12 NM1 — wire "Contact Admin" to a mailto link so the button is no longer dead. */}
             <Button
               variant="outline"
               className="mt-4 text-sm border-[#8E2A4E]/30 text-[#8E2A4E] hover:bg-[#8E2A4E]/05"
               data-testid="button-contact-admin"
+              onClick={() => {
+                if (typeof window !== "undefined") {
+                  window.location.href = "mailto:ops@capavate.com?subject=Collective%20Membership%20Help";
+                }
+              }}
             >
               Contact Admin
             </Button>
@@ -140,10 +146,16 @@ export default function CollectiveMembership() {
             </CardContent>
           </Card>
 
+          {/* v25.12 NM2 — wire "Upgrade Membership" to the membership page so the CTA is no longer dead. */}
           <Button
             variant="outline"
             className="w-full border-[#8E2A4E]/30 text-[#8E2A4E] hover:bg-[#8E2A4E]/05"
             data-testid="button-upgrade"
+            onClick={() => {
+              if (typeof window !== "undefined") {
+                window.location.href = "/collective/membership";
+              }
+            }}
           >
             Upgrade Membership
           </Button>

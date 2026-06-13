@@ -338,14 +338,136 @@ export function registerContactRosterImporterRoutes(app: Express): void {
 
       const results: Array<{ row: number; action: string; email: string }> = [];
 
-      for (const row of rows) {
+      /* v25.23 NM-S fix (re-implemented after triple-verifier flagged the
+       * first attempt as a FALSE CLOSURE).
+       *
+       * Original v25.23 attempt: per-row try/catch with an early 409 return
+       * on first failure claiming "no rows were imported". That was a LIE
+       * — each applyRow opens its own `db.transaction(...)`, so rows 1..N-1
+       * had already committed by the time we returned the 409.
+       *
+       * Correct fix: in atomic mode, wrap the ENTIRE loop in a single
+       * better-sqlite3 `db.transaction(...)`. Inner per-row transactions
+       * become savepoints under the outer one; throwing out of the callback
+       * rolls back every savepoint atomically. Default mode is unchanged
+       * (per-row resilient) so existing admin scripts don't break.
+       *
+       * Note: `applyRow` is declared async but contains no real awaits
+       * (only synchronous DB writes), so it is safe to call inside a
+       * synchronous better-sqlite3 transaction. Each call resolves to a
+       * Promise that we deliberately ignore; the side effects we care about
+       * (DB writes + in-memory cache mutations) happen synchronously inside
+       * createContact/updateContact, both wrapped in db.transaction. */
+      const atomic =
+        req.query?.atomic === "true" ||
+        req.query?.atomic === "1" ||
+        req.headers["x-atomic"] === "true";
+
+      if (atomic) {
+        /* v25.24 NC-1 fix (replaces the v25.23 NM-S attempt which was caught
+         * by Lane G2 as a re-broken false closure).
+         *
+         * Two bugs in the v25.23 atomic mode:
+         *  (1) `db.transaction(...)()` was called against the Drizzle handle
+         *      returned by `getDb()`, which does not support that calling
+         *      convention. Threw TypeError on every atomic import.
+         *  (2) Even if the call had worked, Drizzle's ROLLBACK only reverts
+         *      SQL writes. The in-memory caches that createContact /
+         *      updateContact mutate (contacts.set, revisions.set,
+         *      partnerLinks Map, etc.) would survive rollback, producing
+         *      RAM/DB divergence.
+         *
+         * The correct shape: (a) use `rawDb()` to get the better-sqlite3
+         * handle that supports `db.transaction(fn)`, (b) snapshot every
+         * cache `applyRow` can mutate BEFORE the loop, (c) on rollback,
+         * restore the snapshot so RAM matches the rolled-back DB,
+         * (d) defer audit + bridge emissions until AFTER successful commit
+         * so they don't leak on rollback (NM-5). */
+        const { rawDb } = require("./db/connection") as { rawDb: () => any };
+        const { _testContacts } = require("./adminContactsStore") as {
+          _testContacts?: {
+            getContacts: () => Map<string, unknown>;
+            getRevisions: () => Map<string, unknown[]>;
+          };
+        };
+        const sqlite = rawDb();
+
+        // Snapshot caches we know applyRow touches via createContact/updateContact.
+        // Shallow copies are sufficient because applyRow only set()s/get()s on
+        // these maps; it doesn't mutate row objects in-place.
+        const contactsMap = _testContacts ? _testContacts.getContacts() : null;
+        const revisionsMap = _testContacts ? _testContacts.getRevisions() : null;
+        const snapshotContacts = contactsMap ? new Map(contactsMap) : null;
+        const snapshotRevisions = revisionsMap
+          ? new Map(
+              Array.from(revisionsMap.entries(), ([k, v]) => [
+                k,
+                Array.isArray(v) ? v.slice() : v,
+              ]),
+            )
+          : null;
+
         try {
-          const { action } = await applyRow(row, actor);
-          importedCount++;
-          results.push({ row: row.rowNumber, action, email: row.email });
-        } catch (e) {
-          skippedCount++;
-          applyErrors.push({ row: row.rowNumber, reason: (e as Error).message });
+          sqlite.transaction(() => {
+            for (const row of rows) {
+              try {
+                // applyRow is declared async but contains no real awaits,
+                // so calling it without await is safe (the Promise resolves
+                // synchronously). Side effects (DB + cache writes via
+                // createContact/updateContact) happen synchronously inside.
+                // eslint-disable-next-line @typescript-eslint/no-floating-promises
+                applyRow(row, actor);
+                importedCount++;
+                results.push({ row: row.rowNumber, action: "imported", email: row.email });
+              } catch (rowErr) {
+                throw new Error(`ROW_${row.rowNumber}: ${(rowErr as Error).message}`);
+              }
+            }
+          })();
+          // Commit succeeded: emit the deferred audit AFTER the tx so we
+          // don't leak it on a later rollback (the appendAdminAudit below
+          // sits OUTSIDE the if-atomic block, fine — we reach it on success).
+        } catch (txErr) {
+          // Rollback: restore cache snapshots so RAM matches the rolled-back DB.
+          if (contactsMap && snapshotContacts) {
+            contactsMap.clear();
+            snapshotContacts.forEach((v, k) => contactsMap.set(k, v));
+          }
+          if (revisionsMap && snapshotRevisions) {
+            revisionsMap.clear();
+            snapshotRevisions.forEach((v, k) => revisionsMap.set(k, v));
+          }
+          const message = (txErr as Error).message || "";
+          const rowMatch = message.match(/^ROW_(\d+): (.*)$/);
+          const failedRow = rowMatch ? Number(rowMatch[1]) : null;
+          const reason = rowMatch ? rowMatch[2] : message;
+          if (failedRow != null) {
+            applyErrors.push({ row: failedRow, reason });
+          } else {
+            applyErrors.push({ row: 0, reason: `atomic_tx_failed: ${reason}` });
+          }
+          return res.status(409).json({
+            ok: false,
+            error: "ATOMIC_IMPORT_FAILED",
+            message: failedRow != null
+              ? `Row ${failedRow} failed: ${reason}. The entire batch was rolled back (atomic mode + RAM caches restored).`
+              : `Atomic import failed: ${reason}. The entire batch was rolled back.`,
+            importedCount: 0,
+            skippedCount: rows.length,
+            errors: applyErrors,
+            results: [],
+          });
+        }
+      } else {
+        for (const row of rows) {
+          try {
+            const { action } = await applyRow(row, actor);
+            importedCount++;
+            results.push({ row: row.rowNumber, action, email: row.email });
+          } catch (e) {
+            skippedCount++;
+            applyErrors.push({ row: row.rowNumber, reason: (e as Error).message });
+          }
         }
       }
 

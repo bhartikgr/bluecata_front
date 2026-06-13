@@ -10,6 +10,8 @@
 
 import { useParams } from "wouter";
 import { useQuery } from "@tanstack/react-query";
+/* v25.12 NL4 — explicit queryFn for the two queries below. */
+import { apiRequest } from "@/lib/queryClient";
 import { PageBody, PageHeader } from "@/components/AppShell";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -76,13 +78,17 @@ export default function AdminPartnerDetail() {
   const partnerId = params?.id ?? "";
 
   const partnerQ = useQuery<PartnerDetailResp>({
+    /* v25.12 NL4 — explicit queryFn. */
     queryKey: [`/api/admin/partners/${partnerId}`],
     enabled: !!partnerId,
+    queryFn: async () => (await apiRequest("GET", `/api/admin/partners/${partnerId}`)).json(),
   });
 
   const auditQ = useQuery<WorkspaceAuditResp>({
+    /* v25.12 NL4 — explicit queryFn. */
     queryKey: [`/api/admin/partners/${partnerId}/workspace/audit`],
     enabled: !!partnerId,
+    queryFn: async () => (await apiRequest("GET", `/api/admin/partners/${partnerId}/workspace/audit`)).json(),
   });
 
   const partner = partnerQ.data?.partner;
@@ -100,11 +106,15 @@ export default function AdminPartnerDetail() {
 
   return (
     <>
+      {/* v25.14 NM11 — /admin/partners is not a registered route in App.tsx.
+         Send the back button to the consortium applications page (the admin's
+         actual entry point for managing partners) instead of the AdminNotFound
+         404 catch-all. */}
       <PageHeader
         title={partnerQ.isPending ? "Loading partner…" : name}
         description={partner?.email ?? ""}
         actions={
-          <Link href="/admin/partners">
+          <Link href="/admin/consortium-applications">
             <Button variant="outline" size="sm">
               <ArrowLeft className="h-4 w-4 mr-1" />
               Back to Partners
@@ -146,6 +156,18 @@ export default function AdminPartnerDetail() {
         {/* ── Workspace Audit Sections ─────────────────────────────── */}
         {auditQ.isPending && (
           <p className="text-sm text-muted-foreground">Loading workspace data…</p>
+        )}
+
+        {/* v25.16 NH4 — explicit error branch; previously a failure silently
+           rendered an empty page below the partner summary. */}
+        {auditQ.isError && (
+          <div
+            className="rounded-md bg-destructive/10 text-destructive p-4 text-sm"
+            data-testid="partner-audit-error"
+          >
+            Could not load workspace audit data.{" "}
+            {(auditQ.error as Error | undefined)?.message ?? ""}
+          </div>
         )}
 
         {audit && (

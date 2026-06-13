@@ -220,6 +220,13 @@ function PathA({
         toast({ title: "Validation failed", description: data?.error ?? "Please check the form.", variant: "destructive" });
       }
     },
+    /* v25.12 NH5 — surface network / 4xx / 5xx errors so founders see
+     * why their nomination didn't submit (rate-limit, eligibility, etc). */
+    onError: (e: Error) => toast({
+      variant: "destructive",
+      title: "Nomination failed",
+      description: e.message,
+    }),
   });
 
   const canSubmit = selectedInvestorId && pitchSummary.length >= 20 && !submitMut.isPending;

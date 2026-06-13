@@ -13,7 +13,7 @@
  * No mock data, no TODOs, no stubs \u2014 every action hits a real endpoint.
  */
 
-import { useMemo } from "react";
+import { useMemo, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useCollectiveStream } from "@/lib/sseClient";
@@ -22,6 +22,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CheckCircle2, AlertCircle, ExternalLink } from "lucide-react";
+/* v25.12 NH1 + NH2 — toast errors on checkout / portal failures. */
+import { useToast } from "@/hooks/use-toast";
 
 // ----- Types --------------------------------------------------------------
 
@@ -165,6 +167,49 @@ export default function MembershipPage(): JSX.Element | null {
   // page handles 3DS itself (Airwallex SCA flow) and redirects back here on
   // success/failure. PCI scope stays out of Capavate because card data never
   // touches our origin.
+  /* v25.12 NH1 + NH2 — toast helper. */
+  const { toast } = useToast();
+
+  /* v25.22 NC-7 fix — on the success redirect from Airwallex's hosted
+   * payment page, synchronously verify the intent so the user is activated
+   * even if the webhook never lands. Without this the user pays but stays
+   * in `pending` until webhook arrival (which may take minutes, or fail
+   * entirely). The new `/api/collective/membership/verify` endpoint
+   * verifies the intent against Airwallex AND drives the billing state
+   * machine. We strip the query params on success so a refresh doesn't
+   * re-trigger. Ref guard prevents double-fire under React StrictMode. */
+  const verifyMut = useMutation({
+    mutationFn: async (intentId: string): Promise<{ ok: boolean; idempotent?: boolean }> => {
+      const resp = await apiRequest("POST", "/api/collective/membership/verify", {
+        intent_id: intentId,
+      });
+      return resp.json();
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/collective/membership/me"] });
+      toast({ title: "Membership activated", description: "You're in. Welcome." });
+    },
+    onError: (e: Error) => toast({ variant: "destructive", title: "Activation pending", description: e.message }),
+  });
+  const didVerifyRef = useRef(false);
+  useEffect(() => {
+    if (didVerifyRef.current) return;
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const status = params.get("status");
+    const intentId = params.get("intent_id");
+    if (status === "success" && intentId && intentId !== "{PAYMENT_INTENT_ID}") {
+      didVerifyRef.current = true;
+      verifyMut.mutate(intentId);
+      // Strip query params so a refresh doesn't re-trigger.
+      const url = new URL(window.location.href);
+      url.searchParams.delete("status");
+      url.searchParams.delete("intent_id");
+      window.history.replaceState({}, "", url.toString());
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const checkoutMut = useMutation({
     mutationFn: async (tier: TierDTO["tier"]): Promise<{
       checkout_url?: string | null;
@@ -176,9 +221,13 @@ export default function MembershipPage(): JSX.Element | null {
       const resp = await apiRequest("POST", "/api/collective/membership/checkout", {
         tier,
         chapter_id: activeChapterId,
+        /* v25.22 NC-7 fix — ask Airwallex to include the intent_id on the
+         * success redirect so the client can call the new
+         * /api/collective/membership/verify endpoint to drive activation
+         * synchronously rather than waiting for the webhook. */
         success_url:
           typeof window !== "undefined"
-            ? `${window.location.origin}/collective/membership?status=success`
+            ? `${window.location.origin}/collective/membership?status=success&intent_id={PAYMENT_INTENT_ID}`
             : undefined,
         cancel_url:
           typeof window !== "undefined"
@@ -195,6 +244,8 @@ export default function MembershipPage(): JSX.Element | null {
         window.location.href = targetUrl;
       }
     },
+    /* v25.12 NH1 — surface checkout errors so user knows what to retry. */
+    onError: (e: Error) => toast({ variant: "destructive", title: "Checkout failed", description: e.message }),
   });
 
   // 6) Portal mutation \u2014 POST and follow portal_url.
@@ -214,6 +265,8 @@ export default function MembershipPage(): JSX.Element | null {
         window.location.href = data.portal_url;
       }
     },
+    /* v25.12 NH2 — surface portal errors. */
+    onError: (e: Error) => toast({ variant: "destructive", title: "Could not open billing portal", description: e.message }),
   });
 
   if (!collectiveOn) return null;

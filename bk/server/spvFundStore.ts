@@ -96,7 +96,7 @@ import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
 
-import { requirePartnerAuth } from "./lib/requirePartnerAuth";
+import { requirePartnerAuth, assertSubRole } from "./lib/requirePartnerAuth"; /* v25.14 NH3 */
 import { getDb } from "./db/connection";
 import {
   spvs as spvsTable,
@@ -1264,7 +1264,10 @@ export function registerSpvFundRoutes(app: Express): void {
     res.json({ commitments: spvFundStore.listCommitments(spv.id) });
   });
 
-  app.post("/api/partner/me/spvs/:id/commitments", requirePartnerAuth, (req: Request, res: Response) => {
+  // v25.14 NH3 — was missing the assertSubRole gate; any viewer/analyst
+  // could create SPV commitment records (financial mutation). Restrict to
+  // managing_partner only.
+  app.post("/api/partner/me/spvs/:id/commitments", requirePartnerAuth, assertSubRole("managing_partner"), (req: Request, res: Response) => {
     if (!gate(req, res)) return;
     const ctx = req.partnerContext!;
     const spv = spvFundStore.getById(String(req.params.id));
@@ -1292,7 +1295,10 @@ export function registerSpvFundRoutes(app: Express): void {
     }
   });
 
-  app.patch("/api/partner/me/spvs/:id/commitments/:commitmentId", requirePartnerAuth, (req: Request, res: Response) => {
+  // v25.23 NH-F fix — PATCH commitments was previously guarded by requirePartnerAuth only;
+  // a viewer/analyst could mutate the `committedMinor` financial denorm. Match the POST gate
+  // (v25.14 NH3) by adding assertSubRole("managing_partner").
+  app.patch("/api/partner/me/spvs/:id/commitments/:commitmentId", requirePartnerAuth, assertSubRole("managing_partner"), (req: Request, res: Response) => {
     if (!gate(req, res)) return;
     const ctx = req.partnerContext!;
     const spv = spvFundStore.getById(String(req.params.id));
@@ -1335,7 +1341,10 @@ export function registerSpvFundRoutes(app: Express): void {
     res.json({ capitalCalls: spvFundStore.listCapitalCalls(spv.id) });
   });
 
-  app.post("/api/partner/me/spvs/:id/capital-calls", requirePartnerAuth, (req: Request, res: Response) => {
+  // v25.23 NC-A + NH-F fix — with the partnerRoutes.ts stub removed, this real DB-backed
+  // handler now wins dispatch. Add assertSubRole("managing_partner") to preserve the
+  // financial gate that the stub previously enforced.
+  app.post("/api/partner/me/spvs/:id/capital-calls", requirePartnerAuth, assertSubRole("managing_partner"), (req: Request, res: Response) => {
     if (!gate(req, res)) return;
     const ctx = req.partnerContext!;
     const spv = spvFundStore.getById(String(req.params.id));
@@ -1375,7 +1384,8 @@ export function registerSpvFundRoutes(app: Express): void {
     res.json({ distributions: spvFundStore.listDistributions(spv.id) });
   });
 
-  app.post("/api/partner/me/spvs/:id/distributions", requirePartnerAuth, (req: Request, res: Response) => {
+  // v25.23 NC-A + NH-F fix — see capital-calls above; same gate-preservation rationale.
+  app.post("/api/partner/me/spvs/:id/distributions", requirePartnerAuth, assertSubRole("managing_partner"), (req: Request, res: Response) => {
     if (!gate(req, res)) return;
     const ctx = req.partnerContext!;
     const spv = spvFundStore.getById(String(req.params.id));
@@ -1427,7 +1437,8 @@ export function registerSpvFundRoutes(app: Express): void {
     res.json({ positions: spvFundStore.listPositions(spv.id) });
   });
 
-  app.post("/api/partner/me/spvs/:id/db-positions", requirePartnerAuth, (req: Request, res: Response) => {
+  // v25.14 NH3 — same fix as commitments above; restrict to managing_partner.
+  app.post("/api/partner/me/spvs/:id/db-positions", requirePartnerAuth, assertSubRole("managing_partner"), (req: Request, res: Response) => {
     if (!gate(req, res)) return;
     const ctx = req.partnerContext!;
     const spv = spvFundStore.getById(String(req.params.id));

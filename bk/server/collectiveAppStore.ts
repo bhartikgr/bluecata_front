@@ -90,21 +90,112 @@ export async function hydrateCollectiveAppStore(): Promise<void> {
   void eq;
 }
 
+/**
+ * v25.12 NM-1 — DB fallback for list/get. If the in-memory mirror is
+ * empty (or contains fewer rows than the DB after a hydrate error),
+ * read directly from the DB. This prevents the admin pipeline from
+ * showing zero applications after a transient hydrate failure.
+ */
+function listApplicationsFromDb(filter?: { status?: CollectiveAppStatus }): StoredApplication[] {
+  try {
+    const db: any = getDb();
+    const rows: any[] = db
+      .select()
+      .from(collectiveAppsTable)
+      .where(isNull((collectiveAppsTable as any).deletedAt))
+      .all() as any[];
+    const out: StoredApplication[] = [];
+    for (const r of rows) {
+      let payload: any = {};
+      try { payload = JSON.parse(r.payload_json ?? r.payloadJson ?? "{}"); } catch { /* empty */ }
+      const stored: StoredApplication = {
+        ...(payload as CollectiveApplication),
+        id: r.id,
+        userId: r.user_id ?? r.userId,
+        status: (r.status ?? "submitted") as CollectiveAppStatus,
+        submittedAt: r.submitted_at ?? r.submittedAt,
+        reviewedAt: r.reviewed_at ?? r.reviewedAt ?? undefined,
+        chapterId: r.chapter_id ?? r.chapterId,
+        tenantId: r.tenant_id ?? r.tenantId,
+      };
+      if (!filter?.status || stored.status === filter.status) out.push(stored);
+    }
+    return out;
+  } catch (err) {
+    log.warn("[collectiveAppStore.listApplicationsFromDb] failed:", (err as Error).message);
+    return [];
+  }
+}
+
+function getApplicationFromDb(id: string): StoredApplication | null {
+  try {
+    const db: any = getDb();
+    const r: any = db
+      .select()
+      .from(collectiveAppsTable)
+      .where(eq(collectiveAppsTable.id, id))
+      .get();
+    if (!r) return null;
+    let payload: any = {};
+    try { payload = JSON.parse(r.payload_json ?? r.payloadJson ?? "{}"); } catch { /* empty */ }
+    return {
+      ...(payload as CollectiveApplication),
+      id: r.id,
+      userId: r.user_id ?? r.userId,
+      status: (r.status ?? "submitted") as CollectiveAppStatus,
+      submittedAt: r.submitted_at ?? r.submittedAt,
+      reviewedAt: r.reviewed_at ?? r.reviewedAt ?? undefined,
+      chapterId: r.chapter_id ?? r.chapterId,
+      tenantId: r.tenant_id ?? r.tenantId,
+    };
+  } catch (err) {
+    log.warn("[collectiveAppStore.getApplicationFromDb] failed:", (err as Error).message);
+    return null;
+  }
+}
+
 /** Patch v10 — expose for admin approval pipeline. */
 export function listApplications(filter?: { status?: CollectiveAppStatus }): StoredApplication[] {
+  /* v25.12 NM-1 — if memory is empty, fall back to a fresh DB read so
+   * admins do not see a phantom-empty list after a hydrate error. */
+  if (applications.length === 0) {
+    const fromDb = listApplicationsFromDb(filter);
+    if (fromDb.length > 0) {
+      for (const a of fromDb) applications.push(a);
+      return fromDb;
+    }
+  }
   if (!filter?.status) return applications.slice();
   return applications.filter((a) => a.status === filter.status);
 }
 
 export function getApplicationById(id: string): StoredApplication | null {
-  return applications.find((a) => a.id === id) ?? null;
+  const inMem = applications.find((a) => a.id === id);
+  if (inMem) return inMem;
+  /* v25.12 NM-1 — fall back to DB so admin detail pages do not 404
+   * after a hydrate error. */
+  return getApplicationFromDb(id);
 }
 
 export function setApplicationStatus(id: string, status: CollectiveAppStatus): StoredApplication | null {
-  const a = applications.find((x) => x.id === id);
-  if (!a) return null;
+  /* v25.21 Lane A NH-002 fix — symmetric with getApplicationById's v25.12 NM-1
+   * DB fallback. The legacy code returned null on a cache miss without
+   * touching the DB, so an admin approve/reject after a hydrate failure
+   * activated the membership (via the route's other side effects) while
+   * the application status was never persisted — a permanent
+   * member-active / application-still-submitted half-state. We now resolve
+   * the row from DB on cache miss, perform the UPDATE, AND repopulate the
+   * in-memory cache so subsequent lookups don't re-hit the DB. */
+  let a = applications.find((x) => x.id === id);
+  if (!a) {
+    const fromDb = getApplicationFromDb(id);
+    if (!fromDb) return null;
+    applications.push(fromDb);
+    a = fromDb;
+  }
   const reviewedAt = new Date().toISOString();
   // v17 Phase B — DB write-through.
+  let dbUpdateOk = false;
   try {
     const db: any = getDb();
     db.transaction((tx: any) => {
@@ -113,9 +204,15 @@ export function setApplicationStatus(id: string, status: CollectiveAppStatus): S
         .where(eq((collectiveAppsTable as any).id, id))
         .run();
     });
+    dbUpdateOk = true;
   } catch (err) {
     log.warn("[collectiveAppStore.setApplicationStatus] DB update failed (memory only):", (err as Error).message);
   }
+  /* v25.21 Lane A NH-002 fix continued — if the DB write failed, return null
+   * so the caller can short-circuit BEFORE doing irreversible activations
+   * (e.g. minting a membership row). Membership / application state must
+   * not diverge. */
+  if (!dbUpdateOk) return null;
   a.status = status;
   a.reviewedAt = reviewedAt;
   return a;
@@ -211,7 +308,21 @@ export function registerCollectiveAppRoutes(app: Express): void {
     // no `u_investor_demo` synthetic fallback; an unauthenticated check passes
     // undefined and hits the anonymous-eligibility branch.
     const userId = (req.userContext?.userId) ?? (req.query.userId as string | undefined);
-    res.json(isEligibleForCollective(userId));
+    const elig = isEligibleForCollective(userId);
+    /* v25.21 Lane C NH-1 fix — enrich the response with a `collectiveStatus`
+     * derived from the real collective membership store. Previously the
+     * client checked `elig.data?.collectiveStatus === "active"` but the
+     * server never returned that field, so active members were always shown
+     * the application wizard instead of the "already a member" banner. */
+    let collectiveStatus: "active" | "none" = "none";
+    if (userId) {
+      try {
+        // Lazy require so we don't introduce a circular import.
+        const membership = require("./collectiveMembershipStore");
+        if (membership.isActive(userId)) collectiveStatus = "active";
+      } catch { /* non-fatal */ }
+    }
+    res.json({ ...elig, collectiveStatus });
   });
 
   app.post("/api/collective/applications", requireCollectiveEnabled, (req: Request, res: Response) => {
@@ -295,9 +406,19 @@ export function registerCollectiveAppRoutes(app: Express): void {
   app.get("/api/collective/applications/mine", (req: Request, res: Response) => {
     const userId = req.userContext?.userId ?? null;
     if (!userId) return res.status(401).json({ error: "missing_identity" });
-    const mine = applications
+    /* v25.21 Lane A NM-001 fix — fall back to the DB when the in-memory
+     * cache is empty (post-hydrate-failure / fresh process). Previously
+     * a transient hydrate miss returned 404 to a valid investor for an
+     * application that exists in the DB — a UX defect that fails closed,
+     * but is still a stale-cache surface. */
+    let mine = applications
       .filter(a => a.userId === userId)
       .sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime());
+    if (mine.length === 0) {
+      mine = listApplicationsFromDb()
+        .filter((a) => a.userId === userId)
+        .sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime());
+    }
     if (mine.length === 0) return res.status(404).json({ error: "no_application_yet" });
     return res.json({ application: mine[0] });
   });
@@ -306,7 +427,14 @@ export function registerCollectiveAppRoutes(app: Express): void {
     if (!req.userContext?.isAdmin) {
       return res.status(403).json({ error: "NOT_ADMIN", message: "Admin access required." });
     }
-    res.json(applications);
+    /* v25.22 NH-3 fix — partial v25.21 closure: the /mine and /:id reads
+     * gained DB fallback, but THIS admin list endpoint kept returning the
+     * raw in-memory array. After a hydrate failure the admin saw an empty
+     * tracker for rows that exist in the DB. Union with DB-resolved rows
+     * keyed by id so the response is complete and de-duplicated. */
+    const inMemIds = new Set(applications.map((a) => a.id));
+    const fromDb = listApplicationsFromDb().filter((a) => !inMemIds.has(a.id));
+    res.json([...applications, ...fromDb]);
   });
 
   app.get("/api/collective/applications/:id", (req: Request, res: Response) => {
@@ -322,7 +450,16 @@ export function registerCollectiveAppRoutes(app: Express): void {
     if (!userId || !req.userContext?.isAuthed) {
       return res.status(401).json({ error: "NOT_AUTHED", message: "Sign in to view this application." });
     }
-    const a = applications.find((x) => x.id === req.params.id);
+    /* v25.21 Lane A NM-001 fix — DB fallback when the in-memory cache is
+     * empty (mirror of getApplicationById's v25.12 NM-1). Without the
+     * fallback a transient hydrate miss surfaces a false 404 to the row's
+     * owner. The owner-or-admin gate still runs against the DB-resolved
+     * row's userId. */
+    let a = applications.find((x) => x.id === req.params.id);
+    if (!a) {
+      const fromDb = getApplicationFromDb(String(req.params.id));
+      if (fromDb) a = fromDb;
+    }
     // Return 404 (not 403) for both "missing" and "not yours" to avoid leaking
     // which application ids exist.
     if (!a) return res.status(404).json({ error: "application_not_found" });

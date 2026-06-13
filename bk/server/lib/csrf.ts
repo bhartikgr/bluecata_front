@@ -1,9 +1,47 @@
 /**
  * Sprint 17 D2 — CSRF middleware (double-submit pattern).
  *
+ * v25.23 docstring correction (HONEST STATE OF AFFAIRS):
+ *
+ * The prior header here claimed a global `app.use("/api", csrfMiddleware)`
+ * mount. That mount does NOT exist and never has. The actual CSRF mount
+ * set as of v25.23 is intentionally narrow:
+ *   - `/api/auth/secure/*` — full csrfMiddleware (all methods).
+ *     This is the only flow that returns a csrfToken to the client
+ *     (server/lib/secureAuthRoutes.ts:84, :112, :214) AND sets the
+ *     `cap_csrf` cookie. A double-submit check works end-to-end here.
+ *   - `/api/invitations/redeem` POST — unauth bootstrap; the token IS
+ *     the credential.
+ *   - `/api/collective/applications` POST — unauth path.
+ *   - `/api/rounds` PATCH .../decision — G7 fix; client-paired.
+ *
+ * What v25.22 NH-2 and v25.23 NH-G ATTEMPTED to add (and what we have
+ * NOT shipped because the client cannot complete the double-submit
+ * handshake):
+ *   - `/api/collective`, `/api/admin/collective`, `/api/admin/consortium`,
+ *     `/api/founder/collective`, `/api/investor/collective`
+ *   - `/api/partner`, `/api/admin/partners`, `/api/admin/contacts`
+ *
+ * The blocker: the legacy `/api/auth/login` flow does NOT return the
+ * session's csrfToken to the client, and the client (apiRequest helper,
+ * every UI page) does NOT read or send an X-CSRF-Token header anywhere.
+ * Mounting CSRF on those write paths would block every authenticated
+ * write from the real product. The follow-up wave must:
+ *   1. Modify the legacy login handler to set `cap_csrf` cookie + return
+ *      `csrfToken` in the response body.
+ *   2. Add a `csrfToken` cache in `client/src/lib/queryClient.ts`.
+ *   3. Update `apiRequest` to attach `X-CSRF-Token` on every
+ *      state-mutating call.
+ *   4. THEN re-enable the v25.22 NH-2 + v25.23 NH-G mounts.
+ *
+ * In the meantime, the SameSite=Lax cookie attribute on `cap_uid`
+ * (server/lib/securityHeaders.ts) plus the CORS origin allowlist on /api
+ * (routes.ts line 317) provide meaningful CSRF mitigation for modern
+ * browsers — not as strong as a true double-submit token but a
+ * defensible interim defense.
+ *
+ * Behaviour:
  * - Token issued on session start + every login.
- * - Mounted on `app.use("/api", csrfMiddleware)` so every state-mutating
- *   request must present a matching X-CSRF-Token header.
  * - Read methods (GET/HEAD/OPTIONS) bypass.
  * - Endpoints explicitly listed in CSRF_BYPASS skip too (login/signup,
  *   webhook bridges that have their own HMAC).
@@ -30,6 +68,14 @@ const CSRF_BYPASS = [
   /^\/?invitations\/(check|redeem)(\/|$)/,
   /^\/?api\/bridge\//,             // outbound/inbound webhooks have their own HMAC
   /^\/?bridge\//,
+  /* v25.22 NH-2 fix — explicitly exempt the Airwallex + Stripe webhook
+   * paths. These are signature-authenticated (no session cookie) and
+   * cannot supply a CSRF token; without explicit bypass the new global
+   * mount below would block legitimate webhook deliveries. */
+  /^\/?api\/airwallex\/webhook\//,
+  /^\/?airwallex\/webhook\//,
+  /^\/?api\/stripe\/webhook\//,
+  /^\/?stripe\/webhook\//,
   /^\/?api\/notifications\/stream/, // SSE doesn't carry a body
   /^\/?notifications\/stream/,
   /^\/?api\/events\/stream/,        // realtime SSE, no body

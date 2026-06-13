@@ -180,6 +180,40 @@ function seedCoSoftCircle(roundId: string): CoSoftCircleMember[] {
 // QA messages store: roundId → messages
 const qaMessagesStore = new Map<string, QAMessage[]>();
 
+/**
+ * v25.11 NH5 — hydrate qaMessagesStore from kv on boot so the founder Q&A
+ * thread survives a server restart. Each persisted message is grouped back
+ * into its roundId bucket.
+ */
+export function hydrateQaMessagesStore(): number {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { hydrateEntries } = require("./lib/storePersistenceShim");
+    const rows = hydrateEntries("qaMessagesStore") as Array<[string, QAMessage & { roundId: string }]>;
+    let n = 0;
+    for (const [, msg] of rows) {
+      if (!msg || !msg.roundId) continue;
+      const arr = qaMessagesStore.get(msg.roundId) ?? [];
+      if (!arr.some((x) => x.id === msg.id)) {
+        arr.push(msg);
+        qaMessagesStore.set(msg.roundId, arr);
+        n++;
+      }
+    }
+    /* Sort each thread chronologically. */
+    const ridList: string[] = [];
+    qaMessagesStore.forEach((_arr, rid) => { ridList.push(rid); });
+    for (const rid of ridList) {
+      const arr = qaMessagesStore.get(rid)!;
+      arr.sort((a: QAMessage, b: QAMessage) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
+      qaMessagesStore.set(rid, arr);
+    }
+    return n;
+  } catch {
+    return 0;
+  }
+}
+
 function seedQaMessages(roundId: string): QAMessage[] {
   if (!DEMO_SEED_ENABLED) return [];
   const defaults: Record<string, QAMessage[]> = {
@@ -278,18 +312,23 @@ export function registerSprint21InvitationsRoutes(app: Express): void {
       }
       const { roundId } = req.params;
 
-      // Check: has this investor soft-circled?
-      // We look in the yourDecision store via the mock data approach.
-      // For a simple mock implementation, we allow the check via a query param
-      // or trust the decision record state.
-      const hasSoftCircled =
-        req.query.hasSoftCircled === "true" ||
-        req.query.state === "soft_circled" ||
-        // Fallback: investor with known soft-circle in seed data
-        (ctx.userId === "u_aisha_patel" && roundId === "rnd_novapay_seed") ||
-        // Admin override
-        ctx.isAdmin;
-
+      /* v25.11 NH5 fix — the previous check trusted a `hasSoftCircled=true`
+       * query param straight from the client, which any authenticated caller
+       * could pass to bypass the soft-circle gate and read the co-investor
+       * list. Now we verify against the canonical softCircleStore (DB-backed).
+       * Admin can still see everything. */
+      let hasSoftCircled = ctx.isAdmin;
+      if (!hasSoftCircled) {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const { listForRound } = require("./softCircleStore");
+          const rows = listForRound(roundId) as Array<{ investorUserId?: string }>;
+          hasSoftCircled = rows.some((r) => r?.investorUserId === ctx.userId);
+        } catch {
+          /* If the soft-circle store can't be read, fail closed. */
+          hasSoftCircled = false;
+        }
+      }
       if (!hasSoftCircled) {
         return res.status(403).json({ error: "investor_has_not_soft_circled" });
       }
@@ -370,6 +409,13 @@ export function registerSprint21InvitationsRoutes(app: Express): void {
       };
       messages.push(newMsg);
       qaMessagesStore.set(roundId, messages);
+      /* v25.11 NH5 — persist the new Q&A message via kv shim so the thread
+       * survives a server restart. The Map remains as the hot read path. */
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { persistEntry } = require("./lib/storePersistenceShim");
+        persistEntry("qaMessagesStore", newMsg.id, { ...newMsg, roundId });
+      } catch { /* non-fatal */ }
 
       // Emit SSE event so clients refresh
       emitMutation({ aggregate: "commsThread", id: roundId, change: "update" });

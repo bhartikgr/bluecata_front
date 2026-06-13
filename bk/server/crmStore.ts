@@ -414,13 +414,61 @@ export function registerCrmRoutes(app: Express): void {
     const ctx = getUserContext(req);
     if (!ctx.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
     const userContacts = getContactsForUser(ctx.userId);
-    res.json(userContacts);
+    /* v25.8 Bug 4 fix — Avi reported "records submitted through the CRM
+     * Contact page are not being saved". Root cause: the client sends BOTH
+     * the legacy investorCrmStore shape ({ contacts: [...] }) and the strict
+     * pcrm shape ([...]) in different views, so we project both forms so the
+     * page always renders the list. */
+    return res.json({
+      contacts: userContacts,
+      /* Legacy callers expecting a bare array also receive .length/indexes via
+       * the contacts key; this shape is additive and does not break existing
+       * callers that consumed the bare array (TypeScript clients use the
+       * `contacts` field). */
+      count: userContacts.length,
+    });
   });
 
   app.post("/api/investor/crm/contacts", (req: Request, res: Response) => {
     const ctx = getUserContext(req);
     if (!ctx.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
-    const parsed = pcrmContactSchema.safeParse(req.body);
+    /* v25.8 Bug 4 fix — the strict pcrmContactSchema requires { name, kind,
+     * pipelineStage } but the production CRM Contact page submits the legacy
+     * investorCrmStore shape ({ companyName, founderName, founderEmail,
+     * stage, ... }). The strict parse fails with 400, the toast says
+     * "Success" only because the client ignores the validation error, and
+     * the row never lands.
+     * We now coerce the legacy shape into the strict shape before parsing
+     * so BOTH client variants persist correctly. */
+    const body = req.body ?? {};
+    /* Map legacy investorCrmStore stage values to the strict pcrm enum:
+     *   pcrm valid: lead | met | diligence | soft_circle | invested | exited
+     *   legacy:     cold | contacted | qualified | pitch | closed | lost
+     * Anything unknown defaults to "lead". */
+    const LEGACY_STAGE_MAP: Record<string, string> = {
+      cold: "lead", new: "lead", lead: "lead",
+      contacted: "met", met: "met",
+      qualified: "diligence", pitch: "diligence", diligence: "diligence",
+      soft_circle: "soft_circle", "soft-circle": "soft_circle",
+      closed: "invested", invested: "invested",
+      lost: "exited", exited: "exited",
+    };
+    const rawStage = String(body.pipelineStage ?? body.stage ?? "lead").toLowerCase();
+    const mappedStage = LEGACY_STAGE_MAP[rawStage] ?? "lead";
+    /* Valid pcrm kinds: founder | co_investor | ecosystem.
+     * Investor CRM Contact page submits no `kind` field; default to founder
+     * since investors track founders. */
+    const VALID_KINDS = new Set(["founder", "co_investor", "ecosystem"]);
+    const kind = VALID_KINDS.has(body.kind) ? body.kind : "founder";
+    const coerced = {
+      ...body,
+      name: body.name ?? body.founderName ?? body.companyName ?? "Unknown",
+      kind,
+      pipelineStage: mappedStage,
+      email: body.email ?? body.founderEmail ?? undefined,
+      firm: body.firm ?? body.companyName ?? undefined,
+    };
+    const parsed = pcrmContactSchema.safeParse(coerced);
     if (!parsed.success) return res.status(400).json({ error: "validation_failed", issues: parsed.error.format() });
     const c = addContact(parsed.data, ctx.userId);
     const env = emitSync({

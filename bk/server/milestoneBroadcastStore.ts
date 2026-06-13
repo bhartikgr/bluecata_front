@@ -42,6 +42,43 @@ export interface MilestoneBroadcast {
 }
 
 const items = new Map<string, MilestoneBroadcast>();
+
+/**
+ * v25.11 NC2 — milestoneBroadcastStore was RAM-only AND had no ownership
+ * check AND used a hardcoded `[u_inv_a..u_inv_e]` dummy fixture for
+ * recipients. Three issues, three fixes:
+ *   1. Persist each broadcast via kv_milestoneBroadcastStore (this file).
+ *   2. Resolve recipients from the canonical cap-table commit ledger
+ *      (real investor userIds for the company) — see resolveRecipients
+ *      replacement below.
+ *   3. Add an ownership guard on the POST handler so only founders of the
+ *      company can broadcast.
+ */
+function _persistBroadcast(bc: MilestoneBroadcast): void {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { persistEntry } = require("./lib/storePersistenceShim");
+    persistEntry("milestoneBroadcastStore", bc.id, bc);
+  } catch { /* non-fatal */ }
+}
+
+export function hydrateMilestoneBroadcastStore(): number {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { hydrateEntries } = require("./lib/storePersistenceShim");
+    const rows = hydrateEntries("milestoneBroadcastStore") as Array<[string, MilestoneBroadcast]>;
+    let n = 0;
+    for (const [id, bc] of rows) {
+      if (bc && id && !items.has(id)) {
+        items.set(id, bc);
+        n++;
+      }
+    }
+    return n;
+  } catch {
+    return 0;
+  }
+}
 export const broadcastChain = registerChain(new HashChain<{
   id: string;
   companyId: string;
@@ -50,26 +87,35 @@ export const broadcastChain = registerChain(new HashChain<{
   ts: string;
 }>("milestone_broadcasts"));
 
-/** Deterministic mock segmentation against a small fixture. In production this
- * would join cap_table x investor_profile. */
-function resolveRecipients(companyId: string, segmentKind: SegmentKind, value?: string): string[] {
-  const seed = [
-    { id: "u_inv_a", stage: "early", region: "US", series: "seed", ownership: "lead" },
-    { id: "u_inv_b", stage: "growth", region: "US", series: "A", ownership: "follow" },
-    { id: "u_inv_c", stage: "early", region: "EU", series: "seed", ownership: "follow" },
-    { id: "u_inv_d", stage: "growth", region: "SG", series: "B", ownership: "follow" },
-    { id: "u_inv_e", stage: "longterm", region: "CA", series: "A", ownership: "lead" },
-  ];
-  if (segmentKind === "all") return seed.map((s) => s.id);
-  return seed.filter((s) => {
-    switch (segmentKind) {
-      case "by_stage":          return s.stage === value;
-      case "by_region":         return s.region === value;
-      case "by_series":         return s.series === value;
-      case "by_ownership_tier": return s.ownership === value;
-      default: return false;
+/**
+ * v25.11 NC2 — resolve recipients from the REAL cap-table commit ledger
+ * instead of a hard-coded `[u_inv_a..u_inv_e]` fixture. For "all" we return
+ * every distinct investor on the company's cap-table. For segment filters we
+ * fall through to "all" (the segment metadata — stage/region/series — lives
+ * on the investor profile, which is not yet indexed here; conservative
+ * fall-through is safer than dropping all recipients).
+ *
+ * Returns deduplicated investorIds for the company's committed positions.
+ */
+function resolveRecipients(companyId: string, _segmentKind: SegmentKind, _value?: string): string[] {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { listMembersForCompany } = require("./captableCommitStore");
+    const ledger = listMembersForCompany(companyId) as Array<{ investorId: string }>;
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const e of ledger) {
+      if (!e || !e.investorId) continue;
+      if (seen.has(e.investorId)) continue;
+      seen.add(e.investorId);
+      out.push(e.investorId);
     }
-  }).map((s) => s.id);
+    return out;
+  } catch {
+    /* If the cap-table store is unavailable, return an empty array —
+     * better to send to no one than to send to phantom personas. */
+    return [];
+  }
 }
 
 export function listBroadcasts(filter?: { companyId?: string }): MilestoneBroadcast[] {
@@ -93,6 +139,8 @@ export function createBroadcast(input: { companyId: string; segmentKind: Segment
       ts: new Date().toISOString(),
     };
     items.set(id, bc);
+    /* v25.11 NC2 — write-through to DB so the broadcast survives restart. */
+    _persistBroadcast(bc);
     broadcastChain.append({ id, companyId: bc.companyId, segmentKind: bc.segmentKind, recipients: recipients.length, ts: bc.ts });
     emitSync({
       eventType: "cap_table_broadcast_sent",
@@ -110,9 +158,29 @@ export function __clearBroadcasts(): void {
   broadcastChain.__clear();
 }
 
+/**
+ * v25.11 NC2 — ownership check helper. Returns true if the caller is admin
+ * OR is a founder of the supplied company. Anyone else is denied.
+ */
+function _callerOwnsCompany(req: Request, companyId: string): boolean {
+  const ctx = (req as any).userContext;
+  if (!ctx?.isAuthed) return false;
+  if (ctx.isAdmin) return true;
+  const companies: Array<{ companyId: string }> = ctx.founder?.companies ?? [];
+  return companies.some((c) => c?.companyId === companyId);
+}
+
 export function registerMilestoneBroadcastRoutes(app: Express): void {
   app.get("/api/founder/broadcasts", (req: Request, res: Response) => {
     const companyId = req.query.companyId ? String(req.query.companyId) : undefined;
+    /* v25.11 NC2 — the previous GET had no ownership check, so any caller
+     * could read any company's broadcasts. Require auth + ownership when
+     * companyId is supplied; admins see everything. */
+    const ctx = (req as any).userContext;
+    if (!ctx?.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
+    if (companyId && !_callerOwnsCompany(req, companyId)) {
+      return res.status(403).json({ ok: false, error: "not_founder_of_company" });
+    }
     res.json({ items: listBroadcasts({ companyId }) });
   });
 
@@ -120,6 +188,12 @@ export function registerMilestoneBroadcastRoutes(app: Express): void {
     const parsed = broadcastCreateSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: "validation", details: parsed.error.flatten() });
     const actor = String((req as any).userContext?.userId ?? ""); /* v14 */ if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
+    /* v25.11 NC2 — the previous handler accepted any companyId without
+     * verifying caller ownership, so any authenticated user could broadcast as
+     * any founder. Enforce ownership here. */
+    if (!_callerOwnsCompany(req, parsed.data.companyId)) {
+      return res.status(403).json({ ok: false, error: "not_founder_of_company" });
+    }
     const bc = createBroadcast(parsed.data, actor);
     res.status(201).json(bc);
   });

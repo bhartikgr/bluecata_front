@@ -25,6 +25,10 @@ import { createHash, randomBytes } from "node:crypto";
 import { appendAdminAudit } from "./adminPlatformStore";
 import { emitBridgeEvent } from "./bridgeStore";
 import { REGIONS_ALL } from "../client/src/lib/regions";
+import { persistEntry, hydrateEntries } from "./lib/storePersistenceShim";
+
+const PERSIST_STORE = "regionExtensionStore";
+const PERSIST_HISTORY_STORE = "regionExtensionHistoryStore";
 
 /* ============================================================
  * Type definitions
@@ -286,6 +290,10 @@ function createExtension(
 
   extensions.push(ext);
   addRevision(ext, createdBy);
+  /* v25.9 — persist ext + revision history so they survive restart.
+   * Avi: "Most of the records are being saved in memory instead of the DB." */
+  persistEntry(PERSIST_STORE, ext.id, ext);
+  persistEntry(PERSIST_HISTORY_STORE, ext.id, revisionHistory.get(ext.id) ?? []);
 
   appendAdminAudit(createdBy, `region:${id}`, "region.proposed", {
     id,
@@ -354,6 +362,9 @@ function patchExtension(
   });
 
   addRevision(ext, updatedBy);
+  /* v25.9 — persist update */
+  persistEntry(PERSIST_STORE, ext.id, ext);
+  persistEntry(PERSIST_HISTORY_STORE, ext.id, revisionHistory.get(ext.id) ?? []);
 
   appendAdminAudit(updatedBy, `region:${id}`, "region.research_updated", {
     extensionId: id,
@@ -446,6 +457,9 @@ function transitionExtension(
   });
 
   addRevision(ext, actor);
+  /* v25.9 — persist transition */
+  persistEntry(PERSIST_STORE, ext.id, ext);
+  persistEntry(PERSIST_HISTORY_STORE, ext.id, revisionHistory.get(ext.id) ?? []);
 
   // Audit event type mapping
   const auditEventMap: Partial<Record<RegionStatus, string>> = {
@@ -720,4 +734,32 @@ export function registerRegionExtensionRoutes(app: Express): void {
 
     res.json(result);
   });
+}
+
+/**
+ * v25.9 — Rehydrate region extensions + revision history from DB on boot.
+ * Avi: "Most of the records are being saved in memory instead of the
+ * database. Please fix this issue and ensure that all records are stored
+ * properly in the database tables."
+ */
+export async function hydrateRegionExtensionStore(): Promise<void> {
+  try {
+    const extEntries = hydrateEntries<RegionExtension>(PERSIST_STORE);
+    extensions.length = 0;
+    for (const [, ext] of extEntries) extensions.push(ext);
+
+    const histEntries = hydrateEntries<RegionRevision[]>(PERSIST_HISTORY_STORE);
+    revisionHistory.clear();
+    for (const [id, hist] of histEntries) revisionHistory.set(id, hist);
+
+    if (extEntries.length > 0) {
+      console.info(
+        `[hydrate] regionExtensionStore: ${extEntries.length} extensions, ${histEntries.length} revision lists restored`,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      `[hydrate] regionExtensionStore: DB read failed (non-fatal): ${(err as Error).message}`,
+    );
+  }
 }

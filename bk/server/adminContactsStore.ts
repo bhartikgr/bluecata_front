@@ -592,10 +592,62 @@ export function upsertConsortiumPartner(
   actor: string,
 ): AdminContact {
   const emailLc = (data.email || "").toLowerCase();
-  const existing = Array.from(contacts.values()).find(
+  /* v25.23 NH-I fix — the cache-only dedup could miss after a partial
+   * hydration failure or a sibling-process insert, producing a duplicate
+   * consortium_partner row with a different id (which then breaks
+   * provisionedPartnerId alignment downstream). Probe the DB as well. */
+  let existing = Array.from(contacts.values()).find(
     (c) => c.kind === "consortium_partner" && c.email.toLowerCase() === emailLc && c.status === "active",
   );
-  if (existing) return existing;
+  if (!existing) {
+    try {
+      const db = getDb();
+      const rows = db.select().from(contactsTable).all() as any[];
+      for (const r of rows) {
+        if (
+          r &&
+          r.kind === "consortium_partner" &&
+          (r.email ?? "").toLowerCase() === emailLc &&
+          (r.status ?? "active") === "active"
+        ) {
+          // Reconcile cache from DB row (defensive copy with required fields).
+          existing = (r as unknown) as AdminContact;
+          contacts.set(r.id, existing);
+          break;
+        }
+      }
+    } catch { /* non-fatal: cache lookup remains authoritative */ }
+  }
+  /* v25.24 NM-4 fix — honour preferredId on existing match.
+   * Previously, if `existing` was found by email AND `data.preferredId` was
+   * provided, we returned `existing` without checking whether its id matched
+   * `preferredId`. The consortium approval cascade then stored
+   * `provisionedPartnerId = preferredId` but the adminContacts row carried a
+   * different (earlier-minted) id. Downstream lookups by either id silently
+   * diverged. We now audit-log the mismatch loudly so operators can
+   * reconcile, and return the existing row (id mismatch is irrecoverable in
+   * this code path — changing existing.id would break every cross-table
+   * foreign-key referencing it; the caller should detect and adjust
+   * provisionedPartnerId instead). */
+  if (existing) {
+    if (data.preferredId && existing.id !== data.preferredId) {
+      try {
+        appendAdminAudit(
+          actor,
+          `contact:${existing.id}`,
+          "contact.preferredId.mismatch",
+          {
+            existingId: existing.id,
+            requestedPreferredId: data.preferredId,
+            email: emailLc,
+            kind: "consortium_partner",
+            note: "caller should use existing.id as provisionedPartnerId",
+          },
+        );
+      } catch { /* audit best-effort; v25.23 NH-J already guards chain corruption */ }
+    }
+    return existing;
+  }
   return createContact(
     {
       kind: "consortium_partner",
@@ -1286,7 +1338,7 @@ export function registerAdminContactsRoutes(app: Express): void {
   app.post("/api/admin/contacts", (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"];
     const body = req.body ?? {};
-    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    const actor = String((req as any).userContext?.userId ?? "") /* v25.18 Lane B NC1: actor from session only */;
     if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
 
     const { legalName, email, kind, type } = body;
@@ -1368,7 +1420,7 @@ export function registerAdminContactsRoutes(app: Express): void {
     if (!contact) return res.status(404).json({ ok: false, error: "not_found" });
 
     const patch = req.body ?? {};
-    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    const actor = String((req as any).userContext?.userId ?? "") /* v25.18 Lane B NC1: actor from session only */;
     if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
 
     // Strip immutable fields from patch
@@ -1419,7 +1471,7 @@ export function registerAdminContactsRoutes(app: Express): void {
     const contact = contacts.get(req.params.id);
     if (!contact) return res.status(404).json({ ok: false, error: "not_found" });
 
-    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    const actor = String((req as any).userContext?.userId ?? "") /* v25.18 Lane B NC1: actor from session only */;
     if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
 
     if (confirm !== "true") {
@@ -1451,7 +1503,7 @@ export function registerAdminContactsRoutes(app: Express): void {
     const contact = contacts.get(req.params.id);
     if (!contact) return res.status(404).json({ ok: false, error: "not_found" });
 
-    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    const actor = String((req as any).userContext?.userId ?? "") /* v25.18 Lane B NC1: actor from session only */;
     if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const { reason } = req.body ?? {};
 
@@ -1473,8 +1525,8 @@ export function registerAdminContactsRoutes(app: Express): void {
     );
     if (!updated) return res.status(404).json({ ok: false, error: "not_found" });
 
-    appendAdminAudit(actor, `contact:${req.params.id}`, "contact.suspended", { reason: reason ?? "No reason provided", version: updated.version });
-
+    /* v25.16 cross-comp NM4 — removed the duplicate appendAdminAudit call;
+       updateContact() already writes a contact.suspended audit entry. */
     res.json({ ok: true, contact: updated });
   });
 
@@ -1484,7 +1536,7 @@ export function registerAdminContactsRoutes(app: Express): void {
     const contact = contacts.get(req.params.id);
     if (!contact) return res.status(404).json({ ok: false, error: "not_found" });
 
-    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    const actor = String((req as any).userContext?.userId ?? "") /* v25.18 Lane B NC1: actor from session only */;
     if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
 
     if (confirm !== "true") {
@@ -1516,7 +1568,7 @@ export function registerAdminContactsRoutes(app: Express): void {
     const contact = contacts.get(req.params.id);
     if (!contact) return res.status(404).json({ ok: false, error: "not_found" });
 
-    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    const actor = String((req as any).userContext?.userId ?? "") /* v25.18 Lane B NC1: actor from session only */;
     if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
 
     if (confirm !== "true") {
@@ -1532,8 +1584,8 @@ export function registerAdminContactsRoutes(app: Express): void {
     const updated = updateContact(req.params.id, { status: "active" }, actor, "contact.restored");
     if (!updated) return res.status(404).json({ ok: false, error: "not_found" });
 
-    appendAdminAudit(actor, `contact:${req.params.id}`, "contact.restored", { version: updated.version });
-
+    /* v25.16 cross-comp NM4 — removed the duplicate appendAdminAudit call;
+       updateContact() already writes the audit entry. */
     res.json({ ok: true, contact: updated });
   });
 }

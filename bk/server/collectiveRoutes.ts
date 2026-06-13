@@ -19,7 +19,8 @@
 import type { Express, Request, Response } from "express";
 import { onMutation } from "./lib/eventBus";
 import { getCompanyProfile, getAllProfiles } from "./companyProfileStore";
-import { getListedCompanyIds } from "./collectiveInterestStore";
+import { getListedCompanyIds, getListedCompanyIdsForChapters, isCompanyListedInAnyChapter } from "./collectiveInterestStore";
+import { listChaptersForUser } from "./chaptersStore";
 import { partnerDealPromotionsStore } from "./partnerWorkspaceStore";
 import { getSubscription } from "./subscriptionsStore";
 import { getLatestForCompany, listFeedback, ingestDscScores } from "./dscFeedbackStore";
@@ -184,10 +185,18 @@ export function registerCollectiveRoutes(app: Express): void {
 
     // Pending applications: all collective apps in "pending" state
     // (collectiveAppStore doesn't expose a list count easily — we query via telemetry)
-    // Use telemetry event count as a proxy
+    // Use telemetry event count as a proxy.
+    //
+    // v25.21 Lane C NM-3 fix — the emitter writes
+    // `collective_application_submitted` (underscore) but this consumer
+    // filtered on `collective.application_submitted` (dot). Total mismatch
+    // meant the KPI was always 0. Accept BOTH spellings so we never lose
+    // count regardless of which form a future caller emits.
     const recentTelemetry = getRecentEvents(200);
     const pendingApps = recentTelemetry.filter(
-      (e) => e.eventType === "collective.application_submitted"
+      (e) =>
+        e.eventType === "collective.application_submitted" ||
+        e.eventType === "collective_application_submitted"
     ).length;
 
     // Recent activity feed: last 10 bridge-relevant events from bridge outbox
@@ -227,14 +236,29 @@ export function registerCollectiveRoutes(app: Express): void {
    * Companies opted into M&A or with open transactionPrep channels.
    * ----------------------------------------------------------------- */
   /* v16 F-coll-X4 — was unprotected. */
-  app.get("/api/collective/dealroom/companies", requireCollectiveMember, (_req: Request, res: Response) => {
-    const dealRoomStatuses = new Set(["exploring", "active", "closing"]);
-    const allProfiles = getAllProfiles();
+  app.get("/api/collective/dealroom/companies", requireCollectiveMember, async (req: Request, res: Response) => {
+    /* v25.22 NC-6 fix — chapter-scoped dealroom (mirror of /companies). */
+    const ctx = await getUserContext(req);
+    const userId = ctx?.userId;
+    const isAdmin = ctx?.isAdmin === true;
+    let listedIds: Set<string>;
+    if (isAdmin) {
+      listedIds = getListedCompanyIds();
+    } else if (userId) {
+      const myChapters = listChaptersForUser(userId).map((c: any) => c.id);
+      listedIds = getListedCompanyIdsForChapters(myChapters);
+    } else {
+      listedIds = new Set<string>();
+    }
 
-    // Also include companies that have a transactionPrep channel
+    const dealRoomStatuses = new Set(["exploring", "active", "closing"]);
+    const allProfiles = getAllProfiles().filter((p) => listedIds.has(p.companyId));
+
+    // Also include companies that have a transactionPrep channel (still
+    // chapter-scoped by intersection with `listedIds`).
     const channelCompanyIds = new Set(
       listChannels()
-        .filter((ch) => !ch.archivedAt)
+        .filter((ch) => !ch.archivedAt && listedIds.has(ch.companyId))
         .map((ch) => ch.companyId)
     );
 
@@ -354,17 +378,30 @@ export function registerCollectiveRoutes(app: Express): void {
    * GET /api/collective/companies
    * All companies visible to the Collective.
    * ----------------------------------------------------------------- */
-  app.get("/api/collective/companies", requireCollectiveMember, (_req: Request, res: Response) => {
-    const allProfiles = getAllProfiles();
+  app.get("/api/collective/companies", requireCollectiveMember, async (req: Request, res: Response) => {
+    /* v25.22 NC-6 fix — chapter-scoped read. The previous handler returned
+     * every chapter's companies to any active member, leaking
+     * `chap_keiretsu_canada` data to `chap_keiretsu_us` members and vice
+     * versa. We now resolve the caller's chapters via `listChaptersForUser`
+     * and filter directory listings to that set. Admins still see all
+     * chapters (CROSS-TENANT admin annotation). */
+    const ctx = await getUserContext(req);
+    const userId = ctx?.userId;
+    const isAdmin = ctx?.isAdmin === true;
+    let listedIds: Set<string>;
+    if (isAdmin) {
+      listedIds = getListedCompanyIds(); // platform-wide for admins
+    } else if (userId) {
+      const myChapters = listChaptersForUser(userId).map((c: any) => c.id);
+      listedIds = getListedCompanyIdsForChapters(myChapters);
+    } else {
+      listedIds = new Set<string>();
+    }
+
+    const allProfiles = getAllProfiles().filter((p) => listedIds.has(p.companyId));
 
     // Fall back to canonical companies if profileMap is sparse
     const canonicalById = new Map(canonicalCompanies.map((c) => [c.id, c]));
-
-    // v25.0 Track 2 B3: union the profile-derived list with explicitly-listed
-    // companies from collective_directory_listings (written on admin approval).
-    // This ensures auto-enrollment works even when the founder's profile isn't
-    // populated in companyProfileStore yet.
-    const listedIds = getListedCompanyIds();
     const profileIdSet = new Set(allProfiles.map((p) => p.companyId));
     const augmented = [
       ...allProfiles,
@@ -447,8 +484,26 @@ export function registerCollectiveRoutes(app: Express): void {
    * GET /api/collective/companies/:id
    * Single company detail for Collective view.
    * ----------------------------------------------------------------- */
-  app.get("/api/collective/companies/:id", requireCollectiveMember, (req: Request, res: Response) => {
+  app.get("/api/collective/companies/:id", requireCollectiveMember, async (req: Request, res: Response) => {
     const { id } = req.params;
+    /* v25.22 NC-6 fix — verify the requested company is listed in at least
+     * one of the caller's chapters before exposing its profile / financials.
+     * Without this guard, any active member could fetch any company's
+     * confidential cap-table aggregates by guessing the id. Admins bypass
+     * (CROSS-TENANT admin annotation). 404 (not 403) to avoid leaking which
+     * ids exist. */
+    const ctx = await getUserContext(req);
+    const userId = ctx?.userId;
+    const isAdmin = ctx?.isAdmin === true;
+    if (!isAdmin) {
+      if (!userId) {
+        return res.status(404).json({ error: "not_found" });
+      }
+      const myChapters = listChaptersForUser(userId).map((c: any) => c.id);
+      if (!isCompanyListedInAnyChapter(String(id), myChapters)) {
+        return res.status(404).json({ error: "not_found" });
+      }
+    }
     const profile = getCompanyProfile(id);
     const canonical = canonicalCompanies.find((c) => c.id === id);
     const dscFeedback = getLatestForCompany(id);
@@ -733,30 +788,33 @@ export function registerCollectiveRoutes(app: Express): void {
    * DSC/admin role only (checked via x-role header).
    * ----------------------------------------------------------------- */
   app.post("/api/collective/dsc/compute/:companyId", (req: Request, res: Response) => {
-    // Patch v9 (P0-5 / C-AUTH-3): authorize on session role + DB-stored DSC
-    // committee membership, NOT a client-supplied x-role header in production.
-    // When userContext is present (production path via loadUserContext), the
-    // session governs. When userContext is absent (legacy unit-test harnesses
-    // that mount this router standalone), fall back to the x-role header so
-    // existing tests keep passing.
-    const ctx = (req as unknown as { userContext?: { isAuthed?: boolean; isAdmin?: boolean; collective?: { role?: string | null; status?: string } } }).userContext;
-    if (ctx) {
-      const isAdmin = !!ctx.isAdmin;
-      const isDscCommittee = !!(
-        ctx.collective?.status === "active" &&
-        (ctx.collective.role === "dsc" || ctx.collective.role === "committee" || ctx.collective.role === "dsc_committee")
-      );
-      if (!ctx.isAuthed) {
-        return res.status(401).json({ error: "unauthorized", message: "Sign in required." });
-      }
-      if (!isAdmin && !isDscCommittee) {
-        return res.status(403).json({ error: "forbidden", message: "DSC committee or admin role required." });
-      }
-    } else {
-      const role = req.headers["x-role"] as string | undefined;
-      if (role !== "admin" && role !== "dsc") {
-        return res.status(403).json({ error: "forbidden", message: "DSC or admin role required." });
-      }
+    /* v25.12 NH-3 — the previous implementation had an `x-role` header
+     * fallback for the case when `req.userContext` was absent. That branch
+     * was dead code in production (the global `loadUserContext` middleware
+     * always populates a context object), but any future change to
+     * middleware ordering would silently re-expose a header-spoof bypass.
+     * Role is now read EXCLUSIVELY from the verified session context.
+     * Missing context → 401; non-DSC / non-admin → 403. */
+    const ctx = (req as unknown as {
+      userContext?: {
+        isAuthed?: boolean;
+        isAdmin?: boolean;
+        collective?: { role?: string | null; status?: string };
+      };
+    }).userContext;
+    if (!ctx) {
+      return res.status(401).json({ error: "unauthorized", message: "Sign in required." });
+    }
+    const isAdmin = !!ctx.isAdmin;
+    const isDscCommittee = !!(
+      ctx.collective?.status === "active" &&
+      (ctx.collective.role === "dsc" || ctx.collective.role === "committee" || ctx.collective.role === "dsc_committee")
+    );
+    if (!ctx.isAuthed) {
+      return res.status(401).json({ error: "unauthorized", message: "Sign in required." });
+    }
+    if (!isAdmin && !isDscCommittee) {
+      return res.status(403).json({ error: "forbidden", message: "DSC committee or admin role required." });
     }
 
     const confirm = req.headers["x-confirm"];

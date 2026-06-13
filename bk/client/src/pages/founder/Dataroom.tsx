@@ -109,7 +109,8 @@ export default function Dataroom() {
       if (!activeFolder) throw new Error("Select a folder before uploading");
       fd.append("folderId", activeFolder);
       fd.append("companyId", companyId);
-      const r = await fetch(`/api/founder/dataroom/files`, { method: "POST", body: fd });
+      // v25.10 M1 — include cookies for Safari + cross-origin compatibility.
+      const r = await fetch(`/api/founder/dataroom/files`, { method: "POST", body: fd, credentials: "include" });
       if (!r.ok) throw new Error(`upload ${r.status}`);
       return r.json();
     },

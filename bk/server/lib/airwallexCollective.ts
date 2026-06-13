@@ -213,6 +213,14 @@ export interface CreateCollectiveIntentInput {
   customerEmail?: string;
   /** Optional one-time override for the per-tier env amount (e.g. proration). */
   amountMinorOverride?: number;
+  /**
+   * v25.21 Lane A NC-002 fix — caller-supplied deterministic idempotency anchor.
+   * Renewal worker passes the billing cycle's `current_period_end` so a
+   * worker restart cannot mint a second charge against the same cycle.
+   * If omitted, the legacy time-based key is used (preserves prior behaviour
+   * for one-off checkout flows where each intent IS supposed to be unique).
+   */
+  idempotencyAnchor?: string;
 }
 
 /**
@@ -252,7 +260,14 @@ export async function createCollectiveIntent(
         tier: input.tier,
         interval: cfg.interval,
       },
-      idempotencyKey: `collective_${input.billingId}_${Date.now()}`,
+      // v25.21 Lane A NC-002 fix — use the caller-supplied anchor when present
+      // (renewal worker passes the cycle's `current_period_end`) so Airwallex's
+      // 24h duplicate-rejection window can actually fire. The legacy
+      // `Date.now()` fallback only runs for one-off checkout flows that
+      // genuinely need a unique key per click.
+      idempotencyKey: input.idempotencyAnchor
+        ? `collective_${input.billingId}_${input.idempotencyAnchor}`
+        : `collective_${input.billingId}_${Date.now()}`,
     });
 
     // Airwallex hosted payment page URL pattern: next_action.url is set on

@@ -40,6 +40,7 @@ import { appendAdminAudit } from "./adminPlatformStore";
 // a new investor to their CRM. The email send is best-effort (DB-first
 // pattern); failures are logged but do not block the contact creation.
 import { sendEmail } from "./lib/emailSender";
+import { escapeHtml as e } from "./lib/htmlEscape"; /* v25.17 Lane A NH9 */
 import { getDb, rawDb } from "./db/connection";
 import { withTenant, crossTenant } from "./lib/withTenant"; /* v14 Tier-1 Fix 4 — tenant scoping on writes */
 import { founderCrmContacts as founderCrmContactsTable } from "../shared/schema";
@@ -412,7 +413,7 @@ export function registerFounderCrmRoutes(app: Express): void {
             to: incomingEmail,
             subject: `You have been invited to connect on Capavate`,
             text: `${c.firmName === "—" ? "A founder" : c.firmName} invited you to connect on Capavate.\n\nUse this link (valid for 14 days) to set up your account:\n${redeemUrl}\n`,
-            html: `<p>${c.firmName === "—" ? "A founder" : c.firmName} invited you to connect on Capavate.</p><p><a href="${redeemUrl}">Set up your account</a></p><p>The link is valid for 14 days.</p>`,
+            html: `<p>${e(c.firmName === "—" ? "A founder" : c.firmName)} invited you to connect on Capavate.</p><p><a href="${e(redeemUrl)}">Set up your account</a></p><p>The link is valid for 14 days.</p>` /* v25.17 Lane A NH9: escape user-controlled firmName + redeemUrl */,
             category: "crm_invite",
             refId: tokenId,
           });
@@ -817,4 +818,33 @@ export async function hydrateFounderCrmStore(): Promise<void> {
  */
 export async function hydrateFounderCrmFromDatabase(_db?: unknown): Promise<void> {
   return hydrateFounderCrmStore();
+}
+
+/**
+ * v25.16 cross-comp NH1 — inverse of upsertInvestorContactFromPartner.
+ *
+ * When an admin unlinks a consortium partner from a company, the founder's
+ * CRM row that was auto-created at link time should be soft-deleted so it
+ * no longer appears as an active longterm contact. Idempotent: callers that
+ * unlink an already-unlinked relationship get a clean no-op.
+ */
+export function removeInvestorContactForPartner(companyId: string, partnerId: string): { removed: boolean } {
+  if (!companyId || !partnerId) return { removed: false };
+  const idx = contacts.findIndex(
+    (c) => c.companyId === companyId && c.investorId === partnerId,
+  );
+  if (idx < 0) return { removed: false };
+  const target = contacts[idx];
+  contacts.splice(idx, 1);
+  try {
+    const db = getDb();
+    (db as any)
+      .update(founderCrmContactsTable)
+      .set({ deletedAt: new Date().toISOString(), updatedAt: new Date().toISOString() })
+      .where(eq(founderCrmContactsTable.id, target.id))
+      .run();
+  } catch (err) {
+    log.warn("[founderCrm] removeInvestorContactForPartner DB write failed:", (err as Error).message);
+  }
+  return { removed: true };
 }

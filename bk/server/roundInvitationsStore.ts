@@ -24,7 +24,8 @@
  *     dashboard updates in real time.
  */
 import { createHash, randomBytes } from "crypto";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, inArray } from "drizzle-orm";
+import { escapeHtml as e } from "./lib/htmlEscape"; /* v25.17 Lane A NH4 */
 import { getDb, rawDb } from "./db/connection";
 import { roundInvitations as invitationsTable } from "../shared/schema";
 import { sendMail } from "./emailTransport";
@@ -273,12 +274,15 @@ export async function createInvitation(args: CreateInvitationArgs): Promise<Crea
         to: investorEmail,
         // v24.4 BUG 047 + 048 — unique per-deal subject with company + round name.
         subject: `[Capavate] You're invited to ${companyName} — ${roundName}`,
+        /* v25.17 Lane A NH4 — escape every interpolated value so an
+           attacker-controlled investorName/note/roundName/companyName cannot
+           inject markup or script into the recipient's email client. */
         html:
-          `<p>Hi ${args.investorName ?? "there"},</p>` +
-          `<p>You've been invited to participate in <strong>${roundName}</strong> at <strong>${companyName}</strong>.</p>` +
-          `<p><a href="${link}">Click here to view the invitation</a></p>` +
-          (args.note ? `<p>Note from the founder: ${args.note}</p>` : "") +
-          `<p>This invitation expires in ${args.expiryDays ?? 14} days.</p>`,
+          `<p>Hi ${e(args.investorName ?? "there")},</p>` +
+          `<p>You've been invited to participate in <strong>${e(roundName)}</strong> at <strong>${e(companyName)}</strong>.</p>` +
+          `<p><a href="${e(link)}">Click here to view the invitation</a></p>` +
+          (args.note ? `<p>Note from the founder: ${e(args.note)}</p>` : "") +
+          `<p>This invitation expires in ${e(String(args.expiryDays ?? 14))} days.</p>`,
         text:
           `You've been invited to participate in ${roundName} at ${companyName} on Capavate.\n` +
           `View it here: ${link}\n` +
@@ -382,11 +386,50 @@ export function redeemInvitation(args: RedeemInvitationArgs): RedeemInvitationRe
     throw new Error("expired");
   }
 
+  /* v25.17 Lane A NH3 — close the TOCTOU race: the in-memory guard above
+     can be raced by two concurrent redeem calls. We commit the DB UPDATE
+     conditionally on `state = 'pending'` first; only when changes === 1 do
+     we mark the in-memory row accepted. Concurrent calls see changes === 0
+     and surface 'already_redeemed'. */
+  let acceptedRowsDb = 0;
+  try {
+    const db: any = getDb();
+    db.transaction((tx: any) => {
+      const result = tx.update(invitationsTable)
+        .set({
+          state: "accepted",
+          redeemedAt: now,
+          redeemedByUserId: args.redeemedByUserId,
+          updatedAt: now,
+        } as any)
+        .where(and(
+          eq(invitationsTable.id, row.id),
+          // v25.18 Lane A NC2 — invitations are created with state='sent',
+          // not 'pending'. Both are redeemable; only `accepted` / `revoked`
+          // / `expired` are terminal.
+          inArray(invitationsTable.state as any, ["pending", "sent"] as any),
+        ))
+        .run();
+      acceptedRowsDb = Number((result as { changes?: number }).changes ?? 0);
+    });
+    if (acceptedRowsDb === 0) {
+      // Another concurrent redeem won the race. Surface that to the caller.
+      throw new Error("already_redeemed");
+    }
+  } catch (err) {
+    // If the DB write itself failed we propagate; the in-memory state has
+    // NOT been mutated yet. Re-throw the original error.
+    if ((err as Error).message === "already_redeemed") throw err;
+    // For all other errors, fall back to the legacy in-memory update path
+    // below so dev/test (no DB or test fixtures) still work.
+  }
   row.state = "accepted";
   row.redeemedAt = now;
   row.redeemedByUserId = args.redeemedByUserId;
   row.updatedAt = now;
 
+  // Best-effort additional bookkeeping in same txn for callers that read
+  // additional columns we haven't yet touched.
   try {
     const db: any = getDb();
     db.transaction((tx: any) => {
@@ -475,38 +518,49 @@ export function findByTokenHash(hash: string): RoundInvitationRow | null {
 
 /**
  * L-009 helper v23.4.13: markInvitationRedeemed
- * Atomically transitions the invitation to state='redeemed' (accepted)
- * and records redeemedAt / redeemedByUserId. Returns true if a row was
- * updated, false if the id was not found.
- * Replicates the Drizzle transaction pattern used by redeemInvitation().
+ *
+ * v25.18 Lane A NC1/NC2 hard close:
+ *   The pre-v25.18 implementation performed an unconditional UPDATE-by-id,
+ *   which (a) re-opened the v25.17 NH3 TOCTOU race (two concurrent redeems
+ *   could both succeed) and (b) the v25.17 patch landed on a sibling that is
+ *   never called. We now perform a conditional UPDATE in the only
+ *   redeemable states (`pending` and `sent`); the raw-sqlite `changes`
+ *   counter tells us whether we actually flipped the row. Concurrent callers
+ *   see false and must surface `already_redeemed`.
  */
 export function markInvitationRedeemed(id: string, redeemedByUserId?: string | null): boolean {
   const row = memInvitations.find((r) => r.id === id);
   if (!row) return false;
+  // v25.18 — only allow transition from a redeemable state.
+  if (row.state !== "pending" && row.state !== "sent") return false;
   const now = nowIso();
+  // DB-first conditional UPDATE. If we wrote zero rows somebody else
+  // already redeemed; do NOT touch the in-memory copy.
+  let dbChanged = 0;
+  try {
+    const { rawDb } = require("./db/connection") as typeof import("./db/connection");
+    const stmt = rawDb().prepare(
+      "UPDATE round_invitations SET state = 'accepted', redeemed_at = ?, redeemed_by_user_id = ?, updated_at = ? " +
+      "WHERE id = ? AND state IN ('pending','sent')",
+    );
+    const r = stmt.run(now, redeemedByUserId ?? null, now, id);
+    dbChanged = Number((r as any).changes ?? 0);
+  } catch (err) {
+    log.warn(
+      "[roundInvitationsStore.markInvitationRedeemed] DB write failed:",
+      (err as Error).message,
+    );
+    // Fall through — in-memory only update below if DB unavailable.
+  }
+  if (dbChanged === 0) {
+    // DB row was already redeemed by a concurrent caller (or doesn't exist).
+    // Refuse to mutate in-memory state.
+    return false;
+  }
   row.state = "accepted";
   row.redeemedAt = now;
   row.redeemedByUserId = redeemedByUserId ?? null;
   row.updatedAt = now;
-  try {
-    const db: any = getDb();
-    db.transaction((tx: any) => {
-      tx.update(invitationsTable)
-        .set({
-          state: "accepted",
-          redeemedAt: now,
-          redeemedByUserId: redeemedByUserId ?? null,
-          updatedAt: now,
-        } as any)
-        .where(eq(invitationsTable.id, id))
-        .run();
-    });
-  } catch (err) {
-    log.warn(
-      "[roundInvitationsStore.markInvitationRedeemed] DB write failed (in-memory updated):",
-      (err as Error).message,
-    );
-  }
   emitMutation({
     aggregate: "invitation",
     id: row.id,

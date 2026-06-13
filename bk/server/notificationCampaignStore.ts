@@ -23,6 +23,10 @@ import { emitNotification, type NotificationKind, ALL_NOTIFICATION_KINDS } from 
 import { listContacts } from "./adminContactsStore";
 import { getCompaniesForFounder } from "./multiCompanyStore";
 import { listPersonas } from "./lib/userContext";
+import { persistEntry, hydrateEntries } from "./lib/storePersistenceShim";
+
+const PERSIST_STORE = "notificationCampaignStore";
+const PERSIST_REVS_STORE = "notificationCampaignRevisionsStore";
 
 /* ============================================================
  * Types
@@ -168,6 +172,8 @@ function appendRevision(c: NotificationCampaign, action: string): void {
   const arr = revisions.get(c.id) ?? [];
   arr.push(rev);
   revisions.set(c.id, arr);
+  /* v25.9 — persist revisions */
+  persistEntry(PERSIST_REVS_STORE, c.id, arr);
 }
 
 /* ============================================================
@@ -399,6 +405,8 @@ function createCampaign(
 
   c.revisionHash = computeCampaignHash(c);
   campaigns.set(id, c);
+  /* v25.9 — persist campaign */
+  persistEntry(PERSIST_STORE, id, c);
   appendRevision(c, "campaign.created");
   appendAdminAudit(actor, `campaign:${id}`, "campaign.created", { name: c.name, audienceKind: c.audience.kind });
   emitBridgeEvent({
@@ -444,6 +452,8 @@ function updateCampaign(
 
   updated.revisionHash = computeCampaignHash(updated);
   campaigns.set(id, updated);
+  /* v25.9 — persist update */
+  persistEntry(PERSIST_STORE, id, updated);
   appendRevision(updated, action);
   appendAdminAudit(actor, `campaign:${id}`, action, { version: updated.version, changes: Object.keys(patch) });
 
@@ -636,7 +646,7 @@ export function registerNotificationCampaignRoutes(app: Express): void {
   // ── POST /api/admin/notification-campaigns ─────────────────
   app.post("/api/admin/notification-campaigns", (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"];
-    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    const actor = String((req as any).userContext?.userId ?? "") /* v25.18 Lane B NC1: actor from session only */;
     if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const body = req.body ?? {};
 
@@ -717,7 +727,7 @@ export function registerNotificationCampaignRoutes(app: Express): void {
   // ── PATCH /api/admin/notification-campaigns/:id ────────────
   app.patch("/api/admin/notification-campaigns/:id", (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"];
-    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    const actor = String((req as any).userContext?.userId ?? "") /* v25.18 Lane B NC1: actor from session only */;
     if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const c = campaigns.get(req.params.id);
     if (!c) return res.status(404).json({ ok: false, error: "not_found" });
@@ -750,7 +760,7 @@ export function registerNotificationCampaignRoutes(app: Express): void {
   // ── POST /api/admin/notification-campaigns/:id/schedule ────
   app.post("/api/admin/notification-campaigns/:id/schedule", (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"];
-    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    const actor = String((req as any).userContext?.userId ?? "") /* v25.18 Lane B NC1: actor from session only */;
     if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const c = campaigns.get(req.params.id);
     if (!c) return res.status(404).json({ ok: false, error: "not_found" });
@@ -799,7 +809,7 @@ export function registerNotificationCampaignRoutes(app: Express): void {
   // ── POST /api/admin/notification-campaigns/:id/send ────────
   app.post("/api/admin/notification-campaigns/:id/send", async (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"];
-    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    const actor = String((req as any).userContext?.userId ?? "") /* v25.18 Lane B NC1: actor from session only */;
     if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const c = campaigns.get(req.params.id);
     if (!c) return res.status(404).json({ ok: false, error: "not_found" });
@@ -826,7 +836,7 @@ export function registerNotificationCampaignRoutes(app: Express): void {
   // ── POST /api/admin/notification-campaigns/:id/cancel ──────
   app.post("/api/admin/notification-campaigns/:id/cancel", (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"];
-    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    const actor = String((req as any).userContext?.userId ?? "") /* v25.18 Lane B NC1: actor from session only */;
     if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const c = campaigns.get(req.params.id);
     if (!c) return res.status(404).json({ ok: false, error: "not_found" });
@@ -878,3 +888,28 @@ export const _testCampaigns = {
   executeCampaignSend,
   verifyCampaignChain,
 };
+
+/**
+ * v25.9 — Rehydrate campaigns + revisions from DB on boot.
+ */
+export async function hydrateNotificationCampaignStore(): Promise<void> {
+  try {
+    const campEntries = hydrateEntries<NotificationCampaign>(PERSIST_STORE);
+    campaigns.clear();
+    for (const [id, c] of campEntries) campaigns.set(id, c);
+
+    const revEntries = hydrateEntries<CampaignRevision[]>(PERSIST_REVS_STORE);
+    revisions.clear();
+    for (const [id, r] of revEntries) revisions.set(id, r);
+
+    if (campEntries.length > 0) {
+      console.info(
+        `[hydrate] notificationCampaignStore: ${campEntries.length} campaigns, ${revEntries.length} revision lists restored`,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      `[hydrate] notificationCampaignStore: DB read failed (non-fatal): ${(err as Error).message}`,
+    );
+  }
+}

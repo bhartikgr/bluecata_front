@@ -15,6 +15,7 @@ import { PageBody, PageHeader } from "@/components/AppShell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { useRequirePartnerRole } from "@/lib/partner/useRequirePartnerRole"; /* v25.15 NM12 */
 import {
   AlertTriangle,
   CheckCircle2,
@@ -127,6 +128,8 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
 /* ----------------------------- page ----------------------------- */
 
 export default function PartnerOnboardingChecklistPage() {
+  /* v25.15 NM12 — gate the page on a resolved partner identity. */
+  const role = useRequirePartnerRole();
   const [state, setState] = useState<State>({});
   const [loading, setLoading] = useState<boolean>(true);
   const [saving, setSaving] = useState<boolean>(false);
@@ -154,12 +157,18 @@ export default function PartnerOnboardingChecklistPage() {
   }, []);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (role.ready && role.identity) void load();
+  }, [load, role.ready, role.identity]);
 
+  /* v25.15 NM13 — capture previous state via setState((prev) => ...) so the
+     optimistic rollback path is not bound to a stale closure value. */
   async function toggle(key: string): Promise<void> {
-    const next = { ...state, [key]: !state[key] };
-    setState(next);
+    let prev: State = {};
+    setState((current) => {
+      prev = current;
+      return { ...current, [key]: !current[key] };
+    });
+    const next = { ...prev, [key]: !prev[key] };
     setSaving(true);
     setError(null);
     try {
@@ -169,8 +178,8 @@ export default function PartnerOnboardingChecklistPage() {
       });
       setSavedAt(new Date().toLocaleTimeString());
     } catch (e) {
-      // Roll back the optimistic toggle.
-      setState(state);
+      // Roll back the optimistic toggle using the captured previous state.
+      setState(prev);
       setError((e as Error).message);
     } finally {
       setSaving(false);
@@ -192,6 +201,9 @@ export default function PartnerOnboardingChecklistPage() {
     const total = CHECKLIST.length;
     return { done, total, pct: total === 0 ? 0 : Math.round((done / total) * 100) };
   }, [state]);
+
+  /* v25.15 NM12 — wait for partner role gate before rendering the checklist. */
+  if (!role.ready || !role.identity) return null;
 
   return (
     <>

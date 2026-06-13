@@ -221,11 +221,21 @@ export function setApplicationStatus(
   status: ApplicationStatus,
   reviewedBy?: string,
 ): CompanyApplication | null {
+  /* v25.21 Lane A NH-002 fix (REWORK after triple-verify): the legacy code
+   * mutated the in-memory row, attempted the DB write, and returned the row
+   * EVEN IF the DB write failed. The admin route then activated the
+   * founder's membership against an unpersisted status — the exact
+   * membership-active / application-still-submitted half-state the parallel
+   * fix in `collectiveAppStore` closed. We now: (1) revert the in-memory
+   * mutation if the DB write fails, (2) return null so the caller can
+   * short-circuit before activating membership. */
   const idx = applications.findIndex(a => a.id === id);
   if (idx === -1) return null;
   const now = new Date().toISOString();
-  applications[idx] = { ...applications[idx], status, reviewedAt: now };
+  const previous = applications[idx];
+  applications[idx] = { ...previous, status, reviewedAt: now };
   // v17 Phase B — DB write-through, mirror the existing pattern.
+  let dbUpdateOk = false;
   try {
     const db: any = getDb();
     db.transaction((tx: any) => {
@@ -234,8 +244,14 @@ export function setApplicationStatus(
         .where(eq((founderCollectiveApplicationsTable as any).id, id))
         .run();
     });
+    dbUpdateOk = true;
   } catch (err) {
     log.warn("[founderCollectiveApplyStore.setApplicationStatus] DB update failed (memory only):", (err as Error).message);
+  }
+  if (!dbUpdateOk) {
+    // Roll back the in-memory mutation so cache and DB stay in sync.
+    applications[idx] = previous;
+    return null;
   }
   return applications[idx];
 }
@@ -337,6 +353,25 @@ export function registerFounderCollectiveApplyRoutes(app: Express): void {
     // v16 F-coll-2 — ownership: caller must be the founder named, and own the company.
     const owner = enforceFounderOwnership(req, res, parsed.data);
     if (!owner) return; // response already sent
+    // v25.13 NM2 — reject if the same founder already has a non-rejected
+    // application for the same company. Without this guard, founders could
+    // submit duplicates (or re-apply while waitlisted), flooding the admin
+    // review queue with redundant entries for one company.
+    const existing = applications.find(
+      (a) =>
+        a.founderId === parsed.data.founderId &&
+        a.companyId === parsed.data.companyId &&
+        a.status !== "rejected",
+    );
+    if (existing) {
+      return res.status(409).json({
+        error: "duplicate_application",
+        message:
+          "An application for this company already exists. Withdraw or wait for a decision before re-applying.",
+        existingApplicationId: existing.id,
+        existingStatus: existing.status,
+      });
+    }
     const id = `capp_${randomBytes(8).toString("hex")}`;
     const submittedAt = new Date().toISOString();
     const stored: CompanyApplication = {

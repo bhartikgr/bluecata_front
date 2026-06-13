@@ -12,6 +12,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
+/* v25.12 NH11 — toast settings save failures in addition to the inline error
+ * shown elsewhere on the page. */
+import { useToast } from "@/hooks/use-toast";
 
 const TIER_RANK = { catalyst: 1, builder: 2, amplifier: 3, nexus: 4, founding_member: 5 } as const;
 
@@ -29,10 +32,16 @@ export default function PartnerSettings() {
   const [tab, setTab] = useState<"profile" | "localization" | "branding" | "notifications">("profile");
   const [form, setForm] = useState<Settings>({});
 
-  const { data, isLoading } = useQuery<{ settings: Settings }>({
+  const { data, isLoading, isError } = useQuery<{ settings: Settings }>({
+    /* v25.12 NL1 — explicit queryFn for robustness. */
+    /* v25.15 NM8 — isError surfaced for explicit error UI. */
     queryKey: ["/api/partner/me/workspace-settings"],
     enabled: role.ready && !!role.identity,
+    queryFn: async () => (await apiRequest("GET", "/api/partner/me/workspace-settings")).json(),
   });
+
+  /* v25.12 NH11 — toast helper. */
+  const { toast } = useToast();
 
   const save = useMutation({
     mutationFn: async (body: Settings) => {
@@ -43,7 +52,13 @@ export default function PartnerSettings() {
       }
       return res.json();
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/partner/me/workspace-settings"] }),
+    /* v25.16 NM1 — reset the dirty-form state after a successful save so
+       subsequent saves don't re-submit the previous diff. */
+    onSuccess: () => {
+      setForm({});
+      qc.invalidateQueries({ queryKey: ["/api/partner/me/workspace-settings"] });
+    },
+    onError: (e: Error) => toast({ variant: "destructive", title: "Settings save failed", description: e.message }),
   });
 
   if (!role.ready || !role.identity) return null;
@@ -67,7 +82,16 @@ export default function PartnerSettings() {
         ))}
       </div>
 
-      {isLoading && <div className="text-sm text-slate-500">Loading…</div>}
+      {isLoading && <div className="text-sm text-slate-500" data-testid="settings-loading">Loading…</div>}
+      {/* v25.15 NM8 — explicit error branch. */}
+      {isError && (
+        <div
+          className="rounded-md border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900"
+          data-testid="settings-error"
+        >
+          Could not load settings. Please refresh and try again.
+        </div>
+      )}
 
       {tab === "profile" && (
         <Card className="p-4 space-y-3" data-testid="partner-settings-profile">

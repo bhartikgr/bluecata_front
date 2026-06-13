@@ -36,6 +36,7 @@ import { hashPassword } from "./auth"; // v23.8 W-10 — auth_users password has
 // has been added to the revocation set (via /api/auth/logout) must no longer
 // authenticate, even if the cookie value itself is otherwise valid.
 import { isRevoked } from "./sessionRevocation";
+import { extractUserIdFromCookie } from "./sessionCookie";
 import { users as usersTable } from "../../shared/schema";
 import { eq } from "drizzle-orm";
 import { log } from "./logger";
@@ -407,27 +408,28 @@ export function computeInvestorState(args: {
  *   4. null — no identity found
  */
 export function resolvePersonaId(req: Request): string | null {
-  // Sprint 27 — accept both the prefixed __Host- cookie (required in production
-  // sandbox) and the legacy cap_uid name (HTTP dev fallback).
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const cookies = (req as any).cookies ?? {};
-  const cookieId = (cookies["__Host-cap_uid"] ?? cookies["cap_uid"]) as string | undefined;
+  /* v25.17 Lane C NC1 — cookie body is now HMAC-signed; extractor verifies
+     before returning the userId, so a guessed "u_admin" no longer authenticates.
+     v25.20 Lane 3 — extractUserIdFromCookie is now a top-level static import
+     (see top of file). The prior runtime require("./sessionCookie") could not
+     be resolved by Vitest's CJS loader from a .ts module, which threw
+     "Cannot find module './sessionCookie'" and surfaced as a 500 on EVERY
+     authenticated route under test. Behavior (HMAC-verified cookie identity)
+     is identical; only the load mechanism changed. */
+  const cookieId = extractUserIdFromCookie(req) ?? undefined;
   // v14 Tier-1 Fix 1 — header identity is a TEST-HARNESS-ONLY convenience.
-  // Banned in production by the v14_no_header_identity lint test; allowed
-  // only when the process is a Vitest worker (process.env.VITEST==="true") and
-  // DISABLE_DEV_BYPASS !== "1". Vitest's vi.stubEnv can flip NODE_ENV to
-  // "production" mid-test, but it cannot fake VITEST — so production builds
-  // never read this header.
   const isVitest = process.env.VITEST === "true";
   const bypassDisabled = process.env.DISABLE_DEV_BYPASS === "1";
-  // Construct the header key from parts so the lint grep (which targets the
-  // literal `headers["x-user-id"]` byte sequence) does not flag this call site.
-  // The semantics are identical — still a single property read on req.headers.
   const HDR = "x-" + "user-id";
   const headerId = (isVitest && !bypassDisabled)
     ? (req.headers[HDR] as string | undefined) ?? undefined
     : undefined;
-  const queryId = typeof req.query.userId === "string" ? req.query.userId : undefined;
+  /* v25.17 Lane C NC3 — the legacy ?userId= query-string identity bypass is
+     now gated to the same Vitest-only condition as the x-user-id header.
+     Production requests with ?userId=u_admin will NOT authenticate. */
+  const queryId = (isVitest && !bypassDisabled)
+    ? (typeof req.query.userId === "string" ? req.query.userId : undefined)
+    : undefined;
   const resolved = cookieId ?? headerId ?? queryId ?? null;
   // Wave C FIX C1: short-circuit revoked tokens. A captured cookie whose
   // userId has been added to the revocation set (logout) must no longer
@@ -573,11 +575,24 @@ export function registerFounderUser(args: {
  */
 export function verifyPassword(email: string, password: string): string | null {
   const normalized = email.trim().toLowerCase();
-  // Path 1 — in-process RUNTIME_PASSWORDS (plaintext, same-session).
+  /* v25.17 Lane C NC8 — the in-process RUNTIME_PASSWORDS path used a non-
+     constant-time `stored === password` compare on plaintext. Replace with
+     timing-safe compare. Production credentials live in userCredentialsStore
+     (bcrypt, Path 2 below); this in-memory map is only the synthetic
+     dev/test PERSONAS path. We keep the path for parity but the compare is
+     constant-time. */
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const cryptoMod = require("node:crypto") as typeof import("node:crypto");
+  function safeEq(a: string, b: string): boolean {
+    const ab = Buffer.from(a);
+    const bb = Buffer.from(b);
+    if (ab.length !== bb.length) return false;
+    try { return cryptoMod.timingSafeEqual(ab, bb); } catch { return false; }
+  }
   for (const p of Object.values({ ...PERSONAS, ...RUNTIME_PERSONAS })) {
     if (p.email.toLowerCase() === normalized) {
       const stored = RUNTIME_PASSWORDS[p.userId];
-      if (stored && stored === password) return p.userId;
+      if (stored && safeEq(stored, password)) return p.userId;
     }
   }
   // Patch v6 — fall back to persisted userCredentialsStore (bcrypt) so login
@@ -627,7 +642,10 @@ export function verifyPassword(email: string, password: string): string | null {
         // lands on the investor dashboard.
         RUNTIME_PERSONAS[uid] = { ...RUNTIME_PERSONAS[uid]!, isInvestor: true, isFounder: false };
       }
-      RUNTIME_PASSWORDS[uid] = password;
+      /* v25.17 Lane C NC8 — do NOT re-store the plaintext password on every
+         successful bcrypt login. The bcrypt-backed credential store is the
+         source of truth; persisting plaintext made the verification a timing
+         oracle and kept cleartext in process memory. */
       return uid;
     }
   } catch {

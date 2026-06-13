@@ -101,7 +101,9 @@ describe("CP Phase B — promotion moderation lifecycle", () => {
   it("new collective_deal_room promotion is pending and NOT live", () => {
     const p = newPromotion();
     expect(p.moderationStatus).toBe("pending");
-    expect(p.status).toBe("live"); // promotion-status is live; visibility is gated by moderationStatus
+    // v25.15 F2-NH1 — status is now distinctly "pending_collective_review" on
+    // create; only flipped to "live" by chapter-admin moderation approval.
+    expect(p.status).toBe("pending_collective_review");
     const live = partnerDealPromotionsStore.listLiveCollectivePromotions();
     expect(live.find((x) => x.id === p.id)).toBeUndefined();
     const pending = partnerDealPromotionsStore.listPendingModeration();

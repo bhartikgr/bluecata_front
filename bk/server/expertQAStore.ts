@@ -156,8 +156,14 @@ function computeHash(
   prevHash: string | null,
   payload: Record<string, unknown>,
 ): string {
+  // v25.13 NM1 — use the canonical "GENESIS" sentinel (matches every other
+  // hash-chained store in the codebase: adminDscRoutes, captableCommitStore,
+  // chapterAnnouncementsStore, chapterResourcesStore, collectiveBillingStore,
+  // collectiveOffersStore, collectiveSettingsStore, consortiumApplyStore,
+  // dscVoteStore). Empty-string sentinel previously broke cross-store audit
+  // verification tooling.
   const h = createHash("sha256");
-  h.update(prevHash ?? "");
+  h.update(prevHash ?? "GENESIS");
   h.update("|");
   h.update(JSON.stringify(payload));
   return h.digest("hex");
@@ -414,6 +420,10 @@ function recomputeReputationInTx(
     .all() as any[];
   const questionsAsked = Number(questionsAskedRows[0]?.c ?? 0);
 
+  // v25.13 NM9 — exclude deleted answers from the reputation count. The
+  // bestAnswers count (below) already filters via deletedAt; without the
+  // same filter here, a user who repeatedly posted-then-deleted answers
+  // would accumulate unbounded reputation.
   const answersGivenRows = tx
     .select({ c: sql<number>`count(*)` })
     .from(answersTable)
@@ -422,6 +432,7 @@ function recomputeReputationInTx(
         and(
           eq(answersTable.responderUserId, userId),
           eq(answersTable.chapterId, chapterId),
+          isNull(answersTable.deletedAt),
         )!,
         { tenantId, table: answersTable },
       ),

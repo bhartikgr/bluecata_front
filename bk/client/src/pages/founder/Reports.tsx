@@ -289,6 +289,9 @@ type SendSummary = { recipientCount: number; sentCount: number; failedCount: num
 type CapTableHolder = { userId: string; name: string; email: string; ownershipPct: number };
 
 function SendDialog({ report, onClose, onSent }: { report: Report; onClose: () => void; onSent: (summary: SendSummary) => void }) {
+  // v25.20 Lane 5 NH fix: SendDialog needs toast access so we can surface
+  // delivery failures — previously the mutation rejected silently.
+  const { toast } = useToast();
   // v23.8 W-5/BUG-003 — recipients come from the cap-table holders endpoint,
   // NOT the CRM. The chosen userIds therefore always match what /send
   // validates against, so a valid pick can never 400 (INVALID_RECIPIENTS).
@@ -326,6 +329,17 @@ function SendDialog({ report, onClose, onSent }: { report: Report; onClose: () =
     },
     // v23.4.8 — BUG 003/023: forward delivery summary to caller for the toast.
     onSuccess: (data) => onSent({ recipientCount: data?.recipientCount ?? selected.size, sentCount: data?.sentCount ?? 0, failedCount: data?.failedCount ?? 0 }),
+    // v25.20 Lane 5 NH fix: surface delivery failures. Previously a 4xx/5xx
+    // from /reports2/:id/send rejected the mutation silently — the dialog
+    // stayed open with no feedback. Show an error toast and keep the dialog
+    // open so the founder can retry or pick different recipients.
+    onError: (err: Error) => {
+      toast({
+        title: "Send failed",
+        description: err?.message || "The report could not be sent. Please try again.",
+        variant: "destructive",
+      });
+    },
   });
 
   return (

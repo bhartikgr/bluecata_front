@@ -18,6 +18,9 @@
 import type { Express, Request, Response } from "express";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 import { getLedger } from "./captableCommitStore";
+import { persistEntry, hydrateEntries } from "./lib/storePersistenceShim";
+
+const PERSIST_STORE = "membershipStore";
 
 type MembershipStatus = {
   userId: string;
@@ -183,6 +186,9 @@ export function upsertActiveMembership(
         canApplyToCollective: true,
       };
   MOCK_MEMBERSHIP[userId] = next;
+  /* v25.9 — persist so admin approval survives restart.
+   * Avi: "Most of the records are being saved in memory instead of the DB." */
+  persistEntry(PERSIST_STORE, userId, next);
   return next;
 }
 
@@ -200,6 +206,8 @@ export function deactivateMembership(userId: string): MembershipStatus | null {
     reason: "Deactivated by admin (v16 unified write).",
   };
   MOCK_MEMBERSHIP[userId] = next;
+  /* v25.9 — persist deactivation */
+  persistEntry(PERSIST_STORE, userId, next);
   return next;
 }
 
@@ -304,4 +312,19 @@ export function registerMembershipRoutes(app: Express): void {
       enforcedAt: new Date().toISOString(),
     });
   });
+}
+
+/**
+ * v25.9 — Rehydrate memberships from DB on boot.
+ */
+export async function hydrateMembershipStore(): Promise<void> {
+  try {
+    const entries = hydrateEntries<MembershipStatus>(PERSIST_STORE);
+    for (const [userId, m] of entries) MOCK_MEMBERSHIP[userId] = m;
+    if (entries.length > 0) {
+      console.info(`[hydrate] membershipStore: ${entries.length} memberships restored`);
+    }
+  } catch (err) {
+    console.warn(`[hydrate] membershipStore: DB read failed (non-fatal): ${(err as Error).message}`);
+  }
 }

@@ -49,7 +49,10 @@ export function useRequirePartnerRole(): PartnerRoleState {
     if (q.error && q.error.message === "AUTH_REQUIRED") {
       navigate("/login");
     } else if (q.error && q.error.message === "PARTNER_NOT_FOUND") {
-      navigate("/partner/no-access");
+      // v25.13 NC3 — /partner/no-access was never registered. Send to
+      // /partner/login with an error param so the login page can render
+      // a meaningful banner instead of a generic 404.
+      navigate("/partner/login?error=no_access");
     }
   }, [q.error, navigate]);
 

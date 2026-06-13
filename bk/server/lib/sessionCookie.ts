@@ -12,6 +12,8 @@
  * One source of truth for cookie name + flags lives here.
  */
 import type { Response, Request } from "express";
+import * as crypto from "node:crypto";
+import { SESSION_COOKIE_SECRET } from "./auth";
 
 /** Production cookie name (prefixed) — proxy-safe in *.pplx.app sandbox. */
 export const SESSION_COOKIE = "__Host-cap_uid";
@@ -54,37 +56,121 @@ const SESSION_COOKIE_MAX_AGE_MS = 4 * 60 * 60 * 1000; // 4 hours == 14400s
  * which requires `Secure`, `Path=/`, and no `Domain` attribute. In dev we
  * fall back to the plain cookie name so HTTP `127.0.0.1` still works.
  */
-export function setSessionCookie(res: Response, value: string): void {
-  if (isProductionHttps) {
-    res.cookie(SESSION_COOKIE, value, {
-      httpOnly: true,
-      secure: true,
-      sameSite: "lax",
-      path: "/",
-      maxAge: SESSION_COOKIE_MAX_AGE_MS,
-    });
-  } else {
-    res.cookie(LEGACY_SESSION_COOKIE, value, {
-      httpOnly: true,
-      sameSite: "lax",
-      path: "/",
-      maxAge: SESSION_COOKIE_MAX_AGE_MS,
-    });
+/* v25.17 Lane C NC1 — cookie value is now an HMAC-signed envelope, not the
+   raw userId. Format: <userIdBase64Url>.<issuedAtSec>.<HMAC-SHA256>. Anyone
+   who guessed "u_admin" before would land on the admin persona; that path
+   is closed because the HMAC requires the server secret.
+
+   Cookies issued before this fix have a different shape (raw userId). To
+   stay backward-compatible for already-logged-in sessions, readSessionCookie
+   accepts both shapes:
+     1. If the cookie contains two dots and the HMAC verifies → return userId.
+     2. Else → treat the entire cookie as the legacy raw userId (transitional).
+   The legacy fallback can be removed in a follow-up wave once all sessions
+   have rotated. */
+
+function b64url(buf: Buffer): string {
+  return buf.toString("base64").replace(/=+$/, "").replace(/\+/g, "-").replace(/\//g, "_");
+}
+function b64urlDecode(s: string): Buffer {
+  const pad = s.length % 4 === 0 ? "" : "=".repeat(4 - (s.length % 4));
+  return Buffer.from(s.replace(/-/g, "+").replace(/_/g, "/") + pad, "base64");
+}
+
+/** Build a signed cookie body that encodes the userId + issuedAt. */
+export function signSessionValue(userId: string): string {
+  const iss = Math.floor(Date.now() / 1000);
+  const uidEnc = b64url(Buffer.from(userId, "utf8"));
+  const head = `${uidEnc}.${iss}`;
+  const mac = b64url(crypto.createHmac("sha256", SESSION_COOKIE_SECRET).update(head).digest());
+  return `${head}.${mac}`;
+}
+
+/** Verify a signed cookie body and return the userId, or null if invalid/expired. */
+export function verifySessionValue(value: string, maxAgeSec: number = SESSION_COOKIE_MAX_AGE_MS / 1000): string | null {
+  if (!value || typeof value !== "string") return null;
+  const parts = value.split(".");
+  if (parts.length !== 3) return null;
+  const [uidEnc, issStr, mac] = parts;
+  const head = `${uidEnc}.${issStr}`;
+  const expected = b64url(crypto.createHmac("sha256", SESSION_COOKIE_SECRET).update(head).digest());
+  const a = Buffer.from(mac);
+  const e = Buffer.from(expected);
+  if (a.length !== e.length) return null;
+  try {
+    if (!crypto.timingSafeEqual(a, e)) return null;
+  } catch {
+    return null;
+  }
+  const iss = Number(issStr);
+  if (!Number.isFinite(iss)) return null;
+  if (Math.floor(Date.now() / 1000) - iss > maxAgeSec) return null;
+  try {
+    const userId = b64urlDecode(uidEnc).toString("utf8");
+    if (!userId) return null;
+    return userId;
+  } catch {
+    return null;
   }
 }
 
-/** Clear both cookie variants on logout. */
+export function setSessionCookie(res: Response, value: string): void {
+  /* v25.17 Lane C NC1 — always sign the cookie body. Callers pass the userId;
+     we wrap it in an HMAC envelope before writing. */
+  const signed = signSessionValue(value);
+  const opts = {
+    httpOnly: true,
+    sameSite: "lax" as const,
+    path: "/",
+    maxAge: SESSION_COOKIE_MAX_AGE_MS,
+  };
+  if (isProductionHttps) {
+    res.cookie(SESSION_COOKIE, signed, { ...opts, secure: true });
+  } else {
+    res.cookie(LEGACY_SESSION_COOKIE, signed, opts);
+  }
+}
+
+/* v25.17 Lane C NL4 — clearSessionCookie now uses matching attributes for both
+   cookie names so the legacy cookie reliably clears under all browsers. */
 export function clearSessionCookie(res: Response): void {
   res.clearCookie(SESSION_COOKIE, { path: "/", secure: true, sameSite: "lax" });
-  res.clearCookie(LEGACY_SESSION_COOKIE, { path: "/" });
+  res.clearCookie(LEGACY_SESSION_COOKIE, { path: "/", sameSite: "lax" });
 }
 
 /**
- * Read the session cookie from the request, accepting both the prefixed
- * production name and the legacy dev name. Falls back to x-user-id header
- * for the test harness.
+ * Read the session cookie from the request and return the raw cookie body.
+ * Accepts both the prefixed production name and the legacy dev name.
+ * Does NOT verify the signature — callers should use `extractUserIdFromCookie`
+ * for that.
  */
 export function readSessionCookie(req: Request): string | undefined {
   const cookies = (req as Request & { cookies?: Record<string, string> }).cookies ?? {};
   return cookies[SESSION_COOKIE] ?? cookies[LEGACY_SESSION_COOKIE];
+}
+
+/**
+ * v25.17 Lane C NC1 — single canonical extractor that callers should prefer.
+ * Returns the userId if the cookie body verifies, else null.
+ *
+ * v25.18 Lane C NC1 (hard close):
+ *   The v25.17 legacy raw-userId fallback was a zero-credential admin
+ *   takeover (any attacker could send `__Host-cap_uid=u_admin`). The
+ *   `STRICT_SESSION_COOKIE` env knob is now DEFAULT-ON and required to be
+ *   explicitly set to `0` to re-enable the (deprecated) legacy path —
+ *   intended only for emergency rollback during the v25.18 cutover window.
+ *   In production the legacy path is NEVER honoured regardless of the env
+ *   var. After v25.18 the legacy path will be removed entirely.
+ */
+export function extractUserIdFromCookie(req: Request): string | null {
+  const raw = readSessionCookie(req);
+  if (!raw) return null;
+  if (raw.split(".").length === 3) {
+    return verifySessionValue(raw);
+  }
+  // v25.18 — strict-by-default. Only honour the legacy raw-userId fallback
+  // when the operator has explicitly opted out AND we are not in production.
+  if (process.env.NODE_ENV === "production") return null;
+  if (process.env.STRICT_SESSION_COOKIE !== "0") return null;
+  return raw;
 }

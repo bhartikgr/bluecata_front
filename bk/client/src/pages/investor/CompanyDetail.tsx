@@ -368,16 +368,17 @@ export default function InvestorCompanyDetail() {
  <td className="px-3 py-2.5 text-right font-mono tabular-nums text-muted-foreground">{fmtBytes(f.sizeBytes)}</td>
  <td className="px-5 py-2.5 text-right">
  <div className="inline-flex gap-1">
- {/* Sprint 20 Wave 2 — doc view/download handlers */}
+ {/* v25.18 Lane D NC1 + NC3 — server-streaming download instead of a
+     potentially-tainted `(f as any).url`. The streaming endpoint
+     enforces v25.17 Lane A NC1 dataroom auth + per-investor permission. */}
  <Button size="sm" variant="ghost" data-testid={`button-view-${f.id}`}
- onClick={() => (f as any).url ? window.open((f as any).url, "_blank") : toast({ title: "No URL", description: "Document URL not available in preview." })}>
+ onClick={() => { try { window.open(`/api/dataroom/files/${encodeURIComponent(f.id)}/download?disposition=inline`, "_blank", "noopener,noreferrer"); } catch { toast({ title: "Could not open", description: "Please try the download button instead." }); } }}>
  <Eye className="h-3.5 w-3.5" />
  </Button>
  <a
- href={(f as any).url ?? "#"}
- download={f.name}
+ href={`/api/dataroom/files/${encodeURIComponent(f.id)}/download`}
+ rel="noopener noreferrer"
  tabIndex={-1}
- onClick={(e) => { if (!(f as any).url) { e.preventDefault(); toast({ title: "No URL", description: "Document URL not available in preview." }); } }}
  >
  <Button size="sm" variant="ghost" data-testid={`button-dl-${f.id}`}><Download className="h-3.5 w-3.5" /></Button>
  </a>
@@ -735,7 +736,19 @@ function MaIntelligenceSection({ intel, companyId }: { intel: MaIntelligence; co
  });
  return r.json();
  },
- onSuccess: (_d, vars) => toast({ title: vars === "lead_initiative" ? "Lead initiative started" : "Discussion thread started" }),
+ onSuccess: (_d, vars) => {
+ /* v25.11 NM-3 + NL-4 — prior version had no onError and did not invalidate
+  * the initiatives list. Add both so failures surface a toast and any
+  * dashboard component that reads /api/investor/ma/initiatives refreshes. */
+ toast({ title: vars === "lead_initiative" ? "Lead initiative started" : "Discussion thread started" });
+ queryClient.invalidateQueries({ queryKey: ["/api/investor/ma/initiatives"] });
+ queryClient.invalidateQueries({ queryKey: ["/api/investor/ma/intelligence", companyId] });
+ },
+ onError: (err: Error) => toast({
+ title: "Could not start M&A initiative",
+ description: err.message || "Please try again.",
+ variant: "destructive",
+ }),
  });
 
  return (

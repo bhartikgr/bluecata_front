@@ -13,12 +13,34 @@
 import * as crypto from "node:crypto";
 import { rawDb } from "../db/connection";
 
+/* v25.17 Lane E NC1 — JWT_SECRET must be set in production. Silent
+   per-process fallback caused every restart to invalidate all sessions,
+   and under PM2 multi-worker it minted a different secret per worker
+   (intermittent 401s). Now: fail fast in production, warn loudly in dev. */
 const JWT_SECRET = (() => {
   const s = process.env.JWT_SECRET;
   if (s && s.length >= 32) return s;
-  // Generate a stable per-process secret in dev/preview so existing
-  // sessions survive hot reloads within a single process.
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(
+      "[auth] JWT_SECRET must be set to a >=32 char value in production. Refusing to boot.",
+    );
+  }
+  // eslint-disable-next-line no-console
+  console.warn(
+    "[auth] WARNING: JWT_SECRET is unset \u2014 using ephemeral per-process random secret. Set JWT_SECRET in .env (>=32 chars) to persist sessions across restarts. (dev/test only)",
+  );
   return crypto.randomBytes(48).toString("hex");
+})();
+
+/* v25.17 Lane C NC1 — dedicated session-cookie HMAC. Exported so sessionCookie
+   can sign cookie bodies. Falls back to JWT_SECRET when SESSION_COOKIE_SECRET
+   is unset so existing deployments keep working without a new env var; the
+   same fail-fast rule applies in production. */
+export const SESSION_COOKIE_SECRET = (() => {
+  const s = process.env.SESSION_COOKIE_SECRET;
+  if (s && s.length >= 32) return s;
+  // Reuse JWT_SECRET as a sensible default — still high-entropy, server-only.
+  return JWT_SECRET;
 })();
 
 const ACCESS_TTL_SEC = 30 * 60;          // 30-min sliding access token

@@ -51,16 +51,19 @@ export default function PartnerSignup() {
             Consortium partners are vetted accelerator programs, angel networks, syndicates, and family offices that
             bring their founders, investors, and deals onto Capavate as a single managed portfolio.
           </p>
-          <Link href="/apply/consortium">
-            <Button
-              className="w-full bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_17%)] text-white"
-              data-testid="button-apply-consortium"
-            >
+          {/* v25.15 NM10 — wouter Link inside Button used asChild to avoid
+             nested <a><button> producing invalid HTML. */}
+          <Button
+            asChild
+            className="w-full bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_17%)] text-white"
+            data-testid="button-apply-consortium"
+          >
+            <Link href="/apply/consortium">
               <FileText className="h-4 w-4 mr-2" />
               Start a partner application
               <ArrowRight className="h-4 w-4 ml-2" />
-            </Button>
-          </Link>
+            </Link>
+          </Button>
         </div>
 
         {/* What you get */}
@@ -113,15 +116,17 @@ export default function PartnerSignup() {
 
         {/* Redeem invite token */}
         <div className="border-t pt-4 text-xs text-muted-foreground" data-testid="partner-redeem-token-section">
+          {/* v25.12 NM3 — the previous link pointed at the investor/founder
+           * redemption page (`/auth/redeem` → POST /api/auth/redeem). Partner
+           * invite tokens live at /auth/redeem-partner-invite/:token and
+           * call a different endpoint. Since the token is in the URL path,
+           * we instruct the user to open the full link from their email
+           * rather than typing it in here. */}
           <span className="font-medium text-foreground">Already received a partner invite token?</span>{" "}
-          <Link
-            href="/auth/redeem"
-            className="text-[hsl(184_98%_22%)] hover:underline inline-flex items-center gap-1"
-            data-testid="link-redeem-partner-token"
-          >
+          <span className="text-[hsl(184_98%_22%)] inline-flex items-center gap-1" data-testid="link-redeem-partner-token">
             <KeyRound className="h-3 w-3" />
-            Redeem your token
-          </Link>
+            Open the full activation link from your invitation email
+          </span>
         </div>
       </div>
     </AuthShell>

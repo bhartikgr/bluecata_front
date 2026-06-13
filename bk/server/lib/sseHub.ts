@@ -51,6 +51,9 @@ export const SSE_TOPICS = [
   "consortium-apply",
   "promotion-moderation",
   "gdpr",
+  // v25.13 NM5 — chapter admin promote/demote events so SSE consumers can
+  // refresh stale role displays without a manual page reload.
+  "admins",
 ] as const;
 export type SseTopic = (typeof SSE_TOPICS)[number];
 

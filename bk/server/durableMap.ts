@@ -1,40 +1,41 @@
 /**
  * Sprint 29 KL-03 — Durable Map helper.
  *
- * @deprecated DO NOT ADOPT IN NEW CODE.
+ * **v25.21 Lane D NC-001 fix — implementation completed.**
  *
- * This was a Sprint 29 attempt at a transparent Map-to-DB write-through. It
- * was never finished: `writeThrough` and `deleteThrough` below are still
- * `console.log` stubs that print "would upsert if Drizzle pg driver were
- * active" but never actually write. Furthermore, the intended target is a
- * single key-value `sync_inbox_state` blob table — not the real schema
- * tables. That defeats the whole purpose of having a typed Drizzle schema.
+ * Historical note: this helper shipped in Sprint 29 with `console.log` stubs
+ * for `writeThrough` / `deleteThrough` and was marked `@deprecated DO NOT
+ * ADOPT IN NEW CODE`. Patch v12 (May 19, 2026) bypassed it for new stores in
+ * favour of the direct `getDb()` + per-table Drizzle pattern. However, the
+ * inbound bridge state in `server/lib/bridgeInbound.ts` already adopted it,
+ * meaning every inbound Collective→Capavate cross-product event (DSC scores,
+ * M&A intelligence rankings, partner status, social signals, member
+ * decisions, membership renewals, KYC decisions, round participants — 9
+ * stores in total) was RAM-only and lost on every restart. This violated
+ * the standing rule "ALL TIED DIRECTLY TO THE DATABASE / NO MEMORY STORAGE."
  *
- * Patch v12 (May 19, 2026) deliberately bypassed this helper in favour of
- * writing each store directly against its real Drizzle schema table via
- * `getDb()`. See `/home/user/workspace/audit_findings/phase5_db_persistence/
- * DB_PERSISTENCE_AUDIT.md` Section 6 (DB-2) for the architectural rationale.
+ * v25.21 closes that gap by giving durableMap a real SQLite write-through
+ * AND boot-time hydrate against the existing `sync_inbox_state` table
+ * (defined in shared/schema.ts since Sprint 29 KL-03; CREATE TABLE added in
+ * v25.21 if missing). Each map's namespaced keys (`namespace::mapKey`) live
+ * in that one key-value table. The helper still says `@deprecated` because
+ * new business stores should follow the per-table pattern — but the
+ * existing nine inbound-bridge stores can now safely use this helper for
+ * what it is: an event-state durable key-value cache that survives restart.
  *
- * This file is retained ONLY because some legacy code may import the type.
- * Do not extend it. Do not adopt it. If you need persistence in a new
- * store, follow the v12 pattern: import `getDb` from `./db/connection`
- * and write directly against the schema table.
+ * Usage (unchanged from callers' perspective):
+ *   const myMap = durableMap<MyPayload>("my_namespace");
+ *   myMap.set("key", value);      // upserts to sync_inbox_state
+ *   myMap.get("key");             // reads in-memory (hydrated at boot via hydrateDurableMaps)
+ *   myMap.has("key"), myMap.delete("key"), .entries() / .keys() / .values() / .size
  *
- * A Map-compatible wrapper that, when DATABASE_URL is set, writes through
- * to a backing store (Postgres `sync_inbox_state` table via Drizzle).
- * When DATABASE_URL is absent (sandbox), it stays in-memory but is annotated
- * as "ephemeral" in log messages.
- *
- * Usage:
- *   const myMap = durableMap<string, MyPayload>("my_namespace");
- *   myMap.set("key", value);      // upserts to DB in production
- *   myMap.get("key");             // reads from in-memory (hydrated at boot)
- *   myMap.has("key");
- *   myMap.delete("key");
- *   myMap.entries() / .keys() / .values() / .size
+ * Boot order: `hydrateDurableMaps()` MUST be called once during the
+ * hydration sequence before the first inbound bridge event is dispatched.
+ * `bridgeRuntime.ts` already drives this via the standard hydrate flow.
  */
 
 import { log } from "./lib/logger";
+import { rawDb } from "./db/connection";
 export interface DurableMapOptions {
   /** Namespace prefix stored in the DB key. Defaults to "default". */
   namespace?: string;
@@ -53,7 +54,16 @@ export interface DurableMap<K, V> {
   _raw(): Map<K, V>;
 }
 
-const isProduction = (): boolean => Boolean(process.env.DATABASE_URL);
+/**
+ * v25.21 Lane D NC-001 fix — module-level registry of every durableMap
+ * created in this process so `hydrateDurableMaps()` can rehydrate each one
+ * from `sync_inbox_state` on boot.
+ */
+interface RegisteredMap {
+  namespace: string;
+  inner: Map<string, unknown>;
+}
+const registeredMaps: RegisteredMap[] = [];
 
 /**
  * Creates a DurableMap.
@@ -61,28 +71,45 @@ const isProduction = (): boolean => Boolean(process.env.DATABASE_URL);
  */
 export function durableMap<V>(namespace: string, _opts: DurableMapOptions = {}): DurableMap<string, V> {
   const inner = new Map<string, V>();
-  const mode = isProduction() ? "durable" : "ephemeral";
-
-  if (mode === "ephemeral") {
-    log.info(`[durable-map] ${namespace}: running in ephemeral (in-memory) mode — data will not survive restart`);
-  }
+  // Register for boot-time hydration.
+  registeredMaps.push({ namespace, inner: inner as Map<string, unknown> });
 
   function dbKey(k: string): string {
     return `${namespace}::${k}`;
   }
 
+  /* v25.21 Lane D NC-001 fix — real write-through to sync_inbox_state.
+   * Best-effort: a DB hiccup degrades to memory-only for this one call
+   * (and is loudly logged) rather than aborting the inbound bridge
+   * dispatch. The next set() will retry the upsert. */
   function writeThrough(key: string, value: V): void {
-    if (!isProduction()) return;
-    // In production with Drizzle pg driver active, Avinay will activate:
-    // await db.insert(syncInboxState).values({ key: dbKey(key), valueJson: JSON.stringify(value) })
-    //   .onConflictDoUpdate({ target: syncInboxState.key, set: { valueJson: JSON.stringify(value) } });
-    log.info(`[durable-map] ${namespace}: would upsert key=${dbKey(key)} into sync_inbox_state if Drizzle pg driver were active`);
+    try {
+      const db: any = rawDb();
+      db.prepare(
+        `INSERT INTO sync_inbox_state (key, value_json, updated_at)
+           VALUES (?, ?, ?)
+           ON CONFLICT(key) DO UPDATE SET
+             value_json = excluded.value_json,
+             updated_at = excluded.updated_at`,
+      ).run(dbKey(key), JSON.stringify(value), new Date().toISOString());
+    } catch (err) {
+      log.warn(
+        `[durable-map] ${namespace}: write-through failed for key=${dbKey(key)} (memory only):`,
+        (err as Error).message,
+      );
+    }
   }
 
   function deleteThrough(key: string): void {
-    if (!isProduction()) return;
-    // await db.delete(syncInboxState).where(eq(syncInboxState.key, dbKey(key)));
-    log.info(`[durable-map] ${namespace}: would delete key=${dbKey(key)} from sync_inbox_state if Drizzle pg driver were active`);
+    try {
+      const db: any = rawDb();
+      db.prepare(`DELETE FROM sync_inbox_state WHERE key = ?`).run(dbKey(key));
+    } catch (err) {
+      log.warn(
+        `[durable-map] ${namespace}: delete-through failed for key=${dbKey(key)} (memory only):`,
+        (err as Error).message,
+      );
+    }
   }
 
   return {
@@ -116,4 +143,44 @@ export function durableMap<V>(namespace: string, _opts: DurableMapOptions = {}):
       return inner;
     },
   };
+}
+
+/**
+ * v25.21 Lane D NC-001 fix — rehydrate every registered durableMap from
+ * the `sync_inbox_state` table. Idempotent; safe to call multiple times.
+ * Should be invoked once during the boot hydration sequence (see
+ * server/lib/hydrateStores.ts) BEFORE any inbound bridge event is
+ * dispatched.
+ */
+export function hydrateDurableMaps(): void {
+  if (registeredMaps.length === 0) return;
+  let total = 0;
+  try {
+    const db: any = rawDb();
+    const rows: Array<{ key: string; value_json: string }> = db
+      .prepare(`SELECT key, value_json FROM sync_inbox_state`)
+      .all();
+    for (const row of rows) {
+      const sep = row.key.indexOf("::");
+      if (sep < 0) continue;
+      const ns = row.key.slice(0, sep);
+      const mapKey = row.key.slice(sep + 2);
+      const target = registeredMaps.find((m) => m.namespace === ns);
+      if (!target) continue;
+      try {
+        target.inner.set(mapKey, JSON.parse(row.value_json));
+        total += 1;
+      } catch (parseErr) {
+        log.warn(
+          `[durable-map] hydrate skipping ${row.key}: invalid JSON — ${(parseErr as Error).message}`,
+        );
+      }
+    }
+    log.info(`[durable-map] hydrate complete: ${total} keys restored across ${registeredMaps.length} namespace(s)`);
+  } catch (err) {
+    log.warn(
+      "[durable-map] hydrate failed (continuing with empty maps):",
+      (err as Error).message,
+    );
+  }
 }

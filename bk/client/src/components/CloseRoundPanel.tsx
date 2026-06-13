@@ -21,6 +21,7 @@ import {
 } from "@/lib/sprint3";
 import { useRole } from "@/lib/role";
 import { appendTransaction, type ReconciliationResult } from "@capavate/cap-table-engine";
+import { apiRequest, queryClient } from "@/lib/queryClient"; /* v25.20 Lane 4 — real server close */
 
 type Props = {
  roundId: string;
@@ -138,7 +139,29 @@ export default function CloseRoundPanel({ roundId, companyId = "co-acme", roundN
  // Emit telemetry events for the close
  emit({ type: "round.closed", payload: { roundId, primaryHash: r.primaryHash, referenceHash: r.referenceHash, finalAmount: "0" } }, { companyId, roundId, actorId: admin.actorId, actorRole: "admin", ipAddress: admin.ipAddress });
  emit({ type: "cap_table.mutated", payload: { beforeHash: r.referenceHash, afterHash: r.primaryHash, reason: `round close: ${roundId}` } }, { companyId, roundId, actorId: admin.actorId, actorRole: "admin" });
- toast({ title: "Round closed", description: "Ledger sealed. Audit trail visible in /admin/audit-log." });
+ /* v25.20 Lane 4 — PERSIST the close to the server. Previously commitClose
+    only mutated the client-local sprint3 ledger + telemetry, so the round
+    state was never written to the DB (the "Commit & close" button POSTed
+    nowhere). We now call the canonical POST /api/founder/rounds/:id/close,
+    which runs roundsStore.closeRound (DB UPDATE + audit + bridge event +
+    per-company chain-head freeze, v25.18 NH4). The local seal is kept for
+    the demo reconciliation UX; the server call is the source of truth. */
+ void (async () => {
+   try {
+     await apiRequest("POST", `/api/founder/rounds/${roundId}/close`, {
+       reason: "manual_close",
+       finalCurrency: "USD",
+     });
+     queryClient.invalidateQueries({ queryKey: ["/api/rounds"] });
+     toast({ title: "Round closed", description: "Round state persisted; ledger sealed. Audit trail in /admin/audit-log." });
+   } catch (err) {
+     toast({
+       title: "Close not persisted",
+       description: "The ledger was sealed locally but the server close failed. Retry.",
+       variant: "destructive",
+     });
+   }
+ })();
  }
 
  return (

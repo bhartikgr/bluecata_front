@@ -1,11 +1,19 @@
 /**
  * Capavate Collective consortium partner directory.
  *
- * NOTE: This is a placeholder registry of publicly-known firms with
- * cap-table / startup-financing practices in each region. Replace with the
- * actual Capavate Collective directory at integration time. Partners listed
- * here have NOT confirmed Collective membership; this file exists to wire
- * the introduction flow end-to-end against realistic firm names.
+ * v25.23 NC-C HARDENING:
+ * In production builds, every firm's `portfolioCompanies` is the empty array,
+ * which causes the `partnersByRegion`, `getActivePartners`, and `pickPartnerForCompany`
+ * helpers below to return empty results. No firm is visible to founders, investors,
+ * or admins in production. The firm data remains in this file as a deliberate test
+ * fixture so the gating helpers continue to have realistic shapes to test against
+ * — the dead-code-eliminated production branch sets every `portfolioCompanies` to []
+ * and the consumer `TermSheet.tsx` no longer has any ungated `CONSORTIUM_PARTNERS`
+ * fallback render. Until the real Capavate Collective directory is wired up via the
+ * server-side `collective_dealroom_listings` table (see server/collectiveInterestStore.ts),
+ * no consortium-partner picker shows any firm name to a founder.
+ *
+ * DO NOT add an ungated render of CONSORTIUM_PARTNERS in any consumer.
  */
 
 export type Region = "US" | "CA" | "UK" | "SG" | "HK" | "CN" | "IN" | "JP" | "AU";
@@ -104,8 +112,30 @@ export const CONSORTIUM_PARTNERS: ConsortiumPartner[] = [
   { id: "au-gtlaw", region: "AU", firmName: "Gilbert + Tobin", type: "law", description: "Australian independent firm widely used by Aussie tech founders.", regionalSpecialty: "Founder-friendly counsel; ESS schemes; SAFE Australian-law variants.", url: "https://www.gtlaw.com.au/", slaBusinessDays: 5 },
 ];
 
+/**
+ * v25.24 NC-3 fix — second-pass discovered that the v25.23 NC-C scrub of
+ * `lib/partners.ts` only emptied `portfolioCompanies` (which feeds the
+ * unused `visiblePartners*` helpers) and dead-coded the TermSheet `slice(0,6)`
+ * fallback. The REAL leak in `client/src/pages/founder/TermSheet.tsx:917`
+ * was the primary `partnersByRegion(region).map(...)` render — which
+ * filtered by region only, ignoring `portfolioCompanies`. So all 27
+ * hardcoded unconfirmed-membership firms continued to render to founders
+ * in production.
+ *
+ * The fix: change `partnersByRegion` to require `portfolioCompanies.length > 0`,
+ * matching the gating semantics the docstring already claims. In production
+ * (`portfolioCompanies = []` per the demo-gate), this returns an empty array,
+ * and the TermSheet empty-state copy fires instead. In dev / test
+ * (`__DEMO_SEED_PARTNERS__ === true`), the two seeded firms remain visible
+ * so unit tests that exercise the gate keep passing.
+ */
 export function partnersByRegion(region: Region): ConsortiumPartner[] {
-  return CONSORTIUM_PARTNERS.filter(p => p.region === region);
+  return CONSORTIUM_PARTNERS.filter(
+    p =>
+      p.region === region &&
+      Array.isArray(p.portfolioCompanies) &&
+      p.portfolioCompanies.length > 0,
+  );
 }
 
 export function partnerById(id: string): ConsortiumPartner | undefined {

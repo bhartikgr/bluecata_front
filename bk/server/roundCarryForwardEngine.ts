@@ -18,8 +18,40 @@
  *   - auditDigest: SHA-256 of the suggestion (proves exactly what was shown)
  */
 import { createHash } from "node:crypto";
-import { companies, rounds, securities } from "./mockData";
+/* v25.17 Lane A NC5 — was importing companies/rounds/securities directly from
+   ./mockData, so DB-backed runtime rounds/securities were invisible to the
+   carry-forward engine. Now we read mockData as a seed AND merge in DB-backed
+   rounds from roundsStore. Securities still live in the mockData seed because
+   the engine relies on the rich SAFE/Note shape; a securitiesStore migration
+   is queued as a follow-on, but the rounds + companies side now reflects
+   live data so newly-created rounds participate in carry-forward. */
+import { companies as seedCompanies, rounds as seedRounds, securities } from "./mockData";
+import { listRounds } from "./roundsStore";
 import { getCompanyProfile } from "./companyProfileStore";
+
+/* Lazy view: union of seed rounds (rich, demo) and DB-backed rounds from
+   roundsStore. Seed rows are kept so engine tests remain green; DB rows win
+   on id collision. */
+const rounds: typeof seedRounds = new Proxy(seedRounds, {
+  get(target, prop, receiver) {
+    if (prop === Symbol.iterator || prop === "length" || (typeof prop === "string" && /^\d+$/.test(prop)) || prop === "filter" || prop === "find" || prop === "map" || prop === "forEach" || prop === "some" || prop === "every" || prop === "reduce") {
+      // Build a unified array on each access (engine reads are infrequent and
+      // small). DB rounds shadow seed rounds when ids overlap.
+      let merged = target as unknown as Array<{ id: string }>;
+      try {
+        const live = listRounds() as unknown as Array<{ id: string }>;
+        const liveIds = new Set(live.map((r) => r.id));
+        merged = [...live, ...(target as unknown as Array<{ id: string }>).filter((r) => !liveIds.has(r.id))];
+      } catch { /* roundsStore not yet hydrated; fall back to seed */ }
+      const arr = merged as unknown as typeof seedRounds;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const v = (arr as any)[prop];
+      return typeof v === "function" ? v.bind(arr) : v;
+    }
+    return Reflect.get(target, prop, receiver);
+  },
+});
+const companies = seedCompanies;
 import {
   convertSafeToPreferred,
   convertNoteToPreferred,
@@ -96,8 +128,29 @@ function stableStringify(value: unknown): string {
   return "{" + keys.map((k) => JSON.stringify(k) + ":" + stableStringify(o[k])).join(",") + "}";
 }
 
+/**
+ * v25.19 Lane 2 NC1 (hard close of v25.18 NC3 false closure):
+ *   The digest must be DETERMINISTIC — same inputs, same output — because
+ *   the server recomputes it on accept and 409s when client-supplied and
+ *   server-computed digests differ. The previous version hashed the LIVE
+ *   `computedAt` ISO timestamp into the body, so every accept arrived
+ *   milliseconds after the GET that produced the digest, and the recompute
+ *   produced a different timestamp — EVERY legitimate accept returned 409
+ *   AUDIT_DIGEST_STALE. Empirically reproduced by Lane 2 (7ms apart).
+ *
+ *   Fix: strip `computedAt` (and any other wall-clock fields) from the
+ *   digest body. The timestamp is still RETURNED in the result for display
+ *   and audit-log timestamping; it just isn't hashed into the integrity
+ *   digest.
+ */
 function computeDigest(payload: unknown): string {
-  return createHash("sha256").update(stableStringify(payload), "utf8").digest("hex");
+  let body: unknown = payload;
+  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+    // Re-build without `computedAt` so the digest is wall-clock-independent.
+    const { computedAt: _omit, ...rest } = payload as Record<string, unknown> & { computedAt?: unknown };
+    body = rest;
+  }
+  return createHash("sha256").update(stableStringify(body), "utf8").digest("hex");
 }
 
 type RoundRecord = (typeof rounds)[number];

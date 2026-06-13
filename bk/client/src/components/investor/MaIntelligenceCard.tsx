@@ -8,7 +8,7 @@
  * computes the score client-side.
  */
 
-import { useQuery } from "@tanstack/react-query";
+import { useQueries } from "@tanstack/react-query";
 import { TrendingUp } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
 import {
@@ -28,41 +28,73 @@ type MaRollupRow = {
   topSignals: string[];
 };
 
-function useCompanyProfile(companyId: string) {
-  return useQuery<CompanyProfile>({
-    queryKey: ["/api/companies", companyId, "profile"],
-    queryFn: async () => {
-      const r = await apiRequest("GET", `/api/companies/${companyId}/profile`);
-      return r.json();
-    },
-    staleTime: 60_000,
+// v25.13 NH5 — removed `useCompanyProfile` + `useMaRow` (they were only
+// used by the deleted MaRollupItem and would have been flagged as unused).
+// Equivalent logic is inlined in `MaRollupItems` below using `useQueries`.
+
+// v25.13 NH5 — MaRollupItem removed; presentational `MaRollupRowView`
+// (defined below) is used instead so no hooks run inside `.map()`.
+
+/**
+ * Inner component: uses `useQueries` (single hook call, variable array) to
+ * fetch one profile per position. v25.13 NH5 — the prior implementation
+ * called `useMaRow` (which internally calls `useQuery`) inside `.map()`, a
+ * Rules-of-Hooks violation that would crash if `positions.length` ever
+ * changed across renders.
+ */
+function MaRollupItems({ positions }: { positions: Position[] }) {
+  const profileQueries = useQueries({
+    queries: positions.map((pos) => ({
+      queryKey: ["/api/companies", pos.companyId, "profile"],
+      queryFn: async () => {
+        const r = await apiRequest("GET", `/api/companies/${pos.companyId}/profile`);
+        return r.json() as Promise<CompanyProfile>;
+      },
+      staleTime: 60_000,
+    })),
   });
+
+  const rows = positions.map((pos, idx) => {
+    const profileQ = profileQueries[idx];
+    if (!profileQ?.data) return { pos, row: null as MaRollupRow | null };
+    try {
+      const { score, components } = computeMaReadinessScore(profileQ.data.ma);
+      const topSignals = components
+        .filter((c) => c.awarded >= c.weight * 0.6)
+        .sort((a, b) => b.awarded - a.awarded)
+        .slice(0, 2)
+        .map((c) => c.label);
+      return {
+        pos,
+        row: { companyId: pos.companyId, companyName: pos.company, score, topSignals } as MaRollupRow,
+      };
+    } catch {
+      return { pos, row: null as MaRollupRow | null };
+    }
+  });
+
+  // Sort loaded rows by score descending; unloaded rows go to end
+  const sorted = [...rows].sort((a, b) => {
+    if (a.row && b.row) return b.row.score - a.row.score;
+    if (a.row) return -1;
+    if (b.row) return 1;
+    return 0;
+  });
+  const top3 = sorted.slice(0, 3);
+  return (
+    <div className="divide-y divide-border/50">
+      {top3.map(({ pos, row }, idx) => (
+        <MaRollupRowView key={pos.companyId} pos={pos} row={row} rank={idx + 1} />
+      ))}
+    </div>
+  );
 }
 
-/** Single row — fetches profile + computes score. Returns null while loading. */
-function useMaRow(pos: Position): MaRollupRow | null {
-  const profileQ = useCompanyProfile(pos.companyId);
-  if (!profileQ.data) return null;
-  try {
-    const { score, components } = computeMaReadinessScore(profileQ.data.ma);
-    const topSignals = components
-      .filter((c) => c.awarded >= c.weight * 0.6)
-      .sort((a, b) => b.awarded - a.awarded)
-      .slice(0, 2)
-      .map((c) => c.label);
-    return { companyId: pos.companyId, companyName: pos.company, score, topSignals };
-  } catch {
-    return null;
-  }
-}
-
-/** Aggregates MA rows — rendered per-position so hooks are stable. */
-function MaRollupItem({ pos, rank }: { pos: Position; rank: number }) {
-  const row = useMaRow(pos);
+/** Pure presentational row used by MaRollupItems; no hooks inside. */
+function MaRollupRowView({ pos, row, rank }: { pos: Position; row: MaRollupRow | null; rank: number }) {
   if (!row) {
     return (
       <div
-        key={pos.companyId}
         className="flex items-center gap-3 py-2"
         data-testid={`ma-card-row-${pos.companyId}`}
       >
@@ -72,14 +104,12 @@ function MaRollupItem({ pos, rank }: { pos: Position; rank: number }) {
       </div>
     );
   }
-
   const scoreColor =
     row.score >= 70
       ? "text-emerald-700"
       : row.score >= 45
       ? "text-amber-700"
       : "text-rose-700";
-
   return (
     <div
       className="flex items-start gap-3 py-2 border-b border-border/50 last:border-0"
@@ -106,28 +136,6 @@ function MaRollupItem({ pos, rank }: { pos: Position; rank: number }) {
           </div>
         )}
       </div>
-    </div>
-  );
-}
-
-/** Inner component: calls useMaRow hooks (must be called at component level, not in callbacks) */
-function MaRollupItems({ positions }: { positions: Position[] }) {
-  // DEF-056: compute rows for all positions so we can sort them
-  // Hooks are called for each position in a fixed order (positions should be stable)
-  const rows = positions.map((pos) => ({ pos, row: useMaRow(pos) }));
-  // Sort loaded rows by score descending; unloaded rows go to end
-  const sorted = [...rows].sort((a, b) => {
-    if (a.row && b.row) return b.row.score - a.row.score;
-    if (a.row) return -1;
-    if (b.row) return 1;
-    return 0;
-  });
-  const top3 = sorted.slice(0, 3);
-  return (
-    <div className="divide-y divide-border/50">
-      {top3.map(({ pos }, idx) => (
-        <MaRollupItem key={pos.companyId} pos={pos} rank={idx + 1} />
-      ))}
     </div>
   );
 }

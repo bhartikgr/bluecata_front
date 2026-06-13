@@ -171,23 +171,37 @@ export function listActive(): CollectiveMembershipRow[] {
     for (const r of rows) {
       const userId = r.user_id ?? r.userId;
       if (!userId) continue;
-      // Only import rows that are not yet reflected in the Map (or are
-      // more recent than what the Map has) so we don't overwrite a
-      // valid in-process deactivation.
-      if (!memberships.has(userId)) {
-        const status = (r.status ?? "active") as "active" | "suspended";
-        const row: CollectiveMembershipRow = {
-          userId,
-          status,
-          tier: (r.tier ?? "standard") as "standard" | "plus",
-          activatedAt: r.activated_at ?? r.activatedAt ?? new Date().toISOString(),
-          activatedBy: r.activated_by ?? r.activatedBy ?? "",
-          deactivatedAt: r.deactivated_at ?? r.deactivatedAt ?? null,
-          deactivatedBy: r.deactivated_by ?? r.deactivatedBy ?? null,
-          chapterId: r.chapter_id ?? r.chapterId,
-          tenantId: r.tenant_id ?? r.tenantId,
-        };
-        memberships.set(userId, row);
+      // v25.13 NM7 — prefer DB row when it is newer than the cached one.
+      // The previous code unconditionally skipped any user already in the
+      // Map, which meant a DB-side reactivation (e.g., direct write or
+      // cross-process update) could not overwrite a stale "suspended"
+      // entry until restart. We now compare the DB row's `updatedAt`
+      // timestamp against the cached row's most-recent change timestamp
+      // and let DB win when it is strictly newer.
+      const status = (r.status ?? "active") as "active" | "suspended";
+      const dbRow: CollectiveMembershipRow = {
+        userId,
+        status,
+        tier: (r.tier ?? "standard") as "standard" | "plus",
+        activatedAt: r.activated_at ?? r.activatedAt ?? new Date().toISOString(),
+        activatedBy: r.activated_by ?? r.activatedBy ?? "",
+        deactivatedAt: r.deactivated_at ?? r.deactivatedAt ?? null,
+        deactivatedBy: r.deactivated_by ?? r.deactivatedBy ?? null,
+        chapterId: r.chapter_id ?? r.chapterId,
+        tenantId: r.tenant_id ?? r.tenantId,
+      };
+      const cached = memberships.get(userId);
+      if (!cached) {
+        memberships.set(userId, dbRow);
+        continue;
+      }
+      const dbUpdated = r.updated_at ?? r.updatedAt ?? null;
+      const cachedNewest =
+        cached.deactivatedAt && cached.deactivatedAt > cached.activatedAt
+          ? cached.deactivatedAt
+          : cached.activatedAt;
+      if (dbUpdated && cachedNewest && String(dbUpdated) > String(cachedNewest)) {
+        memberships.set(userId, dbRow);
       }
     }
   } catch {

@@ -80,6 +80,55 @@ export type DecisionRecord = {
 const records = new Map<string, DecisionRecord>();
 
 /**
+ * v25.11 NC1 — yourDecisionStore was 100% RAM-only. Every investor decision
+ * (view, accept, decline, soft_circle, confirm, sign, fund) was erased on any
+ * server restart, leaving the founder pipeline phantom-clean. The fix wraps
+ * the existing Map with the v25.9 generic kv-shim so:
+ *   - every mutation persists to kv_yourDecisionStore
+ *   - every boot hydrates the Map from the table
+ * The Map remains as the hot-path cache; the table is authoritative.
+ */
+/* v25.11 NM6 — exported so the legacy POST shortcuts can mirror the
+ * canonical PATCH handler's write-through path. */
+export function _persistRecord(rec: DecisionRecord): void {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { persistEntry } = require("./lib/storePersistenceShim");
+    persistEntry("yourDecisionStore", rec.invitationId, rec);
+  } catch (err) {
+    log.warn(
+      "[yourDecisionStore] persist failed (non-fatal):",
+      (err as Error).message,
+    );
+  }
+}
+
+/**
+ * Boot hydrator. Called from HYDRATE_ORDER in lib/hydrateStores.ts.
+ */
+export function hydrateYourDecisionStore(): number {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { hydrateEntries } = require("./lib/storePersistenceShim");
+    const rows = hydrateEntries("yourDecisionStore") as Array<[string, DecisionRecord]>;
+    let n = 0;
+    for (const [id, rec] of rows) {
+      if (rec && id && !records.has(id)) {
+        records.set(id, rec);
+        n++;
+      }
+    }
+    return n;
+  } catch (err) {
+    log.warn(
+      "[yourDecisionStore.hydrate] failed (non-fatal):",
+      (err as Error).message,
+    );
+    return 0;
+  }
+}
+
+/**
  * v24.1 Bug D: map a modern InvitationState (roundInvitationsStore) onto a
  * YourDecision state. The modern store has no soft_circled/confirmed/etc., so
  * unknown/"sent" states fall back to "pending".
@@ -92,7 +141,9 @@ function mapModernInvitationState(state: string): YourDecisionState {
   return "pending";
 }
 
-function ensureRecord(invitationId: string): DecisionRecord | null {
+/* v25.11 NM6 — exported so the legacy POST shortcuts can locate the record
+ * via the same lazy-seed path the canonical PATCH uses. */
+export function ensureRecord(invitationId: string): DecisionRecord | null {
   if (records.has(invitationId)) return records.get(invitationId)!;
   const inv = incomingInvitations.find((i) => i.id === invitationId);
   if (inv) {
@@ -225,7 +276,7 @@ export function applyDecisionAction(rec: DecisionRecord, patch: YourDecisionPatc
  */
 export function totalSoftCircled(roundId: string): number {
   let total = 0;
-  for (const r of records.values()) {
+  for (const r of Array.from(records.values())) {
     if (r.roundId !== roundId) continue;
     if (r.state === "soft_circled" || r.state === "confirmed" || r.state === "signed" || r.state === "funded") {
       total += r.amount ?? 0;
@@ -262,7 +313,8 @@ const TELEMETRY_EVENT_BY_ACTION: Record<YourDecisionPatch["action"], string> = {
 export function registerYourDecisionRoutes(app: Express): void {
   // Defect 84: GET requires auth + investor must own the invitation.
   app.get("/api/rounds/:roundId/invitations/:invId/decision", async (req: Request, res: Response) => {
-    const { roundId, invId } = req.params;
+    const roundId = String(req.params.roundId ?? "");
+    const invId = String(req.params.invId ?? "");
     const ctx = await resolveCtx(req);
     // Auth check
     if (!ctx.isAuthed) {
@@ -283,7 +335,8 @@ export function registerYourDecisionRoutes(app: Express): void {
 
   // Defect 85: PATCH requires auth + investor must own the invitation.
   app.patch("/api/rounds/:roundId/invitations/:invId/decision", async (req: Request, res: Response) => {
-    const { roundId, invId } = req.params;
+    const roundId = String(req.params.roundId ?? "");
+    const invId = String(req.params.invId ?? "");
     const ctx = await resolveCtx(req);
     // Auth check
     if (!ctx.isAuthed) {
@@ -310,6 +363,11 @@ export function registerYourDecisionRoutes(app: Express): void {
 
     const result = applyDecisionAction(rec, parsed.data);
     if (!result.ok) return res.status(409).json({ error: result.error });
+    /* v25.11 NC1 fix — write the updated decision to the DB so the state
+     * machine survives a server restart. The Map is still updated in-place
+     * above by applyDecisionAction; persistEntry now mirrors it to
+     * kv_yourDecisionStore. */
+    _persistRecord(rec);
 
     // v23.4.8 Phase 3 — when an investor confirms a soft-circle decision,
     // mirror it into the soft-circle store so founders can see it on

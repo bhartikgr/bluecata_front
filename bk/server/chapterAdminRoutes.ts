@@ -23,6 +23,8 @@ import { requireAdmin } from "./lib/authMiddleware";
 import { requireCollectiveEnabled } from "./lib/featureFlags";
 import { appendAdminAudit } from "./adminPlatformStore";
 import { log } from "./lib/logger";
+import { publish as ssePublish } from "./lib/sseHub"; /* v25.13 NM5 */
+import { emitBridgeEvent } from "./bridgeStore"; /* v25.13 NM5 */
 
 const promoteSchema = z.object({
   user_id: z.string().min(1, "user_id required"),
@@ -227,6 +229,26 @@ export function registerChapterAdminRoutes(app: Express): void {
           chapter.tenantId,
         );
       } catch { /* non-fatal */ }
+      // v25.13 NM5 — publish SSE + bridge event so clients refresh role
+      // displays immediately instead of reading stale data until reload.
+      try {
+        ssePublish(chapterId, "admins", {
+          kind: "admin.promoted",
+          userId: targetUserId,
+          chapterId,
+          at: new Date().toISOString(),
+        });
+      } catch { /* non-fatal */ }
+      try {
+        emitBridgeEvent({
+          eventType: "collective.chapter_admin.promoted",
+          aggregateId: existing.id,
+          // v25.13 NM5 — aggregateKind union does not include "chapter_membership";
+          // use "platform" since chapter admin changes are platform-scoped.
+          aggregateKind: "platform",
+          payload: { chapterId, targetUserId, previousRole: existing.role, newRole: "admin" },
+        });
+      } catch { /* non-fatal */ }
       const fresh = findMembership(targetUserId, chapterId);
       res.status(200).json({ ok: true, membership: fresh });
     },
@@ -309,6 +331,24 @@ export function registerChapterAdminRoutes(app: Express): void {
           },
           chapter.tenantId,
         );
+      } catch { /* non-fatal */ }
+      // v25.13 NM5 — publish SSE + bridge event for the demote path too.
+      try {
+        ssePublish(chapterId, "admins", {
+          kind: "admin.demoted",
+          userId,
+          chapterId,
+          at: new Date().toISOString(),
+        });
+      } catch { /* non-fatal */ }
+      try {
+        emitBridgeEvent({
+          eventType: "collective.chapter_admin.demoted",
+          aggregateId: existing.id,
+          // v25.13 NM5 — aggregateKind: "platform" (chapter-membership not in union).
+          aggregateKind: "platform",
+          payload: { chapterId, targetUserId: userId, previousRole: "admin", newRole: "member" },
+        });
       } catch { /* non-fatal */ }
       const fresh = findMembership(userId, chapterId);
       res.status(200).json({ ok: true, membership: fresh });

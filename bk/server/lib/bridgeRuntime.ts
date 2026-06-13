@@ -32,7 +32,19 @@ import { requireAdmin } from "./authMiddleware"; // B16 (v24.0) — lock bridge 
 
 const COLLECTIVE_WEBHOOK_URL = process.env.COLLECTIVE_WEBHOOK_URL ?? "";
 const COLLECTIVE_WEBHOOK_SECRET = process.env.COLLECTIVE_WEBHOOK_SECRET ?? "";
-const LIVE_MODE = !!COLLECTIVE_WEBHOOK_URL;
+/* v25.17 Lane E NH1 — if LIVE_MODE is on but the HMAC secret is missing,
+   refuse to send unsigned (empty-secret) events. In production this aborts
+   the boot to make the misconfiguration loud. In non-production we log and
+   disable LIVE_MODE so dev/test still work. */
+if (COLLECTIVE_WEBHOOK_URL && !COLLECTIVE_WEBHOOK_SECRET) {
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("[bridgeRuntime] COLLECTIVE_WEBHOOK_URL set without COLLECTIVE_WEBHOOK_SECRET — refusing to start (would emit unsigned webhooks).");
+  } else {
+    // eslint-disable-next-line no-console
+    console.warn("[bridgeRuntime] COLLECTIVE_WEBHOOK_URL set without COLLECTIVE_WEBHOOK_SECRET; LIVE_MODE disabled.");
+  }
+}
+const LIVE_MODE = !!COLLECTIVE_WEBHOOK_URL && !!COLLECTIVE_WEBHOOK_SECRET;
 
 /** Latency samples (last N events). */
 const latencyMs: number[] = [];

@@ -342,7 +342,8 @@ export default function TermSheet() {
  try {
  const fd = new FormData();
  fd.append("file", file);
- const res = await fetch(`/api/rounds/${id}/termsheet/upload`, { method: "POST", body: fd });
+ /* v25.10 M2 — include cookies for Safari + cross-origin compatibility. */
+ const res = await fetch(`/api/rounds/${id}/termsheet/upload`, { method: "POST", body: fd, credentials: "include" });
  if (!res.ok) throw new Error(`HTTP ${res.status}`);
  const json = await res.json() as { filename: string; mimeType: string; extracted: Parameters<typeof reconcileTerms>[1] };
  const diffs = reconcileTerms(data, json.extracted);
@@ -490,6 +491,14 @@ export default function TermSheet() {
  acknowledgedMismatches: Array.from(ackMismatches),
  };
  saveTermSheet(next);
+ /* v25.11 NC-2 fix — the previous implementation only wrote the signed term
+  * sheet to the Zustand in-memory store, then emitted a WebSocket event.
+  * If the founder navigated away or the page reloaded, the signature,
+  * documentHash, and status:"signed" were lost. Investors then received
+  * unsigned drafts when sendToInvestors fired from the stale server copy.
+  * Persist via the same POST /api/founder/term-sheets path that the manual
+  * save and auto-save effects already use. */
+ persistMut.mutate(next);
  emit({
  type: "termsheet.signed",
  payload: { documentHash, signature: sig, roundId: id },
@@ -926,9 +935,16 @@ export default function TermSheet() {
  </label>
  ))}
  {partnersByRegion(region as PartnerRegion).length === 0 && (
- <div className="col-span-2 text-xs text-muted-foreground italic p-4">No partners listed for {region}. Showing all partners across regions:</div>
+ <div className="col-span-2 text-xs text-muted-foreground italic p-4">
+  No consortium partners are currently listed for {region}. Capavate is onboarding partners across regions — check back soon.
+ </div>
  )}
- {partnersByRegion(region as PartnerRegion).length === 0 && CONSORTIUM_PARTNERS.slice(0, 6).map((p) => (
+ {/* v25.23 NC-C fix — the previous ungated fallback rendered CONSORTIUM_PARTNERS.slice(0,6)
+     which leaked the placeholder firm directory (firms that have NOT confirmed Collective
+     membership per lib/partners.ts header). The portfolio-companies gate at partnersByRegion
+     is the source of truth; if a region is empty, render the empty state above and STOP.
+     No mock data is rendered to founders. */}
+ {false && partnersByRegion(region as PartnerRegion).length === 0 && CONSORTIUM_PARTNERS.slice(0, 0).map((p) => (
  <label key={p.id} className="flex items-start gap-2 text-xs cursor-pointer p-2 rounded-md border border-border hover:bg-secondary/40">
  <Checkbox
  checked={consortiumPicks.has(p.id)}

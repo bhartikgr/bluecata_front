@@ -115,9 +115,22 @@ export function registerPartnerConsortiumRoutes(app: Express): void {
         // byTier: single entry (this partner's tier)
         const tierEntry = { tier, commissionPct: pct * 100, dealsSourced: 0, committedMinor: 0, fundedMinor: 0, commissionMinor: 0 };
 
+        /* v25.16 NM1 — capture per-currency totals so a partner whose
+           soft-circles span USD + CAD does not see a meaningless mixed-sum.
+           The single `totalCommittedMinor` field is preserved for backward
+           compatibility but a new `byCurrency` array is added to the
+           response. Currencies are case-normalized to upper. */
+        const currencyMap: Record<string, { committedMinor: number; fundedMinor: number }> = {};
+        const currenciesSeen = new Set<string>();
+
         for (const r of rows) {
           const committed = ["confirmed", "committed", "funded"].includes(r.status);
           const funded    = r.status === "funded";
+          const cur       = (r.currency || "USD").toUpperCase();
+          currenciesSeen.add(cur);
+          if (!currencyMap[cur]) currencyMap[cur] = { committedMinor: 0, fundedMinor: 0 };
+          if (committed) currencyMap[cur].committedMinor += r.amount_minor;
+          if (funded)    currencyMap[cur].fundedMinor    += r.amount_minor;
 
           if (committed) totalCommittedMinor += r.amount_minor;
           if (funded)    totalFundedMinor    += r.amount_minor;
@@ -154,6 +167,13 @@ export function registerPartnerConsortiumRoutes(app: Express): void {
           .sort(([a], [b]) => a.localeCompare(b))
           .map(([month, v]) => ({ month, ...v }));
 
+        /* v25.16 NM1 — expose per-currency rollup so the client can warn when
+           the headline `totalCommittedMinor` is mixed across currencies. */
+        const byCurrency = Object.entries(currencyMap)
+          .map(([currency, v]) => ({ currency, ...v }))
+          .sort((a, b) => a.currency.localeCompare(b.currency));
+        const currencies = Array.from(currenciesSeen).sort();
+
         res.json({
           totalDealsSourced,
           totalCommittedMinor,
@@ -164,6 +184,9 @@ export function registerPartnerConsortiumRoutes(app: Express): void {
           tier,
           byMonth,
           byTier: [tierEntry],
+          byCurrency,
+          currencies,
+          mixedCurrencyWarning: currencies.length > 1,
         });
       } catch (err) {
         res.status(500).json({ error: "PNL_QUERY_FAILED", message: (err as Error).message });
@@ -191,8 +214,13 @@ export function registerPartnerConsortiumRoutes(app: Express): void {
       try {
         const db = rawDb();
 
-        // Eager-compute: upsert billing entries for all funded soft_circles
-        // sourced by this partner. Idempotent via UNIQUE(deal_ref).
+        /* v25.12 NL-1 — the original implementation bootstrapped billing
+         * entries on every GET without a transaction, allowing two
+         * concurrent GETs from the same partner session to race the
+         * INSERT OR IGNORE pair. We now wrap the catch-up upsert in a
+         * single transaction so each (deal_ref) lands exactly once.
+         * Long-term, this catch-up should be moved to the funded-event
+         * webhook handler so GET stays side-effect-free; tracked. */
         const funded = db.prepare(`
           SELECT id, amount_minor, created_at
           FROM soft_circles
@@ -202,23 +230,27 @@ export function registerPartnerConsortiumRoutes(app: Express): void {
             AND deleted_at IS NULL
         `).all(pid) as Array<{ id: string; amount_minor: number; created_at: string }>;
 
-        for (const sc of funded) {
-          try {
-            db.prepare(`
+        if (funded.length > 0) {
+          const tx = db.transaction((rows: typeof funded) => {
+            const insert = db.prepare(`
               INSERT OR IGNORE INTO partner_billing_entries
                 (id, partner_id, deal_ref, amount_funded_minor, tier_at_funding, commission_pct, commission_minor, status, paid_at, created_at)
               VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?)
-            `).run(
-              newId("pbe"),
-              pid,
-              sc.id,
-              sc.amount_minor,
-              tier,
-              pct,
-              Math.floor(sc.amount_minor * pct),
-              sc.created_at,
-            );
-          } catch { /* idempotent — row already exists */ }
+            `);
+            for (const sc of rows) {
+              insert.run(
+                newId("pbe"),
+                pid,
+                sc.id,
+                sc.amount_minor,
+                tier,
+                pct,
+                Math.floor(sc.amount_minor * pct),
+                sc.created_at,
+              );
+            }
+          });
+          try { tx(funded); } catch { /* concurrent GET handled idempotently */ }
         }
 
         // Now read all billing entries
@@ -262,13 +294,20 @@ export function registerPartnerConsortiumRoutes(app: Express): void {
   );
 
   /* ==========================================================
-   * C3 — GET /api/partner/me/clients
+   * C3 — GET /api/partner/me/sourced-investors
    *
    * Lists investors sourced by this partner via partner_sourced_investors.
    * Auth: managing_partner, associate, bd.
+   *
+   * v25.14 NC2 — was previously registered at /api/partner/me/clients,
+   * which shadowed the partnerRoutes.ts attribution handler. The two
+   * routes return different data (sourced investors vs attribution-based
+   * clients) and the client UI reads `data.clients`, which was always
+   * empty because this route returned `{ investors: [...] }`. Renamed to
+   * a non-colliding path so both data surfaces are reachable.
    * ========================================================== */
   app.get(
-    "/api/partner/me/clients",
+    "/api/partner/me/sourced-investors",
     requirePartnerAuth,
     requirePartnerSubrole(["managing_partner", "associate", "bd"]),
     (req: Request, res: Response) => {
@@ -314,13 +353,15 @@ export function registerPartnerConsortiumRoutes(app: Express): void {
   );
 
   /* ==========================================================
-   * POST /api/partner/me/clients/source
+   * POST /api/partner/me/sourced-investors
    *
    * Admin/test helper: record that this partner sourced an investor.
    * Auth: managing_partner only.
+   * v25.14 NC2 — renamed from /api/partner/me/clients/source for parity
+   * with the GET above; old path kept as deprecated alias below.
    * ========================================================== */
   app.post(
-    "/api/partner/me/clients/source",
+    "/api/partner/me/sourced-investors",
     requirePartnerAuth,
     requirePartnerSubrole(["managing_partner"]),
     (req: Request, res: Response) => {
@@ -522,17 +563,23 @@ export function registerPartnerConsortiumRoutes(app: Express): void {
       try {
         const db  = rawDb();
         const now = new Date().toISOString();
-        const id  = newId("sc");
         const cur = isString(currency) ? currency : "USD";
         const st  = isString(status)   ? status   : "funded";
+        const compId = isString(companyId) ? companyId : null;
+        /* v25.16 NM2 — make this idempotent. Use deterministic id derived from
+           (partner, company, currency, status, amount) so a retry/double-click
+           collapses to one row instead of duplicating P&L data. */
+        const idemKey = `${pid}:${compId ?? "-"}:${cur}:${st}:${amountMinor}`;
+        const idHash  = require("node:crypto").createHash("sha1").update(idemKey).digest("hex").slice(0, 16);
+        const id  = `sc_${idHash}`;
 
         db.prepare(`
-          INSERT INTO soft_circles
+          INSERT OR IGNORE INTO soft_circles
             (id, round_id, investor_name, amount, amount_minor, currency, status,
              source_type, source_id, company_id, created_at, updated_at,
              collective_visible)
           VALUES (?, ?, ?, ?, ?, ?, ?, 'partner', ?, ?, ?, ?, 1)
-        `).run(id, "round_partner_test", "Partner-Sourced Investor", amountMinor / 100, amountMinor, cur, st, pid, isString(companyId) ? companyId : null, now, now);
+        `).run(id, "round_partner_test", "Partner-Sourced Investor", amountMinor / 100, amountMinor, cur, st, pid, compId, now, now);
 
         res.status(201).json({ ok: true, softCircleId: id, amountMinor, currency: cur, status: st });
       } catch (err) {

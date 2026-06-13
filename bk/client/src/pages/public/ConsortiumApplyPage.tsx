@@ -56,7 +56,11 @@ export default function ConsortiumApplyPage() {
   const [partnerType, setPartnerType] = useState<PartnerType>("vc");
   const [aumRange, setAumRange] = useState<AumRange>("undisclosed");
   const [portfolioCompanyCount, setPortfolioCompanyCount] = useState<number>(0);
-  const [expectedChapter, setExpectedChapter] = useState("chap_keiretsu_canada");
+  /* v25.16 NM8 — was hardcoded to chap_keiretsu_canada, mis-attributing every
+     non-Keiretsu applicant. Now empty by default; user must explicitly type
+     the chapter ID, and the field is `required` so empty submissions are
+     blocked at form level. */
+  const [expectedChapter, setExpectedChapter] = useState("");
   const [introMessage, setIntroMessage] = useState("");
   const [referredBy, setReferredBy] = useState("");
 

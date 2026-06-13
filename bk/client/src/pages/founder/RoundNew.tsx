@@ -334,6 +334,13 @@ export default function RoundNew() {
  poolSize: optionalIntegerString(form.poolSize),
  region: form.region,
  termsheetChoice,
+ // v25.20 Lane 5 NC fix: persist parent-round attachment for warrants/ESOP.
+ // The wizard captured `attachToRound` but never sent it; server auto-stashes
+ // unknown fields into extras_json, so this restores the cap-table ledger chain.
+ parentRoundId:
+ (form.instrument === "warrant" || form.instrument === "option_pool")
+ ? (attachToRound || null)
+ : null,
  };
  return (await apiRequest("POST", "/api/rounds", payload)).json();
  },
@@ -397,7 +404,8 @@ export default function RoundNew() {
   queryKey: ["/api/companies", companyId, "rounds"],
   queryFn: async () => {
    if (!companyId) return [];
-   const r = await fetch(`/api/companies/${encodeURIComponent(companyId)}/rounds`);
+   // v25.10 M3 — include cookies for Safari + cross-origin compatibility.
+   const r = await fetch(`/api/companies/${encodeURIComponent(companyId)}/rounds`, { credentials: "include" });
    if (!r.ok) return [];
    const data = await r.json();
    return Array.isArray(data) ? data : [];

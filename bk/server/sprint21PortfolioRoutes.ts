@@ -123,12 +123,13 @@ const promoteSchema = z.object({
     .string()
     .min(20, "Rationale must be at least 20 characters")
     .max(1000, "Rationale must be at most 1000 characters"),
-  confirmed: z
-    .boolean()
-    .optional()
-    .refine((v) => v !== false, {
-      message: "Accredited investor confirmation required",
-    }),
+  /* v25.12 NL-2 — accredited investor confirmation is now strictly required.
+   * The previous schema was `z.boolean().optional().refine(v !== false)`,
+   * which accepted `undefined` (the refine passed it), making the
+   * confirmation checkbox decorative. We now require the literal `true`. */
+  confirmed: z.literal(true, {
+    errorMap: () => ({ message: "Accredited investor confirmation required" }),
+  }),
 });
 
 /* ------------------------------------------------------------------ */
@@ -242,6 +243,15 @@ export function registerSprint21PortfolioRoutes(app: Express): void {
         submittedAt,
       };
       // v17 Phase B — DB write-through with hash-chain in same transaction.
+      // v25.21 Lane C NC-002 fix — the in-memory `investorNominations.push`
+      // used to run UNCONDITIONALLY outside this try/catch, which meant a DB
+      // insert failure produced a memory-only row that vanished on the next
+      // restart while the founder had already been notified. Violates the
+      // standing rule "ALL TIED DIRECTLY TO THE DATABASE / NO MEMORY STORAGE."
+      // We now ONLY push to memory after the DB insert succeeds and return
+      // a 500 to the caller otherwise. No phantom record, no spurious
+      // notification.
+      let dbInsertOk = false;
       try {
         const db: any = getDb();
         db.transaction((tx: any) => {
@@ -270,8 +280,19 @@ export function registerSprint21PortfolioRoutes(app: Express): void {
           } as any).run();
           chainTipByTenant.set(tenantId, hash);
         });
+        dbInsertOk = true;
       } catch (err) {
-        log.warn("[sprint21PortfolioRoutes.promote] DB insert failed (memory only):", (err as Error).message);
+        log.error(
+          "[sprint21PortfolioRoutes.promote] DB insert failed:",
+          (err as Error).message,
+        );
+      }
+      if (!dbInsertOk) {
+        return res.status(500).json({
+          ok: false,
+          error: "PROMOTE_PERSIST_FAILED",
+          message: "Could not persist the nomination. Please retry.",
+        });
       }
       investorNominations.push(nomination);
 

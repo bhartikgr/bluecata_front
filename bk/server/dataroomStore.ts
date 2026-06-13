@@ -42,6 +42,7 @@ import multer from "multer";
 import { randomBytes, createHash } from "node:crypto";
 import { and, eq, isNull, asc } from "drizzle-orm";
 import { getUserContext } from "./lib/userContext";
+import { requireAuth } from "./lib/authMiddleware"; /* v25.17 Lane A NC1 */
 import { resolveCompanyIdParam } from "./lib/resolveCompanyIdParam"; /* Avi 22-May Issue 5 */
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 import { getDb } from "./db/connection";
@@ -426,10 +427,15 @@ export async function hydrateDataroomStore(): Promise<void> {
 // ─── Routes (unchanged surface) ──────────────────────────────────────────────
 
 export function registerDataroomRoutes(app: Express): void {
-  app.get("/api/founder/dataroom/folders", (req, res) => {
+  app.get("/api/founder/dataroom/folders", requireAuth, (req, res) => {
     // Avi 22-May Issue 5 — default to active company when query param absent.
     const { companyId } = resolveCompanyIdParam(req);
     if (!companyId) return res.status(400).json({ error: "companyId_required" });
+    /* v25.18 Lane A NH6 — v25.17 NM12 added ownership gates to the other four
+       reads (files, permissions, events, engagement) but missed folders.
+       Without this any authenticated user could list any company's folder
+       tree by passing ?companyId=co_victim, leaking deal activity. */
+    if (!assertFounderOfCompany(req, res, companyId)) return;
     res.json(folders.filter((f) => f.companyId === companyId));
   });
 
@@ -457,13 +463,24 @@ export function registerDataroomRoutes(app: Express): void {
     res.json(f);
   });
 
-  app.get("/api/founder/dataroom/files", (req, res) => {
-    // Avi 22-May Issue 5 — default to active company when query param absent.
+  /* v25.17 Lane A NM12 — assertFounderOfCompany centralizes the ownership
+     gate so every dataroom list/read endpoint requires auth + founder-of
+     (or admin). Returns 404 (not 403) on mismatch to avoid id enumeration. */
+  function assertFounderOfCompany(req: Request, res: Response, companyId: string): boolean {
+    const ctx = getUserContext(req);
+    if (!ctx.isAuthed) { res.status(401).json({ error: "UNAUTHORIZED" }); return false; }
+    if (ctx.isAdmin) return true;
+    const owns = ctx.founder?.companies.some((c) => c.companyId === companyId) ?? false;
+    if (!owns) { res.status(404).json({ error: "not_found" }); return false; }
+    return true;
+  }
+
+  app.get("/api/founder/dataroom/files", requireAuth, (req, res) => {
     const { companyId } = resolveCompanyIdParam(req);
     if (!companyId) return res.status(400).json({ error: "companyId_required" });
+    if (!assertFounderOfCompany(req, res, companyId)) return;
     const folderId = req.query.folderId ? String(req.query.folderId) : null;
     const list = files.filter((f) => f.companyId === companyId && (!folderId || f.folderId === folderId));
-    // strip _buf from JSON response
     res.json(list.map(({ _buf: _, ...rest }) => rest));
   });
 
@@ -514,21 +531,52 @@ export function registerDataroomRoutes(app: Express): void {
     res.json({ ok: true, file: { ...f, _buf: undefined } });
   });
 
-  app.get("/api/founder/dataroom/files/:id", (req, res) => {
+  /* v25.17 Lane A NC1 — file metadata + download were unauthenticated and
+     resolved files by global id with no ownership check. Now requireAuth
+     and confirm the caller is a founder of the file's companyId, an admin,
+     or an investor with a SERVER-RESOLVED permission grant (we no longer
+     trust ?investorId=). Return 404 (not 403) on auth failure to avoid id
+     enumeration. */
+  function dataroomFileOwnerGate(req: Request, res: Response, f: { companyId: string; folderId: string }): { allow: true; ctx: ReturnType<typeof getUserContext>; role: "founder" | "investor" | "admin" } | { allow: false } {
+    const ctx = getUserContext(req);
+    if (!ctx.isAuthed) {
+      res.status(404).json({ error: "not_found" });
+      return { allow: false };
+    }
+    if (ctx.isAdmin) return { allow: true, ctx, role: "admin" };
+    // Founder of this company?
+    const isOwnerFounder = ctx.founder?.companies.some((c) => c.companyId === f.companyId) ?? false;
+    if (isOwnerFounder) return { allow: true, ctx, role: "founder" };
+    // Investor with server-resolved grant against this folder?
+    const investorId = ctx.userId; // SERVER-DERIVED, not from ?investorId=
+    if (investorId) {
+      const p = permissions.find((p) => p.investorId === investorId && p.folderId === f.folderId);
+      if (p) return { allow: true, ctx, role: "investor" };
+    }
+    res.status(404).json({ error: "not_found" });
+    return { allow: false };
+  }
+
+  app.get("/api/founder/dataroom/files/:id", requireAuth, (req, res) => {
     const f = files.find((x) => x.id === req.params.id);
     if (!f) return res.status(404).json({ error: "not_found" });
+    const gate = dataroomFileOwnerGate(req, res, f);
+    if (!gate.allow) return;
     res.json({ ...f, _buf: undefined });
   });
 
-  app.get("/api/founder/dataroom/files/:id/download", (req, res) => {
+  app.get("/api/founder/dataroom/files/:id/download", requireAuth, (req, res) => {
     const f = files.find((x) => x.id === req.params.id);
     if (!f) return res.status(404).json({ error: "not_found" });
-
-    const ctx = getUserContext(req);
-    const role = String(req.query.as ?? "founder");
-    const investorId = req.query.investorId ? String(req.query.investorId) : null;
-    if (role === "investor" && investorId) {
-      const p = permissions.find((p) => p.investorId === investorId && p.folderId === f.folderId);
+    const gate = dataroomFileOwnerGate(req, res, f);
+    if (!gate.allow) return;
+    const ctx = gate.ctx;
+    /* v25.17 Lane A NH1 — the legacy ?investorId= permission lookup is no
+       longer honoured. dataroomFileOwnerGate has already verified the caller
+       has a download grant via their authenticated identity. We keep the
+       download-permission re-check here for investors as defense-in-depth. */
+    if (gate.role === "investor") {
+      const p = permissions.find((p) => p.investorId === ctx.userId && p.folderId === f.folderId);
       if (!p?.download) return res.status(403).json({ error: "download_denied" });
     }
     // v23.4.7 Phase 12 / BUG 027 — "view" icon in the dataroom used to
@@ -539,37 +587,48 @@ export function registerDataroomRoutes(app: Express): void {
       String(req.query.disposition ?? "").toLowerCase() === "inline" ||
       String(req.query.inline ?? "") === "1";
     const disposition = wantInline ? "inline" : "attachment";
-    // PATCH v3: stamp actor from session when available
-    const auditActor = ctx.isAuthed ? ctx.identity.name : (investorId ?? "anonymous");
-    const auditActorId = ctx.isAuthed ? ctx.userId : (investorId ?? "anonymous");
+    /* v25.17 Lane A NH1 — actor always taken from the verified session. */
+    const auditActor = ctx.identity.name;
+    const auditActorId = ctx.userId;
     logEvent({ companyId: f.companyId, actor: auditActor, actorId: auditActorId, action: wantInline ? "view" : "download", targetKind: "file", targetId: f.id });
+    /* v25.17 Lane A NM11 — sanitize the filename before stamping it into
+       Content-Disposition. Strip CR/LF and quotes; ascii-fallback + RFC 5987
+       filename* for non-ascii names so Unicode names survive without
+       header-injection risk. */
+    const safeAsciiName = (f.name || "file").replace(/[\r\n"\\]/g, "_").replace(/[^\x20-\x7e]/g, "_");
+    const utf8FilenameStar = `filename*=UTF-8''${encodeURIComponent(f.name || "file")}`;
     if (!f._buf) {
       // synthesize a tiny placeholder so download succeeds for seeded files
       res.setHeader("Content-Type", "text/plain");
-      res.setHeader("Content-Disposition", `${disposition}; filename="${f.name}.txt"`);
+      res.setHeader("Content-Disposition", `${disposition}; filename="${safeAsciiName}.txt"; ${utf8FilenameStar}`);
       return res.send(`Placeholder content for ${f.name} (Sprint 11 preview).\nsha=${f.sha256}\n`);
     }
     res.setHeader("Content-Type", f.mime);
-    res.setHeader("Content-Disposition", `${disposition}; filename="${f.name}"`);
+    res.setHeader("Content-Disposition", `${disposition}; filename="${safeAsciiName}"; ${utf8FilenameStar}`);
     return res.send(f._buf);
   });
 
-  app.get("/api/founder/dataroom/permissions", (req, res) => {
-    // Avi 22-May Issue 5 — default to active company when query param absent.
+  app.get("/api/founder/dataroom/permissions", requireAuth, (req, res) => {
     const { companyId } = resolveCompanyIdParam(req);
     if (!companyId) return res.status(400).json({ error: "companyId_required" });
+    if (!assertFounderOfCompany(req, res, companyId)) return;
     const folderIds = new Set(folders.filter((f) => f.companyId === companyId).map((f) => f.id));
     res.json(permissions.filter((p) => folderIds.has(p.folderId)));
   });
 
-  app.post("/api/founder/dataroom/permissions", (req, res) => {
+  app.post("/api/founder/dataroom/permissions", requireAuth, (req, res) => {
     const ctx = getUserContext(req);
     if (!ctx.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
     const { investorId, folderId, view, download } = req.body ?? {};
     if (!investorId || !folderId) return res.status(400).json({ error: "investorId + folderId required" });
     // Resolve companyId from the folder
     const folder = folders.find((fl) => fl.id === folderId);
-    const companyId = folder?.companyId ?? "unknown";
+    const companyId = folder?.companyId ?? null;
+    /* v25.17 Lane A NH2 — founder of company A could previously grant dataroom
+       access on company B's folder by passing company B's folderId.  Now
+       require the caller be a founder of the resolved companyId (or admin). */
+    if (!companyId) return res.status(404).json({ error: "folder_not_found" });
+    if (!assertFounderOfCompany(req, res, companyId)) return;
     let p = permissions.find((x) => x.investorId === investorId && x.folderId === folderId);
     if (!p) {
       p = { investorId, folderId, view: !!view, download: !!download };
@@ -584,17 +643,17 @@ export function registerDataroomRoutes(app: Express): void {
     res.json(p);
   });
 
-  app.get("/api/founder/dataroom/events", (req, res) => {
-    // Avi 22-May Issue 5 — default to active company when query param absent.
+  app.get("/api/founder/dataroom/events", requireAuth, (req, res) => {
     const { companyId } = resolveCompanyIdParam(req);
     if (!companyId) return res.status(400).json({ error: "companyId_required" });
+    if (!assertFounderOfCompany(req, res, companyId)) return;
     res.json(events.filter((e) => e.companyId === companyId));
   });
 
-  app.get("/api/founder/dataroom/engagement", (req, res) => {
-    // Avi 22-May Issue 5 — default to active company when query param absent.
+  app.get("/api/founder/dataroom/engagement", requireAuth, (req, res) => {
     const { companyId } = resolveCompanyIdParam(req);
     if (!companyId) return res.status(400).json({ error: "companyId_required" });
+    if (!assertFounderOfCompany(req, res, companyId)) return;
     const fileStats: Record<string, { uniqueViewers: Set<string>; totalViews: number; totalSeconds: number; lastViewedAt: string | null }> = {};
     const investorStats: Record<string, { docsViewed: Set<string>; totalSeconds: number; lastActiveAt: string | null }> = {};
 

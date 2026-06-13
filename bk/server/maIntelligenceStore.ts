@@ -186,9 +186,32 @@ export function clearInitiatives(): void {
   initiatives.length = 0;
 }
 
+/**
+ * v25.10 fix C4 — hydrate the initiatives array from kv_maInitiativesStore
+ * on boot so initiatives created in a previous process are still visible.
+ * Called from HYDRATE_ORDER in lib/hydrateStores.ts.
+ */
+export function hydrateMaInitiativesStore(): number {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { hydrateEntries } = require("./lib/storePersistenceShim");
+    const rows = hydrateEntries("maInitiativesStore") as Array<[string, Initiative]>;
+    let n = 0;
+    for (const [, init] of rows) {
+      if (init && !initiatives.some((x) => x.id === init.id)) {
+        initiatives.push(init);
+        n++;
+      }
+    }
+    return n;
+  } catch {
+    return 0;
+  }
+}
+
 export function registerMaIntelligenceRoutes(app: Express): void {
   app.get("/api/investor/ma/intelligence/:companyId", (req: Request, res: Response) => {
-    const { companyId } = req.params;
+    const companyId = String(req.params.companyId ?? "");
     const intel = getMaIntelligenceFor(companyId);
     res.json(intel);
   });
@@ -209,6 +232,16 @@ export function registerMaIntelligenceRoutes(app: Express): void {
       investorUserId: req.userContext?.userId ?? "u_unknown",
     };
     initiatives.push(initiative);
+    /* v25.10 fix C4 — write-through to DB so the initiative survives a
+     * server restart. The legacy in-process array still gets the push so
+     * reads in this process see it immediately. */
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { persistEntry } = require("./lib/storePersistenceShim");
+      persistEntry("maInitiativesStore", id, initiative);
+    } catch {
+      /* Non-fatal — the in-process push above still works in this session. */
+    }
     const eventType = parsed.data.initiativeType === "lead_initiative"
       ? "ma_initiative_started"
       : "ma_discussion_started";

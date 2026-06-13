@@ -6,6 +6,9 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
+/* v25.12 NL7 — toast errors in addition to the inline display for consistency
+ * with other partner mutations. */
+import { useToast } from "@/hooks/use-toast";
 import { useRequirePartnerRole } from "@/lib/partner/useRequirePartnerRole";
 import { PartnerShell, PartnerEmptyState } from "@/components/partner/PartnerShell";
 import { Button } from "@/components/ui/button";
@@ -32,10 +35,18 @@ export default function PartnerFunds() {
   const [form, setForm] = useState({ fundName: "", vintageYear: "2026", targetSizeMinor: "0", currency: "USD" });
   const [showForm, setShowForm] = useState(false);
 
-  const { data, isLoading } = useQuery<{ funds: Fund[] }>({
+  const { data, isLoading, isError } = useQuery<{ funds: Fund[] }>({
+    /* v25.12 NL1 — explicit queryFn for robustness; previously relied on the
+     * global default which would silently break if the queryKey ever becomes
+     * multi-element. */
+    /* v25.15 NM7 — isError surfaced for explicit error UI. */
     queryKey: ["/api/partner/me/funds"],
     enabled: role.ready && !!role.identity,
+    queryFn: async () => (await apiRequest("GET", "/api/partner/me/funds")).json(),
   });
+
+  /* v25.12 NL7 — toast helper. */
+  const { toast } = useToast();
 
   const create = useMutation({
     mutationFn: async () => {
@@ -56,6 +67,7 @@ export default function PartnerFunds() {
       setForm({ fundName: "", vintageYear: "2026", targetSizeMinor: "0", currency: "USD" });
       setShowForm(false);
     },
+    onError: (e: Error) => toast({ variant: "destructive", title: "Create fund failed", description: e.message }),
   });
 
   if (!role.ready || !role.identity) return null;
@@ -108,8 +120,17 @@ export default function PartnerFunds() {
         </Card>
       )}
 
-      {isLoading && <div className="text-sm text-slate-500">Loading…</div>}
-      {!isLoading && funds.length === 0 && (
+      {isLoading && <div className="text-sm text-slate-500" data-testid="funds-loading">Loading…</div>}
+      {/* v25.15 NM7 — explicit error branch. */}
+      {isError && (
+        <div
+          className="rounded-md border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900"
+          data-testid="funds-error"
+        >
+          Could not load funds. Please refresh and try again.
+        </div>
+      )}
+      {!isLoading && !isError && funds.length === 0 && (
         <PartnerEmptyState
           title="No funds recorded yet"
           description="Record a fund to document commitments."

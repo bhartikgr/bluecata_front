@@ -61,7 +61,17 @@ export default function PartnerDashboard() {
   const data = q.data;
   return (
     <PartnerShell title="Dashboard" tier={role.identity.tier} subRole={role.identity.subRole} partnerName={role.identity.identity.name}>
-      {!data && <div className="text-slate-500" data-testid="dashboard-loading">Loading…</div>}
+      {/* v25.16 NH1 — explicit error branch; previously a fetch failure left
+         the dashboard stuck on "Loading…" with no retry path. */}
+      {q.isError && (
+        <div
+          className="rounded-md border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900"
+          data-testid="dashboard-error"
+        >
+          Could not load dashboard. Please refresh and try again.
+        </div>
+      )}
+      {!data && !q.isError && <div className="text-slate-500" data-testid="dashboard-loading">Loading…</div>}
       {data && data.empty && (
         <PartnerEmptyState
           title="Your portfolio is just getting started"
@@ -75,11 +85,16 @@ export default function PartnerDashboard() {
             <CardContent>
               <div className="text-3xl font-bold" data-testid="kpi-companies">{data.portfolio.attributedCompanies}</div>
               <div className="text-xs text-slate-500">attributed companies</div>
+              {/* v25.16 NL1 — currency label on committed totals so the
+                 number is not bare. (Server-side multi-currency rollup is
+                 covered by server NM1.) */}
               <div className="text-xs mt-3 text-slate-700" data-testid="kpi-spv">
-                SPVs committed: {(data.portfolio.totalSpvCommittedMinor / 100).toLocaleString()}
+                SPVs committed: {(data.portfolio.totalSpvCommittedMinor / 100).toLocaleString()}{" "}
+                <span className="text-slate-400">USD</span>
               </div>
               <div className="text-xs text-slate-700" data-testid="kpi-fund">
-                Funds committed: {(data.portfolio.totalFundCommittedMinor / 100).toLocaleString()}
+                Funds committed: {(data.portfolio.totalFundCommittedMinor / 100).toLocaleString()}{" "}
+                <span className="text-slate-400">USD</span>
               </div>
             </CardContent>
           </Card>

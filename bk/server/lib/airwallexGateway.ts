@@ -206,9 +206,23 @@ export async function createPaymentIntent(
 
   /* istanbul ignore next — real-network path is exercised only in staging */
   // v25.1 Bug 3 fix — use OAuth Bearer token, not x-api-key, on the API call.
+  // v25.8 Bug 1 fix — Airwallex PaymentIntent v1 API requires `request_id`
+  // in the REQUEST BODY (not just the x-idempotency-key header) for
+  // idempotency. Avi's prod call was failing with:
+  //   {"code":"validation_error","source":"request_id",
+  //    "message":"request_id must be provided"}
+  // We now derive request_id from the idempotency key so re-runs of the same
+  // logical request match the same intent (Airwallex de-dups by request_id).
+  // We also include merchant_order_id (already present) and a SHA256 of the
+  // key to keep request_id <= 64 chars per Airwallex spec.
   const { apiBase } = ensureConfigured();
   const token = await getAirwallexBearerToken();
   const url = `${apiBase}/api/v1/pa/payment_intents/create`;
+  const requestId = require("node:crypto")
+    .createHash("sha256")
+    .update(input.idempotencyKey)
+    .digest("hex")
+    .slice(0, 64);
   const res = await fetch(url, {
     method: "POST",
     headers: {
@@ -217,6 +231,7 @@ export async function createPaymentIntent(
       "x-idempotency-key": input.idempotencyKey,
     },
     body: JSON.stringify({
+      request_id: requestId,
       amount: input.amountMinor,
       currency: input.currency,
       merchant_order_id: input.merchantOrderId,

@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ExternalLink, Copy, Play, CheckCircle2, XCircle, ArrowLeft, ScrollText } from "lucide-react";
+import { safeExternalHref } from "@/lib/safeUrl"; /* v25.18 Lane D NC1 */
 import { listFormulas, type FormulaRecord } from "@capavate/cap-table-engine";
 import { useAdminStore } from "@/lib/adminStore";
 import { useToast } from "@/hooks/use-toast";
@@ -157,11 +158,12 @@ export default function AdminFormulaDetail() {
  <CardHeader className="pb-3"><CardTitle className="text-base flex items-center gap-2"><ScrollText className="h-4 w-4" /> Citation</CardTitle></CardHeader>
  <CardContent className="space-y-2 text-sm">
  <div className="font-medium">{formula.citation.source}</div>
- {formula.citation.url && (
- <a href={formula.citation.url} target="_blank" rel="noreferrer" className="text-xs text-[hsl(184_98%_22%)] hover:underline inline-flex items-center gap-1">
+ {/* v25.18 Lane D NC1 — protocol-checked citation URL */}
+ {safeExternalHref(formula.citation.url) ? (
+ <a href={safeExternalHref(formula.citation.url)!} target="_blank" rel="noopener noreferrer" className="text-xs text-[hsl(184_98%_22%)] hover:underline inline-flex items-center gap-1">
  {formula.citation.url} <ExternalLink className="h-3 w-3" />
  </a>
- )}
+ ) : (formula.citation.url ? <span className="text-xs text-muted-foreground">{formula.citation.url}</span> : null)}
  {formula.citation.note && <p className="text-xs text-muted-foreground italic">{formula.citation.note}</p>}
  </CardContent>
  </Card>

@@ -20,9 +20,105 @@
 import type { Express, Request, Response } from "express";
 import multer from "multer";
 import path from "node:path";
+import { rawDb } from "../db/connection";
+import { log } from "./logger";
 
-/** In-memory store: companyId → { buf, mime, ext } */
-const logoStore = new Map<string, { buf: Buffer; mime: string; ext: string }>();
+/**
+ * v25.10 fix H1 — company logos are now persisted to SQLite.
+ *
+ * The previous implementation kept logos only in this in-memory Map, so
+ * every uploaded logo was lost on server restart. The Map is preserved as
+ * a hot cache (avoids a DB round-trip on every GET /logo request) but the
+ * authoritative copy lives in the `company_logos` table, which is created
+ * lazily and hydrated at boot via hydrateCompanyLogos().
+ */
+interface LogoEntry { buf: Buffer; mime: string; ext: string }
+const logoStore = new Map<string, LogoEntry>();
+let logoTableEnsured = false;
+
+function ensureLogoTable(): boolean {
+  if (logoTableEnsured) return true;
+  try {
+    const db: any = rawDb();
+    db.exec(`CREATE TABLE IF NOT EXISTS company_logos (
+      company_id TEXT PRIMARY KEY NOT NULL,
+      mime TEXT NOT NULL,
+      ext TEXT NOT NULL,
+      payload BLOB NOT NULL,
+      updated_at TEXT NOT NULL
+    );`);
+    logoTableEnsured = true;
+    return true;
+  } catch (err) {
+    log.warn({
+      route: "companyLogoRoutes.ensureLogoTable",
+      message: `CREATE TABLE failed (non-fatal): ${(err as Error).message}`,
+    });
+    return false;
+  }
+}
+
+function persistLogo(companyId: string, entry: LogoEntry): void {
+  if (!ensureLogoTable()) return;
+  try {
+    const db: any = rawDb();
+    db.prepare(
+      `INSERT INTO company_logos (company_id, mime, ext, payload, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(company_id) DO UPDATE SET
+         mime = excluded.mime,
+         ext = excluded.ext,
+         payload = excluded.payload,
+         updated_at = excluded.updated_at`,
+    ).run(companyId, entry.mime, entry.ext, entry.buf, new Date().toISOString());
+  } catch (err) {
+    log.warn({
+      route: "companyLogoRoutes.persistLogo",
+      message: `${companyId} persist failed: ${(err as Error).message}`,
+    });
+  }
+}
+
+function deletePersistedLogo(companyId: string): void {
+  if (!ensureLogoTable()) return;
+  try {
+    const db: any = rawDb();
+    db.prepare(`DELETE FROM company_logos WHERE company_id = ?`).run(companyId);
+  } catch (err) {
+    log.warn({
+      route: "companyLogoRoutes.deletePersistedLogo",
+      message: `${companyId} delete failed: ${(err as Error).message}`,
+    });
+  }
+}
+
+/**
+ * Restore the in-memory logo Map from the company_logos table. Called from
+ * HYDRATE_ORDER in lib/hydrateStores.ts.
+ */
+export function hydrateCompanyLogos(): number {
+  if (!ensureLogoTable()) return 0;
+  try {
+    const db: any = rawDb();
+    const rows: any[] = db
+      .prepare(`SELECT company_id, mime, ext, payload FROM company_logos`)
+      .all();
+    let n = 0;
+    for (const r of rows) {
+      const p: any = r.payload;
+      const buf: Buffer = Buffer.isBuffer(p) ? p : Buffer.from(p);
+      logoStore.set(r.company_id, { buf, mime: r.mime, ext: r.ext });
+      n++;
+    }
+    return n;
+  } catch (err) {
+    log.warn({
+      route: "companyLogoRoutes.hydrate",
+      message: `hydrate failed: ${(err as Error).message}`,
+    });
+    return 0;
+  }
+}
 
 /** Test-only accessor so unit tests can read what got stored. */
 export const _logoStoreForTest = logoStore;
@@ -93,7 +189,10 @@ export function registerCompanyLogoRoutes(app: Express): void {
         return res.status(400).json({ ok: false, error: "Unsupported image type." });
       }
       const ext = extForMime(mime, file.originalname);
-      logoStore.set(id, { buf: file.buffer, mime, ext });
+      const entry: LogoEntry = { buf: file.buffer, mime, ext };
+      logoStore.set(id, entry);
+      /* v25.10 fix H1 — write-through to DB so logos survive restart. */
+      persistLogo(id, entry);
       const url = `/api/founder/company/${encodeURIComponent(id)}/logo`;
       return res.json({ ok: true, url });
     },
@@ -119,6 +218,8 @@ export function registerCompanyLogoRoutes(app: Express): void {
   app.delete("/api/founder/company/:id/logo", (req: Request, res: Response) => {
     const id = String(req.params.id || "").trim();
     const had = logoStore.delete(id);
+    /* v25.10 fix H1 — also delete the persisted row. */
+    deletePersistedLogo(id);
     return res.json({ ok: true, deleted: had });
   });
 }

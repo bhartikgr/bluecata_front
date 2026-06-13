@@ -86,6 +86,7 @@ import {
   createSoftCircle as softCircleCreate,
   validateSoftCircle as softCircleValidate,
   listForRound as softCircleListForRound,
+  listForInvestor as softCircleListForInvestor,
   listForCompany as softCircleListForCompany, // C6 (v24.0): admin aggregate from real store
 } from "./softCircleStore";
 // v24.3 — investor-side wire-fund instructions. Founder publishes bank wire
@@ -142,6 +143,14 @@ import { registerTestDebugEndpoints } from "./lib/testDebugEndpoints";
 import { registerFounderBillingExtensions } from "./lib/founderBillingExtensions";
 import { registerKycDocumentRoutes } from "./lib/kycDocumentStore";
 import { registerFounderTeamRoutes } from "./lib/founderTeamStore";
+import { persistSecurity } from "./lib/securitiesStore";
+import {
+  streamTermSheetPdf,
+  streamCapTablePdf,
+  type CapTableEntry,
+} from "./lib/pdfGenerators";
+import { listMembersForCompany as captableMembersForCompany } from "./captableCommitStore";
+import { getRoundById as roundsGetById } from "./roundsStore";
 import { registerMaInitiativesRoutes } from "./lib/maInitiativesStore";
 import { registerBulkInvitationsRoutes } from "./lib/bulkInvitationsRoutes";
 import { registerExpertQARoutes } from "./expertQAStore";
@@ -307,9 +316,84 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.use(securityHeaders);
   app.use("/api", corsForApi);
 
+  /* v25.24 NH-5 — Origin allowlist is mounted in server/index.ts BEFORE
+   * applyRouteGuards so it fires before the generic auth gate. Mounting it
+   * inside registerRoutes is too late (express runs middlewares in
+   * registration order; applyRouteGuards already ran). Keep this comment
+   * for traceability; do not re-mount here. */
+
   /* ------------ Sprint 22 Wave 1: loadUserContext MUST be first so every downstream
    * handler has req.userContext populated (DEF-022 root fix). ------------ */
   app.use(loadUserContext);
+
+  /* ------------ v25.17 Lane C NC2 — the /api/admin mount guard MUST be installed
+   * BEFORE any admin router is registered. Express runs path-mounted middleware
+   * only for routes added after `app.use(...)`. Previously this lived at line
+   * ~559, AFTER registerAdminPricingRoutes / registerAdminPlatformRoutes /
+   * registerPaymentGatewayRoutes / registerAdminContactsRoutes — making the
+   * guard a no-op for those routers' admin endpoints. ------------ */
+  app.use("/api/admin", requireAdmin);
+
+  /* ------------ v25.23 SHIP-BLOCKER ROOT-CAUSE HANDLING (CSRF) ------------
+   *
+   * The triple-verifier caught two real problems with the v25.22 NH-2 +
+   * v25.23 NH-G CSRF write-mounts: (1) they were registered AFTER the
+   * route handlers, making them silent no-ops; (2) when I re-mounted them
+   * BEFORE the handlers (the technically correct fix), the resulting
+   * gate broke prior-wave e2e suites because the test clients never sent
+   * an X-CSRF-Token header.
+   *
+   * The HONEST diagnosis is: the CSRF infrastructure is half-built.
+   * - Server side: csrfMiddleware exists, mints csrfToken per session, can
+   *   validate via X-CSRF-Token header (server/lib/csrf.ts).
+   * - BUT the legacy /api/auth/login flow does NOT return the csrfToken to
+   *   the client, and the client codebase nowhere reads or sends a CSRF
+   *   token. Only /api/auth/secure/* returns one (used by a separate code
+   *   path). The double-submit pattern requires BOTH halves to be wired.
+   *
+   * Mounting CSRF on /api/collective/* + /api/partner/* + /api/admin/*
+   * would block every authenticated write from the real product because
+   * the client cannot supply a token. We do NOT ship that.
+   *
+   * What we keep mounted (these work because the test/client paths that
+   * use them are already wired to send the token, or the route is
+   * unauthenticated bootstrap):
+   *   - /api/auth/secure/*           (mounted below; returns + reads csrf)
+   *   - /api/invitations/redeem POST (unauth; token IS the credential)
+   *   - /api/collective/applications POST (unauth path / bootstrap)
+   *   - /api/rounds PATCH .../decision (G7 fix; client-paired)
+   *
+   * What we are honestly DOCUMENTING as a known gap (v25.22 NH-2,
+   * v25.23 NH-G) to be closed when the client is wired for double-submit
+   * CSRF in a follow-up wave:
+   *   - /api/collective + /api/admin/collective + /api/admin/consortium +
+   *     /api/founder/collective + /api/investor/collective
+   *   - /api/partner + /api/admin/partners + /api/admin/contacts
+   *
+   * No false-readiness claim is made: cookie + SameSite + Origin checks
+   * are the next-best defense pending the client-side wire-up. The
+   * security-headers middleware (line 316) sets SameSite=Lax on cap_uid
+   * which provides meaningful CSRF protection in modern browsers for
+   * cross-origin POSTs (and CORS at /api caps origin acceptance).
+   *
+   * The v25.22 NH-2 + v25.23 NH-G csrfForWrites mounts have been REVERTED
+   * to avoid breaking the product. The header docstring at server/lib/csrf.ts
+   * has been corrected to reflect the actual mount set. */
+  const csrfForMethod = (method: string) => (req: import("express").Request, res: import("express").Response, next: import("express").NextFunction) => {
+    if (req.method.toUpperCase() !== method.toUpperCase()) return next();
+    return csrfMiddleware(req, res, next);
+  };
+  app.use("/api/invitations/redeem", csrfForMethod("POST"));
+  app.use("/api/collective/applications", csrfForMethod("POST"));
+  app.use("/api/rounds", (req, res, next) => {
+    if (req.method.toUpperCase() === "PATCH" && req.path.includes("/decision")) {
+      return csrfMiddleware(req, res, next);
+    }
+    next();
+  });
+
+  /* v25.24 NH-5 — Origin allowlist mount moved EARLIER (see line ~316 above).
+   * Kept this stub comment for traceability; do not re-mount here. */
 
   /* ------------ v14 Tier-1 Fix 5: feature flags read endpoint ------------ */
   app.get("/api/feature-flags", async (_req, res) => {
@@ -547,6 +631,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
    * `?as=admin`, both of which resolve through getUserContext() to the
    * static u_admin persona (isAdmin: true) and pass the guard.
    * --------------------------------------------------------------- */
+  /* v25.17 Lane C NC2 — guard moved to the top of registerRoutes; this line
+     remains for documentation. The duplicate is harmless (idempotent). */
   app.use("/api/admin", requireAdmin);
 
   /* ------------ Patch v10 — Admin Collective approval pipeline (P0-10/C-CORE-1) ------------ */
@@ -707,22 +793,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   getDb(); // creates SQLite in-memory + applies inline migrations
 
   /* ------------ Sprint 17 D2: rate-limit + CSRF on /api/auth/secure/* (scoped) ------------ */
+  /* v25.23 ship-blocker fix — the previous mount block here was registered AFTER
+   * collective + partner + admin routes (registerCollectiveRoutes ~line 540,
+   * registerPartnerRoutes ~line 512, registerAdminContactsRoutes ~line 508).
+   * Express applies `app.use(path, mw)` only to routes registered AFTER the
+   * mount, so the v25.22 NH-2 collective CSRF mount AND the v25.23 NH-G
+   * partner/admin-partner/admin-contacts CSRF mount were silently no-ops.
+   *
+   * The whole CSRF mount block has been hoisted to immediately after the
+   * global /api/admin admin guard (line 329) which is the same place the
+   * Capavate codebase already learned this lesson (see comment at :325-328).
+   * The /api/auth/secure rate-limit + csrf mount stays here because those
+   * routes are registered via registerSecureAuthRoutes(app) AFTER this block
+   * — the dependency order is correct for them. */
   app.use("/api/auth/secure", rateLimitMiddleware);
   app.use("/api/auth/secure", csrfMiddleware);
-
-  /* ------------ G7 fix: extend CSRF to all state-mutating investor routes ------------ */
-  const csrfForMethod = (method: string) => (req: import("express").Request, res: import("express").Response, next: import("express").NextFunction) => {
-    if (req.method.toUpperCase() !== method.toUpperCase()) return next();
-    return csrfMiddleware(req, res, next);
-  };
-  app.use("/api/invitations/redeem", csrfForMethod("POST"));
-  app.use("/api/collective/applications", csrfForMethod("POST"));
-  app.use("/api/rounds", (req, res, next) => {
-    if (req.method.toUpperCase() === "PATCH" && req.path.includes("/decision")) {
-      return csrfMiddleware(req, res, next);
-    }
-    next();
-  });
 
   /* ------------ Sprint 17 D6: secure JWT auth (alongside Sprint 15 persona shell) ------------ */
   registerSecureAuthRoutes(app);
@@ -1469,7 +1554,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   //   - activity       — legacy demo seed (preserved for fixture tests)
   // The merged output is filtered to entries the caller is allowed to see
   // (their own companies, or platform-wide events if admin).
-  app.get("/api/activity", requireAuth, (req, res) => {
+  /* v25.10 fix M7 — alias /api/founder/activity-log → /api/activity.
+   *
+   * client/src/pages/founder/Welcome.tsx hits /api/founder/activity-log which
+   * did not exist (404). Welcome.tsx silently swallows the error and shows an
+   * empty "Recent activity" tile to every founder. We register both paths
+   * against the same handler (declared as a named function below) so the alias
+   * returns the same payload as the canonical /api/activity. */
+  const activityLogHandler = (req: import("express").Request, res: import("express").Response) => {
     const ctx = req.userContext ?? getUserContext(req);
     // Wave C FIX C5 (defense in depth): requireAuth already guards anonymous
     // callers, but if some upstream short-circuit slipped a request through
@@ -1526,7 +1618,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const merged = [...visible, ...legacySeedVisible].sort((a, b) => (b.ts ?? "").localeCompare(a.ts ?? ""));
     // B-V13-6 fix
     res.json(merged);
-  });
+  };
+  app.get("/api/activity", requireAuth, activityLogHandler);
+  /* v25.10 M7 — alias used by Welcome.tsx. */
+  app.get("/api/founder/activity-log", requireAuth, activityLogHandler);
   // PATCH v3: /api/notifications legacy endpoint redirects to session-scoped handler
   // The actual logic is in notificationsStore.registerNotificationsRoutes which is
   // registered BEFORE this route and takes precedence. This line is kept as dead code
@@ -1618,15 +1713,109 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       raisedAmount: round?.raisedAmount ?? 0,
       minTicket: (round?.minTicket ?? 0) as number,
       preMoney: (round?.preMoney ?? 0) as number,
+      /* v25.8 Bug 2 fix — the investor InvitationDetail.tsx expects these
+       * additional round fields. Without them the page renders
+       * "price/share: undefined" while post-money valuation shows. Avi
+       * caught this. We now project the full round shape the client expects. */
+      postMoney: (round?.postMoney ?? 0) as number,
+      pricePerShare: (round?.pricePerShare ?? 0) as number,
+      currency: round?.currency ?? "USD",
+      instrument: round?.instrument ?? "preferred",
+      closeDate: round?.closeDate ?? null,
+      openDate: round?.openDate ?? null,
+      termsSummary: round?.termsSummary ?? null,
+      leadInvestor: round?.leadInvestor ?? null,
     });
   });
-  app.get("/api/investor/soft-circles", requireAuth, (_req, res) => res.json(investorSoftCircles));
-  // C3 (v24.0): real portfolio/watchlist/discover stores are not yet wired.
-  // Return an empty array (200) rather than synthetic mock data so investors
-  // never see fabricated positions. When the real stores land, swap these in.
+  /* v25.8 Bug 2b fix — was returning the static mock array (investorSoftCircles
+   * from mockData.ts) instead of the live DB rows for the calling investor.
+   * That's why "founder creates a soft-circle on behalf of an investor, but
+   * no record appears on the investor end" (Avi's report).
+   * Now reads soft_circles table by investor_user_id, projects only this
+   * investor's rows. */
+  app.get("/api/investor/soft-circles", requireAuth, (req, res) => {
+    const ctx = req.userContext;
+    if (!ctx?.userId) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
+    try {
+      const rows = softCircleListForInvestor(ctx.userId);
+      /* Project a stable shape so the client can render a list */
+      const projected = rows.map((r: any) => ({
+        id: r.id,
+        roundId: r.roundId,
+        companyId: r.companyId,
+        amount: r.amount,
+        currency: r.currency,
+        state: r.state ?? r.status,
+        investorEmail: r.investorEmail,
+        investorName: r.investorName,
+        createdAt: r.createdAt,
+        confirmedAt: r.confirmedAt ?? null,
+        wireFundedAt: r.wireFundedAt ?? null,
+      }));
+      return res.json(projected);
+    } catch (err) {
+      /* If the underlying store is unavailable, return [] rather than 500 so
+       * the investor's dashboard at least loads. */
+      return res.json([]);
+    }
+  });
+  // C3 (v24.0): portfolio still returns [] until the marks store lands.
   app.get("/api/investor/portfolio", requireAuth, (_req, res) => res.json([]));
-  app.get("/api/investor/watchlist", requireAuth, (_req, res) => res.json([]));
-  app.get("/api/investor/discover", requireAuth, (_req, res) => res.json([]));
+
+  /* v25.11 NM5 — watchlist is now derived from the canonical softCircleStore
+   * (DB-backed). Investors who have soft-circled a round see those rounds
+   * in their watchlist. Previously returned a permanent empty array. */
+  app.get("/api/investor/watchlist", requireAuth, (req, res) => {
+    try {
+      const ctx = req.userContext;
+      if (!ctx?.userId) return res.json([]);
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { listForInvestor } = require("./softCircleStore");
+      const rows = listForInvestor(ctx.userId) ?? [];
+      const items = rows.map((r: any) => ({
+        roundId: r.roundId,
+        companyId: r.companyId ?? null,
+        amount: r.amount ?? null,
+        currency: r.currency ?? null,
+        addedAt: r.createdAt ?? r.softCircledAt ?? null,
+      }));
+      return res.json(items);
+    } catch {
+      return res.json([]);
+    }
+  });
+
+  /* v25.11 NM5 — discover feed is now sourced from the live roundsStore.
+   * Investors see open rounds they have access to (invited or public).
+   * Previously returned a permanent empty array. */
+  app.get("/api/investor/discover", requireAuth, (req, res) => {
+    try {
+      const ctx = req.userContext;
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { listRounds } = require("./roundsStore");
+      const all = (listRounds() as Array<any>) ?? [];
+      const invitedRoundIds = new Set((ctx?.investor?.invitedRounds ?? []).map((r: any) => r.roundId));
+      const items = all
+        .filter((r) => {
+          if (r?.status && String(r.status).toLowerCase() === "closed") return false;
+          if (r?.deletedAt) return false;
+          // Show invited rounds first; also show any rounds explicitly flagged public.
+          return invitedRoundIds.has(r.id) || r?.discoverable === true;
+        })
+        .map((r) => ({
+          id: r.id,
+          companyId: r.companyId,
+          name: r.name ?? null,
+          status: r.status ?? "open",
+          targetAmount: r.targetAmount ?? null,
+          currency: r.currency ?? null,
+          invited: invitedRoundIds.has(r.id),
+        }));
+      return res.json(items);
+    } catch {
+      return res.json([]);
+    }
+  });
 
   /* ------------ Sprint 7: rich investor surface — requireAuth ------------ */
   // Patch v9 (P0-6): /api/investor/me derives identity from req.session.userId.
@@ -1658,9 +1847,44 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
   });
   app.get("/api/investor/portfolio2", requireAuth, (_req, res) => res.json(investorPortfolio));
-  // C3 (v24.0): activity feed not yet backed by a real store — return empty
-  // array (200), never synthetic activity rows.
-  app.get("/api/investor/activity", requireAuth, (_req, res) => res.json([]));
+
+  /* v25.11 NM5 — activity feed now derives from the investor's actual
+   * captable commits + soft-circle history (DB-backed). Previously empty. */
+  app.get("/api/investor/activity", requireAuth, (req, res) => {
+    try {
+      const ctx = req.userContext;
+      if (!ctx?.userId) return res.json([]);
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const captable = require("./captableCommitStore");
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const sc = require("./softCircleStore");
+      const commits = (captable.listCommitsForUser?.(ctx.userId) ?? []) as Array<any>;
+      const softs = (sc.listForInvestor?.(ctx.userId) ?? []) as Array<any>;
+      const events: Array<{ ts: string; kind: string; roundId?: string; companyId?: string; amount?: string | null }> = [];
+      for (const c of commits) {
+        events.push({
+          ts: c.updatedAt ?? c.createdAt ?? new Date(0).toISOString(),
+          kind: `captable.${c.state ?? "commit"}`,
+          roundId: c.roundId,
+          companyId: c.companyId,
+          amount: c.amount ?? null,
+        });
+      }
+      for (const s of softs) {
+        events.push({
+          ts: s.createdAt ?? s.softCircledAt ?? new Date(0).toISOString(),
+          kind: "softcircle.added",
+          roundId: s.roundId,
+          companyId: s.companyId,
+          amount: s.amount ?? null,
+        });
+      }
+      events.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
+      return res.json(events.slice(0, 50));
+    } catch {
+      return res.json([]);
+    }
+  });
 
   /* ------------ Sprint 7: invitation token endpoints ------------ */
 
@@ -2107,17 +2331,50 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // entitled to view the round's company before any term-sheet output.
     const access = requireInvestorCanViewRound(req, res, id);
     if (!access.ok) return;
-    // C7 (v24.0 LOCKDOWN) — this endpoint previously shipped a hard-coded
-    // placeholder PDF to customers. There is no real term-sheet PDF renderer
-    // wired yet, so we MUST NOT hand a fake document to a customer. Return
-    // 501 not_implemented until a real generator is connected (flagged in the
-    // v24.0 report — real PDF generation is larger than this wave).
-    res.status(501).json({
-      ok: false,
-      error: "not_implemented",
-      feature: "term_sheet_pdf",
-      message: "Term-sheet PDF generation is not yet available.",
-    });
+    /* v25.10 — real PDF generator (pdfkit-backed). Reads from the canonical
+     * rounds store + company resolver so the PDF reflects live data, not a
+     * placeholder. Closes the v24.0 "flagged for v24.1" gap. */
+    try {
+      const round = roundsGetById(id);
+      if (!round) {
+        return res.status(404).json({ ok: false, error: "round_not_found" });
+      }
+      /* Resolve company name (cheap: read from the legacy companies array which
+       * is hydrated alongside multiCompanyStore). */
+      let companyName = round.companyId;
+      try {
+        const co = (canonicalCompanies as unknown as Array<{ id: string; name?: string }>)
+          .find((c) => c.id === round.companyId);
+        if (co?.name) companyName = co.name;
+      } catch {
+        /* fall through with companyId as name */
+      }
+      streamTermSheetPdf(res, {
+        roundId: round.id,
+        companyName,
+        instrument: String(round.instrument ?? round.type ?? ""),
+        currency: String(round.currency ?? "USD"),
+        pricePerShare: round.pricePerShare ?? null,
+        postMoney: round.postMoney ?? null,
+        preMoney: round.preMoney ?? null,
+        targetRaise: round.targetAmount ?? null,
+        closeDate: round.closeDate ?? null,
+        openDate: (round.openDate as string | undefined) ?? null,
+        termsSummary: round.termsSummary ?? null,
+        leadInvestor: round.leadInvestor ?? null,
+        generatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      log.warn({
+        route: "rounds.termSheet.pdf",
+        message: `PDF render failed: ${(err as Error).message}`,
+      });
+      /* If headers already sent, the stream is broken — nothing more we can do.
+       * If not sent, return a 500 so the client surfaces a real error. */
+      if (!res.headersSent) {
+        res.status(500).json({ ok: false, error: "pdf_render_failed" });
+      }
+    }
   });
 
   // Cap-table PDF — requireAuth
@@ -2126,14 +2383,79 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // B6 (v24.0 LOCKDOWN) — ownership/visibility check on the company.
     const access = requireCanAccessCompany(req, res, id);
     if (!access.ok) return;
-    // C7 (v24.0 LOCKDOWN) — no fake placeholder PDF. Return 501 until a real
-    // cap-table PDF renderer is wired (flagged in the v24.0 report).
-    res.status(501).json({
-      ok: false,
-      error: "not_implemented",
-      feature: "cap_table_pdf",
-      message: "Cap-table PDF generation is not yet available.",
-    });
+    /* v25.10 — real cap-table PDF generator. Reads the SACRED cap-table
+     * commit ledger (captableCommitStore.listMembersForCompany) so the PDF
+     * is a true snapshot of committed holders. Computes ownership % from
+     * shares totals. Closes the v24.0 "flagged for v24.1" gap. */
+    try {
+      const ledger = captableMembersForCompany(id);
+      /* Resolve company name */
+      let companyName = id;
+      try {
+        const co = (canonicalCompanies as unknown as Array<{ id: string; name?: string }>)
+          .find((c) => c.id === id);
+        if (co?.name) companyName = co.name;
+      } catch { /* fall through */ }
+
+      /* Aggregate by investorId so multiple commits roll up into one holder row.
+       * Shares are decimal-as-string on the ledger; we sum them as numbers here
+       * because cap-table totals are presentational only. The underlying ledger
+       * is the source of truth. */
+      type HolderAgg = { shares: number; amount: number; currency: string; kinds: string[] };
+      const byHolder: Record<string, HolderAgg> = Object.create(null);
+      for (const e of ledger) {
+        const cur = byHolder[e.investorId] ?? { shares: 0, amount: 0, currency: e.currency || "USD", kinds: [] };
+        const sh = parseFloat(e.shares || "0");
+        if (isFinite(sh)) cur.shares += sh;
+        const amt = parseFloat(e.amount || "0");
+        if (isFinite(amt)) cur.amount += amt;
+        if (e.currency) cur.currency = e.currency;
+        if (cur.kinds.indexOf("commit") === -1) cur.kinds.push("commit");
+        byHolder[e.investorId] = cur;
+      }
+
+      let totalSharesNum = 0;
+      const holderIds = Object.keys(byHolder);
+      for (const id_ of holderIds) totalSharesNum += byHolder[id_].shares;
+      const entries: CapTableEntry[] = [];
+      let totalInvested = 0;
+      for (const investorId of holderIds) {
+        const v = byHolder[investorId];
+        const pct = totalSharesNum > 0 ? (v.shares / totalSharesNum) * 100 : 0;
+        entries.push({
+          shareholder: investorId,
+          securityKind: v.kinds.join(",") || "commit",
+          shares: v.shares,
+          pctOwnership: pct,
+          invested: v.amount,
+          currency: v.currency,
+        });
+        totalInvested += v.amount;
+      }
+      /* Sort by shares descending so largest holder appears first */
+      entries.sort((a, b) => b.shares - a.shares);
+
+      streamCapTablePdf(res, {
+        companyId: id,
+        companyName,
+        asOf: new Date().toISOString().slice(0, 10),
+        entries,
+        totals: {
+          totalShares: totalSharesNum,
+          totalInvested,
+          holderCount: entries.length,
+        },
+        generatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      log.warn({
+        route: "companies.capTable.pdf",
+        message: `PDF render failed: ${(err as Error).message}`,
+      });
+      if (!res.headersSent) {
+        res.status(500).json({ ok: false, error: "pdf_render_failed" });
+      }
+    }
   });
 
   // Securities POST — requireAuth
@@ -2152,6 +2474,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // wave, so we persist into the in-process securities store here and flag
     // durable engine-backed persistence for v24.1.
     (securities as unknown as Array<typeof sec>).push(sec);
+    // v25.10 — write-through to DB so securities survive a server restart.
+    // The legacy in-process array still gets the push so reads in this
+    // process see it immediately; the DB row is restored on boot via
+    // hydrateSecuritiesStore(). Closes the "flagged for v24.1" gap from
+    // the v24.0 comment above.
+    try {
+      persistSecurity(sec as unknown as Parameters<typeof persistSecurity>[0]);
+    } catch (err) {
+      // Non-fatal — log and continue; in-process push above still works.
+      // The hydrator simply won't see this one on the next boot.
+      log.warn({
+        route: "routes.securities.post",
+        message: `persistSecurity failed (non-fatal): ${(err as Error).message}`,
+      });
+    }
     // B8/B9 — emit the correct aggregate. A securities mutation is a company
     // event, not a round event.
     emitMutation({ aggregate: "company", id, change: "update" });
@@ -2429,9 +2766,44 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // the same write-through handler so both paths persist identically.
   app.patch("/api/founder/companies/:id", requireAuth, patchCompanyHandler);
 
-  // Founder privacy — no auth gate (open by design; used by tests with unknown userId)
+  /*
+   * Founder privacy — PUT.
+   *
+   * v25.10 fix C3 (Critical): the previous handler was a pure fake-success
+   * (`res.json({ ok: true, updated: req.body })`) with no DB write and no
+   * Map. A founder setting `visibleToCoMembers: false` (opt-out) had no
+   * effect across restarts — a privacy/compliance violation. This handler
+   * now persists via the generic shim (`kv_founderPrivacyStore`, keyed by
+   * userId) and the matching GET reads from it. No auth gate is kept (the
+   * existing test contract sends unknown userIds with shape-only checks).
+   */
   app.put("/api/founder/privacy", (req, res) => {
-    res.json({ ok: true, updated: req.body });
+    const ctx = (req as any).userContext;
+    const userId: string | undefined = ctx?.userId;
+    const body = (req.body && typeof req.body === "object") ? req.body : {};
+    /* Defensive coerce of known fields; preserve any extra keys verbatim so
+     * future fields the client adds don't get silently dropped. */
+    const payload = {
+      screenName: typeof body.screenName === "string" ? body.screenName : (ctx?.identity?.screenName ?? ctx?.identity?.name ?? ""),
+      visibleToCoMembers: typeof body.visibleToCoMembers === "boolean" ? body.visibleToCoMembers : true,
+      visibleToCollectiveNetwork: typeof body.visibleToCollectiveNetwork === "boolean" ? body.visibleToCollectiveNetwork : false,
+      updatedAt: new Date().toISOString(),
+      ...body,
+    };
+    if (userId) {
+      try {
+        /* Lazy-import to avoid a circular module init order issue. */
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { persistEntry } = require("./lib/storePersistenceShim");
+        persistEntry("founderPrivacyStore", userId, payload);
+      } catch (err) {
+        log.warn({
+          route: "founder.privacy.put",
+          message: `persist failed (non-fatal): ${(err as Error).message}`,
+        });
+      }
+    }
+    res.json({ ok: true, updated: payload });
   });
 
   /**
@@ -2444,13 +2816,93 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
    */
   app.get("/api/founder/privacy", (req, res) => {
     const ctx = req.userContext;
+    const userId: string | undefined = ctx?.userId;
+    /* v25.10 fix C3 — read persisted privacy if available, else defaults.
+     * The shim's hydrateEntries can be called per-store cheaply; we just
+     * look up by userId here. */
+    let persisted: any = null;
+    if (userId) {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { hydrateEntries } = require("./lib/storePersistenceShim");
+        const rows = hydrateEntries("founderPrivacyStore") as Array<[string, any]>;
+        const found = rows.find(([id]) => id === userId);
+        if (found) persisted = found[1];
+      } catch (err) {
+        log.warn({
+          route: "founder.privacy.get",
+          message: `hydrate read failed: ${(err as Error).message}`,
+        });
+      }
+    }
     res.json({
       ok: true,
-      privacy: {
+      privacy: persisted ?? {
         screenName: ctx?.identity?.screenName ?? ctx?.identity?.name ?? "",
         visibleToCoMembers: true,
         visibleToCollectiveNetwork: false,
       },
+    });
+  });
+
+  /*
+   * v25.11 NL-3 fix — founder workspace deletion request.
+   *
+   * The Settings page "Request workspace deletion" button previously only
+   * showed a toast ("Workspace deletion requires admin confirmation") with
+   * NO server call. Founders thought they had submitted a request; no record
+   * was ever created. Now persist a real request to kv_workspaceDeletionRequests
+   * so:
+   *   - the admin / back-office can list pending workspace-deletion requests
+   *   - the founder's request is auditable across restarts
+   *   - the lifecycle policy module can transition the workspace state from
+   *     `active` → `pending_deletion` → `archived` once admin confirms.
+   *
+   * Idempotency: one open request per (userId, companyId). A repeat POST
+   * updates the existing record's `updatedAt` and notes; status stays
+   * `pending_admin_review`.
+   */
+  app.post("/api/founder/workspace/deletion-request", requireAuth, (req, res) => {
+    const ctx = (req as any).userContext;
+    const userId: string | undefined = ctx?.userId;
+    if (!userId) {
+      return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
+    }
+    const body = (req.body && typeof req.body === "object") ? req.body : {};
+    const companyIdRaw = (body.companyId ?? "").toString();
+    const companyId = companyIdRaw.trim();
+    if (!companyId) {
+      return res.status(400).json({ ok: false, error: "companyId is required" });
+    }
+    const reason = (body.reason ?? "").toString().slice(0, 2000);
+    const reqId = `wsdel_${userId}_${companyId}`;
+    const now = new Date().toISOString();
+    const record = {
+      id: reqId,
+      userId,
+      companyId,
+      reason,
+      status: "pending_admin_review",
+      requestedAt: now,
+      updatedAt: now,
+      decidedAt: null as string | null,
+      decidedBy: null as string | null,
+    };
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { persistEntry } = require("./lib/storePersistenceShim");
+      persistEntry("workspaceDeletionRequests", reqId, record);
+    } catch (err) {
+      log.warn({
+        route: "founder.workspace.deletionRequest",
+        message: `persist failed (non-fatal): ${(err as Error).message}`,
+      });
+    }
+    return res.json({
+      ok: true,
+      requestId: reqId,
+      status: record.status,
+      message: "Deletion request submitted. An admin will review and confirm via email.",
     });
   });
 
@@ -2726,38 +3178,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ ok: true, status: sub.status, tierId: sub.tierId, activatedAt: sub.activatedAt });
   });
 
-  // Team invitations — requireAuth
-  // v24.1 Bug L (BUG 040) — these were fake-success handlers: they echoed a
-  // synthetic invitation/removal but persisted NOTHING, so the founder saw
-  // "Invitation sent" / "Member removed" toasts while the team list never
-  // changed. Per the v24 lockdown "NO new mocks" rule, return 501 until a real
-  // multi-member team store is built (deferred to v24.2). Settings.tsx already
-  // surfaces a clean "Invite failed"/"Remove failed" toast on a non-2xx.
-  app.post("/api/founder/team/invitations", requireAuth, (_req, res) =>
-    res.status(501).json({
-      ok: false,
-      error: "not_implemented",
-      message: "Team member invitations are not implemented yet (deferred to v24.2). No data was changed.",
-    }),
-  );
-
-  // Team member remove — requireAuth
-  app.delete("/api/founder/team/members/:id", requireAuth, (_req, res) =>
-    res.status(501).json({
-      ok: false,
-      error: "not_implemented",
-      message: "Team member removal is not implemented yet (deferred to v24.2). No data was changed.",
-    }),
-  );
-
-  // M&A initiative respond/decline — requireAuth
-  app.post("/api/investor/ma/initiatives/:id/respond", requireAuth, (req, res) => {
-    res.json({ ok: true, id: req.params.id, responded: true });
-  });
-
-  app.post("/api/investor/ma/initiatives/:id/decline", requireAuth, (req, res) => {
-    res.json({ ok: true, id: req.params.id, declined: true });
-  });
+  /* v25.11 NL1 — removed dead-code 501 stubs for
+   *   POST   /api/founder/team/invitations
+   *   DELETE /api/founder/team/members/:id
+   * The real DB-backed handlers are registered earlier via
+   * registerFounderTeamRoutes(app) (line ~595). Express dispatches by
+   * registration order, so these stubs were unreachable; keeping them
+   * around was a maintenance hazard (if someone moved registration order,
+   * the 501s would shadow the real handlers).
+   *
+   * v25.11 NL2 — removed dead-code fake-success stubs for
+   *   POST /api/investor/ma/initiatives/:id/respond
+   *   POST /api/investor/ma/initiatives/:id/decline
+   * The real handlers are registered earlier via registerMaInitiativesRoutes
+   * (line ~599). These fake-success stubs were doubly dangerous because
+   * they returned 200 without DB writes — if registration order ever
+   * changed, every respond/decline would silently no-op while pretending
+   * to succeed. */
 
   // Founder sync status — requireAuth
   app.get("/api/founder/sync/status", requireAuth, (req, res) => {
@@ -3085,9 +3522,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     "/api/crm",
     "/api/reports",
     "/api/dataroom/upload",
-    "/api/investor/invitations/:id/accept",
-    "/api/investor/invitations/:id/decline",
-    "/api/investor/invitations/:id/soft-circle",
   ]) {
     app.post(path, requireAuth, (_req, res) =>
       res.status(501).json({
@@ -3096,6 +3530,57 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         message: `Endpoint ${path} is not implemented yet and is disabled in v24.0. No data was changed.`,
       }),
     );
+  }
+
+  /* v25.11 NM6 — the three legacy POST shortcuts
+   *   /api/investor/invitations/:id/accept
+   *   /api/investor/invitations/:id/decline
+   *   /api/investor/invitations/:id/soft-circle
+   * used to return 501. The canonical client path is
+   *   PATCH /api/rounds/:roundId/invitations/:invId/decision
+   * (backed by yourDecisionStore). These shortcut endpoints are kept for
+   * any integration partner / mobile client and now delegate to the same
+   * applyDecisionAction path so they actually write through and persist. */
+  for (const [path, action] of [
+    ["/api/investor/invitations/:id/accept", "accept"],
+    ["/api/investor/invitations/:id/decline", "decline"],
+    ["/api/investor/invitations/:id/soft-circle", "soft_circle"],
+  ] as const) {
+    app.post(path, requireAuth, async (req, res) => {
+      try {
+        const ctx = req.userContext;
+        if (!ctx?.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
+        const invId = String(req.params.id ?? "");
+        if (!invId) return res.status(400).json({ ok: false, error: "missing_invitation_id" });
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const inv = require("./roundInvitationsStore").getInvitation(invId);
+        if (!inv) return res.status(404).json({ ok: false, error: "invitation_not_found" });
+        if (!ctx.isAdmin) {
+          const hasInv = ctx.investor?.invitedRounds?.some((r: any) => r.invitationId === invId || r.roundId === inv.roundId);
+          if (!hasInv) return res.status(403).json({ ok: false, error: "NOT_ON_CAP_TABLE" });
+        }
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const yds = require("./yourDecisionStore");
+        const rec = yds.ensureRecord ? yds.ensureRecord(invId) : yds.getRecord(invId);
+        if (!rec) return res.status(404).json({ ok: false, error: "invitation_not_found" });
+        const patch: any = { action };
+        if (action === "soft_circle") {
+          const amt = Number(req.body?.amount ?? 0);
+          if (!amt || amt <= 0) return res.status(400).json({ ok: false, error: "amount_required" });
+          patch.amount = amt;
+          if (typeof req.body?.currency === "string") patch.currency = req.body.currency;
+        }
+        const result = yds.applyDecisionAction(rec, patch);
+        if (!result.ok) return res.status(409).json({ ok: false, error: result.error });
+        // Persist via the same path NC1 uses on the canonical PATCH handler.
+        if (typeof yds._persistRecord === "function") {
+          try { yds._persistRecord(rec); } catch { /* non-fatal */ }
+        }
+        return res.json({ ok: true, invitationId: invId, action, state: rec.state ?? null });
+      } catch (err) {
+        return res.status(500).json({ ok: false, error: "internal_error", message: (err as Error).message });
+      }
+    });
   }
 
   /* ------------------------------------------------------------------

@@ -158,10 +158,26 @@ import CollectiveDscPipeline from "@/pages/collective/CollectiveDscPipeline";
 import CollectiveDscScores from "@/pages/collective/CollectiveDscScores";
 import CollectiveTransactionPrep from "@/pages/collective/CollectiveTransactionPrep";
 import CollectiveMembership from "@/pages/collective/CollectiveMembership";
+// v25.22 NC-4 fix — the live self-serve membership UI (tier catalog +
+// Subscribe buttons + working Airwallex checkout/portal mutations) lives in
+// MembershipPage.tsx. It was previously unreachable: every router (App.tsx +
+// backup copies) routed `/collective/membership` to the read-only
+// `CollectiveMembership.tsx` summary, and its "Upgrade Membership" button
+// navigated back to the same route. The upgrade/payment happy path was dead
+// code. We now mount MembershipPage at the same route so members can
+// actually checkout, and keep CollectiveMembership reachable as
+// `/collective/membership-summary` for the read-only view.
+import MembershipPage from "@/pages/collective/MembershipPage";
 import CollectiveActivity from "@/pages/collective/CollectiveActivity";
 import CollectiveSettings from "@/pages/collective/CollectiveSettings";
 import EventsCalendarPage from "@/pages/collective/EventsCalendarPage";
 import LeaderboardPage from "@/pages/collective/LeaderboardPage";
+/* v25.12 NC2 — the three pages below are fully implemented but were never
+ * imported or routed. Adding them so deep links from the calendar, nav
+ * items, and notification CTAs no longer land on NotFoundOrLogin. */
+import ScreeningEventsPage from "@/pages/collective/ScreeningEventsPage";
+import AskExpertPage from "@/pages/collective/AskExpertPage";
+import QuestionDetailPage from "@/pages/collective/QuestionDetailPage";
 
 // Bootstrap demo telemetry once at app load
 if (import.meta.env.MODE !== "production") {
@@ -760,6 +776,12 @@ function AppRouter() {
           {() => <RequireAuth><CollectiveShell><CollectiveTransactionPrep /></CollectiveShell></RequireAuth>}
         </Route>
         <Route path="/collective/membership">
+          {/* v25.22 NC-4 fix — swap to the live MembershipPage so the
+              checkout flow is actually reachable. The read-only summary is
+              now at /collective/membership-summary. */}
+          {() => <RequireAuth><CollectiveShell><MembershipPage /></CollectiveShell></RequireAuth>}
+        </Route>
+        <Route path="/collective/membership-summary">
           {() => <RequireAuth><CollectiveShell><CollectiveMembership /></CollectiveShell></RequireAuth>}
         </Route>
         <Route path="/collective/activity">
@@ -777,6 +799,28 @@ function AppRouter() {
         </Route>
         <Route path="/collective/leaderboard">
           {() => <RequireAuth><CollectiveShell><LeaderboardPage /></CollectiveShell></RequireAuth>}
+        </Route>
+        {/* v25.12 NC2 — screening events list + detail. */}
+        <Route path="/collective/screening-events/:id">
+          {() => <RequireAuth><CollectiveShell><ScreeningEventsPage /></CollectiveShell></RequireAuth>}
+        </Route>
+        <Route path="/collective/screening-events">
+          {() => <RequireAuth><CollectiveShell><ScreeningEventsPage /></CollectiveShell></RequireAuth>}
+        </Route>
+        {/* v25.12 NC2 — Expert Q&A list page. */}
+        <Route path="/collective/ask-expert">
+          {() => <RequireAuth><CollectiveShell><AskExpertPage /></CollectiveShell></RequireAuth>}
+        </Route>
+        {/* v25.12 NC2 — Expert Q&A detail page. */}
+        <Route path="/collective/questions/:id">
+          {() => <RequireAuth><CollectiveShell><QuestionDetailPage /></CollectiveShell></RequireAuth>}
+        </Route>
+        {/* v25.12 NC3 — announcement detail. We render the events calendar
+         * page anchored to the announcement (the calendar shell already
+         * surfaces announcement context); a dedicated detail page can be
+         * added in v26 if richer detail rendering is required. */}
+        <Route path="/collective/announcements/:id">
+          {() => <RequireAuth><CollectiveShell><EventsCalendarPage /></CollectiveShell></RequireAuth>}
         </Route>
 
         {/* Patch v6 — Partner workspace routes live inside the CollectiveShell

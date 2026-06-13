@@ -38,6 +38,11 @@ import { createCollectiveIntent } from "./airwallexCollective";
 import { rawDb } from "../db/connection";
 import { appendAdminAudit } from "../adminPlatformStore";
 import { log } from "./logger";
+// v25.21 Lane D NC-002/NC-003 fix — when the worker cancels a billing row or
+// marks it past_due, the corresponding collective membership MUST also be
+// deactivated. Without this the gate `requireCollectiveMember` still passes
+// for a non-paying ex-member because it keys off `collectiveMembershipStore.isActive`.
+import * as collectiveMembershipStore from "../collectiveMembershipStore";
 
 interface BillingRowDB {
   id: string;
@@ -98,17 +103,36 @@ export async function tick(): Promise<{ swept: number; renewed: number; cancelle
     const db: any = rawDb();
     const nowSec = Math.floor(Date.now() / 1000);
     const cutoff = nowSec + LEAD_WINDOW_SEC;
+    /* v25.21 Lane A NC-001 fix (REWORK after triple-verify): the sweep now
+     * matches `status='active'` ONLY. `past_due` is a terminal state set by
+     * `markPastDue` after MAX_CONSECUTIVE_FAILURES gateway errors — it must
+     * NOT be re-selected by the sweep, otherwise the worker keeps minting
+     * fresh intents against a row that's already been escalated. Webhook
+     * delivery recovers `past_due` rows independently (`invoice.paid` flips
+     * them back to `active`).
+     *
+     * Additionally, we exclude rows whose `updated_at` is within the last
+     * 30 minutes — a heuristic to skip rows where `renewMembership` just
+     * minted an intent and we're now waiting for the Airwallex webhook to
+     * advance `current_period_end`. Without this lookback the same `active`
+     * row stays re-selectable until the webhook lands (which can take
+     * minutes), spamming fresh intents each tick. Combined with the
+     * deterministic idempotency key (NC-002), this prevents both real
+     * double-charges (gateway dedup) AND the audit-log spam (worker dedup). */
+    const renewalDebounceMs = 30 * 60 * 1000;
+    const debounceCutoff = new Date(Date.now() - renewalDebounceMs).toISOString();
     const rows = db
       .prepare(
         `SELECT id, tenant_id, chapter_id, user_id, tier, status, current_period_end,
                 cancel_at_period_end, stripe_subscription_id, updated_at
            FROM collective_memberships_billing
-          WHERE status IN ('active','past_due')
+          WHERE status = 'active'
             AND current_period_end IS NOT NULL
             AND current_period_end <= ?
-            AND (deleted_at IS NULL OR deleted_at = '')`,
+            AND (deleted_at IS NULL OR deleted_at = '')
+            AND (updated_at IS NULL OR updated_at <= ?)`,
       )
-      .all(cutoff) as BillingRowDB[];
+      .all(cutoff, debounceCutoff) as BillingRowDB[];
     swept = rows.length;
 
     for (const row of rows) {
@@ -146,24 +170,47 @@ export async function tick(): Promise<{ swept: number; renewed: number; cancelle
 async function renewMembership(row: BillingRowDB): Promise<void> {
   /* Mint a fresh Airwallex payment intent. The merchant_order_id stays
    * the same so the webhook resolves back to this billing row, which then
-   * rolls current_period_start/end forward via dispatchAirwallexEvent. */
+   * rolls current_period_start/end forward via dispatchAirwallexEvent.
+   *
+   * v25.21 Lane A NC-002 fix — pass a deterministic idempotency anchor
+   * derived from the billing cycle's `current_period_end` so a worker
+   * restart mid-sweep, or a re-selection caused by a slow webhook, cannot
+   * mint a second live charge against the same cycle. Airwallex's 24h
+   * duplicate-rejection window now actually fires.
+   */
+  /* Coerce the numeric epoch to a string so the deterministic key is a
+   * stable text token. `no_cycle` is a deliberate fallback for rows that
+   * somehow lack `current_period_end`; the sweep query above filters those
+   * out, so we only see this fallback in pathological data. */
+  const cycleAnchor = String(row.current_period_end ?? "no_cycle");
   const result = await createCollectiveIntent({
     billingId: row.id,
     userId: row.user_id,
     chapterId: row.chapter_id,
     tier: row.tier,
+    idempotencyAnchor: cycleAnchor,
   });
   if (!result.ok) {
     throw new Error(`createCollectiveIntent_failed:${result.error}`);
   }
 
-  /* Persist the new intent id on the row so dispatchAirwallexEvent can
-   * resolve back via findBillingBySubscriptionId. */
+  /* v25.21 Lane A NC-001 fix (REWORK after triple-verify): persist the new
+   * intent id and bump `updated_at` to now. The sweep is now narrowed to
+   * `status='active'` only AND skips rows whose updated_at falls inside the
+   * 30-minute debounce window (see tick()). That combination prevents the
+   * same active row from being re-selected before the Airwallex webhook
+   * lands and rolls `current_period_end` forward. We deliberately do NOT
+   * flip status to `past_due` here — that state is reserved for
+   * MAX_CONSECUTIVE_FAILURES (markPastDue) and is terminal until webhook
+   * recovery. Conflating "awaiting-webhook" with "payment-failed-3x" is
+   * exactly the false premise the triple-verifier flagged.
+   */
   try {
     const db: any = rawDb();
     db.prepare(
       `UPDATE collective_memberships_billing
-          SET stripe_subscription_id = ?, updated_at = ?
+          SET stripe_subscription_id = ?,
+              updated_at = ?
         WHERE id = ?`,
     ).run(result.intent.id, new Date().toISOString(), row.id);
   } catch { /* non-fatal */ }
@@ -198,6 +245,22 @@ async function cancelMembership(row: BillingRowDB): Promise<void> {
   } catch (err) {
     throw new Error(`db_update_failed:${(err as Error).message}`);
   }
+  /* v25.21 Lane D NC-002 fix — deactivate the collective membership row so
+   * `requireCollectiveMember` no longer admits this user. Without this the
+   * gate keeps passing because it checks `collectiveMembershipStore.isActive`,
+   * not the billing row's status. Best-effort (the billing transition above
+   * is the source of truth; membership deactivation is a downstream gate). */
+  try {
+    collectiveMembershipStore.deactivate(
+      row.user_id,
+      "system:collective_renewal_worker",
+    );
+  } catch (deactivateErr) {
+    log.warn(
+      "[collectiveRenewalWorker.cancelMembership] membership deactivate failed (non-fatal):",
+      (deactivateErr as Error).message,
+    );
+  }
   try {
     appendAdminAudit(
       "system:collective_renewal_worker",
@@ -224,6 +287,23 @@ async function markPastDue(row: BillingRowDB, reason: string): Promise<void> {
         WHERE id = ?`,
     ).run(ts, row.id);
   } catch { /* non-fatal */ }
+  /* v25.21 Lane D NC-003 fix — three consecutive renewal failures = stop
+   * granting collective access. Deactivate the membership row so the gate
+   * (`requireCollectiveMember` / `collectiveMembershipStore.isActive`) closes.
+   * If a subsequent successful webhook lands, dispatchAirwallexEvent's
+   * activate path re-enables the membership; this is the documented
+   * recovery channel. */
+  try {
+    collectiveMembershipStore.deactivate(
+      row.user_id,
+      "system:collective_renewal_worker",
+    );
+  } catch (deactivateErr) {
+    log.warn(
+      "[collectiveRenewalWorker.markPastDue] membership deactivate failed (non-fatal):",
+      (deactivateErr as Error).message,
+    );
+  }
   try {
     appendAdminAudit(
       "system:collective_renewal_worker",

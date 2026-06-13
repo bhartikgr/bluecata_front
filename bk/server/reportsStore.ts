@@ -541,7 +541,7 @@ export function registerReportsRoutes(app: Express): void {
     res.json(r);
   });
 
-  app.post("/api/founder/reports2/:id/read", (req, res) => {
+  app.post("/api/founder/reports2/:id/read", async (req, res) => {
     const r = reports.find((x) => x.id === req.params.id);
     if (!r) return res.status(404).json({ error: "not_found" });
     const investorId = String(req.body?.investorId ?? "u_anonymous");
@@ -552,10 +552,16 @@ export function registerReportsRoutes(app: Express): void {
     } else {
       r.readReceipts.push({ investorId, openedAt: new Date().toISOString(), reads: 1 });
     }
+    /* v25.11 NM7 — read receipts must survive restart so founder email
+     * engagement analytics stay accurate after deploys. */
+    try {
+      const ctx = await getUserContext(req);
+      persistReportToDb(r, ctx?.userId, new Date().toISOString());
+    } catch { /* non-fatal */ }
     res.json({ ok: true, readReceipts: r.readReceipts });
   });
 
-  app.post("/api/founder/reports2/:id/comments", (req, res) => {
+  app.post("/api/founder/reports2/:id/comments", async (req, res) => {
     const r = reports.find((x) => x.id === req.params.id);
     if (!r) return res.status(404).json({ error: "not_found" });
     const { sectionId, text, actor, reaction } = req.body ?? {};
@@ -566,11 +572,22 @@ export function registerReportsRoutes(app: Express): void {
       const cmt = sec.comments.find((c) => c.id === req.body?.commentId);
       if (cmt) {
         cmt.reactions[reaction] = (cmt.reactions[reaction] ?? 0) + 1;
+        /* v25.11 NM7 — reaction-bump also persists. */
+        try {
+          const ctx = await getUserContext(req);
+          persistReportToDb(r, ctx?.userId, new Date().toISOString());
+        } catch { /* non-fatal */ }
         return res.json(cmt);
       }
     }
     const cmt = { id: `cmt_${randomBytes(3).toString("hex")}`, ts: new Date().toISOString(), actor: actor ?? "u_anonymous", text: text ?? "", reactions: {} };
     sec.comments.push(cmt);
+    /* v25.11 NM7 — persist comment-add so investor/founder collaborative
+     * review state survives restart. */
+    try {
+      const ctx = await getUserContext(req);
+      persistReportToDb(r, ctx?.userId, new Date().toISOString());
+    } catch { /* non-fatal */ }
     res.json(cmt);
   });
 }

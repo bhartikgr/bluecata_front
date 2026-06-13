@@ -37,6 +37,7 @@ import {
 } from "./lib/paymentGatewayResolver";
 import { verifyWebhookSignature as verifyAirwallexSig } from "./lib/airwallexGateway";
 import { verifyWebhookSignature as verifyStripeSig } from "./lib/stripeGateway";
+import { requireAuth } from "./lib/authMiddleware"; /* v25.17 Lane C NC6 */
 import { log } from "./lib/logger";
 // v24.2 Airwallex wiring — the per-gateway webhook now flips the Capavate
 // checkout-subscription record (minted by POST /api/billing/plan) from pending
@@ -94,8 +95,63 @@ export interface GatewayConfig {
 
 /* ---------- Idempotency ---------- */
 
-// Tracks processed webhook events: (intentId, type) → boolean
+/* v25.11 NH3 fix — the prior implementation kept processed-webhook keys in a
+ * RAM-only Set, so any server restart within the gateway's retry window
+ * (Airwallex: 72h, Stripe: 72h) allowed duplicate processing of the same
+ * webhook event — a financial-integrity vulnerability. We now persist each
+ * processed key to `processed_webhook_events` with a TTL marker (kept 90
+ * days; the gateway's retry window plus a generous safety margin). The
+ * in-memory Set remains as a fast-path cache; the table is authoritative. */
 const processedWebhookEvents = new Set<string>();
+let _processedWebhookTableEnsured = false;
+
+function _ensureProcessedWebhookTable(): void {
+  if (_processedWebhookTableEnsured) return;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { rawDb } = require("./db/connection");
+    const db: any = rawDb();
+    db.exec(`CREATE TABLE IF NOT EXISTS processed_webhook_events (
+      key TEXT PRIMARY KEY NOT NULL,
+      processed_at TEXT NOT NULL
+    );`);
+    _processedWebhookTableEnsured = true;
+  } catch {
+    /* Non-fatal — fall back to Set-only behavior on this process. */
+  }
+}
+
+function _webhookKeyAlreadyProcessed(key: string): boolean {
+  if (processedWebhookEvents.has(key)) return true;
+  _ensureProcessedWebhookTable();
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { rawDb } = require("./db/connection");
+    const db: any = rawDb();
+    const row: any = db.prepare(
+      `SELECT 1 FROM processed_webhook_events WHERE key = ? LIMIT 1`,
+    ).get(key);
+    if (row) {
+      processedWebhookEvents.add(key);
+      return true;
+    }
+  } catch { /* fall through */ }
+  return false;
+}
+
+function _recordWebhookKey(key: string): void {
+  processedWebhookEvents.add(key);
+  _ensureProcessedWebhookTable();
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { rawDb } = require("./db/connection");
+    const db: any = rawDb();
+    db.prepare(
+      `INSERT INTO processed_webhook_events (key, processed_at) VALUES (?, ?)
+       ON CONFLICT(key) DO NOTHING`,
+    ).run(key, new Date().toISOString());
+  } catch { /* fall through */ }
+}
 
 function webhookKey(intentId: string, type: string): string {
   return `${intentId}::${type}`;
@@ -122,7 +178,15 @@ export function chargeSubscription(input: ChargeSubscriptionInput): ChargeSubscr
     customerId: input.companyId,
     description: `${input.planLabel} — ${input.periodStart} to ${input.periodEnd}`,
     couponCode: input.couponCode,
-    forceState: process.env.NODE_ENV === "production" ? "succeeded" : "succeeded",
+    /* v25.17 Lane C NC4 — do not silently force "succeeded" in production.
+       In production with no real gateway wired, the only legitimate path is to
+       gate on PAYMENT_GATEWAY_LIVE=1 (set when the org has wired Stripe/etc).
+       Otherwise, default to "demo" so the call is observable and the invoice
+       is clearly marked demo. */
+    forceState:
+      process.env.NODE_ENV === "production"
+        ? (process.env.PAYMENT_GATEWAY_LIVE === "1" ? "succeeded" : "demo")
+        : "demo",
   });
 
   // Check for 3DS
@@ -383,8 +447,25 @@ export function registerPaymentGatewayRoutes(app: Express): void {
    * they already own one or more, this endpoint requires an explicit
    * companyId (existing behavior preserved).
    */
-  app.post("/api/founder/subscription/charge", async (req: Request, res: Response) => {
+  app.post("/api/founder/subscription/charge", requireAuth, async (req: Request, res: Response) => {
+    /* v25.18 Lane C NC3 (hard close):
+         v25.17 added `requireAuth` but did NOT verify that the authenticated
+         founder actually owns the `companyId` in the body. Any logged-in user
+         could pass another founder's companyId and trigger a charge against
+         their subscription. We now resolve the founder's owned companies and
+         reject (403) any body.companyId that isn't theirs (admins exempt). */
     let companyId = String(req.body?.companyId ?? (req as any).userContext?.founder?.activeCompanyId ?? ""); /* v14 */
+    {
+      const ctxOwn = await getUserContext(req);
+      const isAdmin = !!ctxOwn?.isAdmin;
+      if (!isAdmin && companyId) {
+        const owned = getCompaniesForFounder(ctxOwn?.userId ?? "");
+        const ownsIt = owned.some((c) => c.companyId === companyId);
+        if (!ownsIt) {
+          return res.status(403).json({ ok: false, error: "NOT_COMPANY_OWNER", message: "You do not own this company." });
+        }
+      }
+    }
     const { pricingModelId, paymentMethod, plan: planRaw } = req.body ?? {};
 
     // v23.4.11 Phase 2 (B-202) — the founder's SELECTED plan must be persisted.
@@ -532,8 +613,13 @@ export function registerPaymentGatewayRoutes(app: Express): void {
    * GET /api/founder/subscription
    * Returns the subscription for the founder's active company.
    */
-  app.get("/api/founder/subscription", (req: Request, res: Response) => {
+  app.get("/api/founder/subscription", requireAuth, async (req: Request, res: Response) => {
     const companyId = String(req.query.companyId ?? (req as any).userContext?.founder?.activeCompanyId ?? ""); /* v14 */
+    /* v25.19 Lane 1 NC1 (hard close): v25.18 NC3 added ownership to the WRITERS
+       (PATCH/resume/payment-method/charge) but the READER stayed open. Any
+       authenticated user could pass ?companyId=co_victim and read another
+       company's plan, cardLast4, status. Now ownership-gated. */
+    if (!(await assertSubscriptionOwnership(req, res, companyId))) return;
     const sub = getSubscription(companyId);
     if (!sub) return res.status(404).json({ ok: false, error: "not_found" });
     res.json({ ok: true, subscription: sub });
@@ -544,8 +630,29 @@ export function registerPaymentGatewayRoutes(app: Express): void {
    * Founder can cancel their own subscription: set status to cancel_at_period_end.
    * Allowed changes: status (cancel_at_period_end only from this endpoint).
    */
-  app.patch("/api/founder/subscription", (req: Request, res: Response) => {
+  /* v25.18 Lane C NC3 helper — assert authenticated caller owns the companyId. */
+  async function assertSubscriptionOwnership(req: Request, res: Response, companyId: string): Promise<boolean> {
+    const ctxOwn = await getUserContext(req);
+    if (!ctxOwn?.isAuthed) {
+      res.status(401).json({ ok: false, error: "unauthenticated" });
+      return false;
+    }
+    if (ctxOwn.isAdmin) return true;
+    if (!companyId) {
+      res.status(400).json({ ok: false, error: "missing_company_id" });
+      return false;
+    }
+    const owned = getCompaniesForFounder(ctxOwn.userId);
+    if (!owned.some((c) => c.companyId === companyId)) {
+      res.status(403).json({ ok: false, error: "NOT_COMPANY_OWNER" });
+      return false;
+    }
+    return true;
+  }
+
+  app.patch("/api/founder/subscription", requireAuth, async (req: Request, res: Response) => {
     const companyId = String(req.body?.companyId ?? (req as any).userContext?.founder?.activeCompanyId ?? ""); /* v14 */
+    if (!(await assertSubscriptionOwnership(req, res, companyId))) return; /* v25.18 Lane C NC3 */
     const { status } = req.body ?? {};
 
     // From founder side only cancel_at_period_end is allowed via this endpoint
@@ -568,8 +675,9 @@ export function registerPaymentGatewayRoutes(app: Express): void {
    * Resumes a cancel_at_period_end subscription back to active.
    * Double-confirm: requires x-confirm: true header.
    */
-  app.post("/api/founder/subscription/resume", (req: Request, res: Response) => {
+  app.post("/api/founder/subscription/resume", requireAuth, async (req: Request, res: Response) => {
     const companyId = String(req.body?.companyId ?? (req as any).userContext?.founder?.activeCompanyId ?? ""); /* v14 */
+    if (!(await assertSubscriptionOwnership(req, res, companyId))) return; /* v25.18 Lane C NC3 */
     const sub = getSubscription(companyId);
     if (!sub) return res.status(404).json({ ok: false, error: "subscription_not_found" });
     if (sub.status !== "cancel_at_period_end") {
@@ -587,8 +695,9 @@ export function registerPaymentGatewayRoutes(app: Express): void {
    * PATCH /api/founder/subscription/payment-method
    * Updates the card on file. Requires Luhn-valid card.
    */
-  app.patch("/api/founder/subscription/payment-method", (req: Request, res: Response) => {
+  app.patch("/api/founder/subscription/payment-method", requireAuth, async (req: Request, res: Response) => {
     const companyId = String(req.body?.companyId ?? (req as any).userContext?.founder?.activeCompanyId ?? ""); /* v14 */
+    if (!(await assertSubscriptionOwnership(req, res, companyId))) return; /* v25.18 Lane C NC3 */
     const { cardLast4, cardExpiry, cardholderName, tokenized } = req.body ?? {};
     if (!cardLast4 || cardLast4.length !== 4 || !/^\d{4}$/.test(cardLast4)) {
       return res.status(400).json({ ok: false, error: "invalid_card_last4" });
@@ -625,8 +734,21 @@ export function registerPaymentGatewayRoutes(app: Express): void {
       ? verifyAirwallexSig(req.headers as Record<string, string | string[] | undefined>, rawBody)
       : verifyStripeSig(req.headers as Record<string, string | string[] | undefined>, rawBody);
 
-    if (isProd && isGatewayReady(gateway) && !sigOk) {
-      return res.status(401).json({ ok: false, error: "invalid_webhook_signature", gateway });
+    /* v25.18 Lane C NC4 (hard close) — the pre-v25.18 check was
+         `isProd && isGatewayReady(gateway) && !sigOk` which fails OPEN when
+         the gateway secret is not configured (isGatewayReady=false). An
+         attacker could blast unsigned events at /api/webhooks/payment-gateway/*
+         in production and force subscription activations. We now fail CLOSED:
+         in production any gateway-specific webhook must verify cleanly. If the
+         gateway is not configured, return 503 — unsigned events are never
+         processed. */
+    if (isProd) {
+      if (!isGatewayReady(gateway)) {
+        return res.status(503).json({ ok: false, error: "gateway_not_configured", gateway });
+      }
+      if (!sigOk) {
+        return res.status(401).json({ ok: false, error: "invalid_webhook_signature", gateway });
+      }
     }
 
     const body = typeof req.body === "object" && req.body !== null ? req.body as Record<string, unknown> : {};
@@ -654,10 +776,11 @@ export function registerPaymentGatewayRoutes(app: Express): void {
     }
 
     const key = webhookKey(intentId, type);
-    if (processedWebhookEvents.has(key)) {
+    /* v25.11 NH3 — check the persisted table, not just the RAM Set. */
+    if (_webhookKeyAlreadyProcessed(key)) {
       return res.json({ ok: true, idempotent: true, gateway });
     }
-    processedWebhookEvents.add(key);
+    _recordWebhookKey(key);
 
     recentWebhookEvents.push({
       id: `wh_${randomBytes(4).toString("hex")}`,
@@ -751,6 +874,31 @@ export function registerPaymentGatewayRoutes(app: Express): void {
    * Idempotent on (intentId, type). Routes events to stores.
    */
   app.post("/api/webhooks/payment-gateway", (req: Request, res: Response) => {
+    /* v25.17 Lane C NC5 — legacy webhook endpoint was unsigned. In production,
+       require a signature header `x-payment-gateway-signature` whose HMAC-SHA256
+       (key = PAYMENT_WEBHOOK_SECRET) matches the raw body. Without the secret,
+       the endpoint is disabled in production. Demo / non-production calls still
+       work (this preserves test flows). */
+    if (process.env.NODE_ENV === "production") {
+      const secret = process.env.PAYMENT_WEBHOOK_SECRET;
+      if (!secret) {
+        return res.status(503).json({ ok: false, error: "webhook_disabled", hint: "set PAYMENT_WEBHOOK_SECRET to enable" });
+      }
+      const provided = String(req.headers["x-payment-gateway-signature"] ?? "");
+      if (!provided || !/^[0-9a-fA-F]+$/.test(provided)) {
+        return res.status(401).json({ ok: false, error: "missing_signature" });
+      }
+      try {
+        const { createHmac, timingSafeEqual } = require("node:crypto") as typeof import("node:crypto");
+        const expected = createHmac("sha256", secret).update(JSON.stringify(req.body ?? {})).digest("hex");
+        if (expected.length !== provided.length) return res.status(401).json({ ok: false, error: "bad_signature" });
+        if (!timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(provided, "hex"))) {
+          return res.status(401).json({ ok: false, error: "bad_signature" });
+        }
+      } catch {
+        return res.status(401).json({ ok: false, error: "bad_signature" });
+      }
+    }
     const { type, intentId, status, companyId } = req.body ?? {};
 
     if (!type || !intentId) {
@@ -759,10 +907,11 @@ export function registerPaymentGatewayRoutes(app: Express): void {
 
     // Idempotency check
     const key = webhookKey(intentId, type);
-    if (processedWebhookEvents.has(key)) {
+    /* v25.11 NH3 — same DB-backed check as the multi-gateway handler above. */
+    if (_webhookKeyAlreadyProcessed(key)) {
       return res.json({ ok: true, idempotent: true });
     }
-    processedWebhookEvents.add(key);
+    _recordWebhookKey(key);
 
     // Record event for the admin UI
     recentWebhookEvents.push({

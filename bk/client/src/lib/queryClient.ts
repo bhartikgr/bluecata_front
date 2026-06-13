@@ -1,4 +1,4 @@
-import { QueryClient, QueryFunction } from "@tanstack/react-query";
+import { QueryClient, QueryFunction, QueryCache, MutationCache } from "@tanstack/react-query";
 
 const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
 
@@ -120,19 +120,26 @@ export async function apiRequest(
   method: string,
   url: string,
   data?: unknown | undefined,
+  // v25.13 NL2 — optional extra headers (e.g. x-confirm) so callers can
+  // stop dropping out of apiRequest just to attach a single header.
+  extraHeaders?: Record<string, string>,
 ): Promise<Response> {
   // Sprint 26 — always include credentials so the cap_uid session cookie set
   // by /api/auth/login travels with every API call. Required for the new
   // credentialed term-sheet save endpoint and any future endpoint that
   // gates writes on session identity. Same-origin browsers already do this
   // by default; explicit "include" also covers cross-origin (proxy) deploys.
-  const doFetch = () =>
-    fetch(`${API_BASE}${url}`, {
+  const doFetch = () => {
+    const baseHeaders: Record<string, string> = data
+      ? { "Content-Type": "application/json" }
+      : {};
+    return fetch(`${API_BASE}${url}`, {
       method,
-      headers: data ? { "Content-Type": "application/json" } : {},
+      headers: extraHeaders ? { ...baseHeaders, ...extraHeaders } : baseHeaders,
       body: data ? JSON.stringify(data) : undefined,
       credentials: "include",
     });
+  };
   let res = await doFetch();
 
   // v23.4.5 Phase 6 — if the server says the active company is unknown,
@@ -197,7 +204,36 @@ export const getQueryFn: <T>(options: {
     }
   };
 
+/**
+ * v25.20 Lane 6 NH fix: when any query or mutation receives a 401, the
+ * user's session has expired — redirect to /login once and skip the redirect
+ * if the user is already on a public/auth route. Previously a 401 on a
+ * background refetch left the user staring at stale data with no auth hint.
+ */
+let redirectingTo401 = false;
+function handleGlobal401(err: unknown): void {
+  if (redirectingTo401) return;
+  const status =
+    (err as any)?.status ??
+    (err instanceof ApiError ? err.status : undefined);
+  if (status !== 401) return;
+  // Don't bounce users already on public/auth pages.
+  if (typeof window === "undefined") return;
+  const pathname = window.location.pathname;
+  const publicPrefixes = ["/login", "/auth", "/invite", "/redeem", "/onboarding", "/signup"];
+  if (publicPrefixes.some((p) => pathname.startsWith(p))) return;
+  redirectingTo401 = true;
+  const next = encodeURIComponent(pathname + window.location.search);
+  window.location.assign(`/login?next=${next}`);
+}
+
 export const queryClient = new QueryClient({
+  queryCache: new QueryCache({
+    onError: (err) => handleGlobal401(err),
+  }),
+  mutationCache: new MutationCache({
+    onError: (err) => handleGlobal401(err),
+  }),
   defaultOptions: {
     queries: {
       queryFn: getQueryFn({ on401: "throw" }),

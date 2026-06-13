@@ -313,10 +313,13 @@ function TemplatesTab() {
                 </div>
                 <div>
                   <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Body (HTML)</div>
-                  <div
-                    className="text-xs mt-0.5 prose prose-sm max-w-none"
+                  {/* v25.17 Lane D NC1 — render template HTML in sandboxed iframe to prevent XSS. The iframe has no allow-scripts in sandbox so any <script> or javascript: URL is neutralised. */}
+                  <iframe
+                    className="w-full min-h-[200px] mt-0.5 border border-border rounded"
                     data-testid="text-preview-body"
-                    dangerouslySetInnerHTML={{ __html: previewQuery.data?.bodyHtml ?? tpl.bodyHtml }}
+                    sandbox=""
+                    title="Email body preview"
+                    srcDoc={previewQuery.data?.bodyHtml ?? tpl.bodyHtml ?? ""}
                   />
                 </div>
               </div>

@@ -43,6 +43,7 @@ import { emitNotification } from "./notificationsStore";
 // C-011 fix v23.6: enrich admin applications list with resolved names
 import { getCompanyNameById } from "./multiCompanyStore";
 import { getUserContextForId } from "./lib/userContext";
+import { appendAdminAudit } from "./adminPlatformStore"; /* v25.19 Lane 4 NC2 — immutable cross-product approval audit */
 import { lookupByUserId, lookupByEmail } from "./userCredentialsStore"; // v23.8 W-14 member enrichment; v24.4 bootstrap
 import { upsertDirectoryListing, removeDirectoryListing } from "./collectiveInterestStore"; /* v25.0 Track 2 B3 */
 
@@ -250,6 +251,18 @@ export function registerAdminCollectiveRoutes(app: Express): void {
     if (legacyApp) {
       // Legacy path: investor-side application — userId is legacyApp.userId
       const updated = legacySetApplicationStatus(id, "accepted");
+      /* v25.21 Lane A NH-002 fix — if the status DB write failed,
+       * `legacySetApplicationStatus` now returns null. Short-circuit BEFORE
+       * activating the membership so we never produce a permanent
+       * member-active / application-still-submitted half-state. */
+      if (!updated) {
+        return res.status(500).json({
+          ok: false,
+          error: "APPLICATION_STATUS_PERSIST_FAILED",
+          message:
+            "Could not persist application status; membership not activated. Please retry.",
+        });
+      }
       const membership = collectiveMembershipStore.activate(legacyApp.userId, adminUserId);
       try { upsertActiveMembership(legacyApp.userId); } catch { /* non-fatal */ }
       try {
@@ -269,6 +282,18 @@ export function registerAdminCollectiveRoutes(app: Express): void {
           link: "/collective",
         });
       } catch { /* non-fatal */ }
+      /* v25.19 Lane 4 NC2 (hard close) — write an immutable audit row so we can
+         prove "investor X was approved into Collective on date Y by admin Z"
+         from the audit chain. Lane 4 audit found ZERO appendAdminAudit calls
+         in cross-product approval routes; compliance/forensics blind spot. */
+      try {
+        appendAdminAudit(
+          adminUserId,
+          `application:${id}`,
+          "collective.application.approved",
+          { applicationId: id, userId: legacyApp.userId, path: "legacy", approvedAt: new Date().toISOString() },
+        );
+      } catch { /* non-fatal */ }
       return res.json({ ok: true, application: updated, membership });
     }
 
@@ -280,6 +305,19 @@ export function registerAdminCollectiveRoutes(app: Express): void {
     // v23.8 W-21: use "accepted" (not "invited") so the status matches the
     // admin filter tab and downstream founder dashboard / member badge.
     const updated = founderApply.setApplicationStatus(id, "accepted", adminUserId);
+    /* v25.21 Lane A NH-002 fix (REWORK after triple-verify): the modern
+     * founder Path B path was the verifier's second blocking find — the
+     * legacy fallback path was guarded but the modern path still proceeded
+     * to activate membership when the status persist failed. Now both paths
+     * short-circuit identically on DB failure (the helper returns null). */
+    if (!updated) {
+      return res.status(500).json({
+        ok: false,
+        error: "APPLICATION_STATUS_PERSIST_FAILED",
+        message:
+          "Could not persist application status; membership not activated. Please retry.",
+      });
+    }
     const userId = modernApp.founderId;
     const membership = collectiveMembershipStore.activate(userId, adminUserId);
     try { upsertActiveMembership(userId); } catch { /* non-fatal */ }
@@ -306,6 +344,15 @@ export function registerAdminCollectiveRoutes(app: Express): void {
         link: "/collective",
       });
     } catch { /* non-fatal */ }
+    /* v25.19 Lane 4 NC2 (hard close) — see explanation above. */
+    try {
+      appendAdminAudit(
+        adminUserId,
+        `application:${id}`,
+        "collective.application.approved",
+        { applicationId: id, userId, companyId: modernApp.companyId, path: "modern", approvedAt: new Date().toISOString() },
+      );
+    } catch { /* non-fatal */ }
     return res.json({ ok: true, application: updated, membership });
   });
 
@@ -319,6 +366,18 @@ export function registerAdminCollectiveRoutes(app: Express): void {
     const legacyApp = legacyGetApplicationById(id);
     if (legacyApp) {
       const updated = legacySetApplicationStatus(id, "rejected");
+      /* v25.21 Lane A NH-002 fix — if the status DB write failed, the helper
+       * now returns null. Short-circuit BEFORE deactivating the membership
+       * (and before sending the rejection notification) so we never tell a
+       * user they were rejected while the DB still says `submitted`. */
+      if (!updated) {
+        return res.status(500).json({
+          ok: false,
+          error: "APPLICATION_STATUS_PERSIST_FAILED",
+          message:
+            "Could not persist application status; membership unchanged. Please retry.",
+        });
+      }
       try { deactivateMembership(legacyApp.userId); } catch { /* non-fatal */ }
       // v24.0 E2: rejection must deactivate BOTH stores (mirror of approval's
       // dual-write). Approval dual-writes membership; rejection previously only
@@ -332,6 +391,36 @@ export function registerAdminCollectiveRoutes(app: Express): void {
           payload: { applicationId: id, userId: legacyApp.userId, status: "rejected", rejectedBy: adminUserId, reason },
         });
       } catch { /* non-fatal */ }
+      // v25.13 NM4 — mirror the approve path's emitNotification call so a
+      // rejected applicant actually receives an in-app notification instead
+      // of waiting indefinitely with no signal.
+      try {
+        emitNotification({
+          userId: legacyApp.userId,
+          kind: "collective.membership_rejected",
+          title: "Your Collective application was not accepted",
+          body: reason.slice(0, 200),
+          link: "/collective/apply",
+        });
+      } catch { /* non-fatal */ }
+      /* v25.22 NH-10 fix — the reject path was missing an audit row
+       * while the approve path had one (v25.19 Lane 4 NC2). Compliance /
+       * forensics now has a complete cross-product approval+rejection
+       * audit chain instead of only one side. */
+      try {
+        appendAdminAudit(
+          adminUserId,
+          `application:${id}`,
+          "collective.application.rejected",
+          {
+            applicationId: id,
+            userId: legacyApp.userId,
+            path: "legacy",
+            reason: reason.slice(0, 200),
+            rejectedAt: new Date().toISOString(),
+          },
+        );
+      } catch { /* non-fatal */ }
       return res.json({ ok: true, application: updated });
     }
 
@@ -341,6 +430,18 @@ export function registerAdminCollectiveRoutes(app: Express): void {
       return res.status(404).json({ ok: false, error: "APPLICATION_NOT_FOUND" });
     }
     const updated = founderApply.setApplicationStatus(id, "rejected", adminUserId);
+    /* v25.21 Lane A NH-002 fix (REWORK after triple-verify) — mirror the
+     * approve-path short-circuit on the reject side. Without this, a DB
+     * failure on the status write still deactivates membership and emits a
+     * rejection notification while the DB row stays `submitted`. */
+    if (!updated) {
+      return res.status(500).json({
+        ok: false,
+        error: "APPLICATION_STATUS_PERSIST_FAILED",
+        message:
+          "Could not persist application status; membership unchanged. Please retry.",
+      });
+    }
     const userId = modernApp.founderId;
     try { deactivateMembership(userId); } catch { /* non-fatal */ }
     // v24.0 E2: rejection must deactivate BOTH stores (mirror of approval).
@@ -354,6 +455,34 @@ export function registerAdminCollectiveRoutes(app: Express): void {
         aggregateKind: "investor",
         payload: { applicationId: id, userId, status: "rejected", rejectedBy: adminUserId, reason },
       });
+    } catch { /* non-fatal */ }
+    // v25.13 NM4 — notify the founder of the rejection (modern path mirror).
+    try {
+      emitNotification({
+        userId,
+        kind: "collective.membership_rejected",
+        title: "Your Collective application was not accepted",
+        body: reason.slice(0, 200),
+        link: "/collective/apply",
+      });
+    } catch { /* non-fatal */ }
+    /* v25.22 NH-10 fix — modern path now also appends an audit row on
+     * reject (mirrors the legacy path fix above + the existing approve
+     * path's audit). Cross-product audit chain is now symmetric. */
+    try {
+      appendAdminAudit(
+        adminUserId,
+        `application:${id}`,
+        "collective.application.rejected",
+        {
+          applicationId: id,
+          userId,
+          companyId: modernApp.companyId,
+          path: "modern",
+          reason: reason.slice(0, 200),
+          rejectedAt: new Date().toISOString(),
+        },
+      );
     } catch { /* non-fatal */ }
     return res.json({ ok: true, application: updated });
   });

@@ -21,6 +21,10 @@
  */
 import type { Express, Request, Response } from "express";
 import { createHash } from "node:crypto";
+import { persistEntry, hydrateEntries } from "./lib/storePersistenceShim";
+
+const PERSIST_STORE = "pricingModelStore";
+const PERSIST_HISTORY_STORE = "pricingModelHistoryStore";
 
 /* =================================================================== */
 /*  Types                                                              */
@@ -403,6 +407,9 @@ function seedInitialModels() {
   for (const m of [founderFree, founderPro, collectiveStandard, capavateAnnual]) {
     models.set(m.id, m);
     history.set(m.id, [snapshot(m)]);
+    /* v25.9 — persist */
+    persistEntry(PERSIST_STORE, m.id, m);
+    persistEntry(PERSIST_HISTORY_STORE, m.id, history.get(m.id) ?? []);
   }
 }
 seedInitialModels();
@@ -471,6 +478,9 @@ export function createModel(input: CreateModelInput, actor: string): { ok: true;
 
   models.set(id, rec);
   history.set(id, [snapshot(rec)]);
+  /* v25.9 — persist */
+  persistEntry(PERSIST_STORE, id, rec);
+  persistEntry(PERSIST_HISTORY_STORE, id, history.get(id) ?? []);
 
   auditAppender({ actor, action: "pricing_model.created", target: `pricing_model:${id}`, payload: { slug: rec.slug, productLine: rec.productLine, status: rec.status } });
   return { ok: true, model: rec };
@@ -495,9 +505,13 @@ export function updateModel(id: string, input: UpdateModelInput, actor: string):
   lastHashChain = next.revisionHash;
 
   models.set(id, next);
+  /* v25.9 — persist update */
+  persistEntry(PERSIST_STORE, id, next);
   const h = history.get(id) ?? [];
   h.push(snapshot(next));
   history.set(id, h);
+  /* v25.9 — persist history snapshot */
+  persistEntry(PERSIST_HISTORY_STORE, id, h);
 
   auditAppender({
     actor,
@@ -729,3 +743,28 @@ export function registerPricingModelRoutes(app: Express) {
 }
 
 export const _testPricingModels = { models, history, seedInitialModels };
+
+/**
+ * v25.9 — Rehydrate pricing models + history from DB on boot.
+ */
+export async function hydratePricingModelStore(): Promise<void> {
+  try {
+    const modelEntries = hydrateEntries<PricingModel>(PERSIST_STORE);
+    /* Don't clear() because seedInitialModels already populated; merge instead.
+     * If a persisted row exists for the same id, it overrides the seed. */
+    for (const [id, m] of modelEntries) models.set(id, m);
+
+    const histEntries = hydrateEntries<PricingModel[]>(PERSIST_HISTORY_STORE);
+    for (const [id, h] of histEntries) history.set(id, h);
+
+    if (modelEntries.length > 0) {
+      console.info(
+        `[hydrate] pricingModelStore: ${modelEntries.length} models, ${histEntries.length} history lists restored`,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      `[hydrate] pricingModelStore: DB read failed (non-fatal): ${(err as Error).message}`,
+    );
+  }
+}

@@ -196,11 +196,21 @@ export function registerAdminDscRoutes(app: Express): void {
     if (!targetUserId) return res.status(400).json({ ok: false, error: "userId required" });
     const adminUserId = req.userContext?.userId ?? "";
 
-    // v17 Phase B — DB write-through: mark all active role rows for this user as revoked.
+    /* v25.12 NM-4 — demote must also append a chain row + advance the
+     * in-memory `roleChainTipByTenant` so the next promote does not fork
+     * the chain. The prior implementation updated the existing role rows
+     * to status="revoked" but never appended a demotion event and never
+     * recomputed the tip — the next promote read the stale tip and
+     * produced an inconsistent chain. We now write a new "demote" row in
+     * the same transaction and stamp the new tip. */
     const demotedAt = new Date().toISOString();
+    const tenantId = DEFAULT_CHAPTER_TENANT_ID;
+    const chapterId = DEFAULT_CHAPTER_ID;
+    const demoteRoleId = `dscrole_${randomBytes(8).toString("hex")}`;
     try {
       const db: any = getDb();
       db.transaction((tx: any) => {
+        // 1) Mark existing active rows for this user as revoked.
         tx.update(dscRolesTable)
           .set({
             status: "revoked",
@@ -210,6 +220,33 @@ export function registerAdminDscRoutes(app: Express): void {
           } as any)
           .where(eq((dscRolesTable as any).userId, targetUserId))
           .run();
+
+        // 2) Append a new chain row for the demote event.
+        const tipRows = tx
+          .select({ hash: (dscRolesTable as any).hash, createdAt: (dscRolesTable as any).createdAt })
+          .from(dscRolesTable)
+          .where(eq((dscRolesTable as any).tenantId, tenantId))
+          .all() as any[];
+        const sorted = tipRows.sort((a, b) =>
+          String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? "")),
+        );
+        const prevHash = sorted.length > 0 ? sorted[sorted.length - 1].hash : null;
+        const hash = computeRoleHash(prevHash, { roleId: demoteRoleId, userId: targetUserId, action: "demote", promotedAt: demotedAt });
+        tx.insert(dscRolesTable).values({
+          id: demoteRoleId,
+          tenantId,
+          chapterId,
+          userId: targetUserId,
+          status: "revoked",
+          prevHash,
+          hash,
+          promotedBy: adminUserId,
+          promotedAt: demotedAt,
+          demotedAt,
+          demotedBy: adminUserId,
+          createdAt: demotedAt,
+        } as any).run();
+        roleChainTipByTenant.set(tenantId, hash);
       });
     } catch (err) {
       log.warn("[adminDscRoutes.demote] DB update failed (memory only):", (err as Error).message);

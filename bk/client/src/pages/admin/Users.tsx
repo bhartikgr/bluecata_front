@@ -19,6 +19,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { AdminPageIntro } from "@/components/AdminPageIntro";
+import { useEntitlement } from "@/lib/entitlement"; /* v25.17 Lane D NC2 — prevent admin self-lockout */
 
 interface AdminUser {
   id: string; email: string; name: string; role: string; tenant: string;
@@ -28,6 +29,17 @@ interface AdminUser {
 export default function AdminUsers() {
   const { toast } = useToast();
   const [q, setQ] = useState("");
+  /* v25.17 Lane D NC2 — capture the logged-in admin's identity so we can disable destructive
+     actions on their own row (demote, suspend, force logout, password reset). */
+  const meQ = useEntitlement();
+  const myUserId = meQ.data?.userId ?? null;
+  const myEmailLower = (meQ.data?.identity?.email ?? "").toLowerCase();
+  const isSelf = (u: AdminUser) => {
+    if (!u) return false;
+    if (myUserId && u.id === myUserId) return true;
+    if (myEmailLower && (u.email ?? "").toLowerCase() === myEmailLower) return true;
+    return false;
+  };
   const [role, setRole] = useState("all");
   const [status, setStatus] = useState("all");
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -226,15 +238,25 @@ export default function AdminUsers() {
                           <Button size="icon" variant="ghost" data-testid={`button-actions-${u.id}`}><MoreVertical className="h-4 w-4" /></Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="w-52">
-                          <DropdownMenuItem onClick={() => updateMut.mutate({ id: u.id, patch: { role: u.role === "admin" ? "founder" : "admin" } })}>
+                          {/* v25.17 Lane D NC2 — destructive actions disabled on the admin's own row */}
+                          <DropdownMenuItem
+                            disabled={isSelf(u)}
+                            onClick={() => { if (isSelf(u)) { toast({ title: "Cannot demote yourself", description: "Ask another admin to change your role.", variant: "destructive" }); return; } updateMut.mutate({ id: u.id, patch: { role: u.role === "admin" ? "founder" : "admin" } }); }}
+                          >
                             <UserCog className="h-3.5 w-3.5 mr-2" /> Toggle admin
                           </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => updateMut.mutate({ id: u.id, patch: { status: u.status === "active" ? "suspended" : "active" } })}>
+                          <DropdownMenuItem
+                            disabled={isSelf(u)}
+                            onClick={() => { if (isSelf(u)) { toast({ title: "Cannot suspend yourself", description: "Ask another admin to suspend this account.", variant: "destructive" }); return; } updateMut.mutate({ id: u.id, patch: { status: u.status === "active" ? "suspended" : "active" } }); }}
+                          >
                             <ShieldAlert className="h-3.5 w-3.5 mr-2" />
                             {u.status === "active" ? "Suspend" : "Reactivate"}
                           </DropdownMenuItem>
                           <DropdownMenuSeparator />
-                          <DropdownMenuItem onClick={() => forceLogoutMut.mutate(u.id)}>
+                          <DropdownMenuItem
+                            disabled={isSelf(u)}
+                            onClick={() => { if (isSelf(u)) { toast({ title: "Cannot force-logout yourself", variant: "destructive" }); return; } forceLogoutMut.mutate(u.id); }}
+                          >
                             <LogOut className="h-3.5 w-3.5 mr-2" /> Force logout
                           </DropdownMenuItem>
                           <DropdownMenuItem onClick={() => resetPwMut.mutate(u.id)}>

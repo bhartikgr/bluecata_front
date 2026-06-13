@@ -6,6 +6,8 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
+/* v25.12 NL7 — toast errors on create. */
+import { useToast } from "@/hooks/use-toast";
 import { useRequirePartnerRole } from "@/lib/partner/useRequirePartnerRole";
 import { PartnerShell, PartnerEmptyState } from "@/components/partner/PartnerShell";
 import { Button } from "@/components/ui/button";
@@ -32,10 +34,16 @@ export default function PartnerSpvs() {
   const [form, setForm] = useState({ spvName: "", jurisdiction: "Delaware", targetSizeMinor: "0", currency: "USD" });
   const [showForm, setShowForm] = useState(false);
 
-  const { data, isLoading } = useQuery<{ spvs: Spv[] }>({
+  const { data, isLoading, isError } = useQuery<{ spvs: Spv[] }>({
+    /* v25.12 NL1 — explicit queryFn for robustness. */
+    /* v25.15 NM6 — isError surfaced for explicit error UI. */
     queryKey: ["/api/partner/me/spvs"],
     enabled: role.ready && !!role.identity,
+    queryFn: async () => (await apiRequest("GET", "/api/partner/me/spvs")).json(),
   });
+
+  /* v25.12 NL7 — toast helper. */
+  const { toast } = useToast();
 
   const create = useMutation({
     mutationFn: async () => {
@@ -56,6 +64,7 @@ export default function PartnerSpvs() {
       setForm({ spvName: "", jurisdiction: "Delaware", targetSizeMinor: "0", currency: "USD" });
       setShowForm(false);
     },
+    onError: (e: Error) => toast({ variant: "destructive", title: "Create SPV failed", description: e.message }),
   });
 
   if (!role.ready || !role.identity) return null;
@@ -111,8 +120,17 @@ export default function PartnerSpvs() {
         </Card>
       )}
 
-      {isLoading && <div className="text-sm text-slate-500">Loading…</div>}
-      {!isLoading && spvs.length === 0 && (
+      {isLoading && <div className="text-sm text-slate-500" data-testid="spvs-loading">Loading…</div>}
+      {/* v25.15 NM6 — explicit error branch. */}
+      {isError && (
+        <div
+          className="rounded-md border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900"
+          data-testid="spvs-error"
+        >
+          Could not load SPVs. Please refresh and try again.
+        </div>
+      )}
+      {!isLoading && !isError && spvs.length === 0 && (
         <PartnerEmptyState
           title="No SPVs recorded yet"
           description="Record an SPV to keep documentation in one place."

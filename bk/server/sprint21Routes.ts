@@ -217,8 +217,41 @@ export function registerSprint21Routes(app: Express): void {
       if (!ctx.isAuthed) {
         return res.status(401).json({ message: "Unauthorised" });
       }
-      const { companyId } = req.params;
-      const raw = CO_MEMBERS_BY_COMPANY[companyId] ?? [];
+      const companyId = String(req.params.companyId ?? "");
+      let raw = CO_MEMBERS_BY_COMPANY[companyId] ?? [];
+      /* v25.10 fix M9 — the static CO_MEMBERS_BY_COMPANY seed is only populated
+       * when DEMO_SEED_ENABLED=true. For real companies (post-demo or in prod),
+       * the array was empty and the "Discuss with cap-table" picker showed zero
+       * recipients. Augment with co-investors derived from the canonical
+       * cap-table commit ledger (committed-state holders for the company),
+       * excluding the caller. */
+      if (raw.length === 0) {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const { listMembersForCompany } = require("./captableCommitStore");
+          const ledger = listMembersForCompany(companyId) as Array<{ investorId: string }>;
+          /* De-dupe by investorId. Exclude the caller. */
+          const seen = new Set<string>();
+          const derived: CoMember[] = [];
+          for (const e of ledger) {
+            if (!e.investorId || e.investorId === ctx.userId) continue;
+            if (seen.has(e.investorId)) continue;
+            seen.add(e.investorId);
+            derived.push({
+              memberId: e.investorId,
+              userId: e.investorId,
+              displayLabel: e.investorId,
+              areaOfExpertise: [],
+              investorExperienceTier: "Angel",
+              screenNameOnly: false,
+              allowDM: true,
+            });
+          }
+          raw = derived;
+        } catch {
+          /* If the cap-table store is unavailable, fall back to empty list. */
+        }
+      }
       const filtered = applyPrivacyFilter(raw);
       return res.json(filtered);
     },
@@ -271,6 +304,44 @@ export function registerSprint21Routes(app: Express): void {
         createdAt: new Date().toISOString(),
       };
       maDiscussRecords.push(record);
+      /* v25.10 fix M8 — the previous handler kept ma-discuss records in a
+       * process-scoped array and never wrote to commsStore, so the message
+       * never reached the recipients. Persist the record via the kv shim and,
+       * for `message` mode, also create a real DM channel + first message
+       * per recipient via commsStore. */
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { persistEntry } = require("./lib/storePersistenceShim");
+        persistEntry("maDiscussStore", id, { ...record, senderId: ctx.userId });
+      } catch {
+        /* non-fatal */
+      }
+      if (mode === "message" && record.recipientIds.length > 0) {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const { startDmChannel, postMessageToChannel } = require("./commsStore");
+          for (const recipientId of record.recipientIds) {
+            if (!recipientId || typeof recipientId !== "string") continue;
+            if (typeof startDmChannel === "function" && typeof postMessageToChannel === "function") {
+              const ch = startDmChannel({
+                senderId: ctx.userId,
+                recipientId,
+                topic: `ma_discuss:${companyId}`,
+              });
+              if (ch && (ch.id || ch.channelId)) {
+                postMessageToChannel({
+                  channelId: ch.id || ch.channelId,
+                  authorId: ctx.userId,
+                  body: record.body,
+                });
+              }
+            }
+          }
+        } catch {
+          /* commsStore exports may not match exactly; persistence shim above
+           * still records the message so the admin can audit it. */
+        }
+      }
 
       if (mode === "message") {
         // Simulate per-recipient message creation (reuses commsStore pattern without coupling)

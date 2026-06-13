@@ -73,9 +73,16 @@ export function getAck(userId: string): boolean {
 }
 
 export function registerWelcomeRoutes(app: Express): void {
+  // v25.20 Lane 1 NH fix: the welcome routes previously fell back to a shared
+  // "anonymous" userId when no session was present, which meant any
+  // unauthenticated caller could read/write a global ack flag. Now we require
+  // a real authenticated userId on all three endpoints.
   app.get("/api/founder/welcome", async (req: Request, res: Response) => {
     const ctx = await getUserContext(req);
-    const userId = ctx?.userId || "anonymous";
+    if (!ctx?.userId) {
+      return res.status(401).json({ error: "UNAUTHORIZED" });
+    }
+    const userId = ctx.userId;
     // Wave B FIX 5 (F-BUG-008) — the UserContext stores the founder's name
     // on `identity.name` (set by registerFounderUser from the signup form).
     // The legacy code here read `ctx.displayName`, which has never existed
@@ -91,15 +98,19 @@ export function registerWelcomeRoutes(app: Express): void {
 
   app.post("/api/founder/welcome/ack", async (req: Request, res: Response) => {
     const ctx = await getUserContext(req);
-    const userId = ctx?.userId || "anonymous";
-    setAck(userId, true);
+    if (!ctx?.userId) {
+      return res.status(401).json({ error: "UNAUTHORIZED" });
+    }
+    setAck(ctx.userId, true);
     res.json({ ok: true, welcomeAck: true });
   });
 
   app.post("/api/founder/welcome/reset", async (req: Request, res: Response) => {
     const ctx = await getUserContext(req);
-    const userId = ctx?.userId || "anonymous";
-    setAck(userId, false);
+    if (!ctx?.userId) {
+      return res.status(401).json({ error: "UNAUTHORIZED" });
+    }
+    setAck(ctx.userId, false);
     res.json({ ok: true, welcomeAck: false });
   });
 }

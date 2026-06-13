@@ -29,7 +29,7 @@
  * exponential backoff with retry, dead-letter queue captured for /admin/audit-log.
  */
 import type { Express, Request, Response } from "express";
-import { createHash, createHmac, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { emitMutation } from "./lib/eventBus";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
@@ -37,6 +37,7 @@ import { getDb } from "./db/connection";
 import { rawDb } from "./db/connection";
 import { bridgeOutbox as bridgeOutboxTable } from "@shared/schema";
 import { log } from "./lib/logger";
+import { requireAdmin } from "./lib/authMiddleware"; /* v25.16 NC4 — gate admin bridge routes */
 
 /* ============================================================
  * v24.5 GAP-2 — Bridge event history (circular buffer, 1000 rows)
@@ -221,6 +222,32 @@ export function hydrateBridgeStore(): void {
     if (restored > 0) {
       log.info(`[hydrate] bridgeStore: ${restored} queued envelopes restored from bridge_outbox`);
     }
+    /* v25.17 Lane E NH4 — restore the hash-chain head from the most recently
+       enqueued envelope so subsequent emits continue the chain instead of
+       restarting from genesis after a server restart. We query ALL statuses
+       (including delivered) so the chain head is preserved even if no
+       envelopes are still in-flight. */
+    try {
+      const tipRows = db
+        .prepare(
+          `SELECT envelope_json FROM bridge_outbox
+             ORDER BY enqueued_at DESC LIMIT 1`,
+        )
+        .all() as any[];
+      if (tipRows.length > 0) {
+        const env = JSON.parse(tipRows[0].envelope_json);
+        const tipHash = env?.auditChain?.hash;
+        if (typeof tipHash === "string" && /^[0-9a-f]{64}$/i.test(tipHash)) {
+          lastChainHash = tipHash;
+          log.info(`[hydrate] bridgeStore: chain head restored to ${tipHash.slice(0, 12)}…`);
+        }
+      }
+    } catch (chainErr) {
+      const msg = (chainErr as Error).message ?? "";
+      if (!/no such table/i.test(msg)) {
+        log.warn("[hydrate] bridgeStore: chain-head restore failed:", msg);
+      }
+    }
   } catch (err) {
     const msg = (err as Error).message ?? "";
     if (!/no such table/i.test(msg)) {
@@ -229,7 +256,18 @@ export function hydrateBridgeStore(): void {
   }
 }
 
-const HMAC_SECRET = process.env.BRIDGE_HMAC_SECRET ?? "capavate-collective-bridge-shared-secret";
+/* v25.16 NM5 — align env var lookup with .env.example (which declares
+   BRIDGE_INBOUND_HMAC_SECRET) so deployments following the template actually
+   sign with the intended secret rather than the hardcoded default. We accept
+   either name for backward compatibility, prefer the canonical inbound name,
+   and warn loudly in production if neither is set. */
+const HMAC_SECRET =
+  process.env.BRIDGE_INBOUND_HMAC_SECRET ??
+  process.env.BRIDGE_HMAC_SECRET ??
+  "capavate-collective-bridge-shared-secret";
+if (process.env.NODE_ENV === "production" && HMAC_SECRET === "capavate-collective-bridge-shared-secret") {
+  log.warn("[bridge] BRIDGE_INBOUND_HMAC_SECRET (or BRIDGE_HMAC_SECRET) is not set in production — using insecure default!");
+}
 const SCHEMA_VERSION = "1.0";
 
 export type OutboundEventType =
@@ -307,7 +345,28 @@ export type OutboundEventType =
   | "partner.fund_commitment_pledged"
   // Final Partner CRM — promote / refer flow
   | "partner.deal.promoted_to_collective"
-  | "partner.deal.referred_to_capavate";
+  | "partner.deal.referred_to_capavate"
+  // v25.13 NM5 — chapter admin promote/demote events.
+  | "collective.chapter_admin.promoted"
+  | "collective.chapter_admin.demoted"
+  // v25.14 — partner cross-component events.
+  | "partner.referral.approved"
+  | "partner.promotion.approved"
+  // v25.24 NM-3 fix — v25.23 NM-O emitBridgeEvent in applyModeration emits
+  // these two when the moderation outcome is reject or changes_requested,
+  // but they were never added to the type union OR the ALL_OUTBOUND_EVENT_TYPES
+  // allowlist, so the bridge worker silently dropped them. Now wired so
+  // Collective + Capavate consumers can react.
+  | "partner.promotion.rejected"
+  | "partner.promotion.changes_requested"
+  | "partner.company_linked"
+  | "partner.company_unlinked"
+  | "partner.suspended"
+  | "partner.reactivated"
+  | "partner.archived"
+  | "partner.application_submitted"
+  | "partner.application_approved"
+  | "partner.application_rejected";
 
 export type InboundEventType =
   | "dsc.scores"
@@ -363,7 +422,20 @@ export function hmacSign(body: string, secret = HMAC_SECRET): string {
 }
 
 export function verifyHmac(body: string, sig: string, secret = HMAC_SECRET): boolean {
-  return hmacSign(body, secret) === sig;
+  /* v25.17 Lane B NH1 — constant-time HMAC comparison. Guard against length
+     mismatch (timingSafeEqual throws on unequal-length buffers) and ensure both
+     sides are valid hex before decoding. */
+  if (typeof sig !== "string" || !/^[0-9a-fA-F]+$/.test(sig)) return false;
+  const expectedHex = hmacSign(body, secret);
+  if (sig.length !== expectedHex.length) return false;
+  try {
+    const expected = Buffer.from(expectedHex, "hex");
+    const provided = Buffer.from(sig, "hex");
+    if (expected.length !== provided.length) return false;
+    return timingSafeEqual(expected, provided);
+  } catch {
+    return false;
+  }
 }
 
 export const ALL_OUTBOUND_EVENT_TYPES: OutboundEventType[] = [
@@ -441,6 +513,23 @@ export const ALL_OUTBOUND_EVENT_TYPES: OutboundEventType[] = [
   // Final Partner CRM — promote / refer flow
   "partner.deal.promoted_to_collective",
   "partner.deal.referred_to_capavate",
+  // v25.13 NM5 — chapter admin promote/demote events.
+  "collective.chapter_admin.promoted",
+  "collective.chapter_admin.demoted",
+  // v25.14 — partner cross-component events.
+  "partner.referral.approved",
+  "partner.promotion.approved",
+  // v25.24 NM-3 — see type union above for rationale.
+  "partner.promotion.rejected",
+  "partner.promotion.changes_requested",
+  "partner.company_linked",
+  "partner.company_unlinked",
+  "partner.suspended",
+  "partner.reactivated",
+  "partner.archived",
+  "partner.application_submitted",
+  "partner.application_approved",
+  "partner.application_rejected",
 ];
 
 export const ALL_INBOUND_EVENT_TYPES: InboundEventType[] = [
@@ -559,6 +648,28 @@ export async function drainOutbox(deliver: (env: BridgeEnvelope, hmac: string) =
 
 export function getOutbox(): OutboxEntry[] {
   return outbox;
+}
+
+/**
+ * v25.19 Lane 4 NC3 (hard close) — DLQ replay primitive.
+ *
+ * Flips a dead_letter envelope back to queued, resets attempts + lastError +
+ * nextRetryAt, and persists the row. The standard `processOutbox()` worker
+ * tick picks it up like any other queued envelope.
+ *
+ * Returns `{ ok: true, entry }` on successful replay, `{ ok: false, error }`
+ * when the eventId is unknown or not currently in `dead_letter`.
+ */
+export function replayDeadLetter(eventId: string): { ok: true; entry: OutboxEntry } | { ok: false; error: string } {
+  const e = outbox.find((x) => x.envelope.eventId === eventId);
+  if (!e) return { ok: false, error: "event_not_found" };
+  if (e.status !== "dead_letter") return { ok: false, error: `not_in_dead_letter:${e.status}` };
+  e.status = "queued";
+  e.attempts = 0;
+  e.lastError = undefined;
+  e.nextRetryAt = new Date().toISOString();
+  persistOutboxUpdate(e);
+  return { ok: true, entry: e };
 }
 
 export function getInbox(): BridgeEnvelope[] {
@@ -758,7 +869,8 @@ export function registerBridgeRoutes(app: Express): void {
   });
 
   // List outbound events
-  app.get("/api/admin/bridge/outbox", (_req: Request, res: Response) => {
+  /* v25.16 NC4 — admin bridge endpoints were unauthenticated; gated under requireAdmin. */
+  app.get("/api/admin/bridge/outbox", requireAdmin, (_req: Request, res: Response) => {
     res.json({
       total: outbox.length,
       delivered: outbox.filter(e => e.status === "delivered").length,
@@ -789,14 +901,14 @@ export function registerBridgeRoutes(app: Express): void {
   });
 
   // Get single envelope
-  app.get("/api/admin/bridge/event/:id", (req: Request, res: Response) => {
+  app.get("/api/admin/bridge/event/:id", requireAdmin, (req: Request, res: Response) => {
     const e = outbox.find(o => o.envelope.eventId === req.params.id);
     if (!e) return res.status(404).json({ error: "not_found" });
     res.json({ envelope: e.envelope, status: e.status, hmac: e.hmac, attempts: e.attempts });
   });
 
   // List inbound (Collective→Capavate)
-  app.get("/api/admin/bridge/inbox", (_req: Request, res: Response) => {
+  app.get("/api/admin/bridge/inbox", requireAdmin, (_req: Request, res: Response) => {
     res.json({
       total: inbox.length,
       eventTypes: ALL_INBOUND_EVENT_TYPES,
@@ -805,7 +917,7 @@ export function registerBridgeRoutes(app: Express): void {
   });
 
   // Drain — call the in-process mock receiver
-  app.post("/api/admin/bridge/drain", async (req: Request, res: Response) => {
+  app.post("/api/admin/bridge/drain", requireAdmin, async (req: Request, res: Response) => {
     const proto = String(req.headers["x-forwarded-proto"] ?? "http");
     const host = String(req.headers.host ?? `127.0.0.1:5000`);
     const baseUrl = `${proto}://${host}`;
@@ -829,7 +941,7 @@ export function registerBridgeRoutes(app: Express): void {
   });
 
   // Emit a custom envelope (admin-only test action)
-  app.post("/api/admin/bridge/emit", (req: Request, res: Response) => {
+  app.post("/api/admin/bridge/emit", requireAdmin, (req: Request, res: Response) => {
     const { eventType, aggregateId, aggregateKind, payload } = req.body ?? {};
     if (!ALL_OUTBOUND_EVENT_TYPES.includes(eventType)) {
       return res.status(400).json({ error: "invalid_event_type", allowed: ALL_OUTBOUND_EVENT_TYPES });
@@ -848,11 +960,9 @@ export function registerBridgeRoutes(app: Express): void {
   });
 
   // Sprint 16 A4 — demo reset + replay (admin-SES-gated for safety).
-  app.post("/api/admin/sync/reset-demo", async (req: Request, res: Response) => {
-    const ses = String(req.headers["x-admin-ses"] ?? req.body?.ses ?? "");
-    if (!ses || ses.length < 8) {
-      return res.status(401).json({ error: "admin_ses_required" });
-    }
+  /* v25.16 NC4 — was guarded only by a trivial 8-char string length check on
+     x-admin-ses; replaced with proper requireAdmin session middleware. */
+  app.post("/api/admin/sync/reset-demo", requireAdmin, async (req: Request, res: Response) => {
     const { resetDemoState } = await import("../scripts/reset-demo");
     const summary = resetDemoState();
     res.json({ ok: summary.ok, summary, outbox: outbox.length, inbox: inbox.length });
@@ -861,7 +971,7 @@ export function registerBridgeRoutes(app: Express): void {
   // v24.5 GAP-2 — Admin-visible bridge event history (circular buffer, 1000 rows).
   // Returns the last N resolved events from bridge_event_history.
   // Default N = 100; override via ?limit= (max 1000).
-  app.get("/api/admin/bridge/history", (_req: Request, res: Response) => {
+  app.get("/api/admin/bridge/history", requireAdmin, (_req: Request, res: Response) => {
     const rawLimit = _req.query.limit;
     const limitNum = Math.min(
       1000,
@@ -896,7 +1006,7 @@ export function registerBridgeRoutes(app: Express): void {
   });
 
   // Verify chain integrity
-  app.get("/api/admin/bridge/verify-chain", (_req: Request, res: Response) => {
+  app.get("/api/admin/bridge/verify-chain", requireAdmin, (_req: Request, res: Response) => {
     let prior = "0000000000000000000000000000000000000000000000000000000000000000";
     let broken = -1;
     for (let i = 0; i < outbox.length; i++) {

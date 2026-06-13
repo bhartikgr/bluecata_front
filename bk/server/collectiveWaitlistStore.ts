@@ -43,6 +43,11 @@ export interface WaitlistRow {
   createdAt: string;
   reviewedAt: string | null;
   reviewedBy: string | null;
+  /**
+   * v25.13 NM3 — admin review note. Persisted into `payload` so we don't
+   * need a schema migration; surfaced explicitly here for ergonomic reads.
+   */
+  reviewNote?: string | null;
 }
 
 export interface CreateWaitlistArgs {
@@ -120,26 +125,88 @@ export function createWaitlistEntry(args: CreateWaitlistArgs): WaitlistRow {
   return row;
 }
 
+/**
+ * v25.12 NH-4 — hydrate a single row from the DB on demand when it is
+ * absent from the in-memory mirror. Without this, any waitlist row created
+ * before the current server process started (or after a hot restart between
+ * the create and the review) would 404 on the admin review endpoint even
+ * though it exists in the DB. Returns the freshly-hydrated row or null.
+ */
+function hydrateOneFromDb(id: string): WaitlistRow | null {
+  try {
+    const db: any = getDb();
+    const r: any = db
+      .select()
+      .from(waitlistTable)
+      .where(eq(waitlistTable.id, id))
+      .get();
+    if (!r) return null;
+    let parsedPayload: Record<string, unknown> = {};
+    try { parsedPayload = JSON.parse(r.payload ?? "{}"); } catch { /* keep empty */ }
+    const row: WaitlistRow = {
+      id: r.id,
+      tenantId: r.tenant_id ?? r.tenantId ?? "",
+      kind: (r.kind ?? "investor_membership") as WaitlistKind,
+      userId: r.user_id ?? r.userId,
+      companyId: r.company_id ?? r.companyId ?? null,
+      payload: parsedPayload,
+      chapterHint: r.chapter_hint ?? r.chapterHint ?? null,
+      status: (r.status ?? "waitlist") as WaitlistStatus,
+      createdAt: r.created_at ?? r.createdAt,
+      reviewedAt: r.reviewed_at ?? r.reviewedAt ?? null,
+      reviewedBy: r.reviewed_by ?? r.reviewedBy ?? null,
+      // v25.13 NM3 — surface persisted review note from payload.
+      reviewNote: (parsedPayload.reviewNote as string | undefined) ?? null,
+    };
+    memWaitlist.push(row);
+    return row;
+  } catch (err) {
+    log.warn("[collectiveWaitlistStore.hydrateOneFromDb] failed:", (err as Error).message);
+    return null;
+  }
+}
+
 export function reviewWaitlistEntry(
   id: string,
   status: WaitlistStatus,
   reviewedBy: string,
+  /**
+   * v25.13 NM3 — the admin review note. Previously the route accepted a
+   * `note` field, echoed it in the response, and threw it away. Now it is
+   * persisted via the `payload.reviewNote` slot (no schema migration).
+   */
+  reviewNote?: string | null,
 ): WaitlistRow | null {
-  const row = memWaitlist.find((r) => r.id === id);
+  let row = memWaitlist.find((r) => r.id === id);
+  /* v25.12 NH-4 — fall back to a one-shot DB read when the row is not in
+   * the in-memory mirror (post-restart, or cross-process). Previously this
+   * function returned null without checking the DB, so admin review of any
+   * row not in the current process's cache returned 404. */
+  if (!row) {
+    row = hydrateOneFromDb(id) ?? undefined;
+  }
   if (!row) return null;
   row.status = status;
   row.reviewedAt = nowIso();
   row.reviewedBy = reviewedBy;
+  // v25.13 NM3 — persist note into payload + a top-level reviewNote field.
+  if (typeof reviewNote === "string") {
+    row.reviewNote = reviewNote;
+    row.payload = { ...(row.payload ?? {}), reviewNote };
+  }
   try {
     const db: any = getDb();
     db.transaction((tx: any) => {
       tx.update(waitlistTable)
         .set({
-          status: row.status,
-          reviewedAt: row.reviewedAt,
-          reviewedBy: row.reviewedBy,
+          status: row!.status,
+          reviewedAt: row!.reviewedAt,
+          reviewedBy: row!.reviewedBy,
+          // v25.13 NM3 — the payload column is the source of truth for the
+          // review note; updated alongside the status to keep them atomic.
+          payload: JSON.stringify(row!.payload ?? {}),
         } as any)
-        .where(eq(waitlistTable.id, row.id))
+        .where(eq(waitlistTable.id, row!.id))
         .run();
     });
   } catch (err) {
@@ -167,7 +234,10 @@ export function listWaitlist(filter?: {
 }
 
 export function getWaitlistEntry(id: string): WaitlistRow | null {
-  return memWaitlist.find((r) => r.id === id) ?? null;
+  /* v25.12 NH-4 — DB fallback path for single-row reads. */
+  const inMem = memWaitlist.find((r) => r.id === id);
+  if (inMem) return inMem;
+  return hydrateOneFromDb(id);
 }
 
 export function listWaitlistForUser(userId: string): WaitlistRow[] {
@@ -200,6 +270,8 @@ export async function hydrateCollectiveWaitlistStore(): Promise<void> {
         createdAt: r.created_at ?? r.createdAt,
         reviewedAt: r.reviewed_at ?? r.reviewedAt ?? null,
         reviewedBy: r.reviewed_by ?? r.reviewedBy ?? null,
+        // v25.13 NM3 — surface persisted review note from payload.
+        reviewNote: (parsedPayload.reviewNote as string | undefined) ?? null,
       });
     }
     if (rows.length > 0) {

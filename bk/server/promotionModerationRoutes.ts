@@ -125,7 +125,9 @@ function notifyChapterMembersOfApproval(args: {
     try {
       emitNotification({
         userId: uid,
-        kind: "cap_table.broadcast" as NotificationKind,
+        /* v25.16 NM6 — dedicated kind so users can configure preferences for
+           Deal Room promotion announcements separately from cap-table broadcasts. */
+        kind: "partner.promotion_approved",
         title: "New partner promotion in the Deal Room",
         body: "A consortium partner has been approved to share a new deal.",
         link: `/collective/dealroom`,
@@ -257,10 +259,18 @@ export function registerPromotionModerationRoutes(app: Express): void {
         const partnerBody = notes
           ? `Reviewer notes: ${notes.slice(0, 200)}`
           : `Status: ${updated.moderationStatus}`;
+        /* v25.16 NM6 — select the proper kind per action so notification
+           preferences and analytics route correctly. */
+        const partnerKind: NotificationKind =
+          action === "approve"
+            ? "partner.promotion_approved"
+            : action === "reject"
+              ? "partner.promotion_rejected"
+              : "partner.promotion_changes_requested";
         notifyPartner({
           partnerId: updated.partnerId,
           promoterUserId: updated.promotedBy,
-          kind: "cap_table.broadcast" as NotificationKind,
+          kind: partnerKind,
           title: partnerTitle,
           body: partnerBody,
           link: "/partner/pipeline",

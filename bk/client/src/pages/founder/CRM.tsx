@@ -167,10 +167,14 @@ export default function FounderInvestorCRM() {
     mutationFn: async ({ id, notes }: { id: string; notes: string }) =>
       (await apiRequest("PATCH", `/api/founder/investor-crm/${id}`, { notes })).json(),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/founder/investor-crm"] });
+      // v25.11 NM-1 — contactsQ is registered with compound key
+      // ["/api/founder/investor-crm", companyId]; invalidating the bare path
+      // didn't match, so notes appeared stale after save. Include companyId.
+      queryClient.invalidateQueries({ queryKey: ["/api/founder/investor-crm", companyId] });
       setEditing(null);
       toast({ title: "Notes saved" });
     },
+    onError: (err: Error) => toast({ title: "Save failed", description: err.message, variant: "destructive" }),
   });
 
   // v23.4.5 BUG 009 — full-edit mutation. Saves name/firmName/email/region/series
@@ -261,6 +265,14 @@ export default function FounderInvestorCRM() {
       toast({ title: `Broadcast sent`, description: `Reached ${data.recipientCount} investors.` });
       setBcOpen(false); setBcMsg(""); setBcInitialIds(new Set());
     },
+    // v25.11 NM-2 — the prior version had no onError handler so any 5xx /
+    // network / 422 failure left the dialog open and silent. Founders
+    // assumed success when the broadcast actually failed.
+    onError: (err: Error) => toast({
+      title: "Broadcast failed",
+      description: err.message || "The message could not be sent. Try again.",
+      variant: "destructive",
+    }),
   });
 
   const counts = useMemo(() => {

@@ -44,8 +44,11 @@ export default function CollectiveMembers() {
   });
 
   const deactivateMutation = useMutation({
+    /* v25.12 NC1 — the server endpoint is /suspend, not /deactivate. The
+     * previous client path 404'd on every click. Renamed to match the
+     * canonical route. */
     mutationFn: async (userId: string) =>
-      (await apiRequest("POST", `/api/admin/collective/members/${userId}/deactivate`, {})).json(),
+      (await apiRequest("POST", `/api/admin/collective/members/${userId}/suspend`, {})).json(),
     onSuccess: () => {
       toast({ title: "Member deactivated" });
       queryClient.invalidateQueries({ queryKey: ["/api/admin/collective/members"] });

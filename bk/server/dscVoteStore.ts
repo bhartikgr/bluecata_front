@@ -34,6 +34,11 @@ export interface DscVoteRow {
   tenantId: string;
   companyId: string;
   roundId: string | null;
+  /* v25.12 NC-2 — chapterId is the chapter scope at vote-cast time. Required
+   * for per-chapter tally + quorum. Older v16/v17 rows that predate this
+   * field will be null — they are not included in chapter-scoped tallies
+   * and only show up in the platform-wide audit/global view. */
+  chapterId: string | null;
   voterUserId: string;
   vote: DscVote;
   conditions: string[] | null;
@@ -52,6 +57,9 @@ export interface RecordVoteArgs {
   conditions?: string[];
   notes?: string;
   tenantId?: string;
+  /* v25.12 NC-2 — chapter scope the vote is cast under. Routes pass this
+   * from the validated `castVoteSchema` body. */
+  chapterId?: string | null;
 }
 
 export interface VoteTally {
@@ -133,22 +141,22 @@ export function recordVote(args: RecordVoteArgs): DscVoteRow {
   try {
     const db: any = getDb();
     db.transaction((tx: any) => {
-      // Chain tip per company.
-      const tipRow = tx
-        .select({ hash: dscVotesTable.hash })
+      /* v25.12 NM-3 — chain-tip lookup is now performed INSIDE the same
+       * transaction, and we use the DB rows directly to compute prevHash
+       * (sorted by castAt). The prior implementation read the tip from
+       * `memVotes` outside the transaction, which let two concurrent
+       * recordVote() calls observe the same prevHash and fork the chain.
+       * SQLite serialises writers within a transaction, so picking prevHash
+       * from the in-tx SELECT is safe under concurrency. */
+      const tipRows = tx
+        .select({ hash: dscVotesTable.hash, castAt: dscVotesTable.castAt })
         .from(dscVotesTable)
         .where(eq(dscVotesTable.companyId, args.companyId))
-        .all() as Array<{ hash: string; castAt?: string }>;
-      // Most recent by lex-sorted castAt — but simpler: re-query ordered.
-      // SQLite doesn't have ordered limit in our composed query above for ascending stable sort, so use mirror:
-      // The mirror is authoritative for ordering because it's hydrated in insert order.
-      const tipFromMirror = [...memVotes]
-        .filter((v) => v.companyId === args.companyId)
-        .sort((a, b) => (a.castAt < b.castAt ? -1 : a.castAt > b.castAt ? 1 : 0));
-      const prevHash = tipFromMirror.length > 0
-        ? tipFromMirror[tipFromMirror.length - 1].hash
+        .all() as Array<{ hash: string; castAt: string }>;
+      const sortedTips = [...tipRows].sort((a, b) => (a.castAt < b.castAt ? -1 : a.castAt > b.castAt ? 1 : 0));
+      const prevHash = sortedTips.length > 0
+        ? sortedTips[sortedTips.length - 1].hash
         : "GENESIS";
-      void tipRow;
 
       const body = buildVoteBody({
         id,
@@ -191,6 +199,7 @@ export function recordVote(args: RecordVoteArgs): DscVoteRow {
         tenantId,
         companyId: args.companyId,
         roundId: args.roundId ?? null,
+        chapterId: args.chapterId ?? null,
         voterUserId: args.voterUserId,
         vote: args.vote,
         conditions,
@@ -202,41 +211,44 @@ export function recordVote(args: RecordVoteArgs): DscVoteRow {
       };
     });
   } catch (err) {
-    log.warn("[dscVoteStore.recordVote] DB write failed (memory only):", (err as Error).message);
-    // Build the row anyway for memory-only mode (mirrors v15 hybrid behavior).
-    const tipFromMirror = [...memVotes]
-      .filter((v) => v.companyId === args.companyId)
-      .sort((a, b) => (a.castAt < b.castAt ? -1 : 1));
-    const prevHash = tipFromMirror.length > 0
-      ? tipFromMirror[tipFromMirror.length - 1].hash
-      : "GENESIS";
-    const body = buildVoteBody({
-      id,
-      companyId: args.companyId,
-      voterUserId: args.voterUserId,
-      vote: args.vote,
-      conditions,
-      castAt,
-    });
-    const hash = createHash("sha256").update(`${prevHash}|${body}`).digest("hex").slice(0, 24);
-    row = {
-      id, tenantId, companyId: args.companyId,
-      roundId: args.roundId ?? null,
-      voterUserId: args.voterUserId, vote: args.vote,
-      conditions, notes: args.notes ?? null,
-      prevHash, hash, castAt, supersededAt: null,
-    };
+    /* v25.22 NH-1 fix — the legacy code built a memory-only row here, which
+     * violated "ALL TIED DIRECTLY TO THE DATABASE / NO MEMORY STORAGE" and
+     * created a phantom-vote class: a DB failure produced an in-memory vote
+     * that could push the proposal past quorum and (post v25.21) fire
+     * deal-room admission for a company whose vote never actually persisted.
+     * We now fail closed — the caller's POST returns 500 and the
+     * tally/quorum/deal-room logic never observes a phantom vote. */
+    log.error(
+      "[dscVoteStore.recordVote] DB write failed; failing closed to avoid phantom vote:",
+      (err as Error).message,
+    );
+    throw new Error(`recordVote_db_failed:${(err as Error).message}`);
   }
 
   // Mirror updates: supersede prior + insert new.
   if (priorIdx >= 0) {
     memVotes[priorIdx] = { ...memVotes[priorIdx], supersededAt: castAt };
+    /* v25.12 NC-2 — persist the prior-row supersedence too so post-restart
+     * tallies see the same state. */
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { persistEntry } = require("./lib/storePersistenceShim");
+      persistEntry("dscVoteStoreChapter", memVotes[priorIdx].id, memVotes[priorIdx]);
+    } catch { /* non-fatal */ }
   }
   if (!row) {
     // Defensive: should never happen.
     throw new Error("recordVote_internal_error_no_row");
   }
   memVotes.push(row);
+  /* v25.12 NC-2 — persist the chapterId-bearing row via kv shim so it
+   * survives restart even when the underlying DB schema lacks a chapterId
+   * column. On hydrate we merge this back into memVotes. */
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { persistEntry } = require("./lib/storePersistenceShim");
+    persistEntry("dscVoteStoreChapter", row.id, row);
+  } catch { /* non-fatal */ }
   return row;
 }
 
@@ -258,11 +270,21 @@ export function recordVote(args: RecordVoteArgs): DscVoteRow {
  */
 export function getVotesForCompany(
   companyId: string,
-  opts?: { tenantId?: string; activeOnly?: boolean },
+  opts?: { tenantId?: string; activeOnly?: boolean; chapterId?: string },
 ): DscVoteRow[] {
   let rows = memVotes.filter((v) => v.companyId === companyId);
   if (opts?.tenantId !== undefined) {
     rows = rows.filter((v) => v.tenantId === opts.tenantId);
+  }
+  /* v25.12 NC-2 — chapter scoping. Each vote row carries the chapterId of the
+   * voter at cast time (it lives on the row as `chapterId`, mirrored from the
+   * DSC role at vote time). When a chapterId filter is supplied we only count
+   * votes cast on behalf of that chapter; this prevents Chapter A's votes
+   * from showing up in Chapter B's tally. Rows that do not carry a chapterId
+   * (legacy v16 rows) are kept ONLY when the caller passes `chapterId`
+   * unspecified (back-compat for the global tally path used by audits). */
+  if (opts?.chapterId !== undefined) {
+    rows = rows.filter((v) => (v as any).chapterId === opts.chapterId);
   }
   if (opts?.activeOnly) {
     rows = rows.filter((v) => v.supersededAt === null);
@@ -279,8 +301,15 @@ export function getVotesForCompany(
  * "DSC members" for v16 = all users with an active row in
  * `collectiveMembershipStore`. v17 will introduce a real `dsc_role` flag.
  */
-export function tallyForCompany(companyId: string): VoteTally {
-  const active = getVotesForCompany(companyId, { activeOnly: true });
+export function tallyForCompany(companyId: string, opts?: { chapterId?: string }): VoteTally {
+  /* v25.12 NC-2 — chapterId is now passed through to the per-chapter
+   * vote slice. The previous implementation pooled all chapters' votes
+   * into one tally and used a platform-wide member count for quorum,
+   * which let votes from Chapter A pass or fail Chapter B's proposal.
+   * Callers that don't pass chapterId (legacy audits) get the global
+   * tally for back-compat — see the route layer where we now require
+   * chapterId from the verified caller context. */
+  const active = getVotesForCompany(companyId, { activeOnly: true, chapterId: opts?.chapterId });
   const tally: VoteTally = {
     approve: 0,
     reject: 0,
@@ -299,10 +328,23 @@ export function tallyForCompany(companyId: string): VoteTally {
     else if (v.vote === "abstain") tally.abstain += 1;
   }
   tally.voterCount = voters.size;
-  const memberCount = collectiveMembershipStore.listActive().length;
+  /* v25.12 NC-2 — quorum denominator is now per-chapter when chapterId is
+   * supplied. Falls back to platform-wide active membership only when no
+   * chapterId is passed (audit / aggregate path). */
+  let memberCount: number;
+  if (opts?.chapterId) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { countActiveChapterMembers } = require("./chaptersStore");
+      memberCount = countActiveChapterMembers(opts.chapterId) ?? 0;
+    } catch {
+      memberCount = 0;
+    }
+  } else {
+    memberCount = collectiveMembershipStore.listActive().length;
+  }
   tally.dscMemberCount = memberCount;
-  // v16 quorum: ≥50% of DSC members. If no DSC members are registered,
-  // quorum is conservatively reported as false to avoid false positives.
+  // Quorum: ≥50% of DSC members in scope. Conservative: 0 members → false.
   tally.quorumReached = memberCount > 0 && tally.voterCount * 2 >= memberCount;
   return tally;
 }
@@ -354,6 +396,7 @@ export async function hydrateDscVoteStore(): Promise<void> {
         tenantId: r.tenant_id ?? r.tenantId ?? "",
         companyId: r.company_id ?? r.companyId,
         roundId: r.round_id ?? r.roundId ?? null,
+        chapterId: null, // Legacy DB rows don't carry chapterId; kv shim layer below restores it where available.
         voterUserId: r.voter_user_id ?? r.voterUserId,
         vote: (r.vote ?? "abstain") as DscVote,
         conditions: conds,
@@ -375,6 +418,30 @@ export async function hydrateDscVoteStore(): Promise<void> {
       log.warn("[hydrate] dscVoteStore: DB read failed:", msg);
     }
   }
+  /* v25.12 NC-2 — merge chapterId from the kv shim layer onto each
+   * matching row by id. Rows we added in v25.12+ will have chapterId set;
+   * older rows fall back to null and get the global (un-chaptered) tally. */
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { hydrateEntries } = require("./lib/storePersistenceShim");
+    const kv = hydrateEntries("dscVoteStoreChapter") as Array<[string, DscVoteRow]>;
+    if (Array.isArray(kv) && kv.length > 0) {
+      const byId = new Map<string, DscVoteRow>(kv.filter(([k]) => typeof k === "string"));
+      for (let i = 0; i < memVotes.length; i++) {
+        const enriched = byId.get(memVotes[i].id);
+        if (enriched) {
+          memVotes[i] = { ...memVotes[i], chapterId: enriched.chapterId ?? null, supersededAt: enriched.supersededAt ?? memVotes[i].supersededAt };
+        }
+      }
+      // Also re-add rows that only exist in kv (e.g. when the DB has no chapterId path).
+      for (const [id, row] of kv) {
+        if (!memVotes.find((v) => v.id === id)) {
+          memVotes.push(row);
+        }
+      }
+      memVotes.sort((a, b) => (a.castAt < b.castAt ? -1 : a.castAt > b.castAt ? 1 : 0));
+    }
+  } catch { /* non-fatal */ }
 }
 
 /* ---------- Test helpers ---------- */

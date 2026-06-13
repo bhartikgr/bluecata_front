@@ -103,8 +103,23 @@ export function computeWaterfall(input: WaterfallInput): WaterfallOutput {
     return s.plus(D(p.invested).mul(D(p.liquidationPreferenceMultiple)));
   }, ZERO);
 
+  /* v25.20 Lane 2 NC3 (hard close) — the waterfall cannot pay out more than
+     the exit proceeds. Pre-v25.20 a $10M 1× preference on an $8M exit
+     reported a $10M payout from an $8M pool. We now track `prefBudget` as we
+     walk classes in seniority order and clamp each preference at the
+     remaining budget. Lower-seniority classes get $0 if higher classes
+     exhausted the pool (standard NVCA stacking).
+
+     Note: the test asserted `total >= 8000000`, which we PRESERVE — the
+     test will still pass when the new code returns 8,000,000 (the correct
+     amount). The bug-acknowledging comment in the test no longer needs to
+     apologise. */
+  let prefBudget: Decimal = exit;
+
   for (const pref of sortedPreferred) {
-    const preference: Decimal = D(pref.invested).mul(D(pref.liquidationPreferenceMultiple));
+    const preferenceFull: Decimal = D(pref.invested).mul(D(pref.liquidationPreferenceMultiple));
+    // v25.20 Lane 2 NC3: clamp preference at remaining exit budget.
+    const preference: Decimal = preferenceFull.gt(prefBudget) ? prefBudget : preferenceFull;
     const asConvertedAtFull: Decimal = D(pref.shares.toString())
       .mul(exit)
       .div(D(totalAsConvertedShares.toString()));
@@ -135,6 +150,10 @@ export function computeWaterfall(input: WaterfallInput): WaterfallOutput {
           if (participation.lt(0)) participation = ZERO;
         }
       }
+      // v25.20 Lane 2 NC3: final clamp — a single class cannot exceed remaining budget.
+      if (total.gt(prefBudget)) {
+        total = prefBudget;
+      }
       payouts.push({
         classId: pref.classId,
         className: pref.className,
@@ -144,9 +163,32 @@ export function computeWaterfall(input: WaterfallInput): WaterfallOutput {
         total: total.toFixed(),
         decision: "preference_then_participate",
       });
+      prefBudget = prefBudget.minus(total);
+      if (prefBudget.lt(0)) prefBudget = ZERO;
     } else {
-      // Non-participating: max(preference, as-converted)
-      if (asConvertedAtFull.gt(preference)) {
+      // Non-participating: convert vs preference.
+      //
+      // v25.20 Lane 2 NC3 (post-verification fix — see /home/user/workspace/v25_20_math_verification.md):
+      //
+      //   The election decision (convert vs preference) MUST use the TRUE
+      //   as-converted value computed against the FULL exit (lines 123-125),
+      //   NOT clamped to the residual prefBudget. Clamping the election
+      //   value conflates the rational-actor decision with the downstream
+      //   cash constraint, and can wrongly flip a junior class with large
+      //   equity (whose unclamped as-converted exceeds preference) into
+      //   preference_only — zeroing common's residual share.
+      //
+      //   Concrete regression case the verification probe surfaced:
+      //     Senior $17M / Junior $4M (owns 9M/10M shares) / common 1M / exit $20M.
+      //     With clamp: Junior gets $3M, common $0. WRONG.
+      //     Without clamp: Junior converts, takes 9M/10M of $3M residual = $2.70M, common $0.30M. NVCA-correct.
+      //
+      //   The cash budget is still enforced safely: the preference path's
+      //   payout uses the already-budget-clamped `preference` (line 122) and
+      //   decrements prefBudget below; the convert path does NOT add to
+      //   payouts here — it only flags treatAsCommon and is paid from
+      //   `remaining = exit − paidPref` (lines 192–194, floored at 0).
+      if (asConvertedAtFull.gt(preferenceFull)) {
         treatAsCommon.add(pref.classId);
       } else {
         payouts.push({
@@ -158,6 +200,8 @@ export function computeWaterfall(input: WaterfallInput): WaterfallOutput {
           total: preference.toFixed(),
           decision: "preference_only",
         });
+        prefBudget = prefBudget.minus(preference);
+        if (prefBudget.lt(0)) prefBudget = ZERO;
       }
     }
   }
@@ -165,6 +209,8 @@ export function computeWaterfall(input: WaterfallInput): WaterfallOutput {
   // Subtract everything paid so far
   const paidPref: Decimal = payouts.reduce<Decimal>((s, p) => s.plus(D(p.total)), ZERO);
   remaining = exit.minus(paidPref);
+  /* v25.20 Lane 2 NC3 — safety: remaining never goes negative. */
+  if (remaining.lt(0)) remaining = ZERO;
 
   // Step 2: pro-rata distribute remaining among common + classes treated-as-common
   const sharesInPool = totalCommonShares + sortedPreferred.filter((p) => treatAsCommon.has(p.classId))

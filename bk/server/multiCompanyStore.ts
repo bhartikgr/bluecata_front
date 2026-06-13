@@ -831,26 +831,39 @@ export function registerMultiCompanyRoutes(app: Express): void {
     const companiesRaw = getCompaniesForFounder(ctx.userId);
     const raw = companiesRaw.find((x) => x.companyId === req.params.id);
     if (!raw) return res.status(404).json({ ok: false, error: "COMPANY_NOT_FOUND", message: `Company ${req.params.id} not found.` });
-    // V3 (Patch v8): overlay canonical subscription billing.
     const c = mergeBillingFromSubscription(raw);
-    const invoices = Array.from({ length: c.billing.invoiceCount }).map((_, i) => {
-      const d = new Date(2026, 5 - i, 15);
-      return {
-        id: `inv_${c.companyId}_${i}`,
-        number: `INV-${(2026 - Math.floor(i / 12)) * 1000 + (12 - (i % 12))}`,
-        date: d.toISOString().slice(0, 10),
-        amountUsd: c.billing.monthlyUsd,
-        status: "paid" as const,
-        url: `/api/founder/companies/${c.companyId}/billing/invoices/${i}/pdf`,
-      };
-    });
+    /* v25.17 Lane A NC4 — was fabricating invoices in memory ("NO MOCK DATA"
+       violation). Now we read real invoice rows from invoiceStore. If the
+       company has no rows we return an empty list — never synthesize fakes.
+       NM6/NM7 fixes (negative-month date math, float division) are moot once
+       the synthetic generator is gone. */
+    let invoices: Array<{ id: string; number: string; date: string; amountMinor: number; currency: string; status: string; url: string }> = [];
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { listInvoicesForCompany } = require("./invoiceStore") as typeof import("./invoiceStore");
+      const rows = listInvoicesForCompany(c.companyId) ?? [];
+      invoices = rows.map((inv) => ({
+        id: inv.id,
+        number: (inv as { number?: string }).number ?? inv.id,
+        date: (inv as { issuedAt?: string }).issuedAt ?? inv.createdAt ?? "",
+        amountMinor: (inv as { amountMinor?: number }).amountMinor ?? 0,
+        currency: (inv as { currency?: string }).currency ?? "USD",
+        status: inv.status,
+        /* v25.19 Lane 1 NM1 — the multi-company billing reader was emitting an
+           invoice download URL that does not match the route registered in
+           invoiceStore (`/api/founder/invoices/:id/pdf`). Every "Download invoice"
+           click in the multi-company billing card 404'd. */
+        url: `/api/founder/invoices/${inv.id}/pdf?companyId=${encodeURIComponent(c.companyId)}`,
+      }));
+    } catch {
+      invoices = [];
+    }
     res.json({
       companyId: c.companyId,
       plan: c.billing.plan,
       monthlyUsd: c.billing.monthlyUsd,
       nextBillingDate: c.billing.nextBillingDate,
       card: c.billing.cardLast4 ? { last4: c.billing.cardLast4, brand: "Visa", exp: "11/28" } : null,
-      stripeDemo: true,
       invoices,
     });
   });
@@ -883,7 +896,12 @@ export function mergeBillingFromSubscription(c: FounderCompanyMembership): Found
     ...c,
     billing: {
       plan: mapPlanCode(sub.plan),
-      monthlyUsd: Math.round(sub.annualAmountMinor / 12 / 100),
+      /* v25.17 Lane A NM7 — was dividing minor units in float then rounding to
+         whole dollars (dropping cents). Now compute monthly in integer minor
+         units and divide by 100 at display time. The legacy `monthlyUsd`
+         contract is preserved by rounding the cents value to whole dollars
+         (existing UI behaviour). */
+      monthlyUsd: Math.round((sub.annualAmountMinor / 12) / 100),
       nextBillingDate: sub.renewsOn,
       cardLast4: sub.cardLast4,
       invoiceCount: sub.invoicesCount,

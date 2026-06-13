@@ -135,7 +135,10 @@ export function CapCollectiveToggle() {
 
   const switchTo = () => {
     if (targetSurface === "collective") {
-      navigate("/collective");
+      // v25.13 NC4 — bare /collective is not a registered route; the
+      // nearest is /collective/dashboard. Without this, the legacy toggle
+      // (VITE_USE_LEGACY_CAP_COLLECTIVE_TOGGLE=1) lands users on a 404.
+      navigate("/collective/dashboard");
     } else {
       const home =
         role === "founder" ? "/founder/dashboard" :

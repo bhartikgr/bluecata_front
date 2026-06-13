@@ -64,6 +64,9 @@ export function DiscussWithCapTableDialog({
     if (open) {
       setMessageBody(`Discussing M&A signal on ${companyName} — top buyer ${topBuyer || "TBD"}, M&A score ${maScore}/100.`);
       setMode("message");
+      // v25.13 NM2 — clear stale recipient selection from a prior open so
+      // a rapid reopen-then-submit can't fire at the previous company's list.
+      setSelectedIds(new Set());
     }
   }, [open, companyName, topBuyer, maScore]);
 

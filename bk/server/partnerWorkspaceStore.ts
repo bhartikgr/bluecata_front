@@ -29,6 +29,10 @@ import { pAll } from "./db/portable"; /* Wave H Track A — Postgres compatibili
 import { partnerDealPromotions as partnerDealPromotionsTable } from "@shared/schema";
 import { DEFAULT_CHAPTER_ID, DEFAULT_CHAPTER_TENANT_ID } from "./lib/chapterDefaults";
 import { log } from "./lib/logger";
+/* v25.23 NC-D / NH-K / NH-L — strict (fail-closed) persistence for the money
+ * and identity surfaces. Default `persistEntry` semantics elsewhere remain
+ * unchanged (Lane G preservation). */
+import { persistEntryStrict } from "./lib/storePersistenceShim";
 
 /* ============================================================
  * Sub-role + tier types
@@ -201,6 +205,11 @@ export interface PartnerFile {
   uploadedBy: string;
   uploadedAt: string;
   isSeed: boolean;
+  // v25.15 NH2 — soft-delete support. Files were previously permanent (no
+  // delete method, no deletedAt field). Now nullable timestamp; reads filter
+  // by deletedAt === null. Hard delete is reserved for admin-side workflows.
+  deletedAt: string | null;
+  deletedBy: string | null;
 }
 
 export interface PartnerWorkspaceSettings {
@@ -317,6 +326,12 @@ export type PartnerDealPromotionType =
 
 export type PartnerDealPromotionStatus =
   | "pending"
+  // v25.15 F2-NH1 — prior schema co-stamped status='live' + moderationStatus='pending'
+  // on collective_deal_room create, which was a contradiction: any feed consumer
+  // reading status alone would surface unmoderated content. We now use a
+  // distinct "pending_collective_review" status on create; status is only
+  // flipped to "live" upon explicit chapter-admin moderation approval.
+  | "pending_collective_review"
   | "live"
   | "rejected"
   | "withdrawn";
@@ -357,6 +372,12 @@ export interface PartnerDealPromotion {
   moderatedByUserId: string | null;
   moderatedAt: string | null;
   moderationNotes: string | null;
+  /** v25.23 NM-N (FALSE CLOSURE fix for v25.16 NH4) — the chapter this
+   *  promotion is scoped to for chapter-admin moderation. Previously the
+   *  field was referenced by `listPendingModeration(chapterId)` but never
+   *  set on the row, so the filter `p.chapterId === chapterId` was always
+   *  false and chapter-scoped admin queues silently returned empty. */
+  chapterId: string;
 }
 
 /* ============================================================
@@ -411,7 +432,13 @@ const dealPromotionsHistory: PartnerDealPromotion[] = [];
  * documented in V24_4_1_STORE_AUDIT.md for a future cleanup wave.
  * ============================================================ */
 
-function persistTeamMember(m: PartnerTeamMember): void {
+/* v25.23 NC-D (identity surface) — `strict` mode makes the team-member write
+ * fail closed: a DB-write failure throws instead of being swallowed, so the
+ * caller (partnerTeamStore.add) can avoid leaving a RAM-only membership row
+ * (which would let an approved partner appear provisioned yet vanish on
+ * restart). Default (strict=false) keeps the prior best-effort behaviour for
+ * the non-identity-create callers (e.g. remove). */
+function persistTeamMember(m: PartnerTeamMember, strict = false): void {
   try {
     rawDb().prepare(
       `INSERT INTO partner_team_members (id, partner_id, user_id, sub_role, status, joined_at, removed_at, created_by, is_seed, updated_at)
@@ -424,10 +451,18 @@ function persistTeamMember(m: PartnerTeamMember): void {
     ).run(m.id, m.partnerId, m.userId, m.subRole, m.status, m.joinedAt, m.removedAt ?? null, m.createdBy, m.isSeed ? 1 : 0, new Date().toISOString());
   } catch (err) {
     log.warn("[partnerWorkspaceStore] teamMember write-through failed:", (err as Error).message);
+    if (strict) {
+      throw new Error(`STRICT_PERSIST_FAILED: partner_team_members.${m.id}: ${(err as Error).message}`);
+    }
   }
 }
 
-function persistTeamInvitation(inv: PartnerTeamInvitation): void {
+/* v25.23 NC-D (identity + bootstrap surface) — `strict` mode throws on a
+ * DB-write failure so the invitation create/redeem paths fail closed rather
+ * than leaving a RAM-only invitation (a swallowed write would let a created
+ * invite — or a redeemed-state flip — vanish on restart). Default best-effort
+ * behaviour is unchanged for any non-strict caller. */
+function persistTeamInvitation(inv: PartnerTeamInvitation, strict = false): void {
   try {
     rawDb().prepare(
       `INSERT INTO partner_team_invitations (id, partner_id, invitation_json, updated_at)
@@ -438,6 +473,9 @@ function persistTeamInvitation(inv: PartnerTeamInvitation): void {
     ).run(inv.id, inv.partnerId, JSON.stringify(inv), new Date().toISOString());
   } catch (err) {
     log.warn("[partnerWorkspaceStore] teamInvitation write-through failed:", (err as Error).message);
+    if (strict) {
+      throw new Error(`STRICT_PERSIST_FAILED: partner_team_invitations.${inv.id}: ${(err as Error).message}`);
+    }
   }
 }
 
@@ -559,11 +597,21 @@ export async function hydratePartnerWorkspaceStoreV241(): Promise<void> {
     {
       const rows = db.prepare(`SELECT id, file_json FROM partner_files`).all() as Array<{ id: string; file_json: string }>;
       files.length = 0;
+      let tombstoned = 0;
       for (const r of rows) {
-        try { files.push(JSON.parse(r.file_json) as PartnerFile); }
-        catch (e) { log.warn(`[hydrate] skip file ${r.id}: ${(e as Error).message}`); }
+        try {
+          const parsed = JSON.parse(r.file_json) as PartnerFile;
+          /* v25.16 cross-comp NH4 — do not inflate tombstoned files into the
+             live array on boot. Runtime list/get already filter, but skipping
+             them here avoids memory pollution and tombstone leakage from
+             code paths that iterate raw.files without filtering. */
+          if (parsed && parsed.deletedAt) { tombstoned += 1; continue; }
+          files.push(parsed);
+        } catch (e) { log.warn(`[hydrate] skip file ${r.id}: ${(e as Error).message}`); }
       }
-      if (rows.length > 0) log.info(`[hydrate] partnerWorkspaceStore: ${rows.length} files loaded`);
+      if (rows.length > 0) {
+        log.info(`[hydrate] partnerWorkspaceStore: ${rows.length - tombstoned} files loaded${tombstoned ? ` (${tombstoned} tombstoned skipped)` : ""}`);
+      }
     }
     // workspaceSettings
     {
@@ -578,6 +626,94 @@ export async function hydratePartnerWorkspaceStoreV241(): Promise<void> {
   } catch (err) {
     log.warn("[hydrate] partnerWorkspaceStore v24.4.1: DB read failed:", (err as Error).message);
   }
+}
+
+/**
+ * v25.12 NM-7 / NM-9 — hydrate the pipeline / funds / attributions arrays
+ * from the kv shim. The legacy `partnerWorkspaceStore` audit said these
+ * were dead code; they are not — the partner UI uses them via
+ * `partnerPipelineStore.*` / `partnerSpvStore.*` / `partnerFundsStore.*` /
+ * `partnerAttributionStore.*`. Without this hydrator, every restart wipes
+ * the in-memory arrays even though we now persist on write.
+ *
+ * Wired into HYDRATE_ORDER as `partnerWorkspaceShimStore`. Safe to fail.
+ */
+export function hydratePartnerWorkspaceShimStore(): number {
+  let n = 0;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { hydrateEntries } = require("./lib/storePersistenceShim");
+
+    const pipelineRows = (hydrateEntries("partnerPipeline") as Array<[string, PartnerPipelineDeal]>) ?? [];
+    for (const [id, row] of pipelineRows) {
+      if (typeof id !== "string" || !row) continue;
+      if (!pipeline.find((p) => p.id === id)) {
+        pipeline.push(row);
+        n += 1;
+      }
+    }
+
+    const fundRows = (hydrateEntries("partnerFunds") as Array<[string, PartnerFund]>) ?? [];
+    for (const [id, row] of fundRows) {
+      if (typeof id !== "string" || !row) continue;
+      if (!funds.find((f) => f.id === id)) {
+        funds.push(row);
+        n += 1;
+      }
+    }
+
+    const attrRows = (hydrateEntries("partnerAttributions") as Array<[string, PartnerAttribution]>) ?? [];
+    for (const [id, row] of attrRows) {
+      if (typeof id !== "string" || !row) continue;
+      if (!attributions.find((a) => a.id === id)) {
+        attributions.push(row);
+        n += 1;
+      }
+    }
+
+    /* v25.16 NC1 — partner SPVs (kv shim shard). */
+    const spvRows = (hydrateEntries("partnerSpvs") as Array<[string, PartnerSpv]>) ?? [];
+    for (const [id, row] of spvRows) {
+      if (typeof id !== "string" || !row) continue;
+      if (!spvs.find((s) => s.id === id)) {
+        spvs.push(row);
+        n += 1;
+      }
+    }
+
+    /* v25.16 NL2 carry-over — partner SPV positions. */
+    const posRows = (hydrateEntries("partnerSpvPositions") as Array<[string, PartnerSpvPosition]>) ?? [];
+    for (const [id, row] of posRows) {
+      if (typeof id !== "string" || !row) continue;
+      if (!spvPositions.find((p) => p.id === id)) {
+        spvPositions.push(row);
+        n += 1;
+      }
+    }
+
+    /* v25.16 NC3 — partner fund commitments. */
+    const commRows = (hydrateEntries("partnerFundCommitments") as Array<[string, PartnerFundCommitment]>) ?? [];
+    for (const [id, row] of commRows) {
+      if (typeof id !== "string" || !row) continue;
+      if (!fundCommitments.find((c) => c.id === id)) {
+        fundCommitments.push(row);
+        n += 1;
+      }
+    }
+
+    /* v25.16 NC2 — partner pipeline activities. */
+    const actRows = (hydrateEntries("partnerPipelineActivities") as Array<[string, PartnerPipelineActivity]>) ?? [];
+    for (const [id, row] of actRows) {
+      if (typeof id !== "string" || !row) continue;
+      if (!pipelineActivities.find((a) => a.id === id)) {
+        pipelineActivities.push(row);
+        n += 1;
+      }
+    }
+  } catch (err) {
+    log.warn("[hydrate] partnerWorkspaceShimStore failed:", (err as Error).message);
+  }
+  return n;
 }
 
 /* ============================================================
@@ -626,8 +762,14 @@ export const partnerTeamStore = {
       createdBy,
       isSeed: !!opts.isSeed,
     };
+    /* v25.23 NC-D (identity surface) — fail closed: write the membership to
+     * the DB FIRST in strict mode, then push into the RAM cache only once the
+     * durable write succeeds. A persist failure throws (leaving no RAM-only
+     * membership) so the caller — e.g. the consortium-approval A8 step or an
+     * invite redeem — cannot believe a partner is provisioned when the row
+     * would vanish on restart. */
+    persistTeamMember(tm, true);
     teamMembers.push(tm);
-    persistTeamMember(tm);
     audit(createdBy, `partner:${partnerId}`, "partner.team_member.added", { userId, subRole });
     emit("partner.team_member_added", partnerId, { partnerId, userId, subRole, idempotencyKey: `${partnerId}|${userId}` });
     return tm;
@@ -637,6 +779,25 @@ export const partnerTeamStore = {
     requirePid(partnerId);
     const m = teamMembers.find((m) => m.partnerId === partnerId && m.userId === userId && m.status === "active");
     if (!m) return null;
+    /* v25.23 NL-U fix — server-side guard against removing the LAST
+     * managing_partner from a workspace. Without this, an admin (or the
+     * managing_partner themselves) could orphan the workspace: no member
+     * left with destructive authority, no recovery path short of admin
+     * intervention. Mirror of the chapter-admin same-class guard. The
+     * client also disables the UI control (NL-U client fix), but defense
+     * in depth requires the server enforcement too. */
+    if (m.subRole === "managing_partner") {
+      const remainingManagingPartners = teamMembers.filter(
+        (tm) =>
+          tm.partnerId === partnerId &&
+          tm.status === "active" &&
+          tm.subRole === "managing_partner" &&
+          tm.userId !== userId,
+      ).length;
+      if (remainingManagingPartners === 0) {
+        throw new Error("LAST_MANAGING_PARTNER_CANNOT_BE_REMOVED");
+      }
+    }
     m.status = "removed";
     m.removedAt = new Date().toISOString();
     persistTeamMember(m);
@@ -647,7 +808,10 @@ export const partnerTeamStore = {
 
   listByPartner(partnerId: string): PartnerTeamMember[] {
     requirePid(partnerId);
-    return teamMembers.filter((m) => m.partnerId === partnerId);
+    // v25.14 NH1 — was leaking removed/suspended team members (PII leak +
+    // confused team view). The auth path findByUserId already filters on
+    // status === "active"; the list path now does the same.
+    return teamMembers.filter((m) => m.partnerId === partnerId && m.status === "active");
   },
 
   findByUserId(userId: string): PartnerTeamMember | null {
@@ -747,15 +911,31 @@ export const partnerInvitationStore = {
       uaLogged: opts.ua ?? null,
       isSeed: !!opts.isSeed,
     };
+    /* v25.23 NC-D (identity + bootstrap) — fail closed: persist the invitation
+     * to the DB FIRST in strict mode, then add it to the RAM cache only on
+     * success. Throws on persist failure so an invite that the admin believes
+     * was issued can never live only in memory (and disappear on restart). */
+    persistTeamInvitation(inv, true);
     teamInvitations.push(inv);
-    persistTeamInvitation(inv);
     audit(createdBy, `partner:${partnerId}`, "partner.team_invitation.created", { email: inv.invitedEmail, subRole });
     return { invitation: inv, plainToken };
   },
 
-  listByPartner(partnerId: string): PartnerTeamInvitation[] {
+  /* v25.16 NH5 — listByPartner now defaults to active invites only (not
+     redeemed, not expired) so the team UI shows the correct pending count.
+     Pass { includeRedeemed | includeExpired } to opt back into history. */
+  listByPartner(
+    partnerId: string,
+    opts: { includeRedeemed?: boolean; includeExpired?: boolean } = {},
+  ): PartnerTeamInvitation[] {
     requirePid(partnerId);
-    return teamInvitations.filter((i) => i.partnerId === partnerId);
+    const now = Date.now();
+    return teamInvitations.filter((i) => {
+      if (i.partnerId !== partnerId) return false;
+      if (!opts.includeRedeemed && i.redeemedAt !== null) return false;
+      if (!opts.includeExpired && Date.parse(i.expiresAt) <= now) return false;
+      return true;
+    });
   },
 
   countPendingByPartner(partnerId: string): number {
@@ -766,22 +946,129 @@ export const partnerInvitationStore = {
     ).length;
   },
 
+  /* v25.23 NH-L — atomic invitation redeem.
+   *
+   * Lane D NH-5 / NH-6 found the prior redeem was a non-atomic
+   * check-then-set: it read `redeemedAt`, flipped it in RAM, swallow-persisted
+   * the invitation, then separately added the team membership. Two concurrent
+   * redeems of the same token could both pass the check and both mint a
+   * membership; and a failure between the invitation flip and the membership
+   * insert left a half-redeemed state.
+   *
+   * Fix: wrap "find pending → mark redeemed → insert team membership" in a
+   * SINGLE better-sqlite3 IMMEDIATE transaction (the SELECT ... FOR UPDATE
+   * equivalent — acquires the write lock up front). The redeemed-state guard
+   * is re-checked against the durable invitation row INSIDE the tx, so a
+   * concurrent double-redeem loses (one tx sees redeemedAt already set and
+   * throws, rolling the whole tx back). If any step fails, nothing commits.
+   * RAM caches are updated only AFTER the tx commits. */
   redeem(plainToken: string, redeemingUserId: string, opts: { ip?: string; ua?: string } = {}): PartnerTeamInvitation {
     if (!plainToken) throw new Error("PARTNER_INVITATION_INVALID_TOKEN");
     const hash = hashInviteToken(plainToken);
-    const inv = teamInvitations.find((i) => i.tokenHash === hash);
-    if (!inv) throw new Error("PARTNER_INVITATION_INVALID_TOKEN");
-    if (inv.redeemedAt) throw new Error("PARTNER_INVITATION_ALREADY_REDEEMED");
-    if (Date.parse(inv.expiresAt) < Date.now()) throw new Error("PARTNER_INVITATION_EXPIRED");
-    inv.redeemedAt = new Date().toISOString();
-    inv.redeemedUserId = redeemingUserId;
-    inv.ipLogged = opts.ip ?? inv.ipLogged;
-    inv.uaLogged = opts.ua ?? inv.uaLogged;
-    persistTeamInvitation(inv);
-    // Add the user to the team
-    partnerTeamStore.add(inv.partnerId, redeemingUserId, inv.subRole, redeemingUserId);
-    audit(redeemingUserId, `partner:${inv.partnerId}`, "partner.team_invitation.redeemed", { invitationId: inv.id });
-    return inv;
+    // Locate the invitation id (RAM cache first; DB fallback if not hydrated).
+    let invId: string | null = teamInvitations.find((i) => i.tokenHash === hash)?.id ?? null;
+    if (!invId) {
+      try {
+        const row = rawDb()
+          .prepare(`SELECT id FROM partner_team_invitations WHERE invitation_json LIKE ? LIMIT 1`)
+          .get(`%"tokenHash":"${hash}"%`) as { id: string } | undefined;
+        invId = row?.id ?? null;
+      } catch { /* fall through to invalid-token below */ }
+    }
+    if (!invId) throw new Error("PARTNER_INVITATION_INVALID_TOKEN");
+
+    const nowIso = new Date().toISOString();
+    const db: any = rawDb();
+
+    // The transaction body. Returns the redeemed invitation + the (possibly
+    // pre-existing) team-member row so the RAM caches can be reconciled after
+    // commit. Throws inside the tx to trigger rollback.
+    const run = db.transaction(() => {
+      const row = db
+        .prepare(`SELECT id, partner_id, invitation_json FROM partner_team_invitations WHERE id = ?`)
+        .get(invId) as { id: string; partner_id: string; invitation_json: string } | undefined;
+      if (!row) throw new Error("PARTNER_INVITATION_INVALID_TOKEN");
+      const durable = JSON.parse(row.invitation_json) as PartnerTeamInvitation;
+      // Atomic single-use guard — re-checked against the durable row under lock.
+      if (durable.redeemedAt) throw new Error("PARTNER_INVITATION_ALREADY_REDEEMED");
+      if (Date.parse(durable.expiresAt) < Date.now()) throw new Error("PARTNER_INVITATION_EXPIRED");
+
+      // 1) Mark the invitation redeemed (durable).
+      durable.redeemedAt = nowIso;
+      durable.redeemedUserId = redeemingUserId;
+      durable.ipLogged = opts.ip ?? durable.ipLogged ?? null;
+      durable.uaLogged = opts.ua ?? durable.uaLogged ?? null;
+      db.prepare(
+        `UPDATE partner_team_invitations SET invitation_json = ?, updated_at = ? WHERE id = ?`,
+      ).run(JSON.stringify(durable), nowIso, durable.id);
+
+      // 2) Insert the team membership (idempotent on (partnerId, userId) active).
+      const existingMember = db
+        .prepare(
+          `SELECT id, partner_id, user_id, sub_role, status, joined_at, removed_at, created_by, is_seed
+             FROM partner_team_members
+            WHERE partner_id = ? AND user_id = ? AND status = 'active' LIMIT 1`,
+        )
+        .get(durable.partnerId, redeemingUserId) as Record<string, unknown> | undefined;
+      let member: PartnerTeamMember;
+      if (existingMember) {
+        member = {
+          id: String(existingMember.id),
+          partnerId: String(existingMember.partner_id),
+          userId: String(existingMember.user_id),
+          subRole: String(existingMember.sub_role) as SubRole,
+          status: "active",
+          joinedAt: String(existingMember.joined_at),
+          removedAt: existingMember.removed_at ? String(existingMember.removed_at) : null,
+          createdBy: String(existingMember.created_by),
+          isSeed: Boolean(existingMember.is_seed),
+        };
+      } else {
+        member = {
+          id: newId("ptm"),
+          partnerId: durable.partnerId,
+          userId: redeemingUserId,
+          subRole: durable.subRole,
+          status: "active",
+          joinedAt: nowIso,
+          removedAt: null,
+          createdBy: redeemingUserId,
+          isSeed: false,
+        };
+        db.prepare(
+          `INSERT INTO partner_team_members (id, partner_id, user_id, sub_role, status, joined_at, removed_at, created_by, is_seed, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(member.id, member.partnerId, member.userId, member.subRole, member.status, member.joinedAt, null, member.createdBy, 0, nowIso);
+      }
+      return { durable, member, memberWasNew: !existingMember };
+    });
+
+    // better-sqlite3: run the immediate variant so the write lock is taken at
+    // BEGIN (SELECT ... FOR UPDATE equivalent), serialising concurrent redeems.
+    const result = (run.immediate ? run.immediate() : run()) as {
+      durable: PartnerTeamInvitation;
+      member: PartnerTeamMember;
+      memberWasNew: boolean;
+    };
+
+    // Tx committed — reconcile RAM caches with the durable state.
+    const cachedInv = teamInvitations.find((i) => i.id === result.durable.id);
+    if (cachedInv) {
+      Object.assign(cachedInv, result.durable);
+    } else {
+      teamInvitations.push(result.durable);
+    }
+    if (result.memberWasNew && !teamMembers.find((m) => m.id === result.member.id)) {
+      teamMembers.push(result.member);
+      emit("partner.team_member_added", result.member.partnerId, {
+        partnerId: result.member.partnerId,
+        userId: result.member.userId,
+        subRole: result.member.subRole,
+        idempotencyKey: `${result.member.partnerId}|${result.member.userId}`,
+      });
+    }
+    audit(redeemingUserId, `partner:${result.durable.partnerId}`, "partner.team_invitation.redeemed", { invitationId: result.durable.id });
+    return result.durable;
   },
 
   findByTokenHash(hash: string): PartnerTeamInvitation | null {
@@ -827,6 +1114,12 @@ export const partnerAttributionStore = {
     base.revisionHash = computeRevisionHash(base as unknown as Record<string, unknown>);
     attributions.push(base);
     attributionsHistory.push({ ...base });
+    /* v25.12 NM-9 — persist attribution via kv shim so admin attributions survive restart. */
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { persistEntry } = require("./lib/storePersistenceShim");
+      persistEntry("partnerAttributions", base.id, base);
+    } catch { /* non-fatal */ }
     audit(attributedBy, `partner:${partnerId}`, "partner.attribution.created", { companyId, attributionId: base.id });
     emit("partner.attribution_created", partnerId, { partnerId, companyId, attributionId: base.id, idempotencyKey: `${partnerId}|${companyId}` });
     return base;
@@ -850,6 +1143,12 @@ export const partnerAttributionStore = {
     next.revisionHash = computeRevisionHash(next as unknown as Record<string, unknown>);
     Object.assign(a, next);
     attributionsHistory.push({ ...next });
+    /* v25.12 NM-9 — persist revoke transition. */
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { persistEntry } = require("./lib/storePersistenceShim");
+      persistEntry("partnerAttributions", a.id, a);
+    } catch { /* non-fatal */ }
     audit(revokedBy, `partner:${partnerId}`, "partner.attribution.revoked", { companyId });
     emit("partner.attribution_revoked", partnerId, { partnerId, companyId, revokedAt: now, idempotencyKey: `${partnerId}|${companyId}|${now}` });
     return next;
@@ -933,6 +1232,12 @@ export const partnerPipelineStore = {
     deal.revisionHash = computeRevisionHash(deal as unknown as Record<string, unknown>);
     pipeline.push(deal);
     pipelineHistory.push({ ...deal });
+    /* v25.12 NM-9 — persist via kv shim so partner deal pipeline survives restart. */
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { persistEntry } = require("./lib/storePersistenceShim");
+      persistEntry("partnerPipeline", deal.id, deal);
+    } catch { /* non-fatal */ }
     audit(actor, `partner:${partnerId}`, "partner.pipeline.created", { dealId: deal.id, stage: deal.stage });
     return deal;
   },
@@ -961,6 +1266,13 @@ export const partnerPipelineStore = {
     next.revisionHash = computeRevisionHash(next as unknown as Record<string, unknown>);
     Object.assign(d, next);
     pipelineHistory.push({ ...next });
+    /* v25.12 NM-9 — mirror the updated row through the kv shim so the
+     * latest version survives restart (not just the create snapshot). */
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { persistEntry } = require("./lib/storePersistenceShim");
+      persistEntry("partnerPipeline", d.id, d);
+    } catch { /* non-fatal */ }
     if (patch.stage && patch.stage !== prevStage) {
       partnerPipelineActivityStore.add(d.id, "stage_change", `Stage changed from ${prevStage} to ${patch.stage}`, actor);
     }
@@ -972,7 +1284,16 @@ export const partnerPipelineStore = {
     requirePid(partnerId);
     const idx = pipeline.findIndex((p) => p.partnerId === partnerId && p.id === dealId);
     if (idx === -1) throw new Error("DEAL_NOT_FOUND");
+    const removed = pipeline[idx];
     pipeline.splice(idx, 1);
+    /* v25.12 NM-7 — archive must also remove the kv shim entry so the deal
+     * does not reappear after restart. Previously this was an in-memory only
+     * splice and the row was rehydrated from the shim, undoing the archive. */
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { softDeleteEntry } = require("./lib/storePersistenceShim");
+      softDeleteEntry("partnerPipeline", removed.id);
+    } catch { /* non-fatal */ }
     audit(actor, `partner:${partnerId}`, "partner.pipeline.archived", { dealId });
   },
 
@@ -1004,6 +1325,12 @@ export const partnerPipelineActivityStore = {
       isSeed: false,
     };
     pipelineActivities.push(a);
+    /* v25.16 NC2 — persist activity entries so pipeline history survives restart. */
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { persistEntry } = require("./lib/storePersistenceShim");
+      persistEntry("partnerPipelineActivities", a.id, a);
+    } catch { /* non-fatal */ }
     return a;
   },
   listForPipeline(pipelineId: string): PartnerPipelineActivity[] {
@@ -1047,6 +1374,11 @@ export const partnerNotesStore = {
     const n = notes.find((nn) => nn.partnerId === partnerId && nn.id === noteId);
     if (!n) throw new Error("NOTE_NOT_FOUND");
     if (n.authorUserId !== actor && !isManagingPartner) throw new Error("NOTE_NOT_AUTHOR");
+    // v25.14 NL2 — tombstone bypass: the delete path overwrites title+body
+    // to "[DELETED]"; the update path used to happily un-delete by writing
+    // new content on top. Block PATCH on tombstoned notes to preserve the
+    // audit chain integrity.
+    if (n.title === "[DELETED]") throw new Error("NOTE_TOMBSTONED");
     const now = new Date().toISOString();
     const next: PartnerNote = {
       ...n,
@@ -1067,8 +1399,12 @@ export const partnerNotesStore = {
   },
   listByPartner(partnerId: string, filters: { scope?: PartnerNote["scope"]; scopeId?: string } = {}): PartnerNote[] {
     requirePid(partnerId);
+    /* v25.12 NL-3 — filter out tombstoned notes from list reads. The delete
+     * path sets title/body to "[DELETED]" without a deleted flag; UX showed
+     * those rows in the notes list with "[DELETED]" as content. */
     return notes.filter((n) =>
       n.partnerId === partnerId &&
+      n.title !== "[DELETED]" &&
       (!filters.scope || n.scope === filters.scope) &&
       (!filters.scopeId || n.scopeId === filters.scopeId)
     );
@@ -1117,7 +1453,8 @@ export const partnerTasksStore = {
   },
   listByPartner(partnerId: string): PartnerTask[] {
     requirePid(partnerId);
-    return tasks.filter((t) => t.partnerId === partnerId);
+    // v25.14 NM3 — exclude cancelled tasks from the default list view.
+    return tasks.filter((t) => t.partnerId === partnerId && t.status !== "cancelled");
   },
 };
 
@@ -1126,7 +1463,7 @@ export const partnerTasksStore = {
  * ============================================================ */
 
 export const partnerFilesStore = {
-  add(partnerId: string, data: Omit<PartnerFile, "id" | "isSeed" | "uploadedAt" | "partnerId">, actor: string): PartnerFile {
+  add(partnerId: string, data: Omit<PartnerFile, "id" | "isSeed" | "uploadedAt" | "partnerId" | "deletedAt" | "deletedBy">, actor: string): PartnerFile {
     requirePid(partnerId);
     const f: PartnerFile = {
       id: newId("pfile"),
@@ -1134,19 +1471,42 @@ export const partnerFilesStore = {
       ...data,
       uploadedAt: new Date().toISOString(),
       isSeed: false,
+      // v25.15 NH2 — default soft-delete fields.
+      deletedAt: null,
+      deletedBy: null,
     };
     files.push(f);
     persistFile(f);
     audit(actor, `partner:${partnerId}`, "partner.file.uploaded", { fileId: f.id, fileName: f.fileName });
     return f;
   },
-  listByPartner(partnerId: string): PartnerFile[] {
+  // v25.15 NH2 — list now filters out tombstoned files. Pass
+  // `{ includeDeleted: true }` only for admin audit surfaces that need them.
+  listByPartner(partnerId: string, opts: { includeDeleted?: boolean } = {}): PartnerFile[] {
     requirePid(partnerId);
-    return files.filter((f) => f.partnerId === partnerId);
+    return files.filter((f) =>
+      f.partnerId === partnerId && (opts.includeDeleted || !f.deletedAt)
+    );
   },
   getById(partnerId: string, fileId: string): PartnerFile | null {
     requirePid(partnerId);
-    return files.find((f) => f.partnerId === partnerId && f.id === fileId) ?? null;
+    // v25.15 NH2 — detail reads also exclude tombstoned rows.
+    return files.find(
+      (f) => f.partnerId === partnerId && f.id === fileId && !f.deletedAt,
+    ) ?? null;
+  },
+  // v25.15 NH2 — soft delete. Sets deletedAt + deletedBy and persists the
+  // row so the tombstone survives restart. Returns the tombstoned record.
+  remove(partnerId: string, fileId: string, actor: string): PartnerFile {
+    requirePid(partnerId);
+    const f = files.find((x) => x.partnerId === partnerId && x.id === fileId);
+    if (!f) throw new Error("FILE_NOT_FOUND");
+    if (f.deletedAt) return f; // idempotent
+    f.deletedAt = new Date().toISOString();
+    f.deletedBy = actor;
+    persistFile(f);
+    audit(actor, `partner:${partnerId}`, "partner.file.deleted", { fileId: f.id, fileName: f.fileName });
+    return f;
   },
 };
 
@@ -1244,6 +1604,17 @@ export const partnerSpvStore = {
       isSeed: false,
     };
     spv.revisionHash = computeRevisionHash(spv as unknown as Record<string, unknown>);
+    /* v25.24 NC-2 fix — migrate the legacy partnerSpvStore.create money path
+     * from non-strict `persistEntry` (failure swallowed) to `persistEntryStrict`
+     * (failure throws). v25.23 NC-D only migrated partnerFundsStore; this
+     * parallel SPV path was missed and remained the live SPV create path.
+     * RAM is updated only after DB persistence succeeds; on failure the
+     * route handler surfaces 500 to the client. */
+    {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { persistEntryStrict } = require("./lib/storePersistenceShim");
+      persistEntryStrict("partnerSpvs", spv.id, spv);
+    }
     spvs.push(spv);
     spvsHistory.push({ ...spv });
     // CP-028: shadow-persist to the DB-backed spvFundStore so the row survives
@@ -1284,8 +1655,26 @@ export const partnerSpvStore = {
       updatedBy: actor,
     };
     next.revisionHash = computeRevisionHash(next as unknown as Record<string, unknown>);
+    /* v25.24 NC-2 fix — see SPV create above. Strict persist BEFORE the RAM
+     * mutation so a failed DB write doesn't leave RAM ahead of disk. */
+    {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { persistEntryStrict } = require("./lib/storePersistenceShim");
+      persistEntryStrict("partnerSpvs", s.id, next);
+    }
     Object.assign(s, next);
     spvsHistory.push({ ...next });
+    /* v25.16 NC1 / v25.24 NC-2 — keep the original best-effort persist below
+     * for breadcrumb continuity (no-op now that strict above succeeded, but
+     * idempotent so prior wave behaviour is preserved). */
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { persistEntry } = require("./lib/storePersistenceShim");
+      persistEntry("partnerSpvs", s.id, s);
+    } catch { /* non-fatal */ }
+    /* v25.16 NM7 — emit bridge event so downstream Collective surfaces react
+       to SPV state transitions (status / structure / notes). */
+    emit("partner.spv_updated", s.id, { partnerId, spvId, patch: Object.keys(patch), idempotencyKey: `spv-upd-${s.id}-v${next.version}` });
     audit(actor, `partner:${partnerId}`, "partner.spv.updated", { spvId });
     return next;
   },
@@ -1324,9 +1713,33 @@ export const partnerSpvStore = {
       notes: data.notes ?? null,
       isSeed: false,
     };
+    /* v25.16 NM3 — honour fxRateToSpvBase when provided so cross-currency
+       positions are normalized into the SPV's base currency before being
+       added to the running committed total. If no rate is supplied we keep
+       the v1 behaviour (raw sum) for backward compatibility. */
+    const rateNum = data.fxRateToSpvBase ? Number(data.fxRateToSpvBase) : NaN;
+    const normalizedMinor =
+      Number.isFinite(rateNum) && rateNum > 0
+        ? Math.round(data.positionAmountMinor * rateNum)
+        : data.positionAmountMinor;
+    /* v25.24 NC-2 fix — SPV addPosition is the worst v25.23 NC-D miss:
+     * the previous code did `s.totalCommittedMinor += normalizedMinor`
+     * BEFORE the swallowed persistEntry, so a failed DB write left the RAM
+     * denorm ahead of disk. The bridge event then fired with a value that
+     * is irreproducible from the DB. We now compute the next denorm value,
+     * strict-persist BOTH the spv (with updated denorm) and the position
+     * row, and update RAM only on DB success. */
+    const nextTotalCommittedMinor = s.totalCommittedMinor + normalizedMinor;
+    {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { persistEntryStrict } = require("./lib/storePersistenceShim");
+      const spvAfter = { ...s, totalCommittedMinor: nextTotalCommittedMinor, updatedAt: now, updatedBy: actor };
+      persistEntryStrict("partnerSpvs", s.id, spvAfter);
+      persistEntryStrict("partnerSpvPositions", pos.id, pos);
+    }
+    // DB persisted: now update RAM denorm.
     spvPositions.push(pos);
-    // Update totalCommittedMinor on SPV (simple sum; FX skipped in v1)
-    s.totalCommittedMinor += data.positionAmountMinor;
+    s.totalCommittedMinor = nextTotalCommittedMinor;
     s.updatedAt = now;
     s.updatedBy = actor;
     // CP-028: shadow-persist position as a commitment in the DB-backed store.
@@ -1385,6 +1798,11 @@ export const partnerFundsStore = {
       isSeed: false,
     };
     f.revisionHash = computeRevisionHash(f as unknown as Record<string, unknown>);
+    /* v25.12 NM-9 — persist via kv shim so partner funds survive restart.
+     * v25.23 NC-D (money surface) — fail closed: write to DB FIRST via the
+     * strict shim; only mutate the in-memory arrays once the durable write
+     * succeeds. A persist failure throws and leaves zero RAM-only state. */
+    persistEntryStrict("partnerFunds", f.id, f);
     funds.push(f);
     fundsHistory.push({ ...f });
     audit(actor, `partner:${partnerId}`, "partner.fund.recorded", { fundId: f.id });
@@ -1407,7 +1825,19 @@ export const partnerFundsStore = {
       updatedBy: actor,
     };
     next.revisionHash = computeRevisionHash(next as unknown as Record<string, unknown>);
+    /* v25.12 NM-9 — persist update.
+     * v25.23 NC-D (money surface) — fail closed: persist the new revision to
+     * the DB FIRST. Only commit the change into the in-memory fund + history
+     * once the durable write succeeds. Snapshot the prior state so a persist
+     * failure rolls back the RAM mutation and re-throws to the caller. */
+    const fundSnapshot: PartnerFund = { ...f };
     Object.assign(f, next);
+    try {
+      persistEntryStrict("partnerFunds", f.id, f);
+    } catch (persistErr) {
+      Object.assign(f, fundSnapshot); // roll back RAM mutation
+      throw persistErr;
+    }
     fundsHistory.push({ ...next });
     audit(actor, `partner:${partnerId}`, "partner.fund.updated", { fundId });
     return next;
@@ -1428,6 +1858,26 @@ export const partnerFundsStore = {
     const dupe = fundCommitments.find((c) => c.partnerFundId === fundId && c.lpContactId === data.lpContactId && (c.rollingPeriod ?? null) === (data.rollingPeriod ?? null));
     if (dupe) throw new Error("COMMITMENT_EXISTS");
     const now = new Date().toISOString();
+    /* v25.23 NH-K — duplicate-create race guard for fund commitments.
+     * Lane D NH-4 found the only uniqueness backstop is the RAM `find` above,
+     * which races across the await boundary (and double-click / two-tab
+     * submits, amplified by the missing client guard NM-2). Add an idempotent
+     * server-side dedup on the natural key (fundId, lpContactId,
+     * commitmentMinor, day-bucket): if an identical commitment was created
+     * < 5s ago, return that existing row instead of inserting a second one
+     * (which would double-count committedSizeMinor). The 5s window keeps this
+     * to genuine rapid-retry races, not legitimate later re-pledges. */
+    const calledAtIsoDay = now.slice(0, 10); // YYYY-MM-DD natural-key day bucket
+    const DEDUP_WINDOW_MS = 5_000;
+    const recentDupe = fundCommitments.find(
+      (c) =>
+        c.partnerFundId === fundId &&
+        c.lpContactId === data.lpContactId &&
+        c.commitmentMinor === data.commitmentMinor &&
+        (c.pledgedAt ?? "").slice(0, 10) === calledAtIsoDay &&
+        Date.now() - Date.parse(c.pledgedAt ?? now) < DEDUP_WINDOW_MS,
+    );
+    if (recentDupe) return recentDupe;
     const c: PartnerFundCommitment = {
       id: newId("pfcom"),
       partnerFundId: fundId,
@@ -1444,10 +1894,40 @@ export const partnerFundsStore = {
       notes: data.notes ?? null,
       isSeed: false,
     };
-    fundCommitments.push(c);
-    f.committedSizeMinor += data.commitmentMinor;
+    /* v25.16 NM3 — honour fxRateToFundBase when provided so cross-currency
+       fund commitments contribute their normalized amount to committedSizeMinor.
+       v1 fallback retained when no rate supplied. */
+    const rate = data.fxRateToFundBase ? Number(data.fxRateToFundBase) : NaN;
+    const normalizedMinor =
+      Number.isFinite(rate) && rate > 0
+        ? Math.round(data.commitmentMinor * rate)
+        : data.commitmentMinor;
+    /* v25.16 NC3 — persist the new commitment record AND the updated parent
+       fund so committedSizeMinor + the pledge survive restart.
+       v25.23 NC-D (money surface) — fail closed. Build the candidate fund
+       state, persist the commitment AND the updated fund to the DB FIRST via
+       the strict shim; only mutate the in-memory commitment array + parent
+       fund once BOTH durable writes succeed. On any persist failure we throw
+       WITHOUT having touched RAM, so committedSizeMinor can never drift to a
+       value that exists only in memory. (committedSizeMinor math itself is
+       unchanged — still integer minor units, fx-normalized.) */
+    const fundCommittedBefore = f.committedSizeMinor;
+    const fundUpdatedAtBefore = f.updatedAt;
+    const fundUpdatedByBefore = f.updatedBy;
+    f.committedSizeMinor += normalizedMinor;
     f.updatedAt = now;
     f.updatedBy = actor;
+    try {
+      persistEntryStrict("partnerFundCommitments", c.id, c);
+      persistEntryStrict("partnerFunds", f.id, f);
+    } catch (persistErr) {
+      // Roll back the parent-fund mutation; the commitment was never pushed.
+      f.committedSizeMinor = fundCommittedBefore;
+      f.updatedAt = fundUpdatedAtBefore;
+      f.updatedBy = fundUpdatedByBefore;
+      throw persistErr;
+    }
+    fundCommitments.push(c);
     audit(actor, `partner:${partnerId}`, "partner.fund.commitment_pledged", { fundId, commitmentId: c.id });
     emit("partner.fund_commitment_pledged", c.id, { partnerId, fundId, commitmentId: c.id, lpContactId: c.lpContactId, idempotencyKey: c.id });
     return c;
@@ -1551,30 +2031,60 @@ export const partnerDealPromotionsStore = {
         p.partnerId === partnerId &&
         p.pipelineDealId === pipelineDealId &&
         p.promotionType === data.promotionType &&
-        (p.status === "pending" || p.status === "live"),
+        // v25.15 F2-NH1 — include pending_collective_review when checking for
+        // an existing active promotion of the same type (prior code missed it).
+        (p.status === "pending" ||
+          p.status === "pending_collective_review" ||
+          p.status === "live"),
     );
     if (existing) {
       throw new PromotionConflictError(
         `Deal ${pipelineDealId} is already promoted (${data.promotionType}, status=${existing.status}).`,
       );
     }
+    /* v25.23 NH-K — duplicate-create race guard for promotions. Lane D NH-4
+     * found the only backstop is the RAM `find` above, which races across the
+     * await boundary (two-tab / double-submit). Add an idempotent dedup on the
+     * natural key (partnerId, companyId, promotionType): if an identical
+     * promotion was created < 5s ago, return it instead of inserting a second
+     * row that would cascade a duplicate into the Collective dealroom. Only
+     * applies when companyId is present (the natural key requires it). */
+    if (data.companyId) {
+      const DEDUP_WINDOW_MS = 5_000;
+      const recentDupe = dealPromotions.find(
+        (p) =>
+          p.partnerId === partnerId &&
+          p.companyId === data.companyId &&
+          p.promotionType === data.promotionType &&
+          Date.now() - Date.parse(p.promotedAt ?? "") < DEDUP_WINDOW_MS,
+      );
+      if (recentDupe) return recentDupe;
+    }
     const now = new Date().toISOString();
     const p: PartnerDealPromotion = {
-      id: newId("pdp"),
+      // v25.15 NH4 — was "pdp" which collided with partnerWorkspaceV19Store's
+      // deal-pipeline rows. Use "ppromo" (partner promotion) for clarity in
+      // audit logs and cross-store ID inspection.
+      id: newId("ppromo"),
       partnerId,
       pipelineDealId,
       promotionType: data.promotionType,
       companyId: data.companyId ?? null,
       targetEmail: data.targetEmail ?? null,
-      // CP Phase B (CP-015): Collective Deal Room promotions are now
-      // status='live' as before BUT moderation_status='pending' — the row
-      // is only visible in chapter feeds once a chapter admin approves it.
-      // Capavate referrals remain pending end-to-end.
-      status: data.promotionType === "collective_deal_room" ? "live" : "pending",
+      // v25.15 F2-NH1 — status now correctly reflects the moderation gate:
+      //   collective_deal_room → "pending_collective_review" (not live until approved)
+      //   capavate_referral    → "pending" (admin must approve)
+      // approvedAt / approvedBy stay null on create; both are only set on the
+      // approve()/applyModeration("approved") path. This eliminates the prior
+      // status='live'+moderationStatus='pending' data-contract contradiction.
+      status:
+        data.promotionType === "collective_deal_room"
+          ? "pending_collective_review"
+          : "pending",
       promotedBy: actor,
       promotedAt: now,
-      approvedAt: data.promotionType === "collective_deal_room" ? now : null,
-      approvedBy: data.promotionType === "collective_deal_room" ? "u_auto_collective" : null,
+      approvedAt: null,
+      approvedBy: null,
       rejectedAt: null,
       rejectedBy: null,
       rejectedReason: null,
@@ -1592,12 +2102,26 @@ export const partnerDealPromotionsStore = {
       moderatedByUserId: null,
       moderatedAt: null,
       moderationNotes: null,
+      // v25.23 NM-N — stamp the chapter so listPendingModeration(chapterId)
+      // actually filters. Until per-promotion chapter selection ships from
+      // the UI, default to DEFAULT_CHAPTER_ID so the same-chapter admin
+      // queue resolves the row, and cross-chapter callers correctly see it
+      // filtered out.
+      chapterId: DEFAULT_CHAPTER_ID,
     };
     p.revisionHash = computeRevisionHash(p as unknown as Record<string, unknown>);
+    /* DB write-through (v17 Phase B) — synchronous; in-memory remains source of truth.
+     * v25.23 NC-D (visibility surface) — fail closed. Persist a strict kv-shim
+     * backstop FIRST so the promotion is durable before any RAM mutation; the
+     * typed partner_deal_promotions write (persistDealPromotion, which the
+     * Collective hydrator reads) is then attempted as before. Only push into
+     * the in-memory arrays once the durable strict write succeeds — on failure
+     * we throw with zero RAM-only state. (No new typed table introduced; the
+     * kv_partnerDealPromotions shim is the durable backstop per scope.) */
+    persistEntryStrict("partnerDealPromotions", p.id, p);
+    persistDealPromotion(p, true);
     dealPromotions.push(p);
     dealPromotionsHistory.push({ ...p });
-    // DB write-through (v17 Phase B) — synchronous; in-memory remains source of truth
-    persistDealPromotion(p, true);
     audit(actor, `partner:${partnerId}`, "partner.deal_promotion.created", {
       promotionId: p.id,
       pipelineDealId,
@@ -1626,7 +2150,11 @@ export const partnerDealPromotionsStore = {
     const p = dealPromotions.find((x) => x.id === promotionId);
     if (!p) throw new Error("PROMOTION_NOT_FOUND");
     if (p.status === "live") return p;
-    if (p.status !== "pending") throw new Error("PROMOTION_NOT_PENDING");
+    // v25.15 F2-NH1 — accept BOTH "pending" (capavate referrals) and
+    // "pending_collective_review" (collective deal room) as approvable inputs.
+    if (p.status !== "pending" && p.status !== "pending_collective_review") {
+      throw new Error("PROMOTION_NOT_PENDING");
+    }
     const now = new Date().toISOString();
     const next: PartnerDealPromotion = {
       ...p,
@@ -1640,9 +2168,8 @@ export const partnerDealPromotionsStore = {
       updatedBy: approver,
     };
     next.revisionHash = computeRevisionHash(next as unknown as Record<string, unknown>);
-    Object.assign(p, next);
-    dealPromotionsHistory.push({ ...next });
-    persistDealPromotion(p, false);
+    // v25.23 NC-D — fail-closed: persist durably before mutating RAM.
+    commitPromotionTransitionStrict(p, next);
     audit(approver, `partner:${p.partnerId}`, "partner.deal_promotion.approved", {
       promotionId, promotionType: p.promotionType,
     });
@@ -1669,9 +2196,8 @@ export const partnerDealPromotionsStore = {
       updatedBy: actor,
     };
     next.revisionHash = computeRevisionHash(next as unknown as Record<string, unknown>);
-    Object.assign(p, next);
-    dealPromotionsHistory.push({ ...next });
-    persistDealPromotion(p, false);
+    // v25.23 NC-D — fail-closed: persist durably before mutating RAM.
+    commitPromotionTransitionStrict(p, next);
     audit(actor, `partner:${p.partnerId}`, "partner.deal_promotion.withdrawn", { promotionId });
     return next;
   },
@@ -1680,7 +2206,12 @@ export const partnerDealPromotionsStore = {
   reject(promotionId: string, rejector: string, reason: string): PartnerDealPromotion {
     const p = dealPromotions.find((x) => x.id === promotionId);
     if (!p) throw new Error("PROMOTION_NOT_FOUND");
-    if (p.status !== "pending") throw new Error("PROMOTION_NOT_PENDING");
+    /* v25.16 NH2 — mirror approve() guard so collective deal room promotions
+       (which start in pending_collective_review since v25.15 F2-NH1) can also
+       be rejected by the admin referral-reject route. */
+    if (p.status !== "pending" && p.status !== "pending_collective_review") {
+      throw new Error("PROMOTION_NOT_PENDING");
+    }
     const now = new Date().toISOString();
     const next: PartnerDealPromotion = {
       ...p,
@@ -1695,9 +2226,8 @@ export const partnerDealPromotionsStore = {
       updatedBy: rejector,
     };
     next.revisionHash = computeRevisionHash(next as unknown as Record<string, unknown>);
-    Object.assign(p, next);
-    dealPromotionsHistory.push({ ...next });
-    persistDealPromotion(p, false);
+    // v25.23 NC-D — fail-closed: persist durably before mutating RAM.
+    commitPromotionTransitionStrict(p, next);
     audit(rejector, `partner:${p.partnerId}`, "partner.deal_promotion.rejected", {
       promotionId, reason,
     });
@@ -1725,22 +2255,46 @@ export const partnerDealPromotionsStore = {
    *  partner-promoted entries into the existing Deal Room list.
    *  CP Phase B: also requires moderation_status='approved' (CP-015). */
   listLiveCollectivePromotions(): PartnerDealPromotion[] {
+    /* v25.16 cross-comp NH2 — also hide promotions whose owning partner has
+       been suspended/archived. Lazy-require to avoid circular import. */
+    let getContactStatus: (id: string) => string = () => "active";
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const ac = require("./adminContactsStoreShim") as { getById?: (id: string) => { status?: string } | undefined };
+      if (typeof ac.getById === "function") {
+        getContactStatus = (id: string) => ac.getById!(id)?.status ?? "active";
+      }
+    } catch { /* non-fatal */ }
     return dealPromotions.filter(
       (p) =>
         p.promotionType === "collective_deal_room" &&
         p.status === "live" &&
-        p.moderationStatus === "approved",
+        p.moderationStatus === "approved" &&
+        getContactStatus(p.partnerId) === "active",
     );
   },
 
   /** CP Phase B: list pending-moderation promotions for a chapter admin queue.
    *  Filter is by current chapter_id stamp on the row. */
   listPendingModeration(chapterId?: string): PartnerDealPromotion[] {
+    /* v25.16 NH4 — honour the chapterId parameter to prevent cross-chapter
+       queue leakage. v25.16 cross-comp NM2 — also hide promotions from
+       suspended partners. */
+    let getContactStatus: (id: string) => string = () => "active";
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const ac = require("./adminContactsStoreShim") as { getById?: (id: string) => { status?: string } | undefined };
+      if (typeof ac.getById === "function") {
+        getContactStatus = (id: string) => ac.getById!(id)?.status ?? "active";
+      }
+    } catch { /* non-fatal */ }
     return dealPromotions.filter(
       (p) =>
         p.promotionType === "collective_deal_room" &&
         (p.moderationStatus === "pending" ||
-          p.moderationStatus === "changes_requested"),
+          p.moderationStatus === "changes_requested") &&
+        (chapterId == null || p.chapterId === chapterId) &&
+        getContactStatus(p.partnerId) === "active",
     );
   },
 
@@ -1762,6 +2316,19 @@ export const partnerDealPromotionsStore = {
     next.moderatedByUserId = actor;
     next.moderatedAt = now;
     next.moderationNotes = notes ?? null;
+    // v25.15 F2-NH1 — promote status alongside the moderation transition so
+    // the two fields stay consistent. Approved → live, rejected → rejected,
+    // changes_requested stays in pending_collective_review (or pending).
+    if (nextStatus === "approved") {
+      next.status = "live";
+      next.approvedAt = now;
+      next.approvedBy = actor;
+    } else if (nextStatus === "rejected") {
+      next.status = "rejected";
+      next.rejectedAt = now;
+      next.rejectedBy = actor;
+      next.rejectedReason = notes ?? null;
+    }
     next.version = (p.version ?? 1) + 1;
     next.prevRevisionHash = p.revisionHash;
     next.updatedAt = now;
@@ -1769,14 +2336,45 @@ export const partnerDealPromotionsStore = {
     next.revisionHash = computeRevisionHash(
       next as unknown as Record<string, unknown>,
     );
-    // Mutate in place + history snapshot
-    Object.assign(p, next);
-    dealPromotionsHistory.push({ ...p });
-    persistDealPromotion(p, false);
+    // v25.23 NC-D — fail-closed: persist durably (strict backstop + typed
+    // write) BEFORE mutating in place + history snapshot.
+    commitPromotionTransitionStrict(p, next);
     audit(actor, `partner:${p.partnerId}`, "partner.promotion.moderated", {
       promotionId: p.id,
       nextStatus,
     });
+    /* v25.23 NM-O fix — emit a bridge event so other components (Collective
+     * dealroom, Capavate founder homepage, notifications) can react to the
+     * moderation outcome instead of polling. Mirrors create()'s emit at
+     * partner.deal.promoted_to_collective. Non-fatal; the moderation row is
+     * already durably persisted by persistDealPromotion above. */
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { emitBridgeEvent } = require("./bridgeStore");
+      const eventType =
+        nextStatus === "approved"
+          ? "partner.promotion.approved"
+          : nextStatus === "rejected"
+          ? "partner.promotion.rejected"
+          : "partner.promotion.changes_requested";
+      emitBridgeEvent({
+        eventType,
+        aggregateId: p.id,
+        aggregateKind: "partner",
+        payload: {
+          promotionId: p.id,
+          partnerId: p.partnerId,
+          companyId: p.companyId,
+          pipelineDealId: p.pipelineDealId,
+          moderationStatus: nextStatus,
+          status: p.status,
+          moderatedBy: actor,
+          moderatedAt: now,
+          notes: notes ?? null,
+          chapterId: p.chapterId,
+        },
+      });
+    } catch { /* non-fatal: bridge consumers may not be wired in test */ }
     return p;
   },
 
@@ -1887,6 +2485,38 @@ function toDbRow(p: PartnerDealPromotion): Record<string, unknown> {
   };
 }
 
+/* v25.23 NC-D (visibility surface) — fail-closed commit for promotion status
+ * transitions (approve / withdraw / reject / applyModeration). Persist the
+ * NEXT revision durably FIRST (strict kv-shim backstop + the typed v17 Phase B
+ * write), and only THEN mutate the in-memory promotion + push history. If the
+ * durable write fails, throw before touching RAM so a status change can never
+ * live only in memory. Returns the committed `next` (now == the live `p`). */
+function commitPromotionTransitionStrict(
+  p: PartnerDealPromotion,
+  next: PartnerDealPromotion,
+): PartnerDealPromotion {
+  // DB first — strict backstop throws on failure (no RAM mutation yet).
+  persistEntryStrict("partnerDealPromotions", next.id, next);
+  // Typed partner_deal_promotions write (read by the Collective hydrator).
+  persistDealPromotion(next, false);
+  // Durable writes succeeded — now commit to RAM.
+  Object.assign(p, next);
+  dealPromotionsHistory.push({ ...next });
+  return next;
+}
+
+/* v25.24 NH-1 fix — the v25.23 NC-D migration added
+ * `commitPromotionTransitionStrict` which strict-persists to `kv_partnerDealPromotions`,
+ * but Lane D2 second-pass confirmed that `kv_partnerDealPromotions` is NEVER
+ * read by the hydrator. The authoritative source is the typed
+ * `partner_deal_promotions` table, hydrated by `hydratePartnerWorkspaceCollectiveStore`
+ * below. The strict guard therefore protected an unhydrated shadow while the
+ * authoritative write here continued to swallow DB failures.
+ *
+ * We now make THIS function strict-on-real-error (still tolerating "no such
+ * table" which is the legitimate early-boot / pre-migration case). Callers
+ * already had try/catch around prior failure modes; we re-throw a tagged
+ * error they can handle. */
 function persistDealPromotion(p: PartnerDealPromotion, isInsert: boolean): void {
   try {
     const db: any = getDb();
@@ -1904,9 +2534,20 @@ function persistDealPromotion(p: PartnerDealPromotion, isInsert: boolean): void 
       }
     });
   } catch (err) {
-    if (!/no such table/i.test(String(err))) {
-      log.warn("[partnerWorkspaceStore] DB write-through failed:", err);
+    const msg = String(err);
+    if (/no such table/i.test(msg)) {
+      // Early-boot before migrations have run; tolerate (table will exist later).
+      log.warn("[partnerWorkspaceStore.persistDealPromotion] no such table yet (early boot)");
+      return;
     }
+    log.error({
+      route: "partnerWorkspaceStore.persistDealPromotion",
+      errorType: "DEAL_PROMOTION_PERSIST_FAILED",
+      message: msg,
+      promotionId: p.id,
+      isInsert,
+    });
+    throw new Error("DEAL_PROMOTION_PERSIST_FAILED");
   }
 }
 
@@ -1962,6 +2603,9 @@ export async function hydratePartnerWorkspaceCollectiveStore(): Promise<void> {
         moderatedByUserId: r.moderated_by_user_id ?? r.moderatedByUserId ?? null,
         moderatedAt: r.moderated_at ?? r.moderatedAt ?? null,
         moderationNotes: r.moderation_notes ?? r.moderationNotes ?? null,
+        // v25.23 NM-N — hydrate the chapter_id column with DEFAULT_CHAPTER_ID
+        // fallback for legacy rows that pre-date this fix.
+        chapterId: r.chapter_id ?? r.chapterId ?? DEFAULT_CHAPTER_ID,
       };
       dealPromotions.push(p);
       dealPromotionsHistory.push({ ...p });

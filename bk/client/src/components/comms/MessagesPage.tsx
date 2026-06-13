@@ -117,6 +117,8 @@ export function MessagesPage({ role }: { role: "founder" | "investor" }) {
  // role comes from prop (see component signature) — do not redeclare via useRole().
  // Sprint 18 Phase 3 E2 — Cmd-K to focus the channel search input.
  const searchInputRef = useRef<HTMLInputElement | null>(null);
+ // v25.13 NH4 — guard against duplicate DM-start POSTs across location changes.
+ const dmStartedForRef = useRef<string | null>(null);
  useEffect(() => {
   const onKey = (e: KeyboardEvent) => {
    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
@@ -148,6 +150,10 @@ export function MessagesPage({ role }: { role: "founder" | "investor" }) {
     // Prefer targetUserId (platform userId) over contactId (may be a CRM-local ID).
     const dmTarget = targetUserId ?? contactId;
     if (!dmTarget) return;
+    // v25.13 NH4 — don't re-issue POST /dm/start for the same target when
+    // unrelated location changes (hash/search tweaks) fire this effect.
+    if (dmStartedForRef.current === dmTarget) return;
+    dmStartedForRef.current = dmTarget;
     apiRequest("POST", "/api/comms/dm/start", { targetUserId: dmTarget })
       .then((r) => r.json())
       .then((data: { ok: boolean; channelId: string }) => {

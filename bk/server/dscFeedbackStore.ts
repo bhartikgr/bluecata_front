@@ -29,6 +29,7 @@ import { HashChain, registerChain } from "./lib/hashChain";
 import { withTrace } from "./lib/trace";
 import { emitSync } from "./sprint10Telemetry";
 import { requireAuth, requireAdmin } from "./lib/authMiddleware"; /* v16 F-coll-25 */
+import { getCompaniesForFounder } from "./multiCompanyStore"; /* v25.13 NH1 — company ownership check */
 import { appendAdminAudit } from "./adminPlatformStore"; /* v16 F-coll-25 audit trail */
 import { getDb } from "./db/connection"; /* v16 Addendum A */
 import { dscFeedback as dscFeedbackTable } from "../shared/schema"; /* v16 Addendum A */
@@ -204,12 +205,33 @@ export async function hydrateDscFeedbackStore(): Promise<void> {
 }
 
 export function registerDscFeedbackRoutes(app: Express): void {
-  app.get("/api/founder/ma/dsc-feedback", (req: Request, res: Response) => {
-    const companyId = String(req.query.companyId ?? "");
-    if (!companyId) return res.status(400).json({ error: "companyId required" });
-    const f = getLatestForCompany(companyId);
-    res.json({ feedback: f ?? null });
-  });
+  // v25.13 NH1 — was previously unguarded at the route layer and relied
+  // solely on the global applyRouteGuards catch-all. Added requireAuth +
+  // explicit per-request company-ownership check so a user can only read
+  // DSC feedback for a company they own (founder) or hold via admin role.
+  app.get(
+    "/api/founder/ma/dsc-feedback",
+    requireAuth,
+    (req: Request, res: Response) => {
+      const companyId = String(req.query.companyId ?? "");
+      if (!companyId) return res.status(400).json({ error: "companyId required" });
+      const ctx = (req as Request & { userContext?: { userId?: string; role?: string } }).userContext;
+      const userId = ctx?.userId;
+      const role = ctx?.role;
+      if (!userId) return res.status(401).json({ error: "auth_required" });
+      // Admins can read any company's DSC feedback (audit / oversight).
+      if (role !== "admin") {
+        try {
+          const owned = getCompaniesForFounder(userId).some((c) => c.companyId === companyId);
+          if (!owned) return res.status(403).json({ error: "forbidden_company" });
+        } catch {
+          return res.status(403).json({ error: "forbidden_company" });
+        }
+      }
+      const f = getLatestForCompany(companyId);
+      res.json({ feedback: f ?? null });
+    },
+  );
 
   // v16 F-coll-25 — mock-inbound is admin-only AND requires a confirm header.
   // Previously this route accepted arbitrary DSC tier writes from ANY authed user.

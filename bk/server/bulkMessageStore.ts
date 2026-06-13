@@ -144,16 +144,41 @@ const sendSchema = z.object({
   recipientIds: z.array(z.string()).min(1),
 }).strict();
 
+/**
+ * v25.11 NM4 — cross-tenant guard helper. Confirms the caller's founder
+ * companies include the supplied companyId. Admin bypasses. Returns boolean.
+ */
+function callerOwnsCompany(ctx: any, companyId: string): boolean {
+  if (!companyId) return false;
+  if (ctx?.isAdmin) return true;
+  const companies = ctx?.founder?.companies ?? [];
+  return Array.isArray(companies) && companies.some((c: any) => c?.companyId === companyId);
+}
+
 export function registerBulkMessageRoutes(app: Express): void {
-  app.get("/api/founder/captable/bulk-segments", (req: Request, res: Response) => {
+  app.get("/api/founder/captable/bulk-segments", async (req: Request, res: Response) => {
+    /* v25.11 NM4 — enforce tenant isolation. Previously this endpoint
+     * returned segments for any supplied companyId without verifying the
+     * caller owned that company — cross-tenant data leak. */
+    const ctx = await getUserContext(req);
+    if (!ctx?.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
     const companyId = String(req.query.companyId || "");
+    if (companyId && !callerOwnsCompany(ctx, companyId)) {
+      return res.status(403).json({ ok: false, error: "not_company_owner" });
+    }
     const list = Array.from(segments.values()).filter(s => !companyId || s.companyId === companyId);
     res.json({ segments: list });
   });
 
-  app.post("/api/founder/captable/bulk-segments", (req: Request, res: Response) => {
+  app.post("/api/founder/captable/bulk-segments", async (req: Request, res: Response) => {
     const parsed = segmentSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ ok: false, error: "INVALID_INPUT", details: parsed.error.flatten() });
+    /* v25.11 NM4 — ownership gate on create as well. */
+    const ctx = await getUserContext(req);
+    if (!ctx?.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
+    if (!callerOwnsCompany(ctx, parsed.data.companyId)) {
+      return res.status(403).json({ ok: false, error: "not_company_owner" });
+    }
     const id = `seg_${randomUUID().slice(0, 8)}`;
     const seg: Segment = { id, ...parsed.data, createdAt: new Date().toISOString() };
     segments.set(id, seg);
@@ -161,8 +186,20 @@ export function registerBulkMessageRoutes(app: Express): void {
     res.json({ ok: true, segment: seg });
   });
 
-  app.delete("/api/founder/captable/bulk-segments/:id", (req: Request, res: Response) => {
+  app.delete("/api/founder/captable/bulk-segments/:id", async (req: Request, res: Response) => {
+    /* v25.11 NM4 — ownership gate on destructive delete. Resolve segment
+     * first, then check that caller owns the segment's company. */
+    const ctx = await getUserContext(req);
+    if (!ctx?.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
     const segId = String(req.params.id);
+    const seg = segments.get(segId);
+    if (!seg) {
+      // Idempotent delete — nothing to do, but still gate on auth above.
+      return res.json({ ok: true });
+    }
+    if (!callerOwnsCompany(ctx, seg.companyId)) {
+      return res.status(403).json({ ok: false, error: "not_company_owner" });
+    }
     segments.delete(segId);
     tombstoneSegment(segId);
     res.json({ ok: true });
@@ -172,6 +209,11 @@ export function registerBulkMessageRoutes(app: Express): void {
     const parsed = sendSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ ok: false, error: "INVALID_INPUT", details: parsed.error.flatten() });
     const ctx = await getUserContext(req);
+    if (!ctx?.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
+    /* v25.11 NM4 — prevent cross-tenant fan-out by gating on company ownership. */
+    if (!callerOwnsCompany(ctx, parsed.data.companyId)) {
+      return res.status(403).json({ ok: false, error: "not_company_owner" });
+    }
     const id = `bs_${randomUUID().slice(0, 8)}`;
     const send: BulkSend = {
       id,
@@ -184,8 +226,14 @@ export function registerBulkMessageRoutes(app: Express): void {
     res.json({ ok: true, sendId: id, fanOut: parsed.data.recipientIds.length });
   });
 
-  app.get("/api/founder/captable/bulk-sends", (req: Request, res: Response) => {
+  app.get("/api/founder/captable/bulk-sends", async (req: Request, res: Response) => {
+    /* v25.11 NM4 — same gate on send-history reads. */
+    const ctx = await getUserContext(req);
+    if (!ctx?.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
     const companyId = String(req.query.companyId || "");
+    if (companyId && !callerOwnsCompany(ctx, companyId)) {
+      return res.status(403).json({ ok: false, error: "not_company_owner" });
+    }
     const list = sends.filter(s => !companyId || s.companyId === companyId);
     res.json({ sends: list });
   });

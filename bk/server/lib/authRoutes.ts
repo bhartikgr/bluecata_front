@@ -238,6 +238,39 @@ export function registerAuthShellRoutes(app: Express, redemption: {
     }
     clearRevocation(userId); // Wave C FIX C1
     setSessionCookie(res, userId);
+
+    /* v25.19 Lane 4 NC1 (hard close) — promote any provisional partner
+       attribution for this email to a real partnerAttribution row. v25.16
+       persisted these rows at promotion-approve time but never read them, so
+       partners who referred founders by email never got credit. Read every
+       provisional row keyed by `${email}::${partnerId}`, create the real
+       attribution, then delete the provisional. Idempotent + non-fatal: if
+       anything goes wrong we still return the signup success. */
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { hydrateEntries, softDeleteEntry } = require("./storePersistenceShim");
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const partnerAttributionStore = require("../partnerAttributionStore");
+      const rows = hydrateEntries("provisionalPartnerAttributions") as Array<[string, {
+        email: string; partnerId: string; promotionId: string; source?: string;
+      }]>;
+      for (const [key, row] of rows) {
+        if (!row || row.email !== email) continue;
+        try {
+          // companyId is not known at signup time — the partnerAttributionStore
+          // accepts null and the founder's later workspace creation can backfill.
+          partnerAttributionStore.create?.(
+            row.partnerId,
+            null,
+            userId,
+            row.source ?? "partner_claim",
+            `Provisional referral promotion ${row.promotionId} promoted on founder signup (v25.19 NC1).`,
+          );
+        } catch { /* duplicate ok */ }
+        try { softDeleteEntry("provisionalPartnerAttributions", key); } catch { /* non-fatal */ }
+      }
+    } catch { /* non-fatal — do NOT block signup */ }
+
     const ctx = getUserContextForId(userId);
     return res.json({ ok: true, ctx });
   });

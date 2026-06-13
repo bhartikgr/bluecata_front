@@ -2513,6 +2513,17 @@ function buildCreateTableStatements(): string[] {
     );`,
     `CREATE INDEX IF NOT EXISTS idx_comms_messages_channel ON comms_messages(channel_id, created_at);`,
     `CREATE INDEX IF NOT EXISTS idx_comms_messages_author ON comms_messages(author_user_id);`,
+    /* v25.21 Lane D NC-001 fix — durable key-value store for cross-product
+     * inbound bridge state (DSC scores, M&A intelligence, KYC decisions,
+     * membership renewals, etc.). Defined in shared/schema.ts as
+     * `syncInboxState` since Sprint 29 KL-03 but never created on the
+     * SQLite side, so the durableMap helper's write-through was a no-op.
+     * Now created on boot so cross-product state survives restart. */
+    `CREATE TABLE IF NOT EXISTS sync_inbox_state (
+      key         TEXT PRIMARY KEY NOT NULL,
+      value_json  TEXT NOT NULL,
+      updated_at  TEXT NOT NULL
+    );`,
   ];
 }
 

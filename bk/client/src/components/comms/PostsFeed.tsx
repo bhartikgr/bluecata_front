@@ -147,6 +147,11 @@ export function PostsFeed({
  : "Posted to your network.";
  toast({ title: isScheduled ? "Post scheduled" : "Post published", description: desc });
  },
+ // v25.13 NM3 — was previously a silent failure; surface error to user.
+ onError: (e: unknown) => {
+ const msg = e instanceof Error ? e.message : "Could not publish post.";
+ toast({ title: "Post failed", description: msg, variant: "destructive" });
+ },
  });
 
  // Sprint 19 F — edit post mutation.
@@ -192,11 +197,15 @@ export function PostsFeed({
  mutationFn: async ({ postId, on }: { postId: string; on: boolean }) =>
  apiRequest(on ? "POST" : "DELETE", `/api/comms/posts/${postId}/like`),
  onMutate: async ({ postId, on }) => {
- await queryClient.cancelQueries({ queryKey: ["/api/comms/posts"] });
+ // v25.13 NH3 — use the exact 4-element queryKey the posts query is
+ // registered with; the previous 2-element key never matched the cache
+ // entry so the optimistic update + rollback were a no-op.
+ const postsKey = ["/api/comms/posts", sort, topicFilter ?? "", authorFilter ?? ""] as const;
+ await queryClient.cancelQueries({ queryKey: postsKey });
  const meId = feedMeId;
- const prev = queryClient.getQueryData<PostView[]>(["/api/comms/posts", sort]);
+ const prev = queryClient.getQueryData<PostView[]>(postsKey);
  if (prev) {
- queryClient.setQueryData<PostView[]>(["/api/comms/posts", sort], prev.map((p) =>
+ queryClient.setQueryData<PostView[]>(postsKey, prev.map((p) =>
  p.id === postId ? {
  ...p,
  likedByUserIds: on
@@ -204,10 +213,10 @@ export function PostsFeed({
  : p.likedByUserIds.filter((u) => u !== meId),
  } : p));
  }
- return { prev };
+ return { prev, postsKey };
  },
  onError: (_e, _v, ctx) => {
- if (ctx?.prev) queryClient.setQueryData(["/api/comms/posts", sort], ctx.prev);
+ if (ctx?.prev && ctx?.postsKey) queryClient.setQueryData(ctx.postsKey as readonly unknown[], ctx.prev);
  },
  onSettled: () => queryClient.invalidateQueries({ queryKey: ["/api/comms/posts"] }),
  });
@@ -378,7 +387,9 @@ export function PostsFeed({
  onLike={(on) => like.mutate({ postId: p.id, on })}
  onShare={() => {
               const safeRole = role || "investor";
-              const shareUrl = `${window.location.origin}/#/${safeRole}/posts/${p.id}`;
+              // v25.13 NM4 — App uses History-API router, not hash router.
+              // Hash-prefixed URLs land on / with an unmatched fragment.
+              const shareUrl = `${window.location.origin}/${safeRole}/posts/${p.id}`;
               navigator.clipboard?.writeText(shareUrl).catch(() => {});
               share.mutate(p.id);
               toast({ title: "Link copied" });
@@ -502,7 +513,8 @@ function PostCard({
  onClick={() => {
  if (typeof navigator?.clipboard?.writeText === "function") {
  const safeRole = role || "investor";
-                  navigator.clipboard.writeText(`${window.location.origin}/#/${safeRole}/posts/${post.id}`)
+                  // v25.13 NM4 — History-API router, drop the hash prefix.
+                  navigator.clipboard.writeText(`${window.location.origin}/${safeRole}/posts/${post.id}`)
  .then(() => toast({ title: "Link copied" }))
  .catch(() => toast({ title: "Copy failed", variant: "destructive" }));
  } else {

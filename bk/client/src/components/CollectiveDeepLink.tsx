@@ -27,9 +27,11 @@ interface Props {
 export function CollectiveDeepLink({ entity, id, label, variant = "outline", size = "sm" }: Props) {
   const { role } = useRole();
   // Sprint 20 Wave 2 — skip /api/founder/sync/status query when viewer is not a founder (defect 64)
+  // v25.13 NL1 — widen to admin + investor so the deep-link button reflects
+  // sync state instead of permanently rendering "Not yet synced" for them.
   const drift = useQuery<DriftResp>({
     queryKey: ["/api/founder/sync/status", entity, id],
-    enabled: role === "founder",
+    enabled: role === "founder" || role === "admin" || role === "investor",
   });
   // Defect 39: replaced admin-only /api/admin/sync/drift with founder-accessible /api/founder/sync/status
   const row = drift.data?.rows?.find(r => r.entityKey === entity && r.aggregateId === id);

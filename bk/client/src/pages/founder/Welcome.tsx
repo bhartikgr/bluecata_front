@@ -127,13 +127,40 @@ export default function FounderWelcome() {
   const completedSteps = steps.filter(s => s.done).length;
   const overallProgress = Math.round((completedSteps / steps.length) * 100);
 
-  // KPI scaffolding — values are illustrative; back-end wiring is incremental.
-  // Falls back gracefully when data isn't loaded yet.
+  /* v25.11 NL-1 — the previous KPI values were hardcoded literal zeros for
+   * every founder. Wire them to real data:
+   *   - rounds: GET /api/rounds (already on the page-shape; count rounds for
+   *     this company that aren't yet `closed`)
+   *   - committed: sum of `raisedAmount` across this company's rounds
+   *   - invited: cap-table reach — count distinct invitees across rounds via
+   *     /api/founder/investor-crm (proxy for reach).
+   * All queries gate on a real companyId so a fresh signup still sees zeros
+   * naturally without showing fake activity. */
+  const companyId = active.data?.activeCompanyId ?? "";
+  type _Round = { id: string; companyId: string; state: string; raisedAmount: number };
+  const roundsForKpiQ = useQuery<_Round[]>({
+    queryKey: ["/api/rounds", companyId],
+    queryFn: async () => (await apiRequest("GET", `/api/rounds?companyId=${encodeURIComponent(companyId)}`)).json(),
+    enabled: Boolean(companyId),
+  });
+  type _CrmContact = { id: string };
+  const crmCountQ = useQuery<_CrmContact[]>({
+    queryKey: ["/api/founder/investor-crm", companyId],
+    queryFn: async () => (await apiRequest("GET", `/api/founder/investor-crm?companyId=${encodeURIComponent(companyId)}`)).json(),
+    enabled: Boolean(companyId),
+  });
+  const _roundsArr: _Round[] = Array.isArray(roundsForKpiQ.data) ? roundsForKpiQ.data : [];
+  const _activeRoundsCount = _roundsArr.filter(r => r.state !== "closed").length;
+  const _committedSum = _roundsArr.reduce((s, r) => s + (Number(r.raisedAmount) || 0), 0);
+  const _committedDisplay = _committedSum > 0
+    ? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(_committedSum)
+    : "$0";
+  const _crmCount = Array.isArray(crmCountQ.data) ? crmCountQ.data.length : 0;
   const kpis = [
-    { key: "companies", label: "Companies",       value: active.data?.activeCompanyId ? 1 : 0, icon: Building2, hint: "in your workspace" },
-    { key: "rounds",    label: "Rounds in progress", value: 0,                                   icon: Briefcase, hint: "live or planned" },
-    { key: "committed", label: "Total committed",  value: "$0",                                  icon: PieChart,  hint: "soft + signed" },
-    { key: "invited",   label: "Investors invited",value: 0,                                     icon: Users,     hint: "cap-table reach" },
+    { key: "companies", label: "Companies",        value: active.data?.activeCompanyId ? 1 : 0, icon: Building2, hint: "in your workspace" },
+    { key: "rounds",    label: "Rounds in progress", value: _activeRoundsCount,                 icon: Briefcase, hint: "live or planned" },
+    { key: "committed", label: "Total committed",   value: _committedDisplay,                   icon: PieChart,  hint: "soft + signed" },
+    { key: "invited",   label: "Investors invited", value: _crmCount,                           icon: Users,     hint: "cap-table reach" },
   ];
 
   // Tips carousel — cycles every 8s, respects reduced-motion (no auto-rotate then).

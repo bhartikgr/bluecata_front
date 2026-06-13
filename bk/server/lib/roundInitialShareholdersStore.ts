@@ -52,6 +52,54 @@ export function listInitialShareholders(roundId: string): readonly InitialShareh
   return store.get(roundId) ?? [];
 }
 
+/**
+ * v25.11 NM3 — rebuild the Map on boot from kv shim. Registered in
+ * HYDRATE_ORDER so initial shareholder lists survive deploys.
+ */
+export function hydrateRoundInitialShareholders(): number {
+  let n = 0;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { hydrateEntries } = require("./storePersistenceShim");
+    const rows = hydrateEntries("roundInitialShareholders") as Array<[string, InitialShareholder[]]>;
+    if (Array.isArray(rows)) {
+      for (const [roundId, arr] of rows) {
+        if (typeof roundId !== "string" || !Array.isArray(arr)) continue;
+        store.set(roundId, arr);
+        n += 1;
+      }
+    }
+  } catch { /* first boot */ }
+  return n;
+}
+
+function persistRoundInitialShareholders(roundId: string): void {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { persistEntry } = require("./storePersistenceShim");
+    persistEntry("roundInitialShareholders", roundId, store.get(roundId) ?? []);
+  } catch { /* non-fatal */ }
+}
+
+/**
+ * v25.11 NM3 — ownership check: confirm caller's founder companies
+ * include the round's owning company. We resolve company via roundsStore
+ * lazily (require so we don't import the sacred path at module top).
+ */
+function callerOwnsRound(ctx: { userId?: string; founder?: { companies?: Array<{ companyId: string }> } }, roundId: string): boolean {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const rs = require("../roundsStore");
+    const round = typeof rs.getRoundById === "function" ? rs.getRoundById(roundId) : null;
+    const companyId: string | undefined = round?.companyId;
+    if (!companyId) return false;
+    const companies = ctx?.founder?.companies ?? [];
+    return Array.isArray(companies) && companies.some((c) => c?.companyId === companyId);
+  } catch {
+    return false;
+  }
+}
+
 function tenantForCompany(companyId: string): string {
   return `tenant_co_${companyId}`;
 }
@@ -69,6 +117,14 @@ export function registerRoundInitialShareholdersRoutes(app: Express): void {
     if (!ctx.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
     const roundId = String(req.params.roundId ?? "");
     if (!roundId) return res.status(400).json({ ok: false, error: "missing_round_id" });
+
+    /* v25.11 NM3 — round ownership gate. Previously any authenticated user
+     * could overwrite any round's initial shareholders. Now we verify the
+     * caller's founder companies include the round's owning company. Admin
+     * still bypasses. */
+    if (!ctx.isAdmin && !callerOwnsRound(ctx, roundId)) {
+      return res.status(403).json({ ok: false, error: "not_round_owner" });
+    }
 
     const body = req.body ?? {};
     const incoming = Array.isArray(body.shareholders) ? body.shareholders : [];
@@ -92,6 +148,7 @@ export function registerRoundInitialShareholdersRoutes(app: Express): void {
     }
 
     store.set(roundId, normalised);
+    persistRoundInitialShareholders(roundId);
 
     // Best-effort audit append. We don't have a companyId here directly, so
     // the audit row is keyed off the roundId. (The sacred roundsStore owns

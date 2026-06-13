@@ -10,6 +10,8 @@ import { PartnerShell, PartnerEmptyState } from "@/components/partner/PartnerShe
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
+/* v25.12 NH9 — toast task-creation failures. */
+import { useToast } from "@/hooks/use-toast";
 
 type PartnerTask = {
   id: string;
@@ -25,20 +27,33 @@ export default function PartnerTasks() {
   const [view, setView] = useState<"list" | "board" | "calendar">("list");
   const [newTitle, setNewTitle] = useState("");
 
-  const { data, isLoading } = useQuery<{ tasks: PartnerTask[] }>({
+  const { data, isLoading, isError } = useQuery<{ tasks: PartnerTask[] }>({
+    /* v25.12 NL1 — explicit queryFn for robustness. */
+    /* v25.15 NM4 — isError surfaced for explicit error UI. */
     queryKey: ["/api/partner/me/tasks"],
     enabled: role.ready && !!role.identity,
+    queryFn: async () => (await apiRequest("GET", "/api/partner/me/tasks")).json(),
   });
+
+  /* v25.12 NH9 — toast helper. */
+  const { toast } = useToast();
 
   const createTask = useMutation({
     mutationFn: async (title: string) => {
       const res = await apiRequest("POST", "/api/partner/me/tasks", { title });
+      /* v25.23 NM — check res.ok so a non-2xx response surfaces as an error
+         instead of clearing the input + invalidating the list as a false success. */
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({} as { error?: string; message?: string }));
+        throw new Error(body.message || body.error || `HTTP ${res.status}`);
+      }
       return res.json();
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/partner/me/tasks"] });
       setNewTitle("");
     },
+    onError: (e: Error) => toast({ variant: "destructive", title: "Could not create task", description: e.message }),
   });
 
   if (!role.ready || !role.identity) return null;
@@ -82,8 +97,17 @@ export default function PartnerTasks() {
         )}
       </div>
 
-      {isLoading && <div className="text-sm text-slate-500">Loading…</div>}
-      {!isLoading && tasks.length === 0 && (
+      {isLoading && <div className="text-sm text-slate-500" data-testid="tasks-loading">Loading…</div>}
+      {/* v25.15 NM4 — explicit error branch. */}
+      {isError && (
+        <div
+          className="rounded-md border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900"
+          data-testid="tasks-error"
+        >
+          Could not load tasks. Please refresh and try again.
+        </div>
+      )}
+      {!isLoading && !isError && tasks.length === 0 && (
         <PartnerEmptyState
           title="No tasks yet"
           description="Add a task to begin tracking your work."

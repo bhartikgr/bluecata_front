@@ -16,6 +16,9 @@
  */
 import type { Express, Request, Response } from "express";
 import { investorPortfolio } from "./mockData";
+/* v25.11 NH4 — to derive real per-investor positions from the canonical
+ * cap-table commit ledger we need listCommitsForUser. */
+import { listCommitsForUser } from "./captableCommitStore";
 
 const STAGE_NORMALIZE: Record<string, string> = {
   "pre-seed": "Pre-Seed",
@@ -67,8 +70,57 @@ export type PortfolioAnalytics = {
   cohortBenchmark: { p25: number; p50: number; p75: number; you: number };
 };
 
-export function computePortfolioAnalytics(): PortfolioAnalytics {
-  const positions = investorPortfolio;
+/**
+ * v25.11 NH4 fix — the previous implementation always used
+ * `mockData.investorPortfolio` regardless of which investor was calling,
+ * so every investor on the platform received identical fabricated MOIC /
+ * IRR / TVPI. This function now accepts a positions array; the HTTP route
+ * below builds it from the caller's real cap-table commit ledger.
+ */
+export interface RealPosition {
+  invested: number;
+  currentValue: number;
+  stage: string;
+  sector: string;
+  vintageYear: number;
+}
+
+/** Derive real positions from the cap-table commit ledger for a userId. */
+export function realPositionsForUser(userId: string): RealPosition[] {
+  try {
+    const commits = listCommitsForUser(userId) as Array<{
+      amount: string; currency: string; ts: string;
+    }>;
+    return commits.map((c) => {
+      const invested = parseFloat(c.amount || "0");
+      const safeInvested = isFinite(invested) ? invested : 0;
+      const tsYear = parseInt((c.ts || "").slice(0, 4), 10);
+      return {
+        invested: safeInvested,
+        currentValue: safeInvested, /* no mark-to-market until marks service is wired */
+        stage: "Unknown",
+        sector: "Unknown",
+        vintageYear: isFinite(tsYear) && tsYear > 1990 ? tsYear : new Date().getUTCFullYear(),
+      };
+    });
+  } catch { return []; }
+}
+
+export function computePortfolioAnalyticsFor(positions: RealPosition[]): PortfolioAnalytics {
+  if (positions.length === 0) {
+    const zeroSpark = (): number[] => Array.from({ length: 12 }, () => 0);
+    return {
+      totalInvested: 0, totalCurrentValue: 0, totalRealized: 0,
+      moic: 0, tvpi: 0, dpi: 0, irr: 0, paperGain: 0,
+      yoyDelta: { moic: 0, irr: 0, paperValue: 0 },
+      sparklines: {
+        moic: zeroSpark(), irr: zeroSpark(), tvpi: zeroSpark(),
+        dpi: zeroSpark(), paperValue: zeroSpark(), realized: zeroSpark(),
+      },
+      byStage: {}, byRegion: {}, byVintage: {},
+      cohortBenchmark: { p25: 1.18, p50: 1.42, p75: 1.86, you: 0 },
+    };
+  }
   const totalInvested = positions.reduce((s, p) => s + p.invested, 0);
   const totalCurrentValue = positions.reduce((s, p) => s + p.currentValue, 0);
   // Realized: assume positions whose label includes "closed" with a positive
@@ -161,8 +213,34 @@ export function computePortfolioAnalytics(): PortfolioAnalytics {
   };
 }
 
+/**
+ * v25.11 NH4 — back-compat shim. The original computePortfolioAnalytics()
+ * took no args and was wired to the mock seed; existing tests still depend
+ * on that. Wrap it so callers that pass nothing get the legacy mock-derived
+ * payload, while the HTTP route below uses the per-user real path.
+ */
+export function computePortfolioAnalytics(): PortfolioAnalytics {
+  return computePortfolioAnalyticsFor(
+    investorPortfolio.map((p) => ({
+      invested: p.invested,
+      currentValue: p.currentValue,
+      stage: p.stage,
+      sector: p.sector,
+      vintageYear: p.vintageYear,
+    })),
+  );
+}
+
 export function registerPortfolioAnalyticsRoutes(app: Express): void {
-  app.get("/api/investor/portfolio/analytics", (_req: Request, res: Response) => {
-    res.json(computePortfolioAnalytics());
+  app.get("/api/investor/portfolio/analytics", (req: Request, res: Response) => {
+    /* v25.11 NH4 — derive analytics from the caller's REAL cap-table commits,
+     * not the mock seed. A fresh investor with no commits gets honest zeros;
+     * we never serve the mock to a real user. */
+    const ctx = (req as any).userContext;
+    if (!ctx?.isAuthed || !ctx.userId) {
+      return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
+    }
+    const positions = realPositionsForUser(ctx.userId);
+    res.json(computePortfolioAnalyticsFor(positions));
   });
 }

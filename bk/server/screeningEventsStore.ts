@@ -291,7 +291,16 @@ const createEventBodySchema = z.object({
   title: z.string().min(3, "Title must be at least 3 characters.").max(200),
   description: z.string().max(2000).optional(),
   /** Unix seconds since epoch — must be in the future. */
-  scheduled_for: z.number().int().positive(),
+  // v25.13 NM6 — the future-date constraint was previously only documented
+  // in the JSDoc; the schema accepted any positive int including past dates,
+  // producing immediately-overdue events with malformed calendar feeds.
+  scheduled_for: z
+    .number()
+    .int()
+    .positive()
+    .refine((v) => v > Math.floor(Date.now() / 1000), {
+      message: "scheduled_for must be a future Unix timestamp (seconds since epoch).",
+    }),
   duration_minutes: z.number().int().positive().max(60 * 12).optional(),
   location: z.string().max(1000).optional(),
   event_type: z.enum(["screening", "pitch", "office_hours"]).optional(),
@@ -602,6 +611,22 @@ export function registerScreeningEventRoutes(app: Express): void {
         typeof req.query.to === "string" && /^\d+$/.test(req.query.to)
           ? parseInt(req.query.to, 10)
           : null;
+      // v25.13 NL1 — paginate to bound response size on busy chapters.
+      const limit = Math.min(
+        500,
+        Math.max(
+          1,
+          typeof req.query.limit === "string" && /^\d+$/.test(req.query.limit)
+            ? parseInt(req.query.limit, 10)
+            : 100,
+        ),
+      );
+      const offset = Math.max(
+        0,
+        typeof req.query.offset === "string" && /^\d+$/.test(req.query.offset)
+          ? parseInt(req.query.offset, 10)
+          : 0,
+      );
 
       const tenantId = tenantForChapter(chapterId);
       const conditions: any[] = [
@@ -629,8 +654,19 @@ export function registerScreeningEventRoutes(app: Express): void {
             }),
           )
           .orderBy(asc((screeningEventsTable as any).scheduledFor))
+          // v25.13 NL1 — apply limit + offset for stable pagination.
+          .limit(limit)
+          .offset(offset)
           .all() as any[];
-        return res.json({ ok: true, events: rows.map(rowToEvent) });
+        return res.json({
+          ok: true,
+          events: rows.map(rowToEvent),
+          // v25.13 NL1 — surface paging metadata so clients can fetch the
+          // next page; hasMore is true when the server returned a full page.
+          limit,
+          offset,
+          hasMore: rows.length === limit,
+        });
       } catch (err) {
         log.warn(
           "[GET screening-events] DB read failed:",

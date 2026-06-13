@@ -135,10 +135,11 @@ describe("Adversarial: idempotency / conflict", () => {
     expect(r2.status).toBe(409);
     expect(r2.body.error).toBe("PROMOTION_CONFLICT");
 
-    // Verify exactly one collective promotion exists for this deal
+    // v25.15 F2-NH1 — created collective promotions now carry status
+    // "pending_collective_review" until chapter-admin approval.
     const promos = partnerDealPromotionsStore
       .listByPipelineDeal(PARTNER_A, dealAId)
-      .filter((p) => p.promotionType === "collective_deal_room" && p.status === "live");
+      .filter((p) => p.promotionType === "collective_deal_room" && p.status === "pending_collective_review");
     expect(promos.length).toBe(1);
     expect(promos[0].id).toBe(firstPromoId);
   });
@@ -215,9 +216,10 @@ describe("Adversarial: cross-partner withdraw", () => {
     expect(r.status).toBe(404);
     expect(r.body.error).toBe("PROMOTION_NOT_FOUND");
 
-    // The promotion should still be live in Partner B's namespace
+    // The promotion should still exist in Partner B's namespace (now
+    // status='pending_collective_review' per v25.15 F2-NH1).
     const stillThere = partnerDealPromotionsStore.getById(promoB.id);
-    expect(stillThere?.status).toBe("live");
+    expect(stillThere?.status).toBe("pending_collective_review");
     expect(stillThere?.partnerId).toBe(PARTNER_B);
   });
 });

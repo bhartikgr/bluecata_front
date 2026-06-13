@@ -7,7 +7,8 @@
  */
 import type { Express, Request, Response } from "express";
 import { requireAdmin } from "./lib/authMiddleware";
-import { getOutbox } from "./bridgeStore";
+import { getOutbox, replayDeadLetter } from "./bridgeStore";
+import { appendAdminAudit } from "./adminPlatformStore"; /* v25.19 Lane 4 NC3 */
 
 export function registerAdminDlqRoutes(app: Express): void {
   app.get("/api/admin/dlq", requireAdmin, (_req: Request, res: Response) => {
@@ -41,12 +42,22 @@ export function registerAdminDlqRoutes(app: Express): void {
 
   /**
    * POST /api/admin/dlq/:eventId/replay
-   * Returns 501 \u2014 the underlying outbox replay primitive doesn't yet exist
-   * in the bridge layer (would need to mutate status from `dead_letter` back
-   * to `queued` and reset `attempts`). Stubbed so the UI can render a Replay
-   * button without 404'ing; mark TODO for v11.
+   *
+   * v25.19 Lane 4 NC3 (hard close) — wired to the new `replayDeadLetter`
+   * primitive in bridgeStore. Flips a dead_letter envelope back to queued,
+   * resets attempts + lastError + nextRetryAt, persists, and audits.
+   * Returns 404 when the event is unknown, 409 when it isn't actually in
+   * dead_letter (so admins can't accidentally replay an in-flight event).
    */
   app.post("/api/admin/dlq/:eventId/replay", requireAdmin, (req: Request, res: Response) => {
-    res.status(501).json({ ok: false, error: "NOT_IMPLEMENTED", eventId: req.params.eventId, message: "DLQ replay primitive not yet wired in bridgeStore; tracked for v11." });
+    const eventId = String(req.params.eventId);
+    const r = replayDeadLetter(eventId);
+    if (!r.ok) {
+      const code = r.error === "event_not_found" ? 404 : 409;
+      return res.status(code).json({ ok: false, error: r.error, eventId });
+    }
+    const actor = (req as any).userContext?.userId ?? "";
+    try { appendAdminAudit(actor, `dlq:${eventId}`, "bridge.dlq.replayed", { eventId, eventType: r.entry.envelope.eventType }); } catch { /* non-fatal */ }
+    return res.json({ ok: true, eventId, status: r.entry.status });
   });
 }

@@ -22,6 +22,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
+/* v25.12 NH3 — toast errors on all four mutations. */
+import { useToast } from "@/hooks/use-toast";
 import {
   ChevronUp,
   ChevronDown,
@@ -168,6 +170,11 @@ export default function QuestionDetailPage(): JSX.Element | null {
     },
   });
 
+  /* v25.12 NH3 — toast helper for mutation error feedback. */
+  const { toast } = useToast();
+  const mutationErrorHandler = (label: string) => (e: Error) =>
+    toast({ variant: "destructive", title: `${label} failed`, description: e.message });
+
   const answerMut = useMutation({
     mutationFn: async () => {
       const res = await apiRequest(
@@ -183,6 +190,7 @@ export default function QuestionDetailPage(): JSX.Element | null {
         queryKey: ["/api/collective/questions", id],
       });
     },
+    onError: mutationErrorHandler("Answer submission"),
   });
 
   const voteMut = useMutation({
@@ -199,6 +207,7 @@ export default function QuestionDetailPage(): JSX.Element | null {
         queryKey: ["/api/collective/questions", id],
       });
     },
+    onError: mutationErrorHandler("Vote"),
   });
 
   const acceptMut = useMutation({
@@ -215,6 +224,7 @@ export default function QuestionDetailPage(): JSX.Element | null {
         queryKey: ["/api/collective/questions", id],
       });
     },
+    onError: mutationErrorHandler("Accept answer"),
   });
 
   const closeMut = useMutation({
@@ -231,6 +241,7 @@ export default function QuestionDetailPage(): JSX.Element | null {
         queryKey: ["/api/collective/questions", id],
       });
     },
+    onError: mutationErrorHandler("Close question"),
   });
 
   const isAsker = useMemo(

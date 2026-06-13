@@ -733,25 +733,57 @@ export default function RoundDetail() {
  </DialogContent>
  </Dialog>
 
- {/* Bulk dialog */}
+ {/* v25.19 Lane 3 NC3 (hard close) — the pre-v25.19 dialog showed a fake
+     "Processing 24 rows…" toast without ever reading the CSV or POSTing to a
+     real endpoint. /api/rounds/:id/invitations/bulk has existed for waves.
+     This now: parses an uploaded CSV (header `name,email,note`), POSTs each
+     row, reports created vs skipped, invalidates the invitations list. */}
  <Dialog open={bulkOpen} onOpenChange={setBulkOpen}>
  <DialogContent>
  <DialogHeader><DialogTitle>Bulk invite via CSV</DialogTitle></DialogHeader>
  <div className="space-y-3 text-sm">
  <p className="text-muted-foreground">Upload a CSV with columns <code className="bg-secondary px-1.5 py-0.5 rounded text-xs">name,email,note</code>. Each row creates a pending invitation with the round's default 30-day expiry.</p>
- <div className="border-2 border-dashed border-border rounded-md p-8 text-center">
- <Upload className="h-8 w-8 mx-auto text-muted-foreground mb-2" />
- <div className="font-medium">Drop CSV here</div>
- <div className="text-xs text-muted-foreground mt-1">or click to browse</div>
- </div>
+ <input
+ type="file"
+ accept=".csv,text/csv"
+ data-testid="input-bulk-csv"
+ onChange={async (ev) => {
+ const file = ev.target.files?.[0];
+ if (!file) return;
+ const text = await file.text();
+ const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+ if (lines.length === 0) { toast({ title: "Empty CSV", variant: "destructive" }); return; }
+ // Detect & skip a header row (case-insensitive: name,email,note).
+ const startIdx = /^name\s*,\s*email/i.test(lines[0]) ? 1 : 0;
+ const invitations = lines.slice(startIdx).map((row) => {
+ const cols = row.split(",").map((c) => c.trim().replace(/^"|"$/g, ""));
+ return { name: cols[0] || undefined, email: cols[1] || "", note: cols[2] || undefined };
+ }).filter((r) => r.email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(r.email));
+ if (invitations.length === 0) { toast({ title: "No valid email rows found", variant: "destructive" }); return; }
+ try {
+ const res = await apiRequest("POST", `/api/rounds/${id}/invitations/bulk`, { invitations });
+ const j = await res.json();
+ if (!res.ok || !j.ok) {
+ toast({ title: "Bulk import failed", description: j.error ?? `HTTP ${res.status}`, variant: "destructive" });
+ return;
+ }
+ const created = Array.isArray(j.created) ? j.created.length : 0;
+ const skipped = Array.isArray(j.skipped) ? j.skipped.length : 0;
+ toast({ title: "Bulk import complete", description: `${created} created, ${skipped} skipped` });
+ // v25.20 Lane 6 NH fix: queryKey for invitations is the single template-literal
+ // string `/api/rounds/${id}/invitations` (line 101). The previous tuple form
+ // never matched, so the bulk import dialog closed without the list refreshing
+ // — founders had to hard-reload to see the new rows. Match the exact key.
+ queryClient.invalidateQueries({ queryKey: [`/api/rounds/${id}/invitations`] });
+ setBulkOpen(false);
+ } catch (err) {
+ toast({ title: "Bulk import error", description: (err as Error).message, variant: "destructive" });
+ }
+ }}
+ />
  </div>
  <DialogFooter>
  <Button variant="ghost" onClick={() => setBulkOpen(false)}>Cancel</Button>
- <Button onClick={() => {
- emit({ type: "round.invitations_sent", payload: { roundId: id, count: 24 } }, { companyId: activeCompanyId, roundId: id, actorId: me.data?.id ?? "founder", actorRole: "founder" });
- toast({ title: "Bulk import started", description: "Processing 24 rows…" });
- setBulkOpen(false);
- }} data-testid="button-bulk-go">Upload &amp; process</Button>
  </DialogFooter>
  </DialogContent>
  </Dialog>

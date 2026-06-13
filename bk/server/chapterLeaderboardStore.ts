@@ -112,8 +112,13 @@ export function periodBounds(period: LeaderboardPeriod, now: Date = new Date()):
     const start = new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000);
     return { periodStart: start.toISOString(), periodEnd: end.toISOString() };
   }
-  // all-time
-  return { periodStart: EPOCH_ISO, periodEnd: end.toISOString() };
+  /* v25.12 NM-2 — all-time bounds must use a stable sentinel for periodEnd.
+   * Previously this returned `new Date().toISOString()`, which made the
+   * cache key change on every request and forced a full O(n) recompute on
+   * every GET to /api/collective/leaderboard?period=all-time. The sentinel
+   * locks the cache key so the snapshot is reused until a write event
+   * (which calls refreshChapterLeaderboard explicitly). */
+  return { periodStart: EPOCH_ISO, periodEnd: "2099-12-31T23:59:59.999Z" };
 }
 
 /* --------------------------------------------------------------- */

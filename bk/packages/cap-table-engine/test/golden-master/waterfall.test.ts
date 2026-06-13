@@ -87,8 +87,71 @@ describe("Liquidation waterfall — golden master", () => {
     });
     const aPay = r.payouts.find((p) => p.classId === "A");
     expect(aPay?.decision).toBe("preference_only");
-    // Preference is $10M but proceeds are only $8M; engine reports the preference amount.
-    // (This represents nominal preference; cash actually paid is min(preference, remaining).)
-    expect(parseFloat(aPay!.total)).toBeGreaterThanOrEqual(8000000);
+    /* v25.20 Lane 2 NC3 (hard close):
+         Pre-v25.20 reported the nominal $10M preference here, even though only
+         $8M existed in the exit pool. The new budget-clamp (line 122) caps each
+         class's preference at the remaining `prefBudget`. The engine now reports
+         the actual cash paid, which is min(preference, remaining) = $8M, and the
+         payouts sum to the exit exactly. */
+    expect(parseFloat(aPay!.total)).toBeCloseTo(8000000, 0);
+    // Total payouts must not exceed exit proceeds.
+    const totalPaid = r.payouts.reduce((s, p) => s + parseFloat(p.total), 0);
+    expect(totalPaid).toBeLessThanOrEqual(8000000 + 1); // ±$1 rounding
+  });
+
+  /* v25.20 Lane 2 NC3 (post-verification) — regression test for the
+     convert-vs-preference election. The election value MUST use the TRUE
+     as-converted (against full exit), not a residual-clamped value.
+
+     Scenario surfaced by the v25.20 math-verification probe:
+       Senior (B) $17M 1× with ~0 shares.
+       Junior (A) $4M 1× with 9M of 10M as-converted shares (90% equity).
+       Common 1M shares. Exit $20M.
+
+       Junior's TRUE as-converted = 9M/10M × $20M = $18M, easily beating its $4M
+       preference — a rational holder converts. Senior takes $17M (budget-
+       clamped at the $17M it invested); $3M residual is split pro-rata across
+       all common-treated shares.
+
+       Engine before fix (wrongly clamped election): Junior got $3M as
+       preference_only, common $0.
+       Engine after fix: Junior converts, takes 9M/10M × $3M = $2.70M; common
+       takes 1M/10M × $3M = $0.30M. Sum = $20M. NVCA §2.1-correct. */
+  it("v25.20 NC3 — junior with large equity ratio converts even when budget is tight", () => {
+    const r = computeWaterfall({
+      exitProceeds: "20000000",
+      preferred: [
+        {
+          classId: "senior", className: "Series B", invested: "17000000",
+          shares: 100n, liquidationPreferenceMultiple: 1,
+          participating: false, seniority: 0,
+        },
+        {
+          classId: "junior", className: "Series A", invested: "4000000",
+          shares: 9_000_000n, liquidationPreferenceMultiple: 1,
+          participating: false, seniority: 1,
+        },
+      ],
+      common: [{ holderId: "founder", shares: 1_000_000n }],
+      formulaId: "waterfall.liquidation",
+      formulaVersion: "1.0.0",
+      region: "US",
+      formulaDef: { formula: "test" },
+    });
+    const senior = r.payouts.find((p) => p.classId === "senior");
+    const junior = r.payouts.find((p) => p.classId === "junior");
+    const founder = r.payouts.find((p) => p.holderId === "founder");
+    // Senior takes its full $17M preference.
+    expect(senior?.decision).toBe("preference_only");
+    expect(parseFloat(senior!.total)).toBeCloseTo(17_000_000, 0);
+    // Junior MUST elect to convert (its true as-converted $18M >> $4M preference),
+    // even though prefBudget is only $3M at that point.
+    expect(junior?.decision).not.toBe("preference_only");
+    // After conversion, the $3M residual is split 9/10 to junior, 1/10 to founder.
+    expect(parseFloat(junior!.total)).toBeCloseTo(2_700_000, -3);
+    expect(parseFloat(founder!.total)).toBeCloseTo(300_000, -3);
+    // Sum payouts == exit exactly.
+    const total = parseFloat(senior!.total) + parseFloat(junior!.total) + parseFloat(founder!.total);
+    expect(total).toBeCloseTo(20_000_000, -3);
   });
 });

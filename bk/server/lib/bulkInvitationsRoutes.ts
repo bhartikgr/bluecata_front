@@ -21,6 +21,13 @@ import type { Express, Request, Response } from "express";
 import { createHash, randomBytes } from "node:crypto";
 import { rawDb } from "../db/connection";
 import { log } from "./logger";
+// v25.20 Lane 6 NC fix: bulk CSV invitations previously persisted rows but
+// never sent emails — invitees were silently invited and never knew. Mirror
+// the single-invitation path: sendMail + escapeHtml + best-effort try/catch.
+import { sendMail } from "../emailTransport";
+import { escapeHtml as e } from "./htmlEscape";
+import { getCompanyNameById } from "../multiCompanyStore";
+import { getRoundById } from "../roundsStore";
 
 const MAX_BULK = 100;
 
@@ -80,9 +87,31 @@ export function registerBulkInvitationsRoutes(app: Express): void {
            sent_at, expires_at, token_hash, created_at, updated_at
          ) VALUES (?, ?, ?, ?, ?, ?, 'sent', 'new_registration', ?, ?, ?, ?, ?, ?, ?)`,
       );
+      const existsStmt = db.prepare(
+        `SELECT id FROM round_invitations
+          WHERE round_id = ? AND investor_email = ? AND state IN ('sent','viewed')
+          LIMIT 1`,
+      );
       const tenantId = `tenant_co_${owner.companyId}`;
       const now = new Date().toISOString();
       const expiry = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
+      const noteText = body.message ? String(body.message).slice(0, 1000) : null;
+
+      // v25.20 Lane 1 NM fix: stage validation + token generation first, then
+      // apply ALL inserts in a single SQLite transaction. If any insert
+      // throws mid-batch, better-sqlite3's atomic transaction wrapper rolls
+      // the entire batch back — we never leave half-committed rows. Emails +
+      // bridge events run AFTER commit so a slow SMTP server can't hold a
+      // write lock and an email failure can't poison a successful DB commit.
+      type Pending = {
+        invId: string;
+        token: string;
+        tokenHash: string;
+        email: string;
+        name: string | null;
+      };
+      const pending: Pending[] = [];
+      const seenInBatch = new Set<string>();
 
       for (const entry of list) {
         const email = String(entry?.email ?? "").trim().toLowerCase();
@@ -91,50 +120,100 @@ export function registerBulkInvitationsRoutes(app: Express): void {
           skipped.push({ email: entry?.email ?? "<missing>", reason: "invalid_email" });
           continue;
         }
-        /* De-dup: if this round already has a pending invitation for this
-         * email, skip and report. */
-        const existing = db
-          .prepare(
-            `SELECT id FROM round_invitations
-              WHERE round_id = ? AND investor_email = ? AND state IN ('sent','viewed')
-              LIMIT 1`,
-          )
-          .get(roundId, email);
+        if (seenInBatch.has(email)) {
+          // Dedup within the same CSV (someone listed the same address twice).
+          skipped.push({ email, reason: "duplicate_in_batch" });
+          continue;
+        }
+        const existing = existsStmt.get(roundId, email);
         if (existing) {
           skipped.push({ email, reason: "already_invited" });
           continue;
         }
+        seenInBatch.add(email);
         const invId = `inv_${roundId}_${randomBytes(8).toString("hex")}`;
         const token = randomBytes(32).toString("hex");
         const tokenHash = createHash("sha256").update(token).digest("hex");
-        const result = insert.run(
-          invId,
-          tenantId,
-          roundId,
-          owner.companyId,
-          email,
-          name,
-          ctx.userId,
-          body.message ? String(body.message).slice(0, 1000) : null,
-          now,
-          expiry,
-          tokenHash,
-          now,
-          now,
-        );
-        if (result.changes > 0) {
-          created.push({ id: invId, email, redeemUrl: `https://capavate.com/invite/${token}` });
-          /* Emit bridge event per invitation so downstream (notifications,
-           * CRM auto-link) see them individually. */
-          try {
-            const { emitBridge } = require("../bridgeStore");
-            emitBridge("round.invitation_sent", invId, "roundInvitation", {
-              invitationId: invId, roundId, companyId: owner.companyId, investorEmail: email,
-            });
-          } catch { /* bridge optional */ }
-        } else {
-          skipped.push({ email, reason: "insert_collision" });
+        pending.push({ invId, token, tokenHash, email, name });
+      }
+
+      // Atomic insert phase.
+      const committed: Pending[] = [];
+      const insertAll = db.transaction((rows: Pending[]) => {
+        for (const r of rows) {
+          const result = insert.run(
+            r.invId,
+            tenantId,
+            roundId,
+            owner.companyId,
+            r.email,
+            r.name,
+            ctx.userId,
+            noteText,
+            now,
+            expiry,
+            r.tokenHash,
+            now,
+            now,
+          );
+          if (result.changes > 0) {
+            committed.push(r);
+          } else {
+            // Race: another caller inserted between our pre-check and insert.
+            skipped.push({ email: r.email, reason: "insert_collision" });
+          }
         }
+      });
+      insertAll(pending);
+
+      // Post-commit: emails + bridge events. Failures here do NOT roll back
+      // the DB rows — the invitations exist; the founder can re-send from UI.
+      const baseUrl =
+        process.env.INVITATION_BASE_URL ??
+        process.env.APP_URL ??
+        "https://capavate.com";
+      let companyName = "a company";
+      let roundName = "a funding round";
+      try {
+        const resolvedCompany = getCompanyNameById(owner.companyId!);
+        if (resolvedCompany && resolvedCompany.trim()) companyName = resolvedCompany.trim();
+      } catch { /* non-fatal */ }
+      try {
+        const resolvedRound = getRoundById(roundId);
+        if (resolvedRound?.name && resolvedRound.name.trim()) roundName = resolvedRound.name.trim();
+      } catch { /* non-fatal */ }
+
+      for (const r of committed) {
+        const link = `${baseUrl}/auth/redeem?token=${encodeURIComponent(r.token)}`;
+        try {
+          await sendMail({
+            to: r.email,
+            subject: `[Capavate] You're invited to ${companyName} — ${roundName}`,
+            html:
+              `<p>Hi ${e(r.name ?? "there")},</p>` +
+              `<p>You've been invited to participate in <strong>${e(roundName)}</strong> at <strong>${e(companyName)}</strong>.</p>` +
+              `<p><a href="${e(link)}">Click here to view the invitation</a></p>` +
+              (noteText ? `<p>Note from the founder: ${e(noteText)}</p>` : "") +
+              `<p>This invitation expires in 14 days.</p>`,
+            text:
+              `You've been invited to participate in ${roundName} at ${companyName} on Capavate.\n` +
+              `View it here: ${link}\n` +
+              (noteText ? `Note: ${noteText}\n` : "") +
+              `This invitation expires in 14 days.`,
+          });
+        } catch (mailErr) {
+          log.warn(
+            "[bulkInvitationsRoutes] email send failed (continuing):",
+            (mailErr as Error).message,
+          );
+        }
+        created.push({ id: r.invId, email: r.email, redeemUrl: link });
+        try {
+          const { emitBridge } = require("../bridgeStore");
+          emitBridge("round.invitation_sent", r.invId, "roundInvitation", {
+            invitationId: r.invId, roundId, companyId: owner.companyId, investorEmail: r.email,
+          });
+        } catch { /* bridge optional */ }
       }
 
       return res.json({

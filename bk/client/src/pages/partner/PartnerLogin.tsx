@@ -54,9 +54,17 @@ function isPreviewEnvironment(): boolean {
 
 function readHashQuery(): URLSearchParams {
   if (typeof window === "undefined") return new URLSearchParams();
+  // v25.13 NC3 — also merge in window.location.search so redirects via
+  // History API (e.g. ?error=no_access from useRequirePartnerRole) are
+  // visible here in addition to the existing hash-style ?demo=1 param.
   const hash = window.location.hash || "";
   const qIdx = hash.indexOf("?");
-  return new URLSearchParams(qIdx === -1 ? "" : hash.slice(qIdx + 1));
+  const fromHash = qIdx === -1 ? "" : hash.slice(qIdx + 1);
+  const fromSearch = window.location.search?.startsWith("?")
+    ? window.location.search.slice(1)
+    : (window.location.search || "");
+  const merged = [fromHash, fromSearch].filter(Boolean).join("&");
+  return new URLSearchParams(merged);
 }
 
 /** Probe the partner endpoint to confirm this user is actually a partner. */
@@ -74,6 +82,9 @@ export default function PartnerLogin() {
   const { setRole } = useRole();
   const query = useMemo(readHashQuery, []);
   const demoMode = query.get("demo") === "1";
+  // v25.13 NC3 — surfaced when useRequirePartnerRole redirects here on
+  // PARTNER_NOT_FOUND so the user understands why they were blocked.
+  const noAccessFlag = query.get("error") === "no_access";
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -198,6 +209,19 @@ export default function PartnerLogin() {
         </div>
       }
     >
+      {noAccessFlag && (
+        <div
+          role="alert"
+          className="mb-5 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-900"
+          data-testid="banner-partner-no-access"
+        >
+          Your account does not have an active partner membership. If you
+          were recently invited, your membership may still be pending
+          activation — try again in a few minutes or contact your
+          consortium administrator.
+        </div>
+      )}
+
       {/* Restricted-access banner \u2014 less alarming than admin, but clear about scope */}
       <div
         role="note"

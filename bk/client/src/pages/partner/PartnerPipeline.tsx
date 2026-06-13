@@ -18,6 +18,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { Badge } from "@/components/ui/badge";
+import { PartnerEmptyState } from "@/components/partner/PartnerShell";
 
 const STAGES = ["sourcing", "qualifying", "committee", "committed", "closed_won", "closed_lost"] as const;
 type Stage = typeof STAGES[number];
@@ -55,9 +56,26 @@ export default function PartnerPipeline() {
   const [referEmail, setReferEmail] = useState("");
 
   const createMut = useMutation({
-    mutationFn: async (dealName: string) =>
-      (await apiRequest("POST", "/api/partner/me/pipeline", { dealName })).json(),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/partner/me/pipeline"] }),
+    /* v25.24 NM-2 fix — second-pass caught that this mutation skipped res.ok
+     * (the v25.23 res.ok sweep matched the first-pass list literally instead
+     * of re-sweeping the whole partner page set). Mirror the promote/refer
+     * mutations below which already check res.ok + throw on !ok. */
+    mutationFn: async (dealName: string) => {
+      const res = await apiRequest("POST", "/api/partner/me/pipeline", { dealName });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({} as any));
+        throw new Error(body?.message || body?.error || `Could not add deal (${res.status})`);
+      }
+      return res.json();
+    },
+    /* v25.16 NH3 — only clear the deal-name input on success so a server
+       error doesn't lose what the user typed. */
+    onSuccess: () => {
+      setName("");
+      queryClient.invalidateQueries({ queryKey: ["/api/partner/me/pipeline"] });
+    },
+    /* v25.12 NH8 — surface add-deal failures (validation, seat-limit, etc). */
+    onError: (e: Error) => toast({ variant: "destructive", title: "Could not add deal", description: e.message }),
   });
 
   const promoteMut = useMutation({
@@ -108,6 +126,15 @@ export default function PartnerPipeline() {
   const byStage: Record<Stage, Deal[]> = { sourcing: [], qualifying: [], committee: [], committed: [], closed_won: [], closed_lost: [] };
   for (const d of q.data?.pipeline ?? []) byStage[d.stage].push(d);
 
+  /* v25.23 NM-2 — explicit loading / error / empty states for the pipeline
+     query (mirrors PartnerClients). Previously a fetch failure rendered an
+     empty Kanban indistinguishable from “no deals”. promoQ errors are
+     surfaced as a non-blocking notice since the board still renders. */
+  const pipelineDeals = q.data?.pipeline ?? [];
+  const showLoading = q.isLoading;
+  const showError = q.isError;
+  const showEmpty = !q.isLoading && !q.isError && pipelineDeals.length === 0;
+
   // Index promotions by pipeline deal id so we can render badges
   const promosByDeal = new Map<string, Promotion[]>();
   for (const p of promoQ.data?.promotions ?? []) {
@@ -127,13 +154,43 @@ export default function PartnerPipeline() {
             onChange={(e) => setName(e.target.value)}
             className="max-w-xs"
           />
+          {/* v25.16 NL2 — disable while pending to prevent double-submit. */}
           <Button
             data-testid="add-deal-btn"
-            disabled={!name}
-            onClick={() => { createMut.mutate(name); setName(""); }}
-          >Add deal</Button>
+            disabled={!name || createMut.isPending}
+            onClick={() => createMut.mutate(name)}
+          >
+            {createMut.isPending ? "Adding…" : "Add deal"}
+          </Button>
         </div>
       )}
+      {showLoading && (
+        <div className="text-sm text-slate-500" data-testid="pipeline-loading">Loading…</div>
+      )}
+      {showError && (
+        <div
+          className="rounded-md border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900"
+          data-testid="pipeline-error"
+        >
+          Could not load your pipeline. Please refresh and try again.
+        </div>
+      )}
+      {/* Non-blocking: the board still renders even if the promotions overlay fails. */}
+      {!showError && promoQ.isError && (
+        <div
+          className="mb-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900"
+          data-testid="pipeline-promotions-error"
+        >
+          Deal promotion badges couldn’t be loaded. Deals are still shown.
+        </div>
+      )}
+      {showEmpty && (
+        <PartnerEmptyState
+          title="No deals yet"
+          description={canWrite ? "Add your first deal above to start tracking your pipeline." : "No deals have been added to this workspace yet."}
+        />
+      )}
+      {!showLoading && !showError && !showEmpty && (
       <div className="grid grid-cols-2 md:grid-cols-6 gap-3" data-testid="pipeline-kanban">
         {STAGES.map((s) => (
           <div key={s} className="bg-white rounded-lg border p-2 min-h-[120px]" data-testid={`column-${s}`}>
@@ -186,9 +243,12 @@ export default function PartnerPipeline() {
           </div>
         ))}
       </div>
+      )}
 
       {/* Promote to Collective Modal */}
-      <Dialog open={!!promoteDeal} onOpenChange={(o) => { if (!o) setPromoteDeal(null); }}>
+      {/* v25.16 NM2 — also clear modal notes on Escape/outside-click dismiss
+         so a half-typed note doesn't bleed into the next modal opened. */}
+      <Dialog open={!!promoteDeal} onOpenChange={(o) => { if (!o) { setPromoteDeal(null); setModalNotes(""); } }}>
         <DialogContent data-testid="promote-modal">
           <DialogHeader>
             <DialogTitle>Promote to Collective Deal Room</DialogTitle>
@@ -219,7 +279,7 @@ export default function PartnerPipeline() {
       </Dialog>
 
       {/* Refer to Capavate Modal */}
-      <Dialog open={!!referDeal} onOpenChange={(o) => { if (!o) setReferDeal(null); }}>
+      <Dialog open={!!referDeal} onOpenChange={(o) => { if (!o) { setReferDeal(null); setModalNotes(""); setReferEmail(""); } }}>
         <DialogContent data-testid="refer-modal">
           <DialogHeader>
             <DialogTitle>Refer to Capavate</DialogTitle>

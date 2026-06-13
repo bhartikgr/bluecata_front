@@ -25,6 +25,7 @@
  * to this PersonaSwitcher.
  */
 import { useEffect, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { ChevronDown, Sparkles, Building2, ShieldCheck, Briefcase } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -135,8 +136,16 @@ function writeStoredPersona(p: Persona): void {
  *   - Capavate   → `founder.companies.length > 0`  OR  `isAdmin`
  *   - Collective → `investor.state !== "NONE"`     OR  founder of an
  *                  active Collective company       OR  `isAdmin`
- *   - Partner    → `isAdmin` (no explicit partner role flag in UserContext)
+ *   - Partner    → `isAdmin` OR an active partner-team membership
  *   - Admin      → `isAdmin`
+ *
+ * v25.23 NH-Q2 — partner gating was previously gated on `ctx.isAdmin` ONLY,
+ * which (a) hid the Partner option from legitimate non-admin consortium
+ * partners and (b) showed it to admins with zero partner membership. We now
+ * accept a DB-backed partner-team membership signal (`ctx.partner`, sourced
+ * from a successful `GET /api/partner/me`) as a parallel sufficient condition.
+ * The flag is OPTIONAL on UserContext so callers that don't populate it keep
+ * the prior admin-only behavior.
  */
 export function entitledPersonas(ctx: UserContext | null | undefined): Set<Persona> {
   const out = new Set<Persona>();
@@ -153,9 +162,13 @@ export function entitledPersonas(ctx: UserContext | null | undefined): Set<Perso
     !!ctx.investor && typeof ctx.investor.state === "string" && ctx.investor.state !== "NONE";
   if (hasInvestorState) out.add("collective");
   if (shouldShowToggleFromCtx(ctx).visible) out.add("collective");
-  // Partner — admin-only entry point. No partner role flag exists on
-  // UserContext yet; keep behavior conservative.
-  if (ctx.isAdmin) out.add("partner");
+  // Partner — v25.23 NH-Q2: admin OR a real partner-team membership. The
+  // `partner` field is DB-backed (GET /api/partner/me) and merged onto the
+  // context by PersonaSwitcher; non-admin partners now see the option, and
+  // membership — not just the admin flag — is a sufficient condition.
+  const hasPartnerMembership =
+    !!ctx.partner && typeof ctx.partner.partnerId === "string" && ctx.partner.partnerId.length > 0;
+  if (ctx.isAdmin || hasPartnerMembership) out.add("partner");
   // Admin — explicit flag only.
   if (ctx.isAdmin) out.add("admin");
   // Always expose capavate to admins (gives them a way back to founder UI).
@@ -197,8 +210,38 @@ export interface PersonaSwitcherProps {
 
 export function PersonaSwitcher({ ctxOverride, hideDemoBadge }: PersonaSwitcherProps = {}) {
   const [location, navigate] = useLocation();
+  const queryClient = useQueryClient();
   const { data: liveCtx } = useEntitlement();
-  const ctx = ctxOverride !== undefined ? ctxOverride : (liveCtx ?? null);
+  const baseCtx = ctxOverride !== undefined ? ctxOverride : (liveCtx ?? null);
+
+  // v25.23 NH-Q2 / v25.24 NH-2 — read the DB-backed partner-team membership
+  // directly from the shared React Query cache. Two keys exist:
+  //   ["/api/partner/me"]            — populated by `useRequirePartnerRole`
+  //                                    which mounts only on /partner/* pages.
+  //   ["/api/partner/me", "soft"]    — populated by `usePartnerMembership`
+  //                                    which mounts on the Collective shell
+  //                                    (CollectiveShell.tsx:136).
+  //
+  // v25.23 NH-Q2 only probed the FIRST key, so a non-admin partner browsing
+  // Collective never saw the Partner option (the exact first-pass bug). v25.24
+  // now probes BOTH keys, taking whichever has populated data first.
+  const partnerMeHard = queryClient.getQueryData<{ partnerId?: string; subRole?: string | null }>([
+    "/api/partner/me",
+  ]);
+  const partnerMeSoft = queryClient.getQueryData<{ partnerId?: string; subRole?: string | null }>([
+    "/api/partner/me",
+    "soft",
+  ]);
+  const partnerMe =
+    partnerMeHard && typeof partnerMeHard.partnerId === "string"
+      ? partnerMeHard
+      : partnerMeSoft && typeof partnerMeSoft.partnerId === "string"
+      ? partnerMeSoft
+      : undefined;
+  const ctx =
+    ctxOverride === undefined && baseCtx && partnerMe && typeof partnerMe.partnerId === "string"
+      ? { ...baseCtx, partner: { partnerId: partnerMe.partnerId, subRole: partnerMe.subRole ?? null } }
+      : baseCtx;
 
   const { visible, reason } = useMemo(
     () => shouldShowToggleFromCtx(ctx ?? null),
@@ -241,6 +284,12 @@ export function PersonaSwitcher({ ctxOverride, hideDemoBadge }: PersonaSwitcherP
     setSelected(p.id);
     writeStoredPersona(p.id);
     navigate(withPortalParam(p.href, p.portalKey));
+    // v25.23 NH-Q1 — invalidate the ENTIRE React Query cache after switching
+    // persona so stale, prior-persona-scoped data (e.g. ["/api/auth/me"],
+    // ["/api/partner/me"], and every role-scoped list) is refetched fresh and
+    // never bleeds across the role boundary. Called after navigation so the
+    // new persona's surfaces mount against a cleared cache.
+    void queryClient.invalidateQueries();
   };
 
   const currentDef = PERSONA_OPTIONS.find((p) => p.id === selected) ?? PERSONA_OPTIONS[0]!;

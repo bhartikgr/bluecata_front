@@ -5,7 +5,7 @@
  * 4 steps covering "proves legitimacy" fields.
  * Non-blocking: partial completion proceeds to /founder/subscribe.
  */
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { PageBody, PageHeader } from "@/components/AppShell";
@@ -365,35 +365,42 @@ export default function FounderProfileWizard() {
   const [data, setData] = useState<WizardData>(INITIAL_DATA);
   const [saving, setSaving] = useState(false);
 
-  // Pre-fill from existing profile
+  // Pre-fill from existing profile.
+  // v25.20 Lane 5 NH fix: TanStack Query v5 dropped `onSuccess`/`onError` from
+  // `useQuery`. The wizard previously relied on `onSuccess` to populate state,
+  // so it never prefilled. We now subscribe to `profileQ.data` with useEffect.
   const profileQ = useQuery({
     queryKey: ["/api/founder/profile", companyId],
     queryFn: async () => (await apiRequest("GET", `/api/founder/profile?companyId=${companyId}`)).json(),
     enabled: !!companyId,
-    onSuccess: (res: any) => {
-      const p = res?.profile ?? {};
-      setData(prev => ({
-        ...prev,
-        linkedinUrl: p.linkedinUrl ?? prev.linkedinUrl,
-        twitterUrl: p.twitterUrl ?? prev.twitterUrl,
-        crunchbaseUrl: p.crunchbaseUrl ?? prev.crunchbaseUrl,
-        pitchbookUrl: p.pitchbookUrl ?? prev.pitchbookUrl,
-        openingDataRoomUrl: p.openingDataRoomUrl ?? prev.openingDataRoomUrl,
-        publicNewsroomUrl: p.publicNewsroomUrl ?? prev.publicNewsroomUrl,
-        tagline: p.tagline ?? prev.tagline,
-        shortPitch: p.shortPitch ?? prev.shortPitch,
-        incorporationJurisdiction: p.incorporationJurisdiction ?? prev.incorporationJurisdiction,
-        secondaryJurisdiction: p.secondaryJurisdiction ?? prev.secondaryJurisdiction,
-        taxResidencyJurisdiction: p.taxResidencyJurisdiction ?? prev.taxResidencyJurisdiction,
-        preferredCurrency: p.preferredCurrency ?? prev.preferredCurrency,
-        preferredTimezone: p.preferredTimezone ?? prev.preferredTimezone,
-        preferredLanguage: p.preferredLanguage ?? prev.preferredLanguage,
-        preferredCommunicationChannel: p.preferredCommunicationChannel ?? prev.preferredCommunicationChannel,
-        preferredMeetingDuration: p.preferredMeetingDuration ? String(p.preferredMeetingDuration) : prev.preferredMeetingDuration,
-        preferredMeetingTimes: p.preferredMeetingTimes ?? prev.preferredMeetingTimes,
-      }));
-    },
   });
+
+  useEffect(() => {
+    const res = profileQ.data as any;
+    if (!res) return;
+    const p = res?.profile ?? {};
+    setData(prev => ({
+      ...prev,
+      linkedinUrl: p.linkedinUrl ?? prev.linkedinUrl,
+      twitterUrl: p.twitterUrl ?? prev.twitterUrl,
+      crunchbaseUrl: p.crunchbaseUrl ?? prev.crunchbaseUrl,
+      pitchbookUrl: p.pitchbookUrl ?? prev.pitchbookUrl,
+      openingDataRoomUrl: p.openingDataRoomUrl ?? prev.openingDataRoomUrl,
+      publicNewsroomUrl: p.publicNewsroomUrl ?? prev.publicNewsroomUrl,
+      tagline: p.tagline ?? prev.tagline,
+      shortPitch: p.shortPitch ?? prev.shortPitch,
+      incorporationJurisdiction: p.incorporationJurisdiction ?? prev.incorporationJurisdiction,
+      secondaryJurisdiction: p.secondaryJurisdiction ?? prev.secondaryJurisdiction,
+      taxResidencyJurisdiction: p.taxResidencyJurisdiction ?? prev.taxResidencyJurisdiction,
+      preferredCurrency: p.preferredCurrency ?? prev.preferredCurrency,
+      preferredTimezone: p.preferredTimezone ?? prev.preferredTimezone,
+      preferredLanguage: p.preferredLanguage ?? prev.preferredLanguage,
+      preferredCommunicationChannel: p.preferredCommunicationChannel ?? prev.preferredCommunicationChannel,
+      preferredMeetingDuration: p.preferredMeetingDuration ? String(p.preferredMeetingDuration) : prev.preferredMeetingDuration,
+      preferredMeetingTimes: p.preferredMeetingTimes ?? prev.preferredMeetingTimes,
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profileQ.data]);
 
   function onChange(key: keyof WizardData, value: string) {
     setData(prev => ({ ...prev, [key]: value }));
@@ -463,10 +470,12 @@ export default function FounderProfileWizard() {
           if (data.preferredMeetingDuration) patch.preferredMeetingDuration = Number(data.preferredMeetingDuration);
           if (data.preferredMeetingTimes) patch.preferredMeetingTimes = data.preferredMeetingTimes;
         }
+        // v25.10 M5 — include cookies for Safari + cross-origin compatibility.
         const r = await fetch(`/api/founder/profile?companyId=${companyId}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json", "x-confirm": "true" },
           body: JSON.stringify(patch),
+          credentials: "include",
         });
         if (!r.ok) {
           const err = await r.json().catch(() => ({}));

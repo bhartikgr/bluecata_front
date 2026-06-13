@@ -13,6 +13,7 @@ import { hydrateBridgeStore } from "./bridgeStore";
 import { hydrateAllStores } from "./lib/hydrateStores";
 // Sprint-fix May 14 2026 — wire the catch-all route guard AFTER registerRoutes.
 import { applyRouteGuards } from "./lib/applyRouteGuards";
+import { originAllowlistForWrites } from "./middleware/security";
 // v12 Phase A.6 — demo seed gate (non-prod only).
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 import { seedDemoData } from "./lib/seedDemoData";
@@ -184,6 +185,14 @@ app.use((req, res, next) => {
     }
   }
 
+  // v25.24 NH-5 fix (post-verifier) — origin allowlist for state-mutating
+  // writes MUST mount BEFORE applyRouteGuards so cross-site POSTs get a 403
+  // origin_not_allowed BEFORE the generic 401 UNAUTHORIZED. Previously the
+  // allowlist was mounted inside registerRoutes, which Express runs AFTER
+  // applyRouteGuards — making the allowlist a no-op (auth gate fired first).
+  // Same-origin requests, native clients, and curl omit Origin and pass.
+  app.use("/api", originAllowlistForWrites);
+
   // Patch v9 (P0-11): apply catch-all route guards BEFORE registerRoutes
   // so the middleware actually intercepts requests. Express middleware runs
   // in registration order — when registered AFTER routes, an `app.use("/api")`
@@ -274,6 +283,20 @@ app.use((req, res, next) => {
           hydrateBridgeStore();
         } catch (err) {
           log(`bridge hydrate failed (non-fatal): ${(err as Error).message}`, "bridge-worker");
+        }
+        /* v25.21 Lane D NC-001 fix — hydrate every registered durableMap
+         * (DSC scores, M&A intelligence, KYC decisions, membership renewals,
+         * partner status, social signals, member decisions, round
+         * participants, company tier) from `sync_inbox_state` BEFORE the
+         * bridge drain worker starts dispatching inbound events. Before this
+         * fix the maps were RAM-only and lost every restart. */
+        try {
+          // Lazy require so a circular import (durableMap → db → …) can't
+          // break boot ordering.
+          const { hydrateDurableMaps } = require("./durableMap");
+          hydrateDurableMaps();
+        } catch (err) {
+          log(`durable-map hydrate failed (non-fatal): ${(err as Error).message}`, "bridge-worker");
         }
         startBridgeWorker();
       } else {

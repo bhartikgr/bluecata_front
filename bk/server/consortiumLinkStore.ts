@@ -33,7 +33,13 @@ function ensureTable(): void {
 ensureTable();
 
 export function linkConsortiumPartner(companyId: string, partnerId: string): void {
-  links.set(companyId, partnerId);
+  /* v25.23 NH-7 / NH-M (Lane D NH-7, Lane A NEW-6) — fail closed.
+   * Previously this set the in-memory Map FIRST and then swallowed any DB-write
+   * failure, so on a failed write the sponsor link lived only in RAM and
+   * silently disappeared on the next restart (breaking Track D founder-channel
+   * attribution that resolves through consortium_links). Now: write to the DB
+   * FIRST and let a failure propagate (throw); only update the read-cache Map
+   * AFTER the durable write succeeds. The DB is the source of truth. */
   try {
     const db = rawDb();
     db.prepare(
@@ -46,20 +52,32 @@ export function linkConsortiumPartner(companyId: string, partnerId: string): voi
     ).run(companyId, partnerId, new Date().toISOString());
   } catch (err) {
     log.warn("[consortiumLinkStore.link] DB write failed:", (err as Error).message);
+    throw new Error(
+      `CONSORTIUM_LINK_PERSIST_FAILED: ${companyId}->${partnerId}: ${(err as Error).message}`,
+    );
   }
+  // Durable write succeeded — now refresh the read cache.
+  links.set(companyId, partnerId);
 }
 
 export function unlinkConsortiumPartner(companyId: string): boolean {
-  const had = links.delete(companyId);
+  // v25.13 NL2 — was previously returning the Map.delete() boolean which
+  // could be `false` simply because the link existed only in DB (the Map
+  // had not yet been hydrated for this entry after a restart). Callers
+  // interpreted that as failure even though the DB soft-delete succeeded.
+  // Now: DB write is the source of truth; Map eviction is a side effect.
+  links.delete(companyId);
+  let dbOk = false;
   try {
     const db = rawDb();
     db.prepare(
       `UPDATE consortium_links SET unlinked_at = ? WHERE company_id = ? AND unlinked_at IS NULL`,
     ).run(new Date().toISOString(), companyId);
+    dbOk = true;
   } catch (err) {
     log.warn("[consortiumLinkStore.unlink] DB write failed:", (err as Error).message);
   }
-  return had;
+  return dbOk;
 }
 
 export function getConsortiumPartnerId(companyId: string): string | null {

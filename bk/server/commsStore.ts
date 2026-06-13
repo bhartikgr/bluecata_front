@@ -50,6 +50,7 @@ import { publish as ssePublish } from "./lib/sseHub";
 import { emitNotification } from "./notificationsStore";
 import { resolvePersonaId } from "./lib/userContext";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
+import { requireAdmin } from "./lib/authMiddleware"; /* v25.20 Lane 1 NC1 */
 // B-505 fix v23.6.1 — resolve founder CRM contacts that have not yet been
 // provisioned into the comms layer, so "Message" never dead-ends on a 404.
 import { findCrmContactByInvestorId } from "./founderCrmStore";
@@ -236,6 +237,40 @@ const posts = new Map<string, Post>();
 /* server/db/connection.ts) and hydrate on boot. Keeps Map as a read     */
 /* cache; DB is the source of truth.                                     */
 /* ==================================================================== */
+/**
+ * v25.9 — Persist a DM/group channel row so it survives restart.
+ * Avi: "Most of the records are being saved in memory instead of the DB."
+ */
+function persistChannel(ch: Channel): void {
+  try {
+    const db: any = rawDb();
+    db.exec(`CREATE TABLE IF NOT EXISTS comms_channels (
+      id TEXT PRIMARY KEY NOT NULL,
+      kind TEXT NOT NULL,
+      participant_user_ids_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      metadata_json TEXT,
+      deleted_at TEXT
+    );`);
+    db.prepare(
+      `INSERT INTO comms_channels (id, kind, participant_user_ids_json, created_at, metadata_json, deleted_at)
+         VALUES (?, ?, ?, ?, ?, NULL)
+         ON CONFLICT(id) DO UPDATE SET
+           participant_user_ids_json = excluded.participant_user_ids_json,
+           metadata_json = excluded.metadata_json,
+           deleted_at = NULL`,
+    ).run(
+      ch.id,
+      ch.kind,
+      JSON.stringify(ch.participantUserIds ?? []),
+      ch.createdAt,
+      ch.metadata ? JSON.stringify(ch.metadata) : null,
+    );
+  } catch (err) {
+    log.warn("[commsStore.persistChannel] DB write failed (continuing in-memory):", (err as Error).message);
+  }
+}
+
 function persistMessage(m: Message): void {
   try {
     const db: any = rawDb();
@@ -1856,6 +1891,8 @@ export function registerCommsRoutes(app: Express): void {
         metadata: { title: `DM — ${me.legalName} ↔ ${target.legalName}` },
       };
       channels.set(id, ch);
+      /* v25.9 — persist DM channel so it survives restart */
+      persistChannel(ch);
     }
     emitOutbox("dm.channel.opened", actorId, ip, ua, {
       channelId: id, fromUserId: actorId, toUserId: target.id,
@@ -2041,9 +2078,21 @@ export function registerCommsRoutes(app: Express): void {
     res.json({ channelId: ch.id, lastReadByUser, totalReaders, receipts });
   });
 
-  /* ---- Telemetry visibility ---- */
-  app.get("/api/comms/dev/outbox", (_req, res) => res.json(outbox.slice(-50)));
-  app.get("/api/comms/dev/audit", (_req, res) => res.json(auditEntries.slice(-50)));
+  /* ---- Telemetry visibility ----
+     v25.20 Lane 1 NC1 (hard close):
+       These dev-telemetry endpoints were unauthenticated and unrestricted to
+       NODE_ENV. Anyone could GET /api/comms/dev/{outbox,audit} in production
+       and see the last 50 cross-tenant outbound comms + the immutable audit
+       chain. Now: production returns 404 (route effectively does not exist),
+       and non-production requires admin auth. */
+  app.get("/api/comms/dev/outbox", requireAdmin, (_req, res) => {
+    if (process.env.NODE_ENV === "production") return res.status(404).end();
+    return res.json(outbox.slice(-50));
+  });
+  app.get("/api/comms/dev/audit", requireAdmin, (_req, res) => {
+    if (process.env.NODE_ENV === "production") return res.status(404).end();
+    return res.json(auditEntries.slice(-50));
+  });
 }
 
 /* Test access helpers. */
@@ -2163,5 +2212,98 @@ export async function hydrateCommsCollectiveStore(): Promise<void> {
     if (!/no such table/i.test(msg)) {
       log.warn("[hydrate] commsStore (Collective slice): DB read failed:", msg);
     }
+  }
+}
+
+/**
+ * v25.9 — Rehydrate comms channels + messages from DB on boot.
+ *
+ * Avi: "Most of the records are being saved in memory instead of the
+ * database." Channels were previously RAM-only; this rebuilds the channels
+ * Map from comms_channels (persisted by persistChannel) AND backfills the
+ * messages Map from comms_messages (persistMessage).
+ *
+ * Idempotent. Skips rows that already exist in-memory (seed wins).
+ */
+export async function hydrateCommsStore(): Promise<void> {
+  try {
+    const db: any = rawDb();
+
+    /* 1. Channels */
+    let chRows: any[] = [];
+    try {
+      chRows = db.prepare(
+        `SELECT id, kind, participant_user_ids_json, created_at, metadata_json
+           FROM comms_channels WHERE deleted_at IS NULL`,
+      ).all();
+    } catch (err) {
+      const msg = (err as Error).message ?? "";
+      if (!/no such table/i.test(msg)) {
+        log.warn("[hydrate] commsStore.channels: DB read failed:", msg);
+      }
+    }
+    for (const r of chRows) {
+      if (channels.has(r.id)) continue;
+      let participantUserIds: string[] = [];
+      let metadata: any = undefined;
+      try { participantUserIds = JSON.parse(r.participant_user_ids_json ?? "[]"); } catch { /* */ }
+      try { if (r.metadata_json) metadata = JSON.parse(r.metadata_json); } catch { /* */ }
+      const ch: Channel = {
+        id: r.id,
+        kind: r.kind as Channel["kind"],
+        participantUserIds,
+        createdAt: r.created_at,
+        metadata,
+      };
+      channels.set(ch.id, ch);
+    }
+
+    /* 2. Messages (already persisted; rebuild the Map) */
+    let msgRows: any[] = [];
+    try {
+      msgRows = db.prepare(
+        `SELECT id, channel_id, author_user_id, body, created_at, edited_at,
+                deleted_at, reply_to_message_id, attachments_json,
+                starred_by_user_ids_json, reactions_json, read_by_user_ids_json
+           FROM comms_messages WHERE deleted_at IS NULL ORDER BY created_at ASC`,
+      ).all();
+    } catch (err) {
+      const msg = (err as Error).message ?? "";
+      if (!/no such table/i.test(msg)) {
+        log.warn("[hydrate] commsStore.messages: DB read failed:", msg);
+      }
+    }
+    for (const r of msgRows) {
+      if (messages.has(r.id)) continue;
+      let attachments: any = []; let starredBy: string[] = [];
+      let reactions: any = []; let readBy: string[] = [];
+      try { attachments = JSON.parse(r.attachments_json ?? "[]"); } catch { /* */ }
+      try { starredBy = JSON.parse(r.starred_by_user_ids_json ?? "[]"); } catch { /* */ }
+      try { reactions = JSON.parse(r.reactions_json ?? "[]"); } catch { /* */ }
+      try { readBy = JSON.parse(r.read_by_user_ids_json ?? "[]"); } catch { /* */ }
+      const msg: Message = {
+        id: r.id,
+        channelId: r.channel_id,
+        authorUserId: r.author_user_id,
+        body: r.body,
+        createdAt: r.created_at,
+        editedAt: r.edited_at ?? undefined,
+        deletedAt: r.deleted_at ?? undefined,
+        replyToMessageId: r.reply_to_message_id ?? undefined,
+        attachments,
+        starredByUserIds: starredBy,
+        reactions,
+        readByUserIds: readBy,
+      };
+      messages.set(msg.id, msg);
+    }
+
+    if (chRows.length > 0 || msgRows.length > 0) {
+      log.info(
+        `[hydrate] commsStore: ${chRows.length} channels, ${msgRows.length} messages restored`,
+      );
+    }
+  } catch (err) {
+    log.warn(`[hydrate] commsStore: failed (non-fatal): ${(err as Error).message}`);
   }
 }

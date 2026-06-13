@@ -37,6 +37,31 @@ import { sendMail } from "./emailTransport";
 import { getDb } from "./db/connection";
 import { invoices as invoicesTable } from "../shared/schema";
 import { log } from "./lib/logger";
+import { requireAuth } from "./lib/authMiddleware"; /* v25.19 Lane 1 NC2 */
+import { getUserContext } from "./lib/userContext"; /* v25.19 Lane 1 NC2 */
+import { getCompaniesForFounder } from "./multiCompanyStore"; /* v25.19 Lane 1 NC2 */
+
+/* v25.19 Lane 1 NC2 helper — the v25.18 audit caught that GET /api/founder/invoices
+   had no ownership gate. Per-invoice routes already 403 cross-tenant, but the
+   list route returned another company's full invoice history. */
+async function assertInvoiceCompanyOwnership(req: Request, res: Response, companyId: string): Promise<boolean> {
+  const ctx = await getUserContext(req);
+  if (!ctx?.isAuthed) {
+    res.status(401).json({ ok: false, error: "unauthenticated" });
+    return false;
+  }
+  if (ctx.isAdmin) return true;
+  if (!companyId) {
+    res.status(400).json({ ok: false, error: "missing_company_id" });
+    return false;
+  }
+  const owned = getCompaniesForFounder(ctx.userId);
+  if (!owned.some((c) => c.companyId === companyId)) {
+    res.status(403).json({ ok: false, error: "NOT_COMPANY_OWNER" });
+    return false;
+  }
+  return true;
+}
 
 /* ---------- Types ---------- */
 
@@ -626,8 +651,10 @@ export function registerInvoiceRoutes(app: Express): void {
     }
   });
 
-  app.get("/api/founder/invoices", (req: Request, res: Response) => {
+  app.get("/api/founder/invoices", requireAuth, async (req: Request, res: Response) => {
     const companyId = String(req.query.companyId ?? (req as any).userContext?.founder?.activeCompanyId ?? ""); /* v14 */
+    /* v25.19 Lane 1 NC2 (hard close) — ownership-gate the list route. */
+    if (!(await assertInvoiceCompanyOwnership(req, res, companyId))) return;
     const invoices = listInvoicesForCompany(companyId);
     res.json({ ok: true, invoices, total: invoices.length });
   });

@@ -146,7 +146,11 @@ function CollectiveSidebar({ onClose }: { onClose?: () => void }) {
   const BETA_WAITLIST_GROUP: NavGroup = {
     title: "BETA — INVITE-ONLY",
     items: [
-      { href: "/collective/waitlist", label: "Join the Waitlist", icon: UserPlus, "data-testid": "nav-collective-waitlist" },
+      // v25.13 NH1 — /collective/waitlist is not a registered route; the
+      // existing public-style apply page is /investor/apply-to-collective
+      // (or /founder/apply-to-collective for founders). Sending users to
+      // the investor flow gives them a working surface instead of 404.
+      { href: "/investor/apply-to-collective", label: "Join the Waitlist", icon: UserPlus, "data-testid": "nav-collective-waitlist" },
     ],
   };
   const baseGroups: NavGroup[] = collectiveOn ? NAV_GROUPS : [BETA_WAITLIST_GROUP];
@@ -239,7 +243,13 @@ function CollectiveTopbar({ onMenuClick }: { onMenuClick: () => void }) {
   const [, navigate] = useLocation();
 
   function switchToCapavate() {
-    const dest = role === "admin" ? "/admin/dashboard" : "/founder/dashboard";
+    // v25.13 NH2 — was only admin vs founder; investor users would land
+    // on /founder/dashboard and trip 403s against /api/founder/*. Branch
+    // for investor (and any other non-admin/non-founder role) properly.
+    const dest =
+      role === "admin" ? "/admin/dashboard" :
+      role === "investor" ? "/investor/dashboard" :
+      "/founder/dashboard";
     navigate(dest);
   }
 

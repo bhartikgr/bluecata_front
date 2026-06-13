@@ -41,6 +41,17 @@ export default function ReportNew() {
       toast({ title: "Draft created", description: "Edit, schedule, or send from the reports list." });
       navigate("/founder/reports");
     },
+    // v25.20 Lane 5 NH fix: previously the create-report mutation rejected
+    // silently on validation/server errors — the button just stopped doing
+    // anything. Surface the error so the founder knows to fix the input or
+    // retry, instead of staring at an unresponsive form.
+    onError: (err: Error) => {
+      toast({
+        title: "Could not create report",
+        description: err?.message || "Please try again.",
+        variant: "destructive",
+      });
+    },
   });
 
   return (

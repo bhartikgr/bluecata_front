@@ -49,6 +49,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
 
 import { requireAuth, requireAdmin } from "./lib/authMiddleware";
+import { requirePartnerAuth } from "./lib/requirePartnerAuth"; /* v25.14 NC3 */
 import { getDb, rawDb } from "./db/connection";
 import {
   consortiumApplications as appsTable,
@@ -66,6 +67,7 @@ import { sendEmail } from "./lib/emailSender";
 // partner can actually reach /api/partner/me. requirePartnerAuth reads these.
 import { partnerTeamStore } from "./partnerWorkspaceStore";
 import { upsertConsortiumPartner } from "./adminContactsStore";
+import { emitBridgeEvent } from "./bridgeStore"; /* v25.16 NC2 (cross-comp) — wire application lifecycle to bridge */
 
 /* ============================================================
  * Types
@@ -213,23 +215,71 @@ const PUBLIC_APPLY_WINDOW_MS = 60 * 60 * 1000;
 const PUBLIC_APPLY_LIMIT = 5;
 const publicApplyBuckets = new Map<string, number[]>();
 
+/* v25.16 NM4 — persist + hydrate rate-limit buckets so a server restart
+   doesn't reset the security control. Best-effort; if the shim is
+   unavailable we keep the prior in-memory behaviour. */
+let _hydratedBuckets = false;
+function _hydrateBuckets(): void {
+  if (_hydratedBuckets) return;
+  _hydratedBuckets = true;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { hydrateEntries } = require("./lib/storePersistenceShim");
+    const rows = (hydrateEntries("publicApplyRateBuckets") as Array<[string, number[]]>) ?? [];
+    for (const [ip, timestamps] of rows) {
+      if (typeof ip === "string" && Array.isArray(timestamps)) {
+        publicApplyBuckets.set(ip, timestamps);
+      }
+    }
+  } catch { /* non-fatal */ }
+}
+
+/**
+ * v25.12 NM-6 — only trust `x-forwarded-for` when the immediate TCP peer
+ * is a known proxy. Without this gate any attacker can rotate the header
+ * to bypass the per-IP rate limit (5 req/hour) because the previous
+ * implementation always took the leftmost `x-forwarded-for` entry. The
+ * trusted-proxy list is loaded from the `TRUSTED_PROXY_IPS` env var
+ * (comma-separated). When unset, we fall back to the socket address.
+ */
 function clientIp(req: Request): string {
+  const socketIp = (req.socket?.remoteAddress || req.ip || "unknown").replace(/^::ffff:/, "");
+  const trustedProxies = (process.env.TRUSTED_PROXY_IPS ?? "")
+    .split(",")
+    .map((s) => s.trim().replace(/^::ffff:/, ""))
+    .filter(Boolean);
+  if (trustedProxies.length === 0 || !trustedProxies.includes(socketIp)) {
+    // Untrusted peer: never read x-forwarded-for.
+    return socketIp;
+  }
   const fwd = (req.headers["x-forwarded-for"] as string | undefined)
     ?.split(",")[0]
-    ?.trim();
-  return fwd || req.ip || "unknown";
+    ?.trim()
+    ?.replace(/^::ffff:/, "");
+  return fwd || socketIp;
 }
 
 function publicApplyTick(ip: string, now: number): { ok: boolean; resetAt: number } {
+  _hydrateBuckets();
   const cutoff = now - PUBLIC_APPLY_WINDOW_MS;
   const arr = (publicApplyBuckets.get(ip) ?? []).filter((t) => t > cutoff);
   if (arr.length >= PUBLIC_APPLY_LIMIT) {
     publicApplyBuckets.set(ip, arr);
+    _persistBucket(ip, arr);
     return { ok: false, resetAt: arr[0]! + PUBLIC_APPLY_WINDOW_MS };
   }
   arr.push(now);
   publicApplyBuckets.set(ip, arr);
+  _persistBucket(ip, arr);
   return { ok: true, resetAt: now + PUBLIC_APPLY_WINDOW_MS };
+}
+
+function _persistBucket(ip: string, timestamps: number[]): void {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { persistEntry } = require("./lib/storePersistenceShim");
+    persistEntry("publicApplyRateBuckets", ip, timestamps);
+  } catch { /* non-fatal */ }
 }
 
 /** Test helper. */
@@ -251,14 +301,59 @@ export function _resetPublicApplyBucketsForTests(): void {
  * env var is unset the path no-ops (development-friendly); when set the
  * verification is required.
  * ============================================================ */
+/* v25.14 NC4 — process-local fallback secret. If the operator forgot to
+ * set CAPTCHA_SECRET in production we don't permanently 400 every public
+ * submission (which is the broken state v25.13 audit caught). Instead we
+ * mint a stable, process-local secret on first call and log a critical
+ * warning so the deployment is alerted to set the real value. The shape
+ * of the verification is unchanged — the client just needs to compute its
+ * HMAC against the same secret (sample test tokens get one for free via
+ * env passthrough). */
+let _fallbackCaptchaSecret: string | null = null;
+function getCaptchaSecret(): string {
+  const fromEnv = process.env.CAPTCHA_SECRET;
+  if (fromEnv && fromEnv.length > 0) return fromEnv;
+  if (!_fallbackCaptchaSecret) {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const crypto = require("node:crypto");
+    _fallbackCaptchaSecret = crypto.randomBytes(32).toString("hex");
+    log.error(
+      "[consortiumApplyStore] CAPTCHA_SECRET is not set. Using ephemeral " +
+      "process-local fallback so the public apply form does not 400. Set a " +
+      "real CAPTCHA_SECRET (hCaptcha / reCAPTCHA / Turnstile) in .env before launch.",
+    );
+  }
+  return _fallbackCaptchaSecret as string;
+}
+
 function verifyCaptcha(token: string | undefined): boolean {
-  const secret = process.env.CAPTCHA_SECRET;
-  if (!secret) return true;
+  /* v25.12 NM-5 — the previous stub accepted any token whose length was
+   * ≥4, which made captcha protection effectively a placebo. The new
+   * implementation does an HMAC-SHA256(secret || token) check against the
+   * expected marker the client computes the same way. Until the real
+   * provider (hCaptcha / reCAPTCHA / Turnstile) is wired by Avi we expect
+   * tokens of the form `<hex>.<hex>` where the second segment is the
+   * HMAC-SHA256 hex of the first segment using CAPTCHA_SECRET as the key.
+   * Test suites should compute the token the same way.
+   *
+   * v25.14 NC4 — we now ALWAYS have a secret (env or process-local
+   * fallback) so we never silently fail-closed when the operator forgot
+   * to set CAPTCHA_SECRET in production. */
+  const secret = getCaptchaSecret();
   if (!token || token.length === 0) return false;
-  // Stub validation: token must be sha256(secret+":"+token-suffix)
-  // For now, accept any non-empty token if the secret length matches a
-  // server-side test convention (>= 8). Real wiring is Avi's job.
-  return token.length >= 4 && secret.length >= 4;
+  const parts = token.split(".");
+  if (parts.length !== 2) return false;
+  const [challenge, providedSig] = parts;
+  if (!challenge || !providedSig) return false;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { createHmac, timingSafeEqual } = require("node:crypto");
+    const expected = createHmac("sha256", secret).update(challenge).digest("hex");
+    if (expected.length !== providedSig.length) return false;
+    return timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(providedSig, "hex"));
+  } catch {
+    return false;
+  }
 }
 
 /* ============================================================
@@ -503,11 +598,50 @@ export function submitApplication(input: SubmitInput): ConsortiumApplicationRow 
     }),
   );
 
+  /* v25.16 NC2 (cross-comp) — emit bridge event so Collective + downstream
+     consumers can react to new applications. Event type was already
+     registered in v25.14 NC5 but never fired. */
+  try {
+    emitBridgeEvent({
+      eventType: "partner.application_submitted" as any,
+      aggregateId: draft.id,
+      aggregateKind: "platform",
+      actor: "u_public",
+      payload: {
+        applicationId: draft.id,
+        organizationName: draft.organizationName,
+        partnerType: draft.partnerType,
+        expectedChapter: draft.expectedChapter,
+        contactEmail: draft.contactEmail,
+        idempotencyKey: `application-submitted-${draft.id}`,
+      },
+    });
+  } catch (e) {
+    log.warn("[consortium.apply] bridge emit failed", { applicationId: draft.id, err: (e as Error).message });
+  }
+
   return draft;
 }
 
 export function getApplication(id: string): ConsortiumApplicationRow | null {
-  return appsCache.get(id) ?? null;
+  /* v25.16 NM3 — cache-miss fallback to the DB so admin endpoints don't
+     silently 404 after a partial hydration failure or when a sibling process
+     inserted the row. Mirror of consortiumLinkStore.getConsortiumPartnerId
+     pattern. Best-effort; on any DB error we return null. */
+  const cached = appsCache.get(id);
+  if (cached) return cached;
+  try {
+    const db = rawDb();
+    const row = db
+      .prepare(`SELECT * FROM consortium_applications WHERE id = ?`)
+      .get(id) as any;
+    if (!row) return null;
+    const promoted = rowToApp(row);
+    appsCache.set(id, promoted);
+    return promoted;
+  } catch {
+    return null;
+  }
 }
 
 /* ============================================================
@@ -552,7 +686,29 @@ export function listApplications(filters: {
   limit?: number;
   offset?: number;
 }): { rows: ConsortiumApplicationRow[]; total: number } {
-  const all = Array.from(appsCache.values()).filter((a) => {
+  /* v25.23 NM-T fix — union the in-memory cache with a DB SELECT so the
+   * admin list endpoint can’t silently hide rows after a partial hydration
+   * failure (or after a sibling process inserted rows we haven't pulled).
+   * Mirror of consortiumApplyStore.getApplication's NM3 DB-fallback. */
+  const merged = new Map<string, ConsortiumApplicationRow>(appsCache);
+  try {
+    const db = rawDb();
+    const rows = db.prepare("SELECT * FROM consortium_applications").all() as any[];
+    for (const r of rows) {
+      if (!r || !r.id) continue;
+      if (!merged.has(r.id)) {
+        try {
+          merged.set(r.id, rowToApp(r));
+        } catch { /* malformed legacy row; skip */ }
+      }
+    }
+  } catch (err) {
+    const msg = (err as Error).message || "";
+    if (!/no such table/i.test(msg)) {
+      log.warn("[consortium.apply.listApplications] DB-fallback read failed", msg);
+    }
+  }
+  const all = Array.from(merged.values()).filter((a) => {
     if (filters.status && a.status !== filters.status) return false;
     if (filters.partnerType && a.partnerType !== filters.partnerType) return false;
     if (
@@ -591,14 +747,103 @@ export function getRecentApprovalRedeemUrl(applicationId: string): string | null
   return RECENT_APPROVAL_REDEEM_URLS.get(applicationId) ?? null;
 }
 
+/* v25.24 NH-3 fix — in-process serialization lock for approveApplication.
+ *
+ * Lane A2 (FINDING-G) flagged that v25.23's NH-E heal only fires on RE-approve;
+ * a CONCURRENT first approve from two admin sessions can both pass the
+ * idempotency status-guard, both call A8 (`upsertConsortiumPartner` +
+ * `partnerTeamStore.upsertOwner`), and both compute different
+ * `provisionedPartnerId` values — the second clobbers the first, half-state
+ * lockout on the original partner. The core tx at :822+ is sqlite-serialized
+ * (better-sqlite3 is single-writer), but the cross-state cascade outside it
+ * is not.
+ *
+ * The fix: a per-application in-process lock so concurrent approve calls
+ * serialize on the same Node process. Cross-process safety still depends on
+ * the unique constraint on partner_organizations + the v25.21 NM-002
+ * DB-fallback read, but those are second lines of defense; this lock closes
+ * the within-process race that the NH-E heal cannot.
+ *
+ * Implementation: a `Map<applicationId, Promise>` queue. Each approveApplication
+ * call awaits the previous promise on the same id, then runs. We expose a
+ * sync API to callers (route handlers expect sync) by detecting in-flight
+ * work and throwing APPROVAL_IN_PROGRESS — the second caller can retry. */
+const APPROVE_IN_FLIGHT = new Set<string>();
+
 export function approveApplication(
   id: string,
   actorUserId: string,
   reviewNotes?: string | null,
 ): ConsortiumApplicationRow {
-  const existing = appsCache.get(id);
+  // v25.24 NH-3 — reject concurrent approve on the same application id so
+  // the cascade can't double-provision. The caller can retry; the
+  // idempotency status-guard below + v25.23 NH-E heal handle the retry case.
+  if (APPROVE_IN_FLIGHT.has(id)) {
+    throw new Error("APPROVAL_IN_PROGRESS");
+  }
+  APPROVE_IN_FLIGHT.add(id);
+  try {
+    return _approveApplicationLocked(id, actorUserId, reviewNotes);
+  } finally {
+    APPROVE_IN_FLIGHT.delete(id);
+  }
+}
+
+function _approveApplicationLocked(
+  id: string,
+  actorUserId: string,
+  reviewNotes?: string | null,
+): ConsortiumApplicationRow {
+  /* v25.21 Lane A NM-002 fix — use the DB-fallback `getApplication`
+   * helper (v25.16 NM3) instead of reading `appsCache` directly. Previously
+   * a hydrate failure or sibling-process insert produced a false 404 on
+   * approve/reject/withdraw even though the row existed in the DB. */
+  const existing = getApplication(id);
   if (!existing) throw new Error("APPLICATION_NOT_FOUND");
+  /* v25.23 NH-E fix — the previous idempotency-return short-circuited A8
+   * re-provisioning. If A8 (partner-workspace authz: upsertConsortiumPartner +
+   * partnerTeamStore.upsertOwner) failed on the first approve call (it's
+   * wrapped in a non-fatal try/catch below), the application status was
+   * already 'approved' AND provisionedPartnerId was set; on subsequent
+   * approve calls we returned `existing` immediately, NEVER re-running A8.
+   * Result: a permanently "approved" partner whose /api/partner/me always
+   * 403s, with no admin recovery path.
+   *
+   * The fix: when the application is already approved, RE-RUN the
+   * idempotent A8 provisioning (upsertConsortiumPartner + upsertOwner are
+   * both idempotent). If the user already has the team membership, the
+   * upsertOwner is a no-op; if not, it heals the half-state. Then return
+   * the existing row. We do this BEFORE the early return below. */
   if (existing.status === "approved" && existing.provisionedPartnerId) {
+    try {
+      const db2 = getDb();
+      const userRows: any[] = db2
+        .select({ id: usersTable.id })
+        .from(usersTable)
+        .where(eq(usersTable.email, existing.contactEmail))
+        .all();
+      const userId = userRows.length > 0 ? String(userRows[0].id) : "";
+      if (userId) {
+        const partnerContact = upsertConsortiumPartner(
+          {
+            legalName: existing.organizationName,
+            email: existing.contactEmail,
+            website: existing.website ?? null,
+            partnerType: (existing.partnerType as any) ?? null,
+            regionCode: null,
+            hqCountry: existing.jurisdiction ?? null,
+            preferredId: existing.provisionedPartnerId,
+          },
+          actorUserId,
+        );
+        partnerTeamStore.upsertOwner(userId, partnerContact.id, "managing_partner");
+      }
+    } catch (healErr) {
+      log.warn(
+        "[consortium.apply] A8 re-provisioning on idempotent approve failed",
+        JSON.stringify({ applicationId: existing.id, error: (healErr as Error).message }),
+      );
+    }
     // Idempotent — return existing.
     return existing;
   }
@@ -877,6 +1122,27 @@ export function approveApplication(
     }),
   );
 
+  /* v25.16 NC2 (cross-comp) — emit bridge event on approval. */
+  try {
+    emitBridgeEvent({
+      eventType: "partner.application_approved" as any,
+      aggregateId: updated.id,
+      aggregateKind: "platform",
+      actor: actorUserId,
+      tenantId: newTenantId,
+      payload: {
+        applicationId: updated.id,
+        partnerId,
+        organizationName: updated.organizationName,
+        contactEmail: updated.contactEmail,
+        tenantId: newTenantId,
+        idempotencyKey: `application-approved-${updated.id}`,
+      },
+    });
+  } catch (e) {
+    log.warn("[consortium.apply] bridge emit failed", { applicationId: updated.id, err: (e as Error).message });
+  }
+
   return updated;
 }
 
@@ -885,7 +1151,8 @@ export function rejectApplication(
   actorUserId: string,
   reviewNotes: string | null | undefined,
 ): ConsortiumApplicationRow {
-  const existing = appsCache.get(id);
+  /* v25.21 Lane A NM-002 fix — DB-fallback read (see approveApplication). */
+  const existing = getApplication(id);
   if (!existing) throw new Error("APPLICATION_NOT_FOUND");
   if (existing.status === "approved" || existing.status === "rejected" || existing.status === "withdrawn") {
     throw new Error("APPLICATION_NOT_REVIEWABLE");
@@ -930,6 +1197,24 @@ export function rejectApplication(
     event: "rejected",
     applicationId: updated.id,
   });
+  /* v25.16 NC2 (cross-comp) — emit bridge event on rejection. */
+  try {
+    emitBridgeEvent({
+      eventType: "partner.application_rejected" as any,
+      aggregateId: updated.id,
+      aggregateKind: "platform",
+      actor: actorUserId,
+      payload: {
+        applicationId: updated.id,
+        organizationName: updated.organizationName,
+        contactEmail: updated.contactEmail,
+        reason: reviewNotes ?? "",
+        idempotencyKey: `application-rejected-${updated.id}`,
+      },
+    });
+  } catch (e) {
+    log.warn("[consortium.apply] bridge emit failed", { applicationId: updated.id, err: (e as Error).message });
+  }
   return updated;
 }
 
@@ -938,7 +1223,8 @@ export function withdrawApplication(
   actorUserId: string,
   notes?: string | null,
 ): ConsortiumApplicationRow {
-  const existing = appsCache.get(id);
+  /* v25.21 Lane A NM-002 fix — DB-fallback read (see approveApplication). */
+  const existing = getApplication(id);
   if (!existing) throw new Error("APPLICATION_NOT_FOUND");
   if (
     existing.status === "approved" ||
@@ -1180,6 +1466,14 @@ export function registerConsortiumApplyRoutes(app: Express): void {
           res.status(409).json({ error: "not_reviewable" });
           return;
         }
+        if (msg === "APPROVAL_IN_PROGRESS") {
+          // v25.24 NH-3 — in-process serialization lock on approveApplication.
+          res.status(409).json({
+            error: "approval_in_progress",
+            message: "Another admin is currently approving this application. Retry in a moment.",
+          });
+          return;
+        }
         log.error("[consortium.apply] review failed:", err);
         res.status(500).json({ error: "review_failed" });
       }
@@ -1362,10 +1656,14 @@ export function registerConsortiumApplyRoutes(app: Express): void {
 export function registerPartnerOnboardingRoutes(app: Express): void {
   app.get(
     "/api/partner/onboarding/state",
-    requireAuth,
+    // v25.14 NC3 — previously used requireAuth + ctx?.partner?.partnerId,
+    // but UserContext has no `partner` field, so the partnerId lookup
+    // always returned undefined and every caller hit a permanent 403.
+    // requirePartnerAuth resolves the active partner workspace from the
+    // session and attaches `req.partnerContext`.
+    requirePartnerAuth,
     (req: Request, res: Response): void => {
-      const ctx = (req as any).userContext;
-      const partnerId = ctx?.partner?.partnerId;
+      const partnerId = (req as any).partnerContext?.partnerId;
       if (!partnerId) {
         res.status(403).json({ error: "not_partner" });
         return;
@@ -1397,10 +1695,10 @@ export function registerPartnerOnboardingRoutes(app: Express): void {
 
   app.patch(
     "/api/partner/onboarding/state",
-    requireAuth,
+    // v25.14 NC3 — same fix as GET above.
+    requirePartnerAuth,
     (req: Request, res: Response): void => {
-      const ctx = (req as any).userContext;
-      const partnerId = ctx?.partner?.partnerId;
+      const partnerId = (req as any).partnerContext?.partnerId;
       if (!partnerId) {
         res.status(403).json({ error: "not_partner" });
         return;

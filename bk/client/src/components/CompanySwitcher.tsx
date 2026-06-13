@@ -93,6 +93,36 @@ export function CompanySwitcher() {
       queryClient.invalidateQueries({ queryKey: ["/api/founder/dataroom/files"] });
       queryClient.invalidateQueries({ queryKey: ["/api/founder/reports2"] });
       queryClient.invalidateQueries({ queryKey: ["/api/founder/investor-crm"] });
+      // v25.20 Lane 6 NH fix: /api/auth/me carries the user's active company
+      // context and the billing surface keys off it. Billing previously kept
+      // showing the prior company's subscription/plan after a switch until
+      // hard-reload. Also flush billing / settings / profile namespaces that
+      // are tied to the active company so subsequent reads refetch fresh.
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/founder/billing"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/billing"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/founder/subscription"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/founder/profile"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/founder/settings"] });
+      // v25.21 Lane D NM fix — Collective surfaces (dashboard, companies, DSC
+      // scores, eligibility, deal-room, soft-circles, transaction-prep) are
+      // server-resolved against the active company / membership context, but
+      // the query keys carry no company discriminator, so they stuck on the
+      // prior company until hard reload (same pattern as the v25.20 Billing
+      // fix). Flush every collective namespace on switch.
+      queryClient.invalidateQueries({ queryKey: ["/api/collective/dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/collective/companies"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/collective/dsc/scores"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/collective/dsc/pipeline"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/collective/eligibility"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/collective/membership/me"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/collective/dealroom/companies"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/collective/soft-circles"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/collective/activity"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/collective/applications/mine"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/collective/network"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/collective/transaction-prep"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/founder/collective/applications/mine"] });
       const co = asArray(companiesQuery.data).find((c) => c.companyId === companyId);
       if (co) toast({ title: "Switched company", description: `Now viewing ${co.companyName}` });
     },

@@ -14,7 +14,7 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@
 import { Label } from "@/components/ui/label";
 import { useCapavateToast } from "./Toast";
 import { InlineError } from "./InlineError";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useMutation } from "@tanstack/react-query";
 
 export interface WarmIntroPrefill {
@@ -55,6 +55,9 @@ export function WarmIntroModal({ open, onOpenChange, requesterCompanyId, prefill
       return res.json();
     },
     onSuccess: () => {
+      // v25.13 NM1 — refresh any open intro-request lists so the new
+      // request appears without requiring a manual refetch.
+      queryClient.invalidateQueries({ queryKey: ["/api/founder/crm/intro-requests"] });
       toast({ title: "Warm intro requested", description: "We'll notify you when the recipient responds.", tone: "success" });
       onOpenChange(false);
       setTargetName(""); setAskText(""); setDeckUrl("");

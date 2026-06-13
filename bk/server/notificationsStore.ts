@@ -18,6 +18,10 @@ import type { Express, Request, Response } from "express";
 import { randomBytes } from "node:crypto";
 import { getUserContext } from "./lib/userContext";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
+import { persistEntry, softDeleteEntry, hydrateEntries } from "./lib/storePersistenceShim";
+
+const PERSIST_STORE = "notificationsStore";
+const PERSIST_PREFS_STORE = "notificationsPreferencesStore";
 
 export type NotificationKind =
   // Core (15 from audit §6.5)
@@ -34,6 +38,21 @@ export type NotificationKind =
   | "message.received"
   | "collective.eligibility_gained"
   | "collective.membership_approved"
+  // v25.13 NM4 — application reject path emits a user-facing notification.
+  | "collective.membership_rejected"
+  // v25.14 F3-NC1 — partner referred a founder/investor to Capavate.
+  | "partner.referral_received"
+  // v25.14 F1-NH2 / F1-NM3 — consortium application lifecycle.
+  | "partner.application_submitted"
+  | "partner.application_approved"
+  | "partner.application_rejected"
+  // v25.14 NM2 — attribution events.
+  | "partner.attribution_granted"
+  | "partner.attribution_revoked"
+  // v25.16 NM6 — deal-promotion moderation outcomes (previously miscast as cap_table.broadcast).
+  | "partner.promotion_approved"
+  | "partner.promotion_rejected"
+  | "partner.promotion_changes_requested"
   | "spv.launched"
   | "spv.subscription_countersigned"
   // Collective-specific (6 from audit §6.5)
@@ -66,6 +85,16 @@ export const ALL_NOTIFICATION_KINDS: NotificationKind[] = [
   "message.received",
   "collective.eligibility_gained",
   "collective.membership_approved",
+  "collective.membership_rejected",
+  "partner.referral_received",
+  "partner.application_submitted",
+  "partner.application_approved",
+  "partner.application_rejected",
+  "partner.attribution_granted",
+  "partner.attribution_revoked",
+  "partner.promotion_approved",
+  "partner.promotion_rejected",
+  "partner.promotion_changes_requested",
   "spv.launched",
   "spv.subscription_countersigned",
   "dsc.company_assigned",
@@ -131,6 +160,9 @@ export function emitNotification(args: {
     channels: { inApp: true, email: false, push: false, ...args.channels },
   };
   store.unshift(n);
+  /* v25.9 — persist immediately so notifications survive restart.
+   * Avi: "Most of the records are being saved in memory instead of the DB." */
+  persistEntry(PERSIST_STORE, n.id, n);
   // Fan-out via SSE
   const subs = sseClients.get(args.userId) ?? [];
   for (const r of subs) {
@@ -226,6 +258,8 @@ export function registerNotificationsRoutes(app: Express): void {
       if (targets.length > 0 && !targets.includes(item.id)) continue;
       if (typeof read === "boolean") item.read = read;
       if (typeof archived === "boolean") item.archived = archived;
+      /* v25.9 — persist the read/archived flag change so it survives restart. */
+      persistEntry(PERSIST_STORE, item.id, item);
       n++;
     }
     res.json({ ok: true, updated: n });
@@ -240,7 +274,11 @@ export function registerNotificationsRoutes(app: Express): void {
     const userId = ctx.userId;
     let n = 0;
     for (const item of store) {
-      if (item.userId === userId && !item.read) { item.read = true; n++; }
+      if (item.userId === userId && !item.read) {
+        item.read = true;
+        persistEntry(PERSIST_STORE, item.id, item); /* v25.9 — persist */
+        n++;
+      }
     }
     res.json({ ok: true, marked: n });
   });
@@ -272,6 +310,7 @@ export function registerNotificationsRoutes(app: Express): void {
       }
     }
     preferences.set(userId, cur);
+    persistEntry(PERSIST_PREFS_STORE, userId, cur); /* v25.9 — persist */
     res.json(cur);
   });
 
@@ -355,3 +394,36 @@ export const _testNotifications = {
   store,
   preferences,
 };
+
+/**
+ * v25.9 — Rebuild the in-memory notification store + preferences from the
+ * kv_notificationsStore + kv_notificationsPreferencesStore tables on boot.
+ * Avi: "Most of the records are being saved in memory instead of the
+ * database." This hydrate function restores prior session data.
+ */
+export async function hydrateNotificationsStore(): Promise<void> {
+  try {
+    /* Notifications */
+    const notifEntries = hydrateEntries<Notification>(PERSIST_STORE);
+    store.length = 0;
+    for (const [, n] of notifEntries) store.push(n);
+    /* Sort newest first so emitNotification's unshift ordering is preserved */
+    store.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+
+    /* Preferences */
+    const prefEntries = hydrateEntries<NotificationPreferences>(PERSIST_PREFS_STORE);
+    preferences.clear();
+    for (const [userId, p] of prefEntries) preferences.set(userId, p);
+
+    if (notifEntries.length > 0 || prefEntries.length > 0) {
+      /* Use console.info because importing logger here would create a circular dep */
+      console.info(
+        `[hydrate] notificationsStore: ${notifEntries.length} notifications, ${prefEntries.length} preference profiles restored`,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      `[hydrate] notificationsStore: DB read failed (non-fatal): ${(err as Error).message}`,
+    );
+  }
+}

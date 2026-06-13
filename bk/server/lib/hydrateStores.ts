@@ -89,30 +89,49 @@ import { hydrateProfileStore as realHydrateProfileStoreInvestor } from "../profi
 // v24.4.1 — partnerWorkspaceStore RAM→DB (6 new tables: team_members,
 // team_invitations, notes, tasks, files, workspace_settings).
 import { hydratePartnerWorkspaceStoreV241 as realHydratePartnerWorkspaceV241 } from "../partnerWorkspaceStore";
+/* v25.9 — new hydrate functions for the 7 previously-stub-only stores.
+ * Avi: "Most of the records are being saved in memory instead of the DB." */
+import { hydrateNotificationsStore as realHydrateNotifications } from "../notificationsStore";
+import { hydrateRegionExtensionStore as realHydrateRegionExtension } from "../regionExtensionStore";
+import { hydrateNotificationCampaignStore as realHydrateNotificationCampaign } from "../notificationCampaignStore";
+import { hydrateEmailCampaignStore as realHydrateEmailCampaign } from "../emailCampaignStore";
+import { hydrateMembershipStore as realHydrateMembership } from "../membershipStore";
+import { hydratePricingModelStore as realHydratePricingModel } from "../pricingModelStore";
+import { hydrateCommsStore as realHydrateComms } from "../commsStore";
+// v25.10 — securities persistence (closes routes.ts:2198 RAM-only push).
+import { hydrateSecuritiesStore as realHydrateSecurities } from "./securitiesStore";
+import { securities as mockSecuritiesArray } from "../mockData";
+// v25.10 — fixes from full E2E sweep.
+//   C4: hydrate M&A initiatives from kv_maInitiativesStore so they survive restart.
+//   H1: hydrate company_logos blob table so uploaded logos survive restart.
+import { hydrateMaInitiativesStore as realHydrateMaInitiatives } from "../maIntelligenceStore";
+import { hydrateCompanyLogos as realHydrateCompanyLogos } from "./companyLogoRoutes";
+/* v25.11 — deep-second-pass hydrators. Each closes a RAM-only persistence
+ * gap surfaced by the v25.11 sweep (yourDecision, milestone broadcasts,
+ * carry-forward audit log, sprint21 Q&A messages, financial-request tokens,
+ * mute/report stores, initial shareholders). */
+import { hydrateYourDecisionStore as realHydrateYourDecision } from "../yourDecisionStore";
+import { hydrateMilestoneBroadcastStore as realHydrateMilestoneBroadcasts } from "../milestoneBroadcastStore";
+import { hydrateCarryForwardAuditLog as realHydrateCarryForwardAudit } from "../roundCarryForwardRoutes";
+import { hydrateQaMessagesStore as realHydrateQaMessages } from "../sprint21InvitationsRoutes";
+import { hydrateFinancialRequestTokens as realHydrateFinancialReqTokens } from "../companyProfileStore";
+import { hydrateSprint20Wave2Stores as realHydrateSprint20Wave2 } from "../sprint20Wave2Routes";
+import { hydrateRoundInitialShareholders as realHydrateRoundInitialShareholders } from "./roundInitialShareholdersStore";
+/* v25.12 NM-7/NM-9 — hydrate partner pipeline + funds + attributions via the
+ * kv shim layer so each survives restart. */
+import { hydratePartnerWorkspaceShimStore as realHydratePartnerWorkspaceShim } from "../partnerWorkspaceStore";
 import { log } from "./logger";
 
-const STORES = [
-  "subscriptionsStore",
-  "adminContactsStore",
-  "invoiceStore",
-  "pricingModelStore",
-  "notificationCampaignStore",
-  "emailCampaignStore",
-  "regionExtensionStore",
-  "legalConsentStore",
-  "companyProfileStore",
-  // Sprint-fix additions:
-  "founderCrmStore",
-  "multiCompanyStore",
-  "membershipStore",
-  "dataroomStore",
-  "reportsStore",
-  "captableCommitStore",
-  "termSheetStore",
-  "crmStore",
-  "commsStore",
-  "notificationsStore",
-];
+/* v25.9 — the legacy STUB list. Items here that gained a REAL hydrate fn
+ * (now in HYDRATE_ORDER below) are removed so we don't log misleading
+ * "would load" messages for stores that are actually being loaded.
+ * Seven previously-stub-only stores now have real hydrate fns:
+ *   notificationsStore, regionExtensionStore, notificationCampaignStore,
+ *   emailCampaignStore, membershipStore, pricingModelStore, commsStore.
+ * The remaining stub names are kept ONLY because legacy tests assert on
+ * the "would load" log message; they're no-op DB-wise but the log line
+ * is preserved for back-compat. */
+const STORES: string[] = [];
 
 /**
  * HYDRATE_ORDER — v12 sequential hydration sequence. Order matters:
@@ -242,6 +261,111 @@ const HYDRATE_ORDER: Array<{ name: string; fn: () => Promise<void> }> = [
   // Runs after partnerWorkspaceV19Store and partnerWorkspaceCollective so
   // the partner identities and workspace context are already warm.
   { name: "partnerWorkspaceStore (v24.4.1)", fn: realHydratePartnerWorkspaceV241 },
+  /* v25.9 — seven previously-stub-only stores now hydrate from DB.
+   * Position them near the end so all prerequisites (companies, rounds,
+   * cap table) are already in memory. */
+  { name: "notificationsStore",        fn: realHydrateNotifications },
+  { name: "regionExtensionStore",      fn: realHydrateRegionExtension },
+  { name: "notificationCampaignStore", fn: realHydrateNotificationCampaign },
+  { name: "emailCampaignStore",        fn: realHydrateEmailCampaign },
+  { name: "membershipStore",           fn: realHydrateMembership },
+  { name: "pricingModelStore",         fn: realHydratePricingModel },
+  { name: "commsStore (DM+messages)",  fn: realHydrateComms },
+  /* v25.10 — securities. Restores the legacy in-process `securities` array
+   * (imported from mockData.ts) from kv_securitiesStore on boot. Closes a
+   * RAM-only persistence gap where POST /api/companies/:id/securities pushed
+   * into the array but never wrote to DB. */
+  {
+    name: "securitiesStore",
+    fn: async () => {
+      const n = realHydrateSecurities(mockSecuritiesArray as unknown as Parameters<typeof realHydrateSecurities>[0]);
+      if (n > 0) log.info({ route: "hydrate.securitiesStore", count: n });
+    },
+  },
+  /* v25.10 fix C4 — M&A initiatives. Each investor-initiated initiative
+   * was previously stored in a process-scoped array and lost on restart;
+   * persistence now flows through kv_maInitiativesStore. */
+  {
+    name: "maInitiativesStore",
+    fn: async () => {
+      const n = realHydrateMaInitiatives();
+      if (n > 0) log.info({ route: "hydrate.maInitiativesStore", count: n });
+    },
+  },
+  /* v25.10 fix H1 — company logos. The in-memory Map cache is restored
+   * from the company_logos blob table. */
+  {
+    name: "companyLogos",
+    fn: async () => {
+      const n = realHydrateCompanyLogos();
+      if (n > 0) log.info({ route: "hydrate.companyLogos", count: n });
+    },
+  },
+  /* v25.11 NC1 — investor decision state machine. Must hydrate AFTER
+   * roundInvitationsStore so invitation IDs are warm. */
+  {
+    name: "yourDecisionStore",
+    fn: async () => {
+      const n = realHydrateYourDecision();
+      if (n > 0) log.info({ route: "hydrate.yourDecisionStore", count: n });
+    },
+  },
+  /* v25.11 NC2 — milestone broadcasts. Independent of round IDs; safe at end. */
+  {
+    name: "milestoneBroadcastStore",
+    fn: async () => {
+      const n = realHydrateMilestoneBroadcasts();
+      if (n > 0) log.info({ route: "hydrate.milestoneBroadcastStore", count: n });
+    },
+  },
+  /* v25.11 NH1 — round carry-forward audit log. */
+  {
+    name: "carryForwardAuditLog",
+    fn: async () => {
+      const n = realHydrateCarryForwardAudit();
+      if (n > 0) log.info({ route: "hydrate.carryForwardAuditLog", count: n });
+    },
+  },
+  /* v25.11 NH5 — founder Q&A messages thread. Hydrates after roundsStore. */
+  {
+    name: "qaMessagesStore",
+    fn: async () => {
+      const n = realHydrateQaMessages();
+      if (n > 0) log.info({ route: "hydrate.qaMessagesStore", count: n });
+    },
+  },
+  /* v25.11 NM1 — accountant financial-request tokens. */
+  {
+    name: "financialRequestTokens",
+    fn: async () => {
+      const n = realHydrateFinancialReqTokens();
+      if (n > 0) log.info({ route: "hydrate.financialRequestTokens", count: n });
+    },
+  },
+  /* v25.11 NM2 — mute + reported-post stores. */
+  {
+    name: "sprint20Wave2Stores",
+    fn: async () => {
+      const n = realHydrateSprint20Wave2();
+      if (n > 0) log.info({ route: "hydrate.sprint20Wave2Stores", count: n });
+    },
+  },
+  /* v25.11 NM3 — round initial shareholders. */
+  {
+    name: "roundInitialShareholdersStore",
+    fn: async () => {
+      const n = realHydrateRoundInitialShareholders();
+      if (n > 0) log.info({ route: "hydrate.roundInitialShareholdersStore", count: n });
+    },
+  },
+  /* v25.12 NM-7 / NM-9 — partner pipeline + funds + attributions kv-shim. */
+  {
+    name: "partnerWorkspaceShimStore",
+    fn: async () => {
+      const n = realHydratePartnerWorkspaceShim();
+      if (n > 0) log.info({ route: "hydrate.partnerWorkspaceShimStore", count: n });
+    },
+  },
 ];
 
 /** Stub hydrate factory — used for stores not yet migrated to DB-backed hybrid. */

@@ -41,7 +41,9 @@ const upload = multer({
 });
 
 // ---------------------------------------------------------------------------
-// In-memory mute + report stores (cleared on restart; production would use DB)
+// Persistent mute + report stores (v25.11 NM2)
+// Backed by the kv shim so mute preferences and content reports survive restart.
+// The Maps remain the hot read path; the shim is the durable write-through.
 // ---------------------------------------------------------------------------
 const mutedAuthors = new Map<string, Set<string>>(); // userId → Set<authorId>
 const reportedPosts = new Map<string, { postId: string; reporterId: string; reason: string; ts: string }[]>();
@@ -49,6 +51,57 @@ const reportedPosts = new Map<string, { postId: string; reporterId: string; reas
 function getMutedSet(userId: string): Set<string> {
   if (!mutedAuthors.has(userId)) mutedAuthors.set(userId, new Set());
   return mutedAuthors.get(userId)!;
+}
+
+/**
+ * v25.11 NM2 — rebuild the in-memory Maps from kv on boot. Wired into
+ * HYDRATE_ORDER so deploys do not lose user mute preferences or pending
+ * moderation reports.
+ */
+export function hydrateSprint20Wave2Stores(): number {
+  let n = 0;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { hydrateEntries } = require("./lib/storePersistenceShim");
+    const mutedRows = hydrateEntries("mutedAuthors") as Array<[string, string[]]>;
+    if (Array.isArray(mutedRows)) {
+      for (const [userId, arr] of mutedRows) {
+        if (typeof userId !== "string" || !Array.isArray(arr)) continue;
+        mutedAuthors.set(userId, new Set(arr.filter((x) => typeof x === "string")));
+        n += 1;
+      }
+    }
+    const reportRows = hydrateEntries("reportedPosts") as Array<[
+      string,
+      { postId: string; reporterId: string; reason: string; ts: string }[],
+    ]>;
+    if (Array.isArray(reportRows)) {
+      for (const [postId, arr] of reportRows) {
+        if (typeof postId !== "string" || !Array.isArray(arr)) continue;
+        reportedPosts.set(postId, arr);
+        n += 1;
+      }
+    }
+  } catch {
+    /* shim unavailable — first boot or migration */
+  }
+  return n;
+}
+
+function persistMutedAuthors(userId: string): void {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { persistEntry } = require("./lib/storePersistenceShim");
+    persistEntry("mutedAuthors", userId, Array.from(getMutedSet(userId)));
+  } catch { /* non-fatal */ }
+}
+
+function persistReportedPosts(postId: string): void {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { persistEntry } = require("./lib/storePersistenceShim");
+    persistEntry("reportedPosts", postId, reportedPosts.get(postId) ?? []);
+  } catch { /* non-fatal */ }
 }
 
 export function registerSprint20Wave2Routes(app: Express): void {
@@ -85,17 +138,99 @@ export function registerSprint20Wave2Routes(app: Express): void {
    * POST /api/collective/kyc-upload  (multipart/form-data, field "file")
    * Accepts a PDF/JPG/PNG up to 20 MB and returns a synthetic upload URL.
    */
+  /* v25.11 NH2 fix — the previous handler used multer.memoryStorage() and
+   * returned a synthetic /uploads/<random>.<ext> URL. The file bytes were
+   * never written anywhere, so the URL pointed at nothing — compliance
+   * blocker. This handler now writes the bytes to the kyc_documents SQLite
+   * table (BLOB column) and returns a real URL /api/collective/kyc-document/:id
+   * which the matching GET serves below. */
   app.post(
     "/api/collective/kyc-upload",
     upload.single("file"),
     (req: Request, res: Response) => {
+      const ctx = (req as any).userContext;
+      if (!ctx?.isAuthed) {
+        return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
+      }
       const file = req.file;
       if (!file) {
         return res.status(400).json({ ok: false, error: "No file received" });
       }
-      const filename =
-        randomBytes(8).toString("hex") + path.extname(file.originalname);
-      return res.json({ ok: true, url: "/uploads/" + filename });
+      const id = randomBytes(12).toString("hex");
+      const ext = path.extname(file.originalname || "").slice(0, 8);
+      const url = `/api/collective/kyc-document/${id}`;
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { rawDb } = require("./db/connection");
+        const db: any = rawDb();
+        /* v25.11 NH2 — we use a distinct table name (collective_kyc_blobs)
+         * to avoid colliding with the legacy kyc_documents schema owned
+         * by kycDocumentStore.ts. That earlier table has its own columns
+         * (investor_id / doc_type / blob_base64) and is consumed by a
+         * different compliance flow. */
+        db.exec(`CREATE TABLE IF NOT EXISTS collective_kyc_blobs (
+          id TEXT PRIMARY KEY NOT NULL,
+          user_id TEXT NOT NULL,
+          field TEXT,
+          original_name TEXT NOT NULL,
+          mime TEXT NOT NULL,
+          ext TEXT NOT NULL,
+          payload BLOB NOT NULL,
+          created_at TEXT NOT NULL
+        );`);
+        db.prepare(
+          `INSERT INTO collective_kyc_blobs (id, user_id, field, original_name, mime, ext, payload, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+          id,
+          ctx.userId,
+          String((req.body && req.body.field) || "").slice(0, 60),
+          (file.originalname || "").slice(0, 200),
+          file.mimetype || "application/octet-stream",
+          ext,
+          file.buffer,
+          new Date().toISOString(),
+        );
+      } catch (err) {
+        return res.status(500).json({ ok: false, error: "persist_failed", message: (err as Error).message });
+      }
+      return res.json({ ok: true, id, url });
+    },
+  );
+
+  /* v25.11 NH2 — GET endpoint to retrieve a previously-uploaded KYC document
+   * blob. The owner can fetch their own; admins can fetch any (for compliance
+   * review). Narrow surface: no listing, only direct by-id reads. */
+  app.get(
+    "/api/collective/kyc-document/:id",
+    (req: Request, res: Response) => {
+      const ctx = (req as any).userContext;
+      if (!ctx?.isAuthed) {
+        return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
+      }
+      const id = String(req.params.id || "");
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { rawDb } = require("./db/connection");
+        const db: any = rawDb();
+        const row: any = db.prepare(
+          `SELECT user_id, mime, ext, payload, original_name FROM collective_kyc_blobs WHERE id = ?`,
+        ).get(id);
+        if (!row) return res.status(404).json({ ok: false, error: "not_found" });
+        if (!ctx.isAdmin && row.user_id !== ctx.userId) {
+          return res.status(403).json({ ok: false, error: "not_owner" });
+        }
+        const p: any = row.payload;
+        const buf: Buffer = Buffer.isBuffer(p) ? p : Buffer.from(p);
+        res.setHeader("Content-Type", row.mime || "application/octet-stream");
+        res.setHeader(
+          "Content-Disposition",
+          `inline; filename="${String(row.original_name || "kyc" + (row.ext || "")).replace(/[^a-zA-Z0-9._-]/g, "_")}"`,
+        );
+        return res.send(buf);
+      } catch (err) {
+        return res.status(500).json({ ok: false, error: "read_failed", message: (err as Error).message });
+      }
     },
   );
 
@@ -107,17 +242,21 @@ export function registerSprint20Wave2Routes(app: Express): void {
    * against this route file without requiring commsStore COMMS_USERS entries.
    * Field name is `targetUserId` (consistent with commsStore dmStartSchema).
    */
-  app.post("/api/comms/dm/start", (req: Request, res: Response) => {
-    const callerId = (req as any).userContext?.userId ?? null; /* v14 */ if (!callerId) return res.status(401).json({ ok: false, error: "missing_identity" });
-    const { targetUserId } = req.body ?? {};
-    if (!targetUserId || typeof targetUserId !== "string") {
-      return res.status(400).json({ error: "targetUserId is required" });
-    }
-    // Produce a deterministic channel id (same pair always gets same id).
-    const sorted = [callerId, targetUserId].sort();
-    const channelId = `ch_dm_${sorted[0]}_${sorted[1]}`;
-    return res.json({ ok: true, channelId });
-  });
+  /* v25.8 Bug 3 fix — this duplicate /api/comms/dm/start handler was
+   * pre-empting the real handler in commsStore.ts (Express dispatches in
+   * registration order, and sprint20Wave2Routes registers before commsStore).
+   * The duplicate only returned a deterministic channelId without actually
+   * persisting a channel row, so subsequent POSTs to
+   * /api/comms/channels/:id/messages 404'd — messages never sent.
+   * Avi: "Messages are still not being sent."
+   *
+   * The real handler in commsStore.ts:1791 performs:
+   *   - Permission check via resolveDisplayIdentity / sharedContextBetween
+   *   - CRM-bridge fallback so founder ↔ invited-investor DMs work
+   *   - Actual channel object creation in the channels Map
+   *   - dm.channel.opened outbox event
+   *
+   * We now no-op here and let commsStore handle it. */
 
   // ── Mute author ─────────────────────────────────────────────────────────
   /**
@@ -131,6 +270,7 @@ export function registerSprint20Wave2Routes(app: Express): void {
       return res.status(400).json({ error: "authorId is required" });
     }
     getMutedSet(callerId).add(authorId);
+    persistMutedAuthors(callerId);
     return res.json({ ok: true, mutedAuthorId: authorId });
   });
 
@@ -151,6 +291,7 @@ export function registerSprint20Wave2Routes(app: Express): void {
       reason,
       ts: new Date().toISOString(),
     });
+    persistReportedPosts(postId);
 
     return res.json({ ok: true, postId, status: "under_review" });
   });

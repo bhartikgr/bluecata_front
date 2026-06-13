@@ -201,7 +201,17 @@ export default function FounderDashboard() {
   const company = active.data?.company;
 
   const rounds = useQuery<Round[]>({ queryKey: ["/api/rounds"] });
-  const activity = useQuery<Activity[]>({ queryKey: ["/api/activity"] });
+  // v25.11 NM-5 — the prior key was the bare path ["/api/activity"] with no
+  // queryFn, so the default queryFn fetched /api/activity with no companyId
+  // filter. That returned the unfiltered audit log (or 401 for non-admins).
+  // Activity.tsx uses ["/api/activity", companyId] and explicitly passes the
+  // filter — mirror that here so the Dashboard panel shows only this
+  // company's events.
+  const activity = useQuery<Activity[]>({
+    queryKey: ["/api/activity", companyId],
+    queryFn: async () => (await apiRequest("GET", `/api/activity?companyId=${encodeURIComponent(companyId)}`)).json(),
+    enabled: Boolean(companyId),
+  });
   // v23.4.7 Phase 5 (B-102) — pull caller identity so the activity feed reads
   // "You" / "User abc12345" instead of raw u_founder_... ids.
   const meQ = useQuery<MeShape>({ queryKey: ["/api/auth/me"] });
@@ -217,23 +227,59 @@ export default function FounderDashboard() {
   const totalRaised = companyRounds.reduce((s, r) => s + r.raisedAmount, 0);
   const totalTarget = companyRounds.reduce((s, r) => s + r.targetAmount, 0);
 
-  // Round-health funnel — synthesized from the active round
+  /* v25.11 NL-2 — the prior funnel computed `seed = Math.max(8, Math.round(20 * 1))`
+   * which always evaluated to 20, so every founder saw `[20, 17, 11, 8, 5, 4]`
+   * regardless of real invitations or commits. Wire to real data:
+   *   - invited:      count of invitations sent for the active round
+   *   - viewed:       invitations whose viewedAt is non-null
+   *   - soft_circled: invitations whose status is `soft_circled` or later in
+   *                   the lifecycle
+   *   - confirmed/signed/funded: count by ledger state for the active round.
+   * If the active round has no invitations, return zero counts (not synthetic). */
+  const invitationsForRoundQ = useQuery<Array<{ status?: string; viewedAt?: string | null }>>({
+    queryKey: ["/api/rounds", activeRound?.id, "invitations"],
+    queryFn: async () => activeRound
+      ? (await apiRequest("GET", `/api/rounds/${activeRound.id}/invitations`)).json()
+      : [],
+    enabled: Boolean(activeRound?.id),
+  });
+  /* v25.19 Lane 3 NC2 (hard close) — the pre-v25.19 query called
+     `/api/rounds/:id/captable` which is NOT a registered route. Every founder
+     dashboard load 404'd silently and the funnel was always empty. The real
+     route is `/api/founder/captable/ledger?companyId=...` which returns ALL
+     ledger entries for the company; we filter to the active round client-side. */
+  const ledgerForRoundQ = useQuery<Array<{ state?: string; roundId?: string }>>({
+    queryKey: ["/api/founder/captable/ledger", activeRound?.id, activeRound?.companyId],
+    queryFn: async () => {
+      if (!activeRound?.companyId) return [];
+      const r = await apiRequest("GET", `/api/founder/captable/ledger?companyId=${encodeURIComponent(activeRound.companyId)}`);
+      const j = await r.json();
+      const entries = Array.isArray(j) ? j : (j?.entries ?? []);
+      return entries.filter((e: { roundId?: string }) => e.roundId === activeRound.id);
+    },
+    enabled: Boolean(activeRound?.id && activeRound?.companyId),
+  });
   const funnel = useMemo(() => {
     if (!activeRound) return null;
-    const t = activeRound.targetAmount || 1;
-    const r = activeRound.raisedAmount;
-    const pct = Math.min(1, r / t);
-    // approximate funnel counts that respect monotonic decrease
-    const seed = Math.max(8, Math.round(20 * 1));
+    const invs = Array.isArray(invitationsForRoundQ.data) ? invitationsForRoundQ.data : [];
+    const ledger = Array.isArray(ledgerForRoundQ.data) ? ledgerForRoundQ.data : [];
+    const invited = invs.length;
+    const viewed = invs.filter(i => i && (i as any).viewedAt).length;
+    const softLifecycle = new Set(["soft_circled", "confirmed", "signed", "funded", "committed"]);
+    const softCircled = invs.filter(i => i && softLifecycle.has(String((i as any).status ?? ""))).length;
+    const stateCount = (s: string) => ledger.filter(e => String((e as any).state ?? "") === s).length;
+    const confirmed = stateCount("confirmed");
+    const signed = stateCount("signed");
+    const funded = stateCount("funded") + stateCount("committed");
     return [
-      { ...FUNNEL_STAGES[0], count: seed },
-      { ...FUNNEL_STAGES[1], count: Math.round(seed * 0.85) },
-      { ...FUNNEL_STAGES[2], count: Math.round(seed * 0.55) },
-      { ...FUNNEL_STAGES[3], count: Math.round(seed * 0.40 * (0.5 + pct / 2)) },
-      { ...FUNNEL_STAGES[4], count: Math.round(seed * 0.28 * (0.5 + pct / 2)) },
-      { ...FUNNEL_STAGES[5], count: Math.round(seed * 0.20 * pct) },
+      { ...FUNNEL_STAGES[0], count: invited },
+      { ...FUNNEL_STAGES[1], count: Math.min(invited, viewed) },
+      { ...FUNNEL_STAGES[2], count: Math.min(invited, softCircled) },
+      { ...FUNNEL_STAGES[3], count: confirmed },
+      { ...FUNNEL_STAGES[4], count: signed },
+      { ...FUNNEL_STAGES[5], count: funded },
     ];
-  }, [activeRound]);
+  }, [activeRound, invitationsForRoundQ.data, ledgerForRoundQ.data]);
 
   // M&A inbound — initiatives tied to active company
   const inbound = useMemo(() => asArray(maAll.data).filter(m => m.companyId === companyId), [maAll.data, companyId]);

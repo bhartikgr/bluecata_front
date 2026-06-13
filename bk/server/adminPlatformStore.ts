@@ -448,14 +448,35 @@ function appendAudit(
       finalEntry = { id, ts, actor, entity, eventType, payload, priorHash: prevHash, hash, tenantId };
     });
   } catch (err) {
-    // If the DB write fails we still surface an entry to keep callers
-    // resilient (route may have already optimistically returned 200). The
-    // chain ends up only in-memory for this entry, which is logged loudly.
-    log.error("[adminPlatformStore.appendAudit] DB write failed:", (err as Error).message);
-    const prevHash = "0".repeat(64);
-    const body = `${prevHash}|${id}|${eventType}|${entity}|${ts}|${payloadStr}`;
-    const hash = sha256(body);
-    finalEntry = { id, ts, actor, entity, eventType, payload, priorHash: prevHash, hash, tenantId };
+    /* v25.23 NH-J fix — prevent in-memory audit-chain corruption on DB failure.
+     *
+     * Previous behaviour: on DB write failure we logged the error, minted a
+     * synthetic in-memory entry with `prevHash = 0*64`, and returned it as
+     * success. That reset the chain tip in the cache and corrupted future
+     * audits (a successful DB write would then compute against a synthetic
+     * prevHash, producing an unverifiable chain segment). Callers also got a
+     * fake `hash` for an event that does not exist in audit_log, violating
+     * the NO MEMORY STORAGE rule.
+     *
+     * Fix: log loudly with a distinct AUDIT_DB_WRITE_FAILED error type and
+     * DO NOT mirror the failed write into the in-memory cache (so the chain
+     * tip is undisturbed). Many call sites are *not* wrapped in try/catch
+     * today (companyProfileStore, emailCampaignStore, etc.), so unconditionally
+     * throwing would crash route handlers; instead we return a tagged
+     * `AuditEntry` with `hash: ""` and `priorHash: ""` so callers receive a
+     * value but the chain in the cache remains uncorrupted. Tests / verifiers
+     * can detect the failure via the empty hash sentinel. */
+    log.error({
+      route: "adminPlatformStore.appendAudit",
+      errorType: "AUDIT_DB_WRITE_FAILED",
+      message: (err as Error).message,
+      actor,
+      entity,
+      eventType,
+      tenantId,
+    });
+    // Return a sentinel entry; do NOT mirror into auditLog cache.
+    return { id, ts, actor, entity, eventType, payload, priorHash: "", hash: "", tenantId };
   }
 
   // Mirror into the in-memory cache. Cap the mirror size so it never grows

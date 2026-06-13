@@ -36,6 +36,32 @@ import { readSessionCookie } from "./lib/sessionCookie.js";
 import { getDb } from "./db/connection";
 import { termSheetRevisions as termSheetRevisionsTable } from "../shared/schema";
 import { log } from "./lib/logger";
+import { getRoundById } from "./roundsStore"; /* v25.19 Lane 1 NH2 */
+import { getCompaniesForFounder } from "./multiCompanyStore"; /* v25.19 Lane 1 NH2 */
+import { getUserContext } from "./lib/userContext"; /* v25.19 Lane 1 NH2 */
+
+/* v25.19 Lane 1 NH2 — prior code only `requireAuth`-gated; any logged-in
+   founder could read or write another company's term-sheet by supplying its
+   roundId. We resolve the round→companyId and require ownership. */
+async function assertRoundOwnership(req: Request, res: Response, roundId: string): Promise<boolean> {
+  const ctx = await getUserContext(req);
+  if (!ctx?.isAuthed) {
+    res.status(401).json({ ok: false, error: "unauthenticated" });
+    return false;
+  }
+  if (ctx.isAdmin) return true;
+  const round = getRoundById(String(roundId));
+  if (!round) {
+    res.status(404).json({ ok: false, error: "round_not_found" });
+    return false;
+  }
+  const owned = getCompaniesForFounder(ctx.userId);
+  if (!owned.some((c) => c.companyId === round.companyId)) {
+    res.status(403).json({ ok: false, error: "NOT_ROUND_OWNER" });
+    return false;
+  }
+  return true;
+}
 
 /**
  * SectionDraft on the wire — mirrors the client's SectionDraft shape.
@@ -309,10 +335,12 @@ function requireAuth(req: Request, res: Response, allowQueryFallback = false): {
 }
 
 export function registerTermSheetRoutes(app: Express): void {
-  app.post("/api/founder/term-sheets", (req: Request, res: Response) => {
+  app.post("/api/founder/term-sheets", async (req: Request, res: Response) => {
     const auth = requireAuth(req, res);
     if (!auth) return;
     const payload = (req.body ?? {}) as SaveTermSheetPayload;
+    /* v25.19 Lane 1 NH2 — require round ownership on writes. */
+    if (payload?.roundId && !(await assertRoundOwnership(req, res, String(payload.roundId)))) return;
     const r = saveTermSheet({ payload, savedBy: auth.userId });
     if (!r.ok) {
       const code = r.error === "termsheet_locked" ? 409 : 400;
@@ -321,19 +349,23 @@ export function registerTermSheetRoutes(app: Express): void {
     return res.json({ ok: true, revision: r.revision });
   });
 
-  app.get("/api/founder/term-sheets/:roundId", (req: Request, res: Response) => {
+  app.get("/api/founder/term-sheets/:roundId", async (req: Request, res: Response) => {
     const auth = requireAuth(req, res, true);
     if (!auth) return;
-    const roundId = req.params.roundId;
+    const roundId = String(req.params.roundId);
+    /* v25.19 Lane 1 NH2 — require round ownership on reads. */
+    if (!(await assertRoundOwnership(req, res, roundId))) return;
     const latest = getLatestRevision(roundId);
     if (!latest) return res.status(404).json({ ok: false, error: "not_found" });
     return res.json({ ok: true, revision: latest, chainVerified: verifyChain(roundId).ok });
   });
 
-  app.get("/api/founder/term-sheets/:roundId/history", (req: Request, res: Response) => {
+  app.get("/api/founder/term-sheets/:roundId/history", async (req: Request, res: Response) => {
     const auth = requireAuth(req, res, true);
     if (!auth) return;
-    const roundId = req.params.roundId;
+    const roundId = String(req.params.roundId);
+    /* v25.19 Lane 1 NH2 — require round ownership on history reads. */
+    if (!(await assertRoundOwnership(req, res, roundId))) return;
     const revisions = getRevisions(roundId);
     return res.json({ ok: true, revisions, chainVerified: verifyChain(roundId).ok });
   });

@@ -489,12 +489,40 @@ export function isValidShares(s: unknown): s is string {
   try { return BigInt(s) > 0n; } catch { return false; }
 }
 
-export function reconcile(input: { invitationId: string; amount: string; currency: string; shares: string }): { primary: string; ref: string; match: boolean } {
-  const canonical = `${input.invitationId}:${input.amount}:${input.currency}:${input.shares}`;
-  const a = createHash("sha256").update(`primary:${canonical}`).digest("hex").slice(0, 16);
-  const b = createHash("sha256").update(`ref:${canonical}`).digest("hex").slice(0, 16);
-  const match = isValidAmount(input.amount) && isValidShares(input.shares);
-  return { primary: a, ref: match ? a : b, match };
+/* v25.19 Lane 2 NC3 (hard close) — the pre-v25.19 reconcile() was hash theatre:
+   it hashed the SAME canonical string twice with different prefixes, so the
+   `primary` and `ref` digests were never independent. `match` only checked
+   that the input strings were well-formed — a wrong share count could pass.
+
+   Real reconcile now computes a second, INDEPENDENT share count from amount
+   and round price-per-share (when available) and compares it to the supplied
+   shares. If a round can't be resolved, `match` falls back to the strict
+   format checks (the old behaviour) but `ref` is the actual derived value,
+   making any drift visible in the immutable ledger. */
+import Decimal from "decimal.js"; /* v25.19 Lane 2 NH1 — precise decimal math */
+import { getRoundById as _getRound } from "./roundsStore";
+export function reconcile(input: { invitationId: string; amount: string; currency: string; shares: string; roundId?: string }): { primary: string; ref: string; match: boolean } {
+  // Primary derivation — the supplied shares.
+  const primary = String(input.shares);
+  let ref = primary;
+  let match = isValidAmount(input.amount) && isValidShares(input.shares);
+  try {
+    if (input.roundId) {
+      const round = _getRound(String(input.roundId));
+      const pps = round?.pricePerShare;
+      if (pps && pps > 0 && isValidAmount(input.amount)) {
+        // amount (decimal string) ÷ pps (number) using decimal.js — no float drift.
+        const derived = new Decimal(input.amount).dividedBy(new Decimal(pps)).floor().toFixed(0);
+        ref = derived;
+        if (isValidShares(ref) && isValidShares(primary)) {
+          match = BigInt(primary) === BigInt(ref);
+        }
+      }
+    }
+  } catch {
+    // On any computation error, fall back to format-only check (legacy behaviour).
+  }
+  return { primary, ref, match };
 }
 
 // ─── Commit ──────────────────────────────────────────────────────────────────
@@ -542,7 +570,8 @@ export function commitFunded(args: {
   if (!isValidShares(args.shares)) return { ok: false, error: "invalid_shares" };
   const currency = (args.currency ?? "USD").toUpperCase();
   if (!/^[A-Z]{3}$/.test(currency)) return { ok: false, error: "invalid_currency" };
-  const rec = reconcile({ invitationId: args.invitationId, amount: args.amount, currency, shares: args.shares });
+  /* v25.19 Lane 2 NC3 — pass roundId for real independent reconciliation. */
+  const rec = reconcile({ invitationId: args.invitationId, amount: args.amount, currency, shares: args.shares, roundId: args.roundId });
   if (!rec.match) return { ok: false, error: "reconcile_mismatch" };
 
   let entry: LedgerEntry | null = null;
@@ -934,9 +963,16 @@ export function registerCaptableCommitRoutes(app: Express): void {
                 // which works under the default lib config (the existing isValidShares
                 // helper at line 409 uses `0n` directly, but adding new `Nn` literals
                 // raises TS2737; BigInt() constructor calls are TS-safe and equivalent).
+                /* v25.19 Lane 2 NH1 (hard close) — the previous code
+                   converted the amount via `Number(e.amount) * 1000000` which
+                   silently lost precision for amounts > ~$9M. We now use
+                   decimal.js to multiply the string directly into the integer
+                   minor-unit space, then BigInt for the division. */
+                const _amtMicroStr = new Decimal(e.amount).times(1_000_000).toFixed(0);
+                const _ppsMicroStr = new Decimal(pps).times(1_000_000).toFixed(0);
                 const SCALE = BigInt("1000000");
-                const amtMicro = BigInt(Math.round(Number(e.amount) * 1000000));
-                const ppsMicro = BigInt(Math.round(pps * 1000000));
+                const amtMicro = BigInt(_amtMicroStr);
+                const ppsMicro = BigInt(_ppsMicroStr);
                 if (ppsMicro > BigInt(0)) {
                   const derived = (amtMicro * SCALE) / (ppsMicro * SCALE);
                   if (derived > BigInt(0)) {
@@ -958,7 +994,8 @@ export function registerCaptableCommitRoutes(app: Express): void {
           }
           // Use the derived shares from this point forward
           e = { ...e, shares: effectiveShares };
-          const rec = reconcile({ invitationId: e.invitationId, amount: e.amount, currency: e.currency, shares: e.shares });
+          /* v25.19 Lane 2 NC3 — pass roundId for real independent reconciliation. */
+          const rec = reconcile({ invitationId: e.invitationId, amount: e.amount, currency: e.currency, shares: e.shares, roundId: e.roundId });
           if (!rec.match) {
             abortBox.push({ invitationId: e.invitationId, error: "reconcile_mismatch" });
             throw new Error("batch_abort");

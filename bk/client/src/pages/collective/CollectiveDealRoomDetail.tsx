@@ -13,6 +13,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ArrowLeft, ExternalLink, Globe, Linkedin, BookOpen, BarChart3 } from "lucide-react";
+import { safeExternalHref } from "@/lib/safeUrl"; /* v25.17 Lane D NC3 — block javascript: URL XSS */
 
 const TIER_COLORS: Record<string, string> = {
   A: "bg-emerald-100 text-emerald-700",
@@ -152,18 +153,19 @@ export default function CollectiveDealRoomDetail() {
                 {profile.stage}
               </Badge>
             )}
-            {profile.linkedinUrl && (
-              <a href={profile.linkedinUrl} target="_blank" rel="noreferrer" data-testid="link-linkedin">
+            {/* v25.17 Lane D NC3 — safeExternalHref hides any link whose URL is not http/https */}
+            {safeExternalHref(profile.linkedinUrl) && (
+              <a href={safeExternalHref(profile.linkedinUrl)!} target="_blank" rel="noopener noreferrer" data-testid="link-linkedin">
                 <Linkedin className="h-4 w-4 text-slate-400 hover:text-[#8E2A4E]" />
               </a>
             )}
-            {profile.crunchbaseUrl && (
-              <a href={profile.crunchbaseUrl} target="_blank" rel="noreferrer" data-testid="link-crunchbase">
+            {safeExternalHref(profile.crunchbaseUrl) && (
+              <a href={safeExternalHref(profile.crunchbaseUrl)!} target="_blank" rel="noopener noreferrer" data-testid="link-crunchbase">
                 <Globe className="h-4 w-4 text-slate-400 hover:text-[#8E2A4E]" />
               </a>
             )}
-            {profile.pitchbookUrl && (
-              <a href={profile.pitchbookUrl} target="_blank" rel="noreferrer" data-testid="link-pitchbook">
+            {safeExternalHref(profile.pitchbookUrl) && (
+              <a href={safeExternalHref(profile.pitchbookUrl)!} target="_blank" rel="noopener noreferrer" data-testid="link-pitchbook">
                 <BookOpen className="h-4 w-4 text-slate-400 hover:text-[#8E2A4E]" />
               </a>
             )}

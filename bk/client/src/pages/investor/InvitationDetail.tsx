@@ -571,18 +571,15 @@ export default function InvitationDetail() {
             <td className="px-3 py-2.5 text-muted-foreground">{fmtDate(f.uploadedAt)}</td>
             <td className="px-3 py-2.5 text-right font-mono tabular-nums text-muted-foreground">{fmtBytes(f.sizeBytes)}</td>
             <td className="px-5 py-2.5 text-right">
-             {/* Defect 16 fix: wire onClick to open/download file */}
+             {/* v25.18 Lane D NC1 + NC3 — server-streaming endpoints replace the
+                 nonexistent `(f as any).url` field. The server enforces auth +
+                 investor permission (v25.17 Lane A NC1). */}
              <div className="inline-flex gap-1">
               <Button size="sm" variant="ghost" data-testid={`button-view-dr-${f.id}`}
-               onClick={() => { if ((f as { url?: string }).url) window.open((f as { url?: string }).url, "_blank", "noopener,noreferrer"); }}
+               onClick={() => { try { window.open(`/api/dataroom/files/${encodeURIComponent(f.id)}/download?disposition=inline`, "_blank", "noopener,noreferrer"); } catch { /* swallow */ } }}
               ><Eye className="h-3.5 w-3.5" /></Button>
               <Button size="sm" variant="ghost" data-testid={`button-dl-dr-${f.id}`}
-               onClick={() => {
-                const url = (f as { url?: string; downloadUrl?: string }).downloadUrl ?? (f as { url?: string }).url;
-                if (url) {
-                 const a = document.createElement("a"); a.href = url; a.download = f.name; a.click();
-                }
-               }}
+               onClick={() => { try { window.open(`/api/dataroom/files/${encodeURIComponent(f.id)}/download`, "_blank", "noopener,noreferrer"); } catch { /* swallow */ } }}
               ><Download className="h-3.5 w-3.5" /></Button>
              </div>
             </td>

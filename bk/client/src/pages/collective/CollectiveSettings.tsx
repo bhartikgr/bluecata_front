@@ -60,16 +60,15 @@ export default function CollectiveSettings() {
 
   const mutation = useMutation({
     mutationFn: async (values: FormValues) => {
-      const res = await fetch("/api/collective/settings/mine", {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "x-confirm": "true",
-        },
-        body: JSON.stringify(values),
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error(await res.text());
+      // v25.13 NL2 — use centralised apiRequest with extraHeaders so this
+      // call benefits from credential handling, error normalisation, and
+      // company-not-found recovery alongside every other mutation.
+      const res = await apiRequest(
+        "PATCH",
+        "/api/collective/settings/mine",
+        values,
+        { "x-confirm": "true" },
+      );
       return res.json();
     },
     onSuccess: () => {

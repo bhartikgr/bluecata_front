@@ -14,6 +14,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
+import { safeExternalHref } from "@/lib/safeUrl"; /* v25.17 Lane D NC3 — block javascript: URL XSS */
 import { PageBody, PageHeader } from "@/components/AppShell";
 import { CapTableChannelCard, SoftCircleChannelCard } from "@/components/comms/ChannelCards";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -80,6 +81,13 @@ type CoMember = {
  visibility: { screenName: string | null; visibleToCoMembers: boolean };
  role: "founder" | "investor";
  shares?: number;
+ /* v25.19 Lane 3 NC1 — the "Message" button on the co-members card POSTs to
+    /api/comms/dm/start with targetUserId. The CoMember shape was missing this
+    field, so every reference to `m.userId` was a TS2339 build-blocker (the
+    code path is dead today — coMembers is hard-coded to [] on line 153 — but
+    the TYPE drift still failed the build). When the co-members list is wired
+    later, the server will populate this field. */
+ userId?: string | null;
 };
 
 export function CompanyDetailsPage({
@@ -168,8 +176,9 @@ function CompanyDetailsView({
  <div className="flex items-center gap-2">
  <Badge variant="outline" data-testid="badge-viewer-role" className="capitalize">{viewerRole} view</Badge>
  {region && region !== "—" && <Badge variant="outline" data-testid="badge-region">Region: {region}</Badge>}
- {(profile?.contact.companyWebsiteUrl ?? data.websiteUrl) && (
- <a href={profile?.contact.companyWebsiteUrl ?? data.websiteUrl} target="_blank" rel="noreferrer">
+ {/* v25.17 Lane D NC3 — only render link when URL has http/https protocol */}
+ {safeExternalHref(profile?.contact.companyWebsiteUrl ?? data.websiteUrl) && (
+ <a href={safeExternalHref(profile?.contact.companyWebsiteUrl ?? data.websiteUrl)!} target="_blank" rel="noopener noreferrer">
  <Button variant="outline" size="sm" data-testid="button-website">
  <Globe className="h-3.5 w-3.5 mr-1.5" /> Visit site
  </Button>
@@ -317,7 +326,8 @@ function CompanyDetailsView({
  <td className="py-2 pr-2 text-muted-foreground tabular-nums">{c.i}</td>
  <td className="py-2 pr-2 font-medium">{c.n}</td>
  <td className="py-2 pr-2 text-xs">
- {c.u ? <a href={c.u} target="_blank" rel="noreferrer" className="hover:underline text-muted-foreground inline-flex items-center gap-1">{c.u} <ExternalLink className="h-3 w-3" /></a> : <span className="text-muted-foreground">—</span>}
+ {/* v25.18 Lane D NC1 — competitor URL: protocol-checked + open redirect closed */}
+ {safeExternalHref(c.u) ? <a href={safeExternalHref(c.u)!} target="_blank" rel="noopener noreferrer" className="hover:underline text-muted-foreground inline-flex items-center gap-1">{c.u} <ExternalLink className="h-3 w-3" /></a> : (c.u ? <span className="text-muted-foreground">{c.u}</span> : <span className="text-muted-foreground">—</span>)}
  </td>
  <td className="py-2 text-xs text-muted-foreground">{c.d}</td>
  </tr>
@@ -397,7 +407,8 @@ function CompanyDetailsView({
  <ul className="space-y-2">
  {data.pressMentions.map((p, i) => (
  <li key={i} className="text-sm" data-testid={`press-${i}`}>
- <a href={p.url} target="_blank" rel="noreferrer" className="font-medium hover:underline inline-flex items-center gap-1">
+ {/* v25.17 Lane D NC3 — sanitize press URL */}
+ <a href={safeExternalHref(p.url) ?? "#"} target="_blank" rel="noopener noreferrer" className="font-medium hover:underline inline-flex items-center gap-1">
  {p.title} <ExternalLink className="h-3 w-3" />
  </a>
  <div className="text-xs text-muted-foreground">{p.outlet} · {p.date}</div>

@@ -96,6 +96,13 @@ export default function Settings() {
   // text input). Hydrated from the active-company query and persisted via the
   // existing saveCompanyMut PATCH body.
   const [coCurrency,    setCoCurrency]    = useState("USD");
+  // v25.20 Lane 5 NC — Region, Tagline, Description had `defaultValue=""` and
+  // were NEVER sent in the PATCH. Founders typed values, hit Save, saw a
+  // success toast, and the data was discarded. Now controlled + included in
+  // the mutation body.
+  const [coRegion,      setCoRegion]      = useState("US");
+  const [coTagline,     setCoTagline]     = useState("");
+  const [coDescription, setCoDescription] = useState("");
   // Re-hydrate the form whenever the active company query resolves / switches.
   useEffect(() => {
     if (company?.companyName !== undefined) setCoDisplayName(company.companyName ?? "");
@@ -110,7 +117,15 @@ export default function Settings() {
       const derived = deriveCurrencyFromRegion(hq);
       if (derived) setCoCurrency(derived);
     }
-  }, [company?.companyName, company?.legalName, (company as { defaultCurrency?: string } | undefined)?.defaultCurrency, (company as { hq?: string } | undefined)?.hq]);
+    // v25.20 Lane 5 NC — hydrate the previously-discarded fields too.
+    const region = (company as { region?: string; hq?: string } | undefined)?.region
+      ?? (company as { hq?: string } | undefined)?.hq;
+    if (region) setCoRegion(region);
+    const tagline = (company as { tagline?: string } | undefined)?.tagline;
+    if (tagline !== undefined) setCoTagline(tagline ?? "");
+    const description = (company as { description?: string } | undefined)?.description;
+    if (description !== undefined) setCoDescription(description ?? "");
+  }, [company?.companyName, company?.legalName, (company as { defaultCurrency?: string } | undefined)?.defaultCurrency, (company as { hq?: string; region?: string; tagline?: string; description?: string } | undefined)?.hq, (company as { region?: string } | undefined)?.region, (company as { tagline?: string } | undefined)?.tagline, (company as { description?: string } | undefined)?.description]);
 
   // ----- Wave B FIX 6 (F-BUG-009) -----
   // Pre-populate the Profile tab inputs (Display name / Email / Title) from
@@ -149,7 +164,8 @@ export default function Settings() {
   const teamQ = useQuery<{ members: TeamMember[] }>({
     queryKey: ["/api/founder/team/members", companyId],
     queryFn: async () => {
-      const r = await fetch(`/api/founder/team/members?companyId=${encodeURIComponent(companyId)}`);
+      // v25.11 NH-1 — include cookies for Safari + cross-origin compatibility.
+      const r = await fetch(`/api/founder/team/members?companyId=${encodeURIComponent(companyId)}`, { credentials: "include" });
       if (!r.ok) return { members: [] };
       return r.json();
     },
@@ -166,10 +182,16 @@ export default function Settings() {
   const saveCompanyMut = useMutation({
     // B-V11-5 fix: send both display name and legal name from controlled state.
     // v23.4.7 Phase 9 / BUG 017: also send the picked defaultCurrency.
+    // v25.20 Lane 5 NC: include Region, Tagline, Description (previously
+    // discarded; the form's `defaultValue=""` inputs were never wired to a
+    // state or to the PATCH body, so founders' edits were silently lost).
     mutationFn: async () => (await apiRequest("PATCH", `/api/companies/${companyId}`, {
       name: coDisplayName,
       legalName: coLegalName,
       defaultCurrency: coCurrency,
+      region: coRegion,
+      tagline: coTagline,
+      description: coDescription,
     })).json(),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/founder/companies"] }); queryClient.invalidateQueries({ queryKey: ["/api/founder/active-company"] }); toast({ title: "Company saved" }); },
     onError: () => toast({ title: "Save failed", variant: "destructive" }),
@@ -215,16 +237,47 @@ export default function Settings() {
     },
   });
 
+  // v25.11 NH-2 — the previous invalidation key was ["/api/founder/team"] but the
+  // teamQ above is registered as ["/api/founder/team/members", companyId]. React
+  // Query prefix matches segment-by-segment; "team" is not a prefix of
+  // "team/members", so the list never refreshed after invite/remove. Use the
+  // correct compound key here so the UI updates without a manual page reload.
   const inviteMemberMut = useMutation({
     mutationFn: async () => (await apiRequest("POST", "/api/founder/team/invitations", { companyId, email: inviteEmail })).json(),
-    onSuccess: () => { toast({ title: "Invitation sent" }); setInviteEmail(""); queryClient.invalidateQueries({ queryKey: ["/api/founder/team"] }); },
+    onSuccess: () => {
+      toast({ title: "Invitation sent" });
+      setInviteEmail("");
+      queryClient.invalidateQueries({ queryKey: ["/api/founder/team/members", companyId] });
+    },
     onError: () => toast({ title: "Invite failed", variant: "destructive" }),
   });
 
   const removeMemberMut = useMutation({
     mutationFn: async (memberId: string) => (await apiRequest("DELETE", `/api/founder/team/members/${memberId}`)).json(),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/founder/team"] }); toast({ title: "Member removed" }); },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/founder/team/members", companyId] });
+      toast({ title: "Member removed" });
+    },
     onError: () => toast({ title: "Remove failed", variant: "destructive" }),
+  });
+
+  // v25.11 NL-3 — the prior "Request workspace deletion" button only showed a
+  // toast. Now POSTs to /api/founder/workspace/deletion-request which persists
+  // to kv_workspaceDeletionRequests for real admin review.
+  const deleteWorkspaceMut = useMutation({
+    mutationFn: async () =>
+      (await apiRequest("POST", "/api/founder/workspace/deletion-request", { companyId })).json(),
+    onSuccess: (data: { requestId?: string }) => toast({
+      title: "Deletion request submitted",
+      description: data?.requestId
+        ? `Reference: ${data.requestId}. An admin will follow up via email.`
+        : "An admin will follow up via email.",
+    }),
+    onError: (err: Error) => toast({
+      title: "Could not submit deletion request",
+      description: err.message || "Please try again or contact support.",
+      variant: "destructive",
+    }),
   });
 
   return (
@@ -338,9 +391,11 @@ export default function Settings() {
                     </SelectContent>
                   </Select>
                 </div>
-                <div><Label>Region of incorporation</Label><Input className="mt-1" defaultValue="US" data-testid="input-region" /></div>
-                <div className="md:col-span-2"><Label>Tagline</Label><Input className="mt-1" defaultValue="" placeholder="One-line value proposition" data-testid="input-tagline" /></div>
-                <div className="md:col-span-2"><Label>Description</Label><Textarea rows={3} className="mt-1" defaultValue="" placeholder="What does your company do?" data-testid="textarea-description" /></div>
+                {/* v25.20 Lane 5 NC — these three inputs were uncontrolled with empty defaults;
+                    edits were never sent to the server. Now controlled state + included in the PATCH. */}
+                <div><Label>Region of incorporation</Label><Input className="mt-1" value={coRegion} onChange={(e) => setCoRegion(e.target.value)} data-testid="input-region" /></div>
+                <div className="md:col-span-2"><Label>Tagline</Label><Input className="mt-1" value={coTagline} onChange={(e) => setCoTagline(e.target.value)} placeholder="One-line value proposition" data-testid="input-tagline" /></div>
+                <div className="md:col-span-2"><Label>Description</Label><Textarea rows={3} className="mt-1" value={coDescription} onChange={(e) => setCoDescription(e.target.value)} placeholder="What does your company do?" data-testid="textarea-description" /></div>
                 <div className="md:col-span-2"><Button className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" onClick={() => saveCompanyMut.mutate()} disabled={saveCompanyMut.isPending} data-testid="button-save-company">{saveCompanyMut.isPending ? "Saving…" : "Save"}</Button></div>
               </CardContent>
             </Card>
@@ -500,38 +555,32 @@ export default function Settings() {
                 </Link>
               </CardContent>
             </Card>
+            {/* v25.20 Lane 5 NC fix: remove fabricated invoice rows + "Visa 4242"
+             * mock card per the NO-MOCK-DATA rule. Real invoices and payment
+             * methods are managed in Billing & Plans (Stripe), which is where
+             * the source-of-truth lives once billing is connected. Showing
+             * fake "paid 249" rows misled founders into thinking they were
+             * already being charged. */}
             <div className="grid md:grid-cols-3 gap-4">
               <Card className="md:col-span-2">
                 <CardHeader><CardTitle className="text-base">Recent invoices</CardTitle></CardHeader>
-                <CardContent className="p-0">
-                  <div className="divide-y divide-border">
-                    {[
-                      { id: "inv_2026_05", date: "2026-05-01", amount: 249, status: "paid" },
-                      { id: "inv_2026_04", date: "2026-04-01", amount: 249, status: "paid" },
-                      { id: "inv_2026_03", date: "2026-03-01", amount: 249, status: "paid" },
-                    ].map(inv => (
-                      <div key={inv.id} className="flex items-center justify-between px-5 py-3" data-testid={`row-invoice-${inv.id}`}>
-                        <div>
-                          <div className="font-medium">{fmtUSD(inv.amount)}</div>
-                          <div className="text-xs text-muted-foreground">{inv.date} · {inv.id}</div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Badge className="bg-[hsl(184_98%_22%)] text-white">{inv.status}</Badge>
-                          <Button size="sm" variant="ghost" onClick={() => toast({ title: "Invoice downloaded" })} data-testid={`button-download-${inv.id}`}><Download className="h-3.5 w-3.5" /></Button>
-                        </div>
-                      </div>
-                    ))}
+                <CardContent>
+                  <div className="text-sm text-muted-foreground py-6 text-center" data-testid="empty-invoices">
+                    Invoices appear here after your first billing cycle. Manage
+                    your subscription in{" "}
+                    <Link href="/founder/billing"><span className="underline cursor-pointer">Billing &amp; Plans</span></Link>.
                   </div>
                 </CardContent>
               </Card>
               <Card>
                 <CardHeader><CardTitle className="text-base">Payment method</CardTitle></CardHeader>
                 <CardContent className="space-y-3">
-                  <div className="rounded-md border p-3">
-                    <div className="font-medium text-sm">Visa ending 4242</div>
-                    <div className="text-xs text-muted-foreground">Exp 12/2027</div>
+                  <div className="text-sm text-muted-foreground" data-testid="empty-payment-method">
+                    No payment method on file. Add one in Billing &amp; Plans.
                   </div>
-                  <Button variant="outline" className="w-full" onClick={() => toast({ title: "Update card flow" })} data-testid="button-update-card">Update card</Button>
+                  <Link href="/founder/billing">
+                    <Button variant="outline" className="w-full" data-testid="button-update-card">Manage payment method</Button>
+                  </Link>
                 </CardContent>
               </Card>
             </div>
@@ -543,6 +592,14 @@ export default function Settings() {
               title="Notifications"
               body="Channel and frequency for alerts. Choose between in-app bell, email digest (daily/weekly), and webhook callbacks for connected systems. Critical security alerts cannot be suppressed."
             />
+            {/* v25.20 Lane 4 sub-finding: the toggles below are not yet wired to a
+              * notification-preference store. Be honest about it so founders
+              * don't think they've disabled an alert they're still receiving. */}
+            <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 text-amber-900 px-3 py-2 text-xs" data-testid="banner-notifications-preview">
+              Notification preferences are coming soon. Toggling these switches
+              previews the planned controls but does not yet change what you
+              receive.
+            </div>
             <Card>
               <CardHeader><CardTitle className="text-base">Email & in-app notifications</CardTitle></CardHeader>
               <CardContent className="space-y-3 text-sm">
@@ -573,6 +630,15 @@ export default function Settings() {
               title="Data"
               body="Export, retention, and audit ledger access. All exports are hash-chained per R165 §12 — you can independently verify integrity. Cap-table snapshots include engine attribution and reconcile checksums."
             />
+            {/* v25.20 Lane 4 sub-finding: 2FA enforcement and SSO domain are
+              * UI-only placeholders — no enforcement endpoint backs them yet.
+              * The two export buttons surface a toast but do not produce a
+              * downloadable artifact in this build. Flag this for honesty. */}
+            <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 text-amber-900 px-3 py-2 text-xs" data-testid="banner-data-preview">
+              The 2FA enforcement, SSO domain, and export controls below are
+              preview placeholders. Programmatic exports and SSO domain
+              enforcement are scheduled for an upcoming release.
+            </div>
             <div className="grid md:grid-cols-2 gap-4">
               <Card>
                 <CardHeader><CardTitle className="text-base flex items-center gap-2"><Lock className="h-4 w-4" /> Security</CardTitle></CardHeader>
@@ -692,10 +758,12 @@ export default function Settings() {
                 <Button
                   variant="outline"
                   className="w-full border-[hsl(7_61%_43%)] text-[hsl(7_61%_43%)] hover:bg-[hsl(7_61%_43%)]/5"
-                  onClick={() => toast({ title: "Workspace deletion requires admin confirmation", variant: "destructive" })}
+                  onClick={() => deleteWorkspaceMut.mutate()}
+                  disabled={deleteWorkspaceMut.isPending}
                   data-testid="button-delete-workspace"
                 >
-                  <Trash2 className="h-3.5 w-3.5 mr-2" /> Request workspace deletion
+                  <Trash2 className="h-3.5 w-3.5 mr-2" />
+                  {deleteWorkspaceMut.isPending ? "Submitting…" : "Request workspace deletion"}
                 </Button>
               </CardContent>
             </Card>
@@ -904,10 +972,12 @@ function LegalPrivacySettingsTab() {
 
 /** Helper: save a profile patch with x-confirm */
 async function saveProfilePatch(companyId: string, patch: Record<string, unknown>): Promise<{ ok: boolean; error?: string }> {
+  // v25.10 M5 — include cookies for Safari + cross-origin compatibility.
   const r = await fetch(`/api/founder/profile?companyId=${companyId}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json", "x-confirm": "true" },
     body: JSON.stringify(patch),
+    credentials: "include",
   });
   const data = await r.json();
   if (!r.ok) return { ok: false, error: data?.error ?? "Save failed" };
@@ -1244,10 +1314,12 @@ function SettingsFinancialsTab({ companyId }: { companyId: string | undefined })
   const requestAcctMut = useMutation({
     mutationFn: async () => {
       if (!acctDialog || !acctEmail) throw new Error("Email required");
+      // v25.10 M4 — include cookies for Safari + cross-origin compatibility.
       const r = await fetch("/api/founder/financials/request-accountant", {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-confirm": "true" },
         body: JSON.stringify({ companyId, fieldKey: acctDialog.fieldKey, accountantEmail: acctEmail, note: acctNote }),
+        credentials: "include",
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data?.error ?? "Request failed");

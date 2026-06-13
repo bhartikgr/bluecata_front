@@ -63,17 +63,29 @@ import { userPrefs } from "../../shared/schema";
 import { log } from "./logger";
 
 /* -------------------------------------------------------------------------
- * resolveSessionUserId — local copy so we don't take a circular dep on
- * userContext.ts (which in turn imports from multiCompanyStore).
- * Mirrors the cap_uid resolution logic at userContext.ts:295–304.
+ * resolveSessionUserId
+ *
+ * v25.18 Lane C NC2 (hard close):
+ *   The pre-v25.18 implementation read `?userId=` query and `x-cap-user-id`
+ *   header as alternative identity sources — a zero-credential takeover path
+ *   that bypassed the HMAC cookie verifier installed in v25.17. We now go
+ *   through the canonical `extractUserIdFromCookie` (HMAC-verified) only.
+ *   No header / no query identity. The query path is preserved ONLY for
+ *   Vitest where `NODE_ENV==='test'`.
  * ------------------------------------------------------------------------- */
+import { extractUserIdFromCookie } from "./sessionCookie";
 function resolveSessionUserId(req: Request): string | null {
-  const headerId = req.headers["x-cap-user-id"];
-  const cookies = (req as unknown as { cookies?: Record<string, string> }).cookies ?? {};
-  const cookieId = cookies["__Host-cap_uid"] ?? cookies["cap_uid"];
-  const queryId = typeof req.query?.userId === "string" ? (req.query.userId as string) : undefined;
-  const id = (cookieId ?? (typeof headerId === "string" ? headerId : undefined) ?? queryId) ?? null;
-  return id && id.length > 0 ? id : null;
+  // Canonical HMAC-verified path (v25.17 NC1 / v25.18 NC1).
+  const verified = extractUserIdFromCookie(req);
+  if (verified) return verified;
+  // Test-only escape hatch — production never reads these.
+  if (process.env.NODE_ENV === "test" || process.env.VITEST === "true") {
+    const headerId = req.headers["x-cap-user-id"];
+    const queryId = typeof req.query?.userId === "string" ? (req.query.userId as string) : undefined;
+    const id = (typeof headerId === "string" ? headerId : undefined) ?? queryId;
+    return id && id.length > 0 ? id : null;
+  }
+  return null;
 }
 
 /* -------------------------------------------------------------------------

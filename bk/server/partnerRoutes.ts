@@ -15,6 +15,7 @@
  * must still be signed in — the flow is "sign up first, then redeem").
  */
 import type { Express, Request, Response } from "express";
+import { createHash, randomBytes } from "node:crypto"; /* v25.14 NC1 — secure team-invite redeem password */
 import { requireAdmin, requireAuth } from "./lib/authMiddleware";
 import { requirePartnerAuth, assertSubRole, assertTier, assertTierSeats } from "./lib/requirePartnerAuth";
 import { getUserContext } from "./lib/userContext";
@@ -42,11 +43,11 @@ import {
 import { getAllContacts, listContacts, updateContact, createContact, upsertConsortiumPartner } from "./adminContactsStore";
 import { registerPersona, getUserContextForId } from "./lib/userContext";
 import { rawDb } from "./db/connection";
-import { createHash } from "node:crypto";
 import { setSessionCookie } from "./lib/sessionCookie";
 import { getCompanyRecordById } from "./multiCompanyStore";
+import { getCompanyProfile } from "./companyProfileStore"; /* v25.15 NM5 — real snapshot data */
 import { linkConsortiumPartner, unlinkConsortiumPartner, getConsortiumPartnerId } from "./consortiumLinkStore";
-import { upsertInvestorContactFromPartner } from "./founderCrmStore";
+import { upsertInvestorContactFromPartner, removeInvestorContactForPartner } from "./founderCrmStore";
 
 /* ============================================================
  * Helpers
@@ -106,7 +107,14 @@ export function registerPartnerRoutes(app: Express): void {
     if (!company) return res.status(404).json({ error: "COMPANY_NOT_FOUND" });
     const partner = getAllContacts().find((c) => c.id === partnerId && c.kind === "consortium_partner");
     if (!partner) return res.status(404).json({ error: "PARTNER_NOT_FOUND" });
-    linkConsortiumPartner(companyId, partnerId);
+    /* v25.23 NH-M — linkConsortiumPartner now fails closed (DB write first,
+     * throws on persist failure). Surface a 500 instead of proceeding with a
+     * lost link so the caller knows the sponsor attribution did not persist. */
+    try {
+      linkConsortiumPartner(companyId, partnerId);
+    } catch (linkErr) {
+      return res.status(500).json({ error: "CONSORTIUM_LINK_PERSIST_FAILED", message: (linkErr as Error).message });
+    }
     // v23.9 C8/CP-6 — surface the sponsor in the founder's CRM.
     try {
       upsertInvestorContactFromPartner(companyId, {
@@ -117,6 +125,16 @@ export function registerPartnerRoutes(app: Express): void {
       });
     } catch { /* non-fatal — link still succeeds */ }
     appendAdminAudit(actor, `company:${companyId}`, "company.consortium_partner_linked", { partnerId });
+    // v25.14 NM1 / F7-NM1 — emit bridge event so Collective + Capavate can
+    // react in real-time to consortium attribution changes.
+    try {
+      emitBridgeEvent({
+        eventType: "partner.company_linked",
+        aggregateId: companyId,
+        aggregateKind: "company",
+        payload: { companyId, partnerId, actor },
+      });
+    } catch { /* non-fatal */ }
     res.json({ ok: true, company: { ...company, consortiumPartnerId: partnerId, consortiumPartner: partner } });
   });
 
@@ -126,8 +144,46 @@ export function registerPartnerRoutes(app: Express): void {
     const companyId = String(req.params.id);
     const company = getCompanyRecordById(companyId);
     if (!company) return res.status(404).json({ error: "COMPANY_NOT_FOUND" });
+    /* v25.16 cross-comp NH1 — capture the partner id BEFORE the link is
+       severed so we can correctly tear down the corresponding CRM contact
+       and revoke the partner-attribution row. */
+    const prevPartnerId = getConsortiumPartnerId(companyId);
     const removed = unlinkConsortiumPartner(companyId);
-    appendAdminAudit(actor, `company:${companyId}`, "company.consortium_partner_unlinked", { removed });
+    let crmRemoved = false;
+    let attributionRevoked = false;
+    if (prevPartnerId) {
+      try {
+        crmRemoved = removeInvestorContactForPartner(companyId, prevPartnerId).removed;
+      } catch { /* non-fatal */ }
+      try {
+        partnerAttributionStore.revoke(prevPartnerId, companyId, actor);
+        attributionRevoked = true;
+      } catch (e) {
+        // ATTRIBUTION_NOT_FOUND is expected when no attribution was ever
+        // created (e.g. partner linked but never sourced a deal). Silently
+        // continue; any other error is surfaced in the audit detail.
+        const msg = (e as Error).message;
+        if (msg !== "ATTRIBUTION_NOT_FOUND") {
+          appendAdminAudit(actor, `company:${companyId}`, "company.consortium_partner_unlink_attr_warn", { partnerId: prevPartnerId, msg });
+        }
+      }
+    }
+    appendAdminAudit(actor, `company:${companyId}`, "company.consortium_partner_unlinked", {
+      removed,
+      prevPartnerId,
+      crmRemoved,
+      attributionRevoked,
+    });
+    // v25.14 NM1 / F7-NM1 — emit bridge event so downstream surfaces can
+    // drop consortium attribution badges, etc.
+    try {
+      emitBridgeEvent({
+        eventType: "partner.company_unlinked",
+        aggregateId: companyId,
+        aggregateKind: "company",
+        payload: { companyId, removed, prevPartnerId, crmRemoved, attributionRevoked, actor },
+      });
+    } catch { /* non-fatal */ }
     res.json({ ok: true, company: { ...company, consortiumPartnerId: null, consortiumPartner: null } });
   });
 
@@ -220,6 +276,40 @@ export function registerPartnerRoutes(app: Express): void {
     const actor = String((req.userContext?.userId) ?? ""); /* v14 */ if (!actor) return res.status(401).json({ error: "missing_identity" });
     try {
       const updated = updateContact(String(req.params.id), { status: "suspended" }, actor, "partner.suspended");
+      // v25.14 F8-NM2 — emit bridge event so Collective / Capavate downstream
+      // surfaces (deal feeds, attribution badges, etc.) can react instead of
+      // waiting for a server restart re-hydration.
+      try {
+        emitBridgeEvent({
+          eventType: "partner.suspended",
+          aggregateId: String(req.params.id),
+          aggregateKind: "platform",
+          payload: { partnerId: String(req.params.id), suspendedBy: actor },
+        });
+      } catch { /* non-fatal */ }
+      res.json({ partner: updated });
+    } catch {
+      res.status(404).json({ error: "PARTNER_NOT_FOUND" });
+    }
+  });
+
+  // v25.14 F8-NH3 — reactivate (unsuspend) endpoint. Without this, every
+  // suspension was effectively permanent and admins needed raw SQL to
+  // restore a partner. Mirror of suspend, sets status back to "active" and
+  // emits the matching bridge event.
+  app.post("/api/admin/partners/:id/reactivate", requireAdmin, (req: Request, res: Response) => {
+    const actor = String((req.userContext?.userId) ?? "");
+    if (!actor) return res.status(401).json({ error: "missing_identity" });
+    try {
+      const updated = updateContact(String(req.params.id), { status: "active" }, actor, "partner.reactivated");
+      try {
+        emitBridgeEvent({
+          eventType: "partner.reactivated",
+          aggregateId: String(req.params.id),
+          aggregateKind: "platform",
+          payload: { partnerId: String(req.params.id), reactivatedBy: actor },
+        });
+      } catch { /* non-fatal */ }
       res.json({ partner: updated });
     } catch {
       res.status(404).json({ error: "PARTNER_NOT_FOUND" });
@@ -230,6 +320,15 @@ export function registerPartnerRoutes(app: Express): void {
     const actor = String((req.userContext?.userId) ?? ""); /* v14 */ if (!actor) return res.status(401).json({ error: "missing_identity" });
     try {
       const updated = updateContact(String(req.params.id), { status: "archived" }, actor, "partner.archived");
+      // v25.14 F8-NM2 — emit bridge event on archive too (same gap as suspend).
+      try {
+        emitBridgeEvent({
+          eventType: "partner.archived",
+          aggregateId: String(req.params.id),
+          aggregateKind: "platform",
+          payload: { partnerId: String(req.params.id), archivedBy: actor },
+        });
+      } catch { /* non-fatal */ }
       res.json({ partner: updated });
     } catch {
       res.status(404).json({ error: "PARTNER_NOT_FOUND" });
@@ -289,11 +388,15 @@ export function registerPartnerRoutes(app: Express): void {
       ).all(partnerId) as Array<{ task_json: string }>).map((r) => {
         try { return JSON.parse(r.task_json); } catch { return r; }
       });
+      /* v25.16 cross-comp NH3 — exclude tombstoned files from the admin audit
+         view so soft-deleted rows (v25.15 NH2) do not resurface via this path. */
       dbFiles = (db.prepare(
         `SELECT id, partner_id, file_json FROM partner_files WHERE partner_id = ?`,
-      ).all(partnerId) as Array<{ file_json: string }>).map((r) => {
-        try { return JSON.parse(r.file_json); } catch { return r; }
-      });
+      ).all(partnerId) as Array<{ file_json: string }>)
+        .map((r) => {
+          try { return JSON.parse(r.file_json); } catch { return r; }
+        })
+        .filter((f: any) => !f || !f.deletedAt);
     } catch { /* DB may not be available — use in-memory data only */ }
 
     // Deduplicate: prefer in-memory rows (which carry richer runtime fields),
@@ -331,14 +434,58 @@ export function registerPartnerRoutes(app: Express): void {
     const { companyId, source, notes } = req.body ?? {};
     if (!isString(companyId)) return badRequest(res, "companyId required");
     const actor = String((req.userContext?.userId) ?? ""); /* v14 */ if (!actor) return res.status(401).json({ error: "missing_identity" });
-    const a = partnerAttributionStore.create(String(req.params.id), companyId, actor, source ?? "admin_manual", notes ?? null);
+    const partnerId = String(req.params.id);
+    const a = partnerAttributionStore.create(partnerId, companyId, actor, source ?? "admin_manual", notes ?? null);
+    // v25.14 NM2 — notify the partner's managing_partner team members so
+    // they don't have to poll the admin attribution page to discover a
+    // newly-granted attribution.
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { emitNotification } = require("./notificationsStore");
+      const team = partnerTeamStore.listByPartner(partnerId);
+      for (const tm of team) {
+        if (tm.subRole === "managing_partner" && tm.status === "active") {
+          try {
+            emitNotification({
+              userId: tm.userId,
+              kind: "partner.attribution_granted",
+              title: "New company attribution granted",
+              body: `Your partner workspace was granted attribution for company ${companyId}.`,
+              link: "/collective/partner/clients",
+            });
+          } catch { /* per-recipient failures non-fatal */ }
+        }
+      }
+    } catch { /* notification optional; attribution itself already persisted */ }
     res.status(201).json({ attribution: a });
   });
 
   app.delete("/api/admin/partners/:id/attributions/:companyId", requireAdmin, (req: Request, res: Response) => {
     const actor = String((req.userContext?.userId) ?? ""); /* v14 */ if (!actor) return res.status(401).json({ error: "missing_identity" });
+    const partnerId = String(req.params.id);
+    const companyId = String(req.params.companyId);
     try {
-      const a = partnerAttributionStore.revoke(String(req.params.id), String(req.params.companyId), actor);
+      const a = partnerAttributionStore.revoke(partnerId, companyId, actor);
+      // v25.14 NM2 — notify the partner's managing_partner team members
+      // about revocation as well.
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { emitNotification } = require("./notificationsStore");
+        const team = partnerTeamStore.listByPartner(partnerId);
+        for (const tm of team) {
+          if (tm.subRole === "managing_partner" && tm.status === "active") {
+            try {
+              emitNotification({
+                userId: tm.userId,
+                kind: "partner.attribution_revoked",
+                title: "Company attribution revoked",
+                body: `Attribution for company ${companyId} was revoked from your partner workspace.`,
+                link: "/collective/partner/clients",
+              });
+            } catch { /* per-recipient failures non-fatal */ }
+          }
+        }
+      } catch { /* notification optional */ }
       res.json({ attribution: a });
     } catch {
       res.status(404).json({ error: "ATTRIBUTION_NOT_FOUND" });
@@ -371,15 +518,37 @@ export function registerPartnerRoutes(app: Express): void {
 
   app.get("/api/partner/me/clients/:id", requirePartnerAuth, (req: Request, res: Response) => {
     const pid = req.partnerContext!.partnerId;
+    const companyId = String(req.params.id);
     const attrs = partnerAttributionStore.listByPartner(pid);
-    const a = attrs.find((x) => x.companyId === String(req.params.id));
+    const a = attrs.find((x) => x.companyId === companyId);
     if (!a) return res.status(404).json({ error: "CLIENT_NOT_FOUND_OR_NOT_ATTRIBUTED" });
-    // Read-only company snapshot
-    const clientNotes = partnerNotesStore.listByPartner(pid, { scope: "client", scopeId: String(req.params.id) });
+    // v25.15 NM5 — real read-only company snapshot from profile + membership
+    const clientNotes = partnerNotesStore.listByPartner(pid, { scope: "client", scopeId: companyId });
+    const profile = getCompanyProfile(companyId);
+    const record = getCompanyRecordById(companyId);
     res.json({
       attribution: a,
-      companyId: String(req.params.id),
-      snapshot: { stage: "unknown", sector: "unknown" }, // would call companyProfileStore here if available
+      companyId,
+      snapshot: {
+        companyId,
+        companyName: record?.companyName ?? null,
+        legalName: record?.legalName ?? null,
+        logoUrl: record?.logoUrl ?? null,
+        stage: profile.stage ?? "unknown",
+        sector: profile.sector ?? "unknown",
+        jurisdiction: profile.jurisdiction ?? null,
+        founderName: profile.founderName ?? null,
+        founderEmail: profile.founderEmail ?? null,
+        employees: profile.employees ?? null,
+        runwayMonths: profile.runwayMonths ?? null,
+        healthScore: profile.healthScore ?? null,
+        complianceScore: profile.complianceScore ?? null,
+        kycStatus: profile.kycStatus ?? null,
+        kybStatus: profile.kybStatus ?? null,
+        lastRaiseDate: profile.lastRaiseDate ?? null,
+        lastRaiseAmount: profile.lastRaiseAmount ?? null,
+        valuationMinor: profile.valuationMinor ?? null,
+      },
       notes: clientNotes,
     });
   });
@@ -590,6 +759,109 @@ export function registerPartnerRoutes(app: Express): void {
     const u = getUserContext(req);
     try {
       const p = partnerDealPromotionsStore.approve(promoId, u.userId);
+      // v25.14 F3-NC1 — the referral approve path used to ONLY flip status
+      // to "live" and write an audit row. The downstream Capavate referral
+      // (founder invite + provisional attribution + cross-component bridge
+      // event + recipient notification) never fired. We now do all four,
+      // in best-effort try/catch so a failure in any one does not block
+      // the approval itself (which is already persisted).
+      try {
+        if (p.promotionType === "capavate_referral" && p.targetEmail) {
+          // 1. Provisional attribution: if a company is named on the
+          //    referral, write an attribution row so the partner gets
+          //    credit the moment the founder signs up against the same
+          //    companyId. If only an email is known, write a
+          //    provisional row keyed by email so the founder signup
+          //    flow can promote it later.
+          try {
+            if (p.companyId) {
+              // v25.14 — source must be a member of the attributionSource
+              // union: admin_manual | referral_code | partner_claim.
+              partnerAttributionStore.create(
+                p.partnerId,
+                p.companyId,
+                u.userId,
+                "partner_claim",
+                `Referral promotion ${p.id} approved; targetEmail=${p.targetEmail}`,
+              );
+            } else {
+              /* v25.16 cross-comp NM1 — email-only referral: persist a
+                 provisional attribution row keyed by lowercased email so the
+                 founder signup flow can promote it to a real attribution
+                 when that account is created. Stored via the kv shim
+                 (provisionalPartnerAttributions) so it survives restart
+                 without requiring a new DB migration. */
+              try {
+                // eslint-disable-next-line @typescript-eslint/no-var-requires
+                const { persistEntry } = require("./lib/storePersistenceShim");
+                const key = `${p.targetEmail.toLowerCase()}::${p.partnerId}`;
+                persistEntry("provisionalPartnerAttributions", key, {
+                  email: p.targetEmail.toLowerCase(),
+                  partnerId: p.partnerId,
+                  promotionId: p.id,
+                  source: "partner_claim",
+                  approvedBy: u.userId,
+                  approvedAt: new Date().toISOString(),
+                });
+              } catch { /* non-fatal */ }
+            }
+          } catch { /* attribution may already exist; non-fatal */ }
+
+          // 2. In-app notification to the target if they already have an
+          //    account on the platform.
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const { emitNotification } = require("./notificationsStore");
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const { rawDb } = require("./db/connection");
+            const db = rawDb();
+            const row = db
+              .prepare("SELECT user_id FROM user_credentials WHERE email = ? LIMIT 1")
+              .get(p.targetEmail) as { user_id?: string } | undefined;
+            if (row?.user_id) {
+              emitNotification({
+                userId: row.user_id,
+                kind: "partner.referral_received",
+                title: "You've been referred to Capavate",
+                body: `A Consortium Partner has referred you to Capavate. Sign in or sign up to claim your invite.`,
+                link: "/founder/dashboard",
+              });
+            }
+          } catch { /* notification optional; non-fatal */ }
+
+          // 3. Bridge event so Capavate / Collective downstream surfaces
+          //    can react to the approved referral.
+          try {
+            emitBridgeEvent({
+              eventType: "partner.referral.approved",
+              aggregateId: p.id,
+              aggregateKind: "platform",
+              payload: {
+                promotionId: p.id,
+                partnerId: p.partnerId,
+                targetEmail: p.targetEmail,
+                companyId: p.companyId ?? null,
+                approvedBy: u.userId,
+              },
+            });
+          } catch { /* bridge optional */ }
+
+          // 4. Best-effort outbound invite email. The sendEmail stub
+          //    silently no-ops if SMTP is not configured.
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const { sendEmail } = require("./lib/emailSender");
+            const inviteUrl = `${(process.env.PUBLIC_BASE_URL ?? "https://capavate.com")}/auth/signup?ref=partner&promoId=${encodeURIComponent(p.id)}&email=${encodeURIComponent(p.targetEmail)}`;
+            sendEmail({
+              to: p.targetEmail,
+              subject: "You've been referred to Capavate",
+              text:
+                `Hello,\n\nA Consortium Partner has referred you to Capavate. ` +
+                `Use the link below to claim your invite:\n\n${inviteUrl}\n\nThanks,\nCapavate Team`,
+            });
+          } catch { /* email optional */ }
+        }
+      } catch { /* swallow — approval itself already succeeded */ }
       res.json({ promotion: p });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -615,9 +887,16 @@ export function registerPartnerRoutes(app: Express): void {
   // TEAM
   app.get("/api/partner/me/team", requirePartnerAuth, (req: Request, res: Response) => {
     const pid = req.partnerContext!.partnerId;
+    /* v25.16 NL1 — expose `email` alias alongside `invitedEmail` so callers
+       using either name see the address. v25.16 NH5 — listByPartner now
+       filters redeemed/expired by default. */
+    const invitations = partnerInvitationStore.listByPartner(pid).map((inv) => ({
+      ...inv,
+      email: inv.invitedEmail,
+    }));
     res.json({
       members: partnerTeamStore.listByPartner(pid),
-      invitations: partnerInvitationStore.listByPartner(pid),
+      invitations,
     });
   });
 
@@ -662,9 +941,24 @@ export function registerPartnerRoutes(app: Express): void {
     assertSubRole("managing_partner"),
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
-      const removed = partnerTeamStore.remove(ctx.partnerId, String(req.params.userId), ctx.userId);
-      if (!removed) return res.status(404).json({ error: "TEAM_MEMBER_NOT_FOUND" });
-      res.json({ member: removed });
+      /* v25.23 NL-U fix — surface the server-side last-managing_partner guard
+       * (partnerTeamStore.remove throws LAST_MANAGING_PARTNER_CANNOT_BE_REMOVED)
+       * with a 409 + machine-readable error so the UI can render the right copy. */
+      try {
+        const removed = partnerTeamStore.remove(ctx.partnerId, String(req.params.userId), ctx.userId);
+        if (!removed) return res.status(404).json({ error: "TEAM_MEMBER_NOT_FOUND" });
+        res.json({ member: removed });
+      } catch (e) {
+        const msg = (e as Error).message;
+        if (msg === "LAST_MANAGING_PARTNER_CANNOT_BE_REMOVED") {
+          return res.status(409).json({
+            error: msg,
+            message:
+              "This is the only managing partner left. Promote another team member to managing partner first.",
+          });
+        }
+        throw e;
+      }
     },
   );
 
@@ -725,7 +1019,12 @@ export function registerPartnerRoutes(app: Express): void {
         const note = partnerNotesStore.update(ctx.partnerId, String(req.params.id), req.body ?? {}, ctx.userId, ctx.partnerSubRole === "managing_partner");
         res.json({ note });
       } catch (e) {
-        res.status(403).json({ error: (e as Error).message });
+        // v25.14 NL2 — distinguish tombstoned (410) from forbidden (403) and
+        // not-found (404) so the client can show a sensible error.
+        const msg = (e as Error).message;
+        if (msg === "NOTE_NOT_FOUND") return res.status(404).json({ error: msg });
+        if (msg === "NOTE_TOMBSTONED") return res.status(410).json({ error: msg });
+        res.status(403).json({ error: msg });
       }
     },
   );
@@ -809,6 +1108,26 @@ export function registerPartnerRoutes(app: Express): void {
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
     res.json({ url: `/api/dataroom/files/${f.dataroomFileId ?? f.id}?ttl=900`, expiresAt });
   });
+
+  // v25.15 NH2 — DELETE /api/partner/me/files/:id (soft delete). Restricted to
+  // managing_partner so analysts/viewers cannot remove files. Idempotent: a
+  // second call on the same id returns the already-tombstoned row.
+  app.delete(
+    "/api/partner/me/files/:id",
+    requirePartnerAuth,
+    assertSubRole("managing_partner"),
+    (req: Request, res: Response) => {
+      const ctx = req.partnerContext!;
+      try {
+        const f = partnerFilesStore.remove(ctx.partnerId, String(req.params.id), ctx.userId);
+        return res.json({ ok: true, file: f });
+      } catch (e) {
+        const msg = (e as Error).message;
+        if (msg === "FILE_NOT_FOUND") return res.status(404).json({ error: msg });
+        return res.status(400).json({ error: msg });
+      }
+    },
+  );
 
   // WORKSPACE SETTINGS
   app.get("/api/partner/me/workspace-settings", requirePartnerAuth, (req: Request, res: Response) => {
@@ -967,34 +1286,24 @@ export function registerPartnerRoutes(app: Express): void {
   );
 
   /* ==========================================================
-   * SPV capital-calls + distributions (managing_partner only)
-   * These are financial actions and require the strictest gate.
+   * v25.23 NC-A fix — SPV capital-calls + distributions.
+   * The previous stub handlers here (registered first) WON Express
+   * dispatch over the real DB-backed handlers in spvFundStore.ts:1341
+   * / 1381, returning 201 without persisting anything. That violated
+   * the NO-MOCK-DATA / NO-MEMORY-STORAGE standing rules and lost
+   * financial records on the most sensitive money surface.
+   *
+   * The fix has two parts:
+   *   1. Remove these stubs here so spvFundStore's real DB-backed
+   *      handlers take effect (registered at routes.ts:640 via
+   *      registerSpvFundRoutes).
+   *   2. Add `assertSubRole("managing_partner")` to the real handlers
+   *      in spvFundStore.ts (separate edit) so the financial gate is
+   *      preserved — v25.14 NH3 only covered POST commitments; this
+   *      wave covers PATCH commitments + capital-calls + distributions.
+   *
+   * The single source of truth is now spvFundStore.
    * ========================================================== */
-  app.post(
-    "/api/partner/me/spvs/:id/capital-calls",
-    requirePartnerAuth,
-    assertSubRole("managing_partner"),
-    (req: Request, res: Response) => {
-      const ctx = req.partnerContext!;
-      const spv = partnerSpvStore.getById(ctx.partnerId, String(req.params.id));
-      if (!spv) return res.status(404).json({ error: "SPV_NOT_FOUND" });
-      // Capital-call record stub — persisted to DB in a future milestone;
-      // the subrole gate is the P1 enforcement goal for v25.0.
-      res.status(201).json({ ok: true, spvId: spv.id, action: "capital_call_recorded", note: "Gate enforced; full capital-call ledger in roadmap." });
-    },
-  );
-
-  app.post(
-    "/api/partner/me/spvs/:id/distributions",
-    requirePartnerAuth,
-    assertSubRole("managing_partner"),
-    (req: Request, res: Response) => {
-      const ctx = req.partnerContext!;
-      const spv = partnerSpvStore.getById(ctx.partnerId, String(req.params.id));
-      if (!spv) return res.status(404).json({ error: "SPV_NOT_FOUND" });
-      res.status(201).json({ ok: true, spvId: spv.id, action: "distribution_recorded", note: "Gate enforced; full distribution ledger in roadmap." });
-    },
-  );
 
   /* ============================================================
    * Magic-link redemption
@@ -1034,6 +1343,25 @@ export function registerPartnerRoutes(app: Express): void {
 
         // Mint/resolve the persona for the invited email and consume the token.
         const existingCtx = getUserContext(req);
+        /* v25.23 NC-B fix — email-binding gate (privilege escalation hole).
+         * Previously: if the caller was already authenticated, we redeemed AS
+         * that user even if their email did not match the invited email. A
+         * Collective member or other-partner user who obtained the link could
+         * join the target workspace bound to their own account. Single-use
+         * tokens stop replay, not redirection. Now we require the authed
+         * session's email to (case-insensitively) match the invited email, or
+         * the redeem is rejected with PARTNER_INVITATION_EMAIL_MISMATCH so the
+         * caller can log out and redeem cleanly. The audit chain (and the
+         * partnerInvitationStore.redeem path below) already covers logging. */
+        if (
+          existingCtx.isAuthed &&
+          (existingCtx.identity?.email ?? "").trim().toLowerCase() !== (row.email ?? "").trim().toLowerCase()
+        ) {
+          return res.status(403).json({
+            error: "PARTNER_INVITATION_EMAIL_MISMATCH",
+            message: "This invitation was sent to a different email. Please log out and redeem with the invited address.",
+          });
+        }
         const approvedUserId = existingCtx.isAuthed
           ? existingCtx.userId
           : registerPersona({
@@ -1046,7 +1374,26 @@ export function registerPartnerRoutes(app: Express): void {
               roundId: "",
               companyId: "",
             });
-        db.prepare(`UPDATE auth_redeem_tokens SET consumed_at = ? WHERE id = ?`).run(new Date().toISOString(), row.id);
+        /* v25.24 NH-4 fix — atomic single-use consume on the consortium-approval
+         * redeem branch. The v25.23 NH-L atomic redeem covered only the
+         * partner-invite store (`partnerInvitationStore.redeem` via
+         * better-sqlite3 IMMEDIATE tx). This branch (auth_redeem_tokens with
+         * intent='partner_invite' from `mintPartnerInviteToken`) used a plain
+         * `UPDATE ... WHERE id = ?` with NO `consumed_at IS NULL` guard. Two
+         * concurrent redeems could both observe `row.consumed_at == null`,
+         * both compute their userId in registerPersona, and both UPDATE the
+         * same row — second wins, but BOTH responded 200 to their respective
+         * callers. Now we use `WHERE id = ? AND consumed_at IS NULL` and
+         * check `changes` (better-sqlite3 result) to detect lost-race; if
+         * the conditional UPDATE doesn't affect a row, another caller won. */
+        const consumeRes = db
+          .prepare(
+            `UPDATE auth_redeem_tokens SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL`,
+          )
+          .run(new Date().toISOString(), row.id);
+        if (consumeRes && typeof consumeRes.changes === "number" && consumeRes.changes === 0) {
+          return res.status(409).json({ error: "PARTNER_INVITATION_ALREADY_REDEEMED" });
+        }
 
         // Ensure partner-workspace authz records exist (idempotent with A8). The
         // approval path already creates these, but guarantee it here so redeem
@@ -1073,15 +1420,31 @@ export function registerPartnerRoutes(app: Express): void {
     if (Date.parse(pending.expiresAt) < Date.now()) return res.status(410).json({ error: "PARTNER_INVITATION_EXPIRED" });
 
     // If the caller is already authenticated, redeem as that user; otherwise
-    // the token mints the partner's account (the token is single-use, so this
-    // is safe — only the email-holder ever receives it).
+    // the token mints the partner's account.
     const existing = getUserContext(req);
+    /* v25.23 NC-B fix — email-binding gate. Same rationale as the approved-
+     * partner fallback branch above: single-use tokens stop replay, not
+     * redirection. An authed caller with a non-matching email must log out
+     * first. */
+    if (
+      existing.isAuthed &&
+      (existing.identity?.email ?? "").trim().toLowerCase() !== (pending.invitedEmail ?? "").trim().toLowerCase()
+    ) {
+      return res.status(403).json({
+        error: "PARTNER_INVITATION_EMAIL_MISMATCH",
+        message: "This invitation was sent to a different email. Please log out and redeem with the invited address.",
+      });
+    }
+    // v25.14 NC1 — was hardcoded to "changeme" giving full account takeover
+    // to anyone who knew an invited team member's email. Now mints a strong
+    // random password; the user is expected to use the invite link itself to
+    // first-time-sign-in, and can reset via the password-reset flow after.
     const userId = existing.isAuthed
       ? existing.userId
       : registerPersona({
           email: pending.invitedEmail,
           name: pending.invitedEmail,
-          password: "changeme",
+          password: createHash("sha256").update(randomBytes(32)).digest("hex"),
           invitationId: pending.id,
           roundId: "",
           companyId: "",
@@ -1090,6 +1453,14 @@ export function registerPartnerRoutes(app: Express): void {
     const ip = (req.ip ?? "").toString();
     const ua = String(req.headers["user-agent"] ?? "");
     try {
+      /* v25.16 NH1 — close the TOCTOU seat race: re-check tier seat limit at
+         redeem (not just at invite-create) so a downgrade-then-redeem or
+         concurrent-redeem cannot blow past the tier seat ceiling. */
+      try {
+        assertTierSeats(pending.partnerId);
+      } catch (seatErr) {
+        return res.status(403).json({ error: (seatErr as Error).message ?? "TIER_SEAT_LIMIT_EXCEEDED" });
+      }
       const inv = partnerInvitationStore.redeem(token, userId, { ip, ua });
       if (!existing.isAuthed) setSessionCookie(res, userId);
       const ctx = getUserContextForId(userId);

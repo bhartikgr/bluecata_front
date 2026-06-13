@@ -3,7 +3,7 @@
  * Token is hashed at rest server-side; this page POSTs the raw token from the
  * URL once. After success, redirects to /collective/partner/dashboard.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRoute, useLocation } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
 import { Card } from "@/components/ui/card";
@@ -14,8 +14,15 @@ export default function RedeemPartnerInvite() {
   const [status, setStatus] = useState<"redeeming" | "success" | "error">("redeeming");
   const [error, setError] = useState<string>("");
 
+  /* v25.23 NM-3 — guard the single-use redeem REQUEST (not just setState) so it
+     fires exactly once even when React 18 StrictMode double-invokes the effect
+     in dev. The single-use token must never be POSTed twice. */
+  const firedRef = useRef(false);
+
   useEffect(() => {
     if (!params?.token) return;
+    if (firedRef.current) return;
+    firedRef.current = true;
     let cancelled = false;
     (async () => {
       try {

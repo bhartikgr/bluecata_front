@@ -126,6 +126,9 @@ export default function AdminConsortiumApplicationsPage() {
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Application | null>(null);
   const [notes, setNotes] = useState<string>("");
+  /* v25.16 NM4 — dedicated state for promotion-moderation notes so they
+     don't bleed in from the application-review textarea. */
+  const [promoNotes, setPromoNotes] = useState<string>("");
   const [busy, setBusy] = useState<string | null>(null);
   // v23.4.1 Task D — invite status feedback
   const [inviteMsg, setInviteMsg] = useState<{ id: string; msg: string; ok: boolean } | null>(null);
@@ -260,14 +263,16 @@ export default function AdminConsortiumApplicationsPage() {
   ): Promise<void> {
     setBusy(`prom:${id}:${action}`);
     try {
+      /* v25.16 NM4 — use the dedicated promoNotes state so the application
+         review textarea cannot leak its content into promotion moderation. */
       await fetchJson(
         `/api/admin/partner/promotions/${encodeURIComponent(id)}/${action}`,
         {
           method: "POST",
-          body: JSON.stringify({ notes: notes.trim() || undefined }),
+          body: JSON.stringify({ notes: promoNotes.trim() || undefined }),
         },
       );
-      setNotes("");
+      setPromoNotes("");
       await reload();
     } catch (e) {
       setError((e as Error).message);
@@ -395,6 +400,9 @@ export default function AdminConsortiumApplicationsPage() {
                         onClick={() => {
                           setSelected(a);
                           setNotes(a.reviewNotes ?? "");
+                          /* v25.16 NM3 — clear stale invite-msg when the admin
+                             switches to a different application row. */
+                          setInviteMsg(null);
                         }}
                         data-testid={`button-review-${a.id}`}
                       >
@@ -446,13 +454,36 @@ export default function AdminConsortiumApplicationsPage() {
                   <div className="col-span-2">
                     <div className="text-muted-foreground">References</div>
                     <ul className="list-disc pl-4">
-                      {selected.refLinks.map((u) => (
-                        <li key={u}>
-                          <a className="underline text-[hsl(327_77%_30%)]" href={u} target="_blank" rel="noreferrer">
-                            {u}
-                          </a>
-                        </li>
-                      ))}
+                      {/* v25.16 NC1 — sanitize applicant-supplied URLs to
+                         http(s) only. Previously a javascript:/data: URL would
+                         render as a clickable anchor and execute in the admin
+                         session on click (stored-XSS / session theft). */}
+                      {selected.refLinks.map((u) => {
+                        const safe = /^https?:\/\//i.test(u);
+                        return (
+                          <li key={u}>
+                            {safe ? (
+                              <a
+                                className="underline text-[hsl(327_77%_30%)]"
+                                href={u}
+                                target="_blank"
+                                rel="noreferrer noopener"
+                                data-testid={`ref-link-${u}`}
+                              >
+                                {u}
+                              </a>
+                            ) : (
+                              <span
+                                className="text-muted-foreground line-through"
+                                title="Reference URL is not http(s); rendered inert."
+                                data-testid={`ref-link-blocked-${u}`}
+                              >
+                                {u} (invalid URL)
+                              </span>
+                            )}
+                          </li>
+                        );
+                      })}
                     </ul>
                   </div>
                 )}

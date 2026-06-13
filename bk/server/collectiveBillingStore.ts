@@ -876,6 +876,34 @@ async function dispatchStripeEvent(event: {
     if (fresh) autoJoinCollectiveMembership(fresh, "system:stripe_webhook");
   }
 
+  /* v25.21 Lane D NC-002 fix — on flip to cancelled or past_due, deactivate
+   * the collective membership row so `requireCollectiveMember` no longer
+   * admits this user. Before this fix the gate kept passing because it keys
+   * off `collectiveMembershipStore.isActive(userId)` and only the billing
+   * row's `status` was being updated. End result: a member who cancelled or
+   * stopped paying retained full Collective access until manual intervention. */
+  if (
+    (newStatus === "cancelled" || newStatus === "past_due") &&
+    billing.status !== newStatus &&
+    billing.userId
+  ) {
+    try {
+      collectiveMembershipStore.deactivate(
+        billing.userId,
+        "system:stripe_webhook",
+      );
+    } catch (deactivateErr) {
+      // Best-effort; the billing transition is the source of truth.
+      try {
+        const { log } = require("./lib/logger");
+        log.warn(
+          "[collectiveBillingStore.applyWebhookEvent] membership deactivate failed (non-fatal):",
+          (deactivateErr as Error).message,
+        );
+      } catch { /* logger optional */ }
+    }
+  }
+
   // Audit append (outside the data tx; appendAdminAudit opens its own).
   try {
     appendAdminAudit(
@@ -1035,6 +1063,31 @@ export async function dispatchAirwallexEvent(event: {
   if (newStatus === "active" && billing.status !== "active") {
     const fresh = result.billing ?? findBillingByIdAnyTenant(billing.id);
     if (fresh) autoJoinCollectiveMembership(fresh, "system:airwallex_webhook");
+  }
+
+  /* v25.22 NC-1 fix (FALSE-CLOSURE recovery from v25.21 D-NC-002): the
+   * v25.21 fix added a `collectiveMembershipStore.deactivate` call to the
+   * LEGACY Stripe dispatcher — which is now a permanent 410 — but missed
+   * the LIVE Airwallex dispatcher (this function). A member who cancels or
+   * stops paying via Airwallex therefore kept full Collective access. We
+   * mirror the same deactivation here on flip-to-cancelled / past_due. */
+  if (
+    (newStatus === "cancelled" || newStatus === "past_due") &&
+    billing.status !== newStatus &&
+    billing.userId
+  ) {
+    try {
+      const membership = require("./collectiveMembershipStore");
+      membership.deactivate(billing.userId, "system:airwallex_webhook");
+    } catch (deactivateErr) {
+      try {
+        const { log } = require("./lib/logger");
+        log.warn(
+          "[dispatchAirwallexEvent] membership deactivate failed (non-fatal):",
+          (deactivateErr as Error).message,
+        );
+      } catch { /* logger optional */ }
+    }
   }
 
   try {
@@ -1232,15 +1285,56 @@ export function registerCollectiveBillingRoutes(app: Express): void {
         });
       }
 
-      // Persist the intent id on the billing row so the webhook can resolve
-      // back to this billing row even if the merchant_order_id round-trip
-      // is mangled in transit.
+      /* v25.12 NH-2 — persist the intent id on the billing row AND recompute
+       * the hash chain. Previously this update wrote stripeSubscriptionId
+       * without touching prevHash/currHash, leaving the row inconsistent
+       * with the chain (every subsequent chain-verification would fail for
+       * this billing record, breaking audit + dispute resolution). We now
+       * read the current row, recompute the next hash from currHash as
+       * prevHash, and update all three fields in a single statement. */
       try {
         const db: any = getDb();
-        db.update(billingTable)
-          .set({ stripeSubscriptionId: intentResult.intent.id } as any)
+        const existingRow: any = db
+          .select()
+          .from(billingTable)
           .where(eq((billingTable as any).id, pending.id))
-          .run();
+          .get();
+        if (existingRow) {
+          const existing = rowToBilling(existingRow);
+          const updatedAt = nowIso();
+          const payloadForHash = {
+            id: existing.id,
+            tenantId: existing.tenantId,
+            chapterId: existing.chapterId,
+            userId: existing.userId,
+            tier: existing.tier,
+            status: existing.status,
+            stripeCustomerId: existing.stripeCustomerId,
+            stripeSubscriptionId: intentResult.intent.id,
+            stripePriceId: existing.stripePriceId,
+            currentPeriodStart: existing.currentPeriodStart,
+            currentPeriodEnd: existing.currentPeriodEnd,
+            cancelAtPeriodEnd: existing.cancelAtPeriodEnd,
+            updatedAt,
+          };
+          const newCurrHash = computeHash(existing.currHash, payloadForHash);
+          db.update(billingTable)
+            .set({
+              stripeSubscriptionId: intentResult.intent.id,
+              prevHash: existing.currHash,
+              currHash: newCurrHash,
+              updatedAt,
+            } as any)
+            .where(eq((billingTable as any).id, pending.id))
+            .run();
+        } else {
+          // Row vanished between create and update — fall back to single-field write
+          // (extremely unlikely, but safer than throwing).
+          db.update(billingTable)
+            .set({ stripeSubscriptionId: intentResult.intent.id } as any)
+            .where(eq((billingTable as any).id, pending.id))
+            .run();
+        }
       } catch { /* non-fatal — webhook can still resolve via merchant_order_id */ }
 
       const fallbackSuccess =
@@ -1487,6 +1581,91 @@ export function registerCollectiveBillingRoutes(app: Express): void {
   );
 
   /**
+   * v25.22 NC-7 fix — POST /api/collective/membership/verify
+   *
+   * The success redirect from the Airwallex hosted-payment page is
+   * insufficient on its own: if the webhook never lands, the user pays but
+   * is never activated. This endpoint synchronously verifies the intent
+   * against Airwallex AND drives the billing state machine via
+   * `dispatchAirwallexEvent`, so the activation is guaranteed independent
+   * of webhook delivery. The client should POST here on the success
+   * redirect with `{ intent_id }`.
+   *
+   * Idempotent: dispatchAirwallexEvent dedups on gateway_event_id; calling
+   * verify twice for the same intent produces one state transition.
+   */
+  app.post(
+    "/api/collective/membership/verify",
+    requireCollectiveEnabled,
+    requireAuth,
+    async (req: Request, res: Response) => {
+      const ctx = (req as any).userContext as
+        | { userId?: string }
+        | undefined;
+      const userId = ctx?.userId;
+      if (!userId) {
+        return res.status(401).json({ ok: false, error: "missing_identity" });
+      }
+      const intentId =
+        typeof req.body?.intent_id === "string" ? req.body.intent_id : null;
+      if (!intentId) {
+        return res.status(400).json({ ok: false, error: "intent_id_required" });
+      }
+      let intent;
+      try {
+        intent = await retrieveCollectiveIntent(intentId);
+      } catch (err) {
+        return res.status(502).json({
+          ok: false,
+          error: "gateway_retrieve_failed",
+          message: (err as Error).message,
+        });
+      }
+      if (!intent) {
+        return res.status(404).json({ ok: false, error: "intent_not_found" });
+      }
+      /* Verify the intent belongs to this user before triggering activation
+       * — prevents one user from confirming another user's paid intent. */
+      const billingId =
+        (intent as any).merchant_order_id ??
+        ((intent as any).metadata?.billingId as string | undefined) ??
+        null;
+      if (!billingId) {
+        return res.status(400).json({ ok: false, error: "intent_missing_billing_ref" });
+      }
+      const billing = findBillingByIdAnyTenant(billingId);
+      if (!billing) {
+        return res.status(404).json({ ok: false, error: "billing_not_found" });
+      }
+      if (billing.userId !== userId) {
+        return res.status(403).json({ ok: false, error: "intent_not_yours" });
+      }
+      /* Construct a synthetic webhook envelope so dispatchAirwallexEvent
+       * runs the canonical state transition. The `event.id` is derived
+       * from the intent so a retried verify is idempotent against the
+       * gateway_event_id dedup column. */
+      const syntheticEvent = {
+        id: `verify_${intentId}`,
+        type: "payment_intent.succeeded",
+        data: { object: intent as any },
+      };
+      const dispatchResult = await dispatchAirwallexEvent(syntheticEvent);
+      if (!dispatchResult.ok) {
+        return res.status(dispatchResult.status ?? 500).json({
+          ok: false,
+          error: dispatchResult.error ?? "verify_dispatch_failed",
+        });
+      }
+      const fresh = findBillingByIdAnyTenant(billingId);
+      return res.json({
+        ok: true,
+        idempotent: dispatchResult.idempotent,
+        membership: fresh,
+      });
+    },
+  );
+
+  /**
    * GET /api/collective/membership/me?chapter_id=...
    *
    * Returns the current user's membership row for the requested chapter
@@ -1563,9 +1742,23 @@ export function registerCollectiveBillingRoutes(app: Express): void {
         req.headers as Record<string, string | string[] | undefined>,
         raw,
       );
-      const isProd = process.env.NODE_ENV === "production";
-      if (isProd && !sigOk) {
-        return res.status(401).json({ ok: false, error: "invalid_signature" });
+      /* v25.21 Lane A NH-001 fix — if the webhook secret IS configured, the
+       * signature must be valid regardless of NODE_ENV. The legacy code
+       * silently bypassed verification whenever NODE_ENV ≠ "production",
+       * meaning a single env-var typo on a real production host would
+       * disable verification on a financial-state webhook. The only escape
+       * hatch is now an EXPLICIT opt-in env flag for local dev
+       * (`AIRWALLEX_WEBHOOK_INSECURE_DEV=1`), and it's loud about it. */
+      if (!sigOk) {
+        const explicitDevBypass =
+          process.env.NODE_ENV !== "production" &&
+          process.env.AIRWALLEX_WEBHOOK_INSECURE_DEV === "1";
+        if (!explicitDevBypass) {
+          return res.status(401).json({ ok: false, error: "invalid_signature" });
+        }
+        log.warn(
+          "[airwallex/webhook/collective] AIRWALLEX_WEBHOOK_INSECURE_DEV=1 — signature verification bypassed (DEV ONLY). Do not set this flag in production.",
+        );
       }
 
       let event: { id: string; type?: string; name?: string; data?: { object?: Record<string, any> } };

@@ -13,6 +13,10 @@ import { createHash, randomBytes } from "node:crypto";
 import { appendAdminAudit } from "./adminPlatformStore";
 import { emitBridgeEvent } from "./bridgeStore";
 import { enqueueOneOff, enqueueBulk, renderTemplate, findTemplate } from "./emailStore";
+import { persistEntry, hydrateEntries } from "./lib/storePersistenceShim";
+
+const PERSIST_STORE = "emailCampaignStore";
+const PERSIST_REVS_STORE = "emailCampaignRevisionsStore";
 import {
   type AudienceTarget,
   resolveAudience,
@@ -259,6 +263,8 @@ function appendRevision(c: EmailCampaign, action: string): void {
   const arr = revisions.get(c.id) ?? [];
   arr.push(rev);
   revisions.set(c.id, arr);
+  /* v25.9 — persist revisions */
+  persistEntry(PERSIST_REVS_STORE, c.id, arr);
 }
 
 /* ============================================================
@@ -310,6 +316,8 @@ function createCampaign(
 
   c.revisionHash = computeHash(c);
   campaigns.set(id, c);
+  /* v25.9 — persist */
+  persistEntry(PERSIST_STORE, id, c);
   appendRevision(c, "email_campaign.created");
   appendAdminAudit(actor, `email_campaign:${id}`, "email_campaign.created", {
     name: c.name,
@@ -362,6 +370,8 @@ function updateCampaign(
 
   updated.revisionHash = computeHash(updated);
   campaigns.set(id, updated);
+  /* v25.9 — persist update */
+  persistEntry(PERSIST_STORE, id, updated);
   appendRevision(updated, action);
   appendAdminAudit(actor, `email_campaign:${id}`, action, {
     version: updated.version,
@@ -574,7 +584,7 @@ export function registerEmailCampaignRoutes(app: Express): void {
   // ── POST /api/admin/email-campaigns ─────────────────────────
   app.post("/api/admin/email-campaigns", (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"];
-    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    const actor = String((req as any).userContext?.userId ?? "") /* v25.18 Lane B NC1: actor from session only */;
     if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const body = req.body ?? {};
 
@@ -666,7 +676,7 @@ export function registerEmailCampaignRoutes(app: Express): void {
   // ── PATCH /api/admin/email-campaigns/:id ────────────────────
   app.patch("/api/admin/email-campaigns/:id", (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"];
-    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    const actor = String((req as any).userContext?.userId ?? "") /* v25.18 Lane B NC1: actor from session only */;
     if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const c = campaigns.get(req.params.id);
     if (!c) return res.status(404).json({ ok: false, error: "not_found" });
@@ -710,7 +720,7 @@ export function registerEmailCampaignRoutes(app: Express): void {
   // ── POST /api/admin/email-campaigns/:id/test-send ───────────
   app.post("/api/admin/email-campaigns/:id/test-send", (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"];
-    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    const actor = String((req as any).userContext?.userId ?? "") /* v25.18 Lane B NC1: actor from session only */;
     if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const c = campaigns.get(req.params.id);
     if (!c) return res.status(404).json({ ok: false, error: "not_found" });
@@ -774,7 +784,7 @@ export function registerEmailCampaignRoutes(app: Express): void {
   // ── POST /api/admin/email-campaigns/:id/schedule ────────────
   app.post("/api/admin/email-campaigns/:id/schedule", (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"];
-    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    const actor = String((req as any).userContext?.userId ?? "") /* v25.18 Lane B NC1: actor from session only */;
     if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const c = campaigns.get(req.params.id);
     if (!c) return res.status(404).json({ ok: false, error: "not_found" });
@@ -827,7 +837,7 @@ export function registerEmailCampaignRoutes(app: Express): void {
   // ── POST /api/admin/email-campaigns/:id/send ─────────────────
   app.post("/api/admin/email-campaigns/:id/send", async (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"];
-    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    const actor = String((req as any).userContext?.userId ?? "") /* v25.18 Lane B NC1: actor from session only */;
     if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const c = campaigns.get(req.params.id);
     if (!c) return res.status(404).json({ ok: false, error: "not_found" });
@@ -866,7 +876,7 @@ export function registerEmailCampaignRoutes(app: Express): void {
   // ── POST /api/admin/email-campaigns/:id/cancel ───────────────
   app.post("/api/admin/email-campaigns/:id/cancel", (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"];
-    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    const actor = String((req as any).userContext?.userId ?? "") /* v25.18 Lane B NC1: actor from session only */;
     if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const c = campaigns.get(req.params.id);
     if (!c) return res.status(404).json({ ok: false, error: "not_found" });
@@ -923,7 +933,7 @@ export function registerEmailTransportRoutes(app: Express): void {
   // ── PATCH /api/admin/email/transport/config ─────────────────
   app.patch("/api/admin/email/transport/config", (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"];
-    const actor = String(req.headers["x-actor"] ?? (req as any).userContext?.userId ?? "");
+    const actor = String((req as any).userContext?.userId ?? "") /* v25.18 Lane B NC1: actor from session only */;
     if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
     const patch = req.body ?? {};
 
@@ -1052,3 +1062,28 @@ export const _testEmailCampaigns = {
   executeCampaignSend,
   verifyCampaignChain,
 };
+
+/**
+ * v25.9 — Rehydrate email campaigns + revisions from DB on boot.
+ */
+export async function hydrateEmailCampaignStore(): Promise<void> {
+  try {
+    const campEntries = hydrateEntries<EmailCampaign>(PERSIST_STORE);
+    campaigns.clear();
+    for (const [id, c] of campEntries) campaigns.set(id, c);
+
+    const revEntries = hydrateEntries<EmailCampaignRevision[]>(PERSIST_REVS_STORE);
+    revisions.clear();
+    for (const [id, r] of revEntries) revisions.set(id, r);
+
+    if (campEntries.length > 0) {
+      console.info(
+        `[hydrate] emailCampaignStore: ${campEntries.length} campaigns, ${revEntries.length} revision lists restored`,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      `[hydrate] emailCampaignStore: DB read failed (non-fatal): ${(err as Error).message}`,
+    );
+  }
+}

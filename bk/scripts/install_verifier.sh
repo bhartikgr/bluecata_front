@@ -169,6 +169,35 @@ else
   pass "SESSION_SECRET length ok (${#SESSION_SECRET} chars)"
 fi
 
+# JWT_SECRET — v25.17 Lane E NC1 / v25.18 hard close.
+# Server REFUSES TO BOOT in production without this.
+if [ -z "${JWT_SECRET:-}" ]; then
+  if [ "$IS_PROD" = "1" ]; then
+    fail "JWT_SECRET is empty — server will refuse to boot in production" \
+         "Generate one: openssl rand -hex 32   (then add JWT_SECRET=... to .env)"
+  else
+    warn "JWT_SECRET unset (dev fallback ok; prod will refuse to boot)" \
+         "Set JWT_SECRET=$(openssl rand -hex 32 2>/dev/null || echo '<32+ random chars>') in .env"
+  fi
+elif [ "${#JWT_SECRET}" -lt 32 ]; then
+  fail "JWT_SECRET too short (${#JWT_SECRET} chars; must be >= 32)" \
+       "Generate a stronger one: openssl rand -hex 32"
+else
+  pass "JWT_SECRET length ok (${#JWT_SECRET} chars)"
+fi
+
+# v25.17 Lane E NH1 — if COLLECTIVE_WEBHOOK_URL is set, the secret is required
+# (in production the server refuses to boot otherwise).
+if [ -n "${COLLECTIVE_WEBHOOK_URL:-}" ] && [ -z "${COLLECTIVE_WEBHOOK_SECRET:-}" ]; then
+  if [ "$IS_PROD" = "1" ]; then
+    fail "COLLECTIVE_WEBHOOK_URL is set but COLLECTIVE_WEBHOOK_SECRET is empty — server will refuse to boot in production" \
+         "Set COLLECTIVE_WEBHOOK_SECRET (same value used by your Collective inbound verifier)"
+  else
+    warn "COLLECTIVE_WEBHOOK_URL set without COLLECTIVE_WEBHOOK_SECRET (LIVE_MODE disabled in dev)" \
+         "Set COLLECTIVE_WEBHOOK_SECRET to enable bridge LIVE_MODE"
+  fi
+fi
+
 # DISABLE_DEV_BYPASS / ALLOW_DEV_BYPASS
 if [ "$IS_PROD" = "1" ]; then
   [ "${DISABLE_DEV_BYPASS:-0}" = "1" ] \

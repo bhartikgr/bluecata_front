@@ -41,7 +41,9 @@ export type CollectiveSseTopic =
   | "partner-workspace"
   | "collective-portfolio"
   | "spv"
-  | "crm";
+  | "crm"
+  /* v25.13 NM5 — chapter admin promote/demote events. */
+  | "admins";
 
 export interface UseCollectiveStreamArgs {
   chapterId: string;
@@ -108,8 +110,12 @@ export function useCollectiveStream(args: UseCollectiveStreamArgs): void {
         };
 
       // Add a listener per known topic. Browsers only fire the matching
-      // event name, so we register all six up front; unsubscribed topics
-      // simply won't receive any frames from the server.
+      // event name, so we register every CollectiveSseTopic literal up
+      // front; unsubscribed topics simply won't receive any frames from
+      // the server. v25.13 NC1 — was previously only 6 topics; expanded
+      // to all 15 + "lag" so leaderboard/screening_events/announcements/
+      // resources/messages/partner-workspace/collective-portfolio/spv/crm
+      // listeners actually receive their events.
       const allTopics: Array<CollectiveSseTopic | "lag"> = [
         "comms",
         "events",
@@ -117,6 +123,16 @@ export function useCollectiveStream(args: UseCollectiveStreamArgs): void {
         "offers",
         "questions",
         "billing",
+        "screening_events",
+        "announcements",
+        "resources",
+        "leaderboard",
+        "messages",
+        "partner-workspace",
+        "collective-portfolio",
+        "spv",
+        "crm",
+        "admins",
         "lag",
       ];
       for (const t of allTopics) {

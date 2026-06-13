@@ -65,6 +65,13 @@ export interface UserContext {
   collective: { status: CollectiveStatus; role: string | null; expiresAt: string | null };
   isAdmin: boolean;
   isAuthed: boolean;
+  /**
+   * v25.23 NH-Q2 — optional DB-backed partner-team membership signal. Sourced
+   * from a successful `GET /api/partner/me` and merged onto the context by
+   * PersonaSwitcher so partner-persona gating is not solely `isAdmin`. Absent
+   * for users with no partner membership; never fabricated.
+   */
+  partner?: { partnerId: string; subRole?: string | null } | null;
 }
 
 /* ---------- Persona mapping (preview) ----------

@@ -40,7 +40,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 
 import { PageBody, PageHeader } from "@/components/AppShell";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import { fmtUSD } from "@/lib/format";
 import { useEntitlement } from "@/lib/entitlement";
 
@@ -69,11 +69,25 @@ type Eligibility = {
   };
 };
 
-const TIER_LABEL: Record<"bronze" | "silver" | "gold" | "platinum", { label: string; price: number; perks: string[] }> = {
-  bronze:   { label: "Bronze",   price: 1_000,  perks: ["Quarterly deal flow", "Discord community", "Newsletter"] },
-  silver:   { label: "Silver",   price: 5_000,  perks: ["Monthly curated deals", "Co-investor matching", "Office hours"] },
-  gold:     { label: "Gold",     price: 15_000, perks: ["Weekly invites", "Term sheet review", "Founder intros"] },
-  platinum: { label: "Platinum", price: 50_000, perks: ["Daily flow", "Lead-investor priority", "Concierge LP intros"] },
+/**
+ * v25.21 Lane C NH-3 fix — the hardcoded `price: 1_000 / 5_000 / 15_000 /
+ * 50_000` numbers below were MOCK DATA: the live billing system
+ * (`server/lib/stripeCollective.ts COLLECTIVE_TIER_CATALOG`) uses a
+ * different tier vocabulary entirely (`basic / standard / premium`) and
+ * env-driven prices. The application form's labels/perks are kept for
+ * preference capture but ALL pricing is now sourced from the live
+ * `/api/collective/membership/tiers` endpoint at apply time (see
+ * `liveTiersQ` below) so the figure shown at "Annual fee" matches what the
+ * member will actually be billed. The application's memberTier enum stays
+ * bronze/silver/gold/platinum to preserve schema/admin compatibility; the
+ * server-side billing tier is selected separately by the admin during
+ * review (see admin tier mapping doc).
+ */
+const TIER_LABEL: Record<"bronze" | "silver" | "gold" | "platinum", { label: string; perks: string[] }> = {
+  bronze:   { label: "Bronze",   perks: ["Quarterly deal flow", "Discord community", "Newsletter"] },
+  silver:   { label: "Silver",   perks: ["Monthly curated deals", "Co-investor matching", "Office hours"] },
+  gold:     { label: "Gold",     perks: ["Weekly invites", "Term sheet review", "Founder intros"] },
+  platinum: { label: "Platinum", perks: ["Daily flow", "Lead-investor priority", "Concierge LP intros"] },
 };
 
 // Sprint 20 Wave 2 — extended jurisdiction text (AU, IN, JP added)
@@ -144,7 +158,8 @@ export default function ApplyToCollective() {
   const mineQ = useQuery<{ application: { status: string; submittedAt: string; reviewedAt?: string } } | null>({
     queryKey: ["/api/collective/applications/mine"],
     queryFn: async () => {
-      const res = await fetch("/api/collective/applications/mine");
+      // v25.10 M6 — include cookies for Safari + cross-origin compatibility.
+      const res = await fetch("/api/collective/applications/mine", { credentials: "include" });
       if (res.status === 404) return null;
       return res.json();
     },
@@ -159,7 +174,8 @@ export default function ApplyToCollective() {
   const waitlistMineQ = useQuery<{ items: Array<{ id: string; kind: string; status: string; createdAt: string }>; count: number }>({
     queryKey: ["/api/collective/waitlist/mine"],
     queryFn: async () => {
-      const res = await fetch("/api/collective/waitlist/mine");
+      // v25.10 M6 — include cookies for Safari + cross-origin compatibility.
+      const res = await fetch("/api/collective/waitlist/mine", { credentials: "include" });
       if (!res.ok) return { items: [], count: 0 };
       return res.json();
     },
@@ -195,6 +211,11 @@ export default function ApplyToCollective() {
       return res.json();
     },
     onSuccess: (d) => {
+      // v25.13 NM5 — invalidate the "my applications" and eligibility
+      // queries so re-navigation to this page reads the fresh state and
+      // doesn't allow a duplicate submission.
+      queryClient.invalidateQueries({ queryKey: ["/api/collective/applications/mine"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/collective/eligibility"] });
       setSubmittedId(d.application.id);
       setStep(7);
       toast({ title: "Application submitted", description: "We'll review and respond within 5 business days." });
@@ -238,13 +259,32 @@ export default function ApplyToCollective() {
   // checks from GET /api/collective/eligibility (`passes`), falling back to
   // the live UserContext, and default to NOT-passed (never green) when neither
   // source has loaded.
+  //
+  // v25.21 Lane C NH-2 fix — the previous code read `passes.accreditation /
+  // kyc / profile / primaryInvestment / riskAck`, but the server returns
+  // `passes.investorOnCapTable / founderOfCompany / signatoryOnCompany /
+  // vouchedByPartner`. Total key mismatch — every check silently fell back
+  // to UserContext, so the eligibility checklist shown to the user was
+  // fabricated client-side, not server-derived. We now use the real server
+  // keys and label each check accurately.
   const passes = elig.data?.passes ?? {};
   const eligChecks = [
-    { label: "Accreditation verified", ok: Boolean(passes.accreditation ?? (ctx ? ctx.investor.state !== "NONE" : false)) },
-    { label: "KYC documents on file", ok: Boolean(passes.kyc ?? (ctx ? ctx.investor.capTablePositions.length > 0 : false)) },
-    { label: "Investor profile complete", ok: Boolean(passes.profile ?? (ctx ? ctx.investor.state !== "NONE" : false)) },
-    { label: "At least one Capavate primary investment", ok: Boolean(passes.primaryInvestment ?? (ctx ? ctx.investor.capTablePositions.length > 0 : false)) },
-    { label: "Risk acknowledgements signed", ok: Boolean(passes.riskAck ?? (ctx ? ctx.collective.status !== "none" : false)) },
+    {
+      label: "Investor on a Capavate cap table",
+      ok: Boolean(passes.investorOnCapTable),
+    },
+    {
+      label: "Founder of a Capavate company",
+      ok: Boolean(passes.founderOfCompany),
+    },
+    {
+      label: "Authorised signatory on a Capavate company",
+      ok: Boolean(passes.signatoryOnCompany),
+    },
+    {
+      label: "Vouched by a consortium partner",
+      ok: Boolean(passes.vouchedByPartner),
+    },
   ];
 
   // v23.8 W-12: only real deals from /api/collective/network. No hardcoded
@@ -699,8 +739,11 @@ function Step2Profile({ form, setForm }: { form: CollectiveApplication; setForm:
             <Select value={form.memberTier} onValueChange={(v) => setForm({ ...form, memberTier: v as CollectiveApplication["memberTier"] })}>
               <SelectTrigger data-testid="select-tier"><SelectValue /></SelectTrigger>
               <SelectContent>
+                {/* v25.21 Lane C NH-3 fix — tier picker shows label only;
+                    pricing is confirmed at billing checkout against the
+                    live `/api/collective/membership/tiers` catalog. */}
                 {Object.entries(TIER_LABEL).map(([k, v]) => (
-                  <SelectItem key={k} value={k}>{v.label} — ${v.price.toLocaleString()}/yr</SelectItem>
+                  <SelectItem key={k} value={k}>{v.label}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
@@ -733,7 +776,8 @@ function Step3Identity({ form, setForm }: { form: CollectiveApplication; setForm
       const fd = new FormData();
       fd.append("file", file);
       fd.append("field", field);
-      const res = await fetch("/api/collective/kyc-upload", { method: "POST", body: fd });
+      // v25.10 M6 — include cookies for Safari + cross-origin compatibility.
+      const res = await fetch("/api/collective/kyc-upload", { method: "POST", body: fd, credentials: "include" });
       if (res.ok) {
         const d = await res.json();
         setForm({ ...form, [field]: d.url ?? file.name });
@@ -881,16 +925,21 @@ function Step5Payment({ form, setForm }: { form: CollectiveApplication; setForm:
     <Card>
       <CardHeader><CardTitle className="text-lg">Membership payment</CardTitle></CardHeader>
       <CardContent className="space-y-4">
+        {/* v25.21 Lane C NH-3 fix — honest notice: the "Annual fee" figure
+            previously shown here was a client-side mock ($1k/$5k/$15k/$50k)
+            that did not reconcile with the live billing catalog. The fee is
+            now confirmed at the secure Airwallex checkout post-approval. */}
         <div className="bg-amber-50 border border-amber-200 rounded-md p-3 flex items-start gap-2 text-sm" data-testid="notice-stripe">
           <AlertTriangle className="w-4 h-4 text-amber-700 mt-0.5" />
           <div>
-            <strong>Demo only.</strong> No card is charged in this preview. Stripe integration ships in production
-            release; this step records intent so admin can issue an invoice.
+            <strong>This step records your payment preference only.</strong> Your
+            actual annual fee is confirmed at the secure checkout after admin
+            approval, against the live tier catalog. No card is charged here.
           </div>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
           <div className="p-3 rounded border"><div className="text-xs text-muted-foreground">Tier</div><div className="font-semibold">{tier.label}</div></div>
-          <div className="p-3 rounded border"><div className="text-xs text-muted-foreground">Annual fee</div><div className="font-semibold">{fmtUSD(tier.price)}</div></div>
+          <div className="p-3 rounded border"><div className="text-xs text-muted-foreground">Annual fee</div><div className="font-semibold">Confirmed at checkout</div></div>
           <div className="p-3 rounded border"><div className="text-xs text-muted-foreground">Renewal</div><div className="font-semibold">12 months</div></div>
         </div>
         <div>
@@ -925,7 +974,8 @@ function Step6Review({ form }: { form: CollectiveApplication }) {
       <CardHeader><CardTitle className="text-lg">Review your application</CardTitle></CardHeader>
       <CardContent className="space-y-4 text-sm">
         <Section title="Profile">
-          <Kv k="Tier" v={`${tier.label} — ${fmtUSD(tier.price)}/yr`} />
+          {/* v25.21 Lane C NH-3 fix — don't show a fabricated annual fee */}
+          <Kv k="Tier" v={tier.label} />
           <Kv k="Check size" v={`${fmtUSD(form.minCheckUsd)} – ${fmtUSD(form.maxCheckUsd)}`} />
           <Kv k="Sectors" v={form.sectors.join(", ") || "—"} />
           <Kv k="Stages" v={form.stages.join(", ") || "—"} />

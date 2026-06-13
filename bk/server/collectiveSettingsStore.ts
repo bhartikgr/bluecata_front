@@ -275,13 +275,41 @@ export async function hydrateCollectiveSettingsStore(): Promise<void> {
  * Routes
  * ============================================================ */
 
+/**
+ * v25.12 NH-1 — settings are scoped to active Collective members only.
+ * Without this gate, any authenticated platform user (non-member investor,
+ * founder, admin observer) could read and write the personal settings ledger
+ * including the hash chain. Admin bypasses for support cases.
+ */
+function requireCollectiveMember(
+  req: Request,
+  res: Response,
+): { userId: string } | null {
+  const ctx = (req as Request & {
+    userContext?: {
+      userId?: string;
+      isAuthed?: boolean;
+      isAdmin?: boolean;
+      collective?: { status?: string };
+    };
+  }).userContext;
+  if (!ctx?.userId || !ctx?.isAuthed) {
+    res.status(401).json({ error: "missing_identity" });
+    return null;
+  }
+  if (!ctx.isAdmin && ctx.collective?.status !== "active") {
+    res.status(403).json({ error: "not_collective_member" });
+    return null;
+  }
+  return { userId: ctx.userId };
+}
+
 export function registerCollectiveSettingsRoutes(app: Express): void {
   // GET /api/collective/settings/mine
   app.get("/api/collective/settings/mine", (req: Request, res: Response) => {
-    // v14 — identity from session; no x-user-id header / u_demo fallback.
-    const ctx = (req as Request & { userContext?: { userId?: string; isAuthed?: boolean } }).userContext;
-    if (!ctx?.userId || !ctx?.isAuthed) return res.status(401).json({ error: "missing_identity" });
-    const settings = getOrCreateSettings(ctx.userId);
+    const m = requireCollectiveMember(req, res);
+    if (!m) return;
+    const settings = getOrCreateSettings(m.userId);
     res.json(settings);
   });
 
@@ -292,10 +320,9 @@ export function registerCollectiveSettingsRoutes(app: Express): void {
       return res.status(428).json({ error: "double_verify_required", hint: 'Set header x-confirm: true' });
     }
 
-    // v14 — identity from session; no x-user-id / x-actor-user-id headers.
-    const ctx = (req as Request & { userContext?: { userId?: string; isAuthed?: boolean } }).userContext;
-    if (!ctx?.userId || !ctx?.isAuthed) return res.status(401).json({ error: "missing_identity" });
-    const userId = ctx.userId;
+    const m = requireCollectiveMember(req, res);
+    if (!m) return;
+    const userId = m.userId;
     const actorUserId = userId; // patch.actorUserId always equals session id
 
     const parsed = collectiveSettingsPatchSchema.safeParse(req.body);

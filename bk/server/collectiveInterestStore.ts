@@ -99,6 +99,12 @@ function createInterestThread(
     createdAt: now,
     lastMessageAt: now,
   };
+  /* v25.22 Lane A2 NH-002 fix — fail closed on DB write failure. The prior
+   * implementation logged "DB write failed (in-memory only)" and returned
+   * the in-memory row as success, violating the standing-rule "NO MEMORY
+   * STORAGE; ALL TIED DIRECTLY TO THE DATABASE" and producing a phantom
+   * thread that the recipient could never reply to. We now throw so the
+   * caller surfaces 500 to the client and the user can retry. */
   try {
     const db: any = rawDb();
     db.prepare(
@@ -108,7 +114,14 @@ function createInterestThread(
        VALUES (?, ?, ?, ?, 'open', ?, ?)`,
     ).run(id, companyId, memberId, initialMessage ?? null, now, now);
   } catch (err) {
-    log.warn("[collectiveInterest.create] DB write failed (in-memory only):", (err as Error).message);
+    log.error({
+      route: "collectiveInterest.create",
+      errorType: "DB_WRITE_FAILED",
+      message: (err as Error).message,
+      companyId,
+      memberId,
+    });
+    throw new Error("INTEREST_THREAD_PERSIST_FAILED");
   }
   return row;
 }
@@ -241,6 +254,62 @@ export function getListedCompanyIds(): Set<string> {
   return out;
 }
 
+/**
+ * v25.22 NC-6 fix — chapter-scoped listed company ids. The legacy
+ * `getListedCompanyIds()` returns every chapter's listings, which allowed
+ * a member of `chap_keiretsu_canada` to see `chap_keiretsu_us` companies on
+ * `/api/collective/{companies,dealroom/companies}`. This variant restricts
+ * to the chapters the caller actually belongs to. An empty input list
+ * returns an empty Set (fail closed). The directory row's `chapter`
+ * column is the source of truth.
+ */
+export function getListedCompanyIdsForChapters(chapterIds: string[]): Set<string> {
+  const out = new Set<string>();
+  if (!chapterIds || chapterIds.length === 0) return out;
+  try {
+    const db: any = rawDb();
+    const placeholders = chapterIds.map(() => "?").join(",");
+    const rows = db
+      .prepare(
+        `SELECT company_id FROM collective_directory_listings
+          WHERE status = 'listed' AND chapter IN (${placeholders})`,
+      )
+      .all(...chapterIds) as any[];
+    for (const r of rows) {
+      if (r.company_id) out.add(r.company_id);
+    }
+  } catch {
+    // Non-fatal — fall through with empty set
+  }
+  return out;
+}
+
+/**
+ * v25.22 NC-6 fix — verify a specific company is listed in at least one
+ * of the caller's chapters. Used by `/api/collective/companies/:id` to
+ * short-circuit cross-chapter reads with a 404.
+ */
+export function isCompanyListedInAnyChapter(
+  companyId: string,
+  chapterIds: string[],
+): boolean {
+  if (!companyId || !chapterIds || chapterIds.length === 0) return false;
+  try {
+    const db: any = rawDb();
+    const placeholders = chapterIds.map(() => "?").join(",");
+    const row = db
+      .prepare(
+        `SELECT 1 AS hit FROM collective_directory_listings
+          WHERE status = 'listed' AND company_id = ? AND chapter IN (${placeholders})
+          LIMIT 1`,
+      )
+      .get(companyId, ...chapterIds);
+    return !!row;
+  } catch {
+    return false;
+  }
+}
+
 /* ============================================================
  * B4 — Network graph helpers
  * ============================================================ */
@@ -293,8 +362,17 @@ export function registerCollectiveInterestRoutes(app: Express): void {
         });
       }
 
-      // Create new thread
-      const thread = createInterestThread(companyId, memberId, message);
+      // Create new thread — fail closed on DB write failure (v25.22 NH-002 fix).
+      let thread;
+      try {
+        thread = createInterestThread(companyId, memberId, message);
+      } catch (err) {
+        return res.status(500).json({
+          ok: false,
+          error: "INTEREST_THREAD_PERSIST_FAILED",
+          message: "Could not record your interest right now. Please try again.",
+        });
+      }
 
       // Emit bridge event so founder side picks it up
       try {
@@ -460,8 +538,12 @@ export function registerCollectiveInterestRoutes(app: Express): void {
         edges.push({ from: m.userId, to: "collective", kind: "member_of" });
       }
 
-      // Add all founder companies as nodes
-      const allProfiles = getAllProfiles();
+      // v25.13 NM8 — only include companies that are directory-listed.
+      // Previously this used the unfiltered getAllProfiles() which leaked
+      // unapproved / rejected founder companies into the public network
+      // graph, letting investors discover them ahead of approval.
+      const listedIds = getListedCompanyIds();
+      const allProfiles = getAllProfiles().filter((p) => listedIds.has(p.companyId));
       for (const p of allProfiles) {
         addNode(p.companyId, "founder", p.founderName ?? p.companyId);
       }

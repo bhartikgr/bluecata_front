@@ -200,7 +200,55 @@ export function registerStripeWebhookRoute(app: Express): void {
    * Routes to invoiceStore / subscriptionsStore accordingly.
    * Idempotent on event ID.
    */
+  /* v25.11 NL3 fix — the prior implementation tracked processed Stripe event
+   * IDs in a RAM-only Set, so any server restart within Stripe's 72h retry
+   * window allowed duplicate processing. We now check / write the
+   * processed_webhook_events table (shared with the Airwallex adapter). */
   const processedStripeEvents = new Set<string>();
+  let _stripeWebhookTableEnsured = false;
+  function _ensureStripeWebhookTable(): void {
+    if (_stripeWebhookTableEnsured) return;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { rawDb } = require("./db/connection");
+      const db: any = rawDb();
+      db.exec(`CREATE TABLE IF NOT EXISTS processed_webhook_events (
+        key TEXT PRIMARY KEY NOT NULL,
+        processed_at TEXT NOT NULL
+      );`);
+      _stripeWebhookTableEnsured = true;
+    } catch { /* non-fatal */ }
+  }
+  function _stripeEventAlreadyProcessed(eventId: string): boolean {
+    if (processedStripeEvents.has(eventId)) return true;
+    _ensureStripeWebhookTable();
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { rawDb } = require("./db/connection");
+      const db: any = rawDb();
+      const row: any = db.prepare(
+        `SELECT 1 FROM processed_webhook_events WHERE key = ? LIMIT 1`,
+      ).get(`stripe::${eventId}`);
+      if (row) {
+        processedStripeEvents.add(eventId);
+        return true;
+      }
+    } catch { /* fall through */ }
+    return false;
+  }
+  function _recordStripeEvent(eventId: string): void {
+    processedStripeEvents.add(eventId);
+    _ensureStripeWebhookTable();
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { rawDb } = require("./db/connection");
+      const db: any = rawDb();
+      db.prepare(
+        `INSERT INTO processed_webhook_events (key, processed_at) VALUES (?, ?)
+         ON CONFLICT(key) DO NOTHING`,
+      ).run(`stripe::${eventId}`, new Date().toISOString());
+    } catch { /* fall through */ }
+  }
 
   app.post("/api/webhooks/stripe", (req: Request, res: Response) => {
     const sigHeader = req.headers["stripe-signature"] as string | undefined;
@@ -224,11 +272,11 @@ export function registerStripeWebhookRoute(app: Express): void {
       return res.status(400).json({ ok: false, error: "invalid_event" });
     }
 
-    // Idempotency
-    if (processedStripeEvents.has(event.id)) {
+    // Idempotency — v25.11 NL3: DB-backed check, survives restart.
+    if (_stripeEventAlreadyProcessed(event.id)) {
       return res.json({ ok: true, idempotent: true });
     }
-    processedStripeEvents.add(event.id);
+    _recordStripeEvent(event.id);
 
     // Route events
     const companyId: string | undefined = event?.data?.object?.metadata?.companyId;

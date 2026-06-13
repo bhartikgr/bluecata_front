@@ -34,6 +34,9 @@ import { getDb } from "./db/connection";
 import { companyProfileExtended } from "../shared/schema";
 import { log } from "./lib/logger";
 import { resolveCompanyIdParam } from "./lib/resolveCompanyIdParam"; /* Avi 22-May Issue 5 */
+import { requireAuth } from "./lib/authMiddleware"; /* v25.17 Lane A NC3 */
+import { getUserContext } from "./lib/userContext"; /* v25.17 Lane A NC3 */
+import { escapeHtml as e } from "./lib/htmlEscape"; /* v25.17 Lane A NH5 */
 
 const sha256 = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
 
@@ -528,7 +531,37 @@ export interface FinancialRequestToken {
   requestId: string;
 }
 
+/**
+ * v25.11 NM1 — financialRequestTokens were RAM-only. Accountants received
+ * emailed magic links that 404'd after any server restart — a fatal data-
+ * collection break for any deploy. We now persist each token via the kv
+ * shim and hydrate on boot. The Map remains as a hot read cache.
+ */
 const financialRequestTokens = new Map<string, FinancialRequestToken>();
+
+function _persistFinancialToken(entry: FinancialRequestToken): void {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { persistEntry } = require("./lib/storePersistenceShim");
+    persistEntry("financialRequestTokens", entry.token, entry);
+  } catch { /* non-fatal */ }
+}
+
+export function hydrateFinancialRequestTokens(): number {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { hydrateEntries } = require("./lib/storePersistenceShim");
+    const rows = hydrateEntries("financialRequestTokens") as Array<[string, FinancialRequestToken]>;
+    let n = 0;
+    for (const [token, entry] of rows) {
+      if (entry && token && !financialRequestTokens.has(token)) {
+        financialRequestTokens.set(token, entry);
+        n++;
+      }
+    }
+    return n;
+  } catch { return 0; }
+}
 
 export function createFinancialRequestToken(args: {
   companyId: string;
@@ -554,6 +587,7 @@ export function createFinancialRequestToken(args: {
     requestId,
   };
   financialRequestTokens.set(token, entry);
+  _persistFinancialToken(entry); /* v25.11 NM1 */
   return entry;
 }
 
@@ -567,6 +601,7 @@ export function consumeFinancialRequestToken(token: string): FinancialRequestTok
   entry.consumed = true;
   entry.consumedAt = new Date().toISOString();
   financialRequestTokens.set(token, entry);
+  _persistFinancialToken(entry); /* v25.11 NM1 */
   return entry;
 }
 
@@ -666,13 +701,28 @@ export function registerCompanyProfileRoutes(app: Express): void {
     res.json({ ok: true, profile: updated });
   });
 
+  /* v25.17 Lane A NC3 — founder-of-company ownership gate. Returns true if
+     the caller is authenticated AND owns companyId (or is admin). 404 on
+     mismatch to avoid id enumeration. */
+  function assertFounderOfCompany(req: Request, res: Response, companyId: string): boolean {
+    const ctx = getUserContext(req);
+    if (!ctx.isAuthed) { res.status(401).json({ ok: false, error: "UNAUTHORIZED" }); return false; }
+    if (ctx.isAdmin) return true;
+    const owns = ctx.founder?.companies.some((c) => c.companyId === companyId) ?? false;
+    if (!owns) { res.status(404).json({ ok: false, error: "not_found" }); return false; }
+    return true;
+  }
+
   /**
    * GET /api/founder/profile?companyId=...
    */
-  app.get("/api/founder/profile", (req: Request, res: Response) => {
-    // Avi 22-May Issue 5 — default to active company when query param absent.
+  app.get("/api/founder/profile", requireAuth, (req: Request, res: Response) => {
     const { companyId } = resolveCompanyIdParam(req);
     if (!companyId) return res.status(400).json({ ok: false, error: "companyId required" });
+    /* v25.17 Lane A NC3 — was reachable without authentication AND without
+       ownership check, allowing any caller to read any company's profile by
+       supplying its id. Now requires founder-of-company (or admin). */
+    if (!assertFounderOfCompany(req, res, companyId)) return;
     const profile = getCompanyProfile(companyId);
     res.json({ ok: true, profile });
   });
@@ -681,9 +731,11 @@ export function registerCompanyProfileRoutes(app: Express): void {
    * PATCH /api/founder/profile?companyId=...
    * x-confirm: true required.
    */
-  app.patch("/api/founder/profile", (req: Request, res: Response) => {
+  app.patch("/api/founder/profile", requireAuth, (req: Request, res: Response) => {
     const companyId = String(req.query.companyId ?? req.body?.companyId ?? "");
     if (!companyId) return res.status(400).json({ ok: false, error: "companyId required" });
+    /* v25.17 Lane A NC3 — ownership gate. */
+    if (!assertFounderOfCompany(req, res, companyId)) return;
 
     const confirm = req.headers["x-confirm"] === "true";
     const actor = String((req as any).userContext?.identity?.email ?? (req as any).userContext?.userId ?? ""); /* v14 */ if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
@@ -742,10 +794,14 @@ export function registerCompanyProfileRoutes(app: Express): void {
   /**
    * GET /api/founder/profile/completion?companyId=...
    */
-  app.get("/api/founder/profile/completion", (req: Request, res: Response) => {
+  app.get("/api/founder/profile/completion", requireAuth, (req: Request, res: Response) => {
     // Avi 22-May Issue 5 — default to active company when query param absent.
     const { companyId } = resolveCompanyIdParam(req);
     if (!companyId) return res.status(400).json({ ok: false, error: "companyId required" });
+    /* v25.18 Lane A NH2 (hard close) — v25.17 NC3 patched GET/PATCH `/api/founder/profile`
+       but missed the sibling `/completion` endpoint. Any logged-in user could enumerate
+       any companyId and learn that company's profile completion %. Now gated. */
+    if (!assertFounderOfCompany(req, res, companyId)) return;
     const profile = getCompanyProfile(companyId);
     const result = computeProfileCompletion(profile);
     res.json({ ok: true, ...result });
@@ -756,7 +812,7 @@ export function registerCompanyProfileRoutes(app: Express): void {
    * Body: { companyId, fieldKey, accountantEmail, note }
    * Creates magic-link token, enqueues email, audits, emits bridge event.
    */
-  app.post("/api/founder/financials/request-accountant", (req: Request, res: Response) => {
+  app.post("/api/founder/financials/request-accountant", requireAuth, (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"] === "true";
     const actor = String((req as any).userContext?.identity?.email ?? (req as any).userContext?.userId ?? ""); /* v14 */ if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
 
@@ -764,6 +820,26 @@ export function registerCompanyProfileRoutes(app: Express): void {
 
     if (!companyId || !fieldKey || !accountantEmail) {
       return res.status(400).json({ ok: false, error: "companyId, fieldKey, accountantEmail required" });
+    }
+    /* v25.19 Lane 1 NH1 — the v25.18 NH5 field-whitelist closed the
+       mass-assignment hole but did NOT verify the caller actually owns the
+       supplied companyId. Any authenticated founder could mint an
+       accountant-fill token for any other company. Now ownership-gated. */
+    if (!assertFounderOfCompany(req, res, companyId)) return;
+    /* v25.17 Lane A NH6 — only allow accountants to fill financial fields
+       on the company profile. Without this whitelist, a founder could mint a
+       token for any field (e.g. `tenant`, `plan`, `founderEmail`) and the
+       accountant's submitted value would overwrite arbitrary profile data. */
+    const ALLOWED_FIELDS = new Set<string>([
+      /* v25.18 Lane A NH5 (hard close) — v25.17's whitelist used the WRONG names.
+         The real `CompanyProfile` keys are below; the old list silently wrote to
+         dead properties so the feature appeared to work but populated nothing. */
+      "arrUsd", "mrrUsd", "monthlyBurnUsd", "cashOnHandUsd", "runwayMonths",
+      "grossMarginPct", "customerCount", "ltvCacRatio",
+      "lastRaiseSizeUsd", "lastRaiseValuationUsd", "totalRaisedUsd",
+    ]);
+    if (!ALLOWED_FIELDS.has(String(fieldKey))) {
+      return res.status(400).json({ ok: false, error: "fieldKey not allowed for accountant fill", allowed: Array.from(ALLOWED_FIELDS) });
     }
     if (typeof note === "string" && note.length > 280) {
       return res.status(400).json({ ok: false, error: "note must be ≤280 characters" });
@@ -782,11 +858,11 @@ export function registerCompanyProfileRoutes(app: Express): void {
       subject: `[Capavate] Please fill in: ${fieldKey}`,
       bodyHtml: `
         <p>Hello,</p>
-        <p>A founder has requested you fill in the <strong>${fieldKey}</strong> field for their company on Capavate.</p>
-        ${note ? `<p>Note from founder: ${note}</p>` : ""}
-        <p><a href="${magicLink}">Click here to fill in the field →</a></p>
+        <p>A founder has requested you fill in the <strong>${e(fieldKey)}</strong> field for their company on Capavate.</p>
+        ${note ? `<p>Note from founder: ${e(note)}</p>` : ""}
+        <p><a href="${e(magicLink)}">Click here to fill in the field →</a></p>
         <p>This link expires in 7 days.</p>
-      `,
+      ` /* v25.17 Lane A NH5: escape user-controlled email HTML */,
       bodyText: `Fill in ${fieldKey}: ${magicLink}\n${note ? `Note: ${note}` : ""}`,
     });
 
@@ -873,7 +949,7 @@ export function registerCompanyProfileRoutes(app: Express): void {
         recipientUserId: entry.requestedBy,
         to: profile.founderEmail,
         subject: `[Capavate] ${entry.fieldKey} filled by your accountant`,
-        bodyHtml: `<p>Your accountant (${entry.accountantEmail}) has filled in the <strong>${entry.fieldKey}</strong> field on your company profile.</p>`,
+        bodyHtml: `<p>Your accountant (${e(entry.accountantEmail)}) has filled in the <strong>${e(entry.fieldKey)}</strong> field on your company profile.</p>` /* v25.17 Lane A NH5: escape email HTML */,
         bodyText: `Your accountant filled in ${entry.fieldKey}.`,
       });
     }
@@ -893,8 +969,12 @@ export function registerCompanyProfileRoutes(app: Express): void {
     res.json({ ok: true, companyId: id, ...timestamps, ...counters });
   });
 
-  app.get("/api/founder/companies/:id/activity", async (req: Request, res: Response) => {
+  app.get("/api/founder/companies/:id/activity", requireAuth, async (req: Request, res: Response) => {
     const { id } = req.params;
+    /* v25.19 Lane 1 NC3 (hard close) — cross-tenant activity/telemetry leak.
+       The admin sibling is covered by the global admin guard; the founder
+       path had no gate at all. */
+    if (!assertFounderOfCompany(req, res, id)) return;
     const { getCompanyActivityTimestamps, getCompanyTelemetryCounters } = await import("./activityDeriver");
     const timestamps = getCompanyActivityTimestamps(id);
     const counters = getCompanyTelemetryCounters(id);
