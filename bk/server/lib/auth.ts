@@ -16,14 +16,37 @@ import { rawDb } from "../db/connection";
 /* v25.17 Lane E NC1 — JWT_SECRET must be set in production. Silent
    per-process fallback caused every restart to invalidate all sessions,
    and under PM2 multi-worker it minted a different secret per worker
-   (intermittent 401s). Now: fail fast in production, warn loudly in dev. */
+   (intermittent 401s). v25.17: fail fast in production, warn loudly in dev.
+
+   v25.25 Avi-1 fix — Symptom Avi reported (2026-06-13): founder login
+   returned 500 Internal Server Error in production when JWT_SECRET was
+   missing/empty in .env (his .env literally had `JWT_SECRET=` with no
+   value). Root cause: the v25.17 `throw` happened at MODULE IMPORT time.
+   `auth.ts` was imported lazily on the first auth-related request, so the
+   server booted fine, `/api/health` worked, but the first login attempt
+   caused an unhandled module-load error → generic 500.
+
+   The fix has two halves:
+     1. (Here)  Do NOT throw inside the module IIFE. Set a sentinel
+        `JWT_SECRET_MISSING = true` so callers can fail gracefully and
+        production callers see a real error before any signing/verifying
+        happens. The actual crash is moved to a BOOT-TIME assertion (see
+        `assertAuthSecretsAtBoot` below, called from `server/index.ts`).
+     2. (server/index.ts) Call `assertAuthSecretsAtBoot()` at the very top
+        of bootstrap so a missing/short JWT_SECRET in production fails the
+        process LOUDLY before any request arrives — not silently 500'ing
+        on the first login. */
+const _envJwtSecret = process.env.JWT_SECRET;
+export const JWT_SECRET_MISSING =
+  !_envJwtSecret || _envJwtSecret.length < 32;
 const JWT_SECRET = (() => {
-  const s = process.env.JWT_SECRET;
-  if (s && s.length >= 32) return s;
+  if (!JWT_SECRET_MISSING) return _envJwtSecret as string;
   if (process.env.NODE_ENV === "production") {
-    throw new Error(
-      "[auth] JWT_SECRET must be set to a >=32 char value in production. Refusing to boot.",
-    );
+    // Do NOT throw here — module is imported lazily; throwing would 500
+    // the first request instead of failing at boot. Return a clearly
+    // unusable sentinel; sign/verify paths will refuse to operate when
+    // JWT_SECRET_MISSING is true (see signJwt/verifyJwt below).
+    return "PRODUCTION_JWT_SECRET_NOT_SET_REFUSED";
   }
   // eslint-disable-next-line no-console
   console.warn(
@@ -31,6 +54,31 @@ const JWT_SECRET = (() => {
   );
   return crypto.randomBytes(48).toString("hex");
 })();
+
+/**
+ * v25.25 Avi-1 — explicit boot-time assertion.
+ *
+ * Called from `server/index.ts` before listen(). In production, refuses to
+ * boot when JWT_SECRET is missing or shorter than 32 chars. Prints a clear
+ * actionable message to stderr. In non-production, just warns.
+ *
+ * Decoupled from the module-load IIFE so the lazy-import 500 cannot recur.
+ */
+export function assertAuthSecretsAtBoot(): void {
+  if (!JWT_SECRET_MISSING) return;
+  const msg =
+    "[auth] FATAL: JWT_SECRET is missing or shorter than 32 characters. " +
+    "Set JWT_SECRET in your .env to a strong random string (recommended: 64+ hex chars). " +
+    "Refusing to boot in production.";
+  if (process.env.NODE_ENV === "production") {
+    // eslint-disable-next-line no-console
+    console.error(msg);
+    // Exit with a non-zero code so PM2/systemd/docker mark the boot as failed.
+    process.exit(1);
+  }
+  // eslint-disable-next-line no-console
+  console.warn(msg);
+}
 
 /* v25.17 Lane C NC1 — dedicated session-cookie HMAC. Exported so sessionCookie
    can sign cookie bodies. Falls back to JWT_SECRET when SESSION_COOKIE_SECRET
@@ -65,6 +113,16 @@ function b64urlDecode(s: string): Buffer {
 }
 
 export function signJwt(payload: Omit<JwtClaims, "iat" | "exp">, ttlSec = ACCESS_TTL_SEC): string {
+  /* v25.25 Avi-1 — refuse to mint a token when JWT_SECRET is missing in prod.
+     Throws a typed error the auth login handler converts to a 503 instead of
+     a generic crash 500. */
+  if (JWT_SECRET_MISSING && process.env.NODE_ENV === "production") {
+    const err = new Error(
+      "JWT_SECRET_NOT_CONFIGURED: server administrator must set JWT_SECRET (>= 32 chars) in .env.",
+    );
+    (err as Error & { code?: string }).code = "JWT_SECRET_NOT_CONFIGURED";
+    throw err;
+  }
   const iat = Math.floor(Date.now() / 1000);
   const claims: JwtClaims = { ...payload, iat, exp: iat + ttlSec };
   const header = b64url(Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })));

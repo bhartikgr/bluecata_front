@@ -22,7 +22,7 @@ import { GlossaryLink } from "@/components/Glossary";
 import { HelpTip } from "@/components/HelpTip";
 import { ArrowLeft, FileText, Eye, Download, ShieldCheck, Check, X, Layers, PieChart as PieIcon, Building2, Info, Hash, Undo2, Wallet, Copy } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
-import { fmtUSD, fmtPct, fmtDate, fmtNum, fmtBytes } from "@/lib/format";
+import { fmtUSD, fmtPct, fmtDate, fmtNum, fmtBytes, safeToFixed } from "@/lib/format";
 import { useToast } from "@/hooks/use-toast";
 import { emit } from "@/lib/sprint3";
 import { useEffect } from "react";
@@ -54,7 +54,10 @@ type Inv = {
  };
  state: string; receivedAt: string; expiresAt: string;
  minTicket: number; targetAmount: number; raisedAmount: number;
- preMoney: number; postMoney: number; pricePerShare: number;
+ preMoney: number; postMoney: number;
+ // v25.25 Avi-8 — priced rounds sometimes leave price_per_share NULL when
+ // sharesAuthorized isn't filled. Allow null so callers must guard.
+ pricePerShare: number | null;
 };
 type Sec = { id: string; holderName: string; holderType: string; instrument: string; series: string | null; shares: number; investmentAmount: number | null };
 type DR = { id: string; category: string; name: string; sizeBytes: number; uploadedAt: string };
@@ -355,7 +358,7 @@ export default function InvitationDetail() {
        <Card><CardContent className="p-4">
         <div className="text-xs uppercase text-muted-foreground tracking-wide font-medium">Pre / post-money</div>
         <div className="text-2xl font-semibold mt-1">{fmtUSD(i.preMoney, { compact: true })}</div>
-        <div className="text-xs text-muted-foreground mt-1">Post: {fmtUSD(i.postMoney, { compact: true })} · ${i.pricePerShare?.toFixed(2)}/sh</div>
+        <div className="text-xs text-muted-foreground mt-1">Post: {fmtUSD(i.postMoney, { compact: true })} · {/* v25.25 Avi-8: was `${i.pricePerShare?.toFixed(2)}/sh` which rendered "undefined/sh" when PPS unset */}{i.pricePerShare != null ? `$${safeToFixed(i.pricePerShare, 2)}/sh` : "PPS not set"}</div>
        </CardContent></Card>
        <Card><CardContent className="p-4">
         <div className="text-xs uppercase text-muted-foreground tracking-wide font-medium">Min ticket</div>
@@ -480,7 +483,10 @@ export default function InvitationDetail() {
          ["Pre-money valuation", fmtUSD(i.preMoney), "The company's value before this round's new money lands."],
          ["Post-money valuation", fmtUSD(i.postMoney), "Pre-money plus the round size — the company's value the instant the round closes."],
          ["Round size", fmtUSD(i.targetAmount), "Total new money the company is targeting in this round."],
-         ["Price per share", `$${i.pricePerShare?.toFixed(4)}`, "The cost of one share in this round, set by pre-money divided by fully-diluted shares."],
+         /* v25.25 Avi-8 — was `$${i.pricePerShare?.toFixed(4)}` which rendered
+            "$undefined" when price_per_share is NULL (priced rounds where the
+            founder didn't fill sharesAuthorized). Surface honestly. */
+         ["Price per share", i.pricePerShare != null ? `$${safeToFixed(i.pricePerShare, 4)}` : "Not set — priced at close", "The cost of one share in this round, set by pre-money divided by fully-diluted shares."],
          ["Min ticket", fmtUSD(i.minTicket), "The smallest cheque the founder will accept."],
          ["Liquidation preference", i.round.terms?.liquidationPref ?? "Not specified", "On exit you receive your invested capital back BEFORE common shareholders — OR you convert to common and share pro-rata, whichever is better. 1× non-participating is the founder-friendly standard."],
          ["Anti-dilution", i.round.terms?.antiDilution ?? "Not specified", "If the company later raises at a lower valuation, your conversion ratio adjusts in your favour. Broad-based weighted-average is the gentle, mainstream version."],

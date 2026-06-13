@@ -169,6 +169,13 @@ export default function FounderSubscribe() {
         const res = await apiRequest("POST", "/api/founder/subscription/activate-free", {});
         return res.json();
       }
+      // v25.25 Avi-3 guard — prevent silent 400 "tierId + companyId required"
+      // when the active company is still loading or unset.
+      if (!companyId) {
+        const e = new Error("COMPANY_NOT_READY");
+        (e as Error & { code?: string }).code = "COMPANY_NOT_READY";
+        throw e;
+      }
       // The single Capavate commercial tier is annual ($840/yr/company). Paid
       // plan keys all map to that tier for the hosted-checkout PaymentIntent.
       const res = await apiRequest("POST", "/api/billing/plan", {
@@ -207,7 +214,15 @@ export default function FounderSubscribe() {
     },
     onError: (e: any) => {
       const code = e?.code ?? "";
-      if (code === "gateway_not_configured" || e?.message?.includes("gateway_not_configured")) {
+      if (code === "COMPANY_NOT_READY") {
+        // v25.25 Avi-3 — actionable error when active company isn't loaded.
+        toast({
+          title: "Complete company setup first",
+          description:
+            "Your active company isn't loaded yet. Refresh the page, or finish company onboarding before subscribing.",
+          variant: "destructive",
+        });
+      } else if (code === "gateway_not_configured" || e?.message?.includes("gateway_not_configured")) {
         toast({ title: "Payment gateway not configured", description: "Contact your administrator to enable payments.", variant: "destructive" });
       } else {
         toast({ title: "Payment failed", description: e?.message ?? "Please try again.", variant: "destructive" });

@@ -653,11 +653,19 @@ export default function InvestorCRM() {
   // Patch v4: CRM list comes strictly from /api/investor/crm/contacts.
   // If the API returns an empty list, the page shows an empty state —
   // no hardcoded persona fallbacks ship in the client bundle.
+  /* v25.25 Avi-6 — the previous query hit /api/investor/crm/contacts, which is
+     SHADOWED by crmStore.ts (registered first in routes.ts:413, before
+     investorCrmStore at :613). crmStore reads the unrelated `pcrm_contacts`
+     table and returns `{contacts,count}` — not the bare array this query
+     expects — so the saved contacts (which land in `investor_crm_contacts`)
+     were invisible. Switch to /api/investor/crm (the bare-array endpoint
+     owned solely by investorCrmStore, no collision) so save+list are on the
+     same store + table + shape. */
   const listQ = useQuery<InvestorCrmContact[]>({
-    queryKey: ["/api/investor/crm/contacts"],
+    queryKey: ["/api/investor/crm"],
     queryFn: async () => {
       try {
-        const res = await apiRequest("GET", "/api/investor/crm/contacts");
+        const res = await apiRequest("GET", "/api/investor/crm");
         if (!res.ok) return [];
         const data = await res.json();
         return Array.isArray(data) ? data : [];

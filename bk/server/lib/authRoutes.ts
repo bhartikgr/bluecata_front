@@ -143,6 +143,25 @@ export function registerAuthShellRoutes(app: Express, redemption: {
   // (10/min/IP) mounted as middleware so credential-spray attacks 429
   // before the handler runs.
   app.post("/api/auth/login", authLoginRateLimit, async (req: Request, res: Response) => {
+    /* v25.25 Avi-1 — if JWT_SECRET is missing in production, return a clear
+       503 instead of a generic 500 from a lazy module-load crash. Boot-time
+       assertion already aborts the process in production (see
+       assertAuthSecretsAtBoot in server/index.ts), but this defends against
+       the dev edge case where someone runs NODE_ENV=production with no
+       secret bypassing boot (e.g. PM2 hot reload). */
+    try {
+      // Lazy import to keep the IIFE-free auth module out of route registration order.
+      const { JWT_SECRET_MISSING } = await import("./auth");
+      if (JWT_SECRET_MISSING && process.env.NODE_ENV === "production") {
+        return res.status(503).json({
+          ok: false,
+          error: "JWT_SECRET_NOT_CONFIGURED",
+          message:
+            "Server administrator must set JWT_SECRET (>= 32 chars) in .env. Login is unavailable until this is corrected.",
+        });
+      }
+    } catch { /* defense in depth — fall through to normal flow */ }
+
     const body = (req.body ?? {}) as { email?: string; password?: string; userId?: string };
     const providedPw = body.password ?? "";
 

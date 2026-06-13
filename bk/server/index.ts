@@ -14,6 +14,7 @@ import { hydrateAllStores } from "./lib/hydrateStores";
 // Sprint-fix May 14 2026 — wire the catch-all route guard AFTER registerRoutes.
 import { applyRouteGuards } from "./lib/applyRouteGuards";
 import { originAllowlistForWrites } from "./middleware/security";
+import { assertAuthSecretsAtBoot } from "./lib/auth"; // v25.25 Avi-1
 // v12 Phase A.6 — demo seed gate (non-prod only).
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 import { seedDemoData } from "./lib/seedDemoData";
@@ -110,6 +111,14 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  // v25.25 Avi-1 — fail fast in production if JWT_SECRET is missing/short.
+  // Avi reported a 500 on /api/auth/login when his .env had `JWT_SECRET=`
+  // (empty). The v25.17 throw was at module-import time — which fired only
+  // on the first request that imported `auth.ts`. Now we assert at boot so
+  // the symptom is obvious (process exits 1 with a clear message) instead
+  // of latent 500s on first login.
+  assertAuthSecretsAtBoot();
+
   // KL-04: Hydrate in-memory stores from DB on startup (no-op in sandbox)
   await hydrateAllStores();
 

@@ -1718,7 +1718,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
        * "price/share: undefined" while post-money valuation shows. Avi
        * caught this. We now project the full round shape the client expects. */
       postMoney: (round?.postMoney ?? 0) as number,
-      pricePerShare: (round?.pricePerShare ?? 0) as number,
+      /* v25.25 Avi-8 — was `?? 0`, which coalesced a genuinely-unset PPS to
+         zero and rendered "$0.00" in the client (misleading). Surface honest
+         null so the new client guards in InvitationDetail.tsx show
+         "Not set — priced at close" instead of a fake $0.00. The previous
+         v25.8 Bug 2 fix surfaced the field; this v25.25 fix surfaces it
+         honestly when unset. */
+      pricePerShare: (round?.pricePerShare ?? null) as number | null,
       currency: round?.currency ?? "USD",
       instrument: round?.instrument ?? "preferred",
       closeDate: round?.closeDate ?? null,

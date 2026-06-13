@@ -49,9 +49,19 @@ export function PaymentSurface({
 
   const checkout = useMutation({
     mutationFn: async () => {
+      // v25.25 Avi-3 guard — either companyId or customerId must be present;
+      // an empty string would otherwise trigger the server's generic 400
+      // "tierId + companyId required". This mirrors the Settings switchPlanMut
+      // guard so the founder gets a clear actionable toast instead.
+      const effectiveCompanyId = companyId ?? customerId;
+      if (!effectiveCompanyId) {
+        const e = new Error("COMPANY_NOT_READY");
+        (e as Error & { code?: string }).code = "COMPANY_NOT_READY";
+        throw e;
+      }
       const res = await apiRequest("POST", "/api/billing/plan", {
         tierId,
-        companyId: companyId ?? customerId,
+        companyId: effectiveCompanyId,
         billingCycle,
       });
       return (await res.json()) as { ok: boolean; hostedPaymentPageUrl?: string };
@@ -66,7 +76,13 @@ export function PaymentSurface({
     },
     onError: (err: any) => {
       const code = err?.code ?? "";
-      if (code === "gateway_not_configured" || err?.message?.includes("gateway_not_configured")) {
+      if (code === "COMPANY_NOT_READY") {
+        // v25.25 Avi-3 — actionable error when companyId is unset.
+        const msg =
+          "Your active company isn't loaded yet. Refresh the page, or finish company onboarding before purchasing.";
+        setErrorMsg(msg);
+        toast.error({ title: "Complete company setup first", description: msg });
+      } else if (code === "gateway_not_configured" || err?.message?.includes("gateway_not_configured")) {
         const msg = "Payment gateway is not configured. Contact your administrator.";
         setErrorMsg(msg);
         toast.error({ title: "Payment gateway not configured", description: msg });

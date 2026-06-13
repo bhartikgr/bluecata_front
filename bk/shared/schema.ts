@@ -254,6 +254,25 @@ export const softCircles = sqliteTable("soft_circles", {
   createdAt: text("created_at").notNull(),
   // v17 Phase A — chapter scoping (additive, nullable; backfilled to chap_keiretsu_canada).
   chapterId: text("chapter_id"),
+  /* v25.25 Avi-7 fix — declare the columns that already exist physically (added
+     via raw ALTER TABLE in server/db/connection.ts:278-286) so Drizzle stops
+     silently dropping them from typed inserts. The bug: softCircleStore was
+     passing `investorUserId`, `amountMinor`, etc. through `.values({...} as
+     any).run()`, but because these columns weren't declared here, Drizzle
+     dropped them — every soft-circle row landed with investor_user_id=NULL
+     and amount_minor=0. That's why the founder list (filters by roundId, a
+     declared column) saw the row, but the investor list (filters by
+     investorUserId) saw nothing. Declaring the columns here makes the
+     existing typed insert persist them correctly; no DB migration needed. */
+  tenantId: text("tenant_id"),
+  companyId: text("company_id"),
+  investorUserId: text("investor_user_id"),
+  investorEmail: text("investor_email"),
+  amountMinor: integer("amount_minor").notNull().default(0),
+  currency: text("currency").notNull().default("USD"),
+  collectiveVisible: integer("collective_visible").notNull().default(1),
+  updatedAt: text("updated_at"),
+  deletedAt: text("deleted_at"),
 });
 
 /* ----- dataroom (§12) ----- */

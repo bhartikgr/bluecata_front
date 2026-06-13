@@ -209,6 +209,19 @@ export const softCircles = pgTable("soft_circles", {
   status: text("status").notNull(),
   createdAt: text("created_at").notNull(),
   chapterId: text("chapter_id"),
+  /* v25.25 Avi-7 fix — PG parity with shared/schema.ts: declare the columns
+     that already exist physically so Drizzle persists typed insert values
+     instead of silently dropping them. See shared/schema.ts for the SQLite
+     counterpart and full root-cause notes. */
+  tenantId: text("tenant_id"),
+  companyId: text("company_id"),
+  investorUserId: text("investor_user_id"),
+  investorEmail: text("investor_email"),
+  amountMinor: integer("amount_minor").notNull().default(0),
+  currency: text("currency").notNull().default("USD"),
+  collectiveVisible: integer("collective_visible").notNull().default(1),
+  updatedAt: text("updated_at"),
+  deletedAt: text("deleted_at"),
 });
 
 /* ----- dataroom ----- */

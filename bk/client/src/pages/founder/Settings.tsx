@@ -211,6 +211,17 @@ export default function Settings() {
   // (optimistic "Plan updated" toast with no payment) was the root of Avi's bug.
   const switchPlanMut = useMutation({
     mutationFn: async (tierId: string) => {
+      // v25.25 Avi-3 guard — useActiveCompanyId() returns "" while companies
+      // are still loading or when the user has no company yet. Sending an
+      // empty companyId would trigger a generic 400 "tierId + companyId
+      // required" from /api/billing/plan, which is what Avi saw on his
+      // newly-created founder account before completing company setup.
+      // Catch it client-side and surface a clear actionable error instead.
+      if (!companyId) {
+        const e = new Error("COMPANY_NOT_READY");
+        (e as Error & { code?: string }).code = "COMPANY_NOT_READY";
+        throw e;
+      }
       // apiRequest throws an ApiError (carrying the server's `error` code) on a
       // non-2xx response, so a 503 gateway_not_configured surfaces in onError.
       const r = await apiRequest("POST", "/api/billing/plan", { tierId, companyId, billingCycle: billingPeriod });
@@ -229,7 +240,15 @@ export default function Settings() {
     },
     onError: (err: any) => {
       const code = err?.code ?? "";
-      if (code === "gateway_not_configured" || err?.message?.includes("gateway_not_configured")) {
+      if (code === "COMPANY_NOT_READY") {
+        // v25.25 Avi-3 — actionable error when companyId is unset.
+        toast({
+          title: "Complete company setup first",
+          description:
+            "Your active company isn't loaded yet. Refresh the page, or finish company onboarding before changing your plan.",
+          variant: "destructive",
+        });
+      } else if (code === "gateway_not_configured" || err?.message?.includes("gateway_not_configured")) {
         toast({ title: "Payment gateway not configured. Contact your administrator.", variant: "destructive" });
       } else {
         toast({ title: "Plan change failed", variant: "destructive" });
