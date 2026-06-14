@@ -19,6 +19,15 @@ import type { Express, Request, Response } from "express";
 import * as crypto from "node:crypto";
 import { getUserContextForId, listPersonas, registerPersona, registerFounderUser, verifyPassword } from "./userContext";
 import { setSessionCookie } from "./sessionCookie";
+/* v25.25.1 emergency fix — static import of JWT_SECRET_MISSING. The v25.25
+   shipped version used `await import("./auth")` inside the login handler;
+   esbuild emits that as a require(...) call in the CJS bundle, which fails
+   at runtime ("require is not defined") and 500'd every login attempt on
+   prod. Verified against capavate.com 2026-06-13. Since auth.ts no longer
+   throws at module-load (the v25.25 design goal), the static import is
+   safe and idiomatic — which is what v25.25 should have used from the
+   start. */
+import { JWT_SECRET_MISSING } from "./auth";
 import { rawDb } from "../db/connection";
 import { sendEmail } from "./emailSender";
 import { log } from "./logger";
@@ -143,24 +152,22 @@ export function registerAuthShellRoutes(app: Express, redemption: {
   // (10/min/IP) mounted as middleware so credential-spray attacks 429
   // before the handler runs.
   app.post("/api/auth/login", authLoginRateLimit, async (req: Request, res: Response) => {
-    /* v25.25 Avi-1 — if JWT_SECRET is missing in production, return a clear
-       503 instead of a generic 500 from a lazy module-load crash. Boot-time
-       assertion already aborts the process in production (see
-       assertAuthSecretsAtBoot in server/index.ts), but this defends against
-       the dev edge case where someone runs NODE_ENV=production with no
-       secret bypassing boot (e.g. PM2 hot reload). */
-    try {
-      // Lazy import to keep the IIFE-free auth module out of route registration order.
-      const { JWT_SECRET_MISSING } = await import("./auth");
-      if (JWT_SECRET_MISSING && process.env.NODE_ENV === "production") {
-        return res.status(503).json({
-          ok: false,
-          error: "JWT_SECRET_NOT_CONFIGURED",
-          message:
-            "Server administrator must set JWT_SECRET (>= 32 chars) in .env. Login is unavailable until this is corrected.",
-        });
-      }
-    } catch { /* defense in depth — fall through to normal flow */ }
+    /* v25.25 Avi-1 / v25.25.1 — if JWT_SECRET is missing in production, return
+       a clean 503 instead of a generic 500. Boot-time assertion already
+       aborts the process in production (see assertAuthSecretsAtBoot in
+       server/index.ts), but this defends against the dev edge case where
+       someone runs NODE_ENV=production with no secret bypassing boot.
+       v25.25.1: replaced the broken dynamic `await import("./auth")` (which
+       esbuild emitted as a CJS require shim that fails at runtime) with the
+       static module-level import — see top of file. */
+    if (JWT_SECRET_MISSING && process.env.NODE_ENV === "production") {
+      return res.status(503).json({
+        ok: false,
+        error: "JWT_SECRET_NOT_CONFIGURED",
+        message:
+          "Server administrator must set JWT_SECRET (>= 32 chars) in .env. Login is unavailable until this is corrected.",
+      });
+    }
 
     const body = (req.body ?? {}) as { email?: string; password?: string; userId?: string };
     const providedPw = body.password ?? "";
