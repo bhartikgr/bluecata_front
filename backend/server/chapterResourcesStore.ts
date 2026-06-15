@@ -24,6 +24,15 @@
  *   - NO mock data, NO TODOs, NO stubs.
  */
 
+/* v25.25.2 — createRequire shim: lazy require() calls in this file must work
+   in BOTH the dev/prod tsx runtime (ESM, where `require` is undefined) AND
+   the bundled CJS dist. This is the minimal, zero-risk way to unblock the
+   v25.25 login 500 ("require is not defined" at userContext.ts:585 and other
+   sites) without converting every lazy require() to a static import (which
+   would re-introduce circular-import bugs). */
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+
 import type { Express, Request, Response } from "express";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { createHash, randomBytes } from "node:crypto";

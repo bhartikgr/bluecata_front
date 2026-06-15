@@ -18,6 +18,14 @@
  *   - getActiveCompanyId(userId) called with the persona's userId.
  *   - New users get ZERO companies — no NovaPay/Arboreal leakage.
  */
+/* v25.25.2 — createRequire shim so lazy require() calls in this file work
+   in BOTH the dev/prod tsx runtime (ESM, where `require` is undefined) AND
+   the bundled CJS dist (where `require` is already defined as a global).
+   Cheap, minimal, and avoids re-introducing circular-import bugs that
+   would arise from converting every lazy require() to a static import. */
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+
 import type { Request } from "express";
 import { getCompaniesForFounder, getActiveCompanyId, getCompanyNameById, type FounderCompanyMembership } from "../multiCompanyStore";
 import { getMembership } from "../membershipStore";

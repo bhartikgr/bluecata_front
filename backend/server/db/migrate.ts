@@ -28,6 +28,8 @@
  * code paths (cap-table-engine / captableCommitStore.ts:354-477). Adding
  * this file leaves the SHA of every other server/* file untouched.
  */
+/* v25.25.2 — this file already had its own createRequire/makeRequire pattern
+   (see _require below). No additional shim required here. */
 import { createRequire } from "node:module";
 import * as fs from "node:fs";
 import * as path from "node:path";
