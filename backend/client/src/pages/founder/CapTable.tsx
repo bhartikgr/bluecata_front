@@ -172,7 +172,7 @@ export default function CapTable() {
 
  function exportCSV() {
  const headers = [
- "Cert #", "Shares from\u2013to", "Round", "Holder", "Holder type",
+ "Cert #", "Shares from–to", "Round", "Holder", "Holder type",
  "Instrument", "Series", "Issuance date", "Shares", "Price/share",
  "Investment", "Vested %", "Drag", "ROFR", "Co-Sale", "Pro-rata",
  "Side letter", "Ownership %",
@@ -181,7 +181,7 @@ export default function CapTable() {
  headers.join(","),
  ...enrichedRows.map((r) => [
  `"${r.orig?.certificateNumber ?? ""}"`,
- `"${r.orig?.shareNumberFrom ?? ""}\u2013${r.orig?.shareNumberTo ?? ""}"`,
+ `"${r.orig?.shareNumberFrom ?? ""}–${r.orig?.shareNumberTo ?? ""}"`,
  `"${r.round?.name ?? ""}"`,
  `"${r.holderName}"`,
  r.holderType,

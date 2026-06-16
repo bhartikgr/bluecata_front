@@ -209,7 +209,7 @@ export default function TermSheet() {
  if (msg.includes("401")) {
  setLastSaveError("Sign in required to save.");
  } else if (msg.includes("409")) {
- setLastSaveError("This term sheet is signed and locked \u2014 saves are no longer accepted.");
+ setLastSaveError("This term sheet is signed and locked — saves are no longer accepted.");
  } else {
  setLastSaveError("Save failed. Your local draft is intact; try again.");
  }

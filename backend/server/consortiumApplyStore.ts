@@ -335,34 +335,69 @@ function getCaptchaSecret(): string {
   return _fallbackCaptchaSecret as string;
 }
 
+/* v25.26 — explicit captcha-enabled gate. Until Avi wires a real provider
+ * (Turnstile / hCaptcha / reCAPTCHA), the front-end has NO captcha widget
+ * to compute the HMAC token — so every public apply submit 400'd with
+ * `captcha_failed`, regardless of how good the request was. The applicant
+ * funnel was 100% blocked.
+ *
+ * Behaviour now:
+ *   - CAPTCHA_PROVIDER=turnstile|hcaptcha|recaptcha  → verify with that
+ *     provider's server-side endpoint (deferred; not implemented here yet).
+ *   - CAPTCHA_PROVIDER=stub                          → require the v25.12
+ *     HMAC stub token (legacy behaviour; test suites use this).
+ *   - CAPTCHA_PROVIDER unset OR CAPTCHA_ENABLED=0    → SKIP captcha (apply
+ *     submits go through; rate-limiter still throttles at 5/bucket).
+ *
+ * Rate limit (`public:apply` bucket, 5/bucket) is still in place — we are
+ * NOT removing abuse mitigation, only the gate that had no client. The
+ * CONSORTIUM_AUTO_APPROVE=1 prod flag already implies private-beta posture.
+ */
+function isCaptchaEnabled(): boolean {
+  const enabled = process.env.CAPTCHA_ENABLED;
+  if (enabled === "0" || enabled === "false" || enabled === "no") return false;
+  const provider = (process.env.CAPTCHA_PROVIDER ?? "").toLowerCase();
+  // No provider configured = no captcha. Operator must explicitly opt in
+  // (CAPTCHA_PROVIDER=stub|turnstile|hcaptcha|recaptcha) to enforce it.
+  return provider === "stub" || provider === "turnstile" || provider === "hcaptcha" || provider === "recaptcha";
+}
+
 function verifyCaptcha(token: string | undefined): boolean {
-  /* v25.12 NM-5 — the previous stub accepted any token whose length was
-   * ≥4, which made captcha protection effectively a placebo. The new
-   * implementation does an HMAC-SHA256(secret || token) check against the
-   * expected marker the client computes the same way. Until the real
-   * provider (hCaptcha / reCAPTCHA / Turnstile) is wired by Avi we expect
-   * tokens of the form `<hex>.<hex>` where the second segment is the
-   * HMAC-SHA256 hex of the first segment using CAPTCHA_SECRET as the key.
-   * Test suites should compute the token the same way.
-   *
-   * v25.14 NC4 — we now ALWAYS have a secret (env or process-local
-   * fallback) so we never silently fail-closed when the operator forgot
-   * to set CAPTCHA_SECRET in production. */
-  const secret = getCaptchaSecret();
-  if (!token || token.length === 0) return false;
-  const parts = token.split(".");
-  if (parts.length !== 2) return false;
-  const [challenge, providedSig] = parts;
-  if (!challenge || !providedSig) return false;
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { createHmac, timingSafeEqual } = require("node:crypto");
-    const expected = createHmac("sha256", secret).update(challenge).digest("hex");
-    if (expected.length !== providedSig.length) return false;
-    return timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(providedSig, "hex"));
-  } catch {
-    return false;
+  /* v25.26 — short-circuit if captcha is disabled (the default in prod
+   * until a real provider is wired). See isCaptchaEnabled() above. */
+  if (!isCaptchaEnabled()) return true;
+
+  const provider = (process.env.CAPTCHA_PROVIDER ?? "stub").toLowerCase();
+
+  /* v25.12 NM-5 — legacy HMAC stub. Tokens are `<hex>.<hex>` where the
+   * second segment is HMAC-SHA256-hex(secret, challenge). Test suites
+   * compute the token the same way. Used when CAPTCHA_PROVIDER=stub. */
+  if (provider === "stub") {
+    const secret = getCaptchaSecret();
+    if (!token || token.length === 0) return false;
+    const parts = token.split(".");
+    if (parts.length !== 2) return false;
+    const [challenge, providedSig] = parts;
+    if (!challenge || !providedSig) return false;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { createHmac, timingSafeEqual } = require("node:crypto");
+      const expected = createHmac("sha256", secret).update(challenge).digest("hex");
+      if (expected.length !== providedSig.length) return false;
+      return timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(providedSig, "hex"));
+    } catch {
+      return false;
+    }
   }
+
+  /* Real provider verification (turnstile / hcaptcha / recaptcha) requires
+   * a server-side HTTP call to the provider's siteverify endpoint. Until
+   * Avi explicitly wires that integration, treat any non-stub provider as
+   * a no-op so we never silently fail-closed mid-launch. */
+  log.warn(
+    `[consortiumApplyStore] CAPTCHA_PROVIDER=${provider} requested but provider integration not implemented. Allowing submit (failure-open).`,
+  );
+  return true;
 }
 
 /* ============================================================

@@ -393,7 +393,27 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     return csrfMiddleware(req, res, next);
   };
   app.use("/api/invitations/redeem", csrfForMethod("POST"));
-  app.use("/api/collective/applications", csrfForMethod("POST"));
+  /* v25.26 — the CSRF mount on /api/collective/applications was 403'ing every
+   * investor Collective application: csrfMiddleware reads `cap_sid` cookie
+   * to look up a server-side session, but the standard /api/auth/login flow
+   * sets `__Host-cap_uid` (JWT identity), NOT `cap_sid`. Only the dead-code
+   * secureAuthRoutes path issued cap_sid. So 100% of authenticated callers
+   * to /api/collective/applications got 403 csrf_no_session.
+   *
+   * Mount disabled to unblock the Collective application funnel. The threat
+   * model is already covered by:
+   *   - v25.24 NH-5 Origin allowlist (mounted before applyRouteGuards;
+   *     rejects cross-site writes with non-allowlisted Origin headers)
+   *   - requireAuth gate (must be a logged-in investor)
+   *   - Per-IP rate limit
+   *   - Cookie SameSite=Lax on cap_uid (modern browsers refuse to send the
+   *     identity cookie on cross-site POSTs)
+   *
+   * A proper CSRF wire-up requires coordinated client+server changes (issue
+   * cap_sid + csrf cookie on login, client reads + sends X-CSRF-Token) which
+   * is a separate piece of work. Until that ships, the layered defenses
+   * above are the documented interim posture. */
+  // app.use("/api/collective/applications", csrfForMethod("POST"));
   app.use("/api/rounds", (req, res, next) => {
     if (req.method.toUpperCase() === "PATCH" && req.path.includes("/decision")) {
       return csrfMiddleware(req, res, next);

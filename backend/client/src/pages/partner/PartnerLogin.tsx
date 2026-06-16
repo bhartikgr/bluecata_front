@@ -116,7 +116,7 @@ export default function PartnerLogin() {
       const msg = err instanceof Error ? err.message : String(err);
       setErrorMsg(
         msg.includes("Failed to fetch")
-          ? "Network error \u2014 try again in a moment."
+          ? "Network error — try again in a moment."
           : "Quick sign-in failed. Try manual sign-in below.",
       );
     } finally {
@@ -164,7 +164,7 @@ export default function PartnerLogin() {
       } else if (status === 429) {
         setErrorMsg("Too many attempts. Wait a minute and try again.");
       } else if (msg.includes("Failed to fetch") || msg.includes("NetworkError")) {
-        setErrorMsg("Network error \u2014 try again in a moment.");
+        setErrorMsg("Network error — try again in a moment.");
       } else {
         setErrorMsg(serverMessage ?? "Sign-in failed. Try again in a moment.");
       }
@@ -222,7 +222,7 @@ export default function PartnerLogin() {
         </div>
       )}
 
-      {/* Restricted-access banner \u2014 less alarming than admin, but clear about scope */}
+      {/* Restricted-access banner — less alarming than admin, but clear about scope */}
       <div
         role="note"
         className="mb-5 flex items-start gap-2 rounded-md border border-[hsl(184_98%_22%_/0.35)] bg-[hsl(184_98%_97%)] px-3 py-2 text-xs leading-relaxed"
@@ -235,7 +235,7 @@ export default function PartnerLogin() {
           <Link href="/apply/consortium" className="font-semibold underline" data-testid="link-apply-from-banner">
             Apply here
           </Link>
-          {" "}or sign in below if you\u2019re already a partner.
+          {" "}or sign in below if you’re already a partner.
         </span>
       </div>
 
@@ -247,7 +247,7 @@ export default function PartnerLogin() {
         >
           <div className="flex items-center gap-2 mb-2">
             <Zap className="h-4 w-4 text-[hsl(184_98%_22%)]" />
-            <span className="text-sm font-semibold text-[hsl(219_45%_20%)]">Preview environment \u2014 one-click sign-in</span>
+            <span className="text-sm font-semibold text-[hsl(219_45%_20%)]">Preview environment — one-click sign-in</span>
           </div>
           <p className="text-xs text-muted-foreground mb-3">
             This shortcut only appears on preview hosts and is hidden in production. Click to sign in as the Keiretsu Forum demo partner instantly.
@@ -260,7 +260,7 @@ export default function PartnerLogin() {
             data-testid="button-preview-quick-signin"
           >
             <Zap className="h-4 w-4 mr-2" />
-            {submitting ? "Signing you in\u2026" : "Sign in as Consortium Partner (preview only)"}
+            {submitting ? "Signing you in…" : "Sign in as Consortium Partner (preview only)"}
           </Button>
         </div>
       )}
@@ -293,7 +293,7 @@ export default function PartnerLogin() {
             onChange={(e) => setPassword(e.target.value)}
             required
             autoComplete="current-password"
-            placeholder="\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"
+            placeholder="••••••••"
             data-testid="input-partner-password"
           />
         </div>
@@ -327,11 +327,11 @@ export default function PartnerLogin() {
           data-testid="button-submit-partner-login"
         >
           <Handshake className="h-4 w-4 mr-2" />
-          {submitting ? "Signing in\u2026" : "Sign in to partner workspace"}
+          {submitting ? "Signing in…" : "Sign in to partner workspace"}
         </Button>
       </form>
 
-      {/* Demo partner quick-fill \u2014 only when ?demo=1 */}
+      {/* Demo partner quick-fill — only when ?demo=1 */}
       {demoMode && (
         <div className="mt-6 border-t pt-4" data-testid="demo-partner-panel">
           <div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-2">
@@ -343,7 +343,7 @@ export default function PartnerLogin() {
             className="text-left text-xs px-2 py-1.5 rounded hover:bg-muted/50 text-muted-foreground w-full"
             data-testid="preset-partner-demo"
           >
-            <span className="font-medium text-foreground">{DEMO_PARTNER.email}</span> \u2014 {DEMO_PARTNER.label}
+            <span className="font-medium text-foreground">{DEMO_PARTNER.email}</span> — {DEMO_PARTNER.label}
           </button>
         </div>
       )}

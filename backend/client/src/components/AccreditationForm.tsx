@@ -192,7 +192,7 @@ export function AccreditationForm({ initialJurisdiction = "US", onSubmit }: Accr
               data-testid="checkbox-truthful"
             />
             <span className="text-xs leading-relaxed">
-              I declare the above is true and accurate. I understand that misrepresentation may be a criminal offence under the {currentJur.label.split("\u2014")[0].trim()} regime.
+              I declare the above is true and accurate. I understand that misrepresentation may be a criminal offence under the {currentJur.label.split("—")[0].trim()} regime.
             </span>
           </label>
           <label className="flex items-start gap-2">

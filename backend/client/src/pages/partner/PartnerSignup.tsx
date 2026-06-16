@@ -75,28 +75,28 @@ export default function PartnerSignup() {
             <li className="flex items-start gap-2">
               <CheckCircle2 className="h-4 w-4 text-emerald-600 mt-0.5 shrink-0" />
               <span>
-                <span className="font-medium text-foreground">Partner dashboard</span> \u2014 portfolio companies,
+                <span className="font-medium text-foreground">Partner dashboard</span> — portfolio companies,
                 investor seats, deal pipeline, and SPV/fund administration.
               </span>
             </li>
             <li className="flex items-start gap-2">
               <CheckCircle2 className="h-4 w-4 text-emerald-600 mt-0.5 shrink-0" />
               <span>
-                <span className="font-medium text-foreground">Tiered seat plans</span> \u2014 from Catalyst (5 seats)
+                <span className="font-medium text-foreground">Tiered seat plans</span> — from Catalyst (5 seats)
                 to Builder, Anchor, and Architect tiers.
               </span>
             </li>
             <li className="flex items-start gap-2">
               <CheckCircle2 className="h-4 w-4 text-emerald-600 mt-0.5 shrink-0" />
               <span>
-                <span className="font-medium text-foreground">Deal promotion</span> \u2014 promote founders into
+                <span className="font-medium text-foreground">Deal promotion</span> — promote founders into
                 Capavate Collective deal rooms with chapter-admin moderation.
               </span>
             </li>
             <li className="flex items-start gap-2">
               <CheckCircle2 className="h-4 w-4 text-emerald-600 mt-0.5 shrink-0" />
               <span>
-                <span className="font-medium text-foreground">Co-branded onboarding</span> \u2014 your founders get a
+                <span className="font-medium text-foreground">Co-branded onboarding</span> — your founders get a
                 partner-branded experience inside Capavate.
               </span>
             </li>
@@ -107,8 +107,8 @@ export default function PartnerSignup() {
         <div className="rounded-md border border-black/5 bg-muted/40 p-4 text-xs space-y-2" data-testid="partner-approval-flow">
           <h3 className="text-sm font-semibold text-foreground mb-1">How approval works</h3>
           <ol className="list-decimal list-inside space-y-1 text-muted-foreground">
-            <li>Submit the partner application (5\u20137 minutes).</li>
-            <li>Platform team reviews + verifies your organization (typically 3\u20135 business days).</li>
+            <li>Submit the partner application (5–7 minutes).</li>
+            <li>Platform team reviews + verifies your organization (typically 3–5 business days).</li>
             <li>On approval, you receive a one-time magic link to set up your partner administrator credentials.</li>
             <li>You can then invite your team into your partner workspace.</li>
           </ol>

@@ -20,6 +20,8 @@ import FinancialsFill from "@/pages/FinancialsFill";
 import { AppShell } from "@/components/AppShell";
 
 import Home from "@/pages/home/Home";
+import LegalTermsPage from "@/pages/Terms"; // v25.26 — stub Terms of Service page (was 404 fallback to login)
+import LegalPrivacyPage from "@/pages/Privacy"; // v25.26 — stub Privacy Policy page (note: separate from @/pages/settings/PrivacyPage which is the settings screen)
 // Sprint-fix May 14 2026 — import the new guard + boundary components
 import { RequireAuth } from "@/components/RequireAuth";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
@@ -413,6 +415,14 @@ function AppRouter() {
         {/* ===== PUBLIC ROUTES — NO auth gate ===== */}
         <Route path="/" component={Home} />
         <Route path="/onboarding" component={Landing} />
+        {/* v25.26 — Terms and Privacy stub routes. Previously these URLs fell
+            through to the SPA login fallback (REG-NEW-103). Real legal
+            content is in the Terms/Privacy components; replace with final
+            policy content before general availability. */}
+        <Route path="/terms" component={LegalTermsPage} />
+        <Route path="/terms-of-service" component={LegalTermsPage} />
+        <Route path="/privacy" component={LegalPrivacyPage} />
+        <Route path="/privacy-policy" component={LegalPrivacyPage} />
         {/* CP Phase B — Public consortium-partner application */}
         <Route path="/apply/consortium" component={ConsortiumApplyPage} />
         <Route path="/login" component={Login} />

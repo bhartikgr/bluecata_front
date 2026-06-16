@@ -74,7 +74,7 @@ interface MeChaptersResponse {
 // ----- Helpers ------------------------------------------------------------
 
 function formatMoney(unitAmount: number | null, currency: string | null): string {
-  if (unitAmount === null || currency === null) return "\u2014";
+  if (unitAmount === null || currency === null) return "—";
   const dollars = unitAmount / 100;
   try {
     return new Intl.NumberFormat("en-US", {
@@ -300,7 +300,7 @@ export default function MembershipPage(): JSX.Element | null {
                 {current.tier} tier
                 {current.cancelAtPeriodEnd && (
                   <span className="ml-2 text-amber-600">
-                    \u2014 cancels at period end
+                    — cancels at period end
                   </span>
                 )}
               </p>
@@ -313,7 +313,7 @@ export default function MembershipPage(): JSX.Element | null {
                 data-testid="manage-subscription-btn"
               >
                 <ExternalLink className="mr-2 h-4 w-4" />
-                {portalMut.isPending ? "Opening\u2026" : "Manage subscription"}
+                {portalMut.isPending ? "Opening…" : "Manage subscription"}
               </Button>
             )}
           </CardHeader>
@@ -370,7 +370,7 @@ export default function MembershipPage(): JSX.Element | null {
                       data-testid={`subscribe-btn-${t.tier}`}
                     >
                       {checkoutMut.isPending
-                        ? "Redirecting\u2026"
+                        ? "Redirecting…"
                         : isCurrent
                           ? "Subscribed"
                           : "Subscribe"}
@@ -396,7 +396,7 @@ export default function MembershipPage(): JSX.Element | null {
       {tiersQ.data && !tiersQ.data.stripeConfigured && (
         <p className="mt-6 text-sm text-muted-foreground">
           Stripe is not configured in this environment. Membership purchases
-          are temporarily disabled \u2014 reach out to your chapter admin to
+          are temporarily disabled — reach out to your chapter admin to
           arrange access.
         </p>
       )}

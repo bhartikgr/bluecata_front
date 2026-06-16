@@ -393,7 +393,7 @@ function InvestorConcentrationWidget({ securities }: { securities: ApiSecurity[]
  {top ? `${top.pct.toFixed(1)}%` : "—"}
  </div>
  <p className="text-[11px] text-muted-foreground mb-2">
- Top holder concentration. {concentrationFlag ? <span className="text-rose-600 font-medium">⚠ &gt;25% \u2014 single-investor risk flagged for M&amp;A diligence.</span> : "Below 25% \u2014 healthy diversification."}
+ Top holder concentration. {concentrationFlag ? <span className="text-rose-600 font-medium">⚠ &gt;25% — single-investor risk flagged for M&amp;A diligence.</span> : "Below 25% — healthy diversification."}
  </p>
  <ul className="space-y-1 text-[11px]">
  {ranked.map((r, i) => (
