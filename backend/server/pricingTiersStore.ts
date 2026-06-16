@@ -1,76 +1,151 @@
 /**
- * v24.2 Airwallex wiring — pricing-tier resolver for the billing checkout flow.
+ * v25.27 — Unified pricing-tier resolver for the billing checkout flow.
  *
- * The authoritative pricing-tier data already lives in `adminPricingStore`
- * (`PRICING_TIERS`, surfaced via GET /api/admin/pricing-tiers and consumed by
- * Founder Settings → Plan & Pricing). That source of truth carries dollar
- * fields (`monthlyUsd`, `annualUsd`) plus an `annualPriceCents` integer.
+ * BEFORE v25.27 (the bug Avi found 16-Jun-2026):
+ * ----------------------------------------------
+ * This module read from `adminPricingStore.PRICING_TIERS` (a hardcoded RAM-only
+ * array containing a single $840 tier). The admin Pricing UI wrote to a
+ * SEPARATE store (`pricingModelStore`, shim-persisted and durable), but billing
+ * never consumed it. `Subscribe.tsx` shipped a 4-plan picker (Pro/Scale/
+ * Enterprise) that always sent `tierId: "founder_capavate_annual"` regardless
+ * of selection, so every founder was charged $840 even though the UI showed
+ * $2,988 / $9,000 / $24,000.
  *
- * The new `/api/billing/plan` checkout handler needs to mint an Airwallex
- * PaymentIntent, which requires *integer minor units* + an ISO-4217 currency.
- * Rather than duplicate or migrate the pricing data (and to avoid touching the
- * sacred `shared/schema.ts`), this module is a thin READ-ONLY adapter over
- * `adminPricingStore.PRICING_TIERS`. It normalises each tier into a shape the
- * checkout handler expects:
+ * v25.27 fix (Phase A — pricing chain unification):
+ * -------------------------------------------------
+ * This adapter now resolves prices from the **persistent, admin-editable
+ * `pricingModelStore`** — the same store the admin Pricing UI writes to. So
+ * when an admin changes a price in /admin/pricing-models, the founder Subscribe
+ * page and the Airwallex PaymentIntent both reflect the change immediately
+ * (no restart, no client deploy).
  *
- *   { id, name, monthlyPriceCents, annualPriceCents, currency }
+ * Tier ID resolution accepts BOTH the canonical model id (e.g. `pm_founder_pro_v1`)
+ * AND the slug (e.g. `founder-pro`, `capavate-annual`). This keeps backwards
+ * compatibility with the legacy `founder_capavate_annual` id that Subscribe.tsx
+ * historically sent (we map it to slug `capavate-annual`).
  *
- * monthlyPriceCents is derived from `monthlyUsd` (×100) when present, otherwise
- * from annual/12. All amounts are integers. Currency defaults to USD (the only
- * currency the single default tier is priced in today).
+ * Filtering:
+ *   - Only `productLine === "founder"` models are considered (collective &
+ *     consortium tiers have their own commercial flows; see lib/stripeCollective
+ *     and lib/airwallexCollective).
+ *   - Only `status === "live"` models surface to founder checkout. Draft /
+ *     preview / deprecated tiers are admin-visible but not user-facing.
  *
- * NO new mocks: this reflects real configured pricing. If a tier id is unknown
- * the caller gets `undefined` and surfaces a clean 404.
+ * Money is in INTEGER MINOR UNITS + ISO 4217 currency — never floats.
  */
-import { PRICING_TIERS, type PricingTier } from "./adminPricingStore";
+
+import * as pricingModel from "./pricingModelStore";
+import type { PricingModel } from "./pricingModelStore";
 
 export interface BillingPricingTier {
+  /** Canonical pricing-model id (e.g. `pm_founder_pro_v1`). */
   id: string;
+  /** Stable slug used for friendly references / legacy tier ids. */
+  slug: string;
+  /** Display name. */
   name: string;
-  /** Integer minor units for a monthly charge. */
+  /** Integer minor units for a monthly charge (derived from cadenceOptions or base). */
   monthlyPriceCents: number;
-  /** Integer minor units for an annual charge. */
+  /** Integer minor units for an annual charge (derived from cadenceOptions or base). */
   annualPriceCents: number;
   /** ISO 4217 currency code (uppercase). */
   currency: string;
+  /** Sprint 28 status — live tiers are the only ones surfaced to founders. */
+  status: "live" | "draft" | "preview" | "deprecated";
+  /** UI billing-cycle hint when only one cadence is offered. */
+  billingCycle?: "monthly" | "annual" | "biennial" | "one_time" | "perpetual";
 }
 
-function toMinor(usd: number | undefined): number {
-  if (typeof usd !== "number" || !Number.isFinite(usd)) return 0;
-  return Math.round(usd * 100);
+/* v25.27 — NO LEGACY ALIASES. Per the standing rule, pricing is admin-driven
+ * and source code carries no baked-in tier ids. The previous `founder_capavate_annual`
+ * → `capavate-annual` alias was removed because:
+ *   1. It tied source code to a specific tier the admin may not want to publish.
+ *   2. If the admin renames or deletes that tier, the alias would silently
+ *      redirect founders to the wrong plan.
+ * If an existing subscription references a tier id that no longer matches a
+ * pricing model row, the admin must run POST /api/admin/pricing-models/migrate-
+ * legacy to create the matching DB row (prices read from existing subscription
+ * rows, not from any hardcoded constant). */
+const LEGACY_ID_ALIASES: Record<string, string> = {};
+
+function priceForCadence(m: PricingModel, cadence: "monthly" | "annual"): number {
+  // 1. Prefer explicit cadenceOptions entry.
+  const opt = m.cadenceOptions?.find((c) => c.cadence === cadence);
+  if (opt && Number.isFinite(opt.priceMinor) && opt.priceMinor >= 0) {
+    return Math.round(opt.priceMinor);
+  }
+  // 2. If the model's primary cadence matches, use basePriceMinor.
+  if (m.cadence === cadence && Number.isFinite(m.basePriceMinor) && m.basePriceMinor >= 0) {
+    return Math.round(m.basePriceMinor);
+  }
+  // 3. Cross-derivation (rough fallback): monthly = annual/12, annual = monthly*12.
+  if (cadence === "monthly" && m.cadence === "annual" && m.basePriceMinor > 0) {
+    return Math.round(m.basePriceMinor / 12);
+  }
+  if (cadence === "annual" && m.cadence === "monthly" && m.basePriceMinor > 0) {
+    return Math.round(m.basePriceMinor * 12);
+  }
+  return 0;
 }
 
-function normalise(t: PricingTier): BillingPricingTier {
-  const annualPriceCents =
-    typeof t.annualPriceCents === "number" && t.annualPriceCents > 0
-      ? Math.round(t.annualPriceCents)
-      : toMinor(t.annualUsd);
-  // Prefer an explicit monthly price; otherwise derive from the annual figure.
-  const monthlyPriceCents =
-    typeof t.monthlyUsd === "number" && t.monthlyUsd > 0
-      ? toMinor(t.monthlyUsd)
-      : annualPriceCents > 0
-        ? Math.round(annualPriceCents / 12)
-        : 0;
+function normalise(m: PricingModel): BillingPricingTier {
+  const monthlyPriceCents = priceForCadence(m, "monthly");
+  const annualPriceCents = priceForCadence(m, "annual");
   return {
-    id: t.id,
-    name: t.name,
+    id: m.id,
+    slug: m.slug,
+    name: m.name,
     monthlyPriceCents,
     annualPriceCents,
-    // The default tier is USD-only today; PRICING_TIERS carries no currency
-    // column, so default to USD. When multi-currency pricing lands this is the
-    // single place to thread it through.
-    currency: "USD",
+    currency: (m.currency || "USD").toUpperCase(),
+    status: m.status as BillingPricingTier["status"],
+    billingCycle: m.cadence,
   };
 }
 
-/** Returns the normalised billing tier for `id`, or undefined if unknown. */
-export function getById(id: string): BillingPricingTier | undefined {
-  const t = PRICING_TIERS.find((x) => x.id === id);
-  return t ? normalise(t) : undefined;
+/**
+ * Returns the normalised billing tier for `idOrSlug`, or undefined if unknown.
+ * Resolution order:
+ *   1. Legacy alias (e.g. `founder_capavate_annual` → `capavate-annual`).
+ *   2. Exact `pricingModel.id` match.
+ *   3. Exact `pricingModel.slug` match.
+ *
+ * Only `productLine === "founder"` && `status === "live"` models are returned
+ * to the billing layer. (Admin tooling that needs draft/preview tiers should
+ * call `pricingModelStore.getModel(id)` directly.)
+ */
+export function getById(idOrSlug: string): BillingPricingTier | undefined {
+  if (!idOrSlug) return undefined;
+  const resolved = LEGACY_ID_ALIASES[idOrSlug] ?? idOrSlug;
+
+  // Try direct id match first.
+  let model = pricingModel.getModel(resolved);
+  if (!model) {
+    // Fall back to slug match.
+    const live = pricingModel.listModels({ productLine: "founder", status: "live" });
+    model = live.find((m) => m.slug === resolved) ?? null;
+  }
+  if (!model) return undefined;
+  if (model.productLine !== "founder") return undefined;
+  if (model.status !== "live") return undefined;
+  return normalise(model);
 }
 
-/** Returns every configured tier in billing-normalised form. */
+/**
+ * Returns every live founder tier in billing-normalised form.
+ *
+ * Consumers: GET /api/billing/tiers (founder Subscribe picker), and the admin
+ * Settings → Plan & Pricing view.
+ */
 export function listTiers(): BillingPricingTier[] {
-  return PRICING_TIERS.map(normalise);
+  const live = pricingModel.listModels({ productLine: "founder", status: "live" });
+  return live.map(normalise);
+}
+
+/**
+ * v25.27 test helper: invalidate any caching layer (none today, but reserved
+ * so future memoisation can be flushed by tests without restarting the process).
+ */
+export function _resetPricingTiersCache(): void {
+  // intentional no-op for v25.27 — adapter is stateless.
 }

@@ -98,6 +98,38 @@ export default function AdminPricingModels() {
     return true;
   });
 
+  /* v25.27 — Bootstrap + legacy migration mutations.
+   * Per the standing rule "pricing plans are determined from the Admin area,
+   * never hardcoded," Capavate ships with zero source-baked tiers. These two
+   * one-click admin actions get a fresh install (bootstrap) or legacy prod
+   * (migrate) into a working admin-driven pricing state. */
+  const bootstrapMut = useMutation({
+    mutationFn: async () => (await apiRequest("POST", "/api/admin/pricing-models/bootstrap-founder-tiers")).json(),
+    onSuccess: (data: { ok: true; created: Array<{ id: string; slug: string; name: string; status: string }>; message: string } | { ok: false; error: string; message?: string }) => {
+      if ((data as { ok: true }).ok) {
+        queryClient.invalidateQueries({ queryKey: ["/api/admin/pricing-models"] });
+        const d = data as { created: Array<{ id: string }>; message: string };
+        toast({ title: `${d.created.length} draft tier(s) created`, description: d.message });
+      } else {
+        const d = data as { error: string; message?: string };
+        toast({ title: "Bootstrap not applied", description: d.message ?? d.error, variant: "destructive" });
+      }
+    },
+    onError: (e: Error) => toast({ title: "Bootstrap failed", description: e.message, variant: "destructive" }),
+  });
+
+  const migrateMut = useMutation({
+    mutationFn: async () => (await apiRequest("POST", "/api/admin/pricing-models/migrate-legacy")).json(),
+    onSuccess: (data: { ok: true; created: Array<{ id: string }>; skipped: Array<{ plan: string; reason: string }>; message: string }) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/pricing-models"] });
+      toast({
+        title: `${data.created.length} legacy tier(s) migrated`,
+        description: `${data.message} Skipped: ${data.skipped.length}.`,
+      });
+    },
+    onError: (e: Error) => toast({ title: "Migration failed", description: e.message, variant: "destructive" }),
+  });
+
   const cloneMut = useMutation({
     mutationFn: async (id: string) => (await apiRequest("POST", `/api/admin/pricing-models/${id}/clone`)).json(),
     onSuccess: (data: { ok: true; model: PricingModel }) => {
@@ -161,6 +193,40 @@ export default function AdminPricingModels() {
             { label: "Deprecated", value: aggregates.deprecated, tone: aggregates.deprecated > 0 ? "warning" : "neutral" },
           ]}
         />
+
+        {/* v25.27 — admin bootstrap + legacy migration card */}
+        <Card className="mb-5 border-[hsl(184_98%_22%)]/30 bg-[hsl(184_98%_22%)]/5">
+          <CardContent className="pt-5">
+            <div className="flex items-start gap-3">
+              <div className="flex-1">
+                <h3 className="font-semibold text-sm mb-1">Admin bootstrap · source of truth</h3>
+                <p className="text-xs text-muted-foreground mb-3">
+                  Capavate ships with zero source-baked tiers. Use these actions to set up pricing for a fresh install or migrate legacy subscriptions. Created tiers come in as DRAFTS with $0 placeholders — set real prices, then promote to <strong>live</strong>.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => bootstrapMut.mutate()}
+                    disabled={bootstrapMut.isPending || aggregates.total > 0}
+                    data-testid="button-bootstrap-founder-tiers"
+                  >
+                    {bootstrapMut.isPending ? "Creating…" : aggregates.total > 0 ? "Bootstrap not needed (tiers exist)" : "Create starter founder tiers ($0 drafts)"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => migrateMut.mutate()}
+                    disabled={migrateMut.isPending}
+                    data-testid="button-migrate-legacy-tiers"
+                  >
+                    {migrateMut.isPending ? "Migrating…" : "Migrate legacy subscriptions → tier rows"}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
 
         <Card className="mb-5">
           <CardContent className="pt-5">

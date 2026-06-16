@@ -32,9 +32,11 @@ import { getMembership } from "../membershipStore";
 // B-509 fix v23.6.1 — resolve human-readable round names for invited rounds.
 // roundsStore is SACRED (read-only): we only call the existing getRoundById getter.
 import { getRoundById } from "../roundsStore";
+// v25.27 Phase B — hydrate invitations from durable store on cookie-only restart.
+import { listForInvestorEmail as listInvitationsByEmail } from "../roundInvitationsStore";
 import { incomingInvitations, currentInvestor as DEMO_INVESTOR } from "../mockData";
 // Patch v6 — persist credentials via userCredentialsStore so login works across restarts.
-import { storeCredential, lookupByEmail } from "../userCredentialsStore";
+import { storeCredential, lookupByEmail, lookupByUserId } from "../userCredentialsStore";
 // Patch v12 (DB-10) — INSERT users row BEFORE user_credentials so the FK
 // ordering is correct (when foreign key enforcement is turned on the row
 // already exists). This also lets `users.email` participate in admin lookups.
@@ -779,7 +781,98 @@ export function registerPersona(args: {
 }
 
 export function getUserContextForId(userId: string): UserContext {
-  const persona = PERSONAS[userId] ?? RUNTIME_PERSONAS[userId];
+  let persona = PERSONAS[userId] ?? RUNTIME_PERSONAS[userId];
+
+  /* v25.27 Phase B — DB-backed hydration.
+   *
+   * BEFORE v25.27: if RUNTIME_PERSONAS doesn't have a runtime-created user
+   * (e.g. founder signed up via /api/auth/signup OR investor redeemed an
+   * invitation), getUserContextForId returned `isAuthed: false` immediately.
+   * After a server restart all RUNTIME_PERSONAS entries vanish, so users
+   * with valid signed cookies got bounced to /login until they manually
+   * re-logged in. This was the GPT-5.5 N1 finding from the v25.27 audit.
+   *
+   * AFTER v25.27: when both PERSONAS and RUNTIME_PERSONAS miss, we fall back
+   * to durable DB reads:
+   *   1. userCredentialsStore.lookupByUserId(userId) for email + name
+   *      (hydrated from auth_users / users on boot, durable)
+   *   2. getDbUserRole(userId) for the role enum (admin/investor/founder)
+   *   3. roundInvitationsStore.listForInvestorEmail(email) to rebuild
+   *      RUNTIME_INVITATIONS for invite-created investors so their cookie
+   *      survives restart with the right invited-rounds context.
+   *
+   * If those reads succeed, we rebuild a synthetic persona on the fly and
+   * cache it in RUNTIME_PERSONAS so subsequent calls in the same process
+   * are fast. Returns `isAuthed: false` only if both DB reads miss (i.e.
+   * the userId really is unknown).
+   *
+   * Known limitation (tracked for v25.28): `RUNTIME_PASSWORDS` plaintext
+   * storage for signup/redeem flows was NOT removed in v25.27. Authentication
+   * itself uses bcrypt via userCredentialsStore (durable). The plaintext map
+   * is a defense-in-depth read path that should be deleted in v25.28.
+   */
+  if (!persona) {
+    try {
+      const cred = lookupByUserId(userId);
+      if (cred && cred.email) {
+        const dbRole = getDbUserRole(userId, cred.email);
+        const isAdmin = dbRole === "admin";
+        const isInvestor = dbRole === "investor";
+
+        /* v25.27 Phase B (extended) — hydrate invitations from durable storage.
+         * Invite-created investors had RUNTIME_INVITATIONS[userId] written at
+         * redemption time; after restart that map is empty. Rebuild it from
+         * the persisted roundInvitations table so the investor's UserContext
+         * still shows their invited rounds. */
+        try {
+          const existingInvs = RUNTIME_INVITATIONS[userId] ?? [];
+          if (existingInvs.length === 0 && isInvestor) {
+            const rows = listInvitationsByEmail(cred.email);
+            const usable = rows
+              .filter((r) => !!r.companyId && (r.state === "pending" || r.state === "sent" || r.state === "viewed"))
+              .map((r) => ({
+                invitationId: r.id,
+                roundId: r.roundId,
+                companyId: r.companyId as string,
+              }));
+            if (usable.length > 0) {
+              RUNTIME_INVITATIONS[userId] = usable;
+            }
+          }
+        } catch (invErr) {
+          // Non-fatal — persona will still authenticate, just with empty invitations.
+          log.warn({
+            route: "userContext.getUserContextForId",
+            errorType: "invitations_hydration_failed",
+            userId,
+            message: (invErr as Error).message,
+          });
+        }
+
+        const synth = {
+          userId,
+          email: cred.email,
+          name: cred.name ?? cred.email,
+          isFounder: !isAdmin && !isInvestor,
+          isInvestor,
+          isAdmin,
+          hasInvitations: (RUNTIME_INVITATIONS[userId]?.length ?? 0) > 0,
+        };
+        // Cache for this process so subsequent calls don't hit the DB.
+        RUNTIME_PERSONAS[userId] = synth;
+        persona = synth;
+      }
+    } catch (err) {
+      // Non-fatal: log and fall through to unauthenticated.
+      log.warn({
+        route: "userContext.getUserContextForId",
+        errorType: "db_hydration_failed",
+        userId,
+        message: (err as Error).message,
+      });
+    }
+  }
+
   if (!persona) {
     return {
       userId,

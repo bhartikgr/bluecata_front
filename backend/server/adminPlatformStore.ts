@@ -672,30 +672,16 @@ interface FounderTier {
   annualPriceCents?: number;
   displayPrice?: string;
 }
-const founderTiers: FounderTier[] = [
-  {
-    id: "founder_capavate_annual",
-    name: "Capavate Annual",
-    usdMonthly: 70, // $70/mo display equivalent = $840/year
-    billingCycle: "annual",
-    annualPriceCents: 84000,
-    displayPrice: "$840 USD/year per company",
-    features: [
-      { key: "cap_table", label: "Cap Table Management", included: true },
-      { key: "rounds", label: "Round Management", included: true },
-      { key: "data_room", label: "Data Room", included: true },
-      { key: "investors_crm", label: "Investor CRM", included: true },
-      { key: "documents", label: "Documents & Term Sheets", included: true },
-      { key: "esop", label: "ESOP / Option Pool", included: true },
-      { key: "communications", label: "Messages & Communications", included: true },
-      { key: "audit_chain", label: "Audit Log & Hash Chain Verification", included: true },
-      { key: "compliance", label: "GDPR / CCPA Compliance Tools", included: true },
-      { key: "support", label: "Email Support", included: true },
-      { key: "collective", label: "Collective Membership", included: false },
-      { key: "consortium", label: "Consortium Partner Features", included: false },
-    ],
-  },
-];
+/* v25.27 — founderTiers no longer carries pricing data. The hardcoded $840
+ * Capavate Annual tier (and all other hardcoded tiers) has been removed per
+ * the standing rule: "Pricing plans are determined from the Admin area. They
+ * are never hardcoded."
+ *
+ * The /api/admin/pricing/founder-tiers route now resolves dynamically from
+ * pricingModelStore (durable, admin-editable). This array remains only as an
+ * empty placeholder for backwards compatibility with the `_testAdmin` export
+ * and historical tests. Live behavior reads from pricingModelStore. */
+const founderTiers: FounderTier[] = [];
 
 const collectiveTiers = [
   { id: "collective_standard", name: "Standard (Angel Network)", usdAnnual: 1200, description: "Full Collective member access" },
@@ -1181,9 +1167,36 @@ export function registerAdminPlatformRoutes(app: Express): void {
     res.json({ ok: true, policies: updated, changed: patch });
   });
 
-  /* ====== Pricing ====== */
-  app.get("/api/admin/pricing/founder-tiers", (_req: Request, res: Response) => {
-    res.json({ tiers: founderTiers });
+  /* ====== Pricing ======
+   * v25.27 — founder-tiers now PROXIES to the admin-editable pricingModelStore
+   * (durable, DB-backed). The legacy hardcoded `founderTiers` array is no
+   * longer the source of truth; admins manage tiers via /admin/pricing-models.
+   * Shape is preserved for backwards compatibility with existing clients. */
+  app.get("/api/admin/pricing/founder-tiers", async (_req: Request, res: Response) => {
+    try {
+      const pm = await import("./pricingModelStore");
+      const live = pm.listModels({ productLine: "founder", status: "live" });
+      const tiers = live.map((m) => {
+        const annualOpt = m.cadenceOptions?.find((c) => c.cadence === "annual");
+        const monthlyOpt = m.cadenceOptions?.find((c) => c.cadence === "monthly");
+        const annualMinor = annualOpt?.priceMinor ?? (m.cadence === "annual" ? m.basePriceMinor : (m.basePriceMinor || 0) * 12);
+        const monthlyMinor = monthlyOpt?.priceMinor ?? (m.cadence === "monthly" ? m.basePriceMinor : Math.round(annualMinor / 12));
+        return {
+          id: m.slug,
+          name: m.name,
+          usdMonthly: Math.round((monthlyMinor || 0) / 100),
+          billingCycle: m.cadence,
+          annualPriceCents: annualMinor,
+          displayPrice: annualMinor > 0
+            ? `$${Math.round(annualMinor / 100).toLocaleString()} ${m.currency || "USD"}/year per company`
+            : "Free",
+          features: m.features.map((f) => ({ key: f.key, label: f.label, included: f.included })),
+        };
+      });
+      res.json({ tiers });
+    } catch (err) {
+      res.status(500).json({ tiers: [], error: (err as Error).message });
+    }
   });
   app.get("/api/admin/pricing/collective-tiers", (_req: Request, res: Response) => {
     res.json({ tiers: collectiveTiers });

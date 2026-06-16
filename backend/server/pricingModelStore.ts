@@ -21,7 +21,7 @@
  */
 import type { Express, Request, Response } from "express";
 import { createHash } from "node:crypto";
-import { persistEntry, hydrateEntries } from "./lib/storePersistenceShim";
+import { persistEntry, hydrateEntries, softDeleteEntry } from "./lib/storePersistenceShim";
 
 const PERSIST_STORE = "pricingModelStore";
 const PERSIST_HISTORY_STORE = "pricingModelHistoryStore";
@@ -148,271 +148,29 @@ function snapshot(m: PricingModel): PricingModel {
   return JSON.parse(JSON.stringify(m)) as PricingModel;
 }
 
+
 /* =================================================================== */
-/*  Seed                                                               */
+/*  v25.27 — NO SEED. Admin is the source of truth.                    */
 /* =================================================================== */
-
-function seedInitialModels() {
-  if (models.size > 0) return;
-  const now = new Date().toISOString();
-
-  const founderPro: PricingModel = {
-    id: "pm_founder_pro_v1",
-    productLine: "founder",
-    slug: "founder-pro",
-    name: "Founder Pro",
-    description: "For active founders running 1-3 rounds with up to 50 investors. Includes e-sign, basic M&A signals, and the full investor CRM.",
-    status: "live",
-    currency: "USD",
-    basePriceMinor: 24_900,
-    cadence: "monthly",
-    cadenceOptions: [
-      { cadence: "monthly", priceMinor: 24_900 },
-      { cadence: "annual", priceMinor: 24_900 * 10 },
-    ],
-    currencyOverrides: [
-      { currency: "USD", basePriceMinor: 24_900 },
-      { currency: "EUR", basePriceMinor: 22_900 },
-      { currency: "GBP", basePriceMinor: 19_900 },
-    ],
-    regionalMultipliers: [
-      { region: "US", multiplier: 1.00 },
-      { region: "UK", multiplier: 1.00 },
-      { region: "EU", multiplier: 1.00 },
-      { region: "CA", multiplier: 1.00 },
-      { region: "AU", multiplier: 1.00 },
-      { region: "SG", multiplier: 0.80 },
-      { region: "HK", multiplier: 0.80 },
-      { region: "JP", multiplier: 0.80, notes: "Lower CAC; partner-led GTM" },
-      { region: "IN", multiplier: 0.50, notes: "PPP-adjusted per World Bank index" },
-      { region: "CN", multiplier: 0.50, notes: "PPP-adjusted; tax-inclusive billing" },
-    ],
-    features: [
-      { key: "captable", label: "Cap-table mgmt", included: true, quota: null },
-      { key: "rounds", label: "Rounds", included: true, quota: null, quotaUnit: "rounds" },
-      { key: "dataroom_gb", label: "Dataroom storage", included: true, quota: 50, quotaUnit: "GB" },
-      { key: "reports", label: "Investor reports", included: true, quota: null },
-      { key: "crm", label: "Investor CRM", included: true, quota: null, quotaUnit: "contacts" },
-      { key: "esign", label: "E-sign included", included: true, quota: null },
-      { key: "ma_signals", label: "M&A signals (basic)", included: true, quota: null },
-      { key: "consortium", label: "Consortium routing", included: false, quota: null },
-      { key: "api_access", label: "API access", included: false, quota: null },
-    ],
-    metering: [
-      { meterKey: "investor_seats", label: "Investor seats", includedQty: 50, overageMinor: 500, unit: "investor" },
-      { meterKey: "dataroom_gb", label: "Dataroom storage", includedQty: 50, overageMinor: 100, unit: "GB" },
-      { meterKey: "e_signs", label: "E-signatures", includedQty: 100, overageMinor: 200, unit: "signature" },
-    ],
-    volumeBrackets: [
-      { fromQty: 1, toQty: 5, pricePerUnitMinor: 24_900 },
-      { fromQty: 6, toQty: 20, pricePerUnitMinor: 22_400 },
-      { fromQty: 21, toQty: 100, pricePerUnitMinor: 19_900 },
-      { fromQty: 101, toQty: null, pricePerUnitMinor: 17_400 },
-    ],
-    discountCodes: [
-      { code: "YC2025", kind: "percent", amount: 0.30, expiresOn: "2026-12-31", maxRedemptions: 200, active: true },
-      { code: "LAUNCH50", kind: "flat_minor", amount: 5_000, expiresOn: "2026-08-31", maxRedemptions: 100, active: true },
-      { code: "TRIAL30", kind: "trial_extension_days", amount: 16, expiresOn: null, maxRedemptions: null, active: true },
-    ],
-    trial: { lengthDays: 14, requiresCard: false, autoConvertToPlanId: null },
-    effectiveFrom: null,
-    effectiveTo: null,
-    grandfatherOnChange: true,
-    taxInclusive: false,
-    version: 1,
-    prevRevisionHash: lastHashChain,
-    revisionHash: "",
-    createdAt: now,
-    updatedAt: now,
-    createdBy: "system:seed",
-    updatedBy: "system:seed",
-  };
-  founderPro.revisionHash = hashRevision(founderPro.prevRevisionHash, founderPro);
-  lastHashChain = founderPro.revisionHash;
-
-  const founderFree: PricingModel = {
-    ...founderPro,
-    id: "pm_founder_free_v1",
-    slug: "founder-free",
-    name: "Founder Free",
-    description: "Get a cap table live in 5 minutes. 1 round, 10 investors, 1 GB dataroom. Upgrade any time.",
-    basePriceMinor: 0,
-    cadenceOptions: [{ cadence: "monthly", priceMinor: 0 }],
-    currencyOverrides: [{ currency: "USD", basePriceMinor: 0 }],
-    features: founderPro.features.map(f =>
-      f.key === "esign" || f.key === "ma_signals" || f.key === "consortium" || f.key === "api_access"
-        ? { ...f, included: false }
-        : f.key === "dataroom_gb" ? { ...f, quota: 1 }
-        : f.key === "crm" ? { ...f, quota: 10 }
-        : f.key === "rounds" ? { ...f, quota: 1 }
-        : f
-    ),
-    metering: [
-      { meterKey: "dataroom_gb", label: "Dataroom storage", includedQty: 1, overageMinor: 0, unit: "GB" },
-    ],
-    volumeBrackets: [],
-    discountCodes: [],
-    trial: null,
-    version: 1,
-    prevRevisionHash: lastHashChain,
-    revisionHash: "",
-    createdAt: now,
-    updatedAt: now,
-    createdBy: "system:seed",
-    updatedBy: "system:seed",
-  };
-  founderFree.revisionHash = hashRevision(founderFree.prevRevisionHash, founderFree);
-  lastHashChain = founderFree.revisionHash;
-
-  const collectiveStandard: PricingModel = {
-    id: "pm_collective_standard_v1",
-    productLine: "collective",
-    slug: "collective-standard",
-    name: "Collective Standard (Angel Network)",
-    description: "Full Collective member access — syndicated deal flow, network, dealroom, partner intros.",
-    status: "live",
-    currency: "USD",
-    basePriceMinor: 120_000,
-    cadence: "annual",
-    cadenceOptions: [
-      { cadence: "annual", priceMinor: 120_000 },
-      { cadence: "biennial", priceMinor: 216_000 },
-    ],
-    currencyOverrides: [
-      { currency: "USD", basePriceMinor: 120_000 },
-      { currency: "EUR", basePriceMinor: 110_000 },
-      { currency: "GBP", basePriceMinor: 95_000 },
-    ],
-    regionalMultipliers: [
-      { region: "US", multiplier: 1.00 },
-      { region: "UK", multiplier: 1.00 },
-      { region: "EU", multiplier: 1.00 },
-      { region: "CA", multiplier: 1.00 },
-      { region: "AU", multiplier: 0.85 },
-      { region: "SG", multiplier: 0.85 },
-      { region: "HK", multiplier: 0.85 },
-      { region: "JP", multiplier: 0.80 },
-      { region: "IN", multiplier: 0.50, notes: "PPP-adjusted" },
-      { region: "CN", multiplier: 0.50, notes: "PPP-adjusted; tax-inclusive billing" },
-    ],
-    features: [
-      { key: "dealroom", label: "Collective deal-room access", included: true, quota: null },
-      { key: "syndicates", label: "Syndicate participation", included: true, quota: null },
-      { key: "network", label: "Member network", included: true, quota: null },
-      { key: "partner_intros", label: "Consortium partner intros", included: true, quota: 6, quotaUnit: "intros / yr" },
-      { key: "dsc_voting", label: "DSC voting rights", included: false, quota: null },
-      { key: "spv_origination", label: "SPV origination", included: false, quota: null },
-    ],
-    metering: [],
-    volumeBrackets: [],
-    discountCodes: [
-      { code: "FOUNDING50", kind: "flat_minor", amount: 60_000, expiresOn: "2026-12-31", maxRedemptions: 50, active: true },
-    ],
-    trial: null,
-    effectiveFrom: null,
-    effectiveTo: null,
-    grandfatherOnChange: true,
-    taxInclusive: false,
-    version: 1,
-    prevRevisionHash: lastHashChain,
-    revisionHash: "",
-    createdAt: now,
-    updatedAt: now,
-    createdBy: "system:seed",
-    updatedBy: "system:seed",
-  };
-  collectiveStandard.revisionHash = hashRevision(collectiveStandard.prevRevisionHash, collectiveStandard);
-  lastHashChain = collectiveStandard.revisionHash;
-
-  /* ------------------------------------------------------------------
-   * Wave F4 FIX F4-4 (E2E-8, P0) — Capavate Annual canonical tier.
-   *
-   * Per Ozan's directive (24-May-2026): the founder-side commercial offer
-   * is a single tier — "Capavate Annual" at $840 USD/year per company,
-   * delivering full Capavate functionality. The legacy `founder-free` /
-   * `founder-pro` rows are retained (status="live" for now so the
-   * sprint28 `find(m => m.status === "live")` invariant still holds, and
-   * deletion of seed-grandfathered subscriptions is not required), but
-   * the canonical SKU that admins manage and the marketing site quotes
-   * is `pm_capavate_annual_v1` below.
-   *
-   * The /admin/pricing Pricing-Models tab renders `card-pm-<id>` for
-   * every entry in `listModels()` — before this fix the Capavate Annual
-   * SKU was missing from the seed, so the admin had no way to manage it.
-   * After this fix the tab surfaces it alongside the legacy rows.
-   * ------------------------------------------------------------------ */
-  const capavateAnnual: PricingModel = {
-    id: "pm_capavate_annual_v1",
-    productLine: "founder",
-    slug: "capavate-annual",
-    name: "Capavate Annual",
-    description: "Capavate Annual — $840 USD/year per company. Full Capavate functionality (cap-table mgmt, rounds, dataroom, investor CRM, e-sign, M&A signals, ESOP, audit chain, compliance, email support). Collective + Consortium are separate commercial offerings.",
-    status: "live",
-    currency: "USD",
-    basePriceMinor: 84_000, // $840.00 = 84_000 cents
-    cadence: "annual",
-    cadenceOptions: [
-      { cadence: "annual", priceMinor: 84_000 },
-    ],
-    currencyOverrides: [
-      { currency: "USD", basePriceMinor: 84_000 },
-      { currency: "EUR", basePriceMinor: 78_000 },
-      { currency: "GBP", basePriceMinor: 67_000 },
-    ],
-    regionalMultipliers: [
-      { region: "US", multiplier: 1.00 },
-      { region: "UK", multiplier: 1.00 },
-      { region: "EU", multiplier: 1.00 },
-      { region: "CA", multiplier: 1.00 },
-      { region: "AU", multiplier: 1.00 },
-      { region: "SG", multiplier: 0.80 },
-      { region: "HK", multiplier: 0.80 },
-      { region: "JP", multiplier: 0.80 },
-      { region: "IN", multiplier: 0.50, notes: "PPP-adjusted per World Bank index" },
-      { region: "CN", multiplier: 0.50, notes: "PPP-adjusted; tax-inclusive billing" },
-    ],
-    features: [
-      { key: "captable", label: "Cap-table mgmt", included: true, quota: null },
-      { key: "rounds", label: "Round management", included: true, quota: null },
-      { key: "dataroom", label: "Data room", included: true, quota: null },
-      { key: "crm", label: "Investor CRM", included: true, quota: null },
-      { key: "esign", label: "E-sign included", included: true, quota: null },
-      { key: "ma_signals", label: "M&A signals", included: true, quota: null },
-      { key: "esop", label: "ESOP / option pool", included: true, quota: null },
-      { key: "audit_chain", label: "Audit log & hash chain verification", included: true, quota: null },
-      { key: "compliance", label: "GDPR / CCPA compliance tools", included: true, quota: null },
-      { key: "support", label: "Email support", included: true, quota: null },
-      { key: "collective", label: "Collective membership", included: false, quota: null },
-      { key: "consortium", label: "Consortium partner features", included: false, quota: null },
-    ],
-    metering: [],
-    volumeBrackets: [],
-    discountCodes: [],
-    trial: { lengthDays: 14, requiresCard: false, autoConvertToPlanId: null },
-    effectiveFrom: null,
-    effectiveTo: null,
-    grandfatherOnChange: true,
-    taxInclusive: false,
-    version: 1,
-    prevRevisionHash: lastHashChain,
-    revisionHash: "",
-    createdAt: now,
-    updatedAt: now,
-    createdBy: "system:seed",
-    updatedBy: "system:seed",
-  };
-  capavateAnnual.revisionHash = hashRevision(capavateAnnual.prevRevisionHash, capavateAnnual);
-  lastHashChain = capavateAnnual.revisionHash;
-
-  for (const m of [founderFree, founderPro, collectiveStandard, capavateAnnual]) {
-    models.set(m.id, m);
-    history.set(m.id, [snapshot(m)]);
-    /* v25.9 — persist */
-    persistEntry(PERSIST_STORE, m.id, m);
-    persistEntry(PERSIST_HISTORY_STORE, m.id, history.get(m.id) ?? []);
-  }
-}
-seedInitialModels();
+/*
+ * BEFORE v25.27: this file shipped a hardcoded seed of founder/collective
+ * tiers (Free, Pro, Capavate Annual at $840, etc.) that ran at module load.
+ * Per the standing rule "pricing plans are determined from the Admin area —
+ * never hardcoded" (Ozan, 16-Jun-2026), all source-baked pricing is removed.
+ *
+ * On a fresh install, `models` is empty until an admin clicks the bootstrap
+ * button in /admin/pricing-models (POST /api/admin/pricing-models/bootstrap-
+ * founder-tiers) which creates 4 placeholder DRAFTS at $0 that the admin
+ * then prices and publishes. For an existing prod database, `hydrateEntries`
+ * rehydrates whatever the admin has previously authored — no source code
+ * touches the actual price numbers.
+ *
+ * Legacy migration: if an existing subscription references a tier id that
+ * has no matching model row (e.g. `founder_capavate_annual` from the old
+ * hardcoded source), admins can click POST /api/admin/pricing-models/migrate-
+ * legacy to create the matching DB rows with prices read from the existing
+ * `subscriptions` rows themselves (NOT from any hardcoded constant).
+ */
 
 /* =================================================================== */
 /*  Reads                                                              */
@@ -583,6 +341,13 @@ export function deleteModel(id: string, actor: string): { ok: true } | { ok: fal
   }
   models.delete(id);
   history.delete(id);
+  /* v25.27 — Phase A6: make delete durable.
+   * Before v25.27 deleteModel only removed the RAM Map entry. On next boot,
+   * hydrateEntries() rehydrated the row from the shim's kv_pricingModelStore
+   * table and the "deleted" draft resurrected. softDeleteEntry sets
+   * deleted_at on the row so the hydrator skips it. */
+  softDeleteEntry(PERSIST_STORE, id);
+  softDeleteEntry(PERSIST_HISTORY_STORE, id);
   auditAppender({ actor, action: "pricing_model.deleted", target: `pricing_model:${id}`, payload: { slug: current.slug, productLine: current.productLine } });
   return { ok: true };
 }
@@ -740,9 +505,207 @@ export function registerPricingModelRoutes(app: Express) {
     if (!result.ok) return res.status(400).json(result);
     res.json(result);
   });
+
+  /* ====================================================================
+   * v25.27 — Admin bootstrap + legacy migration endpoints.
+   *
+   * These endpoints exist so a freshly-installed Capavate (no founder tiers
+   * configured) and a legacy-prod Capavate (existing subscriptions tied to
+   * the now-removed hardcoded `founder_capavate_annual` tier) can both be
+   * brought to a working admin-driven pricing state via two clicks in
+   * /admin/pricing-models, NOT via source-baked seeds.
+   * ==================================================================== */
+
+  /**
+   * POST /api/admin/pricing-models/bootstrap-founder-tiers
+   *
+   * Idempotent. Creates 4 DRAFT founder tiers with $0 placeholder prices and
+   * placeholder feature lists. The admin then edits each tier (price,
+   * features, etc.) and promotes to `live` to publish to founders.
+   *
+   * REFUSES to run if any productLine='founder' model already exists
+   * (idempotency: one-time only per install). Admins who want to create
+   * additional tiers should use the normal POST /api/admin/pricing-models.
+   *
+   * Slugs match what founder Subscribe.tsx expects:
+   *   founder-free, founder-pro, founder-scale, founder-enterprise
+   * Prices: all $0 (admin must set real prices before promoting to live).
+   */
+  app.post("/api/admin/pricing-models/bootstrap-founder-tiers", (req: Request, res: Response) => {
+    const actor = String((req as any).userContext?.identity?.email ?? (req as any).userContext?.userId ?? "");
+    if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
+
+    const existing = listModels({ productLine: "founder" });
+    if (existing.length > 0) {
+      return res.status(409).json({
+        ok: false,
+        error: "already_bootstrapped",
+        message: `${existing.length} founder tier(s) already exist. To create additional tiers, use POST /api/admin/pricing-models.`,
+        existing: existing.map((m) => ({ id: m.id, slug: m.slug, name: m.name, status: m.status })),
+      });
+    }
+
+    const starters: Array<{ slug: string; name: string; description: string; cadence: BillingCadence }> = [
+      { slug: "founder-free", name: "Founder Free", description: "Placeholder — admin must edit features and promote to live.", cadence: "annual" },
+      { slug: "founder-pro", name: "Founder Pro", description: "Placeholder — admin must set price, features, and promote to live.", cadence: "annual" },
+      { slug: "founder-scale", name: "Founder Scale", description: "Placeholder — admin must set price, features, and promote to live.", cadence: "annual" },
+      { slug: "founder-enterprise", name: "Founder Enterprise", description: "Placeholder — admin must set price, features, and promote to live.", cadence: "annual" },
+    ];
+
+    const created: PricingModel[] = [];
+    for (const s of starters) {
+      const r = createModel(
+        {
+          productLine: "founder",
+          slug: s.slug,
+          name: s.name,
+          description: s.description,
+          currency: "USD",
+          basePriceMinor: 0,
+          cadence: s.cadence,
+          cadenceOptions: [{ cadence: s.cadence, priceMinor: 0 }],
+          currencyOverrides: [{ currency: "USD", basePriceMinor: 0 }],
+          regionalMultipliers: [],
+          features: [],
+          metering: [],
+          volumeBrackets: [],
+          discountCodes: [],
+          trial: null,
+          effectiveFrom: null,
+          effectiveTo: null,
+          grandfatherOnChange: true,
+          taxInclusive: false,
+        },
+        actor,
+      );
+      if (r.ok) created.push(r.model);
+    }
+
+    return res.json({
+      ok: true,
+      created: created.map((m) => ({ id: m.id, slug: m.slug, name: m.name, status: m.status })),
+      message: `${created.length} draft founder tier(s) created at $0. Edit each tier to set real prices, features, and metadata, then promote to 'live' to make them visible on the founder Subscribe page.`,
+    });
+  });
+
+  /**
+   * POST /api/admin/pricing-models/migrate-legacy
+   *
+   * Idempotent. For each unique tier id referenced by existing subscription
+   * rows that does NOT yet have a matching pricingModelStore row, creates a
+   * `live` pricingModel using the `annualAmountMinor` + `currency` from the
+   * subscription row itself. This prevents historical subscriptions from
+   * orphaning when v25.27 removes hardcoded tier ids like `founder_capavate_annual`.
+   *
+   * Prices come from the existing subscription rows in the DB, NOT from any
+   * hardcoded constant in source code.
+   */
+  app.post("/api/admin/pricing-models/migrate-legacy", async (req: Request, res: Response) => {
+    const actor = String((req as any).userContext?.identity?.email ?? (req as any).userContext?.userId ?? "");
+    if (!actor) return res.status(401).json({ ok: false, error: "missing_identity" });
+
+    let subscriptionRows: Array<{ plan: string; annualAmountMinor: number; currency: string }> = [];
+    try {
+      const { rawDb } = await import("./db/connection");
+      const db = rawDb();
+      if (db) {
+        /* The capavate_subscriptions table uses columns `tier_id` + `amount_minor` +
+         * `billing_cycle`. For each distinct (tier_id, currency) combo we want the
+         * representative annual amount. Annual amount = amount_minor when billing_cycle
+         * is 'annual', else amount_minor * 12 (rough approximation — admin will tune). */
+        const rows = db
+          .prepare("SELECT DISTINCT tier_id as plan, amount_minor as amountMinor, currency, billing_cycle as billingCycle FROM capavate_subscriptions")
+          .all() as Array<{ plan: string; amountMinor: number; currency: string; billingCycle: string }>;
+        subscriptionRows = rows.map((r) => ({
+          plan: r.plan,
+          annualAmountMinor: r.billingCycle === "annual" ? r.amountMinor : (r.amountMinor || 0) * 12,
+          currency: r.currency,
+        }));
+      }
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: "db_read_failed", message: (err as Error).message });
+    }
+
+    const existingByIdOrSlug = new Set<string>();
+    for (const m of listModels()) {
+      existingByIdOrSlug.add(m.id);
+      existingByIdOrSlug.add(m.slug);
+    }
+
+    const created: PricingModel[] = [];
+    const skipped: Array<{ plan: string; reason: string }> = [];
+
+    for (const sub of subscriptionRows) {
+      const tierKey = sub.plan;
+      if (!tierKey) continue;
+      // Skip if a model with this id or slug already exists.
+      if (existingByIdOrSlug.has(tierKey)) {
+        skipped.push({ plan: tierKey, reason: "already_exists" });
+        continue;
+      }
+      // Also skip canonical plan keys that should be created via bootstrap-founder-tiers.
+      if (["founder_free", "founder_pro", "founder_scale", "founder_enterprise"].includes(tierKey)) {
+        skipped.push({ plan: tierKey, reason: "canonical_plan_use_bootstrap" });
+        continue;
+      }
+
+      // Derive a safe slug from the legacy id.
+      const slug = tierKey.replace(/_/g, "-").toLowerCase();
+      if (existingByIdOrSlug.has(slug)) {
+        skipped.push({ plan: tierKey, reason: "slug_collision" });
+        continue;
+      }
+
+      const annualMinor = Math.max(0, Math.round(sub.annualAmountMinor || 0));
+      const currency = (sub.currency || "USD").toUpperCase();
+
+      const r = createModel(
+        {
+          productLine: "founder",
+          slug,
+          name: tierKey.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
+          description: `Migrated from legacy subscription rows on ${new Date().toISOString().slice(0, 10)}. Original tier id: ${tierKey}. Review and adjust as needed.`,
+          currency,
+          basePriceMinor: annualMinor,
+          cadence: "annual",
+          cadenceOptions: [{ cadence: "annual", priceMinor: annualMinor }],
+          currencyOverrides: [{ currency, basePriceMinor: annualMinor }],
+          regionalMultipliers: [],
+          features: [],
+          metering: [],
+          volumeBrackets: [],
+          discountCodes: [],
+          trial: null,
+          effectiveFrom: null,
+          effectiveTo: null,
+          grandfatherOnChange: true,
+          taxInclusive: false,
+          status: "live", // legacy migration creates LIVE so existing subscriptions keep working
+        },
+        actor,
+      );
+      if (r.ok) {
+        created.push(r.model);
+        existingByIdOrSlug.add(r.model.id);
+        existingByIdOrSlug.add(r.model.slug);
+      } else {
+        skipped.push({ plan: tierKey, reason: r.error });
+      }
+    }
+
+    return res.json({
+      ok: true,
+      created: created.map((m) => ({ id: m.id, slug: m.slug, name: m.name, basePriceMinor: m.basePriceMinor, currency: m.currency, status: m.status })),
+      skipped,
+      message: `Migrated ${created.length} legacy tier(s) from existing subscription rows. Prices were copied from each subscription's annual_amount_minor field. Review each tier in /admin/pricing-models and adjust as needed.`,
+    });
+  });
 }
 
-export const _testPricingModels = { models, history, seedInitialModels };
+/* v25.27 — test helper. `seedInitialModels` was removed (no source-baked
+ * pricing). Tests that need rows must create them via `createModel()` or by
+ * inserting fixture rows into the kv store directly. */
+export const _testPricingModels = { models, history };
 
 /**
  * v25.9 — Rehydrate pricing models + history from DB on boot.
@@ -750,8 +713,9 @@ export const _testPricingModels = { models, history, seedInitialModels };
 export async function hydratePricingModelStore(): Promise<void> {
   try {
     const modelEntries = hydrateEntries<PricingModel>(PERSIST_STORE);
-    /* Don't clear() because seedInitialModels already populated; merge instead.
-     * If a persisted row exists for the same id, it overrides the seed. */
+    /* v25.27 — there is no seed to override; this is the only source of
+     * pricing data on boot. Empty modelEntries means an admin has not yet
+     * created any tiers; the founder Subscribe page will show an empty state. */
     for (const [id, m] of modelEntries) models.set(id, m);
 
     const histEntries = hydrateEntries<PricingModel[]>(PERSIST_HISTORY_STORE);

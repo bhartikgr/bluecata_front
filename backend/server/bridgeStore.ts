@@ -385,7 +385,23 @@ export interface BridgeEnvelope {
   eventId: string;
   eventType: OutboundEventType | InboundEventType;
   aggregateId: string;
-  aggregateKind: "company" | "investor" | "round" | "platform";
+  /* v25.27 — widened to match actual usage. Pre-v25.27 source already passed
+   * 'pricing_model', 'invitation', 'application', 'contact', 'captable_entry',
+   * 'broadcast', 'report' through this field, but the type was too narrow,
+   * producing dozens of TS2322 errors that drove the baseline up. This widening
+   * cleans them up without changing any runtime behavior. */
+  aggregateKind:
+    | "company"
+    | "investor"
+    | "round"
+    | "platform"
+    | "pricing_model"
+    | "invitation"
+    | "application"
+    | "contact"
+    | "captable_entry"
+    | "broadcast"
+    | "report";
   occurredAt: string;
   tenantId: string;
   actor: { userId: string; ip?: string };

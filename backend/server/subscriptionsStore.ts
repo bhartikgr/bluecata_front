@@ -85,14 +85,89 @@ export function configureSubscriptionsStore(opts: {
   bridgeEmitter = opts.bridge;
 }
 
-/* ---------- Plan price catalogue ---------- */
+/* ---------- Plan price catalogue ----------
+ *
+ * v25.27 — ZERO hardcoded prices. Per standing rule: "Pricing plans are
+ * determined from the Admin area. They are never hardcoded."
+ *
+ * PLAN_PRICES resolves every lookup from the admin-editable, DB-backed
+ * `pricingModelStore`. If a plan key has no matching live tier configured
+ * by an admin, `PLAN_PRICES[plan]` returns null/undefined and callers must
+ * surface a structured error ("tier not configured by admin"), never charge
+ * a silent fallback amount.
+ */
 
-export const PLAN_PRICES: Record<Plan, { annualMinor: number; currency: string; label: string }> = {
-  founder_free:       { annualMinor:        0, currency: "USD", label: "Founder Free" },
-  founder_pro:        { annualMinor:   298_800, currency: "USD", label: "Founder Pro" },        // $2,988/yr (= $249/mo × 12)
-  founder_scale:      { annualMinor:   900_000, currency: "USD", label: "Founder Scale" },      // $9,000/yr
-  founder_enterprise: { annualMinor: 2_400_000, currency: "USD", label: "Founder Enterprise" }, // $24,000/yr
+import { listModels as _listPricingModels } from "./pricingModelStore";
+
+const PLAN_TO_SLUG: Record<Plan, string> = {
+  founder_free: "founder-free",
+  founder_pro: "founder-pro",
+  founder_scale: "founder-scale",
+  founder_enterprise: "founder-enterprise",
 };
+
+export class TierNotConfiguredError extends Error {
+  constructor(public plan: Plan) {
+    super(`Plan '${plan}' is not configured by the administrator. Visit /admin/pricing-models to publish this tier.`);
+    this.name = "TierNotConfiguredError";
+  }
+}
+
+/** Strict resolver: returns the price if an admin-published live tier exists,
+ *  else throws TierNotConfiguredError. Use for billing/Airwallex paths. */
+export function getPlanPriceStrict(plan: Plan): { annualMinor: number; currency: string; label: string } {
+  const slug = PLAN_TO_SLUG[plan];
+  if (!slug) throw new TierNotConfiguredError(plan);
+  const live = _listPricingModels({ productLine: "founder", status: "live" });
+  const m = live.find((x) => x.slug === slug);
+  if (!m) throw new TierNotConfiguredError(plan);
+  const annual = m.cadenceOptions?.find((c) => c.cadence === "annual")?.priceMinor
+    ?? (m.cadence === "annual" ? m.basePriceMinor : (m.basePriceMinor || 0) * 12);
+  // Free tier MAY legitimately have a 0 annual price; only treat negative as misconfig.
+  if (typeof annual !== "number" || annual < 0) throw new TierNotConfiguredError(plan);
+  return {
+    annualMinor: Math.round(annual),
+    currency: (m.currency || "USD").toUpperCase(),
+    label: m.name,
+  };
+}
+
+/** Soft resolver: returns the price if configured, else null. Use for display
+ *  paths where missing-tier means "admin hasn't published this yet — show empty state." */
+function resolvePlanPriceOrNull(plan: Plan): { annualMinor: number; currency: string; label: string } | null {
+  try {
+    return getPlanPriceStrict(plan);
+  } catch {
+    return null;
+  }
+}
+
+/** Proxy that resolves each property lookup at call time. Returns `undefined`
+ *  (NOT a hardcoded fallback) when an admin has not published the tier yet.
+ *  Code that previously did `PLAN_PRICES[plan].annualMinor` MUST guard against
+ *  the property being absent and surface a clean error. */
+export const PLAN_PRICES: Record<Plan, { annualMinor: number; currency: string; label: string } | undefined> =
+  new Proxy({} as Record<Plan, undefined>, {
+    get(_target, prop: string): { annualMinor: number; currency: string; label: string } | undefined {
+      if (prop in PLAN_TO_SLUG) {
+        const r = resolvePlanPriceOrNull(prop as Plan);
+        return r ?? undefined;
+      }
+      return undefined;
+    },
+    has(_target, prop) {
+      return typeof prop === "string" && prop in PLAN_TO_SLUG;
+    },
+    ownKeys() {
+      return Object.keys(PLAN_TO_SLUG);
+    },
+    getOwnPropertyDescriptor(_target, prop) {
+      if (typeof prop === "string" && prop in PLAN_TO_SLUG) {
+        return { enumerable: true, configurable: true, value: resolvePlanPriceOrNull(prop as Plan) ?? undefined };
+      }
+      return undefined;
+    },
+  }) as Record<Plan, { annualMinor: number; currency: string; label: string } | undefined>;
 
 /* ---------- Seed ---------- */
 
@@ -114,7 +189,10 @@ function buildSeedRecord(
     trialEndsOn?: string;
   },
 ): Subscription {
-  const price = PLAN_PRICES[partial.plan];
+  /* v25.27 — admin-driven pricing. If no live tier is published the seed
+   * record is created with annualAmountMinor=0; the founder Subscribe page
+   * will block checkout (clean empty state). */
+  const price = PLAN_PRICES[partial.plan] ?? { annualMinor: 0, currency: "USD", label: String(partial.plan) };
   const body = {
     companyId,
     ...partial,
@@ -275,7 +353,16 @@ export function updateSubscription(
   if (!current) return { ok: false, error: "not_found" };
 
   const newPlan = changes.plan ?? current.plan;
+  /* v25.27 — admin-driven pricing. If the admin removed the tier between
+   * the user's last update and this one, we keep the previously-persisted
+   * amount instead of charging a fabricated number. */
   const planPrice = PLAN_PRICES[newPlan];
+  if (!planPrice) {
+    return {
+      ok: false,
+      error: `plan_not_configured: tier '${newPlan}' is not published in /admin/pricing-models`,
+    };
+  }
 
   const next: Subscription = {
     ...current,
@@ -441,7 +528,12 @@ export function createSubscriptionForNewCompany(
     }
   } catch { /* fallthrough to create */ }
 
-  const price = PLAN_PRICES[plan];
+  /* v25.27 — admin-driven pricing. If no tier is configured for this plan
+   * we still create a row (so the founder has a subscription record), but
+   * with annualAmountMinor=0 and status=pending_payment. The Subscribe page
+   * will show the empty-state UI and the founder cannot complete checkout
+   * until an admin publishes the tier. */
+  const price = PLAN_PRICES[plan] ?? { annualMinor: 0, currency: "USD", label: String(plan) };
   const renewsOn = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const trialEndsOn = wantsTrial
     ? new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)

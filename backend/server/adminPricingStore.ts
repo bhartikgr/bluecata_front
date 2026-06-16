@@ -1,25 +1,28 @@
 /**
  * Sprint 11 — Admin pricing store (read by founder Settings).
  *
- * v19 Wave A / Change 2: Single-plan default.
- * --------------------------------------------
- * Per founder directive (Ozan, 24-May-2026): “Display only one pricing
- * option for companies (\$840 USD/year). This delivers them full Capavate
- * functionality (not Collective or Consortium Partners). Obviously, this is
- * per company.”
+ * v25.27 Phase A3 — UNIFY pricing chain.
+ * ----------------------------------------
+ * BEFORE: this file owned a hardcoded RAM-only `PRICING_TIERS` array (single
+ * $840 tier). The PATCH /api/admin/pricing-tiers/:id endpoint mutated the
+ * in-memory object only — every admin edit reverted to $840 on restart.
+ * Meanwhile the admin UI's /admin/pricing-models page wrote to a SEPARATE,
+ * durable store (`pricingModelStore`) which billing ignored. Result:
+ * three disconnected pricing catalogs.
  *
- * The `founder_tiers` table backend schema is preserved (admins can still
- * add tiers via the existing admin pricing endpoints). What changed:
- *   • default seed array contains exactly one tier
- *   • tier carries explicit annual price + billingCycle annotations
- *   • Collective + Consortium are explicitly marked NOT included — those
- *     surfaces have their own commercial flow.
+ * AFTER: this module is now a BACKWARDS-COMPATIBLE READ ADAPTER over the
+ * persistent `pricingModelStore`. Existing consumers of:
+ *   GET   /api/admin/pricing-tiers
+ *   PATCH /api/admin/pricing-tiers/:id
+ * still work, but reads come from pricingModelStore (durable + admin-editable)
+ * and the PATCH route forwards to `pricingModelStore.updateModel` so changes
+ * actually persist.
  *
- * Routes (unchanged):
- *   GET  /api/admin/pricing-tiers       — current tier table (consumed by Founder Settings → Plan & Pricing)
- *   PATCH /api/admin/pricing-tiers/:id  — admin updates a tier (price, included features, blurb)
+ * The exported `PRICING_TIERS` constant is preserved as a getter so any
+ * import that destructures it (server code, tests) sees current data.
  */
 import type { Express, Request, Response } from "express";
+import * as pricingModel from "./pricingModelStore";
 
 export type PricingTier = {
   id: string;
@@ -36,58 +39,130 @@ export type PricingTier = {
   displayPrice?: string;
 };
 
+function modelToTier(m: pricingModel.PricingModel): PricingTier {
+  const annualOption = m.cadenceOptions?.find((c) => c.cadence === "annual");
+  const monthlyOption = m.cadenceOptions?.find((c) => c.cadence === "monthly");
+
+  const annualMinor =
+    annualOption?.priceMinor ??
+    (m.cadence === "annual" ? m.basePriceMinor : (m.basePriceMinor || 0) * 12);
+  const monthlyMinor =
+    monthlyOption?.priceMinor ??
+    (m.cadence === "monthly" ? m.basePriceMinor : Math.round(annualMinor / 12));
+
+  return {
+    id: m.id,
+    name: m.name,
+    monthlyUsd: Math.round((monthlyMinor || 0) / 100),
+    annualUsd: Math.round((annualMinor || 0) / 100),
+    blurb: m.description,
+    features: m.features.map((f) => ({ key: f.key, label: f.label, included: f.included })),
+    billingCycle: m.cadence === "annual" || m.cadence === "monthly" || m.cadence === "one_time" ? m.cadence : "annual",
+    annualPriceCents: annualMinor,
+    displayPrice: annualMinor > 0
+      ? `$${Math.round(annualMinor / 100).toLocaleString()} ${m.currency || "USD"}/year`
+      : "Free",
+  };
+}
+
+function listLiveFounderTiers(): PricingTier[] {
+  return pricingModel
+    .listModels({ productLine: "founder", status: "live" })
+    .map(modelToTier);
+}
+
 /**
- * v19 Wave A / Change 2 — single default tier.
+ * v25.27 — PRICING_TIERS is now a dynamic array-like proxy that reflects the
+ * current pricingModelStore state on every access. Code that does
+ * `PRICING_TIERS.find(t => t.id === ...)` works exactly as before, but the
+ * data is sourced from the durable store, not a hardcoded RAM array.
  *
- * Capavate Annual: \$840 USD/year per company, full Capavate functionality.
- * Collective + Consortium are explicitly excluded — those are separate
- * commercial offerings with their own membership flows.
+ * If you need a snapshot at a single point in time, call `listLiveFounderTiers()`.
  */
-export const PRICING_TIERS: PricingTier[] = [
-  {
-    id: "founder_capavate_annual",
-    name: "Capavate Annual",
-    monthlyUsd: 70,           // $70/mo display equivalent (= $840 / 12)
-    annualUsd: 840,
-    blurb: "Full Capavate functionality — \$840 USD/year per company.",
-    billingCycle: "annual",
-    annualPriceCents: 84000,
-    displayPrice: "\$840 USD/year per company",
-    features: [
-      { key: "cap_table", label: "Cap Table Management", included: true },
-      { key: "rounds", label: "Round Management", included: true },
-      { key: "data_room", label: "Data Room", included: true },
-      { key: "investors_crm", label: "Investor CRM", included: true },
-      { key: "documents", label: "Documents & Term Sheets", included: true },
-      { key: "esop", label: "ESOP / Option Pool", included: true },
-      { key: "communications", label: "Messages & Communications", included: true },
-      { key: "audit_chain", label: "Audit Log & Hash Chain Verification", included: true },
-      { key: "compliance", label: "GDPR / CCPA Compliance Tools", included: true },
-      { key: "support", label: "Email Support", included: true },
-      { key: "collective", label: "Collective Membership", included: false },
-      { key: "consortium", label: "Consortium Partner Features", included: false },
-    ],
+export const PRICING_TIERS: PricingTier[] = new Proxy([] as PricingTier[], {
+  get(_target, prop) {
+    const fresh = listLiveFounderTiers();
+    if (prop === "length") return fresh.length;
+    if (typeof prop === "string" && /^\d+$/.test(prop)) {
+      return fresh[Number(prop)];
+    }
+    // Array methods: rebind to the fresh snapshot
+    if (prop === Symbol.iterator) return fresh[Symbol.iterator].bind(fresh);
+    const v = (fresh as unknown as Record<string | symbol, unknown>)[prop as string];
+    return typeof v === "function" ? (v as Function).bind(fresh) : v;
   },
-];
+  has(_target, prop) {
+    const fresh = listLiveFounderTiers();
+    return prop in fresh;
+  },
+  ownKeys() {
+    const fresh = listLiveFounderTiers();
+    return Reflect.ownKeys(fresh);
+  },
+  getOwnPropertyDescriptor(_target, prop) {
+    const fresh = listLiveFounderTiers();
+    return Object.getOwnPropertyDescriptor(fresh, prop);
+  },
+});
 
 export function registerAdminPricingRoutes(app: Express): void {
+  // GET — list founder-tier pricing (live tiers only).
   app.get("/api/admin/pricing-tiers", (_req: Request, res: Response) => {
-    res.json(PRICING_TIERS);
+    res.json(listLiveFounderTiers());
   });
 
+  // PATCH — forward writes to the persistent pricingModelStore.
+  // This is the bug fix: prior versions mutated the in-RAM array.
   app.patch("/api/admin/pricing-tiers/:id", (req: Request, res: Response) => {
-    const t = PRICING_TIERS.find((x) => x.id === req.params.id);
-    if (!t) return res.status(404).json({ error: "tier_not_found" });
-    if (typeof req.body?.monthlyUsd === "number") t.monthlyUsd = req.body.monthlyUsd;
+    const id = req.params.id;
+    const model = pricingModel.getModel(id);
+    if (!model) return res.status(404).json({ error: "tier_not_found" });
+
+    const update: Partial<pricingModel.PricingModel> = {};
+
+    if (typeof req.body?.monthlyUsd === "number") {
+      const monthlyMinor = Math.round(req.body.monthlyUsd * 100);
+      const newCadenceOpts = (model.cadenceOptions ?? []).map((c) =>
+        c.cadence === "monthly" ? { ...c, priceMinor: monthlyMinor } : c,
+      );
+      if (!newCadenceOpts.some((c) => c.cadence === "monthly")) {
+        newCadenceOpts.push({ cadence: "monthly", priceMinor: monthlyMinor });
+      }
+      update.cadenceOptions = newCadenceOpts;
+      if (model.cadence === "monthly") update.basePriceMinor = monthlyMinor;
+    }
+
     if (typeof req.body?.annualUsd === "number") {
-      t.annualUsd = req.body.annualUsd;
-      t.annualPriceCents = Math.round(req.body.annualUsd * 100);
+      const annualMinor = Math.round(req.body.annualUsd * 100);
+      const newCadenceOpts = (update.cadenceOptions ?? model.cadenceOptions ?? []).map((c) =>
+        c.cadence === "annual" ? { ...c, priceMinor: annualMinor } : c,
+      );
+      if (!newCadenceOpts.some((c) => c.cadence === "annual")) {
+        newCadenceOpts.push({ cadence: "annual", priceMinor: annualMinor });
+      }
+      update.cadenceOptions = newCadenceOpts;
+      if (model.cadence === "annual") update.basePriceMinor = annualMinor;
     }
-    if (typeof req.body?.blurb === "string") t.blurb = req.body.blurb;
-    if (req.body?.billingCycle === "annual" || req.body?.billingCycle === "monthly" || req.body?.billingCycle === "one_time") {
-      t.billingCycle = req.body.billingCycle;
+
+    if (typeof req.body?.blurb === "string") update.description = req.body.blurb;
+    if (
+      req.body?.billingCycle === "annual" ||
+      req.body?.billingCycle === "monthly" ||
+      req.body?.billingCycle === "one_time"
+    ) {
+      update.cadence = req.body.billingCycle;
     }
-    res.json(t);
+
+    if (Object.keys(update).length === 0) {
+      // No-op — return current state so legacy clients don't break.
+      return res.json(modelToTier(model));
+    }
+
+    const actor =
+      (req as { userContext?: { userId?: string } }).userContext?.userId || "admin:legacy-pricing-tiers";
+    const result = pricingModel.updateModel(id, update, actor);
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    return res.json(modelToTier(result.model));
   });
 }
 
