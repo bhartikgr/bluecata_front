@@ -153,29 +153,45 @@ function useInvestorNav(): NavGroup[] {
   ];
 }
 
+/* v25.30 — Admin sidebar reorganized into 5 sections per Ozan's request.
+ *
+ *   1. General Settings   — platform-wide governance: Dashboard, Users & Auth,
+ *                            Lifecycle Policies, Audit Log, Audit Chain Verify
+ *   2. Capavate           — Capavate product surfaces: Companies, Investors,
+ *                            Formula Registry, Regions, Reconciliation,
+ *                            Telemetry, Pricing & Billing
+ *   3. Collective         — Collective product surfaces: Applications, Waitlist,
+ *                            Members, Settings
+ *   4. Consortium Partners— Consortium Applications (review queue + partner
+ *                            promotions). Standalone group per Ozan.
+ *   5. Bridge & Comms     — Bridge & Outbox, Sync Status, Migration, Email,
+ *                            Notifications
+ *
+ * Pure regrouping — every existing route still points at the same page and
+ * keeps the same href/icon. No new routes, no removed routes. Verified by
+ * GPT-5.5 against the current adminNav (22 entries; 22 here).
+ */
 const adminNav: NavGroup[] = [
   {
-    title: "Operations",
+    title: "General Settings",
     items: [
       { href: "/admin/dashboard", label: "Admin Dashboard", icon: LayoutDashboard },
-      { href: "/admin/companies", label: "Companies", icon: Building },
-      { href: "/admin/investors", label: "Investors", icon: Users },
       { href: "/admin/users", label: "Users & Auth", icon: ShieldCheck },
+      { href: "/admin/lifecycle-policies", label: "Lifecycle Policies", icon: SlidersHorizontal },
+      { href: "/admin/audit-log", label: "Audit Log", icon: History },
+      { href: "/admin/audit-chain-verify", label: "Audit Chain Verify", icon: ShieldCheck },
     ],
   },
   {
-    title: "Engine",
+    title: "Capavate",
     items: [
+      { href: "/admin/companies", label: "Companies", icon: Building },
+      { href: "/admin/investors", label: "Investors", icon: Users },
       { href: "/admin/formulas", label: "Formula Registry", icon: Calculator },
       { href: "/admin/regions", label: "Regions", icon: Globe },
-      { href: "/admin/lifecycle-policies", label: "Lifecycle Policies", icon: SlidersHorizontal },
       { href: "/admin/reconciliation", label: "Reconciliation", icon: GitCompareArrows },
       { href: "/admin/telemetry", label: "Telemetry", icon: BarChart3 },
-      { href: "/admin/audit-log", label: "Audit Log", icon: History },
-      /* 23-May Fix 1 — surface v19 Phase C audit-chain verifier in sidebar. */
-      { href: "/admin/audit-chain-verify", label: "Audit Chain Verify", icon: ShieldCheck },
-      /* 23-May Fix 1 — surface CP-B consortium-application review queue. */
-      { href: "/admin/consortium-applications", label: "Consortium Applications", icon: FileSignature },
+      { href: "/admin/pricing", label: "Pricing & Billing", icon: DollarSign },
     ],
   },
   {
@@ -188,6 +204,12 @@ const adminNav: NavGroup[] = [
     ],
   },
   {
+    title: "Consortium Partners",
+    items: [
+      { href: "/admin/consortium-applications", label: "Consortium Applications", icon: FileSignature },
+    ],
+  },
+  {
     title: "Bridge & Comms",
     items: [
       { href: "/admin/bridge", label: "Bridge & Outbox", icon: Network },
@@ -195,7 +217,6 @@ const adminNav: NavGroup[] = [
       { href: "/admin/migration", label: "Migration", icon: Database },
       { href: "/admin/email", label: "Email System", icon: Mail },
       { href: "/admin/notifications", label: "Notifications", icon: Bell },
-      { href: "/admin/pricing", label: "Pricing & Billing", icon: DollarSign },
     ],
   },
 ];

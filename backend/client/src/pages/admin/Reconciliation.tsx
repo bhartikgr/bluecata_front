@@ -3,7 +3,7 @@
  *
  * Top KPIs · Live runner · History table · Drift detail.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { PageBody, PageHeader } from "@/components/AppShell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -16,16 +16,70 @@ import {
 import { useSprint3, runReconciliation, buildDemoComputeOpts } from "@/lib/sprint3";
 import { AdminPageIntro } from "@/components/AdminPageIntro";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { apiRequest } from "@/lib/queryClient";
 
-const COMPANIES = [
- { id: "co-acme", name: "Acme Capital" },
- { id: "co-fluxform", name: "Fluxform Labs" },
- { id: "co-helio", name: "Helio Sciences" },
-];
+/* v25.29 C8 — the hardcoded 3-entry COMPANIES list (co-acme/co-fluxform/
+   co-helio) has been removed. We now fetch the real company list from
+   /api/admin/companies (the same endpoint the Companies admin tab uses).
+   The hardcoded list previously meant every admin instance, regardless of
+   tenant, saw the same demo names — which was confusing and prevented
+   reconciliation against real founder-created companies. */
+type ReconCompany = { id: string; name: string };
 
 export default function AdminReconciliation() {
  const reconciliations = useSprint3((s) => s.reconciliations);
- const [companyId, setCompanyId] = useState("co-acme");
+ const [companies, setCompanies] = useState<ReconCompany[]>([]);
+ const [companyId, setCompanyId] = useState<string>("");
+
+ /* v25.29 C8 — fetch the admin company list once on mount. If the API
+    call fails (e.g. on a fresh local dev environment), we fall back to
+    the legacy demo company list so the page still renders something
+    usable for the dual-engine smoke test. */
+ useEffect(() => {
+   let cancelled = false;
+   const fetchCompanies = async () => {
+     try {
+       const res = await apiRequest("GET", "/api/admin/companies");
+       const data: any = await res.json();
+       /* v25.29 C8 — /api/admin/companies returns { rows: [...] } (NOT items).
+          Accept both shapes defensively in case the contract evolves. */
+       const sourceRows: any[] = Array.isArray(data?.rows)
+         ? data.rows
+         : Array.isArray(data?.items)
+           ? data.items
+           : [];
+       const rows: ReconCompany[] = sourceRows.map((r: any) => ({
+         id: String(r.id),
+         name: String(r.name ?? r.legalName ?? r.id),
+       }));
+       if (!cancelled && rows.length > 0) {
+         setCompanies(rows);
+         setCompanyId((prev) => prev || rows[0].id);
+       } else if (!cancelled) {
+         /* DB is empty; offer demo placeholders so the page is not blank. */
+         const fallback: ReconCompany[] = [
+           { id: "co-acme", name: "Acme Capital (demo)" },
+           { id: "co-fluxform", name: "Fluxform Labs (demo)" },
+           { id: "co-helio", name: "Helio Sciences (demo)" },
+         ];
+         setCompanies(fallback);
+         setCompanyId((prev) => prev || fallback[0].id);
+       }
+     } catch {
+       if (!cancelled) {
+         const fallback: ReconCompany[] = [
+           { id: "co-acme", name: "Acme Capital (demo)" },
+           { id: "co-fluxform", name: "Fluxform Labs (demo)" },
+           { id: "co-helio", name: "Helio Sciences (demo)" },
+         ];
+         setCompanies(fallback);
+         setCompanyId((prev) => prev || fallback[0].id);
+       }
+     }
+   };
+   void fetchCompanies();
+   return () => { cancelled = true; };
+ }, []);
  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
 
  const stats = useMemo(() => {
@@ -42,6 +96,7 @@ export default function AdminReconciliation() {
  const selectedRun = reconciliations.find((r) => r.runId === selectedRunId);
 
  function handleRun() {
+ if (!companyId) return;
  const opts = buildDemoComputeOpts(companyId);
  const r = runReconciliation(opts, { actorId: "admin-platform", actorRole: "admin", companyId, ipAddress: "10.0.0.1" });
  setSelectedRunId(r.runId);
@@ -96,18 +151,18 @@ export default function AdminReconciliation() {
  <div className="flex items-end gap-3 mb-4 flex-wrap">
  <div>
  <label className="text-xs text-muted-foreground block mb-1">Company</label>
- <Select value={companyId} onValueChange={setCompanyId}>
+ <Select value={companyId} onValueChange={setCompanyId} disabled={companies.length === 0}>
  <SelectTrigger className="w-[260px]" data-testid="select-recon-company">
- <SelectValue />
+ <SelectValue placeholder={companies.length === 0 ? "Loading companies…" : undefined} />
  </SelectTrigger>
  <SelectContent>
- {COMPANIES.map((c) => (
+ {companies.map((c) => (
  <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
  ))}
  </SelectContent>
  </Select>
  </div>
- <Button onClick={handleRun} className="bg-[hsl(327_77%_30%)] hover:bg-[hsl(327_77%_25%)]" data-testid="button-run-reconciliation">
+ <Button onClick={handleRun} disabled={!companyId} className="bg-[hsl(327_77%_30%)] hover:bg-[hsl(327_77%_25%)]" data-testid="button-run-reconciliation">
  <RefreshCw className="h-4 w-4 mr-2" />
  Run reconciliation now
  </Button>
