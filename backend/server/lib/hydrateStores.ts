@@ -97,6 +97,8 @@ import { hydrateNotificationCampaignStore as realHydrateNotificationCampaign } f
 import { hydrateEmailCampaignStore as realHydrateEmailCampaign } from "../emailCampaignStore";
 import { hydrateMembershipStore as realHydrateMembership } from "../membershipStore";
 import { hydratePricingModelStore as realHydratePricingModel } from "../pricingModelStore";
+// v25.28 Phase C — emailStore outbox + delivery state durability.
+import { hydrateEmailStore as realHydrateEmailStore } from "../emailStore";
 import { hydrateCommsStore as realHydrateComms } from "../commsStore";
 // v25.10 — securities persistence (closes routes.ts:2198 RAM-only push).
 import { hydrateSecuritiesStore as realHydrateSecurities } from "./securitiesStore";
@@ -270,6 +272,10 @@ const HYDRATE_ORDER: Array<{ name: string; fn: () => Promise<void> }> = [
   { name: "emailCampaignStore",        fn: realHydrateEmailCampaign },
   { name: "membershipStore",           fn: realHydrateMembership },
   { name: "pricingModelStore",         fn: realHydratePricingModel },
+  /* v25.28 Phase C — emailStore.outbox now persistent. Hydrates before commsStore
+   * so an admin who restarts mid-send can see the queue (status + retries +
+   * delivery state) exactly as it was. */
+  { name: "emailStore",                fn: async () => { realHydrateEmailStore(); } },
   { name: "commsStore (DM+messages)",  fn: realHydrateComms },
   /* v25.10 — securities. Restores the legacy in-process `securities` array
    * (imported from mockData.ts) from kv_securitiesStore on boot. Closes a

@@ -68,6 +68,39 @@ interface BillingTier {
 }
 
 /* ---------- Helpers ---------- */
+
+/** v25.28 — lazy-load Airwallex Components SDK from their official CDN.
+ *
+ * We don't want every page in the app to ship the SDK. This injects the script
+ * tag on demand the first time the founder clicks "Continue to Airwallex".
+ * Idempotent: returns the same Promise on subsequent calls. */
+let _airwallexSdkPromise: Promise<void> | null = null;
+function loadAirwallexSDK(): Promise<void> {
+  if (_airwallexSdkPromise) return _airwallexSdkPromise;
+  if (typeof window !== "undefined" && (window as any).AirwallexComponentsSDK?.init) {
+    _airwallexSdkPromise = Promise.resolve();
+    return _airwallexSdkPromise;
+  }
+  _airwallexSdkPromise = new Promise<void>((resolve, reject) => {
+    if (typeof document === "undefined") return reject(new Error("no_document"));
+    const existing = document.getElementById("airwallex-sdk") as HTMLScriptElement | null;
+    if (existing) {
+      existing.addEventListener("load", () => resolve());
+      existing.addEventListener("error", () => reject(new Error("airwallex_sdk_load_error")));
+      if ((window as any).AirwallexComponentsSDK?.init) resolve();
+      return;
+    }
+    const s = document.createElement("script");
+    s.id = "airwallex-sdk";
+    s.async = true;
+    s.src = "https://static.airwallex.com/components/sdk/v1/index.js";
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error("airwallex_sdk_load_error"));
+    document.head.appendChild(s);
+  });
+  return _airwallexSdkPromise;
+}
+
 function fmtMoney(minor: number, currency = "USD"): string {
   try {
     return new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 0 }).format(minor / 100);
@@ -232,7 +265,53 @@ export default function FounderSubscribe() {
       });
       return res.json();
     },
-    onSuccess: (data) => {
+    onSuccess: async (data) => {
+      /* v25.28 — Airwallex.js redirectToCheckout integration.
+       *
+       * BEFORE v25.28: the server returned a fabricated `hostedPaymentPageUrl`
+       * like `https://checkout.airwallex.com/checkout?...` which doesn't exist.
+       * The browser landed on a blank page, the PaymentIntent stayed in
+       * "Created" status forever, and no card was ever charged.
+       *
+       * AFTER v25.28: the server returns `data.airwallex = { intent_id,
+       * client_secret, currency, successUrl, env }`. We load Airwallex's
+       * official Components SDK from their CDN, init it, and call
+       * payments.redirectToCheckout(...) which takes the user to the REAL
+       * Airwallex-hosted checkout page where they enter a card and pay.
+       *
+       * Reference: https://www.airwallex.com/docs/payments/get-started/quickstart
+       */
+      if (data?.airwallex?.intent_id && data?.airwallex?.client_secret) {
+        try {
+          legalConsentRef.current?.recordConsent().catch(() => null);
+          await loadAirwallexSDK();
+          // window.AirwallexComponentsSDK is provided by the CDN script.
+          const sdk = (window as any).AirwallexComponentsSDK;
+          if (!sdk?.init) throw new Error("AirwallexComponentsSDK not available after load");
+          const { payments } = await sdk.init({
+            env: data.airwallex.env || "demo",
+            enabledElements: ["payments"],
+          });
+          payments.redirectToCheckout({
+            env: data.airwallex.env || "demo",
+            mode: "payment",
+            currency: data.airwallex.currency,
+            intent_id: data.airwallex.intent_id,
+            client_secret: data.airwallex.client_secret,
+            successUrl: data.airwallex.successUrl,
+          });
+          return;
+        } catch (sdkErr: any) {
+          toast({
+            title: "Payment redirect failed",
+            description: sdkErr?.message ?? "Could not redirect to Airwallex. Please try again.",
+            variant: "destructive",
+          });
+          return;
+        }
+      }
+      /* v25.28 stub-mode fallback — server still emits hostedPaymentPageUrl in
+       * stub mode pointing at our own BillingReturn page. */
       if (data?.hostedPaymentPageUrl) {
         legalConsentRef.current?.recordConsent().catch(() => null);
         window.location.href = data.hostedPaymentPageUrl;

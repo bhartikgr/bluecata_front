@@ -9,6 +9,13 @@ import type { Express, Request, Response } from "express";
 import { randomBytes } from "node:crypto";
 import { sendMail } from "./emailTransport";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
+// v25.28 Phase C — outbox + delivery state persistence.
+// Before v25.28 every queued/sent/opened/clicked/bounced row was lost on PM2
+// restart. Each mutation now writes through the shim's `kv_emailStoreOutbox`
+// table so the queue resumes mid-flight and admin retry/cancel survives boots.
+import { persistEntry, hydrateEntries, softDeleteEntry } from "./lib/storePersistenceShim";
+
+const PERSIST_STORE = "emailStoreOutbox";
 
 export type DeliveryStatus = "queued" | "sent" | "delivered" | "opened" | "clicked" | "bounced" | "complained";
 
@@ -64,6 +71,13 @@ const templates: EmailTemplate[] = [
 
 const outbox: OutboxEmail[] = [];
 
+/** v25.28 Phase C — persist a single outbox row. Non-fatal: shim returns false
+ * on DB failure; we keep the in-memory copy so the queue keeps moving forward,
+ * and the next successful write will pick it up. */
+function persistOutbox(e: OutboxEmail): void {
+  try { persistEntry(PERSIST_STORE, e.id, e); } catch { /* non-fatal */ }
+}
+
 /** Naive Handlebars-style {{var}} substitution. */
 export function renderTemplate(html: string, vars: Record<string, string>): string {
   return html.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_m, key) => {
@@ -99,6 +113,7 @@ export function enqueueEmail(args: {
     error: null,
   };
   outbox.push(e);
+  persistOutbox(e);
   return e;
 }
 
@@ -155,6 +170,10 @@ export async function tickQueue(): Promise<void> {
         (e as any)._nextRetryMs = nowMs + backoffMs(e.attempts);
       }
     }
+    /* v25.28 Phase C — persist after EVERY state transition (attempts++, status,
+     * sentAt, deliveredAt, bouncedAt, error). On restart the queue picks up
+     * exactly where it left off. */
+    persistOutbox(e);
   }
 }
 
@@ -191,6 +210,7 @@ export function enqueueOneOff(args: {
     campaignId: args.campaignId,
   };
   outbox.push(e);
+  persistOutbox(e);
   return { id: e.id };
 }
 
@@ -232,6 +252,7 @@ export function enqueueBulk(args: {
       batchId,
     };
     outbox.push(e);
+    persistOutbox(e);
   }
   return { batchId, queuedCount: args.items.length };
 }
@@ -247,6 +268,7 @@ export function retryOutboxItem(id: string): OutboxEmail | null {
   e.status = "queued";
   e.error = null;
   (e as any)._nextRetryMs = 0; // allow immediate retry on next tick
+  persistOutbox(e);
   return e;
 }
 
@@ -257,6 +279,7 @@ export function cancelOutboxItem(id: string): OutboxEmail | null {
   e.status = "bounced"; // repurpose bounced as "canceled" equivalent at transport layer
   // We mark it with a special error so UI can show "canceled"
   e.error = "canceled_by_admin";
+  persistOutbox(e);
   return e;
 }
 
@@ -280,6 +303,32 @@ function seedDemo() {
 // Patch v4: only seed demo emails when demo gate is on.
 if (DEMO_SEED_ENABLED) {
   seedDemo();
+}
+
+/**
+ * v25.28 Phase C — hydrate the outbox from durable storage on boot.
+ *
+ * Called from server/lib/hydrateStores.ts. If there is no DB (early boot,
+ * test sandbox without DATABASE_URL) or the kv table is empty, this is a
+ * no-op and the queue starts empty.
+ *
+ * Idempotent: skips any id already present in the in-memory `outbox` (so
+ * demo seeds + hydrated rows don't collide).
+ */
+export function hydrateEmailStore(): void {
+  try {
+    const entries = hydrateEntries<OutboxEmail>(PERSIST_STORE);
+    if (entries.length === 0) return;
+    const seen = new Set(outbox.map((e) => e.id));
+    for (const [id, row] of entries) {
+      if (seen.has(id)) continue;
+      outbox.push(row);
+    }
+  } catch (err) {
+    // Non-fatal — the queue starts empty rather than crashing the boot.
+    // eslint-disable-next-line no-console
+    console.warn("[emailStore.hydrateEmailStore] failed:", (err as Error).message);
+  }
 }
 
 export function registerEmailRoutes(app: Express): void {

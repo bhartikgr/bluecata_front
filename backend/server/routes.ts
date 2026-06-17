@@ -875,11 +875,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const pkg = JSON.parse(readFileSync(path.resolve(__dirname, "..", "package.json"), "utf8"));
       if (pkg.version) return pkg.version as string;
-    } catch { }
+    } catch {}
     try {
       const pkg = JSON.parse(readFileSync(path.resolve(__dirname, "package.json"), "utf8"));
       if (pkg.version) return pkg.version as string;
-    } catch { }
+    } catch {}
     log.error({ route: "health.version", errorType: "version_unresolved", message: "FAILED to resolve version — APP_VERSION env unset and package.json not found" });
     return "unknown";
   })();
@@ -972,7 +972,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             inviteeEmail: entry.inviteeEmail,
             inviteeName: entry.inviteeName,
             expiresAt: entry.expiresAt,
-            roundLabel: round ? `${round.type ?? ""}${round.targetAmount ? " · $" + (round.targetAmount / 1_000_000).toFixed(1) + "M target" : ""}` : undefined,
+            roundLabel: round ? `${round.type ?? ""}${round.targetAmount ? " · $" + (round.targetAmount/1_000_000).toFixed(1) + "M target" : ""}` : undefined,
             founderName: company ? "Founder" : undefined,
           },
         };
@@ -996,7 +996,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           inviteeEmail: modernEntry.investorEmail,
           inviteeName: modernEntry.investorName ?? "",
           expiresAt: modernEntry.expiresAt ?? "",
-          roundLabel: modernRound ? `${modernRound.type ?? ""}${modernRound.targetAmount ? " · $" + (modernRound.targetAmount / 1_000_000).toFixed(1) + "M target" : ""}` : undefined,
+          roundLabel: modernRound ? `${modernRound.type ?? ""}${modernRound.targetAmount ? " · $" + (modernRound.targetAmount/1_000_000).toFixed(1) + "M target" : ""}` : undefined,
           founderName: modernCompany ? "Founder" : undefined,
         },
       };
@@ -1047,17 +1047,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return mw(req, res, next);
     };
   }
-  app.use("/api/investor/portfolio", gate("investor.hasAnyCapTable"));
-  app.use("/api/investor/crm", gate("investor.hasAnyCapTable"));
-  app.use("/api/investor/messages", gate("investor.hasAnyCapTable"));
+  app.use("/api/investor/portfolio",  gate("investor.hasAnyCapTable"));
+  app.use("/api/investor/crm",        gate("investor.hasAnyCapTable"));
+  app.use("/api/investor/messages",   gate("investor.hasAnyCapTable"));
   app.use("/api/investor/portfolio2", gate("investor.hasAnyCapTable"));
   app.use("/api/investor/companies/:companyId", gate("investor.onCapTableOf"));
   app.use("/api/collective/applications", (req, res, next) => {
     if (req.method !== "POST") return next();
     return gate("investor.hasAnyCapTable")(req, res, next);
   });
-  app.use("/api/collective/network", gate("collective.active"));
-  app.use("/api/collective/dealroom", gate("collective.active"));
+  app.use("/api/collective/network",   gate("collective.active"));
+  app.use("/api/collective/dealroom",  gate("collective.active"));
   app.use("/api/founder/companies/:id/billing", gate("founder.ofCompany"));
 
   // Sprint 10: telemetry inspection (admin-only)
@@ -1070,11 +1070,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Patch v4: ALL_ITEMS demo seed only when DEMO_SEED_ENABLED.
   app.get("/api/investor/round-activity", requireAuth, (req, res) => {
     const ALL_ITEMS = DEMO_SEED_ENABLED ? [
-      { id: "ra_1", ts: "2026-05-08T09:14:00Z", kind: "new_round", companyId: "co_arboreal", company: "Arboreal Health", text: "Pre-Seed open · $1.5M target · soft-circle window 14d", href: "/investor/companies/co_arboreal?tab=your-decision", roundId: "rnd_pre" },
-      { id: "ra_2", ts: "2026-05-07T17:02:00Z", kind: "soft_circle", companyId: "co_novapay", company: "NovaPay AI", text: "Seed Extension · $2.65M soft-circled of $4.0M", href: "/investor/companies/co_novapay?tab=your-decision", roundId: "rnd_novapay_seed" },
-      { id: "ra_3", ts: "2026-05-06T11:08:00Z", kind: "term_sheet", companyId: "co_quanta", company: "Quanta Robotics", text: "Series A term sheet drop — pro-rata exercise window 7d", href: "/investor/companies/co_quanta?tab=your-decision", roundId: "rnd_q_a" },
-      { id: "ra_4", ts: "2026-05-05T14:33:00Z", kind: "close_gate", companyId: "co_helia", company: "Helia AI", text: "Series A closing tomorrow — last call for confirmations", href: "/investor/companies/co_helia?tab=your-decision", roundId: "rnd_helia_a" },
-      { id: "ra_5", ts: "2026-05-03T08:00:00Z", kind: "new_round", companyId: "co_kelvin", company: "Kelvin Energy", text: "Bridge note round opening Q2", href: "/investor/companies/co_kelvin?tab=your-decision", roundId: "rnd_k_bridge" },
+      { id: "ra_1", ts: "2026-05-08T09:14:00Z", kind: "new_round",       companyId: "co_arboreal", company: "Arboreal Health", text: "Pre-Seed open · $1.5M target · soft-circle window 14d", href: "/investor/companies/co_arboreal?tab=your-decision", roundId: "rnd_pre" },
+      { id: "ra_2", ts: "2026-05-07T17:02:00Z", kind: "soft_circle",     companyId: "co_novapay",  company: "NovaPay AI",      text: "Seed Extension · $2.65M soft-circled of $4.0M",     href: "/investor/companies/co_novapay?tab=your-decision", roundId: "rnd_novapay_seed" },
+      { id: "ra_3", ts: "2026-05-06T11:08:00Z", kind: "term_sheet",      companyId: "co_quanta",   company: "Quanta Robotics", text: "Series A term sheet drop — pro-rata exercise window 7d", href: "/investor/companies/co_quanta?tab=your-decision",  roundId: "rnd_q_a" },
+      { id: "ra_4", ts: "2026-05-05T14:33:00Z", kind: "close_gate",      companyId: "co_helia",    company: "Helia AI",        text: "Series A closing tomorrow — last call for confirmations", href: "/investor/companies/co_helia?tab=your-decision", roundId: "rnd_helia_a" },
+      { id: "ra_5", ts: "2026-05-03T08:00:00Z", kind: "new_round",       companyId: "co_kelvin",   company: "Kelvin Energy",   text: "Bridge note round opening Q2",                       href: "/investor/companies/co_kelvin?tab=your-decision", roundId: "rnd_k_bridge" },
     ] : [];
     const ctx = req.userContext;
     if (ctx?.isAuthed && !ctx.isAdmin) {
@@ -1150,7 +1150,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     if (role === "investor") {
       const invited = !!(ctx?.investor?.invitedRounds?.some(r => r.companyId === req.params.id) ||
-        ctx?.investor?.capTablePositions?.some(p => p.companyId === req.params.id));
+                         ctx?.investor?.capTablePositions?.some(p => p.companyId === req.params.id));
       canSeeRound = invited;
       canSeeDataroom = invited;
       canSeeSoftCircle = invited;
@@ -1174,11 +1174,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // the shared display fields from that profile so the full-page view renders
     // the real company name/description instead of the raw id.
     const lp = liveProfile as
-      | {
-        contact?: { companyName?: string; companyWebsiteUrl?: string; oneSentenceHeadliner?: string; logoDataUrl?: string | null };
-        legal?: { legalEntityName?: string; region?: string };
-        industry?: string
-      }
+      | { contact?: { companyName?: string; companyWebsiteUrl?: string; oneSentenceHeadliner?: string; logoDataUrl?: string | null };
+          legal?: { legalEntityName?: string; region?: string };
+          industry?: string }
       | null;
     // BUG 019 follow-up v23.7.1 — when the company exists only in
     // multiCompanyStore (founder-created, no profile snapshot yet), fall back to
@@ -1215,8 +1213,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       dataroom: canSeeDataroom ? dataroomForCompany : null,
       softCircles: canSeeSoftCircle
         ? (role === "founder" || role === "admin"
-          ? softCirclesForCompany
-          : softCirclesForCompany.filter(s => s.investorName === currentInvestor.entityName || s.investorName === currentInvestor.legalName))
+            ? softCirclesForCompany
+            : softCirclesForCompany.filter(s => s.investorName === currentInvestor.entityName || s.investorName === currentInvestor.legalName))
         : null,
       termSheet: canSeeTermSheet ? { available: true, lastUpdated: "2026-04-22" } : null,
     });
@@ -2777,11 +2775,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       updated = updateCompanyDetails(id, {
         companyName: typeof req.body?.name === "string" ? req.body.name : req.body?.companyName,
-        legalName: req.body?.legalName,
-        sector: req.body?.sector,
-        stage: req.body?.stage,
-        hq: req.body?.hq,
-        role: req.body?.role,
+        legalName:   req.body?.legalName,
+        sector:      req.body?.sector,
+        stage:       req.body?.stage,
+        hq:          req.body?.hq,
+        role:        req.body?.role,
         // BUG 017 fix v23.7 — persist the Settings → Company currency selection.
         defaultCurrency: req.body?.defaultCurrency,
       });
@@ -3064,6 +3062,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const merchantOrderId = `cap_sub_${companyId}_${tierId}_${Date.now()}`;
       const idempotencyKey = `idem_${ctx.userId}_${tierId}_${Date.now()}`;
 
+      /* v25.28 — build returnUrl BEFORE intent creation so we can pass it to
+       * Airwallex (the hosted checkout page redirects the founder back here
+       * after they complete or abandon payment). */
+      const appOrigin =
+        process.env.PUBLIC_APP_URL ??
+        `${req.protocol}://${req.get("host") ?? "localhost"}`;
+      const returnUrlEarly = `${appOrigin.replace(/\/$/, "")}/founder/billing/return?merchantOrderId=${encodeURIComponent(merchantOrderId)}`;
+
       let intent;
       try {
         intent = await createPaymentIntent({
@@ -3074,6 +3080,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           description: `Capavate ${tier.name} (${billingCycle})`,
           metadata: { companyId, tierId, userId: ctx.userId, billingCycle },
           idempotencyKey,
+          returnUrl: returnUrlEarly,
         });
       } catch (e) {
         if (e instanceof AirwallexNotConfiguredError) {
@@ -3100,24 +3107,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         merchantOrderId,
       });
 
-      // The Airwallex hosted page redirects the founder back to BillingReturn.tsx
-      // (/founder/billing/return) with the PaymentIntent id, where the client
-      // polls /api/founder/subscription/status until the webhook flips the
-      // subscription to active. Honour an explicit origin override (PUBLIC_APP_URL)
-      // for deployed environments; fall back to the request's own origin.
-      const appOrigin =
-        process.env.PUBLIC_APP_URL ??
-        `${req.protocol}://${req.get("host") ?? "localhost"}`;
-      const returnUrl = `${appOrigin.replace(/\/$/, "")}/founder/billing/return?paymentIntentId=${encodeURIComponent(intent.id)}`;
+      /* v25.28 — attach paymentIntentId to the returnUrl now that we know it.
+       * (Earlier returnUrlEarly was constructed with merchantOrderId only so
+       * Airwallex had something stable to redirect to; the client polls by
+       * paymentIntentId via the URL query string.) */
+      const returnUrl = `${appOrigin.replace(/\/$/, "")}/founder/billing/return?paymentIntentId=${encodeURIComponent(intent.id)}&merchantOrderId=${encodeURIComponent(merchantOrderId)}`;
 
       // v24.4.2 Bug F — STUB MODE AUTO-PROGRESSION
       // When AIRWALLEX_REAL_NETWORK=0 (mode=stub), no real webhook will ever
       // arrive. The stub intent is already "SUCCEEDED", so activate the
       // subscription immediately and skip the Airwallex-hosted checkout page
-      // redirect (which would 404 with a stub intent id).
+      // redirect (which would 404 with a stub intent id). Instead, return the
+      // returnUrl as the hostedPaymentPageUrl so the client navigates directly
+      // to BillingReturn which polls and finds the subscription active.
       const { getAirwallexMode: getMode } = await import("./lib/paymentGatewayResolver");
       const airwallexMode = getMode();
-
       if (airwallexMode === "stub") {
         // Activate immediately — stub is deterministically SUCCEEDED.
         const activatedSub = subStore.activateByPaymentIntent(intent.id);
@@ -3152,9 +3156,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             log.warn(`[billing/plan] stub mode: invoice creation failed (subscription still active): ${(invErr as Error).message}`);
           }
         }
-
-        // STUB MODE: Return success with explicit checkout_complete flag
-        // Client should show a success message and THEN redirect to dashboard
+        // Return returnUrl as hostedPaymentPageUrl so PaymentSurface redirects
+        // to BillingReturn, which will see status=active and redirect to dashboard.
         return res.json({
           ok: true,
           paymentIntentId: intent.id,
@@ -3164,17 +3167,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           merchantOrderId,
           status: "SUCCEEDED",
           stubMode: true,
-          // Give client a flag to handle the redirect flow properly
-          checkoutComplete: true,
-          redirectUrl: returnUrl, // Where to go after showing success
-          // The client should show a success message BEFORE navigating to redirectUrl
-          message: `Your subscription to ${tier.name} has been activated successfully!`,
+          returnUrl,
+          hostedPaymentPageUrl: returnUrl,
         });
       }
 
-      // REAL MODE: Return checkout URL for Airwallex hosted payment page
-      const hostedPaymentPageUrl = `https://checkout.airwallex.com/checkout?intent_id=${intent.id}&client_secret=${encodeURIComponent(intent.client_secret ?? "")}&return_url=${encodeURIComponent(returnUrl)}`;
-
+      /* v25.28 — REAL MODE: stop fabricating a fake checkout URL.
+       *
+       * BEFORE: the server constructed `https://checkout.airwallex.com/checkout?...`
+       * which does NOT exist as a real Airwallex URL. The browser would land
+       * on an empty/404 page, the payment intent would stay in "Created"
+       * status forever, and no card would ever be charged.
+       *
+       * AFTER: the server returns the raw {intent_id, client_secret, currency,
+       * returnUrl}. The client-side PaymentSurface.tsx loads the official
+       * Airwallex.js SDK (window.AirwallexComponentsSDK) and calls
+       * payments.redirectToCheckout({...}), which takes the user to the
+       * REAL Airwallex-hosted checkout page where they enter a card and pay.
+       *
+       * Reference: https://www.airwallex.com/docs/payments/get-started/quickstart
+       */
       res.json({
         ok: true,
         paymentIntentId: intent.id,
@@ -3184,9 +3196,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         merchantOrderId,
         status: intent.status,
         returnUrl,
-        hostedPaymentPageUrl,
-        // Explicitly indicate this is a checkout flow, not completion
-        requiresCheckout: true,
+        /* The client uses these three fields with Airwallex.js redirectToCheckout. */
+        airwallex: {
+          intent_id: intent.id,
+          client_secret: intent.client_secret,
+          currency,
+          successUrl: returnUrl,
+          env: (process.env.AIRWALLEX_MODE ?? (process.env.AIRWALLEX_API_BASE?.includes("api-demo") ? "demo" : "prod")),
+        },
       });
     } catch (err: any) {
       log.error("[billing/plan] error:", err);
@@ -3200,6 +3217,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           ok: false,
           error: "gateway_network_error",
           message: "Airwallex gateway is unreachable. Check AIRWALLEX_API_BASE and network connectivity.",
+        });
+      }
+      /* v25.28 — surface Airwallex credential failures as a clear 503 instead
+       * of a generic 500 so admins immediately see they need to rotate keys
+       * (not a bug in our code). */
+      const msg = String(err?.message ?? "");
+      const isAuthError =
+        /credentials_invalid|UNAUTHORIZED|HTTP 401|HTTP 403/i.test(msg);
+      if (isAuthError) {
+        return res.status(503).json({
+          ok: false,
+          error: "gateway_credentials_invalid",
+          message: "Airwallex rejected our API credentials (401 credentials_invalid). The administrator must verify AIRWALLEX_API_KEY + AIRWALLEX_CLIENT_ID in the Airwallex merchant portal (Developer → API keys).",
         });
       }
       res.status(500).json({ ok: false, error: "server_error", message: err?.message });
@@ -3656,13 +3686,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // returns 404 for unknown companies — no leak of demo personas.
   const FOUNDER_MAP: Record<string, { userId: string; name: string }> = DEMO_SEED_ENABLED
     ? {
-      co_novapay: { userId: "u_maya_chen", name: "Maya Chen" },
-      co_arboreal: { userId: "u_maya_chen", name: "Maya Chen" },
-      co_quanta: { userId: "u_maya_chen", name: "Maya Chen" },
-      co_beacon: { userId: "u_maya_chen", name: "Maya Chen" },
-      co_tideline: { userId: "u_maya_chen", name: "Maya Chen" },
-      co_kelvin: { userId: "u_maya_chen", name: "Maya Chen" },
-    }
+        co_novapay: { userId: "u_maya_chen", name: "Maya Chen" },
+        co_arboreal: { userId: "u_maya_chen", name: "Maya Chen" },
+        co_quanta:   { userId: "u_maya_chen", name: "Maya Chen" },
+        co_beacon:   { userId: "u_maya_chen", name: "Maya Chen" },
+        co_tideline: { userId: "u_maya_chen", name: "Maya Chen" },
+        co_kelvin:   { userId: "u_maya_chen", name: "Maya Chen" },
+      }
     : {};
   app.get("/api/companies/:id/founder", requireAuth, (req, res) => {
     const { id } = req.params;
@@ -3772,15 +3802,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({
       company: company
         ? {
-          id: company.companyId,
-          name: company.companyName,
-          legalName: company.legalName,
-          sector: company.sector,
-          stage: company.stage,
-          hq: company.hq,
-          collective: company.collective ?? { status: "none" },
-          billing: company.billing ?? null,
-        }
+            id: company.companyId,
+            name: company.companyName,
+            legalName: company.legalName,
+            sector: company.sector,
+            stage: company.stage,
+            hq: company.hq,
+            collective: company.collective ?? { status: "none" },
+            billing: company.billing ?? null,
+          }
         : null,
       kpis,
       recentRounds,
@@ -3851,7 +3881,7 @@ function extractTerms(text: string): { preMoney?: number; valuationCap?: number;
   const cap = norm.match(/(?:valuation\s+cap|cap\s+price)[^$]*\$\s?([\d,]+(?:\.\d+)?)\s?(million|m|k)?/i);
   if (cap) out.valuationCap = toAmount(cap[1], cap[2]);
   const liq = norm.match(/(\d+(?:\.\d+)?)\s?[x×]\s+(?:non-)?participating?(?:\s+preferred)?/i)
-    ?? norm.match(/liquidation\s+preference[^0-9]*(\d+(?:\.\d+)?)\s?[x×]/i);
+           ?? norm.match(/liquidation\s+preference[^0-9]*(\d+(?:\.\d+)?)\s?[x×]/i);
   if (liq) out.liqPrefMultiple = parseFloat(liq[1]);
   if (/full\s+ratchet/i.test(norm)) out.antiDilution = "full_ratchet";
   else if (/broad[-\s]?based\s+weighted/i.test(norm)) out.antiDilution = "broad_based_wa";

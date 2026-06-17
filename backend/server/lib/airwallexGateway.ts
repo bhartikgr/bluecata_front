@@ -35,6 +35,48 @@ const require = createRequire(import.meta.url);
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { getGatewayCredentials, getAirwallexMode } from "./paymentGatewayResolver";
 
+/* =====================================================================
+ * v25.28 — ISO-4217 amount conversion for the Airwallex boundary.
+ *
+ * Critical bug fix discovered 16-Jun-2026: Capavate stores money internally
+ * as minor units (cents) following the Stripe convention, but the Airwallex
+ * PaymentIntent v1 API expects amounts in MAJOR units (dollars). Quoting the
+ * official Airwallex docs (https://www.airwallex.com/docs/payments/get-
+ * started/using-payments-intent-api):
+ *
+ *   "amount: The amount to charge specified in major units as defined by
+ *    ISO 4217. For example, $9.99 is represented as 9.99."
+ *
+ * Sending `amount: 84000` for a $840 USD plan made the merchant portal show
+ * **$84,000.00** — a 100x inflation (confirmed by Avi's screenshot). This
+ * helper converts at the Airwallex boundary only; internal storage and
+ * Number.isInteger(amountMinor) validation remain unchanged.
+ *
+ * Critical subtlety — do NOT just divide by 100:
+ *   • USD/EUR/most currencies: exponent 2 → divide by 100 (84000 cents = $840.00)
+ *   • Zero-decimal currencies (JPY/KRW/etc.): exponent 0 → divide by 1
+ *     (yen and won have no sub-unit; ¥1000 is stored as 1000 minor units AND
+ *     sent to Airwallex as 1000 major units)
+ *   • Three-decimal currencies (BHD/KWD/etc.): exponent 3 → divide by 1000
+ * ===================================================================== */
+const ZERO_DECIMAL_CURRENCIES = new Set([
+  "BIF", "CLP", "DJF", "GNF", "HUF", "IDR", "ISK", "JPY", "KMF", "KRW",
+  "MGA", "PYG", "RWF", "TWD", "UGX", "VND", "VUV", "XAF", "XOF", "XPF",
+]);
+const THREE_DECIMAL_CURRENCIES = new Set(["BHD", "JOD", "KWD", "OMR", "TND"]);
+
+export function minorToAirwallexMajor(amountMinor: number, currency: string): number {
+  const c = (currency || "USD").toUpperCase();
+  const exp = ZERO_DECIMAL_CURRENCIES.has(c)
+    ? 0
+    : THREE_DECIMAL_CURRENCIES.has(c)
+    ? 3
+    : 2;
+  if (exp === 0) return amountMinor;
+  // Airwallex docs explicitly allow fractional `amount` (e.g. 9.99). Don't round.
+  return amountMinor / Math.pow(10, exp);
+}
+
 export interface AirwallexCreatePaymentIntentInput {
   amountMinor: number;
   currency: string;            // ISO 4217 (e.g. "USD", "HKD")
@@ -44,6 +86,9 @@ export interface AirwallexCreatePaymentIntentInput {
   metadata?: Record<string, string | number | boolean>;
   /** Idempotency key — pass per-attempt to avoid double-charging. */
   idempotencyKey: string;
+  /** v25.28 — URL Airwallex redirects to after hosted-payment-page completion.
+   *  Required for the Airwallex.js redirectToCheckout flow. */
+  returnUrl?: string;
 }
 
 export interface AirwallexPaymentIntent {
@@ -205,7 +250,8 @@ export async function createPaymentIntent(
     return {
       id: stubId,
       status: "SUCCEEDED",
-      amount: input.amountMinor,
+      // v25.28 — stub responses echo the Airwallex contract: amount in MAJOR units.
+      amount: minorToAirwallexMajor(input.amountMinor, input.currency),
       currency: input.currency,
       merchant_order_id: input.merchantOrderId,
       client_secret: `cs_stub_${randomBytes(8).toString("hex")}`,
@@ -241,10 +287,16 @@ export async function createPaymentIntent(
     },
     body: JSON.stringify({
       request_id: requestId,
-      amount: input.amountMinor,
+      /* v25.28 — 100x bug fix. Airwallex requires MAJOR units, not minor.
+       * For USD: amountMinor=84000 cents → amount=840 dollars.
+       * For JPY: amountMinor=1000 yen   → amount=1000 yen (zero-decimal).
+       * See: https://www.airwallex.com/docs/payments/get-started/using-payments-intent-api */
+      amount: minorToAirwallexMajor(input.amountMinor, input.currency),
       currency: input.currency,
       merchant_order_id: input.merchantOrderId,
       descriptor: input.description?.slice(0, 32),
+      /* v25.28 — Airwallex hosted-payment-page redirect target. */
+      ...(input.returnUrl ? { return_url: input.returnUrl } : {}),
       metadata: input.metadata ?? {},
     }),
   });
@@ -292,7 +344,8 @@ export async function refundPayment(input: AirwallexRefundInput): Promise<Airwal
     return {
       id: `ref_stub_${input.idempotencyKey.slice(0, 12)}`,
       payment_intent_id: input.paymentIntentId,
-      amount: input.amountMinor,
+      // v25.28 — stub echoes Airwallex contract: MAJOR units.
+      amount: minorToAirwallexMajor(input.amountMinor, "USD"),
       currency: "USD",
       status: "SUCCEEDED",
       reason: input.reason,
@@ -312,7 +365,9 @@ export async function refundPayment(input: AirwallexRefundInput): Promise<Airwal
     },
     body: JSON.stringify({
       payment_intent_id: input.paymentIntentId,
-      amount: input.amountMinor,
+      // v25.28 — same major-unit fix for refunds. Airwallex docs:
+      // "amount: in major units as defined by ISO 4217."
+      amount: minorToAirwallexMajor(input.amountMinor, "USD"),
       reason: input.reason,
       metadata: input.metadata ?? {},
     }),

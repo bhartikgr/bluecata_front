@@ -41,7 +41,32 @@ import { log } from "./lib/logger";
 /* v25.23 NC-D / NH-K / NH-L — strict (fail-closed) persistence for the money
  * and identity surfaces. Default `persistEntry` semantics elsewhere remain
  * unchanged (Lane G preservation). */
-import { persistEntryStrict } from "./lib/storePersistenceShim";
+import { persistEntryStrict, persistEntry as persistEntryShim } from "./lib/storePersistenceShim";
+
+/* v25.28 Phase D — partner workspace *History arrays now durable.
+ *
+ * The 6 audit-trail arrays (attributionsHistory, pipelineHistory, notesHistory,
+ * spvsHistory, fundsHistory, dealPromotionsHistory) used to be pure RAM — the
+ * CURRENT records persisted to their respective drizzle tables, but the
+ * change-history audit trail was lost on every restart. This helper writes
+ * each history row through the shim's kv_<store> table on push.
+ *
+ * History rows are non-fatal: if the DB blip-fails, the in-memory record is
+ * still kept (we don't want admin actions blocked by a transient DB write).
+ * The kv key uses a stable UUID-flavored composite so subsequent updates of
+ * the same logical entity append rather than overwrite. */
+function pushHistory<T extends { id: string; version?: number; updatedAt?: string }>(
+  arr: T[],
+  storeName: string,
+  entry: T,
+): void {
+  arr.push(entry);
+  try {
+    const versionPart = entry.version ?? arr.length;
+    const kvKey = `${entry.id}::v${versionPart}`;
+    persistEntryShim(storeName, kvKey, entry);
+  } catch { /* non-fatal */ }
+}
 
 /* ============================================================
  * Sub-role + tier types
@@ -1122,7 +1147,7 @@ export const partnerAttributionStore = {
     };
     base.revisionHash = computeRevisionHash(base as unknown as Record<string, unknown>);
     attributions.push(base);
-    attributionsHistory.push({ ...base });
+    pushHistory(attributionsHistory, "partnerAttributionsHistory", { ...base });
     /* v25.12 NM-9 — persist attribution via kv shim so admin attributions survive restart. */
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -1151,7 +1176,7 @@ export const partnerAttributionStore = {
     };
     next.revisionHash = computeRevisionHash(next as unknown as Record<string, unknown>);
     Object.assign(a, next);
-    attributionsHistory.push({ ...next });
+    pushHistory(attributionsHistory, "partnerAttributionsHistory", { ...next });
     /* v25.12 NM-9 — persist revoke transition. */
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -1240,7 +1265,7 @@ export const partnerPipelineStore = {
     };
     deal.revisionHash = computeRevisionHash(deal as unknown as Record<string, unknown>);
     pipeline.push(deal);
-    pipelineHistory.push({ ...deal });
+    pushHistory(pipelineHistory, "partnerPipelineHistory", { ...deal });
     /* v25.12 NM-9 — persist via kv shim so partner deal pipeline survives restart. */
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -1274,7 +1299,7 @@ export const partnerPipelineStore = {
     };
     next.revisionHash = computeRevisionHash(next as unknown as Record<string, unknown>);
     Object.assign(d, next);
-    pipelineHistory.push({ ...next });
+    pushHistory(pipelineHistory, "partnerPipelineHistory", { ...next });
     /* v25.12 NM-9 — mirror the updated row through the kv shim so the
      * latest version survives restart (not just the create snapshot). */
     try {
@@ -1374,7 +1399,7 @@ export const partnerNotesStore = {
     note.revisionHash = computeRevisionHash(note as unknown as Record<string, unknown>);
     notes.push(note);
     persistNote(note);
-    notesHistory.push({ ...note });
+    pushHistory(notesHistory, "partnerNotesHistory", { ...note });
     audit(actor, `partner:${partnerId}`, "partner.note.created", { noteId: note.id, scope: note.scope });
     return note;
   },
@@ -1402,7 +1427,7 @@ export const partnerNotesStore = {
     next.revisionHash = computeRevisionHash(next as unknown as Record<string, unknown>);
     Object.assign(n, next);
     persistNote(n);
-    notesHistory.push({ ...next });
+    pushHistory(notesHistory, "partnerNotesHistory", { ...next });
     audit(actor, `partner:${partnerId}`, "partner.note.updated", { noteId, changes: Object.keys(patch) });
     return next;
   },
@@ -1625,7 +1650,7 @@ export const partnerSpvStore = {
       persistEntryStrict("partnerSpvs", spv.id, spv);
     }
     spvs.push(spv);
-    spvsHistory.push({ ...spv });
+    pushHistory(spvsHistory, "partnerSpvsHistory", { ...spv });
     // CP-028: shadow-persist to the DB-backed spvFundStore so the row survives
     //   process restart. Best-effort — failure does NOT block the legacy path.
     try {
@@ -1672,7 +1697,7 @@ export const partnerSpvStore = {
       persistEntryStrict("partnerSpvs", s.id, next);
     }
     Object.assign(s, next);
-    spvsHistory.push({ ...next });
+    pushHistory(spvsHistory, "partnerSpvsHistory", { ...next });
     /* v25.16 NC1 / v25.24 NC-2 — keep the original best-effort persist below
      * for breadcrumb continuity (no-op now that strict above succeeded, but
      * idempotent so prior wave behaviour is preserved). */
@@ -1813,7 +1838,7 @@ export const partnerFundsStore = {
      * succeeds. A persist failure throws and leaves zero RAM-only state. */
     persistEntryStrict("partnerFunds", f.id, f);
     funds.push(f);
-    fundsHistory.push({ ...f });
+    pushHistory(fundsHistory, "partnerFundsHistory", { ...f });
     audit(actor, `partner:${partnerId}`, "partner.fund.recorded", { fundId: f.id });
     return f;
   },
@@ -1847,7 +1872,7 @@ export const partnerFundsStore = {
       Object.assign(f, fundSnapshot); // roll back RAM mutation
       throw persistErr;
     }
-    fundsHistory.push({ ...next });
+    pushHistory(fundsHistory, "partnerFundsHistory", { ...next });
     audit(actor, `partner:${partnerId}`, "partner.fund.updated", { fundId });
     return next;
   },
@@ -2130,7 +2155,7 @@ export const partnerDealPromotionsStore = {
     persistEntryStrict("partnerDealPromotions", p.id, p);
     persistDealPromotion(p, true);
     dealPromotions.push(p);
-    dealPromotionsHistory.push({ ...p });
+    pushHistory(dealPromotionsHistory, "partnerDealPromotionsHistory", { ...p });
     audit(actor, `partner:${partnerId}`, "partner.deal_promotion.created", {
       promotionId: p.id,
       pipelineDealId,
@@ -2510,7 +2535,7 @@ function commitPromotionTransitionStrict(
   persistDealPromotion(next, false);
   // Durable writes succeeded — now commit to RAM.
   Object.assign(p, next);
-  dealPromotionsHistory.push({ ...next });
+  pushHistory(dealPromotionsHistory, "partnerDealPromotionsHistory", { ...next });
   return next;
 }
 
@@ -2617,7 +2642,7 @@ export async function hydratePartnerWorkspaceCollectiveStore(): Promise<void> {
         chapterId: r.chapter_id ?? r.chapterId ?? DEFAULT_CHAPTER_ID,
       };
       dealPromotions.push(p);
-      dealPromotionsHistory.push({ ...p });
+      pushHistory(dealPromotionsHistory, "partnerDealPromotionsHistory", { ...p });
     }
     if (rows.length > 0) {
       log.info(`[partnerWorkspaceStore] hydrated ${rows.length} partner_deal_promotions row(s)`);

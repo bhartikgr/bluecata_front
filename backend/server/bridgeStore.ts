@@ -38,6 +38,14 @@ import { rawDb } from "./db/connection";
 import { bridgeOutbox as bridgeOutboxTable } from "@shared/schema";
 import { log } from "./lib/logger";
 import { requireAdmin } from "./lib/authMiddleware"; /* v25.16 NC4 — gate admin bridge routes */
+// v25.28 Phase D — bridgeStore.inbox is now durable. The outbox was already
+// DB-backed via the `bridge_outbox` drizzle table. The inbox (Collective →
+// Capavate inbound bridge envelopes) was pure RAM, meaning any event that
+// arrived during a PM2 restart window was lost. We now write-through every
+// inbox.push to the shim's kv_bridgeStoreInbox table and hydrate on boot.
+import { persistEntry as persistShimEntry, hydrateEntries as hydrateShimEntries } from "./lib/storePersistenceShim";
+
+const BRIDGE_INBOX_STORE = "bridgeStoreInbox";
 
 /* ============================================================
  * v24.5 GAP-2 — Bridge event history (circular buffer, 1000 rows)
@@ -254,6 +262,29 @@ export function hydrateBridgeStore(): void {
       log.warn("[hydrate] bridgeStore: DB read failed:", msg);
     }
   }
+
+  /* v25.28 Phase D — also restore the inbound bridge envelope buffer from
+   * the shim-backed kv_bridgeStoreInbox table. Without this, a Collective
+   * → Capavate event that arrived in the seconds before a PM2 restart was
+   * lost forever (the outbox was DB-backed and survived; the inbox didn't).
+   * Idempotent: keyed by eventId via the shim. */
+  try {
+    const inboundRows = hydrateShimEntries<BridgeEnvelope>(BRIDGE_INBOX_STORE);
+    if (inboundRows.length > 0) {
+      const seenInbox = new Set(inbox.map((e) => e.eventId));
+      let restoredInbox = 0;
+      for (const [eventId, env] of inboundRows) {
+        if (seenInbox.has(eventId)) continue;
+        inbox.push(env);
+        restoredInbox++;
+      }
+      if (restoredInbox > 0) {
+        log.info(`[hydrate] bridgeStore: ${restoredInbox} inbound envelopes restored from kv_bridgeStoreInbox`);
+      }
+    }
+  } catch (inboxErr) {
+    log.warn("[hydrate] bridgeStore.inbox: ", (inboxErr as Error).message);
+  }
 }
 
 /* v25.16 NM5 — align env var lookup with .env.example (which declares
@@ -427,6 +458,14 @@ export interface OutboxEntry {
 
 const outbox: OutboxEntry[] = [];
 const inbox: BridgeEnvelope[] = [];
+
+/** v25.28 Phase D — push to inbox + write through to durable storage.
+ * Idempotent: shim's kv table is keyed by eventId, so repeat receives of the
+ * same envelope (e.g. Collective retry storm) collapse cleanly. */
+function inboxPush(env: BridgeEnvelope): void {
+  inbox.push(env);
+  try { persistShimEntry(BRIDGE_INBOX_STORE, env.eventId, env); } catch { /* non-fatal */ }
+}
 let lastChainHash = "0000000000000000000000000000000000000000000000000000000000000000";
 
 function sha256(s: string): string {
@@ -693,7 +732,7 @@ export function getInbox(): BridgeEnvelope[] {
 }
 
 export function pushInbound(env: BridgeEnvelope): void {
-  inbox.push(env);
+  inboxPush(env);
 }
 
 /** Seed a few demo events so the admin surface has something to show. */
@@ -808,7 +847,7 @@ export function seedDemoEvents(): void {
   }
 
   // Seed inbound demo
-  inbox.push({
+  inboxPush({
     eventId: `evt_${randomBytes(8).toString("hex")}`,
     eventType: "ma.intelligence_rankings",
     aggregateId: "co_novapay",
@@ -821,7 +860,7 @@ export function seedDemoEvents(): void {
     auditChain: { priorHash: "abc", hash: "def" },
     schemaVersion: SCHEMA_VERSION,
   });
-  inbox.push({
+  inboxPush({
     eventId: `evt_${randomBytes(8).toString("hex")}`,
     eventType: "dsc.scores",
     aggregateId: "co_novapay",
@@ -834,7 +873,7 @@ export function seedDemoEvents(): void {
     auditChain: { priorHash: "abc", hash: "ghi" },
     schemaVersion: SCHEMA_VERSION,
   });
-  inbox.push({
+  inboxPush({
     eventId: `evt_${randomBytes(8).toString("hex")}`,
     eventType: "partner.introduction_status",
     aggregateId: "co_novapay",
@@ -847,7 +886,7 @@ export function seedDemoEvents(): void {
     auditChain: { priorHash: "abc", hash: "jkl" },
     schemaVersion: SCHEMA_VERSION,
   });
-  inbox.push({
+  inboxPush({
     eventId: `evt_${randomBytes(8).toString("hex")}`,
     eventType: "network.social_signals",
     aggregateId: "co_novapay",

@@ -23,7 +23,7 @@ import { listActive as listActiveCollectiveMembers } from "./collectiveMembershi
 import { listAllInvitations } from "./roundInvitationsStore";
 import { getRecentEvents } from "./sprint10Telemetry";
 // Patch v12 Day 2 Wave 1 — audit_log + recon_runs + founder_tiers DB-backed.
-import { getDb } from "./db/connection";
+import { getDb, rawDb } from "./db/connection";
 import {
   auditLog as auditLogTable,
   reconRuns as reconRunsTable,
@@ -996,24 +996,97 @@ export function registerAdminPlatformRoutes(app: Express): void {
   // GET /api/admin/users/:id and POST /api/admin/users/:id/sessions/revoke are
   // kept here because adminUsersRoutes.ts does NOT register them — they would
   // otherwise 404 via the new JSON 404 middleware.
+  /* v25.28 Phase C — admin user endpoints now DB-backed.
+   *
+   * BEFORE: these 3 routes read from the hardcoded module-level `users`
+   * array in this file. The canonical /api/admin/users LIST endpoint
+   * (adminUsersRoutes.ts) ALREADY merges auth_users with the hardcoded
+   * seeds, so admins saw inconsistent state: the LIST showed the real DB
+   * user, but /api/admin/users/:id 404'd because the hardcoded array
+   * didn't include them.
+   *
+   * AFTER: these routes consult both the hardcoded array (for back-compat
+   * with the demo seed users in adminUsersRoutes._seedUsers) AND the
+   * durable `auth_users` table. If the requested id matches a real user
+   * in the DB, we return their row. The sessions/revoke endpoint also
+   * deletes durable auth_sessions rows for that user. */
   app.get("/api/admin/users/:id", (req: Request, res: Response) => {
-    const u = users.find(x => x.id === req.params.id);
-    if (!u) return res.status(404).json({ error: "not_found" });
-    const userAudit = auditLog.filter(a => a.actor === u.id);
-    res.json({ ...u, audit: userAudit });
+    const id = req.params.id;
+    // Try the legacy hardcoded array first (for demo seed users).
+    const hardcoded = users.find(x => x.id === id);
+    if (hardcoded) {
+      const userAudit = auditLog.filter(a => a.actor === hardcoded.id);
+      return res.json({ ...hardcoded, audit: userAudit });
+    }
+    // Fall back to the durable auth_users table.
+    try {
+      const db = rawDb();
+      const row = db.prepare(
+        `SELECT id, email, role, status, last_login, created_at FROM auth_users WHERE id = ?`,
+      ).get(id) as { id: string; email: string; role: string; status: string; last_login: string | null; created_at: string } | undefined;
+      if (!row) return res.status(404).json({ error: "not_found" });
+      const userAudit = auditLog.filter(a => a.actor === row.id);
+      return res.json({
+        id: row.id,
+        email: row.email,
+        name: row.email.split("@")[0] ?? row.email,
+        role: row.role,
+        status: row.status,
+        lastLogin: row.last_login,
+        createdAt: row.created_at,
+        // sessions[] no longer hardcoded — use /api/admin/users/:id/sessions if needed
+        sessions: [],
+        audit: userAudit,
+      });
+    } catch {
+      return res.status(500).json({ error: "db_error" });
+    }
   });
   app.post("/api/admin/users/:id/sessions/revoke", (req: Request, res: Response) => {
-    const u = users.find(x => x.id === req.params.id);
-    if (!u) return res.status(404).json({ error: "not_found" });
-    const before = u.sessions.length;
-    u.sessions = [];
-    res.json({ ok: true, revoked: before });
+    const id = req.params.id;
+    // Legacy: clear the hardcoded sessions array.
+    const hardcoded = users.find(x => x.id === id);
+    let revoked = 0;
+    if (hardcoded) {
+      revoked += hardcoded.sessions.length;
+      hardcoded.sessions = [];
+    }
+    // Durable: delete all auth_sessions rows for this user.
+    try {
+      const db = rawDb();
+      const result = db.prepare(`DELETE FROM auth_sessions WHERE user_id = ?`).run(id);
+      revoked += (result as { changes?: number }).changes ?? 0;
+    } catch { /* table may not exist in early-boot test sandbox — non-fatal */ }
+    res.json({ ok: true, revoked });
   });
   app.post("/api/admin/users/bulk", (req: Request, res: Response) => {
     const { action, ids } = req.body ?? {};
-    const allowed = ["suspend","unsuspend","force_mfa","force_logout","reset_password"];
+    const allowed = ["suspend", "unsuspend", "force_mfa", "force_logout", "reset_password"];
     if (!allowed.includes(action)) return res.status(400).json({ error: "invalid_action", allowed });
-    res.json({ ok: true, action, count: Array.isArray(ids) ? ids.length : 0 });
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.json({ ok: true, action, count: 0 });
+    }
+    /* v25.28 — actually persist the requested action on durable rows.
+     * Each action maps to an auth_users column or auth_sessions delete. */
+    let applied = 0;
+    try {
+      const db = rawDb();
+      for (const id of ids) {
+        if (action === "suspend") {
+          const r = db.prepare(`UPDATE auth_users SET status = 'suspended' WHERE id = ?`).run(id);
+          applied += (r as { changes?: number }).changes ?? 0;
+        } else if (action === "unsuspend") {
+          const r = db.prepare(`UPDATE auth_users SET status = 'active' WHERE id = ?`).run(id);
+          applied += (r as { changes?: number }).changes ?? 0;
+        } else if (action === "force_logout") {
+          const r = db.prepare(`DELETE FROM auth_sessions WHERE user_id = ?`).run(id);
+          applied += (r as { changes?: number }).changes ?? 0;
+        }
+        // force_mfa + reset_password are tracked by audit only — no schema column yet.
+        appendAudit((req as Request & { userContext?: { userId?: string } }).userContext?.userId ?? "system:bulk", "platform", `user.${action}`, { id });
+      }
+    } catch { /* DB not ready in test sandbox — fall back to count-only ack */ }
+    res.json({ ok: true, action, count: ids.length, applied });
   });
 
   /* ====== Audit log ====== */

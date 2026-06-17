@@ -1,8 +1,22 @@
 /**
  * Sprint 3 client-side runtime: ledger handle, telemetry store, reference
- * engine reconciler, sign-off state. All in-memory; production lifts these
- * into Postgres + Cedar policy enforcement.
- */
+ * engine reconciler, sign-off state.
+ *
+ * v25.28 Phase E — partial server-side mirroring.
+ * --------------------------------------------------
+ * The original Sprint-3 design kept ALL governance state (sign-offs,
+ * reconciliations, telemetry events) in client browser memory — the file's
+ * own header used to say "production lifts these into Postgres + Cedar".
+ *
+ * v25.28 Phase E mirrors the COMPLIANCE-CRITICAL piece (sign-off records)
+ * to the durable server-side audit log on every set. Reconciliation runs
+ * and telemetry events are best-effort UI surface state and remain client-
+ * memory in this wave (zero impact if lost — they're recomputable).
+ *
+ * A full server-backed governance refactor (replacing the zustand store
+ * with React Query against new /api/governance/* endpoints) is tracked for
+ * v25.29 as a dedicated wave because it touches 8 consumer components and
+ * requires server schema work. */
 import { create } from "@/lib/createStore";
 import {
   TelemetryStore, defaultTelemetryStore,
@@ -56,8 +70,18 @@ export const useSprint3 = create<Sprint3State>((set, get) => ({
   benchmarkTick: 0,
   setLedger: (l) => set({ ledger: l }),
   recordReconciliation: (r) => set((s) => ({ reconciliations: [...s.reconciliations, r] })),
-  setCloseState: (s2) =>
-    set((s) => ({ closeStates: { ...s.closeStates, [s2.roundId]: s2 } })),
+  setCloseState: (s2) => {
+    set((s) => ({ closeStates: { ...s.closeStates, [s2.roundId]: s2 } }));
+    /* v25.28 Phase E — mirror sign-off changes to the durable server-side
+     * audit log so they survive a browser refresh, a different admin
+     * logging in, and any tab-close mid-flow.
+     *
+     * Best-effort: a network failure here does NOT block the local UI
+     * update (the user can still see their sign-off on their own screen).
+     * Idempotent: the audit-log endpoint is append-only and the actorId +
+     * roundId + ts triple makes duplicate events safe to collapse later. */
+    void mirrorSignoffToAuditLog(s2);
+  },
   bumpTelemetry: () => set((s) => ({ telemetryTick: s.telemetryTick + 1 })),
   bumpBenchmarks: () => set((s) => ({ benchmarkTick: s.benchmarkTick + 1 })),
 }));
@@ -70,6 +94,44 @@ export {
 };
 
 export type { TelemetryEvent, TelemetryEventBody };
+
+/** v25.28 Phase E — mirror sign-off records to the server audit log.
+ *
+ * Fires async, non-blocking. If the endpoint fails (offline, 5xx) we just
+ * swallow the error; the in-memory store still has the record, and a
+ * future v25.29 wave will replace this with a full server-state migration. */
+async function mirrorSignoffToAuditLog(s: RoundCloseState): Promise<void> {
+  const items: Array<{ kind: "founder" | "admin"; record: SignoffRecord }> = [];
+  if (s.founderSignoff) items.push({ kind: "founder", record: s.founderSignoff });
+  if (s.adminSignoff) items.push({ kind: "admin", record: s.adminSignoff });
+  if (items.length === 0) return;
+  for (const item of items) {
+    try {
+      await fetch("/api/admin/audit-log/append", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          actor: item.record.actorId,
+          entity: `round:${s.roundId}`,
+          eventType: `round.signoff.${item.kind}`,
+          payload: {
+            roundId: s.roundId,
+            actorRole: item.record.actorRole,
+            actorName: item.record.actorName,
+            ipAddress: item.record.ipAddress,
+            identityHash: item.record.identityHash,
+            ts: item.record.ts,
+            closed: s.closed,
+            closedAt: s.closedAt,
+          },
+        }),
+      });
+    } catch {
+      /* non-fatal — client state still has the record */
+    }
+  }
+}
 
 /** Convenience wrapper: record + bump react re-renders. */
 export function emit(body: TelemetryEventBody, ctx: Parameters<typeof defaultTelemetryStore.recordEvent>[1]) {

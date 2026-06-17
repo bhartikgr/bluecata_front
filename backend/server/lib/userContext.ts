@@ -332,7 +332,30 @@ export function resolveRoundName(roundId: string): string {
 
 function buildInvitedRounds(persona: PersonaSeed): InvitedRound[] {
   // Defect 83: runtime-registered (redeemed) users get their seeded invitation records
-  const runtimeInvs = RUNTIME_INVITATIONS[persona.userId];
+  let runtimeInvs = RUNTIME_INVITATIONS[persona.userId];
+  /* v25.28.1 — if the in-memory cache is empty but persona has an email,
+     hydrate from the durable roundInvitations table. This closes the
+     restart-loss-of-invitations gap that Phase B left partially open
+     (the prior Phase B hydration only fired during persona synthesis,
+     not for RUNTIME_PERSONAS-cached personas that survive in-process). */
+  if ((!runtimeInvs || runtimeInvs.length === 0) && persona.email) {
+    try {
+      const rows = listInvitationsByEmail(persona.email);
+      const usable = rows
+        .filter((r) => !!r.companyId && (r.state === "pending" || r.state === "sent" || r.state === "viewed"))
+        .map((r) => ({
+          invitationId: r.id,
+          roundId: r.roundId,
+          companyId: r.companyId as string,
+        }));
+      if (usable.length > 0) {
+        RUNTIME_INVITATIONS[persona.userId] = usable;
+        runtimeInvs = usable;
+      }
+    } catch {
+      // Non-fatal — fall through to the legacy path.
+    }
+  }
   if (runtimeInvs && runtimeInvs.length > 0) {
     // B-509 fix v23.6.1 — resolve real company + round names instead of raw ids.
     // Falls back to a truncated id (never the full raw id) when unresolved.
@@ -513,7 +536,12 @@ export function registerFounderUser(args: {
     isAdmin: false,
     hasInvitations: false,
   };
-  RUNTIME_PASSWORDS[userId] = args.password;
+  /* v25.28.1 — REMOVED `RUNTIME_PASSWORDS[userId] = args.password`.
+     userCredentialsStore (bcrypt) below is the source of truth and survives
+     restart. The plaintext copy in process RAM was a security smell with no
+     functional benefit — verifyPassword() falls through to lookupByEmail()
+     which uses the bcrypt-backed credential, so same-process login works
+     without the plaintext entry. */
   // Patch v12 (DB-10) — INSERT users row FIRST, then user_credentials.
   // Both are written through Drizzle so they hit the same SQLite/Postgres
   // backend that hydrate*Store reads back at boot.
@@ -680,7 +708,9 @@ export function registerPersona(args: {
     if (!RUNTIME_INVITATIONS[existingId]) RUNTIME_INVITATIONS[existingId] = [];
     const already = RUNTIME_INVITATIONS[existingId].some(i => i.invitationId === args.invitationId);
     if (!already) RUNTIME_INVITATIONS[existingId].push({ invitationId: args.invitationId, roundId: args.roundId, companyId: args.companyId });
-    RUNTIME_PASSWORDS[existingId] = args.password;
+    /* v25.28.1 — REMOVED `RUNTIME_PASSWORDS[existingId] = args.password`.
+       userCredentialsStore (bcrypt) at storeCredential() below is the source
+       of truth. The plaintext RAM copy was redundant and a security smell. */
     // v25.1 Bug 5 fix (Avi prod report 11-Jun):
     // The existingId branch used to only update RUNTIME_PASSWORDS (RAM). On
     // server restart, the investor's password was lost and they couldn't log
@@ -733,7 +763,9 @@ export function registerPersona(args: {
     hasInvitations: true,
   };
   RUNTIME_INVITATIONS[userId] = [{ invitationId: args.invitationId, roundId: args.roundId, companyId: args.companyId }];
-  RUNTIME_PASSWORDS[userId] = args.password;
+  /* v25.28.1 — REMOVED `RUNTIME_PASSWORDS[userId] = args.password`.
+     userCredentialsStore (bcrypt) at storeCredential() below is the source
+     of truth. The plaintext RAM copy was redundant and a security smell. */
   // v25.0 RAM→DB fix: persist invitation-redeemed investor credentials via
   // userCredentialsStore (bcrypt-hashed, survives restart). Without this,
   // investors created via /api/invitations/redeem cannot log in after a
