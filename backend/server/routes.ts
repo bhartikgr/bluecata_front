@@ -3190,6 +3190,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
        *
        * Reference: https://www.airwallex.com/docs/payments/get-started/quickstart
        */
+      const awEnv = process.env.AIRWALLEX_MODE === "live" ? "prod" : "demo";
       res.json({
         ok: true,
         paymentIntentId: intent.id,
@@ -3205,7 +3206,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           client_secret: intent.client_secret,
           currency,
           successUrl: returnUrl,
-          env: (process.env.AIRWALLEX_MODE ?? (process.env.AIRWALLEX_API_BASE?.includes("api-demo") ? "demo" : "prod")),
+          env: awEnv,
         },
       });
     } catch (err: any) {
