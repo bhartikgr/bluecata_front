@@ -3054,7 +3054,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!tier) return res.status(404).json({ ok: false, error: "tier_not_found" });
 
       //const amountMinor = billingCycle === "annual" ? tier.annualPriceCents : tier.monthlyPriceCents;
-      const amountMinor = 10000;
+      const amountMinor = 1000;
       const currency = tier.currency ?? "USD";
       if (!amountMinor || amountMinor <= 0) {
         return res.status(400).json({ ok: false, error: "invalid_tier_price" });
