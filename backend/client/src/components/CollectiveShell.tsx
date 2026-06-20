@@ -310,9 +310,19 @@ interface CollectiveShellProps {
 
 export function CollectiveShell({ children }: CollectiveShellProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
+  /* v25.31 Wave B — set data-product="collective" or "partner" on the shell
+     so capavate.com design tokens defined in index.css can be applied via
+     scoped selectors WITHOUT touching any existing inline color or className.
+     This is purely additive presentation — zero functionality change, zero
+     route change, zero auth-wrapper change. Capavate routes never receive
+     this attribute (they go through AppShell, not CollectiveShell). */
+  const [location] = useLocation();
+  const product: "partner" | "collective" = location.startsWith("/collective/partner")
+    ? "partner"
+    : "collective";
 
   return (
-    <div className="flex h-screen overflow-hidden bg-white">
+    <div data-product={product} className="flex h-screen overflow-hidden bg-white">
       {/* Desktop sidebar */}
       <aside className="hidden md:flex w-56 shrink-0 flex-col h-full">
         <CollectiveSidebar />

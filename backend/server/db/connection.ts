@@ -2524,6 +2524,26 @@ function buildCreateTableStatements(): string[] {
       value_json  TEXT NOT NULL,
       updated_at  TEXT NOT NULL
     );`,
+    /* v25.31.1 — durable per-entity drift snapshot store. Replaces the
+     * process-local Maps in driftDetector.ts for read paths. Each row is a
+     * point-in-time snapshot of (entity, aggregate, local payload, last
+     * acked payload) so the /api/admin/sync/drift endpoint can compute drift
+     * deterministically across PM2 reloads. Source-of-truth rule (Ozan,
+     * 19-Jun): no process-local state. */
+    `CREATE TABLE IF NOT EXISTS sync_snapshots (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id       TEXT NOT NULL DEFAULT '_global',
+      entity_key      TEXT NOT NULL,
+      aggregate_id    TEXT NOT NULL,
+      local_json      TEXT,
+      acked_json      TEXT,
+      last_synced_at  TEXT,
+      updated_at      TEXT NOT NULL,
+      UNIQUE (tenant_id, entity_key, aggregate_id)
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_sync_snapshots_entity ON sync_snapshots(entity_key);`,
+    `CREATE INDEX IF NOT EXISTS idx_sync_snapshots_updated ON sync_snapshots(updated_at DESC);`,
+    `CREATE INDEX IF NOT EXISTS idx_sync_snapshots_tenant ON sync_snapshots(tenant_id);`,
   ];
 }
 

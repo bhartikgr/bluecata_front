@@ -213,6 +213,9 @@ const adminNav: NavGroup[] = [
     title: "Bridge & Comms",
     items: [
       { href: "/admin/bridge", label: "Bridge & Outbox", icon: Network },
+      /* v25.31 Wave A #13 — surface the v25.0 Track 5 E8 Bridge History page
+         which was registered at /admin/bridge-history but never linked. */
+      { href: "/admin/bridge-history", label: "Bridge History", icon: History },
       { href: "/admin/sync", label: "Sync Status", icon: RefreshCw },
       { href: "/admin/migration", label: "Migration", icon: Database },
       { href: "/admin/email", label: "Email System", icon: Mail },

@@ -236,3 +236,97 @@
     }
   }
 }
+
+/* ============================================================================
+ * v25.31 Wave B — Capavate.com design language for Collective + Partner
+ *
+ * Scoped via [data-product="collective"] and [data-product="partner"] on the
+ * CollectiveShell root element. Capavate routes (founder/investor/admin) go
+ * through AppShell instead, so they NEVER receive this attribute and are
+ * COMPLETELY UNAFFECTED by the rules below. Zero functionality change; zero
+ * route change; zero auth-wrapper change.
+ *
+ * Color tokens extracted from the production CSS bundle of www.capavate.com
+ * (see /home/user/workspace/capavate_com_index-DFTXHRpy.css):
+ *   primary    #cc0001   (HSL 360 100% 40%)  — Capavate red
+ *   navy       #041e41   (HSL 214 88% 14%)   — headline / highlight
+ *   accent     #d4850a   (HSL 37 91% 44%)    — warm gold accent
+ *   bg         #fafaf8   (HSL 60 17% 98%)    — off-white surface
+ *   surface    #ffffff
+ *   border     #ddd9d3   (HSL 36 13% 85%)
+ *   divider    #e8e6e1   (HSL 43 13% 90%)
+ *
+ * These overrides use a narrow selector chain so they win over the inline
+ * `style={{ ... }}` literals in CollectiveShell/CollectiveSidebar (Wave C-3
+ * era code authored by Avi) WITHOUT us having to edit Avi's existing code.
+ * ========================================================================== */
+
+[data-product="collective"],
+[data-product="partner"] {
+  /* Capavate.com brand palette as CSS custom properties. Page-level Tailwind
+     classes that resolve `hsl(var(--primary))` etc. automatically pick these
+     up inside the scoped subtree. */
+  --primary: 360 100% 40%;
+  --primary-foreground: 0 0% 100%;
+  --accent: 37 91% 44%;
+  --accent-foreground: 0 0% 10%;
+  --background: 60 17% 98%;
+  --foreground: 0 0% 10%;
+  --card: 0 0% 100%;
+  --card-foreground: 0 0% 10%;
+  --border: 36 13% 85%;
+  --ring: 360 100% 40%;
+
+  --cap-site-primary: #cc0001;
+  --cap-site-primary-hover: #a30001;
+  --cap-site-navy: #041e41;
+  --cap-site-accent: #d4850a;
+  --cap-site-bg: #fafaf8;
+  --cap-site-surface: #ffffff;
+  --cap-site-border: #ddd9d3;
+  --cap-site-divider: #e8e6e1;
+}
+
+/* Main content area background — overrides the inline `bg-[#FAFAF8]` on the
+   <main> element so the whole workspace canvas matches capavate.com. */
+[data-product="collective"] main,
+[data-product="partner"] main {
+  background-color: var(--cap-site-bg);
+}
+
+/* Headlines pick up the capavate.com warmer navy color. Body text stays
+   exactly as it is. */
+[data-product="collective"] h1,
+[data-product="collective"] h2,
+[data-product="partner"] h1,
+[data-product="partner"] h2 {
+  color: var(--cap-site-navy);
+  letter-spacing: -0.01em;
+}
+
+/* Primary buttons take the capavate.com red. Limit to buttons that already
+   carry the Tailwind `bg-primary` class so we don't repaint every button on
+   the page (Avi's Wave C-3 plum-on-cream nav items have explicit inline
+   styling and are intentionally left alone). */
+[data-product="collective"] button.bg-primary,
+[data-product="partner"] button.bg-primary {
+  background-color: var(--cap-site-primary);
+  color: #ffffff;
+}
+[data-product="collective"] button.bg-primary:hover,
+[data-product="partner"] button.bg-primary:hover {
+  background-color: var(--cap-site-primary-hover);
+}
+
+/* Accent hovers / focus rings inside the workspace. */
+[data-product="collective"] :focus-visible,
+[data-product="partner"] :focus-visible {
+  outline-color: var(--cap-site-primary);
+}
+
+/* Subtle border refresh on cards inside the workspace so they pick up the
+   warm cream divider tone. Limited to the card primitive's standard class. */
+[data-product="collective"] .border,
+[data-product="partner"] .border {
+  border-color: var(--cap-site-border);
+}

@@ -1618,10 +1618,28 @@ export function registerConsortiumApplyRoutes(app: Express): void {
         return;
       }
       const appUrl = (process.env.APP_URL ?? "http://localhost:5000").replace(/\/$/, "");
+      const inviteUrl = `${appUrl}/auth/redeem-partner-invite/${result.rawToken}`;
+      /* v25.31 Wave C — ADDITIVE response shape fix.
+       *
+       * The admin UI (ConsortiumApplicationsPage.tsx) reads `inviteLink` and
+       * `inviteEmailStatus` from this endpoint's response, but the server
+       * was returning `inviteUrl` only. Result: the Copy Invite Link button
+       * copied `undefined` to the clipboard.
+       *
+       * Per the "do not modify Avi's existing code" rule, the legacy
+       * `inviteUrl` and `expiresAt` fields are PRESERVED byte-identical.
+       * The new `inviteLink` and `inviteEmailStatus` fields are ADDED
+       * alongside them, mirroring `inviteUrl` so existing callers continue
+       * to work and the admin UI gets what it expects. */
       res.json({
         ok: true,
-        inviteUrl: `${appUrl}/auth/redeem-partner-invite/${result.rawToken}`,
+        inviteUrl,
         expiresAt: result.expiresAt,
+        // v25.31 additive fields for the admin UI. inviteEmailStatus="pending"
+        // aligns with the client InvitePayload union ("pending"|"delivered"|"failed")
+        // since this GET only mints a fresh link; no email is sent from this path.
+        inviteLink: inviteUrl,
+        inviteEmailStatus: "pending",
       });
     },
   );
@@ -1686,7 +1704,31 @@ export function registerConsortiumApplyRoutes(app: Express): void {
         "consortium.apply.invite_resent",
         { emailSent, error: emailError, tokenId: result.tokenId },
       );
-      res.json({ ok: true, resent: true, emailSent, expiresAt: result.expiresAt });
+      /* v25.31 Wave C — ADDITIVE response shape fix.
+       *
+       * The admin UI (ConsortiumApplicationsPage.tsx:241) expects
+       * `{ ok, inviteEmailStatus, inviteLink }` but the server was returning
+       * `{ ok, resent, emailSent, expiresAt }`. Result: Ozan saw the red
+       * banner "Email not delivered — link available. Status: undefined"
+       * even when the email actually sent successfully, because the client
+       * read `data.inviteEmailStatus` which was undefined.
+       *
+       * Per the "do not modify Avi's existing code" rule, the legacy
+       * `resent`, `emailSent`, `expiresAt` fields are PRESERVED. We ADD
+       * the two missing fields the admin UI needs:
+       *   - inviteLink (mirrors redeemUrl)
+       *   - inviteEmailStatus ("delivered" when emailSent, otherwise
+       *     "queued" — the admin UI treats anything non-"delivered" as
+       *     a queue-not-delivered status which is honest given best-effort send) */
+      res.json({
+        ok: true,
+        resent: true,
+        emailSent,
+        expiresAt: result.expiresAt,
+        // v25.31 additive fields for the admin UI:
+        inviteLink: redeemUrl,
+        inviteEmailStatus: emailSent ? "delivered" : (emailError ? "failed" : "queued"),
+      });
     },
   );
 }

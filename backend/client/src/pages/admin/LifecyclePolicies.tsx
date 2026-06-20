@@ -5,7 +5,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Save, RotateCcw } from "lucide-react";
-import { useAdminStore } from "@/lib/adminStore";
 import { useToast } from "@/hooks/use-toast";
 import { AdminPageIntro } from "@/components/AdminPageIntro";
 import { useQuery, useMutation } from "@tanstack/react-query";
@@ -36,7 +35,13 @@ const DEFAULT_POLICIES: Defaults = {
 };
 
 export default function AdminLifecyclePolicies() {
-  const { auditLog } = useAdminStore();
+  /* v25.31.1 Wave A #10 — pure durable read. The legacy client-only
+     `useAdminStore().auditLog` fallback has been removed. The "Edits (30d)"
+     stat is computed from the durable audit_log table only (via
+     /api/admin/audit-log?eventType=lifecycle_policy.changed). If the query
+     is loading we show 0 with a "Loading…" hint; if it errors we surface
+     "Audit log unavailable". No process-local or client-cached state is
+     consulted. */
   const { toast } = useToast();
   const [draft, setDraft] = useState<Defaults>(DEFAULT_POLICIES);
 
@@ -45,6 +50,19 @@ export default function AdminLifecyclePolicies() {
     queryKey: ["/api/admin/lifecycle-policies"],
     queryFn: async () => (await apiRequest("GET", "/api/admin/lifecycle-policies")).json(),
     onSuccess: (data) => setDraft(data.policies),
+  } as any);
+
+  /* v25.31.1 Wave A #10 — durable "Edits (30d)" query (DB-only). */
+  type AuditRow = { ts: string; eventType?: string; action?: string };
+  const auditQ = useQuery<{ count: number; items: AuditRow[] }>({
+    queryKey: ["/api/admin/audit-log", { eventType: "lifecycle_policy.changed" }],
+    queryFn: async () =>
+      (
+        await apiRequest(
+          "GET",
+          "/api/admin/audit-log?eventType=lifecycle_policy.changed",
+        )
+      ).json(),
   } as any);
 
   const savedPolicies = policiesQ.data?.policies ?? DEFAULT_POLICIES;
@@ -59,13 +77,17 @@ export default function AdminLifecyclePolicies() {
     onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
   });
 
-  // Sprint 28 — dynamic analytics
+  // v25.31.1 — dynamic analytics. DB-only "Edits (30d)" — no client-side
+  // fallback. If the durable audit_log query is loading we show 0; if it
+  // errors the hint text surfaces the error state.
   const stats = useMemo(() => {
     const now = Date.now();
     const thirtyDays = 30 * 24 * 3600 * 1000;
-    const recentChanges = (auditLog ?? []).filter(
-      (a) => a.action === "lifecycle_policy.changed" && now - new Date(a.ts).getTime() < thirtyDays,
-    ).length;
+    const serverItems: AuditRow[] = auditQ.data?.items ?? [];
+    const recentChanges = serverItems.filter((a) => {
+      const kind = a.eventType ?? a.action;
+      return kind === "lifecycle_policy.changed" && now - new Date(a.ts).getTime() < thirtyDays;
+    }).length;
     const driftCount = POLICY_DEFS.reduce(
       (n, p) => (savedPolicies[p.key] !== p.default ? n + 1 : n),
       0,
@@ -75,12 +97,23 @@ export default function AdminLifecyclePolicies() {
       0,
     );
     return { recentChanges, driftCount, dirty };
-  }, [auditLog, savedPolicies, draft]);
+  }, [auditQ.data, savedPolicies, draft]);
 
   function resetDefaults() {
     setDraft(DEFAULT_POLICIES);
     toast({ title: "Reset to defaults" });
   }
+
+  const editsHint = auditQ.isError
+    ? "Audit log unavailable"
+    : auditQ.isLoading
+      ? "Loading…"
+      : "From the audit log";
+  const editsTone: "positive" | "neutral" | "warning" = auditQ.isError
+    ? "warning"
+    : stats.recentChanges > 0
+      ? "positive"
+      : "neutral";
 
   return (
     <>
@@ -109,7 +142,7 @@ export default function AdminLifecyclePolicies() {
           }}
           stats={[
             { label: "Active policies", value: POLICY_DEFS.length, hint: "Tenant-wide rules" },
-            { label: "Edits (30d)", value: stats.recentChanges, hint: "From the audit log", tone: stats.recentChanges > 0 ? "positive" : "neutral" },
+            { label: "Edits (30d)", value: stats.recentChanges, hint: editsHint, tone: editsTone },
             { label: "Drift from defaults", value: stats.driftCount, hint: "Policies overridden", tone: stats.driftCount > 0 ? "warning" : "neutral" },
             { label: "Unsaved on this page", value: stats.dirty, hint: "Click Save to apply", tone: stats.dirty > 0 ? "warning" : "neutral" },
           ]}

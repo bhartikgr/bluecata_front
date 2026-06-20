@@ -16,12 +16,17 @@ import { useToast } from "@/hooks/use-toast";
 export default function CollectiveSettings() {
   const [, navigate] = useLocation();
   const { toast } = useToast();
+  /* v25.31 Wave A #12 — redirect target /admin/collective/dashboard does not
+     exist (App.tsx registers /admin/collective/{applications,members,waitlist,
+     settings} but no .../dashboard). The previous redirect dead-ended on the
+     same page. Now redirects to /admin/collective/members which is the most
+     dashboard-like working admin Collective surface. */
   useEffect(() => {
     toast({
       title: "Collective settings",
-      description: "Admin settings are not yet available — redirected to the Collective dashboard.",
+      description: "Admin settings are not yet available — redirected to the Collective members view.",
     });
-    navigate("/admin/collective/dashboard");
+    navigate("/admin/collective/members");
   }, [navigate, toast]);
   return (
     <>
