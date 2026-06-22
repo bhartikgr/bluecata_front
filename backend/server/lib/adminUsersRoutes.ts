@@ -56,17 +56,25 @@ function actorIdFromReq(req: Request): string {
  */
 function listAll(): AdminUser[] {
   const db = rawDb();
-  const rows = db.prepare(`SELECT id, email, role, status, last_login FROM auth_users`).all() as
-    Array<{ id: string; email: string; role: string; status: string; last_login: string | null }>;
+  /* v25.32 P2d — read name, tenant and totp_secret. `mfa` is DERIVED, not
+   * stored: a user has MFA enabled iff they have a non-empty TOTP secret.
+   * name/tenant fall back to email-derived/em-dash when null (legacy rows). */
+  const rows = db.prepare(
+    `SELECT id, email, role, status, last_login, name, tenant, totp_secret FROM auth_users`
+  ).all() as Array<{
+    id: string; email: string; role: string; status: string; last_login: string | null;
+    name: string | null; tenant: string | null; totp_secret: string | null;
+  }>;
 
   const out: AdminUser[] = [];
   const seenIds = new Set<string>();
 
   for (const r of rows) {
     seenIds.add(r.id);
+    const mfa = r.totp_secret != null && r.totp_secret !== "";
     out.push({
-      id: r.id, email: r.email, name: r.email.split("@")[0]!,
-      role: r.role, status: r.status, tenant: "—", mfa: false,
+      id: r.id, email: r.email, name: r.name || r.email.split("@")[0]!,
+      role: r.role, status: r.status, tenant: r.tenant || "—", mfa,
       lastLogin: r.last_login ?? new Date().toISOString(),
     });
   }
@@ -103,19 +111,38 @@ export function registerAdminUsersRoutes(app: Express): void {
     const tokenHash = crypto.createHash("sha256").update(tokenRaw).digest("hex");
     const now = new Date().toISOString();
     const expiresAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
-    rawDb().prepare(
-      `INSERT INTO auth_redeem_tokens (id, token_hash, email, intent, expires_at, created_at)
-       VALUES (?, ?, ?, 'invite', ?, ?)`
-    ).run(`tk_${crypto.randomBytes(5).toString("hex")}`, tokenHash, body.email, expiresAt, now);
 
     /* v25.31.1 — durable invite. Writes `auth_users` shell so the invited
      * user survives PM2 reload. If the INSERT fails (e.g. duplicate email)
-     * we return 409 — no in-memory fallback. */
+     * we return 409 — no in-memory fallback.
+     *
+     * v25.32 P2a — atomicity: the redeem-token INSERT and the auth_users
+     * INSERT must both succeed or both roll back. Wrapping them in a single
+     * IMMEDIATE transaction prevents an orphaned redeem token when the
+     * auth_users insert fails (e.g. duplicate email). The 409 duplicate-email
+     * handling stays OUTSIDE the transaction: we catch the SqliteError thrown
+     * by .immediate() and map UNIQUE violations to 409. P2d — name + tenant
+     * are now persisted on the shell row. */
     try {
-      rawDb().prepare(
-        `INSERT INTO auth_users (id, email, password_hash, password_algo, role, status, failed_attempts, created_at)
-         VALUES (?, ?, '', 'pending', ?, 'pending', 0, ?)`
-      ).run(id, body.email, body.role || "founder", now);
+      const db = rawDb();
+      const insertInvite = db.transaction(() => {
+        db.prepare(
+          `INSERT INTO auth_redeem_tokens (id, token_hash, email, intent, expires_at, created_at)
+           VALUES (?, ?, ?, 'invite', ?, ?)`
+        ).run(`tk_${crypto.randomBytes(5).toString("hex")}`, tokenHash, body.email, expiresAt, now);
+        db.prepare(
+          `INSERT INTO auth_users (id, email, password_hash, password_algo, role, status, failed_attempts, created_at, name, tenant)
+           VALUES (?, ?, '', 'pending', ?, 'pending', 0, ?, ?, ?)`
+        ).run(
+          id,
+          body.email,
+          body.role || "founder",
+          now,
+          body.name ?? null,
+          body.tenant ?? null,
+        );
+      });
+      insertInvite.immediate();
     } catch (e: any) {
       if (String(e?.message || "").includes("UNIQUE")) {
         return res.status(409).json({ error: "email_taken" });
@@ -143,7 +170,7 @@ export function registerAdminUsersRoutes(app: Express): void {
 
   app.patch("/api/admin/users/:id", (req: Request, res: Response) => {
     const id = req.params.id!;
-    const body = req.body as { status?: string; role?: string; mfa?: boolean };
+    const body = req.body as { status?: string; role?: string; mfa?: boolean; name?: string; tenant?: string };
     const existing = listAll().find(u => u.id === id);
     if (!existing) return res.status(404).json({ error: "not_found" });
     const updated: AdminUser = {
@@ -151,6 +178,8 @@ export function registerAdminUsersRoutes(app: Express): void {
       status: body.status ?? existing.status,
       role: body.role ?? existing.role,
       mfa: body.mfa ?? existing.mfa,
+      name: body.name ?? existing.name,
+      tenant: body.tenant ?? existing.tenant,
     };
     /* v25.18 Lane D NC2 (hard close) — server-side self-lockout + last-admin guard.
        v25.17 added a client `isSelf()` guard, but the server PATCH was still wide
@@ -164,19 +193,65 @@ export function registerAdminUsersRoutes(app: Express): void {
     if (isSelf && (wouldDemote || wouldSuspend)) {
       return res.status(409).json({ error: "cannot_modify_self", message: "You cannot demote or suspend your own admin account." });
     }
-    if (wouldDemote || wouldSuspend) {
-      const activeAdmins = listAll().filter((u) => u.role === "admin" && u.status === "active" && u.id !== id).length;
-      if (activeAdmins === 0) {
-        return res.status(409).json({ error: "last_active_admin", message: "Refusing to leave the platform with zero active admins." });
-      }
-    }
     /* v25.31.1 — DB-only write. Mirror to auth_users when the row exists.
      * Demo seed personas (u_maya, u_dev, …) are read-only constants — patches
      * against them are a no-op at the DB layer but still emit the mutation
-     * event so the UI updates optimistically for the demo gate. */
-    const upd = rawDb().prepare(`UPDATE auth_users SET status = ?, role = ? WHERE id = ?`).run(updated.status, updated.role, id);
-    if (upd.changes === 0 && !SEED_USERS.find(s => s.id === id)) {
-      return res.status(404).json({ error: "not_found_in_db" });
+     * event so the UI updates optimistically for the demo gate.
+     *
+     * v25.32 P2b — last-active-admin guard is now ATOMIC. The previous
+     * count-then-update pattern had a TOCTOU race: two concurrent demotions
+     * could each read activeAdmins>0 and both commit, leaving zero admins.
+     * This single conditional UPDATE only applies when the new state keeps an
+     * active admin (either this row stays an active admin, OR at least one
+     * OTHER active admin remains), evaluated atomically inside the statement.
+     * P2d — name + tenant are persisted in the same UPDATE.
+     *
+     * v25.32 deep Fix 8 — TIGHTEN guard scope. The last-admin protection must
+     * only constrain a patch that actually removes admin-active status from a
+     * user who is CURRENTLY an active admin. Previously the protective branch
+     * was evaluated for EVERY suspend/demote (including patches against
+     * non-admins), so suspending an ordinary user could spuriously 409 when the
+     * platform happened to have a single active admin. New guard: the patch is
+     * allowed when the target is NOT currently an active admin being moved away
+     * from admin/active, OR the resulting row stays an active admin, OR at
+     * least one OTHER active admin remains. */
+    const upd = rawDb().prepare(
+      `UPDATE auth_users
+          SET status = ?, role = ?, name = ?, tenant = ?
+        WHERE id = ?
+          AND (
+            -- Target is not currently an active admin losing that status:
+            NOT (role = 'admin' AND status = 'active' AND (? != 'admin' OR ? != 'active'))
+            OR
+            -- The resulting row itself stays an active admin:
+            (? = 'active' AND ? = 'admin')
+            OR
+            -- At least one OTHER active admin remains:
+            (SELECT COUNT(*) FROM auth_users
+               WHERE role = 'admin' AND status = 'active' AND id != ?) > 0
+          )`
+    ).run(
+      updated.status, updated.role, updated.name, updated.tenant, id,
+      updated.role, updated.status,
+      updated.status, updated.role, id,
+    );
+    if (upd.changes === 0) {
+      // Either the guard rejected the change (would leave zero active admins)
+      // or the row doesn't exist in auth_users. Distinguish the two so the
+      // demo-seed no-op path (read-only personas) still returns 200.
+      //
+      // v25.32 deep Fix 8 — the last-admin 409 must ONLY fire when the TARGET is
+      // currently an active admin whose admin-active status is being removed.
+      // Suspending/demoting a NON-admin can never deplete the admin pool, so it
+      // must not 409 (it falls through to the demo-seed/no-op handling).
+      const targetWasActiveAdmin = existing.role === "admin" && existing.status === "active";
+      const removesAdminActive = (updated.role !== "admin" || updated.status !== "active");
+      if (targetWasActiveAdmin && removesAdminActive) {
+        return res.status(409).json({ error: "last_active_admin", message: "Refusing to leave the platform with zero active admins." });
+      }
+      if (!SEED_USERS.find(s => s.id === id)) {
+        return res.status(404).json({ error: "not_found_in_db" });
+      }
     }
     try {
       appendAdminAudit(actorIdFromReq(req), `user:${id}`, "user.update", body as Record<string, unknown>);

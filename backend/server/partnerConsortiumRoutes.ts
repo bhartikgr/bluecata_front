@@ -209,6 +209,20 @@ export function registerPartnerConsortiumRoutes(app: Express): void {
    * Lists billing entries for funded deals sourced by this partner.
    * Auto-populates billing_entries from soft_circles on read (idempotent).
    * Auth: managing_partner only (financial data).
+   *
+   * v25.32 P1g — TODO(avi-alignment): This endpoint surfaces COMMISSION /
+   * payout billing (what the consortium owes the partner for funded deals),
+   * NOT a partner-tier *subscription* charge (what a partner would pay to
+   * Capavate for a seat). As of v25.32 there is no partner subscription
+   * payment flow in the codebase — partners are not charged a subscription;
+   * they earn commissions. The five-field read-only "subscription billing"
+   * surface specified for founders/collective members (amount paid, plan,
+   * payment date, period_end, status) has no partner equivalent because no
+   * partner subscription is minted in capavate_subscriptions or invoices.
+   * Per the v25.32 brief, NO new payment flow was invented here. If/when a
+   * partner-tier subscription product is introduced, wire its read-only
+   * billing onto the partner workspace (mirror CollectiveMembership.tsx) and
+   * source it from capavate_subscriptions + invoices like the founder flow.
    * ========================================================== */
   app.get(
     "/api/partner/me/billing",
@@ -262,21 +276,27 @@ export function registerPartnerConsortiumRoutes(app: Express): void {
           try { tx(funded); } catch { /* concurrent GET handled idempotently */ }
         }
 
-        // Now read all billing entries
+        /* v25.32 final — join in `soft_circles.currency` so the UI no longer
+         * hardcodes USD when partner deals are multi-currency. The source
+         * row already has currency; partner_billing_entries doesn't replicate
+         * it, so we LEFT JOIN at read time. Falls back to 'USD' only if the
+         * source row is missing currency (legacy data). */
         const entries = db.prepare(`
           SELECT
-            id,
-            deal_ref      AS dealId,
-            created_at    AS date,
-            amount_funded_minor AS amountFundedMinor,
-            tier_at_funding AS tier,
-            commission_pct  AS commissionPct,
-            commission_minor AS commissionMinor,
-            status,
-            paid_at         AS paidAt
-          FROM partner_billing_entries
-          WHERE partner_id = ?
-          ORDER BY created_at DESC
+            pbe.id,
+            pbe.deal_ref      AS dealId,
+            pbe.created_at    AS date,
+            pbe.amount_funded_minor AS amountFundedMinor,
+            pbe.tier_at_funding AS tier,
+            pbe.commission_pct  AS commissionPct,
+            pbe.commission_minor AS commissionMinor,
+            pbe.status,
+            pbe.paid_at         AS paidAt,
+            COALESCE(sc.currency, 'USD') AS currency
+          FROM partner_billing_entries pbe
+          LEFT JOIN soft_circles sc ON sc.id = pbe.deal_ref
+          WHERE pbe.partner_id = ?
+          ORDER BY pbe.created_at DESC
         `).all(pid) as Array<{
           id: string;
           dealId: string;
@@ -287,6 +307,7 @@ export function registerPartnerConsortiumRoutes(app: Express): void {
           commissionMinor: number;
           status: "pending" | "paid";
           paidAt: string | null;
+          currency: string;
         }>;
 
         // Totals by status

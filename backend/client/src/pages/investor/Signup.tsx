@@ -131,15 +131,21 @@ export default function InvestorSignup() {
  return r.json();
  },
  onSuccess: (data) => {
+ /* v25.32 P0 — apiRequest throws on non-2xx, so non-ok responses never
+  * reach this onSuccess. The redeem mutationFn always either returns
+  * data with ok:true or throws — dropped the unreachable else branch. */
  if (data.ok) {
  toast({ title: "Welcome to Capavate", description: "Your account is active. Loading your round invitation…" });
  setRole("investor");
  navigate(data.redirectTo ?? "/investor/dashboard");
- } else {
- toast({ title: "Could not redeem", description: data.reason ?? "Please try again.", variant: "destructive" });
  }
  },
- onError: () => toast({ title: "Network error", description: "Try again in a moment.", variant: "destructive" }),
+ onError: (err) => {
+ /* v25.32 P0 — surface the actual server error code/message instead of
+  * the generic "Network error" toast. ApiError carries .code and the
+  * friendly message via Error.message. */
+ toast({ title: "Could not redeem", description: err.message || "Try again in a moment.", variant: "destructive" });
+ },
  });
 
  // Sprint 24: no ?token= → redirect to the unified investor sign-in page

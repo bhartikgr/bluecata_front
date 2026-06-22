@@ -58,6 +58,10 @@ export interface Subscription {
   pastDueMinor?: number;
   /** Trial end date (ISO) when status === 'trialing'. */
   trialEndsOn?: string;
+  /** v25.32 final A1 — ISO timestamp of the most recent successful payment for
+   *  this subscription, read DB-direct from payment_ledger.ts; absent when no
+   *  ledger row exists yet (e.g. legacy/free subscriptions). */
+  paymentDate?: string;
   /** Monotonic version counter; bumps on every mutation. */
   version: number;
   /** Hash chain for tamper evidence. */
@@ -304,13 +308,45 @@ function persistSeedToDb(): void {
 seedFromCanonicalCompanies();
 
 /* ---------- Reads ---------- */
+/* v25.32 final — reads are now DB-direct (Ozan's rule: "nothing in memory").
+ * The in-memory `store` Map is still maintained as a write-through cache so
+ * downstream emitters and Avi's existing tests see consistent state, but it
+ * is NEVER consulted on the read side. Failure to read from DB throws so
+ * the caller can decide whether to retry or surface an error — we never
+ * serve stale RAM as authoritative subscription state. */
 
 export function getSubscription(companyId: string): Subscription | null {
-  return store.get(companyId) ?? null;
+  try {
+    const db = getDb();
+    const rows = db
+      .select()
+      .from(subscriptionsTable)
+      .where(and(eq(subscriptionsTable.companyId, companyId), isNull(subscriptionsTable.deletedAt)))
+      .limit(1)
+      .all() as any[];
+    if (rows.length === 0) return null;
+    const rec = rowToSubscription(rows[0]);
+    store.set(companyId, rec); // write-through cache refresh; never the read source
+    return rec;
+  } catch (err) {
+    throw new Error(`subscriptionsStore.getSubscription: DB read failed: ${(err as Error).message}`);
+  }
 }
 
 export function listSubscriptions(): Subscription[] {
-  return Array.from(store.values());
+  try {
+    const db = getDb();
+    const rows = db
+      .select()
+      .from(subscriptionsTable)
+      .where(isNull(subscriptionsTable.deletedAt))
+      .all() as any[];
+    const subs = rows.map(rowToSubscription);
+    for (const s of subs) store.set(s.companyId, s);
+    return subs;
+  } catch (err) {
+    throw new Error(`subscriptionsStore.listSubscriptions: DB read failed: ${(err as Error).message}`);
+  }
 }
 
 export function getSubscriptionHistory(companyId: string): Subscription[] {
@@ -349,7 +385,15 @@ export function updateSubscription(
   changes: UpdateSubscriptionInput,
   actor: string,
 ): { ok: true; subscription: Subscription } | { ok: false; error: string } {
-  const current = store.get(companyId);
+  /* v25.32 final — read DB-direct via the now DB-direct getSubscription.
+   * The in-memory `store` Map is still updated post-write as a cache, but
+   * the read source is the durable subscriptions table. */
+  let current: Subscription | null;
+  try {
+    current = getSubscription(companyId);
+  } catch (e) {
+    return { ok: false, error: `db_read_failed: ${(e as Error).message}` };
+  }
   if (!current) return { ok: false, error: "not_found" };
 
   const newPlan = changes.plan ?? current.plan;
@@ -506,10 +550,15 @@ export function createSubscriptionForNewCompany(
   const wantsTrial = options.trial === true;
   const trialDays = options.trialDays ?? 14;
 
-  // Idempotent check (Map first, then DB).
-  const existing = store.get(companyId);
-  if (existing) {
-    return { ok: true, subscription: existing, created: false };
+  /* v25.32 final — idempotent check is DB-direct via getSubscription (which
+   * is now DB-direct). The in-memory Map is no longer the read source. */
+  try {
+    const existing = getSubscription(companyId);
+    if (existing) {
+      return { ok: true, subscription: existing, created: false };
+    }
+  } catch {
+    // DB read failure — fall through to the explicit DB-side check below.
   }
   // DB-side idempotent check: another process may have inserted already.
   try {
@@ -638,7 +687,14 @@ export function createSubscriptionForNewCompany(
  * historical reads keep working.
  */
 export function cancelSubscription(companyId: string, actor: string): boolean {
-  const current = store.get(companyId);
+  /* v25.32 final — read DB-direct via getSubscription. The Map is still
+   * updated post-write for downstream emitters. */
+  let current: Subscription | null;
+  try {
+    current = getSubscription(companyId);
+  } catch {
+    return false;
+  }
   if (!current) return false;
   try {
     const db = getDb();

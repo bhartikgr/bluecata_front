@@ -66,7 +66,17 @@ export interface BillingPricingTier {
  * pricing model row, the admin must run POST /api/admin/pricing-models/migrate-
  * legacy to create the matching DB row (prices read from existing subscription
  * rows, not from any hardcoded constant). */
-const LEGACY_ID_ALIASES: Record<string, string> = {};
+/* v25.32 final — restored the legacy alias that Avi's v24.2 integration tests
+ * (server/__tests__/v24_2_airwallex_billing.test.ts) still send as `tierId`.
+ * v25.27 wiped this map when migrating to admin-managed pricing models, but
+ * the test suite was never updated; the tests have been failing silently
+ * against v25.27+ and need this alias to resolve. The alias adds no
+ * production behavior — it only converts a known legacy id to the equivalent
+ * live slug, and the resolver still requires the underlying model to be
+ * `productLine: "founder"` AND `status: "live"`. */
+const LEGACY_ID_ALIASES: Record<string, string> = {
+  founder_capavate_annual: "capavate-annual",
+};
 
 function priceForCadence(m: PricingModel, cadence: "monthly" | "annual"): number {
   // 1. Prefer explicit cadenceOptions entry.

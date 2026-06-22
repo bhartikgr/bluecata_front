@@ -267,6 +267,24 @@ app.use((req, res, next) => {
     }
   }
 
+  // v25.32 Item 9 — fail fast on missing PUBLIC_BASE_URL in production.
+  // Partner-promotion invite URLs default to `https://capavate.com` when
+  // PUBLIC_BASE_URL is unset (server/partnerRoutes.ts). In production that
+  // silent default can mint invite links pointing at the wrong host, so we
+  // abort boot with a clear message instead of shipping bad links. (No NEW
+  // env var is introduced — PUBLIC_BASE_URL already exists in the codebase.)
+  if (process.env.NODE_ENV === "production") {
+    const publicBaseUrl = process.env.PUBLIC_BASE_URL ?? "";
+    if (!publicBaseUrl) {
+      structuredLog.error(
+        "[boot] PUBLIC_BASE_URL is not set in production. Partner invite links would " +
+          "silently default to https://capavate.com. Set PUBLIC_BASE_URL=https://<your-public-domain> " +
+          "in .env, then restart. Aborting boot.",
+      );
+      process.exit(1);
+    }
+  }
+
   // importantly only setup vite in development and after
   // setting up all the other routes so the catch-all route
   // doesn't interfere with the other routes

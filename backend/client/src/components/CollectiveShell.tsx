@@ -12,7 +12,7 @@ import {
   LayoutDashboard, Briefcase, Users, Building2, Circle, BarChart3,
   TrendingUp, ClipboardList, UserCircle, Activity, Settings, Menu, X,
   ArrowLeftRight, LogOut, Scale, UserPlus, FileText, ListTodo, FolderOpen,
-  PiggyBank, CalendarDays, Trophy,
+  PiggyBank, CalendarDays, Trophy, Receipt,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -94,6 +94,8 @@ const PARTNER_WORKSPACE_GROUP: NavGroup = {
     { href: "/collective/partner/files", label: "Files", icon: FolderOpen, "data-testid": "nav-partner-files" },
     { href: "/collective/partner/spvs", label: "SPVs", icon: Building2, "data-testid": "nav-partner-spvs" },
     { href: "/collective/partner/funds", label: "Funds", icon: PiggyBank, "data-testid": "nav-partner-funds" },
+    /* v25.32 A3 — consortium partner commission ledger (not subscription billing). */
+    { href: "/collective/partner/billing", label: "Billing", icon: Receipt, "data-testid": "nav-partner-billing" },
     { href: "/collective/partner/settings", label: "Settings", icon: Settings, "data-testid": "nav-partner-settings" },
   ],
 };

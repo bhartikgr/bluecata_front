@@ -8,7 +8,7 @@ import {
   Sparkles, Bell, Search, Menu, X, ChevronDown, LogOut,
   ShieldCheck, Calculator, History, SlidersHorizontal, Building,
   GitCompareArrows, BarChart3, Mail, Network, DollarSign, RefreshCw, Database,
-  Rss, HelpCircle, Globe,
+  Rss, HelpCircle, Globe, CreditCard,
 } from "lucide-react";
 import { CapavateLogo } from "./CapavateLogo";
 import { CompanySwitcher } from "@/components/CompanySwitcher";
@@ -68,7 +68,7 @@ function AdminChip() {
   );
 }
 
-type NavItem = { href: string; label: string; icon: typeof Inbox; badge?: string | number };
+type NavItem = { href: string; label: string; icon: typeof Inbox; badge?: string | number; testId?: string };
 type NavGroup = { title: string; items: NavItem[] };
 
 /** Sprint 19 K — Live badge counts from queries. Returns static nav with live badge overrides. */
@@ -190,6 +190,7 @@ const adminNav: NavGroup[] = [
       { href: "/admin/formulas", label: "Formula Registry", icon: Calculator },
       { href: "/admin/regions", label: "Regions", icon: Globe },
       { href: "/admin/reconciliation", label: "Reconciliation", icon: GitCompareArrows },
+      { href: "/admin/payments", label: "Payments", icon: CreditCard, testId: "nav-admin-payments" },
       { href: "/admin/telemetry", label: "Telemetry", icon: BarChart3 },
       { href: "/admin/pricing", label: "Pricing & Billing", icon: DollarSign },
     ],
@@ -248,7 +249,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
                   <Link
                     href={item.href}
                     onClick={onNavigate}
-                    data-testid={`link-nav-${item.label.toLowerCase().replace(/[^a-z]+/g, "-")}`}
+                    data-testid={item.testId ?? `link-nav-${item.label.toLowerCase().replace(/[^a-z]+/g, "-")}`}
                     className={`flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors ${
                       active
                         ? "bg-sidebar-primary text-sidebar-primary-foreground font-medium shadow-sm"

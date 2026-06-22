@@ -13,7 +13,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { useLocation } from "wouter";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, ApiError } from "@/lib/queryClient";
 
 export type PartnerTier = "catalyst" | "builder" | "amplifier" | "nexus" | "founding_member";
 export type PartnerSubRole = "managing_partner" | "associate" | "bd" | "analyst" | "viewer";
@@ -36,11 +36,24 @@ export function useRequirePartnerRole(): PartnerRoleState {
   const q = useQuery<PartnerIdentity>({
     queryKey: ["/api/partner/me"],
     queryFn: async () => {
-      const r = await apiRequest("GET", "/api/partner/me");
-      if (r.status === 401) throw new Error("AUTH_REQUIRED");
-      if (r.status === 403) throw new Error("PARTNER_NOT_FOUND");
-      if (!r.ok) throw new Error(`HTTP_${r.status}`);
-      return r.json();
+      // v25.32 P0' — apiRequest() THROWS an ApiError on any non-2xx response,
+      // so the previous `if (r.status === 401)` checks after the await were
+      // dead code that never ran. The thrown ApiError carries `.status` —
+      // catch it and re-throw a normalized sentinel the useEffect below
+      // routes on. This is the root cause of partner role detection failing
+      // silently after redeem (the 403 "not a partner yet" / 401 cases never
+      // produced the AUTH_REQUIRED / PARTNER_NOT_FOUND sentinels).
+      try {
+        const r = await apiRequest("GET", "/api/partner/me");
+        return (await r.json()) as PartnerIdentity;
+      } catch (err) {
+        if (err instanceof ApiError) {
+          if (err.status === 401) throw new Error("AUTH_REQUIRED");
+          if (err.status === 403) throw new Error("PARTNER_NOT_FOUND");
+          throw new Error(`HTTP_${err.status}`);
+        }
+        throw err;
+      }
     },
     retry: false,
   });

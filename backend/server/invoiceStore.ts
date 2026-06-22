@@ -283,7 +283,18 @@ export interface CreateInvoiceInput {
   relatedInvoiceId?: string;
 }
 
-export function createInvoice(input: CreateInvoiceInput): Invoice {
+/**
+ * v25.32 deep Fix 3 — build + persist an invoice row using a CALLER-SUPPLIED
+ * drizzle transaction `tx`. This is the pure DB portion of createInvoice with
+ * NO post-commit side-effects (no cache write, no hash-chain append, no audit /
+ * bridge emit). The payment webhook finalizer calls this INSIDE its own
+ * transaction so the invoice commits atomically with the subscription update
+ * and payment_ledger row; if anything throws, the whole webhook finalization
+ * (including the idempotency-key claim) rolls back. Side-effects are run by the
+ * public createInvoice() AFTER the transaction commits, since a rollback could
+ * not undo them; the cache is rebuilt from the DB on hydrate / read anyway.
+ */
+export function createInvoiceInTransaction(tx: any, input: CreateInvoiceInput): Invoice {
   const id = `inv_${randomBytes(8).toString("hex")}`;
   const now = new Date().toISOString();
   const actor = input.actor ?? "system";
@@ -298,46 +309,53 @@ export function createInvoice(input: CreateInvoiceInput): Invoice {
     lineItems.push({ label: "Tax", amountMinor: taxMinor });
   }
 
+  // Monotonic allocation INSIDE the tx — race-safe.
+  const year = new Date(now).getFullYear();
+  const invoiceNumber = nextInvoiceNumberInTx(tx, year);
+
+  const partial: Invoice = {
+    id,
+    invoiceNumber,
+    companyId: input.companyId,
+    subscriptionId: input.subscriptionId,
+    planLabel: input.planLabel,
+    periodStart: input.periodStart,
+    periodEnd: input.periodEnd,
+    amountMinor: input.amountMinor,
+    currency: input.currency,
+    taxMinor,
+    totalMinor,
+    status: input.paymentEntryId ? "paid" : "issued",
+    paymentEntryId: input.paymentEntryId,
+    relatedInvoiceId: input.relatedInvoiceId,
+    issuedAt: now,
+    paidAt: input.paymentEntryId ? now : undefined,
+    lineItems,
+    cardLast4: input.cardLast4,
+    prevHash,
+    version: 1,
+    updatedAt: now,
+    updatedBy: actor,
+    hash: "",
+  };
+  partial.hash = computeHash(prevHash, partial);
+  persistInvoice(tx, partial);
+  return partial;
+}
+
+export function createInvoice(input: CreateInvoiceInput): Invoice {
+  const actor = input.actor ?? "system";
   let invoice: Invoice | null = null;
 
   const db = getDb();
   db.transaction((tx: any) => {
-    // Monotonic allocation INSIDE the tx — race-safe.
-    const year = new Date(now).getFullYear();
-    const invoiceNumber = nextInvoiceNumberInTx(tx, year);
-
-    const partial: Invoice = {
-      id,
-      invoiceNumber,
-      companyId: input.companyId,
-      subscriptionId: input.subscriptionId,
-      planLabel: input.planLabel,
-      periodStart: input.periodStart,
-      periodEnd: input.periodEnd,
-      amountMinor: input.amountMinor,
-      currency: input.currency,
-      taxMinor,
-      totalMinor,
-      status: input.paymentEntryId ? "paid" : "issued",
-      paymentEntryId: input.paymentEntryId,
-      relatedInvoiceId: input.relatedInvoiceId,
-      issuedAt: now,
-      paidAt: input.paymentEntryId ? now : undefined,
-      lineItems,
-      cardLast4: input.cardLast4,
-      prevHash,
-      version: 1,
-      updatedAt: now,
-      updatedBy: actor,
-      hash: "",
-    };
-    partial.hash = computeHash(prevHash, partial);
-    persistInvoice(tx, partial);
-    invoice = partial;
+    invoice = createInvoiceInTransaction(tx, input);
   });
 
   if (!invoice) throw new Error("createInvoice: transaction yielded no invoice");
   const inv: Invoice = invoice;
+  const totalMinor = inv.totalMinor;
+  const now = inv.issuedAt;
 
   // Cache update
   invoiceMap.set(inv.id, inv);
@@ -371,7 +389,12 @@ function transitionInvoice(
   actor: string,
   extra: Partial<Invoice> = {},
 ): Invoice {
-  const current = invoiceMap.get(id);
+  /* v25.32 final — DB-direct read. The invoice mutation path used to read
+   * the current row from `invoiceMap` (in-memory authoritative); now it
+   * SELECTs from `invoices` first. The Map is still updated post-write as
+   * a write-through cache for downstream readers, but it is never the read
+   * source on this mutation hot path. */
+  const current = getInvoice(id); // getInvoice is DB-direct (v25.32 deep Fix 5)
   if (!current) throw new Error(`invoice_not_found:${id}`);
 
   const now = new Date().toISOString();
@@ -430,7 +453,10 @@ export function voidInvoice(invoiceId: string, actor: string): Invoice {
 
 /** Refund creates a NEW negative-amount invoice linked to original. */
 export function refundInvoice(originalInvoiceId: string, amountMinor: number, reason: string, actor: string): Invoice {
-  const original = invoiceMap.get(originalInvoiceId);
+  /* v25.32 final — DB-direct read via getInvoice (which is DB-direct as of
+   * Fix 5). The in-memory invoiceMap is no longer the read source for
+   * refund's original lookup. */
+  const original = getInvoice(originalInvoiceId);
   if (!original) throw new Error(`invoice_not_found:${originalInvoiceId}`);
 
   // Mark original as refunded
@@ -456,24 +482,95 @@ export function refundInvoice(originalInvoiceId: string, amountMinor: number, re
 /* ---------- Reads (from cache; cache always mirrors DB) ---------- */
 
 export function getInvoice(id: string): Invoice | null {
-  return invoiceMap.get(id) ?? null;
+  // v25.32 deep Fix 5 — read DB-direct (the Map is only a hydration cache).
+  // Excludes soft-deleted rows to match hydration semantics.
+  try {
+    const db = getDb();
+    const row = db
+      .select()
+      .from(invoicesTable)
+      .where(and(eq(invoicesTable.id, id), isNull(invoicesTable.deletedAt)))
+      .get() as any;
+    if (row) {
+      const inv = rowToInvoice(row);
+      invoiceMap.set(inv.id, inv); // refresh cache
+      return inv;
+    }
+    return null;
+  } catch (err) {
+    /* v25.32 final — fail closed. Ozan's rule: "nothing in memory."
+     * Returning stale cached invoice on DB error risks showing wrong
+     * status/amount to callers. Better to surface the failure so the
+     * caller can retry or display an error. */
+    log.warn("[invoiceStore.getInvoice] DB read failed:", (err as Error).message);
+    throw err;
+  }
 }
 
 export function listInvoices(filter?: { companyId?: string; status?: InvoiceStatus }): Invoice[] {
-  const all = Array.from(invoiceMap.values()).sort((a, b) => b.issuedAt.localeCompare(a.issuedAt));
-  return all.filter(inv => {
-    if (filter?.companyId && inv.companyId !== filter.companyId) return false;
-    if (filter?.status && inv.status !== filter.status) return false;
-    return true;
-  });
+  // v25.32 deep Fix 5 — read DB-direct. CROSS-TENANT when no companyId filter
+  // (admin billing dashboard reads platform-wide), matching prior behaviour.
+  try {
+    const db = getDb();
+    const conds: any[] = [isNull(invoicesTable.deletedAt)];
+    if (filter?.companyId) conds.push(eq(invoicesTable.companyId, filter.companyId));
+    if (filter?.status) conds.push(eq(invoicesTable.status, filter.status));
+    const rows = db
+      .select()
+      .from(invoicesTable)
+      .where(and(...conds))
+      .all() as any[];
+    const invs = rows.map(rowToInvoice).sort((a, b) => b.issuedAt.localeCompare(a.issuedAt));
+    for (const inv of invs) invoiceMap.set(inv.id, inv); // refresh cache
+    return invs;
+  } catch (err) {
+    /* v25.32 final — fail closed. See getInvoice for rationale. */
+    log.warn("[invoiceStore.listInvoices] DB read failed:", (err as Error).message);
+    throw err;
+  }
 }
 
 export function listInvoicesForCompany(companyId: string): Invoice[] {
-  const ids = companyInvoices.get(companyId) ?? [];
-  return ids
-    .map(id => invoiceMap.get(id))
-    .filter(Boolean)
-    .sort((a, b) => b!.issuedAt.localeCompare(a!.issuedAt)) as Invoice[];
+  // v25.32 deep Fix 5 — read DB-direct (scoped to the company, excludes soft-deleted).
+  try {
+    const db = getDb();
+    const rows = db
+      .select()
+      .from(invoicesTable)
+      .where(and(eq(invoicesTable.companyId, companyId), isNull(invoicesTable.deletedAt)))
+      .all() as any[];
+    const invs = rows.map(rowToInvoice).sort((a, b) => b.issuedAt.localeCompare(a.issuedAt));
+    // Refresh both caches for this company.
+    for (const inv of invs) invoiceMap.set(inv.id, inv);
+    companyInvoices.set(companyId, invs.map(i => i.id));
+    return invs;
+  } catch (err) {
+    /* v25.32 final — fail closed. See getInvoice for rationale. */
+    log.warn("[invoiceStore.listInvoicesForCompany] DB read failed:", (err as Error).message);
+    throw err;
+  }
+}
+
+/* v25.32 burndown — item 46: aggregate count in SQL instead of
+   list-then-length. projectCanonicalSubscription previously did
+   `listInvoicesForCompany(companyId).length`, which hydrates every invoice row
+   (and refreshes the in-memory caches) just to read a count. This does a direct
+   COUNT(*) over the same scoped, non-soft-deleted predicate. DB-direct read;
+   never reads from in-memory state; additive (new export, no behavior change to
+   existing callers). Source: paymentGatewayAdapter.ts projectCanonicalSubscription. */
+export function countInvoicesForCompany(companyId: string): number {
+  try {
+    const db = getDb();
+    const row = db
+      .select({ n: sql<number>`count(*)` })
+      .from(invoicesTable)
+      .where(and(eq(invoicesTable.companyId, companyId), isNull(invoicesTable.deletedAt)))
+      .get() as { n: number } | undefined;
+    return row?.n ?? 0;
+  } catch (err) {
+    log.warn("[invoiceStore.countInvoicesForCompany] DB read failed:", (err as Error).message);
+    throw err;
+  }
 }
 
 /* ---------- Hydration ---------- */

@@ -49,6 +49,10 @@ interface Subscription {
   invoicesCount: number;
   pastDueMinor?: number;
   trialEndsOn?: string;
+  /** v25.32 final A1 — ISO timestamp of the most recent successful payment,
+   *  sourced DB-direct from payment_ledger on the server. Absent for free /
+   *  legacy subscriptions with no ledger row. */
+  paymentDate?: string;
 }
 
 interface Invoice {
@@ -476,6 +480,13 @@ export default function FounderBilling() {
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Calendar className="h-3.5 w-3.5" />
                     <span>{isCancelling ? "Cancels on" : "Renews on"}: {fmtDate(sub.renewsOn)}</span>
+                  </div>
+
+                  {/* v25.32 final A1 — surface the most recent payment date
+                      (Avi field 3), sourced DB-direct from payment_ledger. */}
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground" data-testid="sub-payment-date">
+                    <CreditCard className="h-3.5 w-3.5" />
+                    <span>Last payment: {sub.paymentDate ? fmtDate(sub.paymentDate) : "—"}</span>
                   </div>
 
                   <div className="flex gap-2 pt-1">

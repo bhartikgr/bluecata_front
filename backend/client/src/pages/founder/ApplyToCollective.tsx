@@ -35,7 +35,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { PageBody, PageHeader } from "@/components/AppShell";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, ApiError, queryClient } from "@/lib/queryClient";
 import { fmtUSD } from "@/lib/format";
 import { useActiveCompany, useActiveCompanyId } from "@/lib/useActiveCompany";
 
@@ -84,10 +84,20 @@ export default function FounderApplyToCollective() {
   // C-006 v23.5: fetch the founder's latest application status for banner
   const mineQ = useQuery<{ application: Application } | null>({
     queryKey: ["/api/founder/collective/applications/mine"],
+    /* v25.32 burndown — item 14: apiRequest throws ApiError on non-2xx, so the
+       prior `if (res.status === 404) return null` after the await was dead code
+       (the 404 graceful-empty fallback never ran; the query errored instead).
+       Source: v25_32_apiRequest_dead_code_sites_gpt55.txt (ApplyToCollective.tsx:88).
+       Catch ApiError and branch on .status to restore the intended
+       "no application yet" → null behavior. Read-only; additive. */
     queryFn: async () => {
-      const res = await apiRequest("GET", "/api/founder/collective/applications/mine");
-      if (res.status === 404) return null;
-      return res.json();
+      try {
+        const res = await apiRequest("GET", "/api/founder/collective/applications/mine");
+        return res.json();
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 404) return null;
+        throw err;
+      }
     },
     retry: false,
   });

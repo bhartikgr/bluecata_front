@@ -34,6 +34,10 @@
 import type { Request, Response, NextFunction } from "express";
 import * as collectiveMembershipStore from "../collectiveMembershipStore";
 import { getMembership } from "../membershipStore";
+// v25.32 P0'' — detect partner-only sessions so the 403 can tell the client
+// to switch to the partner workspace instead of silently rendering a
+// zeroed-out Collective dashboard ("Failed to load dashboard data").
+import { partnerTeamStore } from "../partnerWorkspaceStore";
 // v24.5 GAP-3 — DB-fallback for admin role check so admins whose
 // RUNTIME_PERSONAS entry was not yet built (e.g. first request in a
 // fresh process after create_admin.ts ran) still pass through.
@@ -84,7 +88,39 @@ export function requireCollectiveMember(req: Request, res: Response, next: NextF
     next();
     return;
   }
-  res.status(403).json({ ok: false, error: "not_collective_member" });
+
+  // v25.32 P0'' — DIAGNOSIS: a partner-only session (active partner_team_member
+  // but NOT a collective member) hits this exact 403. The previous response
+  // was `{ ok:false, error:"not_collective_member" }` with no human message,
+  // so the client's react-query error state rendered the generic "Failed to
+  // load dashboard data. Please refresh." banner with all-zero KPI cards.
+  // We now (a) always include a friendly `message`, and (b) when the caller
+  // actually IS a partner, set `partnerWorkspace: true` + a redirect hint so
+  // the client routes them to /collective/partner/dashboard instead of
+  // stranding them on an empty Collective dashboard.
+  let isPartner = false;
+  try {
+    isPartner = !!partnerTeamStore.findByUserId(userId);
+  } catch { /* store may be unavailable in some test contexts; non-fatal */ }
+
+  if (isPartner) {
+    res.status(403).json({
+      ok: false,
+      error: "not_collective_member",
+      partnerWorkspace: true,
+      redirectTo: "/collective/partner/dashboard",
+      message:
+        "You're signed in as a consortium partner. Switch to your partner workspace to continue.",
+    });
+    return;
+  }
+
+  res.status(403).json({
+    ok: false,
+    error: "not_collective_member",
+    message:
+      "Your account isn't an active Collective member yet. If you applied recently, an admin still needs to approve your membership.",
+  });
 }
 
 export default requireCollectiveMember;

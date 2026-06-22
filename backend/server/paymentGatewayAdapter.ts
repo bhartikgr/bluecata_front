@@ -28,8 +28,8 @@ const require = createRequire(import.meta.url);
 import type { Express, Request, Response } from "express";
 import { createHash, randomBytes } from "node:crypto";
 import { chargeOrIdempotent, type PaymentEntry } from "./paymentStore";
-import { createInvoice, refundInvoice, markInvoicePaid, getInvoice, type Invoice } from "./invoiceStore";
-import { getSubscription, updateSubscription, createSubscriptionForNewCompany } from "./subscriptionsStore";
+import { createInvoice, createInvoiceInTransaction, refundInvoice, markInvoicePaid, getInvoice, countInvoicesForCompany, type Invoice } from "./invoiceStore";
+import { getSubscription, updateSubscription, createSubscriptionForNewCompany, type Subscription } from "./subscriptionsStore";
 import { appendAdminAudit } from "./adminPlatformStore";
 // Patch v6 — free-plan activation needs a company + user context.
 import { getUserContext } from "./lib/userContext";
@@ -57,8 +57,12 @@ import {
   getByMerchantOrderId as getCapSubByMerchantOrderId,
   activateByPaymentIntent as activateCapSub,
   failByPaymentIntent as failCapSub,
+  listForCompany as listCapSubsForCompany,
+  type CapavateSubscription,
 } from "./subscriptionStore";
 import { emitBillingEvent } from "./lib/billingEvents";
+import { getDb, rawDb } from "./db/connection"; // v25.32 deep — webhook claim+finalize transaction (top-level import so the lazy require() is never evaluated INSIDE a better-sqlite3 transaction, which breaks the tsx TS-require hook)
+import * as pricingTiers from "./pricingTiersStore"; // v25.32 deep — static import: the plan-label lookup runs INSIDE the webhook transaction, where a first-time lazy require() of a .ts module throws "Unexpected token 'const'" under the createRequire shim. No circular dep (pricingTiersStore -> pricingModelStore only).
 
 /* ---------- Types ---------- */
 
@@ -107,63 +111,96 @@ export interface GatewayConfig {
 /* v25.11 NH3 fix — the prior implementation kept processed-webhook keys in a
  * RAM-only Set, so any server restart within the gateway's retry window
  * (Airwallex: 72h, Stripe: 72h) allowed duplicate processing of the same
- * webhook event — a financial-integrity vulnerability. We now persist each
- * processed key to `processed_webhook_events` with a TTL marker (kept 90
- * days; the gateway's retry window plus a generous safety margin). The
- * in-memory Set remains as a fast-path cache; the table is authoritative. */
-const processedWebhookEvents = new Set<string>();
-let _processedWebhookTableEnsured = false;
-
-function _ensureProcessedWebhookTable(): void {
-  if (_processedWebhookTableEnsured) return;
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { rawDb } = require("./db/connection");
-    const db: any = rawDb();
-    db.exec(`CREATE TABLE IF NOT EXISTS processed_webhook_events (
-      key TEXT PRIMARY KEY NOT NULL,
-      processed_at TEXT NOT NULL
-    );`);
-    _processedWebhookTableEnsured = true;
-  } catch {
-    /* Non-fatal — fall back to Set-only behavior on this process. */
-  }
-}
+ * webhook event — a financial-integrity vulnerability.
+ *
+ * v25.32 deep — the in-memory `processedWebhookEvents` Set fast-path was NOT
+ * cross-process safe and is forbidden by Ozan's standing rule (nothing in
+ * memory; all DB-driven). The Set is REMOVED entirely. Idempotency is now
+ * DB-only against `processed_webhook_events` (DDL promoted to the boot schema
+ * in server/db/connection.ts — no lazy per-process table creation). The
+ * `_recordWebhookKey` insert is `INSERT OR IGNORE` so concurrent processes
+ * race-safely converge on the single PRIMARY KEY `key` row, and the webhook
+ * handlers claim the key INSIDE the finalize transaction (see
+ * handleGatewayWebhook). */
 
 function _webhookKeyAlreadyProcessed(key: string): boolean {
-  if (processedWebhookEvents.has(key)) return true;
-  _ensureProcessedWebhookTable();
+  // v25.32 deep — DB-only idempotency check. Fail OPEN on DB error: the
+  // PRIMARY KEY on insert (and the transactional claim) is the real guard.
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { rawDb } = require("./db/connection");
     const db: any = rawDb();
     const row: any = db.prepare(
       `SELECT 1 FROM processed_webhook_events WHERE key = ? LIMIT 1`,
     ).get(key);
-    if (row) {
-      processedWebhookEvents.add(key);
-      return true;
-    }
-  } catch { /* fall through */ }
-  return false;
+    return !!row;
+  } catch (e) {
+    log.warn("[webhook] DB idempotency check failed:", (e as Error).message);
+    return false;
+  }
+}
+
+/**
+ * v25.32 deep — claim a webhook key. Returns true if THIS call claimed the key
+ * (i.e. it was previously unclaimed), false if it was already present. The
+ * `INSERT OR IGNORE` makes the claim atomic and race-safe across processes; the
+ * `changes` count tells the caller whether they won the claim. Callers run this
+ * INSIDE the finalize transaction so a downstream failure rolls the claim back
+ * and the next retry can repair. */
+function _claimWebhookKey(key: string): boolean {
+  /* v25.32 final — FAIL CLOSED. The previous fail-open behavior (returning
+   * `true` and letting processing proceed on DB error) violated Ozan's
+   * "nothing in memory" rule — it let downstream writes run without a
+   * durable idempotency claim. We now throw on DB failure so the outer
+   * webhook handler returns 5xx and the provider retries; the next attempt
+   * either claims cleanly or hits the same DB error and retries again until
+   * the DB is reachable. NEVER process a webhook without a durable claim. */
+  const db: any = rawDb();
+  const result: any = db.prepare(
+    `INSERT OR IGNORE INTO processed_webhook_events (key, processed_at) VALUES (?, ?)`,
+  ).run(key, new Date().toISOString());
+  return result.changes > 0;
 }
 
 function _recordWebhookKey(key: string): void {
-  processedWebhookEvents.add(key);
-  _ensureProcessedWebhookTable();
+  // v25.32 deep — DB-only. INSERT OR IGNORE so concurrent processes don't race
+  // on the PRIMARY KEY. Retained for the legacy non-transactional endpoint.
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { rawDb } = require("./db/connection");
     const db: any = rawDb();
     db.prepare(
-      `INSERT INTO processed_webhook_events (key, processed_at) VALUES (?, ?)
-       ON CONFLICT(key) DO NOTHING`,
+      `INSERT OR IGNORE INTO processed_webhook_events (key, processed_at) VALUES (?, ?)`,
     ).run(key, new Date().toISOString());
-  } catch { /* fall through */ }
+  } catch (e) {
+    log.warn("[webhook] DB idempotency record failed:", (e as Error).message);
+  }
 }
 
 function webhookKey(intentId: string, type: string): string {
   return `${intentId}::${type}`;
+}
+
+/* v25.32 burndown — item 40: processed_webhook_events retention. The
+   idempotency claim table is append-only and would otherwise grow unbounded.
+   Payment gateways never retry a webhook beyond a few days, so claims older
+   than the retention window can never cause a replay and are safe to reap.
+   This runs BEST-EFFORT and OUTSIDE the finalize transaction (called at the
+   top of handleGatewayWebhook, before getDb().transaction), so it can never
+   roll back or interfere with the transactional claim. It is sampled (≈ 1 in
+   20 calls) so it does not add a DELETE to every webhook — no module-scope
+   state is introduced (sampling is stateless; missing a run is harmless).
+   Source: server/db/connection.ts processed_webhook_events DDL. */
+const WEBHOOK_EVENT_RETENTION_DAYS = 90;
+function _reapProcessedWebhookEvents(): void {
+  // Sample so we don't pay the DELETE cost on every webhook. Stateless.
+  if (Math.random() >= 0.05) return;
+  try {
+    rawDb()
+      .prepare(
+        `DELETE FROM processed_webhook_events WHERE processed_at < datetime('now', ?)`,
+      )
+      .run(`-${WEBHOOK_EVENT_RETENTION_DAYS} days`);
+  } catch (e) {
+    // Best-effort: a failed reap never affects webhook processing.
+    log.warn("[webhook] processed_webhook_events retention reap failed (non-fatal):", (e as Error).message);
+  }
 }
 
 /* ---------- Core operations ---------- */
@@ -309,31 +346,67 @@ export function getPublicGatewayList() {
  * v23.4.5 BUG 018 — per-user auto-provision lock.
  *
  * Serializes concurrent calls to /api/founder/subscription/charge for the
- * same userId. When a second request arrives while the first is still
- * running, it awaits the in-flight Promise and then runs `task()` with the
- * companies cache already updated by the first one — so it short-circuits
- * to the existing company instead of minting a duplicate.
+ * same userId so we don't mint duplicate companies on a parallel double-tap.
+ *
+ * v25.32 final — the in-memory `AUTO_PROVISION_LOCKS` Map<string, Promise>
+ * is REPLACED by a DB-backed lock against `provisioning_locks` (Ozan's rule:
+ * "nothing in memory"). The atomic acquire is `INSERT OR IGNORE` against the
+ * UNIQUE lock_key; the loser callers either back off and retry once or
+ * (cleaner) wait until the lock_key expires. Locks are short-lived (10s
+ * default) and we opportunistically clean expired rows on every acquire.
+ * This is also cross-process safe (the previous Map was only single-process).
  */
-const AUTO_PROVISION_LOCKS = new Map<string, Promise<string | null>>();
+const PROVISION_LOCK_TTL_MS = 10_000;
 async function acquireAutoProvisionLock(
   userId: string,
   task: () => Promise<string | null>,
 ): Promise<string | null> {
-  const pending = AUTO_PROVISION_LOCKS.get(userId);
-  if (pending) {
-    // Wait for the first holder to release; then run our task (which will
-    // re-check the cache and short-circuit if a company now exists).
-    await pending.catch(() => null);
-  }
-  const run = (async () => {
+  const db: any = rawDb();
+  const lockKey = `autoprovision::${userId}`;
+  const holder = `${process.pid}::${randomBytes(4).toString("hex")}`;
+  const now = Date.now();
+  const acquiredAt = new Date(now).toISOString();
+  const expiresAt = new Date(now + PROVISION_LOCK_TTL_MS).toISOString();
+
+  // Opportunistic cleanup of expired locks (best-effort; safe to fail).
+  try {
+    db.prepare(`DELETE FROM provisioning_locks WHERE expires_at < ?`).run(acquiredAt);
+  } catch { /* non-fatal */ }
+
+  // Try to acquire. If we lose, briefly retry waiting for the holder to
+  // release (mirrors the prior await-pending semantics).
+  let acquired = false;
+  for (let i = 0; i < 20; i++) { // ~2s max wait at 100ms
     try {
-      return await task();
-    } finally {
-      AUTO_PROVISION_LOCKS.delete(userId);
+      const result: any = db.prepare(
+        `INSERT OR IGNORE INTO provisioning_locks (lock_key, holder, acquired_at, expires_at) VALUES (?, ?, ?, ?)`,
+      ).run(lockKey, holder, acquiredAt, expiresAt);
+      if (result.changes > 0) { acquired = true; break; }
+    } catch {
+      // DB error — fall through to retry; if persistent we'll exhaust the loop.
     }
-  })();
-  AUTO_PROVISION_LOCKS.set(userId, run);
-  return run;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+
+  /* v25.32 final — FAIL CLOSED if the lock was not acquired. The previous
+   * fall-through behavior (run the task anyway) defeated the lock's
+   * correctness guarantee under contention or DB failure — a duplicate
+   * company could be minted. Now we throw a retryable error so the caller
+   * surfaces 5xx and the client/founder can retry. */
+  if (!acquired) {
+    throw new Error(
+      `provisioning_lock_unavailable: could not acquire ${lockKey} after retry window; refusing to run protected task`,
+    );
+  }
+  try {
+    return await task();
+  } finally {
+    try {
+      db.prepare(
+        `DELETE FROM provisioning_locks WHERE lock_key = ? AND holder = ?`,
+      ).run(lockKey, holder);
+    } catch { /* non-fatal: TTL cleanup will reap it */ }
+  }
 }
 
 export function registerPaymentGatewayRoutes(app: Express): void {
@@ -350,7 +423,7 @@ export function registerPaymentGatewayRoutes(app: Express): void {
    * Returns recent webhook event log.
    */
   app.get("/api/admin/payment-gateway/webhook-events", (_req: Request, res: Response) => {
-    res.json({ ok: true, events: recentWebhookEvents.slice(-50) });
+    res.json({ ok: true, events: listRecentWebhookEvents(100) });
   });
 
   /**
@@ -629,6 +702,16 @@ export function registerPaymentGatewayRoutes(app: Express): void {
        authenticated user could pass ?companyId=co_victim and read another
        company's plan, cardLast4, status. Now ownership-gated. */
     if (!(await assertSubscriptionOwnership(req, res, companyId))) return;
+
+    /* v25.32 deep Fix 6 — canonical billing source. The real hosted-checkout
+       state lives in capavate_subscriptions (written by the payment webhook /
+       founder charge). Read that FIRST so the founder UI reflects the actual
+       paid plan/amount. Fall back to the legacy subscriptionsStore for
+       companies that predate the hosted-checkout model. */
+    const canonical = projectCanonicalSubscription(companyId);
+    if (canonical) {
+      return res.json({ ok: true, subscription: canonical });
+    }
     const sub = getSubscription(companyId);
     if (!sub) return res.status(404).json({ ok: false, error: "not_found" });
     res.json({ ok: true, subscription: sub });
@@ -737,6 +820,10 @@ export function registerPaymentGatewayRoutes(app: Express): void {
    * the legacy `/api/webhooks/payment-gateway` endpoint.
    */
   function handleGatewayWebhook(gateway: "airwallex" | "stripe", req: Request, res: Response) {
+    // v25.32 burndown — item 40: opportunistic, best-effort retention reap of
+    // the idempotency claim table. Runs before the finalize transaction so it
+    // never participates in (and cannot roll back) the transactional claim.
+    _reapProcessedWebhookEvents();
     const rawBody = typeof req.body === "string" ? req.body : JSON.stringify(req.body ?? {});
     const isProd = process.env.NODE_ENV === "production";
     const sigOk = gateway === "airwallex"
@@ -785,20 +872,6 @@ export function registerPaymentGatewayRoutes(app: Express): void {
     }
 
     const key = webhookKey(intentId, type);
-    /* v25.11 NH3 — check the persisted table, not just the RAM Set. */
-    if (_webhookKeyAlreadyProcessed(key)) {
-      return res.json({ ok: true, idempotent: true, gateway });
-    }
-    _recordWebhookKey(key);
-
-    recentWebhookEvents.push({
-      id: `wh_${randomBytes(4).toString("hex")}`,
-      type,
-      intentId,
-      status: status ?? "received",
-      companyId: companyId ?? null,
-      receivedAt: new Date().toISOString(),
-    });
 
     // Normalise type into the legacy dispatch verbs.
     //
@@ -819,43 +892,87 @@ export function registerPaymentGatewayRoutes(app: Express): void {
       isFailure = /fail|declined|errored|cancelled/i.test(type) || /FAILED|failed/.test(status ?? "");
     }
 
-    // v24.2 Airwallex wiring — flip the Capavate checkout subscription. The
-    // record was minted PENDING by POST /api/billing/plan keyed on the
-    // PaymentIntent id; on `payment_intent.succeeded` we flip it to active and
-    // emit a billing event so downstream consumers (entitlements refresh, etc.)
-    // can react. We resolve the row by intentId first, then by
-    // merchant_order_id (Airwallex puts it on data.object.merchant_order_id,
-    // which the normaliser above maps into `companyId`).
-    let capSub = getCapSubByPaymentIntent(intentId);
-    if (!capSub && companyId) capSub = getCapSubByMerchantOrderId(companyId);
-    if (capSub) {
-      if (isSuccess) {
-        const activated = activateCapSub(capSub.paymentIntentId);
-        if (activated) {
-          emitBillingEvent({
-            kind: "subscription.activated",
-            paymentIntentId: activated.paymentIntentId,
-            companyId: activated.companyId,
-            tierId: activated.tierId,
-            userId: activated.userId,
-            gateway,
-          });
+    /* v25.32 deep Fix 2 — the WHOLE webhook flow is now atomic and DB-only.
+     * Order (per brief): begin transaction → claim the idempotency key →
+     * if already claimed return idempotent success → record event →
+     * activate/fail subscription + finalize billing (invoice IN-TRANSACTION) →
+     * commit. If anything throws, the transaction rolls back and the key stays
+     * unclaimed so the next gateway retry repairs cleanly. The old in-memory
+     * Set fast-path is gone. Billing events are collected and emitted AFTER the
+     * commit (emitting inside the txn would fire side-effects a rollback cannot
+     * undo). */
+    let alreadyProcessed = false;
+    const pendingBillingEvents: Array<Record<string, unknown>> = [];
+    try {
+      getDb().transaction((tx: any) => {
+        // Claim the key atomically. If 0 rows changed it was already processed.
+        if (!_claimWebhookKey(key)) {
+          alreadyProcessed = true;
+          return;
         }
-      } else if (isFailure) {
-        const failed = failCapSub(capSub.paymentIntentId);
-        if (failed && failed.status === "failed") {
-          emitBillingEvent({
-            kind: "subscription.failed",
-            paymentIntentId: failed.paymentIntentId,
-            companyId: failed.companyId,
-            tierId: failed.tierId,
-            userId: failed.userId,
-            gateway,
-          });
+
+        recordWebhookEvent({
+          type,
+          intentId,
+          status: status ?? "received",
+          companyId: companyId ?? null,
+          gateway,
+          payload: req.body,
+        });
+
+        // Flip the Capavate checkout subscription (resolved by intentId, then
+        // merchant_order_id which the normaliser maps into `companyId`).
+        let capSub = getCapSubByPaymentIntent(intentId);
+        if (!capSub && companyId) capSub = getCapSubByMerchantOrderId(companyId);
+        if (capSub) {
+          if (isSuccess) {
+            const activated = activateCapSub(capSub.paymentIntentId);
+            if (activated) {
+              pendingBillingEvents.push({
+                kind: "subscription.activated",
+                paymentIntentId: activated.paymentIntentId,
+                companyId: activated.companyId,
+                tierId: activated.tierId,
+                userId: activated.userId,
+                gateway,
+              });
+            }
+            // Finalize billing atomically: period_end, payment_ledger
+            // (idempotent on intent_id) and the invoice — all inside `tx`.
+            finalizeWebhookSuccessInTx(tx, { intentId, companyId: companyId ?? null, gateway });
+          } else if (isFailure) {
+            const failed = failCapSub(capSub.paymentIntentId);
+            if (failed && failed.status === "failed") {
+              pendingBillingEvents.push({
+                kind: "subscription.failed",
+                paymentIntentId: failed.paymentIntentId,
+                companyId: failed.companyId,
+                tierId: failed.tierId,
+                userId: failed.userId,
+                gateway,
+              });
+            }
+          }
         }
-      }
+
+      });
+    } catch (txErr) {
+      // The transaction rolled back; the key was NOT persisted (claim is part
+      // of the same txn) so the gateway's retry can re-process. Surface a 500
+      // so the gateway knows to retry rather than treating this as final.
+      log.warn(`[webhook] ${gateway} finalize transaction rolled back:`, (txErr as Error).message);
+      return res.status(500).json({ ok: false, error: "webhook_finalize_failed", gateway });
     }
 
+    if (alreadyProcessed) {
+      return res.json({ ok: true, idempotent: true, gateway });
+    }
+
+    /* v25.32 deep — the legacy past_due<->active flip uses subscriptionsStore
+     * .updateSubscription, which opens its OWN better-sqlite3 transaction.
+     * better-sqlite3 forbids nested transactions, so this MUST run AFTER the
+     * finalize transaction commits (not inside it). The idempotency key is
+     * already claimed; this flip is naturally idempotent. */
     if (isSuccess && companyId) {
       const sub = getSubscription(companyId);
       if (sub?.status === "past_due") {
@@ -866,6 +983,11 @@ export function registerPaymentGatewayRoutes(app: Express): void {
       if (sub?.status === "active") {
         updateSubscription(companyId, { status: "past_due" }, `system:webhook:${gateway}`);
       }
+    }
+
+    // Emit collected billing events AFTER commit (post-transaction side-effects).
+    for (const evt of pendingBillingEvents) {
+      try { emitBillingEvent(evt as any); } catch (e) { log.warn("[webhook] emitBillingEvent failed:", (e as Error).message); }
     }
 
     return res.json({ ok: true, gateway });
@@ -914,27 +1036,49 @@ export function registerPaymentGatewayRoutes(app: Express): void {
       return res.status(400).json({ ok: false, error: "missing_fields" });
     }
 
-    // Idempotency check
+    // Idempotency + finalize, transactional & DB-only (v25.32 deep Fix 2/3).
     const key = webhookKey(intentId, type);
-    /* v25.11 NH3 — same DB-backed check as the multi-gateway handler above. */
-    if (_webhookKeyAlreadyProcessed(key)) {
+    let alreadyProcessed = false;
+    try {
+      getDb().transaction((tx: any) => {
+        // Atomically claim the idempotency key. 0 rows changed => already done.
+        if (!_claimWebhookKey(key)) {
+          alreadyProcessed = true;
+          return;
+        }
+
+        // Record event for the admin UI (DB-backed).
+        recordWebhookEvent({
+          type,
+          intentId,
+          status: status ?? "received",
+          companyId: companyId ?? null,
+          gateway: "legacy",
+          payload: req.body,
+        });
+
+        // Finalize Capavate subscription billing atomically — period_end,
+        // payment_ledger (idempotent on intent_id) and the invoice, all in `tx`.
+        // The legacy past_due<->active flip is intentionally NOT done here: it
+        // uses subscriptionsStore.updateSubscription, which opens its own
+        // better-sqlite3 transaction (nested transactions are forbidden), so it
+        // runs AFTER this transaction commits (see below).
+        if (type === "payment.succeeded" && companyId) {
+          finalizeWebhookSuccessInTx(tx, { intentId, companyId: companyId ?? null, gateway: "legacy" });
+        }
+      });
+    } catch (txErr) {
+      // Rolled back; key was not persisted so the gateway retry can re-process.
+      log.warn("[webhook] legacy finalize transaction rolled back:", (txErr as Error).message);
+      return res.status(500).json({ ok: false, error: "webhook_finalize_failed" });
+    }
+
+    if (alreadyProcessed) {
       return res.json({ ok: true, idempotent: true });
     }
-    _recordWebhookKey(key);
 
-    // Record event for the admin UI
-    recentWebhookEvents.push({
-      id: `wh_${randomBytes(4).toString("hex")}`,
-      type,
-      intentId,
-      status: status ?? "received",
-      companyId: companyId ?? null,
-      receivedAt: new Date().toISOString(),
-    });
-
-    // Route to appropriate store action
+    // v25.32 deep — post-commit legacy status flip (own transaction).
     if (type === "payment.succeeded" && companyId) {
-      // Mark subscription active if it was past_due
       const sub = getSubscription(companyId);
       if (sub?.status === "past_due") {
         updateSubscription(companyId, { status: "active" }, "system:webhook");
@@ -950,7 +1094,7 @@ export function registerPaymentGatewayRoutes(app: Express): void {
   });
 }
 
-/* ---------- Webhook event log ---------- */
+/* ---------- Webhook event log (v25.32 P1c — DB-backed) ---------- */
 
 interface WebhookEvent {
   id: string;
@@ -961,14 +1105,299 @@ interface WebhookEvent {
   receivedAt: string;
 }
 
-const recentWebhookEvents: WebhookEvent[] = [];
+/* v25.32 P1c — the in-memory `recentWebhookEvents` array was mutable
+ * module-scope runtime state (a standing-rule violation: nothing in memory;
+ * all DB-driven). It is REPLACED by the durable `payment_webhook_events`
+ * table (schema in server/db/connection.ts). Writes INSERT a row; the admin
+ * webhook-events view SELECTs the most recent rows. No array remains. */
+function recordWebhookEvent(evt: {
+  type: string;
+  intentId: string;
+  status: string;
+  companyId: string | null;
+  gateway?: string;
+  payload?: unknown;
+}): void {
+  try {
+    const db: any = rawDb();
+    db.prepare(
+      `INSERT INTO payment_webhook_events
+         (id, type, intent_id, status, company_id, gateway, payload_json, received_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      `wh_${randomBytes(4).toString("hex")}`,
+      evt.type,
+      evt.intentId,
+      evt.status,
+      evt.companyId,
+      evt.gateway ?? null,
+      evt.payload !== undefined ? JSON.stringify(evt.payload) : null,
+      new Date().toISOString(),
+    );
+  } catch (err) {
+    // v25.32 Item 29 — webhook-event logging is part of transaction integrity.
+    // Both call sites run INSIDE the webhook claim+finalize transaction
+    // (getDb().transaction at lines ~877 and ~1013), so THROWING here rolls the
+    // whole finalize back — including the idempotency claim — and the gateway
+    // retries. Swallowing previously allowed a webhook to update
+    // subscription/ledger/invoice WITHOUT a durable audit row. Fail closed.
+    log.warn("[paymentGatewayAdapter] recordWebhookEvent INSERT failed — failing closed:", (err as Error).message);
+    throw err;
+  }
+}
+
+function listRecentWebhookEvents(limit = 100): WebhookEvent[] {
+  try {
+    const db: any = rawDb();
+    const rows: any[] = db
+      .prepare(
+        `SELECT id, type, intent_id, status, company_id, received_at
+           FROM payment_webhook_events
+          ORDER BY received_at DESC
+          LIMIT ?`,
+      )
+      .all(limit);
+    return rows.map((r) => ({
+      id: r.id,
+      type: r.type,
+      intentId: r.intent_id,
+      status: r.status,
+      companyId: r.company_id ?? null,
+      receivedAt: r.received_at,
+    }));
+  } catch (err) {
+    log.warn("[paymentGatewayAdapter] listRecentWebhookEvents SELECT failed:", (err as Error).message);
+    return [];
+  }
+}
+
+/* ---------- v25.32 deep Fix 6 — canonical founder billing projection ---------- */
+
+/**
+ * Project the canonical hosted-checkout subscription (capavate_subscriptions)
+ * into the legacy `Subscription` shape the founder UI consumes. Returns null
+ * when the company has no canonical row (the caller then falls back to the
+ * legacy subscriptionsStore). Read-only — never persists; the hash-chain /
+ * version fields are presentational placeholders for this projection.
+ */
+function projectCanonicalSubscription(companyId: string): Subscription | null {
+  if (!companyId) return null;
+  let rows: CapavateSubscription[];
+  try {
+    rows = listCapSubsForCompany(companyId); // DB-direct (Fix 4)
+  } catch (err) {
+    log.warn("[founder/subscription] canonical read failed:", (err as Error).message);
+    return null;
+  }
+  if (!rows.length) return null;
+
+  // Most recent ACTIVE row wins; otherwise the most recently created row.
+  const byNewest = (a: CapavateSubscription, b: CapavateSubscription) =>
+    (b.activatedAt ?? b.createdAt).localeCompare(a.activatedAt ?? a.createdAt);
+  const active = rows.filter((r) => r.status === "active").sort(byNewest);
+  const chosen = active[0] ?? [...rows].sort(byNewest)[0];
+  if (!chosen) return null;
+
+  // Map tierId -> human plan label / annual amount via the configured tier.
+  let plan: Subscription["plan"] = "founder_pro";
+  try {
+    const tier = pricingTiers.getById(chosen.tierId);
+    const slug = (tier?.id ?? chosen.tierId ?? "").toLowerCase();
+    if (slug.includes("free")) plan = "founder_free";
+    else if (slug.includes("scale")) plan = "founder_scale";
+    else if (slug.includes("enter")) plan = "founder_enterprise";
+    else plan = "founder_pro";
+  } catch { /* default plan */ }
+
+  // Map canonical status -> legacy SubscriptionStatus.
+  const status: Subscription["status"] =
+    chosen.status === "active" ? "active"
+    : chosen.status === "failed" ? "past_due"
+    : "pending_payment";
+
+  // Annualize the canonical (per-cycle) amount for the UI's annual field.
+  const cycle = (chosen.billingCycle ?? "monthly").toLowerCase();
+  const annualAmountMinor =
+    cycle === "annual" || cycle === "yearly"
+      ? chosen.amountMinor
+      : chosen.amountMinor * 12;
+
+  let invoicesCount = 0;
+  /* v25.32 burndown — item 46: COUNT(*) in SQL instead of hydrating every
+     invoice row just to take .length. countInvoicesForCompany is DB-direct over
+     the same scoped predicate. Source: invoiceStore.ts:561. */
+  try { invoicesCount = countInvoicesForCompany(companyId); } catch { /* best-effort */ }
+
+  const renewsOn = chosen.currentPeriodEnd ?? chosen.expiresAt ?? chosen.createdAt;
+
+  /* v25.32 final A1 — DB-direct read from payment_ledger; never reads from any
+     in-memory state. Surfaces the most recent SUCCESSFUL payment timestamp for
+     this subscription's payment intent so the founder Billing card can show the
+     actual payment date (Avi field 3). When no ledger row exists yet (free /
+     legacy subscription, or webhook not landed), paymentDate is left undefined
+     and the client renders an em dash. */
+  let paymentDate: string | undefined;
+  try {
+    const ledgerRow: any = rawDb()
+      .prepare(
+        `SELECT ts FROM payment_ledger
+          WHERE intent_id = ? AND state = 'succeeded'
+          ORDER BY ts DESC LIMIT 1`,
+      )
+      .get(chosen.paymentIntentId);
+    if (ledgerRow?.ts) paymentDate = String(ledgerRow.ts);
+  } catch (err) {
+    log.warn("[founder/subscription] payment_ledger date read failed:", (err as Error).message);
+  }
+
+  return {
+    companyId,
+    status,
+    plan,
+    annualAmountMinor,
+    currency: chosen.currency,
+    renewsOn,
+    ...(paymentDate ? { paymentDate } : {}),
+    cardLast4: null,
+    cardExpiry: null,
+    invoicesCount,
+    version: 0,
+    revisionHash: "",
+    prevRevisionHash: "",
+    updatedAt: chosen.activatedAt ?? chosen.createdAt,
+    updatedBy: "system:canonical-projection",
+  };
+}
+
+/* ---------- v25.32 P1d — webhook success finalization (atomic) ---------- */
+
+/**
+ * v25.32 deep Fix 2+3 — On a confirmed `payment.succeeded` webhook, finalize the
+ * local Capavate subscription billing state ATOMICALLY, inside a CALLER-SUPPLIED
+ * drizzle transaction `tx` (the webhook handler's claim+finalize transaction):
+ *   1. Resolve capavate_subscriptions by payment_intent_id (or merchant_order_id).
+ *   2. Compute current_period_end (+30d monthly / +365d annual from billing_cycle).
+ *   3. UPDATE capavate_subscriptions SET status='active', current_period_end, activated_at.
+ *   4. INSERT a payment_ledger row (state='succeeded') ON CONFLICT(intent_id)
+ *      DO NOTHING for webhook-retry idempotency.
+ *   5. If the ledger row is NEW, create the legacy `invoices` row IN-TRANSACTION
+ *      via createInvoiceInTransaction(tx, ...).
+ *
+ * Because every write here uses the same underlying better-sqlite3 connection
+ * that `tx` holds open, the subscription update, ledger row AND invoice commit
+ * or roll back together with the idempotency-key claim. Errors are NOT swallowed
+ * — they propagate so the surrounding transaction rolls back and the next
+ * gateway retry can repair (the unclaimed key is then free to re-process).
+ */
+function finalizeWebhookSuccessInTx(
+  tx: any,
+  args: { intentId: string; companyId: string | null; gateway: string },
+): void {
+  const db: any = rawDb();
+
+  // Resolve the local subscription row (DB-direct via subscriptionStore reads).
+  let capSub = getCapSubByPaymentIntent(args.intentId);
+  if (!capSub && args.companyId) capSub = getCapSubByMerchantOrderId(args.companyId);
+  if (!capSub) return; // Nothing local to finalize (e.g. collective webhook).
+
+  const nowIso = new Date().toISOString();
+  const cycle = (capSub.billingCycle ?? "monthly").toLowerCase();
+  const days = cycle === "annual" || cycle === "yearly" ? 365 : 30;
+  const periodEnd = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+
+  // Resolve a human plan label from the configured tier (DB-driven).
+  let planLabel = capSub.tierId;
+  try {
+    const tier = pricingTiers.getById(capSub.tierId);
+    if (tier?.name) planLabel = tier.name;
+  } catch { /* fall back to tierId */ }
+
+  const ledgerEntryId = `pe_${randomBytes(8).toString("hex")}`;
+
+  // 1+2+3. Activate subscription + set period end (raw stmt runs inside `tx`).
+  db.prepare(
+    `UPDATE capavate_subscriptions
+        SET status = 'active', current_period_end = ?, activated_at = ?
+      WHERE payment_intent_id = ?`,
+  ).run(periodEnd, nowIso, capSub.paymentIntentId);
+
+  // 4. Idempotent ledger insert keyed on the UNIQUE intent_id.
+  const entry = {
+    id: ledgerEntryId,
+    intentId: capSub.paymentIntentId,
+    kind: "subscription_charge",
+    amountCents: capSub.amountMinor,
+    currency: capSub.currency,
+    customerId: capSub.companyId,
+    state: "succeeded",
+    ts: nowIso,
+    plan: planLabel,
+    periodEnd,
+    status: "active",
+    gateway: args.gateway,
+  };
+  const result = db
+    .prepare(
+      `INSERT INTO payment_ledger (id, intent_id, customer_id, state, entry_json, ts)
+         VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(intent_id) DO NOTHING`,
+    )
+    .run(
+      ledgerEntryId,
+      capSub.paymentIntentId,
+      capSub.companyId,
+      "succeeded",
+      JSON.stringify(entry),
+      nowIso,
+    );
+  const ledgerInserted = result.changes > 0;
+
+  // 5. Create the invoice IN-TRANSACTION only if this was a NEW ledger entry.
+  //    No swallowing — a throw rolls back the whole webhook finalization
+  //    (v25.32 deep Fix 3).
+  if (ledgerInserted) {
+    createInvoiceInTransaction(tx, {
+      companyId: capSub.companyId,
+      subscriptionId: capSub.id,
+      planLabel,
+      periodStart: nowIso,
+      periodEnd,
+      amountMinor: capSub.amountMinor,
+      currency: capSub.currency,
+      taxMinor: 0,
+      paymentEntryId: ledgerEntryId,
+      actor: `system:webhook:${args.gateway}`,
+    });
+  }
+}
 
 /* ---------- Testing exports ---------- */
 export const _testGateway = {
-  processedWebhookEvents,
-  recentWebhookEvents,
+  /** v25.32 deep — the in-memory `processedWebhookEvents` Set was REMOVED
+   *  (Ozan's no-in-memory rule). Idempotency keys now live ONLY in the durable
+   *  `processed_webhook_events` table. This accessor reads that table so any
+   *  test that previously inspected the Set keeps working DB-direct. */
+  get processedWebhookEvents(): Set<string> {
+    try {
+      const rows: any[] = rawDb()
+        .prepare(`SELECT key FROM processed_webhook_events`)
+        .all();
+      return new Set<string>(rows.map((r) => r.key));
+    } catch {
+      return new Set<string>();
+    }
+  },
+  /** v25.32 P1c — webhook events are now in `payment_webhook_events`. This
+   *  accessor reads the table so existing tests that inspected the old array
+   *  keep working without an in-memory array. */
+  get recentWebhookEvents(): WebhookEvent[] {
+    return listRecentWebhookEvents(200);
+  },
   reset(): void {
-    processedWebhookEvents.clear();
-    recentWebhookEvents.length = 0;
+    // v25.32 deep — DB-only reset: clear both durable webhook tables.
+    try {
+      rawDb().prepare(`DELETE FROM payment_webhook_events`).run();
+      rawDb().prepare(`DELETE FROM processed_webhook_events`).run();
+    } catch { /* table may not exist in some test contexts */ }
   },
 };

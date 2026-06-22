@@ -9,10 +9,22 @@
  *   This page now renders a "Log out and continue" action that calls
  *   /api/auth/logout and then re-fires the redeem in the same flow, which
  *   resolves the gate cleanly.
+ *
+ * v25.32 P0 — RECOVERY UI WAS DEAD CODE.
+ *   v25.30 added the recovery UI, but apiRequest THROWS on non-2xx (see
+ *   queryClient.ts:154 throwIfResNotOk) — control never reached the
+ *   `if (!res.ok)` block, so the `error` state held the friendly message
+ *   string instead of the error code, and `isEmailMismatch` was always
+ *   false. Ozan was stuck on the "Could not redeem invite" screen with no
+ *   button for three waves. This rewrite catches ApiError, reads
+ *   `.code` for the conditional, `.payload.message` for display text, and
+ *   `.payload.invitedEmail` for the address. The server now includes
+ *   `invitedEmail` in the 403 (see server/partnerRoutes.ts v25.32 P0).
  */
 import { useEffect, useRef, useState } from "react";
 import { useRoute, useLocation } from "wouter";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, ApiError } from "@/lib/queryClient";
+import { useRole } from "@/lib/role";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 
@@ -21,10 +33,20 @@ type Status = "redeeming" | "success" | "error";
 export default function RedeemPartnerInvite() {
   const [, params] = useRoute<{ token: string }>("/auth/redeem-partner-invite/:token");
   const [, setLocation] = useLocation();
+  // v25.32 P0'''' — set the role context to "partner" BEFORE navigating so the
+  // new /collective/partner/dashboard route mounts with the correct role and
+  // does NOT bounce the user back to the Collective member view (the
+  // wrong-landing bug). Pairs with the useRequirePartnerRole dead-code fix.
+  const { setRole } = useRole();
   const [status, setStatus] = useState<Status>("redeeming");
-  const [error, setError] = useState<string>("");
+  const [errorCode, setErrorCode] = useState<string>("");
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [invitedEmail, setInvitedEmail] = useState<string>("");
+  // v25.32 Item 64 — surface the CURRENTLY logged-in email alongside the
+  // invited email so the mismatch copy tells the user exactly which account is
+  // active and which address the invite requires. Read DB-direct from
+  // GET /api/auth/me (identity.email) only when a mismatch is detected.
+  const [loggedInEmail, setLoggedInEmail] = useState<string>("");
   const [recovering, setRecovering] = useState<boolean>(false);
 
   /* v25.23 NM-3 — guard the single-use redeem REQUEST (not just setState) so it
@@ -34,22 +56,46 @@ export default function RedeemPartnerInvite() {
 
   async function attemptRedeem(token: string): Promise<void> {
     setStatus("redeeming");
-    setError("");
+    setErrorCode("");
     setErrorMessage("");
     try {
-      const res = await apiRequest("POST", `/api/auth/redeem-partner-invite/${token}`, {});
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({ error: "redeem_failed" }));
-        setError(body.error || "redeem_failed");
-        setErrorMessage(typeof body.message === "string" ? body.message : "");
-        if (typeof body.invitedEmail === "string") setInvitedEmail(body.invitedEmail);
-        setStatus("error");
-        return;
-      }
+      await apiRequest("POST", `/api/auth/redeem-partner-invite/${token}`, {});
       setStatus("success");
+      // v25.32 P0'''' — reflect the partner role in context before the route
+      // change so partner-scoped pages mount correctly on first paint.
+      setRole("partner");
       setTimeout(() => setLocation("/collective/partner/dashboard"), 1200);
     } catch (e) {
-      setError((e as Error).message || "network_error");
+      /* v25.32 P0 — apiRequest throws ApiError on non-2xx. Read the
+       * structured fields directly: `.code` for the conditional, the
+       * server-supplied `message` for display, and `.invitedEmail` if the
+       * mismatch branch included it. */
+      if (e instanceof ApiError) {
+        setErrorCode(e.code ?? "");
+        const payload = (typeof e.payload === "object" && e.payload !== null ? e.payload : {}) as {
+          message?: string;
+          invitedEmail?: string;
+        };
+        setErrorMessage(typeof payload.message === "string" && payload.message ? payload.message : e.message);
+        if (typeof payload.invitedEmail === "string") setInvitedEmail(payload.invitedEmail);
+        // v25.32 Item 64 — on a mismatch, resolve the active session email so
+        // the UI can name BOTH addresses. Best-effort: failure leaves the copy
+        // generic rather than blocking the recovery action.
+        if (e.code === "PARTNER_INVITATION_EMAIL_MISMATCH") {
+          try {
+            const me = (await apiRequest("GET", "/api/auth/me").then((r) => r.json())) as {
+              isAuthed?: boolean;
+              identity?: { email?: string } | null;
+            };
+            if (me?.isAuthed && typeof me.identity?.email === "string") {
+              setLoggedInEmail(me.identity.email);
+            }
+          } catch { /* leave loggedInEmail blank — copy degrades gracefully */ }
+        }
+      } else {
+        setErrorCode("");
+        setErrorMessage((e as Error)?.message || "network_error");
+      }
       setStatus("error");
     }
   }
@@ -82,7 +128,7 @@ export default function RedeemPartnerInvite() {
     await attemptRedeem(params.token);
   }
 
-  const isEmailMismatch = error === "PARTNER_INVITATION_EMAIL_MISMATCH";
+  const isEmailMismatch = errorCode === "PARTNER_INVITATION_EMAIL_MISMATCH";
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-slate-50">
@@ -102,14 +148,19 @@ export default function RedeemPartnerInvite() {
         {status === "error" && (
           <div data-testid="partner-redeem-error">
             <h1 className="text-xl font-semibold text-red-700 mb-2">Could not redeem invite</h1>
-            <p className="text-sm text-slate-600 mb-3">{errorMessage || error}</p>
+            <p className="text-sm text-slate-600 mb-3">{errorMessage || errorCode}</p>
             {isEmailMismatch && (
               <div className="mb-3 border border-slate-200 rounded-md p-3 bg-slate-50">
                 <p className="text-xs text-slate-700 mb-2">
                   You're currently signed in to a different Capavate account. We won't bind this invite to your current session for security reasons.
+                  {loggedInEmail && (
+                    <>
+                      {" "}You're signed in as <strong data-testid="partner-redeem-logged-in-email">{loggedInEmail}</strong>.
+                    </>
+                  )}
                   {invitedEmail && (
                     <>
-                      {" "}This invite was sent to <strong>{invitedEmail}</strong>.
+                      {" "}This invite was sent to <strong data-testid="partner-redeem-invited-email">{invitedEmail}</strong>{loggedInEmail ? ", so you'll need to log out and continue with that address" : ""}.
                     </>
                   )}
                 </p>

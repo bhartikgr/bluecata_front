@@ -64,9 +64,13 @@ export default function Signup() {
   const meProbe = useQuery<{ isAuthed: boolean; isAdmin?: boolean; founder?: { companies: unknown[] }; investor?: { state?: string } }>({
     queryKey: ["/api/auth/me", "signup-redirect-probe"],
     queryFn: async () => {
+      // v25.32 P0' — apiRequest() THROWS on non-2xx, so `if (!res.ok)` here
+      // was dead code (a 401 unauthenticated probe lands in the catch, not
+      // this branch). The try/catch already resolves the unauthenticated
+      // case to { isAuthed: false }; we just drop the dead conditional and
+      // parse the authenticated 2xx body directly.
       try {
         const res = await apiRequest("GET", "/api/auth/me");
-        if (!res.ok) return { isAuthed: false };
         return res.json();
       } catch { return { isAuthed: false }; }
     },

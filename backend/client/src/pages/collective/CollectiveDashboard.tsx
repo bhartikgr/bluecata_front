@@ -3,10 +3,13 @@
  * KPI cards + recent activity feed. All data live-fetched.
  */
 
+import { useEffect } from "react";
+import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, ApiError } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Users, Briefcase, BarChart3, Clock, FileText, TrendingUp } from "lucide-react";
 
@@ -87,11 +90,58 @@ function statusColor(status: string) {
 }
 
 export default function CollectiveDashboard() {
+  const [, navigate] = useLocation();
   const { data, isLoading, error } = useQuery<DashboardData>({
     queryKey: ["/api/collective/dashboard"],
     queryFn: () => apiRequest("GET", "/api/collective/dashboard").then((r) => r.json()),
     refetchInterval: 30_000,
   });
+
+  // v25.32 P0'' / P0'''' — diagnose the "Failed to load dashboard data" case.
+  // The endpoint 403s for non-collective sessions. apiRequest throws an
+  // ApiError carrying the server payload. When the server flags this caller
+  // as a partner-only session (`partnerWorkspace: true`), redirect them to
+  // their partner workspace instead of stranding them on a zeroed-out
+  // Collective dashboard. This is the wrong-landing self-heal for Ozan.
+  const apiErr = error instanceof ApiError ? error : null;
+  const errPayload = (apiErr && typeof apiErr.payload === "object" && apiErr.payload !== null
+    ? (apiErr.payload as { partnerWorkspace?: boolean; redirectTo?: string; message?: string })
+    : null);
+  const isPartnerWorkspaceCase = errPayload?.partnerWorkspace === true;
+  const redirectTo = errPayload?.redirectTo ?? "/collective/partner/dashboard";
+
+  useEffect(() => {
+    if (isPartnerWorkspaceCase) {
+      navigate(redirectTo);
+    }
+  }, [isPartnerWorkspaceCase, redirectTo, navigate]);
+
+  // While the redirect is in flight, render an explicit partner panel rather
+  // than the generic "Failed to load" banner (which misled the user into
+  // thinking the platform was broken).
+  if (isPartnerWorkspaceCase) {
+    return (
+      <div className="p-6 max-w-2xl mx-auto" data-testid="collective-partner-redirect">
+        <Card>
+          <CardHeader>
+            <CardTitle style={{ color: "#1A1A2E" }}>You're a consortium partner</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-slate-600">
+              {errPayload?.message ??
+                "Switch to your partner workspace to continue."}
+            </p>
+            <Button
+              onClick={() => navigate(redirectTo)}
+              data-testid="button-go-partner-workspace"
+            >
+              Go to partner workspace →
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6">
@@ -113,7 +163,11 @@ export default function CollectiveDashboard() {
           className="rounded-md bg-red-50 border border-red-200 p-4 text-sm text-red-700"
           data-testid="error-dashboard"
         >
-          Failed to load dashboard data. Please refresh.
+          {/* v25.32 P0'' — surface the server's friendly message when present
+              (e.g. "membership pending admin approval") instead of a blanket
+              "Failed to load". Falls back to the generic copy for opaque
+              5xx / network errors. */}
+          {errPayload?.message ?? "Failed to load dashboard data. Please refresh."}
         </div>
       )}
 

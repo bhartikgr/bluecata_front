@@ -35,6 +35,7 @@ import {
   currentInvestor,
 } from "./mockData";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
+import { sanitizeErrorMessage } from "./lib/sanitize"; /* v25.32 burndown — item 33 */
 // v17 Phase A — chapter scoping store (used by /api/me/chapters).
 import { listChaptersForUser as v17ListChaptersForUser } from "./chaptersStore";
 import { registerProfileRoutes } from "./profileStore";
@@ -148,6 +149,7 @@ import { registerCollectiveOfferRoutes } from "./collectiveOffersStore";
 import { registerCollectiveDscVoteRoutes } from "./collectiveDscVoteRoutes";
 import { registerScreeningEventRoutes } from "./screeningEventsStore";
 import { registerCollectiveBillingRoutes } from "./collectiveBillingStore";
+import { registerCollectiveMembershipDetailRoutes } from "./lib/collectiveMembershipDetailRoutes"; // v25.32 final A2
 import { registerTestDebugEndpoints } from "./lib/testDebugEndpoints";
 import { registerFounderBillingExtensions } from "./lib/founderBillingExtensions";
 import { registerKycDocumentRoutes } from "./lib/kycDocumentStore";
@@ -681,6 +683,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
    * /api/collective/* so it bypasses requireAuthenticated — Stripe is the
    * caller, and the signature IS the auth). Graceful 503 when env vars unset. */
   registerCollectiveBillingRoutes(app);
+
+  /* v25.32 final A2 — additive collective membership DETAIL endpoint. Reads
+   * DB-direct from collective_memberships_billing + collective_billing_events
+   * to surface amount-anchor / payment date / expiry / status WITHOUT touching
+   * the sacred collectiveBillingStore.ts. Mounts under /api/collective so it
+   * inherits the requireAuthenticated gate registered above. */
+  registerCollectiveMembershipDetailRoutes(app);
 
   /* v25.5 — Test-debug endpoints (gated by ENABLE_TEST_DEBUG_ENDPOINTS=1).
    * Returns 404 on every route when the env flag is unset. */
@@ -3053,8 +3062,27 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const tier = (await import("./pricingTiersStore")).getById(tierId);
       if (!tier) return res.status(404).json({ ok: false, error: "tier_not_found" });
 
-      //const amountMinor = billingCycle === "annual" ? tier.annualPriceCents : tier.monthlyPriceCents;
-      const amountMinor = 1000;
+      // v25.32 P1a — RESTORED tier-based pricing. The previous
+      // `const amountMinor = 1000;` hardcode billed EVERY founder $10.00
+      // regardless of the admin-configured plan price (a charge bug:
+      // nothing in the platform may be hardcoded — prices come from the
+      // admin-managed pricing tier). Pricing now reads from the tier the
+      // admin configured, selected by the requested billing cadence.
+      //
+      // Validate the tier actually carries numeric pricing for the chosen
+      // cadence; if the admin never set it, return a 400 so they know to
+      // fix the tier config rather than silently billing $0/garbage.
+      const monthly = (tier as { monthlyPriceCents?: number }).monthlyPriceCents;
+      const annual = (tier as { annualPriceCents?: number }).annualPriceCents;
+      if (typeof monthly !== "number" || typeof annual !== "number") {
+        return res.status(400).json({
+          ok: false,
+          error: "tier_pricing_misconfigured",
+          message:
+            "This pricing tier has no configured monthly/annual price. An administrator must set the tier price before checkout.",
+        });
+      }
+      const amountMinor = billingCycle === "annual" ? annual : monthly;
       const currency = tier.currency ?? "USD";
       if (!amountMinor || amountMinor <= 0) {
         return res.status(400).json({ ok: false, error: "invalid_tier_price" });
@@ -3098,17 +3126,34 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       // Persist a PENDING subscription so we don't lose track if the webhook is
       // slow. Status flips to "active" only when payment_intent.succeeded lands.
+      //
+      // v25.32 final — recordPendingSubscription now THROWS on DB write
+      // failure (instead of returning a cache-only shim). The PaymentIntent
+      // is already minted at this point, so a DB failure means we cannot
+      // reconcile a successful payment. We MUST refuse to send the user to
+      // hosted checkout in that state; surface 503 so the client can retry
+      // once the DB recovers. The orphan PaymentIntent will expire on the
+      // Airwallex side without being charged.
       const subStore = await import("./subscriptionStore");
-      subStore.recordPendingSubscription({
-        companyId,
-        tierId,
-        userId: ctx.userId,
-        billingCycle,
-        paymentIntentId: intent.id,
-        amountMinor,
-        currency,
-        merchantOrderId,
-      });
+      try {
+        subStore.recordPendingSubscription({
+          companyId,
+          tierId,
+          userId: ctx.userId,
+          billingCycle,
+          paymentIntentId: intent.id,
+          amountMinor,
+          currency,
+          merchantOrderId,
+        });
+      } catch (dbErr) {
+        return res.status(503).json({
+          ok: false,
+          error: "pending_subscription_persist_failed",
+          message: "Could not durably record the pending subscription. Please try again in a moment.",
+          detail: (dbErr as Error).message,
+        });
+      }
 
       /* v25.28 — attach paymentIntentId to the returnUrl now that we know it.
        * (Earlier returnUrlEarly was constructed with merchantOrderId only so
@@ -3236,7 +3281,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           message: "Airwallex rejected our API credentials (401 credentials_invalid). The administrator must verify AIRWALLEX_API_KEY + AIRWALLEX_CLIENT_ID in the Airwallex merchant portal (Developer → API keys).",
         });
       }
-      res.status(500).json({ ok: false, error: "server_error", message: err?.message });
+      /* v25.32 burndown — item 33: do not echo raw err.message to the client in
+         production (can leak DB/SQL/path detail). The full error is already
+         captured by log.error above; the client gets a generic message in prod
+         and the raw text only in dev. Source: server/lib/sanitize.ts. */
+      res.status(500).json({ ok: false, error: "server_error", message: sanitizeErrorMessage(err) });
     }
   });
 

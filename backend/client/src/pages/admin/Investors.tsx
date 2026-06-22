@@ -54,7 +54,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, queryClient, ApiError } from "@/lib/queryClient";
 import {
   Plus,
   Search,
@@ -238,24 +238,31 @@ function NewContactDialog({ open, onClose }: NewContactDialogProps) {
 
   const createMutation = useMutation({
     mutationFn: async (data: typeof form) => {
-      // First probe without confirm
-      const probe = await apiRequest("POST", "/api/admin/contacts", data);
-      const probeBody = await probe.json();
-      if (probe.status === 409 && probeBody.error === "confirmation_required") {
-        setConfirming(true);
-        return null;
+      /* v25.32 P0 — apiRequest throws ApiError on non-2xx (see
+       * queryClient.ts:154). The 409 confirmation_required flow had dead
+       * code: `if (probe.status === 409)` could never run because the 409
+       * threw before the line. Now we catch ApiError and inspect `.status`
+       * + `.code` directly. */
+      try {
+        const probe = await apiRequest("POST", "/api/admin/contacts", data);
+        return await probe.json();
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 409 && e.code === "confirmation_required") {
+          setConfirming(true);
+          return null;
+        }
+        const code = e instanceof ApiError ? e.code : null;
+        throw new Error(code ?? (e as Error)?.message ?? "Create failed");
       }
-      throw new Error(probeBody.error ?? "Create failed");
     },
   });
 
   const confirmMutation = useMutation({
     mutationFn: async (data: typeof form) => {
+      /* v25.32 P0 — same fix as createMutation above. apiRequest already
+       * throws on non-2xx, so `if (!res.ok)` was dead code. The thrown
+       * ApiError already surfaces a friendly message via onError. */
       const res = await apiRequest("POST", "/api/admin/contacts", data, { "x-confirm": "true" });
-      if (!res.ok) {
-        const body = await res.json();
-        throw new Error(body.error ?? "Create failed");
-      }
       return res.json();
     },
     onSuccess: () => {

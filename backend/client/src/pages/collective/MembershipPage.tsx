@@ -67,6 +67,25 @@ interface MeResponse {
   membership: BillingDTO | null;
 }
 
+/** v25.32 final A2 — enriched billing detail from the additive
+ *  /api/collective/membership/detail endpoint (DB-direct, read-only). Surfaces
+ *  the payment date + period bounds the sacred `/me` DTO omits. */
+interface MembershipDetailDTO {
+  id: string | null;
+  tier: string | null;
+  priceId: string | null;
+  status: string | null;
+  currentPeriodStart: string | null;
+  currentPeriodEnd: string | null;
+  paymentDate: string | null;
+  cancelAtPeriodEnd: boolean;
+}
+
+interface MembershipDetailResponse {
+  ok: boolean;
+  membership: MembershipDetailDTO | null;
+}
+
 interface MeChaptersResponse {
   chapters: Array<{ id: string; name?: string; role?: string }>;
 }
@@ -84,6 +103,16 @@ function formatMoney(unitAmount: number | null, currency: string | null): string
     }).format(dollars);
   } catch {
     return `$${dollars.toFixed(0)} ${currency.toUpperCase()}`;
+  }
+}
+
+/** v25.32 final A2 — format an ISO timestamp for display; em dash when absent. */
+function formatIsoDate(iso: string | null): string {
+  if (!iso) return "—";
+  try {
+    return new Date(iso).toLocaleDateString();
+  } catch {
+    return iso;
   }
 }
 
@@ -146,6 +175,21 @@ export default function MembershipPage(): JSX.Element | null {
     enabled: collectiveOn && !!activeChapterId,
   });
 
+  // 4b) v25.32 final A2 — enriched billing detail (amount anchor / payment
+  // date / period bounds) from the additive detail endpoint. DB-direct,
+  // read-only; supplements the sacred `/me` DTO without modifying it.
+  const detailQ = useQuery<MembershipDetailResponse>({
+    queryKey: ["/api/collective/membership/detail", activeChapterId],
+    queryFn: async () =>
+      (
+        await apiRequest(
+          "GET",
+          `/api/collective/membership/detail?chapter_id=${encodeURIComponent(activeChapterId)}`,
+        )
+      ).json(),
+    enabled: collectiveOn && !!activeChapterId,
+  });
+
   // v18 Phase D — SSE realtime: invalidate `me` membership query on every
   // `billing` topic frame for this chapter. Polling refetch is the background
   // fallback when SSE never connects.
@@ -156,6 +200,10 @@ export default function MembershipPage(): JSX.Element | null {
     onMessage: () => {
       qc.invalidateQueries({
         queryKey: ["/api/collective/membership/me", activeChapterId],
+      });
+      // v25.32 final A2 — also refresh the enriched detail card on billing SSE.
+      qc.invalidateQueries({
+        queryKey: ["/api/collective/membership/detail", activeChapterId],
       });
     },
   });
@@ -276,6 +324,17 @@ export default function MembershipPage(): JSX.Element | null {
     current !== null &&
     (current.status === "active" || current.status === "past_due");
 
+  // v25.32 final A2 — enriched detail (payment date / period bounds) and the
+  // amount the member pays, resolved from the tier catalogue by matching the
+  // member's tier. The exact charged amount is NOT persisted as a column on
+  // collective_memberships_billing (flagged Avi-alignment); the tier price is
+  // the authoritative displayed amount.
+  const detail = detailQ.data?.membership ?? null;
+  const currentTierCatalog =
+    current !== null
+      ? (tiersQ.data?.tiers ?? []).find((t) => t.tier === current.tier) ?? null
+      : null;
+
   return (
     <div className="container mx-auto px-4 py-8 max-w-6xl" data-testid="collective-membership-page">
       <div className="mb-8">
@@ -317,6 +376,51 @@ export default function MembershipPage(): JSX.Element | null {
               </Button>
             )}
           </CardHeader>
+          {/* v25.32 final A2 — surface all five Avi billing fields prominently:
+              amount, plan/tier, payment date, expiry/validity, status. Amount
+              is the tier catalogue price (resolved from tiersQ); payment date
+              + expiry come DB-direct from the detail endpoint. */}
+          <CardContent>
+            <dl
+              className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm sm:grid-cols-3"
+              data-testid="membership-billing-detail"
+            >
+              <div>
+                <dt className="text-muted-foreground">Amount</dt>
+                <dd className="font-medium" data-testid="membership-amount">
+                  {currentTierCatalog
+                    ? `${formatMoney(currentTierCatalog.unitAmount, currentTierCatalog.currency)} / ${currentTierCatalog.interval ?? "year"}`
+                    : "—"}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">Plan</dt>
+                <dd className="font-medium capitalize" data-testid="membership-plan">
+                  {current.tier} tier
+                </dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">Status</dt>
+                <dd className="font-medium capitalize" data-testid="membership-status">
+                  {current.status}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">Payment date</dt>
+                <dd className="font-medium" data-testid="membership-payment-date">
+                  {formatIsoDate(detail?.paymentDate ?? null)}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">
+                  {current.cancelAtPeriodEnd ? "Expires" : "Renews / valid until"}
+                </dt>
+                <dd className="font-medium" data-testid="membership-expiry">
+                  {formatIsoDate(detail?.currentPeriodEnd ?? null)}
+                </dd>
+              </div>
+            </dl>
+          </CardContent>
         </Card>
       )}
 

@@ -52,3 +52,23 @@ export function safeLog(label: string, payload: unknown): void {
   // eslint-disable-next-line no-console
   console.log(label, JSON.stringify(redact(payload)));
 }
+
+/*
+ * v25.32 burndown — item 33: scrub raw err.message from client responses in
+ * production. Several routes echoed `err?.message` straight back to the client
+ * (e.g. /api/billing/plan 500), which can leak DB driver text, file paths, SQL
+ * fragments, or stack detail to end users. This helper returns the raw message
+ * in non-production (so local/dev debugging is unchanged) and a fixed generic
+ * string in production. Always pair with a server-side log.error(...) that
+ * keeps the full error for operators. Source: server/routes.ts billing/plan
+ * 500 handler. Additive: a new export; existing callers are unaffected.
+ */
+export function sanitizeErrorMessage(
+  err: unknown,
+  fallback = "An unexpected error occurred. Please try again.",
+): string {
+  const raw =
+    err instanceof Error ? err.message : typeof err === "string" ? err : "";
+  if (process.env.NODE_ENV === "production") return fallback;
+  return raw || fallback;
+}

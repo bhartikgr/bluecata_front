@@ -17,7 +17,7 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, ApiError } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -53,16 +53,24 @@ export default function CoSoftCircleBox({ roundId, hasSoftCircled }: Props) {
 
   const { data, isLoading } = useQuery<CoMembersResponse>({
     queryKey: ["/api/rounds", roundId, "co-soft-circle-members"],
+    /* v25.32 burndown — item 15: apiRequest throws ApiError on non-2xx, so the
+       prior `if (!res.ok) { ... }` block (incl. the 403 → empty-members
+       fallback) was dead code — a 403/non-2xx surfaced as a query error instead
+       of the intended empty roster. Catch ApiError and return the empty roster
+       on any non-2xx, preserving the original graceful-degradation behavior.
+       Source: v25_32_apiRequest_dead_code_sites_gpt55.txt (CoSoftCircleBox.tsx:57).
+       Read-only; additive. */
     queryFn: async () => {
-      const res = await apiRequest(
-        "GET",
-        `/api/rounds/${roundId}/co-soft-circle-members?hasSoftCircled=true`,
-      );
-      if (!res.ok) {
-        if (res.status === 403) return { roundId, members: [] };
-        return { roundId, members: [] };
+      try {
+        const res = await apiRequest(
+          "GET",
+          `/api/rounds/${roundId}/co-soft-circle-members?hasSoftCircled=true`,
+        );
+        return res.json();
+      } catch (err) {
+        if (err instanceof ApiError) return { roundId, members: [] };
+        throw err;
       }
-      return res.json();
     },
     enabled: !!roundId && hasSoftCircled,
   });

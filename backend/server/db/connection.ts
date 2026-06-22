@@ -325,6 +325,11 @@ function applyV12AdditiveAlters(db: any) {
     // ---- v25.0 Track 3 C5 — partners active_fund_id for multi-fund switching. ----
     // Applied via ALTER TABLE IF NOT EXISTS; error silently swallowed for duplicate column.
     ["contacts", "ALTER TABLE contacts ADD COLUMN active_fund_id TEXT"],
+    // ---- v25.32 P2c — admin-user directory fields. `name` + `tenant` are
+    // persisted columns the admin Users UI surfaces. MFA is NOT a column —
+    // it's derived from `totp_secret IS NOT NULL` in adminUsersRoutes.listAll().
+    ["auth_users", "ALTER TABLE auth_users ADD COLUMN name TEXT"],
+    ["auth_users", "ALTER TABLE auth_users ADD COLUMN tenant TEXT"],
   ];
   for (const [table, sql] of alters) {
     try {
@@ -2175,6 +2180,77 @@ function buildCreateTableStatements(): string[] {
     );`,
     `CREATE INDEX IF NOT EXISTS idx_payment_customer ON payment_ledger(customer_id);`,
     `CREATE INDEX IF NOT EXISTS idx_payment_state ON payment_ledger(state);`,
+    /* v25.32 burndown — item 43: composite index backing the /api/admin/payments
+       filter+sort path (WHERE state = ? AND ts >= ? ORDER BY ts DESC). The
+       single-column idx_payment_state above can serve the equality predicate but
+       not the ts range/sort; (state, ts) lets SQLite satisfy both the filter and
+       the ordering from one index for large ledgers. CREATE INDEX IF NOT EXISTS —
+       idempotent, additive. Source: paymentStore.ts /api/admin/payments. */
+    `CREATE INDEX IF NOT EXISTS idx_payment_state_ts ON payment_ledger(state, ts);`,
+    `CREATE INDEX IF NOT EXISTS idx_payment_ts ON payment_ledger(ts);`,
+
+    // v25.32 P1c — durable payment webhook event log. Replaces the in-memory
+    // `recentWebhookEvents` array in paymentGatewayAdapter.ts (standing rule:
+    // nothing in memory; all DB-driven). The admin webhook-events view and any
+    // future audit/replay path read directly from this table.
+    `CREATE TABLE IF NOT EXISTS payment_webhook_events (
+      id           TEXT PRIMARY KEY,
+      type         TEXT NOT NULL,
+      intent_id    TEXT NOT NULL,
+      status       TEXT NOT NULL,
+      company_id   TEXT,
+      gateway      TEXT,
+      payload_json TEXT,
+      received_at  TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_pwe_intent ON payment_webhook_events(intent_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_pwe_received ON payment_webhook_events(received_at DESC);`,
+
+    // v25.32 deep — webhook idempotency claim table, promoted to the BOOT
+    // schema. Previously this DDL was created lazily inside
+    // paymentGatewayAdapter.ts / stripeGatewayAdapter.ts (and guarded by an
+    // in-memory `_processedWebhookTableEnsured` flag). Per Ozan's standing rule
+    // (nothing in memory; all DB-driven) the idempotency path is now DB-only and
+    // must not depend on lazy per-process table creation. Both the Airwallex and
+    // Stripe adapters share this table; the column is `processed_at` (its
+    // historical name — kept stable so the Stripe adapter contract is unchanged).
+    `CREATE TABLE IF NOT EXISTS processed_webhook_events (
+      key          TEXT PRIMARY KEY NOT NULL,
+      processed_at TEXT NOT NULL
+    );`,
+
+    /* v25.32 final — FX rates for soft-circle multi-currency display.
+     * Previously hardcoded in paymentStore.softCircleRates() (USD/CAD/GBP/
+     * EUR/SGD/HKD/CNY constants). Ozan: "no hardcoded values that should
+     * come from DB/admin." Defaults seeded on first boot via INSERT OR
+     * IGNORE so existing deploys don't drift from prior behavior; admin
+     * can UPDATE rates through a dedicated endpoint or directly. */
+    `CREATE TABLE IF NOT EXISTS fx_rates (
+      currency_code TEXT PRIMARY KEY NOT NULL,
+      rate          REAL NOT NULL,
+      updated_at    TEXT NOT NULL
+    );`,
+    `INSERT OR IGNORE INTO fx_rates (currency_code, rate, updated_at) VALUES ('USD', 1.0,  '2026-06-21T00:00:00Z');`,
+    `INSERT OR IGNORE INTO fx_rates (currency_code, rate, updated_at) VALUES ('CAD', 1.35, '2026-06-21T00:00:00Z');`,
+    `INSERT OR IGNORE INTO fx_rates (currency_code, rate, updated_at) VALUES ('GBP', 0.79, '2026-06-21T00:00:00Z');`,
+    `INSERT OR IGNORE INTO fx_rates (currency_code, rate, updated_at) VALUES ('EUR', 0.92, '2026-06-21T00:00:00Z');`,
+    `INSERT OR IGNORE INTO fx_rates (currency_code, rate, updated_at) VALUES ('SGD', 1.35, '2026-06-21T00:00:00Z');`,
+    `INSERT OR IGNORE INTO fx_rates (currency_code, rate, updated_at) VALUES ('HKD', 7.81, '2026-06-21T00:00:00Z');`,
+    `INSERT OR IGNORE INTO fx_rates (currency_code, rate, updated_at) VALUES ('CNY', 7.27, '2026-06-21T00:00:00Z');`,
+
+    /* v25.32 final — DB-backed provisioning locks (replaces the in-memory
+     * AUTO_PROVISION_LOCKS Map<string, Promise> in paymentGatewayAdapter).
+     * Each row is a lock claim on a (lock_key, holder) tuple with an
+     * expiration. INSERT OR IGNORE against `lock_key` is the atomic acquire;
+     * we cleanup expired rows opportunistically on every call. This is
+     * cross-process safe (the original Map was only single-process safe). */
+    `CREATE TABLE IF NOT EXISTS provisioning_locks (
+      lock_key   TEXT PRIMARY KEY NOT NULL,
+      holder     TEXT NOT NULL,
+      acquired_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_provisioning_locks_expires ON provisioning_locks(expires_at);`,
 
     // profileStore.investorProfiles — mirror of the existing
     // profilestore_company_profile table from v24.2 Bug 6. The company-profile

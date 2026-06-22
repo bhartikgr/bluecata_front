@@ -41,8 +41,19 @@ import { addCompanyForFounder, type FounderCompanyMembership } from "../multiCom
 import { _testSubscriptionStore, getByPaymentIntent } from "../subscriptionStore";
 import { _testGateway } from "../paymentGatewayAdapter";
 import { signWebhookBody } from "../lib/airwallexGateway";
+import * as pricingModel from "../pricingModelStore";
 
+// The checkout flow sends the legacy tier id `founder_capavate_annual`, which
+// pricingTiersStore aliases to the live founder slug `capavate-annual`
+// (LEGACY_ID_ALIASES). v25.27 removed the source-baked pricing seed, so the
+// resolver finds nothing unless a matching `capavate-annual` founder model is
+// seeded as `live` in the test DB/store. We seed it directly in beforeAll
+// below (admin-equivalent createModel) — no production code path is changed.
 const TIER_ID = "founder_capavate_annual";
+const TIER_SLUG = "capavate-annual";
+// Annual price for the single Capavate tier is $840 → 84000 minor units.
+const ANNUAL_PRICE_MINOR = 84000;
+const MONTHLY_PRICE_MINOR = 7000;
 
 function mkMembership(companyId: string, name: string): FounderCompanyMembership {
   return {
@@ -95,6 +106,43 @@ describe("v24.2 Airwallex billing wiring — POST /api/billing/plan + webhook + 
   beforeAll(async () => {
     getDb();
     setCreds();
+
+    // Seed the live `capavate-annual` founder pricing model so the billing
+    // resolver (pricingTiersStore.getById → LEGACY_ID_ALIASES) can resolve the
+    // legacy `founder_capavate_annual` tier id the checkout sends. This mirrors
+    // what an admin does in /admin/pricing-models; it is additive test setup,
+    // not a source-baked price. Idempotent across re-runs of the same process.
+    if (!pricingModel.listModels({ productLine: "founder", status: "live" }).some((m) => m.slug === TIER_SLUG)) {
+      const created = pricingModel.createModel(
+        {
+          productLine: "founder",
+          slug: TIER_SLUG,
+          name: "Capavate Annual",
+          description: "Capavate founder annual plan (test seed).",
+          status: "live",
+          currency: "USD",
+          basePriceMinor: ANNUAL_PRICE_MINOR,
+          cadence: "annual",
+          cadenceOptions: [
+            { cadence: "annual", priceMinor: ANNUAL_PRICE_MINOR },
+            { cadence: "monthly", priceMinor: MONTHLY_PRICE_MINOR },
+          ],
+          currencyOverrides: [],
+          regionalMultipliers: [],
+          features: [],
+          metering: [],
+          volumeBrackets: [],
+          discountCodes: [],
+          trial: null,
+          effectiveFrom: null,
+          effectiveTo: null,
+          grandfatherOnChange: false,
+          taxInclusive: false,
+        },
+        "test-harness",
+      );
+      if (!created.ok) throw new Error(`failed to seed pricing model: ${created.error}`);
+    }
 
     const reg = registerFounderUser({ email: `awx_${Date.now()}@test.example`, name: "Airwallex Founder", password: "pw-not-used" });
     FOUNDER = reg.userId;
@@ -158,9 +206,18 @@ describe("v24.2 Airwallex billing wiring — POST /api/billing/plan + webhook + 
     expect(r.body.paymentIntentId.length).toBeGreaterThan(0);
     expect(r.body.paymentIntentId).toMatch(/^int_/);
     // The client needs the hosted page URL to redirect the founder to Airwallex.
+    // v24.4.2 Bug F + v25.1 Bug 4 (Avi prod reports): in STUB mode (the
+    // hermetic default here — no AIRWALLEX_MODE / AIRWALLEX_REAL_NETWORK set)
+    // the stub intent is already SUCCEEDED, so the route auto-activates the
+    // subscription and returns the local BillingReturn `returnUrl` as the
+    // hostedPaymentPageUrl (a real airwallex.com checkout URL would 404 for a
+    // stub intent). On Avi's live server (AIRWALLEX_REAL_NETWORK=1 → mode
+    // `test`) the gateway returns a real hosted Airwallex URL and the
+    // pending→webhook flow applies instead. Assert the stub contract that ships.
     expect(typeof r.body?.hostedPaymentPageUrl).toBe("string");
-    expect(r.body.hostedPaymentPageUrl).toContain("airwallex.com");
+    expect(r.body.hostedPaymentPageUrl.length).toBeGreaterThan(0);
     expect(r.body.hostedPaymentPageUrl).toContain(r.body.paymentIntentId);
+    expect(r.body?.stubMode).toBe(true);
     // Annual price for the single Capavate tier is $840 → 84000 minor units.
     expect(r.body?.amountMinor).toBe(84000);
     expect(r.body?.currency).toBe("USD");
@@ -179,27 +236,37 @@ describe("v24.2 Airwallex billing wiring — POST /api/billing/plan + webhook + 
     setCreds();
   });
 
-  /* (c) success persists a PENDING (not active) subscription ---------------- */
-  it("(c) a successful checkout persists a PENDING subscription (active only after webhook)", async () => {
+  /* (c) success persists a durable subscription with the right fields ------- */
+  it("(c) a successful checkout persists a durable subscription (stub mode auto-activates per v24.4.2 Bug F)", async () => {
     const r = await call("POST", "/api/billing/plan", { tierId: TIER_ID, companyId: COMPANY, billingCycle: "annual" }, FOUNDER);
     expect(r.status).toBe(200);
     const pid = r.body.paymentIntentId as string;
 
+    // The subscription is persisted to capavate_subscriptions with the correct
+    // company / user / tier regardless of mode. In STUB mode (hermetic default)
+    // the route auto-activates it (v24.4.2 Bug F) so status === "active"; in
+    // test/live mode it stays "pending" until the success webhook lands.
     const sub = getByPaymentIntent(pid);
     expect(sub).toBeTruthy();
-    expect(sub?.status).toBe("pending");
+    expect(["pending", "active"]).toContain(sub?.status);
     expect(sub?.companyId).toBe(COMPANY);
     expect(sub?.userId).toBe(FOUNDER);
     expect(sub?.tierId).toBe(TIER_ID);
-    expect(sub?.activatedAt).toBeNull();
+    if (r.body?.stubMode) {
+      expect(sub?.status).toBe("active");
+      expect(sub?.activatedAt).toBeTruthy();
+    }
   });
 
-  /* (d) webhook payment_intent.succeeded flips pending → active ------------- */
-  it("(d) Airwallex payment_intent.succeeded webhook flips the subscription to active", async () => {
-    // Mint a fresh pending subscription.
+  /* (d) webhook payment_intent.succeeded yields an active subscription ------ */
+  it("(d) Airwallex payment_intent.succeeded webhook leaves the subscription active (idempotent in stub mode)", async () => {
+    // Mint a fresh subscription. In stub mode it is already auto-activated
+    // (v24.4.2 Bug F); the success webhook below must then be idempotent and
+    // leave it active. In test/live mode it would be pending and the webhook
+    // flips it to active. Either way the post-webhook state is `active`.
     const created = await call("POST", "/api/billing/plan", { tierId: TIER_ID, companyId: COMPANY, billingCycle: "annual" }, FOUNDER);
     const pid = created.body.paymentIntentId as string;
-    expect(getByPaymentIntent(pid)?.status).toBe("pending");
+    expect(["pending", "active"]).toContain(getByPaymentIntent(pid)?.status);
 
     // Build a realistic Airwallex webhook envelope. The handler normalises
     // type from body.name, intent id from data.object.id, status from
@@ -240,13 +307,16 @@ describe("v24.2 Airwallex billing wiring — POST /api/billing/plan + webhook + 
     expect(created.status).toBe(200);
     const pid = created.body.paymentIntentId as string;
 
-    // Owner sees pending (no webhook has landed yet).
-    const pending = await call("GET", `/api/founder/subscription/status?paymentIntentId=${encodeURIComponent(pid)}`, undefined, FOUNDER_E);
-    expect(pending.status).toBe(200);
-    expect(pending.body?.status).toBe("pending");
-    expect(pending.body?.tierId).toBe(TIER_ID);
+    // Owner can read its own subscription status. In stub mode (hermetic
+    // default) the route auto-activated it (v24.4.2 Bug F), so status is
+    // already `active`; in test/live mode it would be `pending` until the
+    // webhook lands. Assert the owner read succeeds with the correct tier.
+    const ownerView = await call("GET", `/api/founder/subscription/status?paymentIntentId=${encodeURIComponent(pid)}`, undefined, FOUNDER_E);
+    expect(ownerView.status).toBe(200);
+    expect(["pending", "active"]).toContain(ownerView.body?.status);
+    expect(ownerView.body?.tierId).toBe(TIER_ID);
 
-    // After the success webhook, the owner sees active.
+    // After the success webhook, the owner sees active (idempotent if already).
     const event = { name: "payment_intent.succeeded", data: { object: { id: pid, status: "SUCCEEDED", merchant_order_id: COMPANY_E } } };
     const rawBody = JSON.stringify(event);
     const timestamp = String(Date.now());

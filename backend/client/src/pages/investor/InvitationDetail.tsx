@@ -138,11 +138,20 @@ export default function InvitationDetail() {
  // Defect 2 fix: fetch dataroom scoped to company
  const dr = useQuery<DR[]>({
   queryKey: ["/api/dataroom", companyId],
+  /* v25.32 burndown — item 15: apiRequest throws ApiError on non-2xx, so the
+     prior `if (!res.ok) return []` was dead — a non-2xx surfaced as a query
+     error instead of the intended empty dataroom. Catch ApiError and return [].
+     Source: v25_32_apiRequest_dead_code_sites_gpt55.txt (InvitationDetail.tsx:143).
+     Read-only; additive. */
   queryFn: async () => {
    if (!companyId) return [];
-   const res = await apiRequest("GET", `/api/dataroom?companyId=${encodeURIComponent(companyId)}`);
-   if (!res.ok) return [];
-   return res.json();
+   try {
+    const res = await apiRequest("GET", `/api/dataroom?companyId=${encodeURIComponent(companyId)}`);
+    return res.json();
+   } catch (err) {
+    if (err instanceof ApiError) return [];
+    throw err;
+   }
   },
   enabled: !!companyId,
  });
@@ -150,11 +159,20 @@ export default function InvitationDetail() {
  // B3: Fetch decision record to know if investor has soft-circled (for B6 CoSoftCircleBox)
  const decisionRecord = useQuery<{ record?: { state?: string } }>({
    queryKey: ["/api/rounds", roundId, "invitations", id, "decision"],
+   /* v25.32 burndown — item 15: apiRequest throws ApiError on non-2xx, so the
+      prior `if (!res.ok) return {}` was dead — a non-2xx surfaced as a query
+      error instead of the intended empty decision record. Catch ApiError and
+      return {}. Source: v25_32_apiRequest_dead_code_sites_gpt55.txt
+      (InvitationDetail.tsx:155). Read-only; additive. */
    queryFn: async () => {
      if (!roundId || !id) return {};
-     const res = await apiRequest("GET", `/api/rounds/${roundId}/invitations/${id}/decision`);
-     if (!res.ok) return {};
-     return res.json();
+     try {
+       const res = await apiRequest("GET", `/api/rounds/${roundId}/invitations/${id}/decision`);
+       return res.json();
+     } catch (err) {
+       if (err instanceof ApiError) return {};
+       throw err;
+     }
    },
    enabled: !!roundId && !!id,
  });

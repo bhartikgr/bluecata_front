@@ -31,7 +31,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, ApiError } from "@/lib/queryClient";
 
 interface PromoteToCollectiveDialogProps {
   companyId: string;
@@ -56,10 +56,19 @@ export function PromoteToCollectiveDialog({
   // DEF-042: Prefetch collective/promotion-status so submit button shows "Already nominated" if applicable
   const collectiveStatusQ = useQuery<{ nominated: boolean; submittedAt?: string } | null>({
     queryKey: ["/api/investor/companies", companyId, "promotion-status"],
+    /* v25.32 burndown — item 15: apiRequest throws ApiError on non-2xx, so the
+       prior `if (res.status === 404) return null` was dead (the "not yet
+       nominated" 404 surfaced as a query error instead of null). Catch ApiError
+       and branch on .status. Source: v25_32_apiRequest_dead_code_sites_gpt55.txt
+       (PromoteToCollectiveDialog.tsx:60). Read-only; additive. */
     queryFn: async () => {
-      const res = await apiRequest("GET", `/api/investor/companies/${companyId}/promotion-status`);
-      if (res.status === 404) return null;
-      return res.json();
+      try {
+        const res = await apiRequest("GET", `/api/investor/companies/${companyId}/promotion-status`);
+        return res.json();
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 404) return null;
+        throw err;
+      }
     },
     enabled: open && !!companyId,
   });

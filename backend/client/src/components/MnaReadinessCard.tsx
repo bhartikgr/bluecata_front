@@ -28,9 +28,13 @@ export function MnaReadinessCard({ companyId }: { companyId: string }) {
   const ranking = useQuery<Ranking | null>({
     queryKey: ["/api/companies", companyId, "ma-readiness"],
     queryFn: async () => {
+      /* v25.32 burndown — item 15: apiRequest throws ApiError on non-2xx, so the
+         prior `if (res.status === 404) return null` was dead. Behavior was
+         already correct via the outer catch (any error → null); the dead line is
+         removed for clarity. Source:
+         v25_32_apiRequest_dead_code_sites_gpt55.txt (MnaReadinessCard.tsx:32). */
       try {
         const res = await apiRequest("GET", `/api/companies/${companyId}/ma-readiness`);
-        if (res.status === 404) return null;
         return res.json();
       } catch {
         return null;

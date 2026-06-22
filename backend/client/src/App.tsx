@@ -71,6 +71,7 @@ import PartnerSettings from "@/pages/partner/PartnerSettings";
 import PartnerSpvs from "@/pages/partner/PartnerSpvs";
 import PartnerSpvDetail from "@/pages/partner/PartnerSpvDetail";
 import PartnerFunds from "@/pages/partner/PartnerFunds";
+import PartnerBilling from "@/pages/partner/PartnerBilling"; /* v25.32 A3 — consortium partner commission ledger */
 import PartnerFundDetail from "@/pages/partner/PartnerFundDetail";
 import RedeemPartnerInvite from "@/pages/auth/RedeemPartnerInvite";
 
@@ -112,6 +113,7 @@ import AdminRegionExtensionDetail from "@/pages/admin/RegionExtensionDetail";
 import AdminAuditLog from "@/pages/admin/AuditLog";
 import AuditChainVerifyPage from "@/pages/admin/AuditChainVerifyPage"; /* v19 Phase C */
 import AdminReconciliation from "@/pages/admin/Reconciliation";
+import AdminPayments from "@/pages/admin/Payments"; /* v25.32 P1h */
 import AdminTelemetry from "@/pages/admin/Telemetry";
 // Sprint 12 — new admin + cross-role pages
 import NotificationCenter from "@/pages/NotificationCenter";
@@ -711,6 +713,9 @@ function AppRouter() {
         <Route path="/admin/reconciliation">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminReconciliation /></RequireAuth>}
         </Route>
+        <Route path="/admin/payments">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminPayments /></RequireAuth>}
+        </Route>
         <Route path="/admin/telemetry">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminTelemetry /></RequireAuth>}
         </Route>
@@ -862,6 +867,10 @@ function AppRouter() {
         </Route>
         <Route path="/collective/partner/settings">
           {() => <RequireAuth><CollectiveShell><PartnerSettings /></CollectiveShell></RequireAuth>}
+        </Route>
+        {/* v25.32 A3 — consortium partner billing (commission ledger; not subscription) */}
+        <Route path="/collective/partner/billing">
+          {() => <RequireAuth><CollectiveShell><PartnerBilling /></CollectiveShell></RequireAuth>}
         </Route>
         {/* CP Phase B — Partner onboarding checklist */}
         <Route path="/collective/partner/onboarding">

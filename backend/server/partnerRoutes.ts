@@ -1366,9 +1366,14 @@ export function registerPartnerRoutes(app: Express): void {
           existingCtx.isAuthed &&
           (existingCtx.identity?.email ?? "").trim().toLowerCase() !== (row.email ?? "").trim().toLowerCase()
         ) {
+          /* v25.32 P0 — include `invitedEmail` so the client recovery UI can
+           * show the partner which mailbox the invite targeted. The recovery
+           * "Log out and continue" action then clears the admin session and
+           * re-fires the (unconsumed) token as anonymous. */
           return res.status(403).json({
             error: "PARTNER_INVITATION_EMAIL_MISMATCH",
             message: "This invitation was sent to a different email. Please log out and redeem with the invited address.",
+            invitedEmail: row.email,
           });
         }
         const approvedUserId = existingCtx.isAuthed
@@ -1439,9 +1444,12 @@ export function registerPartnerRoutes(app: Express): void {
       existing.isAuthed &&
       (existing.identity?.email ?? "").trim().toLowerCase() !== (pending.invitedEmail ?? "").trim().toLowerCase()
     ) {
+      /* v25.32 P0 — include `invitedEmail` so the client recovery UI can
+       * display which mailbox owns this invite. See sibling branch above. */
       return res.status(403).json({
         error: "PARTNER_INVITATION_EMAIL_MISMATCH",
         message: "This invitation was sent to a different email. Please log out and redeem with the invited address.",
+        invitedEmail: pending.invitedEmail,
       });
     }
     // v25.14 NC1 — was hardcoded to "changeme" giving full account takeover

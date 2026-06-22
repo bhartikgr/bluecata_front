@@ -213,24 +213,17 @@ export function registerStripeWebhookRoute(app: Express): void {
    * IDs in a RAM-only Set, so any server restart within Stripe's 72h retry
    * window allowed duplicate processing. We now check / write the
    * processed_webhook_events table (shared with the Airwallex adapter). */
-  const processedStripeEvents = new Set<string>();
-  let _stripeWebhookTableEnsured = false;
-  function _ensureStripeWebhookTable(): void {
-    if (_stripeWebhookTableEnsured) return;
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { rawDb } = require("./db/connection");
-      const db: any = rawDb();
-      db.exec(`CREATE TABLE IF NOT EXISTS processed_webhook_events (
-        key TEXT PRIMARY KEY NOT NULL,
-        processed_at TEXT NOT NULL
-      );`);
-      _stripeWebhookTableEnsured = true;
-    } catch { /* non-fatal */ }
-  }
+  /* v25.32 deep — the in-memory `processedStripeEvents` Set fast-path was
+   * REMOVED per Ozan's "nothing in memory" rule. Stripe webhook idempotency
+   * is now DB-only via the central `processed_webhook_events` table (now
+   * created in server/db/connection.ts boot schema, not lazily here).
+   *
+   * Fail-closed: if the DB claim cannot be written, the webhook is rejected
+   * (we cannot prove single processing). This is the safe behavior —
+   * Stripe will retry on non-2xx and the next attempt will succeed once
+   * the DB is reachable.
+   */
   function _stripeEventAlreadyProcessed(eventId: string): boolean {
-    if (processedStripeEvents.has(eventId)) return true;
-    _ensureStripeWebhookTable();
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const { rawDb } = require("./db/connection");
@@ -238,25 +231,34 @@ export function registerStripeWebhookRoute(app: Express): void {
       const row: any = db.prepare(
         `SELECT 1 FROM processed_webhook_events WHERE key = ? LIMIT 1`,
       ).get(`stripe::${eventId}`);
-      if (row) {
-        processedStripeEvents.add(eventId);
-        return true;
-      }
-    } catch { /* fall through */ }
-    return false;
+      return !!row;
+    } catch (e) {
+      // Fail-closed: do NOT treat "unknown" as "already processed"; the
+      // handler will attempt to record, which will also fail, and the
+      // 5xx response we return then will trigger Stripe's retry path.
+      return false;
+    }
   }
+  /**
+   * Atomically claim a Stripe event id in `processed_webhook_events`.
+   * Returns true if THIS call is the one that claimed it (proceed with
+   * downstream writes), false if it was already claimed (idempotent return).
+   * Throws on DB failure so the caller can return 5xx to trigger Stripe's
+   * native retry rather than silently double-process.
+   */
+  function _claimStripeEvent(eventId: string): boolean {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { rawDb } = require("./db/connection");
+    const db: any = rawDb();
+    const result: any = db.prepare(
+      `INSERT OR IGNORE INTO processed_webhook_events (key, processed_at) VALUES (?, ?)`,
+    ).run(`stripe::${eventId}`, new Date().toISOString());
+    return typeof result?.changes === "number" && result.changes > 0;
+  }
+  /* Legacy compatibility shim — some downstream code may still import
+   * `_recordStripeEvent`. Keep as a no-op that hits the durable claim. */
   function _recordStripeEvent(eventId: string): void {
-    processedStripeEvents.add(eventId);
-    _ensureStripeWebhookTable();
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { rawDb } = require("./db/connection");
-      const db: any = rawDb();
-      db.prepare(
-        `INSERT INTO processed_webhook_events (key, processed_at) VALUES (?, ?)
-         ON CONFLICT(key) DO NOTHING`,
-      ).run(`stripe::${eventId}`, new Date().toISOString());
-    } catch { /* fall through */ }
+    try { _claimStripeEvent(eventId); } catch { /* swallowed: only used by legacy callers */ }
   }
 
   app.post("/api/webhooks/stripe", (req: Request, res: Response) => {
@@ -281,69 +283,114 @@ export function registerStripeWebhookRoute(app: Express): void {
       return res.status(400).json({ ok: false, error: "invalid_event" });
     }
 
-    // Idempotency — v25.11 NL3: DB-backed check, survives restart.
-    if (_stripeEventAlreadyProcessed(event.id)) {
-      return res.json({ ok: true, idempotent: true });
-    }
-    _recordStripeEvent(event.id);
-
-    // Route events
+    /* v25.32 deep — atomic claim. We INSERT OR IGNORE into
+     * `processed_webhook_events` and inspect `changes`. If THIS call won
+     * the claim, proceed with downstream writes. If not, return idempotent
+     * success. The claim and downstream writes share `getDb().transaction`
+     * for full atomicity (the durable `processed_webhook_events` row is
+     * only committed if the downstream writes also commit).
+     *
+     * On any DB failure we return 500 so Stripe's native retry kicks in
+     * — we never silently double-process or skip processing.
+     */
     const companyId: string | undefined = event?.data?.object?.metadata?.companyId;
 
     try {
-      switch (event.type) {
-        case "payment_intent.succeeded": {
-          if (companyId) {
-            const sub = getSubscription(companyId);
-            if (sub?.status === "past_due") {
-              updateSubscription(companyId, { status: "active" }, "system:stripe_webhook");
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { rawDb } = require("./db/connection");
+      const db: any = rawDb();
+      let claimed = false;
+      db.transaction(() => {
+        const claim: any = db.prepare(
+          `INSERT OR IGNORE INTO processed_webhook_events (key, processed_at) VALUES (?, ?)`,
+        ).run(`stripe::${event.id}`, new Date().toISOString());
+        claimed = typeof claim?.changes === "number" && claim.changes > 0;
+        if (!claimed) return; // idempotent: another worker already processed; abort downstream
+        // Downstream writes are still in this transaction. If any throws,
+        // the claim row is rolled back too — next retry will re-claim cleanly.
+        /* v25.32 final — every updateSubscription() call must THROW on failure
+         * so the surrounding transaction (and the processed_webhook_events
+         * claim) rolls back. Previously the {ok:false} return was ignored,
+         * which let the claim commit while the downstream subscription
+         * status flip silently failed — Stripe would not retry, and the
+         * subscription would be permanently stuck. The `assertUpdated`
+         * helper enforces ok=true. */
+        const assertUpdated = (result: { ok: boolean; error?: string }, label: string) => {
+          if (!result.ok) {
+            throw new Error(`[stripe-webhook] ${label} failed: ${result.error ?? "unknown"}`);
+          }
+        };
+        switch (event.type) {
+          case "payment_intent.succeeded": {
+            if (companyId) {
+              const sub = getSubscription(companyId);
+              if (sub?.status === "past_due") {
+                assertUpdated(
+                  updateSubscription(companyId, { status: "active" }, "system:stripe_webhook"),
+                  "updateSubscription(active)",
+                );
+              }
+              appendAdminAudit("system:stripe_webhook", `subscription:${companyId}`, "invoice.paid", {
+                stripeEventId: event.id,
+                amount: event.data?.object?.amount,
+              });
             }
-            appendAdminAudit("system:stripe_webhook", `subscription:${companyId}`, "invoice.paid", {
-              stripeEventId: event.id,
-              amount: event.data?.object?.amount,
-            });
+            break;
           }
-          break;
-        }
-        case "payment_intent.payment_failed": {
-          if (companyId) {
-            const sub = getSubscription(companyId);
-            if (sub?.status === "active") {
-              updateSubscription(companyId, { status: "past_due" }, "system:stripe_webhook");
+          case "payment_intent.payment_failed": {
+            if (companyId) {
+              const sub = getSubscription(companyId);
+              if (sub?.status === "active") {
+                assertUpdated(
+                  updateSubscription(companyId, { status: "past_due" }, "system:stripe_webhook"),
+                  "updateSubscription(past_due)",
+                );
+              }
+              appendAdminAudit("system:stripe_webhook", `subscription:${companyId}`, "payment.failed", {
+                stripeEventId: event.id,
+              });
             }
-            appendAdminAudit("system:stripe_webhook", `subscription:${companyId}`, "payment.failed", {
-              stripeEventId: event.id,
-            });
+            break;
           }
-          break;
-        }
-        case "charge.refunded": {
-          appendAdminAudit("system:stripe_webhook", "payment", "invoice.refunded", {
-            stripeEventId: event.id,
-            companyId: companyId ?? "unknown",
-          });
-          break;
-        }
-        case "customer.subscription.deleted": {
-          if (companyId) {
-            updateSubscription(companyId, { status: "canceled" }, "system:stripe_webhook");
-            appendAdminAudit("system:stripe_webhook", `subscription:${companyId}`, "subscription.updated", {
-              status: "canceled",
+          case "charge.refunded": {
+            appendAdminAudit("system:stripe_webhook", "payment", "invoice.refunded", {
               stripeEventId: event.id,
+              companyId: companyId ?? "unknown",
             });
+            break;
           }
-          break;
+          case "customer.subscription.deleted": {
+            if (companyId) {
+              /* v25.32 final — "canceled" was the prior spelling but the
+               * Subscription status union expects "cancelled" (British
+               * spelling, the platform's canonical form). Fix the enum
+               * value so the TS error at this line goes away and the
+               * downstream subscription row carries the canonical status. */
+              assertUpdated(
+                updateSubscription(companyId, { status: "cancelled" }, "system:stripe_webhook"),
+                "updateSubscription(cancelled)",
+              );
+              appendAdminAudit("system:stripe_webhook", `subscription:${companyId}`, "subscription.updated", {
+                status: "cancelled",
+                stripeEventId: event.id,
+              });
+            }
+            break;
+          }
+          default:
+            // Unhandled event — log inside the txn (audit-friendly) and proceed
+            log.info(`[stripe-webhook] unhandled event type: ${event.type}`);
         }
-        default:
-          // Unhandled event — log and return 200
-          log.info(`[stripe-webhook] unhandled event type: ${event.type}`);
-      }
+      })();
+      if (!claimed) return res.json({ ok: true, idempotent: true });
+      return res.json({ ok: true, type: event.type });
     } catch (err) {
       log.error("[stripe-webhook] handler error:", err);
       return res.status(500).json({ ok: false, error: "handler_error" });
     }
 
-    res.json({ ok: true, type: event.type });
+    /* v25.32 deep — the legacy non-atomic switch below was removed; the
+     * atomic block above is the only execution path. */
   });
 }
 
