@@ -1,0 +1,105 @@
+/**
+ * UK default formula set.
+ * Citations: BVCA model documents, EMI scheme rules (HMRC), SEIS/EIS, IFRS 2.
+ */
+import type { FormulaRecord } from "../types.js";
+const def = (formula: string, where?: Record<string, string>) => ({ formula, ...(where ? { where } : {}) });
+
+export const UK_FORMULAS: FormulaRecord[] = [
+  {
+    id: "safe.postmoney.conversion",
+    name: "ASA (UK SAFE-equivalent) post-money conversion",
+    region: "UK",
+    version: "1.0.0",
+    status: "active",
+    category: "safe_conversion",
+    citation: {
+      source: "BVCA model Advance Subscription Agreement; aligned with YC post-money mechanics",
+      url: "https://www.bvca.co.uk/Our-industry/Standardised-Documents",
+    },
+    definition: def("ASA Shares = Subscription / min(capPrice, discountPrice)"),
+  },
+  {
+    id: "safe.premoney.conversion",
+    name: "ASA pre-money conversion (UK)",
+    region: "UK",
+    version: "1.0.0",
+    status: "active",
+    category: "safe_conversion",
+    citation: { source: "BVCA model ASA, pre-money cap variant", url: "https://www.bvca.co.uk/Our-industry/Standardised-Documents" },
+    definition: def("ASA Shares = Subscription / Conversion Price"),
+  },
+  {
+    id: "note.conversion",
+    name: "Convertible Loan Note conversion (UK)",
+    region: "UK",
+    version: "1.0.0",
+    status: "active",
+    category: "note_conversion",
+    citation: { source: "BVCA Convertible Loan Note model", url: "https://www.bvca.co.uk/Our-industry/Standardised-Documents" },
+    definition: def("(Principal + Interest) / min(discountPrice, capPrice)"),
+  },
+  {
+    id: "antiDilution.fullRatchet",
+    name: "Anti-dilution: Full-Ratchet (UK BVCA)",
+    region: "UK",
+    version: "1.0.0",
+    status: "active",
+    category: "anti_dilution",
+    citation: { source: "BVCA preferred shares model", url: "https://www.bvca.co.uk/Our-industry/Standardised-Documents" },
+    definition: def("NCP = NIP"),
+  },
+  {
+    id: "antiDilution.broadBased",
+    name: "Anti-dilution: Broad-Based WA (UK)",
+    region: "UK",
+    version: "1.0.0",
+    status: "active",
+    category: "anti_dilution",
+    citation: { source: "BVCA broad-based WA", url: "https://www.bvca.co.uk/Our-industry/Standardised-Documents" },
+    definition: def("NCP = OCP × (A+B)/(A+C)"),
+  },
+  {
+    id: "antiDilution.narrowBased",
+    name: "Anti-dilution: Narrow-Based WA (UK)",
+    region: "UK",
+    version: "1.0.0",
+    status: "active",
+    category: "anti_dilution",
+    citation: { source: "BVCA narrow-based WA", url: "https://www.bvca.co.uk/Our-industry/Standardised-Documents" },
+    definition: def("NCP = OCP × (A_narrow+B)/(A_narrow+C)"),
+  },
+  {
+    id: "esop.topup",
+    name: "EMI / CSOP option pool top-up (UK)",
+    region: "UK",
+    version: "1.0.0",
+    status: "active",
+    category: "esop_topup",
+    citation: {
+      source: "HMRC EMI scheme rules (ITEPA 2003 Schedule 5) + IFRS 2",
+      url: "https://www.gov.uk/government/publications/enterprise-management-incentives-scheme",
+    },
+    definition: def("T = (P×(existing+newInv) − pool) / (1−P)"),
+  },
+  {
+    id: "waterfall.liquidation",
+    name: "Liquidation Waterfall (UK BVCA)",
+    region: "UK",
+    version: "1.0.0",
+    status: "active",
+    category: "waterfall",
+    citation: { source: "BVCA Articles of Association — preferred share rights", url: "https://www.bvca.co.uk/Our-industry/Standardised-Documents" },
+    definition: def("Senior pref → preference → participation/cap → ords"),
+  },
+  {
+    id: "ownership.percent",
+    name: "Ownership % (UK)",
+    region: "UK",
+    version: "1.0.0",
+    status: "active",
+    category: "ownership",
+    citation: { source: "BVCA cap table convention", url: "https://www.bvca.co.uk/Our-industry/Standardised-Documents" },
+    definition: def("ownership_i = shares_i / Σ shares"),
+  },
+];
