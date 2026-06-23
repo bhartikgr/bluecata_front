@@ -40,17 +40,15 @@ export default function PartnerFiles() {
 
   const upload = useMutation({
     mutationFn: async (fileName: string) => {
+      /* v25.33 — apiRequest() throws ApiError on non-2xx (validation/seat/auth),
+         so the former `if (!res.ok)` guard (here, in deleteFile, and in viewFile
+         below) was unreachable dead code. The thrown ApiError reaches the
+         respective onError / catch unchanged, preserving the failure toast. */
       const res = await apiRequest("POST", "/api/partner/me/files", {
         fileName,
         sizeBytes: 0,
         mimeType: "application/octet-stream",
       });
-      /* v25.23 NM — check res.ok so a non-2xx (validation/seat/auth) doesn't
-         clear the input + invalidate the list as a false success. */
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({} as { error?: string; message?: string }));
-        throw new Error(body.message || body.error || `HTTP ${res.status}`);
-      }
       return res.json();
     },
     onSuccess: () => {
@@ -66,10 +64,6 @@ export default function PartnerFiles() {
   const deleteFile = useMutation({
     mutationFn: async (id: string) => {
       const res = await apiRequest("DELETE", `/api/partner/me/files/${id}`);
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({} as { error?: string; message?: string }));
-        throw new Error(body.message || body.error || `HTTP ${res.status}`);
-      }
       return res.json();
     },
     onMutate: async (id: string) => {
@@ -95,10 +89,6 @@ export default function PartnerFiles() {
   const viewFile = async (id: string) => {
     try {
       const res = await apiRequest("GET", `/api/partner/me/files/${id}/url`);
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({} as { error?: string; message?: string }));
-        throw new Error(body.message || body.error || `HTTP ${res.status}`);
-      }
       const { url } = (await res.json()) as { url: string };
       if (url) window.open(url, "_blank", "noopener,noreferrer");
     } catch (e) {

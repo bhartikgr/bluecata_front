@@ -10,6 +10,7 @@
  * Editor lives at /admin/pricing-models/:id
  */
 import { useState } from "react";
+import { formatMinor } from "@/lib/currency"; /* v25.38 currency sweep */
 import { Link, useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { PageBody, PageHeader } from "@/components/AppShell";
@@ -70,12 +71,8 @@ const PRODUCT_LINE_LABEL: Record<ProductLine, string> = {
 };
 
 function fmtMoney(minor: number, currency: string): string {
-  const amount = minor / 100;
-  try {
-    return new Intl.NumberFormat(undefined, { style: "currency", currency, maximumFractionDigits: 2 }).format(amount);
-  } catch {
-    return `${currency} ${amount.toFixed(2)}`;
-  }
+  // v25.38 — delegate to shared ISO-4217-aware formatter (2-decimal parity).
+  return formatMinor(minor, currency);
 }
 
 export default function AdminPricingModels() {
@@ -108,6 +105,9 @@ export default function AdminPricingModels() {
     onSuccess: (data: { ok: true; created: Array<{ id: string; slug: string; name: string; status: string }>; message: string } | { ok: false; error: string; message?: string }) => {
       if ((data as { ok: true }).ok) {
         queryClient.invalidateQueries({ queryKey: ["/api/admin/pricing-models"] });
+        // v25.40 FIX-3: cascade pricing edits to founder-facing pricing queries (sync P1 #3).
+        queryClient.invalidateQueries({ queryKey: ["/api/admin/pricing-tiers"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/billing/tiers"] });
         const d = data as { created: Array<{ id: string }>; message: string };
         toast({ title: `${d.created.length} draft tier(s) created`, description: d.message });
       } else {
@@ -122,6 +122,9 @@ export default function AdminPricingModels() {
     mutationFn: async () => (await apiRequest("POST", "/api/admin/pricing-models/migrate-legacy")).json(),
     onSuccess: (data: { ok: true; created: Array<{ id: string }>; skipped: Array<{ plan: string; reason: string }>; message: string }) => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/pricing-models"] });
+      // v25.40 FIX-3: cascade pricing edits to founder-facing pricing queries (sync P1 #3).
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/pricing-tiers"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/billing/tiers"] });
       toast({
         title: `${data.created.length} legacy tier(s) migrated`,
         description: `${data.message} Skipped: ${data.skipped.length}.`,
@@ -134,6 +137,9 @@ export default function AdminPricingModels() {
     mutationFn: async (id: string) => (await apiRequest("POST", `/api/admin/pricing-models/${id}/clone`)).json(),
     onSuccess: (data: { ok: true; model: PricingModel }) => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/pricing-models"] });
+      // v25.40 FIX-3: cascade pricing edits to founder-facing pricing queries (sync P1 #3).
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/pricing-tiers"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/billing/tiers"] });
       toast({ title: "Model cloned", description: `New draft '${data.model.name}' created.` });
       navigate(`/admin/pricing-models/${data.model.id}`);
     },
@@ -144,6 +150,9 @@ export default function AdminPricingModels() {
     mutationFn: async (id: string) => (await apiRequest("DELETE", `/api/admin/pricing-models/${id}`)).json(),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/pricing-models"] });
+      // v25.40 FIX-3: cascade pricing edits to founder-facing pricing queries (sync P1 #3).
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/pricing-tiers"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/billing/tiers"] });
       toast({ title: "Draft deleted" });
     },
     onError: (e: Error) => toast({ title: "Delete failed", description: e.message, variant: "destructive" }),
@@ -360,6 +369,9 @@ function CreatePricingModelDialog({ open, setOpen, onCreated }: { open: boolean;
     },
     onSuccess: (data: { ok: true; model: PricingModel }) => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/pricing-models"] });
+      // v25.40 FIX-3: cascade pricing edits to founder-facing pricing queries (sync P1 #3).
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/pricing-tiers"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/billing/tiers"] });
       setOpen(false);
       onCreated(data.model.id);
       toast({ title: "Draft created", description: `New pricing model '${data.model.name}' created in draft status.` });

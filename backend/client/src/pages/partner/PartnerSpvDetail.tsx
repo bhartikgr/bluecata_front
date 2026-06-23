@@ -4,6 +4,7 @@
  * + distribution forms wired to the v25.23 NC-A real DB-backed handlers.
  */
 import { useState } from "react";
+import { formatMinor as formatMinorLib } from "@/lib/currency"; /* v25.38 currency sweep */
 import { useRoute } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient"; /* v25.14 NH3 — needed for queryFn */
@@ -28,7 +29,8 @@ type SpvDetail = {
 };
 
 function formatMinor(minor: number, currency: string) {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(minor / 100);
+  // v25.38 — delegate to shared ISO-4217-aware formatter (2-decimal parity).
+  return formatMinorLib(minor, currency, { locale: "en-US" });
 }
 
 export default function PartnerSpvDetail() {
@@ -58,14 +60,13 @@ export default function PartnerSpvDetail() {
 
   const callMut = useMutation({
     mutationFn: async (amountMinor: number) => {
+      /* v25.33 — apiRequest() throws ApiError on non-2xx; the former `if (!res.ok)`
+         guard (here and in distMut below) was unreachable dead code. The thrown
+         ApiError reaches onError unchanged, preserving the failure toast. */
       const res = await apiRequest("POST", `/api/partner/me/spvs/${spvId}/capital-calls`, {
         amount_minor: amountMinor,
         called_at: new Date().toISOString(),
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({} as any));
-        throw new Error(body?.message || body?.error || `Capital call failed (${res.status})`);
-      }
       return res.json();
     },
     onSuccess: () => {
@@ -83,10 +84,6 @@ export default function PartnerSpvDetail() {
         total_minor: totalMinor,
         distributed_at: new Date().toISOString(),
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({} as any));
-        throw new Error(body?.message || body?.error || `Distribution failed (${res.status})`);
-      }
       return res.json();
     },
     onSuccess: () => {

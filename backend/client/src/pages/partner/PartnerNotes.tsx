@@ -26,14 +26,11 @@ export default function PartnerNotes() {
   const { toast } = useToast();
 
   const createMut = useMutation({
-    /* v25.23 NM — check res.ok so a non-2xx response surfaces as an error
-       instead of clearing the editor + invalidating the list as a false success. */
+    /* v25.33 — apiRequest() throws ApiError on non-2xx, so the former `if (!res.ok)`
+       guard was unreachable dead code. The thrown ApiError reaches onError
+       unchanged, preserving the "Note save failed" toast. */
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/partner/me/notes", { title, body, scope: "general" });
-      if (!res.ok) {
-        const errBody = await res.json().catch(() => ({} as { error?: string; message?: string }));
-        throw new Error(errBody.message || errBody.error || `HTTP ${res.status}`);
-      }
       return res.json();
     },
     onSuccess: () => { setTitle(""); setBody(""); queryClient.invalidateQueries({ queryKey: ["/api/partner/me/notes"] }); },

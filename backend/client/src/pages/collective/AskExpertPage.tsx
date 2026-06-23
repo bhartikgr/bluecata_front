@@ -135,8 +135,11 @@ export default function AskExpertPage(): JSX.Element | null {
         tags,
         chapter_id: chapterId,
       });
+      // v25.34 Phase 3 — apiRequest() throws ApiError on any non-2xx response,
+      // so res.ok is always true here; the former `!res.ok` branch was dead code.
+      // We keep the body-level `!payload.ok` check (server may return 200 with ok:false).
       const payload = (await res.json()) as { ok?: boolean; error?: string };
-      if (!res.ok || !payload.ok) {
+      if (!payload.ok) {
         throw new Error(payload.error ?? "post_failed");
       }
       return payload;

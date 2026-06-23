@@ -72,6 +72,10 @@ import PartnerSpvs from "@/pages/partner/PartnerSpvs";
 import PartnerSpvDetail from "@/pages/partner/PartnerSpvDetail";
 import PartnerFunds from "@/pages/partner/PartnerFunds";
 import PartnerBilling from "@/pages/partner/PartnerBilling"; /* v25.32 A3 — consortium partner commission ledger */
+/* v25.33 Consortium Partner Payment Model — partner self-service pages. */
+import PartnerSubscribe from "@/pages/partner/PartnerSubscribe";
+import PartnerAgreementSign from "@/pages/partner/PartnerAgreementSign";
+import PartnerTaxForm from "@/pages/partner/PartnerTaxForm";
 import PartnerFundDetail from "@/pages/partner/PartnerFundDetail";
 import RedeemPartnerInvite from "@/pages/auth/RedeemPartnerInvite";
 
@@ -114,6 +118,15 @@ import AdminAuditLog from "@/pages/admin/AuditLog";
 import AuditChainVerifyPage from "@/pages/admin/AuditChainVerifyPage"; /* v19 Phase C */
 import AdminReconciliation from "@/pages/admin/Reconciliation";
 import AdminPayments from "@/pages/admin/Payments"; /* v25.32 P1h */
+/* v25.33 Consortium Partner Payment Model — admin surfaces (DB-driven). */
+import AdminPartners from "@/pages/admin/Partners";
+import AdminPartnerFeeSchedules from "@/pages/admin/PartnerFeeSchedules";
+import AdminApplicationFee from "@/pages/admin/AdminApplicationFee"; /* v25.39 */
+import AdminCommissionRates from "@/pages/admin/AdminCommissionRates"; /* v25.39 */
+import AdminPartnerPL from "@/pages/admin/PartnerPL";
+/* v25.34 Collective Payment Model — admin pages (DB-driven). */
+import AdminCollectivePaymentSchedules from "@/pages/admin/CollectivePaymentSchedules";
+import AdminCollectivePaymentPL from "@/pages/admin/CollectivePaymentPL";
 import AdminTelemetry from "@/pages/admin/Telemetry";
 // Sprint 12 — new admin + cross-role pages
 import NotificationCenter from "@/pages/NotificationCenter";
@@ -635,6 +648,32 @@ function AppRouter() {
         <Route path="/admin/bridge-history">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminBridgeHistory /></RequireAuth>}
         </Route>
+        {/* v25.33 Consortium Partner Payment Model — admin partner roster (DB-driven).
+           MUST precede /admin/partners/:id so wouter matches the exact list path first. */}
+        <Route path="/admin/partners">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminPartners /></RequireAuth>}
+        </Route>
+        {/* v25.33 — partner fee catalogue + partner P&L (DB-driven). */}
+        <Route path="/admin/partner-fees">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminPartnerFeeSchedules /></RequireAuth>}
+        </Route>
+        <Route path="/admin/partner-pl">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminPartnerPL /></RequireAuth>}
+        </Route>
+        {/* v25.39 — DB-driven fee config editors (application fee + commission rates). */}
+        <Route path="/admin/application-fee">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminApplicationFee /></RequireAuth>}
+        </Route>
+        <Route path="/admin/commission-rates">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminCommissionRates /></RequireAuth>}
+        </Route>
+        {/* v25.34 — Collective payment schedules + Collective P&L (DB-driven). */}
+        <Route path="/admin/collective-payment-schedules">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminCollectivePaymentSchedules /></RequireAuth>}
+        </Route>
+        <Route path="/admin/collective-payment-pl">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminCollectivePaymentPL /></RequireAuth>}
+        </Route>
         {/* v25.0 Track 5 — E7: Admin Partner Detail */}
         <Route path="/admin/partners/:id">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminPartnerDetail /></RequireAuth>}
@@ -871,6 +910,16 @@ function AppRouter() {
         {/* v25.32 A3 — consortium partner billing (commission ledger; not subscription) */}
         <Route path="/collective/partner/billing">
           {() => <RequireAuth><CollectiveShell><PartnerBilling /></CollectiveShell></RequireAuth>}
+        </Route>
+        {/* v25.33 Consortium Partner Payment Model — partner self-service pages. */}
+        <Route path="/collective/partner/subscribe">
+          {() => <RequireAuth><CollectiveShell><PartnerSubscribe /></CollectiveShell></RequireAuth>}
+        </Route>
+        <Route path="/collective/partner/agreement">
+          {() => <RequireAuth><CollectiveShell><PartnerAgreementSign /></CollectiveShell></RequireAuth>}
+        </Route>
+        <Route path="/collective/partner/tax-form">
+          {() => <RequireAuth><CollectiveShell><PartnerTaxForm /></CollectiveShell></RequireAuth>}
         </Route>
         {/* CP Phase B — Partner onboarding checklist */}
         <Route path="/collective/partner/onboarding">

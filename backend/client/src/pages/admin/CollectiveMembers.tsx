@@ -51,7 +51,12 @@ export default function CollectiveMembers() {
       (await apiRequest("POST", `/api/admin/collective/members/${userId}/suspend`, {})).json(),
     onSuccess: () => {
       toast({ title: "Member deactivated" });
+      // v25.40 FIX-2: broaden invalidation so founder-facing collective views
+      // reflect the suspend immediately (sync P1 #2).
       queryClient.invalidateQueries({ queryKey: ["/api/admin/collective/members"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/collective/membership/me"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/collective/dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/collective/members"] });
       setDeactivatingId(null);
     },
     onError: () => toast({ variant: "destructive", title: "Deactivate failed", description: "Please try again. If the issue persists, contact support." }),
@@ -65,7 +70,11 @@ export default function CollectiveMembers() {
     onSuccess: () => {
       toast({ title: "Member activated", description: "Collective membership bootstrapped." });
       setBootstrapEmail("");
+      // v25.40 FIX-2: broaden invalidation (sync P1 #2).
       queryClient.invalidateQueries({ queryKey: ["/api/admin/collective/members"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/collective/membership/me"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/collective/dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/collective/members"] });
     },
     onError: (err: unknown) =>
       toast({

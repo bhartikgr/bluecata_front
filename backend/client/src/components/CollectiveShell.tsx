@@ -13,6 +13,9 @@ import {
   TrendingUp, ClipboardList, UserCircle, Activity, Settings, Menu, X,
   ArrowLeftRight, LogOut, Scale, UserPlus, FileText, ListTodo, FolderOpen,
   PiggyBank, CalendarDays, Trophy, Receipt,
+  /* v25.33 Consortium Partner Payment Model — icons for the new partner
+     self-service nav items (Subscribe / Agreement / Tax Forms). */
+  CreditCard, FileSignature, FileCheck,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -96,6 +99,10 @@ const PARTNER_WORKSPACE_GROUP: NavGroup = {
     { href: "/collective/partner/funds", label: "Funds", icon: PiggyBank, "data-testid": "nav-partner-funds" },
     /* v25.32 A3 — consortium partner commission ledger (not subscription billing). */
     { href: "/collective/partner/billing", label: "Billing", icon: Receipt, "data-testid": "nav-partner-billing" },
+    /* v25.33 Consortium Partner Payment Model — partner self-service surfaces. */
+    { href: "/collective/partner/subscribe", label: "Subscribe", icon: CreditCard, "data-testid": "nav-partner-subscribe" },
+    { href: "/collective/partner/agreement", label: "Agreement", icon: FileSignature, "data-testid": "nav-partner-agreement" },
+    { href: "/collective/partner/tax-form", label: "Tax Forms", icon: FileCheck, "data-testid": "nav-partner-tax-form" },
     { href: "/collective/partner/settings", label: "Settings", icon: Settings, "data-testid": "nav-partner-settings" },
   ],
 };

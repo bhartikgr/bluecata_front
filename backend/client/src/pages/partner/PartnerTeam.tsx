@@ -48,14 +48,11 @@ export default function PartnerTeam() {
   useEffect(() => () => { if (tokenTimerRef.current) clearTimeout(tokenTimerRef.current); }, []);
 
   const inviteMut = useMutation({
-    /* v25.23 NM — check res.ok so a non-2xx response surfaces as an error toast
-       instead of a false success that clears the form + invalidates the list. */
+    /* v25.33 — apiRequest() throws ApiError on non-2xx, so the prior `if (!res.ok)`
+       guard (here and in removeMut below) was unreachable dead code. The thrown
+       ApiError reaches onError unchanged, preserving the failure toast. */
     mutationFn: async (): Promise<{ invitation: { invitedEmail: string }; plainToken: string }> => {
       const res = await apiRequest("POST", "/api/partner/me/team/invitations", { email, subRole });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({} as { error?: string; message?: string }));
-        throw new Error(body.message || body.error || `HTTP ${res.status}`);
-      }
       return res.json();
     },
     onSuccess: (data) => {
@@ -72,13 +69,8 @@ export default function PartnerTeam() {
     onError: onErr("Invite"),
   });
   const removeMut = useMutation({
-    /* v25.23 NM — check res.ok before treating the remove as successful. */
     mutationFn: async (userId: string) => {
       const res = await apiRequest("DELETE", `/api/partner/me/team/${userId}`);
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({} as { error?: string; message?: string }));
-        throw new Error(body.message || body.error || `HTTP ${res.status}`);
-      }
       return res.json();
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/partner/me/team"] }),

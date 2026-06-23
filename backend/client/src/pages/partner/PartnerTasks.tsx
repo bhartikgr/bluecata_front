@@ -40,13 +40,11 @@ export default function PartnerTasks() {
 
   const createTask = useMutation({
     mutationFn: async (title: string) => {
+      /* v25.33 — apiRequest() throws ApiError on any non-2xx response, so the
+         former `if (!res.ok)` guard was unreachable dead code (res.ok is always
+         true past this point). A non-2xx now propagates as a thrown ApiError
+         straight to onError below — same error-surfacing behaviour, no dead branch. */
       const res = await apiRequest("POST", "/api/partner/me/tasks", { title });
-      /* v25.23 NM — check res.ok so a non-2xx response surfaces as an error
-         instead of clearing the input + invalidating the list as a false success. */
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({} as { error?: string; message?: string }));
-        throw new Error(body.message || body.error || `HTTP ${res.status}`);
-      }
       return res.json();
     },
     onSuccess: () => {

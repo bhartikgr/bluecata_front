@@ -8,6 +8,7 @@ import { useQuery } from "@tanstack/react-query";
 import { PartnerShell, PartnerEmptyState } from "@/components/partner/PartnerShell";
 import { useRequirePartnerRole, tierAtLeast } from "@/lib/partner/useRequirePartnerRole";
 import { apiRequest } from "@/lib/queryClient";
+import { formatMinor } from "@/lib/currency"; /* v25.40 FIX-12 currency sweep */
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 interface DashboardSnapshot {
@@ -88,12 +89,19 @@ export default function PartnerDashboard() {
               {/* v25.16 NL1 — currency label on committed totals so the
                  number is not bare. (Server-side multi-currency rollup is
                  covered by server NM1.) */}
+              {/* v25.40 FIX-12 (consortium P2 #1): the v25.38 currency-formatter
+                 sweep missed these two inline `(value / 100).toLocaleString()`
+                 calls, which hardcoded a 2-decimal divisor and broke 0-/3-decimal
+                 currencies. Use the shared ISO 4217-aware formatMinor instead.
+                 The portfolio rollup has no per-currency field yet (server-side
+                 multi-currency rollup is tracked separately), so we default to
+                 "USD" — matching the prior hardcoded label. */}
               <div className="text-xs mt-3 text-slate-700" data-testid="kpi-spv">
-                SPVs committed: {(data.portfolio.totalSpvCommittedMinor / 100).toLocaleString()}{" "}
+                SPVs committed: {formatMinor(data.portfolio.totalSpvCommittedMinor, "USD", { locale: "en-US" })}{" "}
                 <span className="text-slate-400">USD</span>
               </div>
               <div className="text-xs text-slate-700" data-testid="kpi-fund">
-                Funds committed: {(data.portfolio.totalFundCommittedMinor / 100).toLocaleString()}{" "}
+                Funds committed: {formatMinor(data.portfolio.totalFundCommittedMinor, "USD", { locale: "en-US" })}{" "}
                 <span className="text-slate-400">USD</span>
               </div>
             </CardContent>

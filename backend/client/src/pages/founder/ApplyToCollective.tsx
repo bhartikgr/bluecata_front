@@ -22,8 +22,9 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation, Link } from "wouter";
 import {
   Sparkles, ShieldCheck, Users, Mail, ExternalLink, AlertTriangle,
-  Building2, FileText, Trophy,
+  Building2, FileText, Trophy, Loader2, RefreshCw,
 } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -54,6 +55,21 @@ type Application = {
   status: "submitted" | "reviewing" | "invited" | "accepted" | "rejected" | "waitlisted";
   submittedAt: string;
 };
+
+/**
+ * v25.39 Phase 1 — inline loading placeholder for the DB-driven application fee.
+ * Rendered at both fee display sites while the fee query is pending so the user
+ * NEVER sees a stale/guessed amount (the old soft-fall to $2,500). Uses only the
+ * existing Loader2 icon + Tailwind utilities — no new theme tokens.
+ */
+function FeeLoading() {
+  return (
+    <span className="inline-flex items-center gap-1.5 align-middle text-muted-foreground" data-testid="fee-loading">
+      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+      Loading application fee…
+    </span>
+  );
+}
 
 const STATUS_BADGE: Record<string, string> = {
   pending_vouch: "bg-amber-50 text-amber-800 border-amber-200",
@@ -138,7 +154,7 @@ export default function FounderApplyToCollective() {
               {mineApp.status === "reviewing" && <><strong>Under review</strong> since {new Date(mineApp.submittedAt).toLocaleDateString()}.</>}
               {(mineApp.status === "invited" || mineApp.status === "accepted") && <><strong className="text-emerald-800">Accepted on {mineApp.reviewedAt ? new Date(mineApp.reviewedAt).toLocaleDateString() : "—"}</strong> — congratulations! <Link href="/collective"><span className="underline cursor-pointer">Go to Collective</span></Link></>}
               {mineApp.status === "rejected" && <><strong className="text-rose-800">Not selected this cycle.</strong> You may apply again in the next cycle.</>}
-              {mineApp.status === "waitlisted" && <><strong>Waitlisted</strong> — you\'re on the waitlist for the next cycle.</>}
+              {mineApp.status === "waitlisted" && <><strong>Waitlisted</strong> — you’re on the waitlist for the next cycle.</>}
             </div>
           </div>
         )}
@@ -349,7 +365,42 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
   const [coverLetter, setCoverLetter] = useState("");
   const [feeAcknowledged, setFeeAcknowledged] = useState(false);
 
-  const APPLICATION_FEE = 2_500;
+  // v25.39 Phase 1 — HARD-FAIL loading UX for the DB-driven application fee.
+  // The fee is Admin-controlled (GET /api/collective/application-fee). v25.38
+  // soft-fell to 2500 on any error/pending, which risked posting an application
+  // against a STALE price if admin had changed it. We now NEVER fall back in the
+  // UI: show a spinner while pending, an error banner + Retry on failure, and
+  // enable Submit only once a valid integer fee resolves.
+  //
+  // DEFAULT_APPLICATION_FEE_MINOR is retained for DOCUMENTATION ONLY (it records
+  // the historical literal); it is intentionally NOT referenced in any JSX.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const DEFAULT_APPLICATION_FEE_MINOR = 2500;
+  const {
+    data: applicationFeeData,
+    isPending: feePending,
+    isFetching: feeFetching, // v25.39 round-2 (per GPT-5.5): treat background
+    // refetch as not-yet-ready so a cached stale value never enables Submit
+    // while the fresh response is still in flight.
+    isError: feeError,
+    refetch: refetchFee,
+  } = useQuery<{ amountMinor: number; currency: string; source: string }>({
+    queryKey: ["/api/collective/application-fee"],
+    staleTime: 0,
+    retry: 2,
+  });
+  const APPLICATION_FEE = applicationFeeData?.amountMinor;
+  // v25.39 round-2 (per GPT-5.5): require integer (not just finite number); the
+  // contract is non-negative integer, and SQLite typing is dynamic so a
+  // corrupted/manually-edited row could otherwise pass `Number.isFinite`.
+  const feeReady =
+    !feePending &&
+    !feeFetching &&
+    !feeError &&
+    typeof APPLICATION_FEE === "number" &&
+    Number.isFinite(APPLICATION_FEE) &&
+    Number.isInteger(APPLICATION_FEE) &&
+    APPLICATION_FEE >= 0;
 
   const submitMut = useMutation({
     mutationFn: async () => {
@@ -392,6 +443,15 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
     onError: (e: Error) => toast({ title: "Application failed", description: e.message, variant: "destructive" }),
   });
 
+  // C-012 v23.5: client-side validation feedback (always-enabled button pattern)
+  // v25.39 round-3 (per GPT-5.5 concern B): this useState hook MUST be called
+  // unconditionally on every render. Previously it was declared AFTER the
+  // `if (submittedId) return ...` early-return, which violates React's Rules
+  // of Hooks — after a successful submit, React would see fewer hooks than
+  // the prior render and throw. The declaration is preserved verbatim from
+  // Avi's C-012 v23.5 pattern, only moved up. No other change to Avi's logic.
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
   if (submittedId) {
     return (
       <Card>
@@ -413,10 +473,18 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
     );
   }
 
-  // C-012 v23.5: client-side validation feedback (always-enabled button pattern)
-  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
-
   function validateAndSubmit() {
+    // v25.39 round-2 (per GPT-5.5): fail closed at the function entry so that
+    // any non-click submission path (form onSubmit, keyboard Enter, programmatic
+    // call to validateAndSubmit) cannot bypass the disabled-button gate.
+    if (!feeReady) {
+      toast({
+        title: "Application fee unavailable",
+        description: "The current fee has not loaded yet. Please retry before submitting.",
+        variant: "destructive",
+      });
+      return;
+    }
     const errs: Record<string, string> = {};
     if (!pitchDeck) errs.pitchDeck = "Pitch deck filename is required.";
     if (asks.length < 20) errs.asks = `Asks must be at least 20 characters (${asks.length}/20).`;
@@ -436,7 +504,9 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
     submitMut.mutate();
   }
 
-  const canSubmit = !submitMut.isPending;
+  // v25.39 Phase 1 — Submit is gated on a resolved fee: never allow posting an
+  // application without a confirmed, current price.
+  const canSubmit = !submitMut.isPending && feeReady;
 
   return (
     <div className="space-y-4">
@@ -448,7 +518,7 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
         </CardHeader>
         <CardContent className="space-y-2 text-sm text-muted-foreground">
           <p>This path is for founders without a cap-table investor sponsor.</p>
-          <p>Diligence is more thorough — typically reviewed within 5 business days. A non-refundable application fee of {fmtUSD(APPLICATION_FEE)} applies.</p>
+          <p>Diligence is more thorough — typically reviewed within 5 business days. A non-refundable application fee of {feeReady ? <>{fmtUSD(APPLICATION_FEE as number)}</> : <FeeLoading />} applies.</p>
           <p className="pt-2 text-xs italic">Reminder: this applies your COMPANY to PRESENT — it doesn't enrol you as a member.</p>
         </CardContent>
       </Card>
@@ -470,6 +540,23 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
             </ul>
           </CardContent>
         </Card>
+      )}
+
+      {feeError && (
+        <Alert variant="destructive" data-testid="fee-error-banner">
+          <AlertTriangle className="h-4 w-4" />
+          <AlertDescription className="flex items-center justify-between gap-3">
+            <span>Application fee unavailable. Please retry before submitting — we won't let you apply against a stale price.</span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => refetchFee()}
+              data-testid="button-retry-fee"
+            >
+              <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Retry
+            </Button>
+          </AlertDescription>
+        </Alert>
       )}
 
       <Card>
@@ -517,7 +604,7 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
 
           <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm">
             <div className="font-semibold text-amber-900 mb-1 flex items-center gap-2">
-              <FileText className="h-4 w-4" /> Application fee — {fmtUSD(APPLICATION_FEE)} non-refundable
+              <FileText className="h-4 w-4" /> Application fee — {feeReady ? <>{fmtUSD(APPLICATION_FEE as number)}</> : <FeeLoading />} non-refundable
             </div>
             <p className="text-xs text-amber-800 mb-2">In production, payment is processed via Stripe before the application enters the queue. Demo mode does not charge.</p>
             <label className="flex items-start gap-2 text-xs text-amber-900 cursor-pointer">
@@ -543,8 +630,21 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
               disabled={!canSubmit}
               onClick={validateAndSubmit}
               data-testid="button-submit-application"
+              title={
+                feeError
+                  ? "Application fee unavailable — retry before submitting."
+                  : feePending
+                    ? "Loading application fee…"
+                    : undefined
+              }
             >
-              {submitMut.isPending ? "Submitting…" : "Submit application"} <ExternalLink className="h-3.5 w-3.5 ml-1" />
+              {submitMut.isPending
+                ? "Submitting…"
+                : feePending
+                  ? "Loading application fee…"
+                  : feeError
+                    ? "Fee unavailable—retry"
+                    : "Submit application"} <ExternalLink className="h-3.5 w-3.5 ml-1" />
             </Button>
           </div>
         </CardContent>

@@ -3,6 +3,7 @@
  * Read-only fund record with commitment ledger and audit receipt.
  */
 import { useState } from "react";
+import { formatMinor as formatMinorLib } from "@/lib/currency"; /* v25.38 currency sweep */
 import { useRoute } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
@@ -37,7 +38,8 @@ type FundDetail = {
 };
 
 function formatMinor(minor: number, currency: string) {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(minor / 100);
+  // v25.38 — delegate to shared ISO-4217-aware formatter (2-decimal parity).
+  return formatMinorLib(minor, currency, { locale: "en-US" });
 }
 
 export default function PartnerFundDetail() {
@@ -64,14 +66,13 @@ export default function PartnerFundDetail() {
       const amount = parseInt(pledgeForm.amountMinor, 10);
       if (!pledgeForm.lpName.trim()) throw new Error("LP name required.");
       if (!Number.isFinite(amount) || amount <= 0) throw new Error("Pledge amount must be a positive number.");
+      /* v25.33 — apiRequest() throws ApiError on non-2xx; the former `if (!res.ok)`
+         guard was unreachable dead code. (The client-side validation throws above
+         are intentional and remain.) The thrown ApiError reaches onError unchanged. */
       const res = await apiRequest("POST", `/api/partner/me/funds/${fundId}/commitments`, {
         lpName: pledgeForm.lpName,
         amountMinor: amount,
       });
-      if (!res.ok) {
-        const e = await res.json().catch(() => ({ error: "pledge_failed" }));
-        throw new Error(e.error || "pledge_failed");
-      }
       return res.json();
     },
     onSuccess: () => {

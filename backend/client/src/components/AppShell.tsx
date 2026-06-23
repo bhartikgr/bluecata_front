@@ -202,12 +202,25 @@ const adminNav: NavGroup[] = [
       { href: "/admin/collective/waitlist", label: "Collective Waitlist", icon: History },
       { href: "/admin/collective/members", label: "Collective Members", icon: Users },
       { href: "/admin/collective/settings", label: "Collective Settings", icon: Settings },
+      /* v25.39 — DB-driven founder application-fee editor. */
+      { href: "/admin/application-fee", label: "Application Fee", icon: DollarSign },
+      /* v25.34 Collective Payment Model — admin surfaces for the Collective fee
+         catalogue and Collective P&L (DB-driven via /api/admin/collective-payments/*). */
+      { href: "/admin/collective-payment-schedules", label: "Collective Payment Schedules", icon: DollarSign },
+      { href: "/admin/collective-payment-pl", label: "Collective P&L", icon: BarChart3 },
     ],
   },
   {
     title: "Consortium Partners",
     items: [
       { href: "/admin/consortium-applications", label: "Consortium Applications", icon: FileSignature },
+      /* v25.33 Consortium Partner Payment Model — admin surfaces for partner roster,
+         fee catalogue, and partner P&L (all DB-driven via /api/admin/*). */
+      { href: "/admin/partners", label: "Partners", icon: Users },
+      { href: "/admin/partner-fees", label: "Partner Fees", icon: DollarSign },
+      /* v25.39 — DB-driven per-tier commission-rate editor. */
+      { href: "/admin/commission-rates", label: "Commission Rates", icon: DollarSign },
+      { href: "/admin/partner-pl", label: "Partner P&L", icon: BarChart3 },
     ],
   },
   {

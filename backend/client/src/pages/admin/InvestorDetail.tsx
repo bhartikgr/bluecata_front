@@ -12,6 +12,7 @@
  */
 
 import { useState, useEffect } from "react";
+import { fromMinor, toMinor } from "@/lib/currency"; /* v25.38 currency sweep */
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useRoute, Link } from "wouter";
 import {
@@ -136,10 +137,17 @@ function formatMinorUsd(minor: number | null, currency = "USD"): string {
   return String(minor / 100);
 }
 
-function parseToMinor(val: string): number | null {
+// v25.38 round-2 (per Opus): the parse partner of `fromMinor` must scale by the
+// SAME currency exponent the display side used, or edit round-trips silently
+// inflate the value 100x for non-2-decimal currencies (e.g. JPY/KRW where the
+// display divides by 1 but the legacy parse multiplied by 100). Hardcoded
+// `* 100` here was a v25.38 regression introduced when the display moved to
+// `fromMinor`; this restores the v25.37 round-trip invariant for USD and
+// extends correctness to JPY/KRW/BHD/etc. via the shared ISO-4217 helper.
+function parseToMinor(val: string, currency: string = "USD"): number | null {
   const n = parseFloat(val.replace(/[^0-9.]/g, ""));
   if (isNaN(n)) return null;
-  return Math.round(n * 100);
+  return toMinor(n, currency);
 }
 
 function initials(name: string): string {
@@ -772,8 +780,8 @@ export default function AdminInvestorDetail() {
                         type="number"
                         className="h-8 mt-1 text-sm font-mono"
                         placeholder="e.g. 85000000000"
-                        value={merged.aumMinor != null ? String(merged.aumMinor / 100) : ""}
-                        onChange={(e) => updateDraft({ aumMinor: parseToMinor(e.target.value) })}
+                        value={merged.aumMinor != null ? String(fromMinor(merged.aumMinor, merged.aumCurrency || "USD")) : ""}
+                        onChange={(e) => updateDraft({ aumMinor: parseToMinor(e.target.value, merged.aumCurrency || "USD") })}
                       />
                       <div className="text-[10px] text-muted-foreground mt-1">
                         Stored as integer minor units (cents). Enter whole dollars.
@@ -786,8 +794,8 @@ export default function AdminInvestorDetail() {
                         type="number"
                         className="h-8 mt-1 text-sm font-mono"
                         placeholder="e.g. 500000"
-                        value={merged.checkSizeMinMinor != null ? String(merged.checkSizeMinMinor / 100) : ""}
-                        onChange={(e) => updateDraft({ checkSizeMinMinor: parseToMinor(e.target.value) })}
+                        value={merged.checkSizeMinMinor != null ? String(fromMinor(merged.checkSizeMinMinor, merged.aumCurrency || "USD")) : ""}
+                        onChange={(e) => updateDraft({ checkSizeMinMinor: parseToMinor(e.target.value, merged.aumCurrency || "USD") })}
                       />
                     </div>
                     <div>
@@ -797,8 +805,8 @@ export default function AdminInvestorDetail() {
                         type="number"
                         className="h-8 mt-1 text-sm font-mono"
                         placeholder="e.g. 20000000"
-                        value={merged.checkSizeMaxMinor != null ? String(merged.checkSizeMaxMinor / 100) : ""}
-                        onChange={(e) => updateDraft({ checkSizeMaxMinor: parseToMinor(e.target.value) })}
+                        value={merged.checkSizeMaxMinor != null ? String(fromMinor(merged.checkSizeMaxMinor, merged.aumCurrency || "USD")) : ""}
+                        onChange={(e) => updateDraft({ checkSizeMaxMinor: parseToMinor(e.target.value, merged.aumCurrency || "USD") })}
                       />
                     </div>
                   </div>

@@ -45,11 +45,10 @@ export default function PartnerSettings() {
 
   const save = useMutation({
     mutationFn: async (body: Settings) => {
+      /* v25.33 — apiRequest() throws ApiError on non-2xx, so the former `if (!res.ok)`
+         guard was unreachable dead code. The thrown ApiError reaches onError
+         unchanged, preserving the "Settings save failed" toast. */
       const res = await apiRequest("PATCH", "/api/partner/me/workspace-settings", body);
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: "save_failed" }));
-        throw new Error(err.error || "save_failed");
-      }
       return res.json();
     },
     /* v25.16 NM1 — reset the dirty-form state after a successful save so

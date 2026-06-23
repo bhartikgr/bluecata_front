@@ -22,7 +22,7 @@ import { useToast } from "@/hooks/use-toast";
 import { validateScreenName } from "@/lib/privacy/visibility";
 import { useActiveCompany, useActiveCompanyId } from "@/lib/useActiveCompany";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { fmtUSD } from "@/lib/format";
+import { fmtUSD, fmtDate } from "@/lib/format";
 import { Link } from "wouter";
 import { FINANCIAL_FIELD_COPY, getFieldsForStage } from "@/lib/financialFieldCopy";
 import { Slider } from "@/components/ui/slider";
@@ -172,6 +172,33 @@ export default function Settings() {
     enabled: Boolean(companyId),
   });
   const teamMembers: TeamMember[] = teamQ.data?.members ?? [];
+
+  /* v25.33 P0b -- Avi feedback: "Payment save in database table, but record
+   * not display in this module." The Billing tab's "Recent invoices" card was
+   * a hardcoded empty state that never queried any endpoint. Wire it to the
+   * real /api/founder/invoices endpoint (DB-backed via invoiceStore) so a
+   * durably-saved payment/invoice actually appears. Graceful fallback to an
+   * empty list on any error (404/403/5xx) so the tab never crashes. */
+  type FounderInvoice = {
+    id: string;
+    invoiceNumber: string;
+    totalMinor: number;
+    amountMinor: number;
+    currency: string;
+    status: "draft" | "issued" | "paid" | "refunded" | "void";
+    issuedAt: string;
+  };
+  const invoicesQ = useQuery<{ invoices: FounderInvoice[] }>({
+    queryKey: ["/api/founder/invoices", companyId],
+    queryFn: async () => {
+      const r = await fetch(`/api/founder/invoices?companyId=${encodeURIComponent(companyId)}`, { credentials: "include" });
+      if (!r.ok) return { invoices: [] };
+      const data = await r.json();
+      return { invoices: Array.isArray(data?.invoices) ? data.invoices : [] };
+    },
+    enabled: Boolean(companyId),
+  });
+  const recentInvoices: FounderInvoice[] = asArray<FounderInvoice>(invoicesQ.data?.invoices);
 
   const saveProfileMut = useMutation({
     mutationFn: async () => (await apiRequest("PATCH", "/api/auth/me", { timezone, name: profileName, email: profileEmail, title: profileTitle })).json(),
@@ -584,11 +611,45 @@ export default function Settings() {
               <Card className="md:col-span-2">
                 <CardHeader><CardTitle className="text-base">Recent invoices</CardTitle></CardHeader>
                 <CardContent>
-                  <div className="text-sm text-muted-foreground py-6 text-center" data-testid="empty-invoices">
-                    Invoices appear here after your first billing cycle. Manage
-                    your subscription in{" "}
-                    <Link href="/founder/billing"><span className="underline cursor-pointer">Billing &amp; Plans</span></Link>.
-                  </div>
+                  {/* v25.33 P0b -- render REAL invoices from /api/founder/invoices
+                    * (DB-backed) instead of a permanent hardcoded empty state.
+                    * Avi feedback: a saved payment never appeared here. The
+                    * empty state below is shown only when the DB genuinely has
+                    * no invoices for this company. */}
+                  {recentInvoices.length === 0 ? (
+                    <div className="text-sm text-muted-foreground py-6 text-center" data-testid="empty-invoices">
+                      No invoices yet. They appear here after your first billing
+                      cycle. Manage your subscription in{" "}
+                      <Link href="/founder/billing"><span className="underline cursor-pointer">Billing &amp; Plans</span></Link>.
+                    </div>
+                  ) : (
+                    <div className="divide-y" data-testid="list-invoices">
+                      {recentInvoices.map((inv) => (
+                        <div key={inv.id} className="flex items-center justify-between py-2.5 text-sm" data-testid={`invoice-row-${inv.id}`}>
+                          <div className="min-w-0">
+                            <div className="font-medium truncate">{inv.invoiceNumber}</div>
+                            <div className="text-xs text-muted-foreground">{fmtDate(inv.issuedAt)}</div>
+                          </div>
+                          <div className="flex items-center gap-3 shrink-0">
+                            <span className="tabular-nums">{fmtUSD((inv.totalMinor ?? inv.amountMinor ?? 0) / 100, { currency: inv.currency || "USD" })}</span>
+                            <Badge
+                              variant={inv.status === "paid" ? "default" : inv.status === "void" || inv.status === "refunded" ? "destructive" : "secondary"}
+                              data-testid={`invoice-status-${inv.id}`}
+                            >
+                              {inv.status}
+                            </Badge>
+                            <a
+                              href={`/api/founder/invoices/${encodeURIComponent(inv.id)}/pdf?companyId=${encodeURIComponent(companyId)}`}
+                              className="text-xs underline text-muted-foreground hover:text-foreground"
+                              data-testid={`invoice-pdf-${inv.id}`}
+                            >
+                              PDF
+                            </a>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
               <Card>

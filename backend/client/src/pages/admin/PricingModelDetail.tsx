@@ -12,6 +12,7 @@
  * a bridge event so the Collective stays in sync.
  */
 import { useEffect, useMemo, useState } from "react";
+import { formatMinor } from "@/lib/currency"; /* v25.38 currency sweep */
 import { useRoute, Link } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { PageBody, PageHeader } from "@/components/AppShell";
@@ -96,11 +97,8 @@ const PROMOTE_TARGETS: Record<Status, Status[]> = {
 };
 
 function fmtMoney(minor: number, currency: string): string {
-  try {
-    return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(minor / 100);
-  } catch {
-    return `${currency} ${(minor / 100).toFixed(2)}`;
-  }
+  // v25.38 — delegate to shared ISO-4217-aware formatter (2-decimal parity).
+  return formatMinor(minor, currency, { locale: "en-US" });
 }
 
 function deepClone<T>(x: T): T { return JSON.parse(JSON.stringify(x)) as T; }
@@ -159,6 +157,9 @@ export default function PricingModelDetail() {
     onSuccess: () => {
       toast({ title: "Pricing model saved", description: "Revision chain extended; audit appended." });
       queryClient.invalidateQueries({ queryKey: ["/api/admin/pricing-models"] });
+      // v25.40 FIX-3: cascade pricing edits to founder-facing pricing queries (sync P1 #3).
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/pricing-tiers"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/billing/tiers"] });
     },
     onError: (e: Error) => toast({ title: "Save failed", description: e.message, variant: "destructive" }),
   });
@@ -173,6 +174,9 @@ export default function PricingModelDetail() {
       }
       toast({ title: "Status updated", description: "Bridge event emitted if now live." });
       queryClient.invalidateQueries({ queryKey: ["/api/admin/pricing-models"] });
+      // v25.40 FIX-3: cascade pricing edits to founder-facing pricing queries (sync P1 #3).
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/pricing-tiers"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/billing/tiers"] });
     },
     onError: (e: Error) => toast({ title: "Promotion failed", description: e.message, variant: "destructive" }),
   });
@@ -183,6 +187,9 @@ export default function PricingModelDetail() {
       const newId = (resp as { model?: { id?: string } }).model?.id;
       toast({ title: "Cloned to draft", description: newId ? `New id: ${newId}` : "" });
       queryClient.invalidateQueries({ queryKey: ["/api/admin/pricing-models"] });
+      // v25.40 FIX-3: cascade pricing edits to founder-facing pricing queries (sync P1 #3).
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/pricing-tiers"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/billing/tiers"] });
       if (newId) window.location.hash = `#/admin/pricing-models/${newId}`;
     },
   });
@@ -196,6 +203,9 @@ export default function PricingModelDetail() {
       }
       toast({ title: "Model deleted" });
       queryClient.invalidateQueries({ queryKey: ["/api/admin/pricing-models"] });
+      // v25.40 FIX-3: cascade pricing edits to founder-facing pricing queries (sync P1 #3).
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/pricing-tiers"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/billing/tiers"] });
       window.location.hash = "#/admin/pricing-models";
     },
   });

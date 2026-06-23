@@ -3,6 +3,7 @@
  * Read-only record-keeping for fund commitments. No money movement.
  */
 import { useState } from "react";
+import { formatMinor as formatMinorLib } from "@/lib/currency"; /* v25.38 currency sweep */
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
@@ -26,7 +27,8 @@ type Fund = {
 };
 
 function formatMinor(minor: number, currency: string) {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(minor / 100);
+  // v25.38 — delegate to shared ISO-4217-aware formatter (2-decimal parity).
+  return formatMinorLib(minor, currency, { locale: "en-US" });
 }
 
 export default function PartnerFunds() {
@@ -50,16 +52,15 @@ export default function PartnerFunds() {
 
   const create = useMutation({
     mutationFn: async () => {
+      /* v25.33 — apiRequest() throws ApiError on non-2xx; the former `if (!res.ok)`
+         guard was unreachable dead code. The thrown ApiError reaches onError
+         unchanged, preserving the "Create fund failed" toast. */
       const res = await apiRequest("POST", "/api/partner/me/funds", {
         fundName: form.fundName,
         vintageYear: parseInt(form.vintageYear, 10),
         targetSizeMinor: parseInt(form.targetSizeMinor, 10),
         currency: form.currency,
       });
-      if (!res.ok) {
-        const e = await res.json().catch(() => ({ error: "create_failed" }));
-        throw new Error(e.error || "create_failed");
-      }
       return res.json();
     },
     onSuccess: () => {

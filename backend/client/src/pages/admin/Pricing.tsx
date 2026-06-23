@@ -10,6 +10,7 @@
  * Tab 5: Payment Gateway     — gateway config, mode, recent webhook events
  */
 import { useState } from "react";
+import { formatMinor } from "@/lib/currency"; /* v25.38 currency sweep */
 import { Link, useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { PageBody, PageHeader } from "@/components/AppShell";
@@ -104,11 +105,8 @@ interface Invoice {
 
 /* ---------- Formatters ---------- */
 function fmtMoney(minor: number, currency = "USD"): string {
-  try {
-    return new Intl.NumberFormat(undefined, { style: "currency", currency, maximumFractionDigits: 2 }).format(minor / 100);
-  } catch {
-    return `${currency} ${(minor / 100).toFixed(2)}`;
-  }
+  // v25.38 — delegate to shared ISO-4217-aware formatter (2-decimal parity).
+  return formatMinor(minor, currency);
 }
 function fmtDate(iso: string): string {
   if (!iso || iso === "—") return "—";

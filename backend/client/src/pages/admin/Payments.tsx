@@ -6,6 +6,7 @@
  * in-memory state). Simple paginated table with state + since filters.
  */
 import { useState } from "react";
+import { formatMinor } from "@/lib/currency"; /* v25.38 currency sweep */
 import { useQuery } from "@tanstack/react-query";
 import { PageBody, PageHeader } from "@/components/AppShell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -54,11 +55,9 @@ const STATE_TONE: Record<string, { bg: string; text: string }> = {
 };
 
 function fmtMoney(minor: number, currency = "USD"): string {
-  try {
-    return new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 2 }).format(minor / 100);
-  } catch {
-    return `${currency} ${(minor / 100).toFixed(2)}`;
-  }
+  // v25.38 — delegate to shared ISO-4217-aware formatter (USD/EUR/GBP output
+  // is byte-identical to the prior Intl.NumberFormat(.../100) call).
+  return formatMinor(minor, currency, { locale: "en-US" });
 }
 function fmtDate(iso: string): string {
   if (!iso) return "—";

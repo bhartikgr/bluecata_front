@@ -56,16 +56,12 @@ export default function PartnerPipeline() {
   const [referEmail, setReferEmail] = useState("");
 
   const createMut = useMutation({
-    /* v25.24 NM-2 fix — second-pass caught that this mutation skipped res.ok
-     * (the v25.23 res.ok sweep matched the first-pass list literally instead
-     * of re-sweeping the whole partner page set). Mirror the promote/refer
-     * mutations below which already check res.ok + throw on !ok. */
+    /* v25.33 — apiRequest() throws ApiError on non-2xx, so the prior `if (!res.ok)`
+     * guard here (and in the promote/refer mutations below) was unreachable dead
+     * code. The thrown ApiError propagates to onError unchanged, preserving the
+     * exact failure toast. Removed the dead branches across all three mutations. */
     mutationFn: async (dealName: string) => {
       const res = await apiRequest("POST", "/api/partner/me/pipeline", { dealName });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({} as any));
-        throw new Error(body?.message || body?.error || `Could not add deal (${res.status})`);
-      }
       return res.json();
     },
     /* v25.16 NH3 — only clear the deal-name input on success so a server
@@ -81,10 +77,6 @@ export default function PartnerPipeline() {
   const promoteMut = useMutation({
     mutationFn: async (vars: { dealId: string; notes: string }) => {
       const res = await apiRequest("POST", `/api/partner/me/pipeline/${vars.dealId}/promote-to-collective`, { notes: vars.notes || undefined });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.message || `HTTP ${res.status}`);
-      }
       return res.json();
     },
     onSuccess: () => {
@@ -104,10 +96,6 @@ export default function PartnerPipeline() {
         notes: vars.notes || undefined,
         targetEmail: vars.targetEmail || undefined,
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.message || `HTTP ${res.status}`);
-      }
       return res.json();
     },
     onSuccess: () => {

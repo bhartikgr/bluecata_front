@@ -31,7 +31,8 @@ import { MaIntelligenceCard } from "@/components/investor/MaIntelligenceCard";
 import { DiscussWithCapTableDialog } from "@/components/investor/DiscussWithCapTableDialog";
 import { MemberValueIntelligenceInvestor } from "@/components/investor/MemberValueIntelligenceInvestor";
 import { HOVER_LIFT } from "@/lib/microInteractions";
-import { apiRequest } from "@/lib/queryClient";
+// v25.38 Phase 4 — removed dead `apiRequest` import (zero call sites in this
+// file; audit-confirmed truly-dead). No call site removed.
 import { useToast } from "@/hooks/use-toast";
 import type { PortfolioAnalytics } from "../../../../server/portfolioAnalyticsStore";
 import type { MaIntelligence } from "@shared/schema";

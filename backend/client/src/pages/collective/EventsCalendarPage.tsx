@@ -286,6 +286,14 @@ export default function EventsCalendarPage(): JSX.Element | null {
         </CardContent>
       </Card>
 
+      {/* v25.34 Phase 5 — empty-state hint when this month/chapter has no events
+          (data loaded successfully but nothing is scheduled). */}
+      {!eventsQ.isLoading && !eventsQ.isError && Boolean(chapterId) && (eventsQ.data?.events?.length ?? 0) === 0 && (
+        <div className="text-sm text-muted-foreground text-center py-2" data-testid="cal-empty">
+          No screening events scheduled for this chapter yet.
+        </div>
+      )}
+
       {eventsQ.isError && (
         <div className="text-sm text-destructive" data-testid="cal-error">
           Failed to load events. Try refreshing the page.

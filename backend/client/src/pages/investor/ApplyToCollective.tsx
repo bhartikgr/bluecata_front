@@ -312,7 +312,7 @@ export default function ApplyToCollective() {
               {mineApp.status === "reviewing" && <><strong>Under review</strong> since {new Date(mineApp.submittedAt).toLocaleDateString()}.</>}
               {mineApp.status === "accepted" && <><strong className="text-emerald-800">Accepted</strong> on {mineApp.reviewedAt ? new Date(mineApp.reviewedAt).toLocaleDateString() : "—"} — your membership is being activated.</>}
               {mineApp.status === "rejected" && <><strong className="text-rose-800">Not selected this cycle.</strong></>}
-              {mineApp.status === "waitlisted" && <><strong>Waitlisted</strong> — we\'ll notify you when a spot opens.</>}
+              {mineApp.status === "waitlisted" && <><strong>Waitlisted</strong> — we’ll notify you when a spot opens.</>}
             </div>
           </div>
         )}

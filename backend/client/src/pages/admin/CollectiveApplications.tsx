@@ -89,7 +89,13 @@ export default function CollectiveApplications() {
       (await apiRequest("POST", `/api/admin/collective/applications/${id}/approve`, {})).json(),
     onSuccess: () => {
       toast({ title: "Application approved", description: "Membership activated." });
+      // v25.40 FIX-1: broaden invalidation so founder-facing collective views
+      // reflect the approval immediately (sync P1 #1).
       queryClient.invalidateQueries({ queryKey: ["/api/admin/collective/applications"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/founder/collective/applications/mine"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/collective/applications/mine"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/collective/membership/me"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/collective/dashboard"] });
       setSelected(null);
     },
     onError: () => toast({ variant: "destructive", title: "Approve failed", description: "Please try again. If the issue persists, contact support." }),
@@ -100,7 +106,12 @@ export default function CollectiveApplications() {
       (await apiRequest("POST", `/api/admin/collective/applications/${id}/reject`, { reason })).json(),
     onSuccess: () => {
       toast({ title: "Application rejected" });
+      // v25.40 FIX-1: broaden invalidation (sync P1 #1).
       queryClient.invalidateQueries({ queryKey: ["/api/admin/collective/applications"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/founder/collective/applications/mine"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/collective/applications/mine"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/collective/membership/me"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/collective/dashboard"] });
       setSelected(null);
       setRejectNotes("");
     },
