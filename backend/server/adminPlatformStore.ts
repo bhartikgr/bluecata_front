@@ -1096,31 +1096,141 @@ export function registerAdminPlatformRoutes(app: Express): void {
     res.json({ ok: true, action, count: ids.length, applied });
   });
 
-  /* ====== Audit log ====== */
+  /* ====== Audit log ======
+   * v25.41 round-2 (per GPT-5.5): server-side filtering + pagination so the
+   * admin UI can scale beyond the in-memory cap. Filters now reduce the row
+   * set BEFORE pagination, and the response carries `total`, `limit`, `offset`
+   * so the client can render a proper paginator. The legacy filter-by-`q`
+   * behavior is preserved as a substring match over the JSON payload. */
   app.get("/api/admin/audit-log", (req: Request, res: Response) => {
-    const entity = String(req.query.entity ?? "");
+    /* v25.41 round-3 (per GPT-5.5 re-verify):
+     * TRUE DB-BACKED query. Filters + COUNT + LIMIT/OFFSET applied at the
+     * SQLite layer against the durable `audit_log` table — NOT the in-memory
+     * mirror. This satisfies Avi's unifying directive (every module's page
+     * dynamic and DB-driven) and ensures admins see ALL historical rows, not
+     * just the most recent AUDIT_MIRROR_LIMIT.
+     *
+     * Entity prefix wildcard: `entity=co_*` matches all rows where target
+     * starts with `co_`. Exact-match is preserved when no trailing `*`. The
+     * in-memory mirror remains as a hot-path fallback for cases where the DB
+     * is unavailable (e.g., during tests using _testAdmin reset). */
+    const entityRaw = String(req.query.entity ?? "");
     const actor = String(req.query.actor ?? "");
     const eventType = String(req.query.eventType ?? "");
     const q = String(req.query.q ?? "").toLowerCase();
-    const items = auditLog.filter(a =>
-      (entity ? a.entity === entity : true) &&
-      (actor ? a.actor === actor : true) &&
-      (eventType ? a.eventType === eventType : true) &&
-      (q ? JSON.stringify(a).toLowerCase().includes(q) : true)
-    );
-    res.json({ count: items.length, items });
-  });
-  app.get("/api/admin/audit-log/verify", (_req: Request, res: Response) => {
-    let prior = "0".repeat(64);
-    let broken = -1;
-    for (let i = 0; i < auditLog.length; i++) {
-      const a = auditLog[i];
-      if (a.priorHash !== prior) { broken = i; break; }
-      const expected = sha256(`${prior}|${a.id}|${a.eventType}|${a.entity}|${a.ts}|${JSON.stringify(a.payload)}`);
-      if (a.hash !== expected) { broken = i; break; }
-      prior = a.hash;
+    const rawLimit = Number.parseInt(String(req.query.limit ?? ""), 10);
+    const rawOffset = Number.parseInt(String(req.query.offset ?? ""), 10);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 1000) : null;
+    const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
+
+    try {
+      const db = rawDb();
+      const where: string[] = ["deleted_at IS NULL"];
+      const binds: any[] = [];
+      if (entityRaw) {
+        if (entityRaw.endsWith("*")) {
+          const prefix = entityRaw.slice(0, -1).replace(/[%_\\]/g, (c) => "\\" + c);
+          where.push("target LIKE ? ESCAPE '\\'");
+          binds.push(prefix + "%");
+        } else {
+          const escaped = entityRaw.replace(/[%_\\]/g, (c) => "\\" + c);
+          where.push("(target = ? OR target LIKE ? ESCAPE '\\')");
+          binds.push(entityRaw, escaped + "%");
+        }
+      }
+      if (actor) { where.push("actor_id = ?"); binds.push(actor); }
+      if (eventType) { where.push("action = ?"); binds.push(eventType); }
+      if (q) { where.push("LOWER(payload_json) LIKE ?"); binds.push("%" + q + "%"); }
+      const whereSql = "WHERE " + where.join(" AND ");
+
+      const totalRow = db.prepare("SELECT COUNT(*) AS n FROM audit_log " + whereSql).get(...binds) as { n: number };
+      const total = Number(totalRow?.n ?? 0);
+
+      const limSql = limit !== null ? "LIMIT ? OFFSET ?" : "";
+      const itemBinds = limit !== null ? [...binds, limit, offset] : binds;
+      const rows = db.prepare(
+        `SELECT id, created_at AS ts, actor_id AS actor, target AS entity, action AS "eventType", payload_json AS "payloadJson", prev_hash AS "priorHash", hash, tenant_id AS "tenantId" FROM audit_log ${whereSql} ORDER BY created_at ASC, id ASC ${limSql}`
+      ).all(...itemBinds) as Array<{ id: string; ts: string; actor: string; entity: string; eventType: string; payloadJson: string | null; priorHash: string; hash: string; tenantId: string }>;
+
+      const items = rows.map((r) => {
+        let payload: Record<string, unknown> = {};
+        if (r.payloadJson) {
+          try { payload = JSON.parse(r.payloadJson) as Record<string, unknown>; } catch { payload = {}; }
+        }
+        return {
+          id: r.id, ts: r.ts, actor: r.actor, entity: r.entity, eventType: r.eventType,
+          payload, priorHash: r.priorHash, hash: r.hash, tenantId: r.tenantId,
+        };
+      });
+      return res.json({ count: items.length, total, limit: limit ?? total, offset, items });
+    } catch (err) {
+      // DB unavailable → degrade to mirror so the page never blanks for admins.
+      log.warn("[adminPlatformStore.audit-log] DB query failed; falling back to mirror:", (err as Error).message);
+      const entity = entityRaw.endsWith("*") ? entityRaw.slice(0, -1) : entityRaw;
+      const filtered = auditLog.filter(a =>
+        (entity ? (a.entity === entity || a.entity.startsWith(entity)) : true) &&
+        (actor ? a.actor === actor : true) &&
+        (eventType ? a.eventType === eventType : true) &&
+        (q ? JSON.stringify(a).toLowerCase().includes(q) : true)
+      );
+      const total = filtered.length;
+      const items = limit !== null ? filtered.slice(offset, offset + limit) : filtered;
+      return res.json({ count: items.length, total, limit: limit ?? total, offset, items, fallback: true });
     }
-    res.json({ ok: broken === -1, brokenAt: broken, totalLinks: auditLog.length });
+  });
+  app.get("/api/admin/audit-log/verify", (req: Request, res: Response) => {
+    /* v25.41 round-3 (per GPT-5.5 re-verify): per-CHAIN verification.
+     * `appendAudit()` scopes the hash chain by `tenantId`. The verifier MUST
+     * use the same scope to avoid false fails when mixed entities share a
+     * tenant.
+     *
+     * Query params:
+     *   ?tenantId=<id>   — verify a single tenant's chain (PREFERRED)
+     *   ?entity=<exact>  — legacy alias; resolved to tenantId via resolveTenantId
+     *   (no param)       — verify every tenant chain; returns per-tenant array
+     */
+    const tenantIdParam = String(req.query.tenantId ?? "");
+    const entityParam = String(req.query.entity ?? "");
+    const resolvedTenant = tenantIdParam || (entityParam ? resolveTenantId(entityParam) : "");
+
+    try {
+      const db = rawDb();
+      const verifyChain = (tenantId: string) => {
+        const rows = db.prepare(
+          `SELECT id, action, target, created_at AS ts, payload_json AS "payloadJson", prev_hash AS "priorHash", hash FROM audit_log WHERE tenant_id = ? AND deleted_at IS NULL ORDER BY created_at ASC, id ASC`
+        ).all(tenantId) as Array<{ id: string; action: string; target: string; ts: string; payloadJson: string | null; priorHash: string; hash: string }>;
+        let prior = "0".repeat(64);
+        let broken = -1;
+        for (let i = 0; i < rows.length; i++) {
+          const a = rows[i];
+          if (a.priorHash !== prior) { broken = i; break; }
+          const expected = sha256(`${prior}|${a.id}|${a.action}|${a.target}|${a.ts}|${a.payloadJson ?? "{}"}`);
+          if (a.hash !== expected) { broken = i; break; }
+          prior = a.hash;
+        }
+        return { tenantId, ok: broken === -1, brokenAt: broken, totalLinks: rows.length };
+      };
+
+      if (resolvedTenant) {
+        const r = verifyChain(resolvedTenant);
+        return res.json({ ok: r.ok, brokenAt: r.brokenAt, totalLinks: r.totalLinks, scope: `tenant:${resolvedTenant}` });
+      }
+      // Whole-platform: verify each tenant's chain independently.
+      const tenants = db.prepare(`SELECT DISTINCT tenant_id FROM audit_log WHERE deleted_at IS NULL`).all() as Array<{ tenant_id: string }>;
+      const perTenant = tenants.map((t) => verifyChain(t.tenant_id));
+      const overallOk = perTenant.every((p) => p.ok);
+      const overallLinks = perTenant.reduce((s, p) => s + p.totalLinks, 0);
+      return res.json({ ok: overallOk, brokenAt: -1, totalLinks: overallLinks, scope: "all-tenants", perTenant });
+    } catch (err) {
+      /* v25.41 round-3 (per GPT-5.5 R3 re-verify): FAIL CLOSED on verifier
+       * unavailability. The previous draft returned `ok: true` which falsely
+       * advertised a valid chain when the verifier could not actually read
+       * the durable audit table — a SOC 2 CC7.2 violation. Now we surface a
+       * 503 with `ok: false` so the UI can render an explicit "verification
+       * unavailable" warning rather than a green badge. */
+      log.warn("[adminPlatformStore.audit-log/verify] DB verify failed:", (err as Error).message);
+      return res.status(503).json({ ok: false, brokenAt: 0, totalLinks: 0, scope: "unavailable", error: "db_unavailable" });
+    }
   });
   app.get("/api/admin/audit-log/export.csv", (_req: Request, res: Response) => {
     const csv = ["id,ts,actor,entity,eventType,priorHash,hash", ...auditLog.map(a => [a.id,a.ts,a.actor,a.entity,a.eventType,a.priorHash,a.hash].join(","))].join("\n");

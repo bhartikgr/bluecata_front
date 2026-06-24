@@ -39,6 +39,10 @@ import { requirePartnerAuth, requirePartnerSubrole } from "./lib/requirePartnerA
 import { rawDb } from "./db/connection";
 import { partnerFundsStore } from "./partnerWorkspaceStore";
 import type { PartnerTier } from "./adminContactsStoreShim";
+/* v25.41 Q1 (Avi authorized = A): DB-driven per-tier commission rate resolver.
+   ADDITIVE import only — Avi's COMMISSION_RATE literal table below stays
+   byte-identical and remains the ultimate fallback. */
+import { getCommissionRate as resolveCommissionRateFromDb } from "./lib/partnerCommissionRateResolver";
 
 /* ============================================================
  * Commission rate table (industry standard angel-network economics)
@@ -53,6 +57,15 @@ const COMMISSION_RATE: Record<PartnerTier, number> = {
 };
 
 function commissionPct(tier: PartnerTier): number {
+  // v25.41 Q1 (Avi authorized): DB-driven via partnerCommissionRateResolver wins
+  // when present; the literal table above is the byte-identical fallback. This
+  // is the single commission-rate helper used by BOTH the P&L summary path and
+  // the partner_billing_entries ledger-insert path (commissionForLedgerInsert),
+  // so wrapping it here makes both DB-driven per Avi's unifying directive.
+  try {
+    const resolved = resolveCommissionRateFromDb(tier);
+    if (typeof resolved?.rate === "number" && resolved.source === "db") return resolved.rate;
+  } catch { /* fall through to literal */ }
   return COMMISSION_RATE[tier] ?? 0.02;
 }
 

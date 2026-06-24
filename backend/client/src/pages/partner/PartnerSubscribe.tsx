@@ -7,7 +7,8 @@
  * bespoke payment logic is added here. Current subscription state is read from
  * GET /api/partner/me/subscription. apiRequest throws ApiError on non-2xx.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useLocation } from "wouter"; /* v25.41 Q8 — post-checkout navigation */
 import { formatMinor as formatMinorLib } from "@/lib/currency"; /* v25.38 currency sweep */
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, ApiError } from "@/lib/queryClient";
@@ -53,6 +54,7 @@ function formatDate(value: string | null) {
 export default function PartnerSubscribe() {
   const role = useRequirePartnerRole();
   const { toast } = useToast();
+  const [, navigate] = useLocation(); /* v25.41 Q8 */
   const [cycle, setCycle] = useState<"monthly" | "annual">("monthly");
   const [quote, setQuote] = useState<QuoteResponse | null>(null);
 
@@ -81,10 +83,22 @@ export default function PartnerSubscribe() {
     },
   });
 
+  const sub = data?.subscription ?? null;
+  // v25.41 Q8 (Avi answer = A): once the subscription is active, show a success
+  // end-state with a "Go to dashboard" button AND a 3-second auto-redirect. The
+  // active state is read from the DB-backed GET /api/partner/me/subscription —
+  // no in-memory flag (per Avi's unifying directive). Hooks run before the
+  // early returns below to satisfy the rules-of-hooks.
+  const subscriptionActive = sub?.status === "active";
+  useEffect(() => {
+    if (!subscriptionActive) return;
+    const t = setTimeout(() => navigate("/collective/partner/dashboard"), 3000);
+    return () => clearTimeout(t);
+  }, [subscriptionActive, navigate]);
+
   if (!role.ready || !role.identity) return null;
   const me = role.identity;
   const isForbidden = isError && error instanceof ApiError && error.status === 403;
-  const sub = data?.subscription ?? null;
 
   return (
     <PartnerShell title="Subscription" tier={me.tier} subRole={me.subRole} partnerName={me.identity.name}>
@@ -97,6 +111,22 @@ export default function PartnerSubscribe() {
       {!isForbidden && (
         <>
           {isLoading && <div className="text-sm text-slate-500" data-testid="partner-subscribe-loading">Loading…</div>}
+
+          {!isLoading && subscriptionActive && (
+            <Card className="p-6 max-w-xl mb-4" data-testid="partner-subscribe-success">
+              <div className="text-xs uppercase tracking-wide text-emerald-700">Subscription active</div>
+              <p className="mt-1 text-sm text-slate-700">
+                Subscription active — you&rsquo;ll be redirected in 3 seconds.
+              </p>
+              <Button
+                className="mt-3"
+                onClick={() => navigate("/collective/partner/dashboard")}
+                data-testid="button-partner-subscribe-go-dashboard"
+              >
+                Go to dashboard
+              </Button>
+            </Card>
+          )}
 
           {!isLoading && sub && (
             <Card className="p-6 max-w-xl mb-4" data-testid="partner-subscribe-current">

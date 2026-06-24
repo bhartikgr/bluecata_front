@@ -24,8 +24,9 @@
  */
 
 import type { Express, Request, Response } from "express";
-import { randomBytes } from "node:crypto";
+import { randomBytes, createHash } from "node:crypto";
 import { rawDb } from "./db/connection";
+import { listChaptersForUser } from "./chaptersStore"; /* v25.41 Q2 chapter-scoping */
 import { emitNotification } from "./notificationsStore";
 import { emitBridgeEvent } from "./bridgeStore";
 import { requireCollectiveMember } from "./lib/requireCollectiveMember";
@@ -35,6 +36,9 @@ import { listActive as listActiveMembers } from "./collectiveMembershipStore";
 import { getAllProfiles } from "./companyProfileStore";
 import { getCompaniesForFounder } from "./multiCompanyStore";
 import { log } from "./lib/logger";
+
+/* v25.41 Q2 - opaque node-id hashing for the collective network graph. */
+const sha256 = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
 
 /* ============================================================
  * B1 — collective_interest_threads helpers
@@ -231,6 +235,11 @@ export function upsertDirectoryListing(
     // round-2 change is logging visibility only: the error is now ERROR-level
     // and structured (was inline WARN with no stack), so a directory-listing
     // failure is now observable in the LIVE logs.
+    //
+    // v25.41 Q5 (Avi answer = A, NO-OP): Avi explicitly confirmed the
+    // caller-level `try { } catch { /* non-fatal */ }` pattern STAYS. The
+    // v25.40 store-level log elevation above is the only change that shipped;
+    // no caller-level behavior is altered in v25.41.
     log.error("[directoryListings.upsert] DB write failed:", (err as Error).message);
     throw err;
   }
@@ -537,7 +546,31 @@ export function registerCollectiveInterestRoutes(app: Express): void {
   app.get(
     "/api/collective/network",
     requireCollectiveMember,
-    (_req: Request, res: Response) => {
+    (req: Request, res: Response) => {
+      // v25.41 Q2 (Avi answer = A): chapter-scope the network graph (v25.36
+      // pattern) and replace investor NAMES used as node IDs with opaque
+      // hashes (display name moves to the `label` field). Visibility is
+      // resolved dynamically from the directory-listing record table per the
+      // caller's chapter membership (Avi's unifying directive).
+      const ctx = (req as Request & {
+        userContext?: { userId?: string; isAdmin?: boolean };
+      }).userContext;
+      const userId = ctx?.userId ?? null;
+      const isAdmin = !!ctx?.isAdmin;
+      // Fail closed: requireCollectiveMember already 401s without identity, but
+      // keep an explicit empty result so a context-less session never leaks.
+      if (!userId && !isAdmin) {
+        return res.json({ nodes: [], edges: [] });
+      }
+
+      // v25.41 Q2 - opaque, stable node id for an investor. Derived from the
+      // durable investor id when present, else the name (legacy rows with a
+      // null investorUserId). Never the raw name as a primary key.
+      function memberNodeId(investorUserId: string | null | undefined, investorName: string): string {
+        const seed = investorUserId && investorUserId.length > 0 ? investorUserId : `name:${investorName}`;
+        return `m_${sha256(seed).slice(0, 12)}`;
+      }
+
       const nodes: NetworkNode[] = [];
       const edges: NetworkEdge[] = [];
       const seenNodes = new Set<string>();
@@ -549,32 +582,67 @@ export function registerCollectiveInterestRoutes(app: Express): void {
         }
       }
 
-      // Add all active collective members as nodes
+      // Active collective members as nodes (opaque id, name as label).
+      // v25.41 round-2 (per GPT-5.5): previously emitted ALL active members
+      // platform-wide BEFORE the chapter-scoping step, leaking opaque IDs of
+      // members in other chapters. Now filtered to: viewer's own chapter
+      // membership(s) for non-admin viewers; full list for admins only.
       const activeMembers = listActiveMembers();
+      const memberInViewerChapter = (mUserId: string): boolean => {
+        if (isAdmin) return true;
+        try {
+          const theirChapters = listChaptersForUser(mUserId).map((c: { id: string }) => c.id);
+          const viewerChapters: string[] = [];
+          try { viewerChapters.push(...listChaptersForUser(userId!).map((c: { id: string }) => c.id)); } catch {}
+          return theirChapters.some((cid) => viewerChapters.includes(cid));
+        } catch {
+          return false;
+        }
+      };
       for (const m of activeMembers) {
-        addNode(m.userId, "member", m.userId);
+        if (!memberInViewerChapter(m.userId)) continue;
+        const nid = memberNodeId(m.userId, m.userId);
+        addNode(nid, "member", m.userId);
         // member_of edge: member → collective
-        edges.push({ from: m.userId, to: "collective", kind: "member_of" });
+        edges.push({ from: nid, to: "collective", kind: "member_of" });
       }
 
       // v25.13 NM8 — only include companies that are directory-listed.
       // Previously this used the unfiltered getAllProfiles() which leaked
       // unapproved / rejected founder companies into the public network
       // graph, letting investors discover them ahead of approval.
-      const listedIds = getListedCompanyIds();
+      // v25.41 Q2 - chapter-scope the listed company set. Admins see ALL listed
+      // companies; a chapter member sees only companies listed in THEIR
+      // chapter(s). Fail-closed (no companies) when no chapter resolves.
+      let listedIds: Set<string>;
+      if (isAdmin) {
+        listedIds = getListedCompanyIds();
+      } else {
+        let myChapterIds: string[] = [];
+        try {
+          myChapterIds = listChaptersForUser(userId!).map((c: { id: string }) => c.id);
+        } catch (err) {
+          log.warn("[collective/network] chapter lookup failed:", (err as Error).message);
+        }
+        listedIds = getListedCompanyIdsForChapters(myChapterIds);
+      }
       const allProfiles = getAllProfiles().filter((p) => listedIds.has(p.companyId));
       for (const p of allProfiles) {
         addNode(p.companyId, "founder", p.founderName ?? p.companyId);
       }
 
-      // Add collective-visible soft-circle edges (committed)
+      // Add collective-visible soft-circle edges (committed). Only emit edges
+      // whose company is in the chapter-scoped listed set, so scoping above is
+      // not bypassed via the soft-circle loop.
       const circles = listSoftCirclesForCollective();
       for (const sc of circles) {
         if (!sc.companyId) continue;
+        if (!listedIds.has(sc.companyId)) continue;
         // Ensure the company is a node
         addNode(sc.companyId, "founder", sc.companyId);
-        // Use investorName as member node id if no userId
-        const memberId = sc.investorName;
+        // Opaque member node id (name stays in the label only). The collective
+        // soft-circle projection only carries investorName, so hash that.
+        const memberId = memberNodeId(null, sc.investorName);
         addNode(memberId, "member", sc.investorName);
         edges.push({ from: memberId, to: sc.companyId, kind: "committed" });
       }

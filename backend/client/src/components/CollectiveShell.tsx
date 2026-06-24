@@ -27,6 +27,48 @@ import { useQuery } from "@tanstack/react-query"; /* v16 Fix 6 — read COLLECTI
 import { apiRequest } from "@/lib/queryClient"; /* v16 Fix 6 */
 import { ChapterSelector } from "@/components/ChapterSelector"; /* v17 Phase A — chapter scope dropdown in topbar */
 
+/* ============================================================
+ * v25.41 Bug-1 — Consortium Partner vs Collective separation
+ *
+ * A partner-only user (active partner membership but NO active Collective
+ * chapter membership) must see ONLY the PARTNER WORKSPACE nav, branded
+ * "CONSORTIUM". A dual-role user (partner AND active Collective member)
+ * keeps the existing combined view. Detection is chapter_id-free: the
+ * existing GET /api/me/chapters endpoint already returns ONLY active
+ * memberships (server/chaptersStore.ts filters status="active"), so a
+ * non-empty list == active Collective member. No server change, no removal
+ * of any NAV_GROUPS / PARTNER_WORKSPACE_GROUP array — assembly logic only.
+ */
+function useCollectiveMembershipActive(): boolean {
+  const q = useQuery<{ ok?: boolean; chapters?: Array<{ id: string }> }>({
+    queryKey: ["/api/me/chapters"],
+    queryFn: async () => {
+      try {
+        return await (await apiRequest("GET", "/api/me/chapters")).json();
+      } catch {
+        // Fail closed: when COLLECTIVE_ENABLED=0 the endpoint 503s and
+        // apiRequest throws; treat as "no active membership".
+        return { ok: false, chapters: [] };
+      }
+    },
+    retry: false,
+    staleTime: 30_000,
+  });
+  return Array.isArray(q.data?.chapters) && (q.data!.chapters!.length > 0);
+}
+
+/**
+ * v25.41 Bug-1 — resolves the shell "mode" for the current session.
+ *   - "partner"    : partner-only (show partner nav only, CONSORTIUM brand)
+ *   - "combined"   : partner + active Collective member (existing combined view)
+ *   - "collective" : non-partner (existing Collective view)
+ */
+function usePartnerOnlyMode(): boolean {
+  const partner = usePartnerMembership();
+  const collectiveMember = useCollectiveMembershipActive();
+  return partner.isPartner && !collectiveMember;
+}
+
 type NavItem = {
   href: string;
   label: string;
@@ -163,9 +205,16 @@ function CollectiveSidebar({ onClose }: { onClose?: () => void }) {
     ],
   };
   const baseGroups: NavGroup[] = collectiveOn ? NAV_GROUPS : [BETA_WAITLIST_GROUP];
-  const groups: NavGroup[] = partner.isPartner
-    ? [...baseGroups, PARTNER_WORKSPACE_GROUP]
-    : baseGroups;
+  // v25.41 Bug-1 — partner-only users (partner role, NO active Collective
+  // membership) see ONLY the partner workspace nav; the Collective base nav
+  // is suppressed for them. Dual-role users (partner + active member) keep
+  // the combined view exactly as before. Pure-Collective users are unchanged.
+  const partnerOnly = partner.isPartner && !useCollectiveMembershipActive();
+  const groups: NavGroup[] = partnerOnly
+    ? [PARTNER_WORKSPACE_GROUP]
+    : partner.isPartner
+      ? [...baseGroups, PARTNER_WORKSPACE_GROUP]
+      : baseGroups;
 
   return (
     <div
@@ -180,7 +229,11 @@ function CollectiveSidebar({ onClose }: { onClose?: () => void }) {
         <div className="flex items-center gap-2">
           <div
             className="w-7 h-7 rounded-md flex items-center justify-center text-white text-xs font-bold"
-            style={{ backgroundColor: "#8E2A4E" }}
+            /* v25.41 Bug-2 — partner-only sessions use the capavate.com navy
+               (existing --cap-site-navy value #041e41) rather than the
+               Collective plum, so the consortium brand is visually distinct
+               from the Collective brand. No new theme token introduced. */
+            style={{ backgroundColor: partnerOnly ? "#041e41" : "#8E2A4E" }}
           >
             C
           </div>
@@ -190,9 +243,11 @@ function CollectiveSidebar({ onClose }: { onClose?: () => void }) {
             </span>
             <span
               className="text-xs font-medium ml-1 px-1.5 py-0.5 rounded"
-              style={{ backgroundColor: "#8E2A4E", color: "#fff", fontSize: "9px" }}
+              style={{ backgroundColor: partnerOnly ? "#041e41" : "#8E2A4E", color: "#fff", fontSize: "9px" }}
+              data-testid="brand-chip"
             >
-              COLLECTIVE
+              {/* v25.41 Bug-1 — partner-only sessions are branded CONSORTIUM. */}
+              {partnerOnly ? "CONSORTIUM" : "COLLECTIVE"}
             </span>
           </div>
         </div>
@@ -250,6 +305,9 @@ function CollectiveSidebar({ onClose }: { onClose?: () => void }) {
 function CollectiveTopbar({ onMenuClick }: { onMenuClick: () => void }) {
   const { role } = useRole();
   const [, navigate] = useLocation();
+  // v25.41 Bug-1 — partner-only sessions retitle the topbar and hide the
+  // chapter selector (a pure partner has no Collective chapter scope).
+  const partnerOnly = usePartnerOnlyMode();
 
   function switchToCapavate() {
     // v25.13 NH2 — was only admin vs founder; investor users would land
@@ -284,8 +342,10 @@ function CollectiveTopbar({ onMenuClick }: { onMenuClick: () => void }) {
         <div
           className="text-sm font-medium hidden md:block"
           style={{ color: "#1A1A2E" }}
+          data-testid="topbar-title"
         >
-          Capavate Collective
+          {/* v25.41 Bug-1 — partner-only sessions show the Consortium title. */}
+          {partnerOnly ? "Capavate Consortium Partner" : "Capavate Collective"}
         </div>
       </div>
 
@@ -294,16 +354,23 @@ function CollectiveTopbar({ onMenuClick }: { onMenuClick: () => void }) {
             or when the user has zero chapter memberships, so the topbar layout
             matches the v16 Friday baseline by default. */}
         <ChapterSelector data-testid="topbar-chapter-selector" />
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={switchToCapavate}
-          data-testid="button-switch-to-capavate"
-          className="gap-2 text-xs border-[#8E2A4E]/30 text-[#8E2A4E] hover:bg-[#8E2A4E]/05"
-        >
-          <ArrowLeftRight className="h-3 w-3" />
-          Switch to Capavate
-        </Button>
+        {/* v25.41 Bug-1/Bug-2 — the "Switch to Capavate" affordance routes to the
+            legacy company portal (founder/investor/admin dashboards). A pure
+            consortium partner has no such home and would land on a 403; hide
+            it for partner-only sessions. Dual-role and pure-Collective users
+            keep the button exactly as before. */}
+        {!partnerOnly && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={switchToCapavate}
+            data-testid="button-switch-to-capavate"
+            className="gap-2 text-xs border-[#8E2A4E]/30 text-[#8E2A4E] hover:bg-[#8E2A4E]/05"
+          >
+            <ArrowLeftRight className="h-3 w-3" />
+            Switch to Capavate
+          </Button>
+        )}
       </div>
     </header>
   );

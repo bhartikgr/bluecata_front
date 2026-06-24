@@ -10,6 +10,7 @@ import type { Express, Request, Response } from "express";
 import crypto from "crypto";
 import { rawDb } from "../db/connection";
 import { appendAdminAudit } from "../adminPlatformStore";
+import { partnerSpvStore } from "../partnerWorkspaceStore"; /* v25.41 Bug-3 — admin-side SPV creation reuses the existing store (no store changes). */
 import { sanitizeErrorMessage } from "./sanitize"; /* v25.33 — scrub raw err.message from the generic 500 path in prod (backlog item 33 extension). The UNIQUE-constraint 409 message is intentionally surfaced as safe admin feedback. */
 
 const FEE_KINDS = new Set([
@@ -229,6 +230,77 @@ export function registerPartnerFeeAdminRoutes(app: Express): void {
     rawDb().prepare(`UPDATE partner_billing_entries SET status = 'paid', paid_at = ? WHERE id = ?`).run(nowIso(), entryId);
     appendAdminAudit(actorOf(req), `partner_billing_entry:${entryId}`, "partner_billing_entry.marked_paid", { entryId });
     res.json({ ok: true });
+  });
+
+  /* ---- v25.41 Bug-3 — Admin SPV creation for a partner ----
+   *
+   * Admin parity for the partner self-service POST /api/partner/me/spvs path.
+   * Mounted under the router-level requireAdmin gate (routes.ts), audit-logged
+   * via appendAdminAudit, and delegates to the EXISTING partnerSpvStore.create
+   * (no store changes; the partner-side endpoint is untouched). Same request
+   * body shape and same status validation as the partner-side route. */
+  const VALID_SPV_STATUS = new Set(["planned", "open", "closed", "wound_down"]);
+
+  app.get("/api/admin/partners/:partnerId/spvs", (req: Request, res: Response) => {
+    const partnerId = String(req.params.partnerId);
+    const partner = rawDb()
+      .prepare(`SELECT id FROM contacts WHERE id = ? AND kind = 'consortium_partner' AND deleted_at IS NULL`)
+      .get(partnerId);
+    if (!partner) return res.status(404).json({ ok: false, error: "partner_not_found" });
+    try {
+      const spvs = partnerSpvStore.listByPartner(partnerId);
+      res.json({ ok: true, spvs, total: spvs.length });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: "list_failed", message: sanitizeErrorMessage(err) });
+    }
+  });
+
+  app.post("/api/admin/partners/:partnerId/spvs", (req: Request, res: Response) => {
+    const partnerId = String(req.params.partnerId);
+    const partner = rawDb()
+      .prepare(`SELECT id FROM contacts WHERE id = ? AND kind = 'consortium_partner' AND deleted_at IS NULL`)
+      .get(partnerId);
+    if (!partner) return res.status(404).json({ ok: false, error: "partner_not_found" });
+    const b = req.body as {
+      spvName?: string; jurisdiction?: string; vintage?: number; currency?: string; status?: string;
+      targetCompanyId?: string | null; entityStructure?: string | null;
+      externalAdminProvider?: string | null; externalAdminRef?: string | null; notes?: string | null;
+    };
+    if (
+      typeof b?.spvName !== "string" || !b.spvName.trim() ||
+      typeof b?.jurisdiction !== "string" || !b.jurisdiction.trim() ||
+      typeof b?.vintage !== "number" || !Number.isInteger(b.vintage) ||
+      typeof b?.currency !== "string" || !/^[A-Z]{3}$/.test(b.currency) ||
+      typeof b?.status !== "string"
+    ) {
+      return res.status(400).json({ ok: false, error: "spvName, jurisdiction, vintage, ISO 4217 currency, status required" });
+    }
+    if (!VALID_SPV_STATUS.has(b.status)) {
+      return res.status(400).json({ ok: false, error: "status must be one of planned|open|closed|wound_down" });
+    }
+    try {
+      const actor = actorOf(req);
+      const spv = partnerSpvStore.create(
+        partnerId,
+        {
+          spvName: b.spvName,
+          jurisdiction: b.jurisdiction,
+          vintage: b.vintage,
+          currency: b.currency,
+          status: b.status as "planned" | "open" | "closed" | "wound_down",
+          targetCompanyId: b.targetCompanyId ?? null,
+          entityStructure: b.entityStructure ?? null,
+          externalAdminProvider: b.externalAdminProvider ?? null,
+          externalAdminRef: b.externalAdminRef ?? null,
+          notes: b.notes ?? null,
+        },
+        actor,
+      );
+      appendAdminAudit(actor, `partner_spv:${spv.id}`, "partner_spv.created", { partnerId, spvId: spv.id, spvName: spv.spvName, status: spv.status });
+      res.status(201).json({ ok: true, spv });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: "create_failed", message: sanitizeErrorMessage(err) });
+    }
   });
 
   /* ---- Read a partner's current override + the effective resolved fees ---- */

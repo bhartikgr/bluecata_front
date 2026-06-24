@@ -353,16 +353,58 @@ export function registerProfileRoutes(app: Express): void {
       // fields this endpoint emits; deeper fields default to safe values.
       const legacy = getLegacyCompanyProfile(id) as any;
       if (legacy && (legacy.description || legacy.tagline)) {
-        return res.json({
+        // v25.41 Phase 3 (company-profile module error) — the legacy adapter
+        // historically returned a FLAT shape lacking the schema-complete
+        // `contact` / `address` / `legal` / `ma` objects. The Founder Company
+        // wizard reads `profile.contact.companyName` (and seeds local state
+        // from profile.contact/address/ma) UNGUARDED, so this flat payload
+        // crashed the page at render time with "Cannot read properties of
+        // undefined" — the exact "company profile module" error Avi reported.
+        //
+        // Fix (DB-driven, schema-complete, additive): build the canonical
+        // empty profile and overlay the legacy display fields onto it so the
+        // wizard always receives a complete CompanyProfile. The legacy fields
+        // are also preserved as extra keys for any consumer that read them.
+        let tenantIdForLegacy = `tenant_co_${id}`;
+        let legacyCompanyName: string | undefined;
+        try {
+          const db = getDb();
+          const row = db
+            .select({ tenantId: companiesTable.tenantId, name: companiesTable.name })
+            .from(companiesTable)
+            .where(and(eq(companiesTable.id, id), isNull(companiesTable.deletedAt)))
+            .get() as { tenantId: string; name: string } | undefined;
+          if (row?.tenantId) tenantIdForLegacy = row.tenantId;
+          legacyCompanyName = row?.name;
+        } catch { /* keep default tenant id; name optional */ }
+        const base = makeEmptyCompanyProfile({
           id,
-          companyId: id,
+          tenantId: tenantIdForLegacy,
+          companyName: legacyCompanyName || legacy.name || undefined,
+        });
+        // Overlay legacy display fields into the schema-complete contact block.
+        if (legacy.tagline) base.contact.oneSentenceHeadliner = String(legacy.tagline);
+        if (legacy.description) base.contact.problemStatement = String(legacy.description);
+        if (legacy.updatedAt) base.updatedAt = String(legacy.updatedAt);
+        // v25.41 round-2 (per GPT-5.5): cache the adapted profile into the
+        // in-memory `companyProfiles` map so a subsequent PATCH does not return
+        // COMPANY_NOT_FOUND. The PATCH path looks up the profile from this map
+        // (or the durable DB) before applying changes; without this cache the
+        // legacy-rendered profile could not be saved. We don't durably persist
+        // the synthesized base here — the PATCH itself writes to the durable
+        // store the moment a founder makes their first real edit.
+        companyProfiles.set(id, base);
+        const legacyScore = computeMaReadinessScore(base.ma);
+        return res.json({
+          ...base,
+          maScore: legacyScore,
+          // Preserve the original legacy fields as additive extras.
           description: legacy.description ?? "",
           tagline: legacy.tagline ?? "",
           sector: legacy.sector ?? null,
           stage: legacy.stage ?? null,
           logoUrl: legacy.logoUrl ?? null,
           version: legacy.version ?? 0,
-          updatedAt: legacy.updatedAt ?? null,
           source: "companyProfileStore",
         });
       }

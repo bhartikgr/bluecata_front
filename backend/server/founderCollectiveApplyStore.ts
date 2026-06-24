@@ -29,7 +29,51 @@ import {
   founderCollectiveApplications as founderCollectiveApplicationsTable,
 } from "@shared/schema";
 import { DEFAULT_CHAPTER_ID, DEFAULT_CHAPTER_TENANT_ID } from "./lib/chapterDefaults";
+import { listChaptersForUser } from "./chaptersStore"; /* v25.41 Q7 */
 import { log } from "./lib/logger";
+
+/* ============================================================
+ * v25.41 Q7 (Avi answer = A): resolve the REAL chapter from the founder's
+ * chapter membership at write time, instead of always stamping the platform
+ * DEFAULT chapter. Per Avi's unifying directive, the chapter a record belongs
+ * to must be derived dynamically from the membership record table, not a
+ * hardcoded constant.
+ *
+ * Precedence: first ACTIVE chapter membership for the user wins. If the user
+ * has no resolvable chapter membership (the common single-chapter LIVE case,
+ * or a brand-new founder), fall back to the DEFAULT chapter — preserving the
+ * exact prior behavior so nothing already shipped is "spoiled".
+ * ============================================================ */
+function resolveFounderChapter(userId: string): { chapterId: string; tenantId: string } {
+  try {
+    const memberships = listChaptersForUser(userId);
+    // v25.41 round-2 (per GPT-5.5): when a founder has MULTIPLE active chapter
+    // memberships, the previous `memberships.find(active)` returned the first
+    // one in unspecified order. Make this deterministic: prefer DEFAULT_CHAPTER
+    // if the founder belongs to it (so single-chapter LIVE keeps current
+    // behavior); otherwise sort active memberships by joinedAt ASC (or `id`
+    // ASC as a stable tiebreak) and take the earliest. This is a deterministic
+    // policy until an explicit per-application chapter selector is added.
+    const actives = memberships.filter((m) => m.membershipStatus === "active");
+    let pick = actives.find((m) => m.id === DEFAULT_CHAPTER_ID);
+    if (!pick && actives.length > 0) {
+      const sorted = [...actives].sort((a, b) => {
+        const aj = (a as { joinedAt?: string }).joinedAt ?? "";
+        const bj = (b as { joinedAt?: string }).joinedAt ?? "";
+        if (aj !== bj) return aj.localeCompare(bj);
+        return String(a.id).localeCompare(String(b.id));
+      });
+      pick = sorted[0];
+    }
+    if (!pick && memberships.length > 0) pick = memberships[0]; // pre-v25.41 behavior fallback
+    if (pick && pick.id) {
+      return { chapterId: pick.id, tenantId: pick.tenantId ?? DEFAULT_CHAPTER_TENANT_ID };
+    }
+  } catch (err) {
+    log.warn("[founderCollectiveApplyStore.resolveFounderChapter] lookup failed:", (err as Error).message);
+  }
+  return { chapterId: DEFAULT_CHAPTER_ID, tenantId: DEFAULT_CHAPTER_TENANT_ID };
+}
 
 export type NominationStatus = "pending_vouch" | "vouched" | "reviewing" | "invited" | "presented" | "declined";
 // v23.8 W-21: "accepted" added so admin approval of a founder Path B application
@@ -421,14 +465,17 @@ export function registerFounderCollectiveApplyRoutes(app: Express): void {
       status: "pending_vouch",
       submittedAt,
     };
+    // v25.41 Q7 — stamp the founder's real chapter from membership (DEFAULT
+    // fallback), consistent with the application write path.
+    const nomChapter = resolveFounderChapter(parsed.data.founderId);
     // v17 Phase B — DB write-through, transaction-wrapped.
     try {
       const db: any = getDb();
       db.transaction((tx: any) => {
         tx.insert(founderCollectiveNominationsTable).values({
           id,
-          tenantId: DEFAULT_CHAPTER_TENANT_ID,
-          chapterId: DEFAULT_CHAPTER_ID,
+          tenantId: nomChapter.tenantId,
+          chapterId: nomChapter.chapterId,
           companyId: parsed.data.companyId,
           founderId: parsed.data.founderId,
           vouchingInvestorId: parsed.data.vouchingInvestorId,
@@ -535,14 +582,18 @@ export function registerFounderCollectiveApplyRoutes(app: Express): void {
       status: "submitted",
       submittedAt,
     };
+    // v25.41 Q7 — resolve the founder's real chapter from membership (falls back
+    // to DEFAULT when none), so the application record is stamped with the
+    // chapter it actually belongs to rather than always the platform default.
+    const appChapter = resolveFounderChapter(parsed.data.founderId);
     // v17 Phase B — DB write-through, transaction-wrapped.
     try {
       const db: any = getDb();
       db.transaction((tx: any) => {
         tx.insert(founderCollectiveApplicationsTable).values({
           id,
-          tenantId: DEFAULT_CHAPTER_TENANT_ID,
-          chapterId: DEFAULT_CHAPTER_ID,
+          tenantId: appChapter.tenantId,
+          chapterId: appChapter.chapterId,
           companyId: parsed.data.companyId,
           founderId: parsed.data.founderId,
           pitchDeckFilename: parsed.data.pitchDeckFilename,

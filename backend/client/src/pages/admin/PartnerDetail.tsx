@@ -8,15 +8,22 @@
  * Renders: partner summary + team members + notes + tasks + workspace audit.
  */
 
+import { useState } from "react";
 import { useParams } from "wouter";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 /* v25.12 NL4 — explicit queryFn for the two queries below. */
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import { PageBody, PageHeader } from "@/components/AppShell";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, Building2, Users, FileText, CheckSquare, FolderOpen } from "lucide-react";
+import { Input } from "@/components/ui/input"; /* v25.41 Bug-3 — admin SPV create form */
+import { Label } from "@/components/ui/label"; /* v25.41 Bug-3 */
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select"; /* v25.41 Bug-3 */
+import { useToast } from "@/hooks/use-toast"; /* v25.41 Bug-3 */
+import { ArrowLeft, Building2, Users, FileText, CheckSquare, FolderOpen, Layers, Plus } from "lucide-react";
 import { Link } from "wouter";
 
 // ── Types ─────────────────────────────────────────────────────────────────
@@ -71,11 +78,75 @@ interface WorkspaceAuditResp {
   }>;
 }
 
+/* v25.41 Bug-3 — admin-created SPV row (subset of PartnerSpv surfaced to admin). */
+interface AdminPartnerSpv {
+  id: string;
+  spvName: string;
+  jurisdiction: string;
+  vintage: number;
+  currency: string;
+  status: string;
+  recordedAt?: string;
+}
+interface AdminPartnerSpvsResp {
+  ok: boolean;
+  spvs: AdminPartnerSpv[];
+  total: number;
+}
+
+const SPV_STATUSES = ["planned", "open", "closed", "wound_down"] as const;
+
 // ── Page ──────────────────────────────────────────────────────────────────
 
 export default function AdminPartnerDetail() {
   const params = useParams<{ id: string }>();
   const partnerId = params?.id ?? "";
+  const { toast } = useToast();
+
+  /* v25.41 Bug-3 — admin SPV creation. DB-driven: the SPV list below is
+     fetched live from GET /api/admin/partners/:id/spvs and the create form
+     POSTs to the new admin endpoint, which delegates to the existing
+     partnerSpvStore.create. Nothing is hardcoded; nothing is held in browser
+     memory beyond the transient form draft. */
+  const [spvForm, setSpvForm] = useState({
+    spvName: "",
+    jurisdiction: "",
+    vintage: String(new Date().getFullYear()),
+    currency: "USD",
+    status: "planned" as (typeof SPV_STATUSES)[number],
+  });
+
+  const spvsQ = useQuery<AdminPartnerSpvsResp>({
+    queryKey: [`/api/admin/partners/${partnerId}/spvs`],
+    enabled: !!partnerId,
+    queryFn: async () => (await apiRequest("GET", `/api/admin/partners/${partnerId}/spvs`)).json(),
+  });
+
+  const createSpvMut = useMutation({
+    mutationFn: async () => {
+      const vintage = parseInt(spvForm.vintage, 10);
+      if (!spvForm.spvName.trim()) throw new Error("SPV name is required");
+      if (!spvForm.jurisdiction.trim()) throw new Error("Jurisdiction is required");
+      if (!Number.isInteger(vintage)) throw new Error("Vintage must be a year");
+      const currency = (spvForm.currency || "USD").trim().toUpperCase();
+      if (!/^[A-Z]{3}$/.test(currency)) throw new Error("Currency must be a 3-letter ISO code");
+      const r = await apiRequest("POST", `/api/admin/partners/${partnerId}/spvs`, {
+        spvName: spvForm.spvName.trim(),
+        jurisdiction: spvForm.jurisdiction.trim(),
+        vintage,
+        currency,
+        status: spvForm.status,
+      });
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || "create_failed");
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [`/api/admin/partners/${partnerId}/spvs`] });
+      setSpvForm((f) => ({ ...f, spvName: "", jurisdiction: "" }));
+      toast({ title: "SPV created" });
+    },
+    onError: (e: any) => toast({ title: "Create SPV failed", description: e?.message, variant: "destructive" }),
+  });
 
   const partnerQ = useQuery<PartnerDetailResp>({
     /* v25.12 NL4 — explicit queryFn. */
@@ -154,6 +225,128 @@ export default function AdminPartnerDetail() {
         )}
 
         {/* ── Workspace Audit Sections ─────────────────────────────── */}
+        {/* v25.41 Bug-3 - SPV creation + list (admin parity for partner self-service) */}
+        {partner && (
+          <Card className="p-5 mb-6" data-testid="admin-partner-spvs">
+            <div className="flex items-center gap-2 mb-4">
+              <Layers className="h-4 w-4 text-muted-foreground" />
+              <h3 className="font-semibold text-sm">
+                SPVs ({spvsQ.data?.total ?? 0})
+              </h3>
+            </div>
+
+            {/* Create form */}
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5 mb-4">
+              <div className="space-y-1">
+                <Label htmlFor="spv-name" className="text-xs">SPV Name</Label>
+                <Input
+                  id="spv-name"
+                  data-testid="input-spv-name"
+                  value={spvForm.spvName}
+                  onChange={(e) => setSpvForm((f) => ({ ...f, spvName: e.target.value }))}
+                  placeholder="Acme SPV I"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="spv-jurisdiction" className="text-xs">Jurisdiction</Label>
+                <Input
+                  id="spv-jurisdiction"
+                  data-testid="input-spv-jurisdiction"
+                  value={spvForm.jurisdiction}
+                  onChange={(e) => setSpvForm((f) => ({ ...f, jurisdiction: e.target.value }))}
+                  placeholder="Delaware"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="spv-vintage" className="text-xs">Vintage</Label>
+                <Input
+                  id="spv-vintage"
+                  data-testid="input-spv-vintage"
+                  inputMode="numeric"
+                  value={spvForm.vintage}
+                  onChange={(e) => setSpvForm((f) => ({ ...f, vintage: e.target.value }))}
+                  placeholder="2026"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="spv-currency" className="text-xs">Currency</Label>
+                <Input
+                  id="spv-currency"
+                  data-testid="input-spv-currency"
+                  value={spvForm.currency}
+                  onChange={(e) => setSpvForm((f) => ({ ...f, currency: e.target.value.toUpperCase() }))}
+                  placeholder="USD"
+                  maxLength={3}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Status</Label>
+                <Select
+                  value={spvForm.status}
+                  onValueChange={(v) => setSpvForm((f) => ({ ...f, status: v as (typeof SPV_STATUSES)[number] }))}
+                >
+                  <SelectTrigger data-testid="select-spv-status">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SPV_STATUSES.map((s) => (
+                      <SelectItem key={s} value={s}>{s}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="flex justify-end mb-4">
+              <Button
+                size="sm"
+                data-testid="button-create-spv"
+                onClick={() => createSpvMut.mutate()}
+                disabled={createSpvMut.isPending}
+              >
+                <Plus className="h-4 w-4 mr-1" />
+                {createSpvMut.isPending ? "Creating..." : "Create SPV"}
+              </Button>
+            </div>
+
+            {/* List */}
+            {spvsQ.isError && (
+              <div className="rounded-md bg-destructive/10 text-destructive p-3 text-sm" data-testid="spv-list-error">
+                Could not load SPVs.
+              </div>
+            )}
+            {spvsQ.data && spvsQ.data.spvs.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No SPVs yet.</p>
+            ) : spvsQ.data ? (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm" data-testid="spv-table">
+                  <thead>
+                    <tr className="border-b text-muted-foreground">
+                      <th className="text-left pb-2 pr-4 font-medium">Name</th>
+                      <th className="text-left pb-2 pr-4 font-medium">Jurisdiction</th>
+                      <th className="text-left pb-2 pr-4 font-medium">Vintage</th>
+                      <th className="text-left pb-2 pr-4 font-medium">Currency</th>
+                      <th className="text-left pb-2 font-medium">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {spvsQ.data.spvs.map((s) => (
+                      <tr key={s.id} className="border-b last:border-0" data-testid={`spv-row-${s.id}`}>
+                        <td className="py-2 pr-4">{s.spvName}</td>
+                        <td className="py-2 pr-4">{s.jurisdiction}</td>
+                        <td className="py-2 pr-4">{s.vintage}</td>
+                        <td className="py-2 pr-4">{s.currency}</td>
+                        <td className="py-2">
+                          <Badge variant="outline" className="text-xs">{s.status}</Badge>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
+          </Card>
+        )}
+
         {auditQ.isPending && (
           <p className="text-sm text-muted-foreground">Loading workspace data…</p>
         )}

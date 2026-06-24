@@ -107,8 +107,51 @@ function defaultSettings(userId: string): CollectiveSettings {
  * Business logic
  * ============================================================ */
 
+// v25.41 Q4 (Avi answer = B): map a durable collective_settings row to the
+// in-memory CollectiveSettings shape. Mirrors the boot hydrator's mapping so a
+// single source of truth is preserved (snake_case OR camelCase column access).
+function rowToSettings(r: any): CollectiveSettings {
+  return {
+    userId: r.user_id ?? r.userId,
+    anonymityLevel: (r.anonymity_level ?? r.anonymityLevel ?? "public") as AnonymityLevel,
+    notifyOnDscScore: Boolean(r.notify_on_dsc_score ?? r.notifyOnDscScore),
+    notifyOnDealRoomUpdate: Boolean(r.notify_on_deal_room_update ?? r.notifyOnDealRoomUpdate),
+    dealRoomVisibility: (r.deal_room_visibility ?? r.dealRoomVisibility ?? "visible") as DealRoomVisibility,
+    updatedAt: r.updated_at ?? r.updatedAt,
+    updatedBy: r.updated_by ?? r.updatedBy,
+    version: Number(r.version ?? 1),
+    prevHash: r.prev_hash ?? r.prevHash ?? "GENESIS",
+    hash: r.hash,
+  };
+}
+
 export function getOrCreateSettings(userId: string): CollectiveSettings {
   if (!settingsMap.has(userId)) {
+    // v25.41 Q4 (Avi answer = B): DB-FIRST before minting. The boot hydrator only
+    // restores rows that existed at startup; a user whose row was written by
+    // another process (or after this process booted) would otherwise be silently
+    // re-minted to defaults, forking the hash chain. Per Avi's unifying directive
+    // ("nothing in memory; everything fetched from the record table"), query the
+    // durable collective_settings table first; hydrate into memory and return it
+    // if a row exists. Only mint a fresh default when the DB returns nothing.
+    try {
+      const db: any = getDb();
+      const row = db
+        .select()
+        .from(collectiveSettingsTable)
+        .where(eq((collectiveSettingsTable as any).userId, userId))
+        .get() as any;
+      if (row && row.hash) {
+        settingsMap.set(userId, rowToSettings(row));
+        return settingsMap.get(userId)!;
+      }
+    } catch (err) {
+      const msg = (err as Error).message ?? "";
+      if (!/no such table/i.test(msg)) {
+        log.warn("[collectiveSettingsStore.getOrCreate] DB read failed:", msg);
+      }
+      // fall through to mint (preserves prior behavior on DB error)
+    }
     settingsMap.set(userId, defaultSettings(userId));
   }
   return settingsMap.get(userId)!;

@@ -28,6 +28,7 @@ import { requirePartnerAuth, requirePartnerSubrole } from "./requirePartnerAuth"
 import { rawDb } from "../db/connection";
 import { appendAdminAudit } from "../adminPlatformStore";
 import { sanitizeErrorMessage } from "./sanitize"; /* v25.33 — scrub raw err.message from client responses in prod (backlog item 33 extension). */
+import { resolvePartnerFee } from "./partnerFeeResolver"; /* v25.41 round-2 (per GPT-5.5): static ESM import replaces the prior lazy `require("./partnerFeeResolver")` so the route is safe under both tsx production loader AND vitest ESM .mjs test harness. No behavior change. */
 
 function newId(prefix: string): string {
   return `${prefix}_${randomBytes(8).toString("hex")}`;
@@ -299,8 +300,7 @@ export function registerPartnerSelfServiceRoutes(app: Express): void {
         // Resolve the partner-subscription fee from the DB catalogue (no hardcode).
         // resolvePartnerFee is fail-closed; if no schedule exists it throws, which
         // we translate into a clear "not available" response rather than a 500.
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const { resolvePartnerFee } = require("./partnerFeeResolver") as typeof import("./partnerFeeResolver");
+        // v25.41 round-2 (per GPT-5.5): import is now static at the top of the file.
         const feeKind = cycle === "annual" ? "subscription_annual" : "subscription_monthly";
         let resolved: { amountMinor: number; currency: string; computedVia: string };
         try {

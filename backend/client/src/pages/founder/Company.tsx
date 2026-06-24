@@ -171,6 +171,28 @@ export default function Company() {
  );
  }
 
+ // v25.41 Phase 3 - defensive guard against a non-schema-complete payload
+ // (e.g. a legacy flat profile shape). The wizard reads profile.contact /
+ // .address / .ma unguarded, so a missing contact block would crash the
+ // page. The server-side fix (profileStore legacy fallback) now always emits
+ // a complete profile; this guard is belt-and-suspenders so the page never
+ // white-screens on an unexpected shape - it shows the same actionable error.
+ if (!profile.contact) {
+  return (
+   <>
+    <PageHeader title="Company profile" description="Could not load profile" />
+    <PageBody>
+     <Card>
+      <CardContent className="p-6 text-sm" data-testid="company-profile-incomplete">
+       This company profile could not be loaded in full. Refresh the page; if
+       the problem persists, the page error is surfaced to admin logs.
+      </CardContent>
+     </Card>
+    </PageBody>
+   </>
+  );
+ }
+
  return <CompanyWizard profile={profile} step={step} setStep={setStep} toast={toast} />;
 }
 
