@@ -3130,8 +3130,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             "This pricing tier has no configured monthly/annual price. An administrator must set the tier price before checkout.",
         });
       }
-      //const amountMinor = billingCycle === "annual" ? annual : monthly;
-      const amountMinor = 1;
+      const amountMinor = billingCycle === "annual" ? annual : monthly;
+      // const amountMinor = 1;
       const currency = tier.currency ?? "USD";
       if (!amountMinor || amountMinor <= 0) {
         return res.status(400).json({ ok: false, error: "invalid_tier_price" });
