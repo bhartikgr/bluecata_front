@@ -75,7 +75,7 @@ type WireInstructions = {
 };
 
 const INSTRUMENT_COLORS: Record<string, string> = {
- common: "hsl(219 45% 30%)", preferred: "hsl(184 98% 28%)", safe: "hsl(333 75% 40%)",
+ common: "hsl(219 45% 30%)", preferred: "hsl(0 100% 40%)", safe: "hsl(333 75% 40%)",
  note: "hsl(38 92% 50%)", warrant: "hsl(158 64% 38%)", option: "hsl(219 70% 55%)",
 };
 
@@ -83,7 +83,7 @@ const INSTRUMENT_COLORS: Record<string, string> = {
 function TabIntro({ children }: { children: React.ReactNode }) {
  return (
   <div className="flex items-start gap-2 p-3 rounded-md bg-secondary/40 border border-border text-xs leading-relaxed" data-testid="tab-intro">
-   <Info className="h-3.5 w-3.5 mt-0.5 text-[hsl(184_98%_22%)] shrink-0" />
+   <Info className="h-3.5 w-3.5 mt-0.5 text-[hsl(0_100%_40%)] shrink-0" />
    <span className="text-muted-foreground">{children}</span>
   </div>
  );
@@ -332,7 +332,7 @@ export default function InvitationDetail() {
         {/* B5: Soft-circle button navigates to Your Decision tab */}
         <Button
           onClick={handleSoftCircleClick}
-          className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+          className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
           data-testid="button-accept"
         >
           <Check className="h-4 w-4 mr-2" /> Soft-circle
@@ -342,7 +342,7 @@ export default function InvitationDetail() {
          <Button
           onClick={() => setSignOpen(true)}
           variant="outline"
-          className="border-[hsl(184_98%_22%)] text-[hsl(184_98%_22%)]"
+          className="border-[hsl(0_100%_40%)] text-[hsl(0_100%_40%)]"
           data-testid="button-open-sign"
          >
           <ShieldCheck className="h-4 w-4 mr-2" /> Sign Term Sheet
@@ -371,7 +371,7 @@ export default function InvitationDetail() {
         <div className="text-xs uppercase text-muted-foreground tracking-wide font-medium">Round target</div>
         <div className="text-2xl font-semibold mt-1">{fmtUSD(i.targetAmount, { compact: true })}</div>
         <div className="text-xs text-muted-foreground mt-1">{fmtUSD(i.raisedAmount, { compact: true })} soft-circled · {fmtPct(pct, 0)}</div>
-        <div className="h-2 mt-2 bg-secondary rounded-full overflow-hidden"><div className="h-full bg-[hsl(184_98%_22%)]" style={{ width: `${Math.min(100, pct)}%` }} /></div>
+        <div className="h-2 mt-2 bg-secondary rounded-full overflow-hidden"><div className="h-full bg-[hsl(0_100%_40%)]" style={{ width: `${Math.min(100, pct)}%` }} /></div>
        </CardContent></Card>
        <Card><CardContent className="p-4">
         <div className="text-xs uppercase text-muted-foreground tracking-wide font-medium">Pre / post-money</div>
@@ -535,7 +535,7 @@ export default function InvitationDetail() {
           {i.round.useOfProceeds.map(u => (
            <div key={u.category}>
             <div className="flex justify-between text-sm mb-1"><span>{u.category}</span><span className="font-mono tabular-nums">{u.percent}%</span></div>
-            <div className="h-2 bg-secondary rounded-full overflow-hidden"><div className="h-full bg-[hsl(184_98%_22%)]" style={{ width: `${u.percent}%` }} /></div>
+            <div className="h-2 bg-secondary rounded-full overflow-hidden"><div className="h-full bg-[hsl(0_100%_40%)]" style={{ width: `${u.percent}%` }} /></div>
            </div>
           ))}
          </div>
@@ -555,7 +555,7 @@ export default function InvitationDetail() {
           { d: (i.round as { closeDate?: string }).closeDate ?? i.expiresAt, t: "Definitive docs + wire instructions" },
          ].map((s, idx) => (
           <li key={idx} className="ml-4">
-           <div className="absolute -left-[5px] mt-1 h-2.5 w-2.5 rounded-full bg-[hsl(184_98%_22%)]" />
+           <div className="absolute -left-[5px] mt-1 h-2.5 w-2.5 rounded-full bg-[hsl(0_100%_40%)]" />
            <div className="text-xs text-muted-foreground">{fmtDate(s.d)}</div>
            <div className="font-medium text-sm">{s.t}</div>
           </li>
@@ -623,7 +623,7 @@ export default function InvitationDetail() {
           CONFIRMED (signed), so the investor knows where to send funds.
           Addresses Avi's main v24.3 complaint. */}
       {isConfirmed && (
-       <Card className="border-[hsl(184_98%_22%)]/40" data-testid="card-wire-instructions-investor">
+       <Card className="border-[hsl(0_100%_40%)]/40" data-testid="card-wire-instructions-investor">
         <CardHeader className="pb-3">
          <CardTitle className="text-base flex items-center gap-2"><Wallet className="h-4 w-4" /> Wire Transfer Instructions</CardTitle>
         </CardHeader>
@@ -669,8 +669,8 @@ export default function InvitationDetail() {
         <InvestmentHistoryPanel companyId={companyId} companyName={i.company.name} />
       )}
 
-      <div className="flex items-start gap-2 p-3 rounded-md border border-[hsl(184_98%_22%)]/30 bg-[hsl(184_98%_22%)]/5 text-xs leading-relaxed">
-       <Info className="h-3.5 w-3.5 mt-0.5 text-[hsl(184_98%_22%)] shrink-0" />
+      <div className="flex items-start gap-2 p-3 rounded-md border border-[hsl(0_100%_40%)]/30 bg-[hsl(0_100%_40%)]/5 text-xs leading-relaxed">
+       <Info className="h-3.5 w-3.5 mt-0.5 text-[hsl(0_100%_40%)] shrink-0" />
        <div>
         <span className="font-semibold">Soft-circle commitment — non-binding indication of interest.</span> A binding subscription requires definitive transaction documents executed by both parties. You can withdraw before the deadline.
        </div>
@@ -701,8 +701,8 @@ export default function InvitationDetail() {
       <div ref={softCircleFormRef} />
 
       <div className="grid md:grid-cols-2 gap-5">
-       <Card className="border-[hsl(184_98%_22%)]/40">
-        <CardHeader className="pb-3"><CardTitle className="text-base text-[hsl(184_98%_22%)] ">{mySig && !mySig.withdrawn ? "Update soft-circle" : "Soft-circle this round"}</CardTitle></CardHeader>
+       <Card className="border-[hsl(0_100%_40%)]/40">
+        <CardHeader className="pb-3"><CardTitle className="text-base text-[hsl(0_100%_40%)] ">{mySig && !mySig.withdrawn ? "Update soft-circle" : "Soft-circle this round"}</CardTitle></CardHeader>
         <CardContent className="space-y-3">
          <div>
           <Label>Investment amount (USD)</Label>
@@ -729,7 +729,7 @@ export default function InvitationDetail() {
           <span>I acknowledge this is a non-binding indication of interest.</span>
          </label>
          <Button
-          className="w-full bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white h-11"
+          className="w-full bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white h-11"
           onClick={async () => {
            if (!signerName.trim()) { toast({ title: "Type your full legal name", variant: "destructive" }); return; }
            if (!ack) { toast({ title: "Acknowledge before submitting", variant: "destructive" }); return; }
@@ -846,7 +846,7 @@ export default function InvitationDetail() {
         emit({ type: "softcircle.created", payload: { softCircleId: scId, roundId: i.round?.id ?? "r1", investorId: "investor-current", amount: String(i.minTicket ?? 100000) } }, { companyId: i.company.id ?? "co-x", roundId: i.round?.id, actorId: entitlementCtx?.userId ?? "investor-current", actorRole: "investor" });
         toast({ title: "Soft-circled", description: `${i.company.name} has been notified.` });
         setAcceptOpen(false);
-       }} className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)]" data-testid="button-confirm-soft">
+       }} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)]" data-testid="button-confirm-soft">
         Confirm soft-circle
        </AlertDialogAction>
       </AlertDialogFooter>
@@ -925,7 +925,7 @@ export default function InvitationDetail() {
           setSignOpen(false);
          } catch { /* error already toasted */ }
         }}
-        className="bg-[hsl(184_98%_22%)] text-white"
+        className="bg-[hsl(0_100%_40%)] text-white"
         data-testid="button-confirm-sign"
        >
         Sign term sheet

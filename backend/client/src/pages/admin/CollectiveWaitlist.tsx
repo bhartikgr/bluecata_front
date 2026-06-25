@@ -98,7 +98,7 @@ export default function CollectiveWaitlist() {
               onClick={() => setStatusFilter(s)}
               className={`px-3 py-1 text-xs rounded-full border capitalize transition-colors ${
                 statusFilter === s
-                  ? "bg-[hsl(184_98%_22%)] text-white border-transparent"
+                  ? "bg-[hsl(0_100%_40%)] text-white border-transparent"
                   : "bg-white text-slate-700 border-slate-200 hover:border-slate-400"
               }`}
             >

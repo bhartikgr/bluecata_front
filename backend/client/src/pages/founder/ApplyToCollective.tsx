@@ -160,9 +160,9 @@ export default function FounderApplyToCollective() {
         )}
 
         {/* Eligibility info banner */}
-        <div className="rounded-md border-2 border-[hsl(184_98%_22%)]/30 bg-[hsl(184_98%_22%)]/5 p-4 mb-5" data-testid="banner-presentation-eligibility">
+        <div className="rounded-md border-2 border-[hsl(0_100%_40%)]/30 bg-[hsl(0_100%_40%)]/5 p-4 mb-5" data-testid="banner-presentation-eligibility">
           <div className="flex items-start gap-3">
-            <Trophy className="h-5 w-5 text-[hsl(184_98%_22%)] shrink-0 mt-0.5" />
+            <Trophy className="h-5 w-5 text-[hsl(0_100%_40%)] shrink-0 mt-0.5" />
             <div className="text-sm">
               <div className="font-semibold mb-1">This applies your <span className="underline">company</span> to PRESENT, not you for membership.</div>
               <p className="text-muted-foreground">
@@ -170,7 +170,7 @@ export default function FounderApplyToCollective() {
                 via an investor on your cap table who nominates you (faster), or by applying directly (more diligence required, includes a non-refundable application fee).
               </p>
               <p className="text-xs text-muted-foreground mt-2">
-                Looking for membership? Investors apply at <span className="font-mono text-[hsl(184_98%_22%)]">/investor/apply-to-collective</span>.
+                Looking for membership? Investors apply at <span className="font-mono text-[hsl(0_100%_40%)]">/investor/apply-to-collective</span>.
               </p>
             </div>
           </div>
@@ -206,7 +206,7 @@ export default function FounderApplyToCollective() {
         </Tabs>
 
         <div className="text-xs text-muted-foreground text-center mt-6 pb-4">
-          Looking for Collective membership? <Link href="/investor/apply-to-collective"><span className="text-[hsl(184_98%_22%)] underline cursor-pointer" data-testid="link-investor-membership">Investors apply here</span></Link>.
+          Looking for Collective membership? <Link href="/investor/apply-to-collective"><span className="text-[hsl(0_100%_40%)] underline cursor-pointer" data-testid="link-investor-membership">Investors apply here</span></Link>.
         </div>
       </PageBody>
     </>
@@ -262,7 +262,7 @@ function PathA({
       <Card>
         <CardHeader>
           <CardTitle className="text-base flex items-center gap-2">
-            <Sparkles className="h-4 w-4 text-[hsl(184_98%_22%)]" /> How vouching works
+            <Sparkles className="h-4 w-4 text-[hsl(0_100%_40%)]" /> How vouching works
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-2 text-sm text-muted-foreground">
@@ -335,7 +335,7 @@ function PathA({
           <div className="flex items-center justify-between pt-3 border-t">
             <p className="text-xs text-muted-foreground">Your nominator must approve before this enters the diligence queue.</p>
             <Button
-              className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+              className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
               disabled={!canSubmit}
               onClick={() => submitMut.mutate()}
               data-testid="button-submit-nomination"
@@ -456,7 +456,7 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
     return (
       <Card>
         <CardContent className="p-8 text-center space-y-4">
-          <Sparkles className="h-12 w-12 text-[hsl(184_98%_22%)] mx-auto" />
+          <Sparkles className="h-12 w-12 text-[hsl(0_100%_40%)] mx-auto" />
           <div>
             <h2 className="text-xl font-semibold">Application submitted!</h2>
             <p className="text-sm text-muted-foreground mt-1">ID: <span className="font-mono">{submittedId}</span></p>
@@ -466,7 +466,7 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
           </div>
           <div className="flex justify-center gap-2">
             <Button variant="outline" onClick={() => navigate("/founder/dashboard")} data-testid="button-back-dashboard">Back to dashboard</Button>
-            <Button className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" onClick={() => navigate("/founder/messages")} data-testid="button-go-messages">View Collective messages</Button>
+            <Button className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" onClick={() => navigate("/founder/messages")} data-testid="button-go-messages">View Collective messages</Button>
           </div>
         </CardContent>
       </Card>
@@ -513,7 +513,7 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
       <Card>
         <CardHeader>
           <CardTitle className="text-base flex items-center gap-2">
-            <ShieldCheck className="h-4 w-4 text-[hsl(184_98%_22%)]" /> Direct company application
+            <ShieldCheck className="h-4 w-4 text-[hsl(0_100%_40%)]" /> Direct company application
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-2 text-sm text-muted-foreground">
@@ -626,7 +626,7 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
           <div className="flex items-center justify-between pt-3 border-t">
             <p className="text-xs text-muted-foreground">Required: deck filename, asks (≥20), cover letter (≥100), fee acknowledgement.</p>
             <Button
-              className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+              className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
               disabled={!canSubmit}
               onClick={validateAndSubmit}
               data-testid="button-submit-application"

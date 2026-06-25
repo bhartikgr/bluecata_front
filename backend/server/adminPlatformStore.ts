@@ -31,6 +31,9 @@ import {
   platformConfig as platformConfigTable,
 } from "../shared/schema";
 import { log } from "./lib/logger";
+// v25.42h round-2 (Blocker 2) — DB read failures must surface as 503, never as
+// an empty/default literal payload.
+import { DbUnavailableError } from "./lib/errors";
 
 /**
  * Patch v10 — Live activity feed allowlist.
@@ -87,10 +90,11 @@ function computeKpis() {
     0,
   );
 
-  // Synthetic growth/churn/NRR — no canonical source yet.
-  const momGrowthPct = 11.4;
-  const churnPct = 2.1;
-  const nrr = 1.18;
+  // v25.42h — growth/churn/NRR now DB-derived from subscriptions +
+  // subscriptions_history. Any metric without a defensible source returns
+  // null so the UI shows "N/A — historical data not available" instead of a
+  // fabricated number (was hardcoded 11.4 / 2.1 / 1.18).
+  const { momGrowthPct, churnPct, nrr } = computeSubscriptionMetrics();
 
   const outbox = getOutbox();
   const queues = {
@@ -99,37 +103,26 @@ function computeKpis() {
     bridgeOutbox: outbox.filter(e => e.status === "queued").length,
     deadLetter: outbox.filter(e => e.status === "dead_letter").length,
   };
+  // v25.42h — health.capTableReconcile now DB-derived from recon_runs. The
+  // remaining sub-fields (closeGateFailures, dataroomUploadErrors,
+  // messageDelivery, emailSlaSec) have no canonical source table in this wave
+  // and are returned as null so the UI shows "N/A" rather than fabricated
+  // counts (were 318/316, 4, 2, 1284/1281, 38).
+  const reconHealth = computeReconHealth();
   const health = {
-    capTableReconcile: { runs: 318, success: 316, successRatePct: 99.37 },
-    closeGateFailures: 4,
-    dataroomUploadErrors: 2,
-    messageDelivery: { sent: 1284, delivered: 1281, deliveryRatePct: 99.77 },
-    emailSlaSec: 38,
+    capTableReconcile: reconHealth,
+    closeGateFailures: null,
+    dataroomUploadErrors: null,
+    messageDelivery: { sent: null, delivered: null, deliveryRatePct: null },
+    emailSlaSec: null,
   };
-  const funnels = {
-    onboarding: [
-      { step: "company_created", count: 18 },
-      { step: "first_round_opened", count: 12 },
-      { step: "first_close", count: 9 },
-    ],
-    investor: [
-      { step: "invited", count: 240 },
-      { step: "soft_circled", count: 132 },
-      { step: "funded", count: 88 },
-    ],
-  };
-  const topCompanies = [
-    { id: "co_novapay", name: "NovaPay AI", traction: 92, raised: 6_500_000 },
-    { id: "co_quanta", name: "Quanta Robotics", traction: 88, raised: 4_200_000 },
-    { id: "co_arboreal", name: "Arboreal Health", traction: 81, raised: 1_500_000 },
-    { id: "co_helia", name: "Helia AI", traction: 79, raised: 3_800_000 },
-    { id: "co_kelvin", name: "Kelvin Energy", traction: 74, raised: 1_100_000 },
-  ];
-  const topInvestors = [
-    { id: "u_aisha_patel", name: "Aisha Patel · Hydra Ventures", activity: 27, committed: 2_400_000 },
-    { id: "u_moss_dawn", name: "Moss & Dawn", activity: 19, committed: 1_750_000 },
-    { id: "u_lapsed_lp", name: "Cascadia LP (lapsed)", activity: 4, committed: 800_000 },
-  ];
+  // v25.42h — funnels now DB-derived from audit_log event-type counts.
+  const funnels = computeFunnels();
+  // v25.42h — top companies / investors now DB-derived (real companies ordered
+  // by activity; real role=investor users ordered by deal/audit activity).
+  // `raised` / `committed` return null where no canonical aggregate exists.
+  const topCompanies = computeTopCompanies(5);
+  const topInvestors = computeTopInvestors(3);
   // Regions: derived from `companies[].region` (when present); falls back to a
   // global "GLOBAL" bucket so we never return an empty array.
   const regionAcc = new Map<string, { companies: number; raised: number }>();
@@ -186,72 +179,95 @@ function computeKpis() {
  * render the same components) but populated with Collective-flavoured numbers.
  */
 function computeCollectiveKpis() {
-  const totalMembers = 142;      // total accredited Collective members
-  const activeMembers = 118;     // status === "active"
-  const newMembersMoM = 14;
-  const churnPct = 1.8;
-  const nrr = 1.27;
-  const totalCommittedSyndication = 18_400_000;   // committed via syndicates in last 12mo
-  const totalDeployedSyndication = 11_750_000;    // actually deployed
+  // v25.42h — 100% DB-derived from the real Collective tables
+  // (collective_memberships, chapters, chapter_memberships, collective_apps,
+  // subscriptions). Was entirely hardcoded (totalMembers=142, etc.). Metrics
+  // with no defensible source return null so the UI shows an explicit "N/A"
+  // state rather than a fabricated number.
+  const m = computeCollectiveKpisFromDb();
   const queues = {
-    pendingApplications: 9,            // membership applications in admin queue
-    pendingKyc: 4,                     // KYC docs awaiting review
-    syndicationAllocations: 6,         // open syndicate allocations to close
+    pendingApplications: m.pendingApplications,
+    pendingKyc: null,                  // no KYC-queue source table this wave
+    syndicationAllocations: null,      // no syndicate-allocation source this wave
     deadLetter: getOutbox().filter(e => e.status === "dead_letter").length,
   };
+  // Collective-shared cap-table reconciles share the same recon_runs table.
+  const reconHealth = computeReconHealth();
   const health = {
-    capTableReconcile: { runs: 142, success: 141, successRatePct: 99.30 }, // Collective-shared cap-table reconciles
-    closeGateFailures: 1,
-    dataroomUploadErrors: 0,
-    messageDelivery: { sent: 962, delivered: 960, deliveryRatePct: 99.79 },
-    emailSlaSec: 42,
+    capTableReconcile: reconHealth,
+    closeGateFailures: null,
+    dataroomUploadErrors: null,
+    messageDelivery: { sent: null, delivered: null, deliveryRatePct: null },
+    emailSlaSec: null,
+  };
+  // Onboarding funnel from collective_apps status counts; investor funnel from
+  // audit_log event-type counts (shared with the Capavate funnel helper).
+  const appStatusCount = (statuses: string[]): number => {
+    if (statuses.length === 0) return 0;
+    const ph = statuses.map(() => "?").join(",");
+    try {
+      return Number((dbGet(`SELECT COUNT(*) AS n FROM collective_apps WHERE deleted_at IS NULL AND status IN (${ph})`, ...statuses) as { n: number })?.n ?? 0);
+    } catch (err) {
+      // v25.42h round-2 (Blocker 2b) — fail-closed: rethrow rather than reporting
+      // a fabricated 0 application count. Propagates to the KPI route as 503.
+      log.warn("[adminPlatformStore.computeCollectiveKpis.appStatusCount] DB read failed:", (err as Error).message);
+      throw new DbUnavailableError("collective application counts", err);
+    }
   };
   const funnels = {
     onboarding: [
-      { step: "application_started",   count: 38 },
-      { step: "application_submitted", count: 26 },
-      { step: "kyc_completed",         count: 21 },
-      { step: "member_activated",      count: 18 },
+      { step: "application_started",   count: appStatusCount(["started", "draft"]) },
+      { step: "application_submitted", count: appStatusCount(["submitted", "pending", "in_review"]) },
+      { step: "kyc_completed",         count: appStatusCount(["kyc_completed", "approved"]) },
+      { step: "member_activated",      count: m.activeMembers },
     ],
-    investor: [
-      { step: "deals_shared",     count: 84 },
-      { step: "deals_viewed",     count: 71 },
-      { step: "soft_circled",     count: 38 },
-      { step: "syndicate_joined", count: 22 },
-    ],
+    investor: computeFunnels().investor,
   };
-  const topCompanies = [   // Top member-tier brands (instead of portfolio companies)
-    { id: "tier_lead",       name: "Lead Investor (tier)", traction: 9,  raised: 6_200_000 },
-    { id: "tier_syndicate",  name: "Syndicate Lead (tier)", traction: 17, raised: 7_400_000 },
-    { id: "tier_standard",   name: "Standard Member",       traction: 84, raised: 4_800_000 },
-    { id: "tier_partner",    name: "Consortium Partner",    traction: 11, raised: 0 },
-    { id: "tier_observer",   name: "Observer (read-only)",  traction: 21, raised: 0 },
-  ];
-  const topInvestors = [
-    { id: "u_aisha_patel", name: "Aisha Patel · Hydra Ventures",   activity: 31, committed: 2_400_000 },
-    { id: "u_moss_dawn",   name: "Moss & Dawn",                    activity: 22, committed: 1_950_000 },
-    { id: "u_keith_sato",  name: "Keith Sato · Sato Capital",       activity: 18, committed: 1_350_000 },
-  ];
-  const regions = [
-    { code: "US", companies: 78, raised: 12_400_000 },  // companies = members in this surface
-    { code: "CA", companies: 12, raised: 1_100_000 },
-    { code: "UK", companies: 18, raised: 1_900_000 },
-    { code: "EU", companies: 11, raised: 1_350_000 },
-    { code: "SG", companies:  8, raised:   900_000 },
-    { code: "HK", companies:  6, raised:   400_000 },
-    { code: "JP", companies:  4, raised:   200_000 },
-    { code: "IN", companies:  3, raised:   100_000 },
-    { code: "AU", companies:  2, raised:    50_000 },
-  ];
+  // No member-tier brand aggregate table exists; surface real chapters as the
+  // "top" rows (name + member activity) instead of fabricated tier brands.
+  let topCompanies: { id: string; name: string; traction: number; raised: number | null }[] = [];
+  try {
+    topCompanies = (dbAll(
+      `SELECT ch.id AS id, ch.name AS name, COUNT(cm.user_id) AS members
+         FROM chapters ch
+         LEFT JOIN chapter_memberships cm ON cm.chapter_id = ch.id AND cm.deleted_at IS NULL
+        WHERE ch.deleted_at IS NULL
+        GROUP BY ch.id, ch.name
+        ORDER BY members DESC, ch.name ASC
+        LIMIT 5`,
+    ) as Array<{ id: string; name: string; members: number }>).map((r) => ({
+      id: r.id, name: r.name, traction: Number(r.members ?? 0), raised: null,
+    }));
+  } catch (err) {
+    // v25.42h round-2 (Blocker 2b) — fail-closed: rethrow rather than returning
+    // an empty top-companies list as if the chapters table were genuinely empty.
+    log.warn("[adminPlatformStore.computeCollectiveKpis.topCompanies] DB read failed:", (err as Error).message);
+    throw new DbUnavailableError("collective top companies", err);
+  }
+  const topInvestors = computeTopInvestors(3);
+  // Regions from real chapters grouped by region.
+  let regions: { code: string; companies: number; raised: number | null }[] = [];
+  try {
+    regions = (dbAll(
+      `SELECT COALESCE(region, 'GLOBAL') AS code, COUNT(*) AS n
+         FROM chapters WHERE deleted_at IS NULL
+        GROUP BY code ORDER BY n DESC`,
+    ) as Array<{ code: string; n: number }>).map((r) => ({ code: r.code, companies: Number(r.n ?? 0), raised: null }));
+  } catch (err) {
+    // v25.42h round-2 (Blocker 2b) — fail-closed: rethrow rather than returning
+    // an empty regions list as if no chapters had a region.
+    log.warn("[adminPlatformStore.computeCollectiveKpis.regions] DB read failed:", (err as Error).message);
+    throw new DbUnavailableError("collective regions", err);
+  }
   return {
     summary: {
-      totalCompanies: totalMembers,            // re-use shape: "companies" = members
-      totalInvestors: activeMembers,           // "investors" = active members
-      totalCommittedSoftCircle: totalCommittedSyndication,
-      totalFunded: totalDeployedSyndication,
-      momGrowthPct: (newMembersMoM / totalMembers) * 100,
-      churnPct,
-      nrr,
+      totalCompanies: m.totalMembers,          // re-use shape: "companies" = members
+      totalInvestors: m.activeMembers,         // "investors" = active members
+      totalCommittedSoftCircle: null,          // no syndication-commit aggregate this wave
+      totalFunded: null,                       // no deployed-syndication aggregate this wave
+      momGrowthPct: m.momGrowthPct,
+      churnPct: m.churnPct,
+      nrr: m.nrr,
     },
     queues,
     health,
@@ -261,7 +277,6 @@ function computeCollectiveKpis() {
     regions,
   };
 }
-
 /* ------------ Activity feed ------------ */
 const activityFeed: Array<{ id: string; ts: string; actor: string; entity: string; kind: string; text: string }> = [
   { id: "act_1", ts: new Date(Date.now() - 2 * 60_000).toISOString(), actor: "u_maya", entity: "co_novapay", kind: "round.closed", text: "NovaPay Seed Extension closed — $4.0M" },
@@ -510,8 +525,205 @@ if (DEMO_SEED_ENABLED) {
 }
 
 /* ============================================================
+ * v25.42h Housekeeping — DB-derived admin metrics helpers.
+ *
+ * These replace the hardcoded literals that previously seeded the admin
+ * dashboard (momGrowthPct/churn/nrr, health, funnels, topCompanies/Investors,
+ * collective KPIs, activity feed, per-company stats, investor lookup). The
+ * store header described all store data as "in-memory mock seeded from
+ * existing fixtures" — i.e. OUR preview code, not Avi's. Per the brief:
+ *   - real DB-derived value when the source rows exist, OR
+ *   - null  → UI renders an explicit "N/A — historical data not available"
+ *             state (NEVER a fabricated number), OR
+ *   - 503 + ok:false at the route layer on a hard DB error.
+ *
+ * All reads use rawDb() (synchronous better-sqlite3) and exclude soft-deleted
+ * rows (deleted_at IS NULL) where the column exists.
+ * ============================================================ */
+
+/** Run a parametrized SELECT, returning rows or throwing on DB error. */
+function dbAll(sql: string, ...binds: any[]): any[] {
+  return rawDb().prepare(sql).all(...binds) as any[];
+}
+function dbGet(sql: string, ...binds: any[]): any {
+  return rawDb().prepare(sql).get(...binds);
+}
+
+/**
+ * MoM growth / churn / NRR from subscriptions + subscriptions_history.
+ * Returns null for any metric that cannot be computed from real history
+ * (so the UI shows "N/A — historical data not available" instead of a lie).
+ */
+function computeSubscriptionMetrics(): { momGrowthPct: number | null; churnPct: number | null; nrr: number | null } {
+  try {
+    const activeNow = Number(
+      (dbGet(`SELECT COUNT(*) AS n FROM subscriptions WHERE status IN ('active','trialing') AND deleted_at IS NULL`) as { n: number })?.n ?? 0,
+    );
+    const histCount = Number(
+      (dbGet(`SELECT COUNT(*) AS n FROM subscriptions_history`) as { n: number })?.n ?? 0,
+    );
+    if (activeNow === 0 && histCount === 0) {
+      return { momGrowthPct: null, churnPct: null, nrr: null };
+    }
+    const everCount = Number(
+      (dbGet(
+        `SELECT COUNT(DISTINCT company_id) AS n FROM (
+           SELECT company_id FROM subscriptions WHERE deleted_at IS NULL
+           UNION SELECT company_id FROM subscriptions_history
+         )`,
+      ) as { n: number })?.n ?? 0,
+    );
+    const cancelled = Math.max(0, everCount - activeNow);
+    const churnPct = everCount > 0 ? Number(((cancelled / everCount) * 100).toFixed(2)) : null;
+    // MoM growth requires a clean prior-period base. With only a single period
+    // of history we cannot compute a defensible rate, so return null rather
+    // than invent a number.
+    const priorBase = everCount - activeNow;
+    const momGrowthPct = histCount >= everCount && priorBase > 0
+      ? Number((((activeNow - priorBase) / priorBase) * 100).toFixed(2))
+      : null;
+    // NRR requires per-period revenue retention snapshots we do not have; null.
+    const nrr = null;
+    return { momGrowthPct, churnPct, nrr };
+  } catch (err) {
+    // v25.42h round-2 (Blocker 2a) — fail-closed. A DB read failure here must NOT
+    // be swallowed into a {null,null,null} payload; rethrow so the KPI route
+    // responds 503 + ok:false.
+    log.warn("[adminPlatformStore.computeSubscriptionMetrics] DB read failed:", (err as Error).message);
+    throw new DbUnavailableError("subscription metrics", err);
+  }
+}
+
+/** Cap-table reconcile health from the recon_runs table. */
+function computeReconHealth(): { runs: number; success: number; successRatePct: number | null } {
+  const runs = Number((dbGet(`SELECT COUNT(*) AS n FROM recon_runs WHERE deleted_at IS NULL`) as { n: number })?.n ?? 0);
+  // A run is a success when its diff_json marks ok:true. INSTR avoids brittle
+  // quote-escaping in a LIKE pattern; diff_json stores a JSON object.
+  const success = Number(
+    (dbGet(`SELECT COUNT(*) AS n FROM recon_runs WHERE deleted_at IS NULL AND INSTR(diff_json, '"ok":true') > 0`) as { n: number })?.n ?? 0,
+  );
+  const successRatePct = runs > 0 ? Number(((success / runs) * 100).toFixed(2)) : null;
+  return { runs, success, successRatePct };
+}
+
+/**
+ * Funnel step counts from audit_log event-type (action) counts. Steps with
+ * zero matches still appear (count: 0) so the funnel chart shape is stable.
+ */
+function computeFunnels(): { onboarding: { step: string; count: number }[]; investor: { step: string; count: number }[] } {
+  const countAction = (actions: string[]): number => {
+    if (actions.length === 0) return 0;
+    const placeholders = actions.map(() => "?").join(",");
+    return Number(
+      (dbGet(`SELECT COUNT(*) AS n FROM audit_log WHERE deleted_at IS NULL AND action IN (${placeholders})`, ...actions) as { n: number })?.n ?? 0,
+    );
+  };
+  return {
+    onboarding: [
+      { step: "company_created", count: countAction(["company.created", "company.onboarded"]) },
+      { step: "first_round_opened", count: countAction(["round.opened", "round.created"]) },
+      { step: "first_close", count: countAction(["round.closed"]) },
+    ],
+    investor: [
+      { step: "invited", count: countAction(["investor.invited", "invitation.sent", "round.invitation.sent"]) },
+      { step: "soft_circled", count: countAction(["soft_circle.submitted"]) },
+      { step: "funded", count: countAction(["cap_table.mutated", "captable.mutated", "funding.committed"]) },
+    ],
+  };
+}
+
+/** Top companies by recent audit activity (joined to real company names). */
+function computeTopCompanies(limit = 5): { id: string; name: string; traction: number; raised: number | null }[] {
+  const rows = dbAll(
+    `SELECT c.id AS id, c.name AS name, COUNT(a.id) AS activity
+       FROM companies c
+       LEFT JOIN audit_log a
+         ON a.deleted_at IS NULL
+        AND (a.target = c.id OR a.target LIKE c.id || '%' OR a.target LIKE '%' || c.id || '%')
+      WHERE c.deleted_at IS NULL
+      GROUP BY c.id, c.name
+      ORDER BY activity DESC, c.name ASC
+      LIMIT ?`,
+    limit,
+  ) as Array<{ id: string; name: string; activity: number }>;
+  return rows.map((r) => ({ id: r.id, name: r.name, traction: Number(r.activity ?? 0), raised: null }));
+}
+
+/** Top investors: real users with role=investor, ordered by audit activity. */
+function computeTopInvestors(limit = 3): { id: string; name: string; activity: number; committed: number | null }[] {
+  const rows = dbAll(
+    `SELECT u.id AS id, COALESCE(u.name, u.email, u.id) AS name, COUNT(a.id) AS activity
+       FROM users u
+       LEFT JOIN audit_log a ON a.deleted_at IS NULL AND a.actor_id = u.id
+      WHERE u.deleted_at IS NULL AND LOWER(u.role) LIKE '%investor%'
+      GROUP BY u.id, name
+      ORDER BY activity DESC, name ASC
+      LIMIT ?`,
+    limit,
+  ) as Array<{ id: string; name: string; activity: number }>;
+  return rows.map((r) => ({ id: r.id, name: r.name, activity: Number(r.activity ?? 0), committed: null }));
+}
+
+/** Live activity feed from audit_log (most recent first). */
+function computeActivityFeed(limit = 20): { id: string; ts: string; actor: string; entity: string; kind: string; text: string }[] {
+  const rows = dbAll(
+    `SELECT id, created_at AS ts, actor_id AS actor, target AS entity, action AS kind, payload_json AS payload
+       FROM audit_log
+      WHERE deleted_at IS NULL
+      ORDER BY created_at DESC, id DESC
+      LIMIT ?`,
+    limit,
+  ) as Array<{ id: string; ts: string; actor: string; entity: string; kind: string; payload: string | null }>;
+  return rows.map((r) => ({
+    id: r.id,
+    ts: r.ts,
+    actor: r.actor ?? "u_system",
+    entity: r.entity ?? "platform",
+    kind: r.kind,
+    text: `${r.kind} on ${r.entity ?? "platform"}`,
+  }));
+}
+
+/**
+ * Collective-side KPIs from the real Collective tables. Membership counts,
+ * chapter counts, application pipeline are derived; metrics with no defensible
+ * source return null.
+ *
+ * NB: the brief references tables `collective_applications` and
+ * `chapter_members`; the deployed schema names are `collective_apps` and
+ * `chapter_memberships` respectively (verified via PRAGMA on the live DB).
+ */
+function computeCollectiveKpisFromDb(): {
+  totalMembers: number; activeMembers: number; chapters: number;
+  pendingApplications: number; chapterMembers: number;
+  momGrowthPct: number | null; churnPct: number | null; nrr: number | null;
+} {
+  // v25.42h round-2 (Blocker 2b) — fail-closed. A DB read failure on any of
+  // these Collective tables must surface as a typed DbUnavailableError (→ 503),
+  // not propagate as a raw error or fall back to a fabricated count.
+  try {
+  const totalMembers = Number((dbGet(`SELECT COUNT(*) AS n FROM collective_memberships WHERE deleted_at IS NULL`) as { n: number })?.n ?? 0);
+  const activeMembers = Number((dbGet(`SELECT COUNT(*) AS n FROM collective_memberships WHERE deleted_at IS NULL AND status = 'active'`) as { n: number })?.n ?? 0);
+  const chapters = Number((dbGet(`SELECT COUNT(*) AS n FROM chapters WHERE deleted_at IS NULL`) as { n: number })?.n ?? 0);
+  const chapterMembers = Number((dbGet(`SELECT COUNT(*) AS n FROM chapter_memberships WHERE deleted_at IS NULL`) as { n: number })?.n ?? 0);
+  const pendingApplications = Number((dbGet(`SELECT COUNT(*) AS n FROM collective_apps WHERE deleted_at IS NULL AND status IN ('submitted','pending','in_review')`) as { n: number })?.n ?? 0);
+  const deactivated = Number((dbGet(`SELECT COUNT(*) AS n FROM collective_memberships WHERE deleted_at IS NULL AND status != 'active'`) as { n: number })?.n ?? 0);
+  const everMembers = totalMembers;
+  const churnPct = everMembers > 0 ? Number(((deactivated / everMembers) * 100).toFixed(2)) : null;
+  return {
+    totalMembers, activeMembers, chapters, pendingApplications, chapterMembers,
+    momGrowthPct: null, churnPct, nrr: null,
+  };
+  } catch (err) {
+    log.warn("[adminPlatformStore.computeCollectiveKpisFromDb] DB read failed:", (err as Error).message);
+    throw new DbUnavailableError("collective KPIs", err);
+  }
+}
+
+/* ============================================================
  * Patch v12 Day 2 Wave 1 — hydrator + lifecycle policy persistence
  * ============================================================ */
+
 
 export async function hydrateAdminPlatformStore(): Promise<void> {
   // 1) Audit log mirror — load most recent N rows ordered by created_at ASC
@@ -811,65 +1023,126 @@ export function registerAdminPlatformRoutes(app: Express): void {
   app.get("/api/admin/dashboard/kpis", (req: Request, res: Response) => {
     // Sprint 28 Wave 2 — ?surface=collective swaps the KPI source to the
     // Collective-side counters so the same dashboard UI can render either view.
+    // v25.42h — fail-closed: KPI computation now reads the DB; on a hard DB
+    // error return 503 + ok:false (never an empty/default literal payload).
     const surface = String(req.query.surface ?? "capavate").toLowerCase();
-    if (surface === "collective") {
-      return res.json(computeCollectiveKpis());
+    try {
+      if (surface === "collective") {
+        return res.json(computeCollectiveKpis());
+      }
+      return res.json(computeKpis());
+    } catch (err) {
+      // v25.42h round-2 (Blocker 2) — store helpers throw DbUnavailableError on a
+      // DB read failure; map it to 503 + ok:false with the resource name.
+      if (err instanceof DbUnavailableError) {
+        log.error({ route: "admin.dashboard.kpis", errorType: "KPI_DB_ERROR", resource: err.resource, message: err.message });
+        return res.status(503).json({ ok: false, error: "db_unavailable", message: `${err.resource} temporarily unavailable` });
+      }
+      log.error({ route: "admin.dashboard.kpis", errorType: "KPI_DB_ERROR", message: (err as Error).message });
+      return res.status(503).json({ ok: false, error: "db_unavailable", message: "Dashboard metrics temporarily unavailable" });
     }
-    res.json(computeKpis());
   });
   app.get("/api/admin/dashboard/activity", (req: Request, res: Response) => {
     const surface = String(req.query.surface ?? "capavate").toLowerCase();
-    if (surface === "collective") {
-      // Synthesise Collective-flavour activity items.
-      return res.json({
-        items: [
-          { id: "col_act_1", ts: new Date(Date.now() - 3 * 60_000).toISOString(),  actor: "u_admin",       entity: "app_421",  kind: "application.approved",       text: "Approved Sasha Reyes (Cascade Group) — Standard" },
-          { id: "col_act_2", ts: new Date(Date.now() - 9 * 60_000).toISOString(),  actor: "u_aisha_patel", entity: "synd_07",   kind: "syndicate.commitment",        text: "Aisha committed $250K to Helia Series A syndicate" },
-          { id: "col_act_3", ts: new Date(Date.now() - 24 * 60_000).toISOString(), actor: "u_admin",       entity: "member_lap", kind: "membership.renewal_reminder", text: "Renewal reminders sent: 5 members (T-30 days)" },
-          // Partner-related synthetic activity was removed (Final Partner CRM patch — zero partner mocks in production paths).
-          { id: "col_act_5", ts: new Date(Date.now() - 92 * 60_000).toISOString(), actor: "u_keith_sato",  entity: "app_417",   kind: "application.kyc_uploaded",    text: "Keith Sato submitted refreshed KYC docs" },
-        ],
-      });
+    // v25.42h — fail-closed + DB-driven. The activity feed is now sourced from
+    // the durable audit_log table (computeActivityFeed) for BOTH surfaces,
+    // merged with the live telemetry firehose for the allowlisted kinds. On a
+    // hard DB error return 503 + ok:false rather than a hardcoded literal feed.
+    try {
+      if (surface === "collective") {
+        // Collective activity is the same audit_log feed, scoped to
+        // collective/application/membership/syndicate event kinds.
+        const all = computeActivityFeed(50);
+        const items = all
+          .filter((a) => /collective|application|membership|syndicate|chapter|kyc/i.test(a.kind))
+          .slice(0, 30);
+        return res.json({ items });
+      }
+      // Patch v10 — merge live telemetry events for the allowlisted kinds with
+      // the DB-backed audit_log feed so promoted-to-collective, cap-table-mutated
+      // and application-submitted events appear in the admin dashboard feed.
+      const live = getRecentEvents(50)
+        .filter((e) => LIVE_ACTIVITY_ALLOWLIST.has(e.eventType))
+        .map((e, i) => ({
+          id: `live_${e.eventId ?? i}`,
+          ts: e.occurredAt,
+          actor: e.actor?.userId ?? "u_system",
+          entity: e.aggregateId,
+          kind: e.eventType,
+          text: `${e.eventType} on ${e.aggregateKind}:${e.aggregateId}`,
+        }));
+      const feed = computeActivityFeed(30);
+      const merged = [...live, ...feed]
+        .sort((a, b) => (a.ts < b.ts ? 1 : -1))
+        .slice(0, 30);
+      return res.json({ items: merged });
+    } catch (err) {
+      if (err instanceof DbUnavailableError) {
+        log.error({ route: "admin.dashboard.activity", errorType: "ACTIVITY_DB_ERROR", resource: err.resource, message: err.message });
+        return res.status(503).json({ ok: false, error: "db_unavailable", message: `${err.resource} temporarily unavailable` });
+      }
+      log.error({ route: "admin.dashboard.activity", errorType: "ACTIVITY_DB_ERROR", message: (err as Error).message });
+      return res.status(503).json({ ok: false, error: "db_unavailable", message: "Activity feed temporarily unavailable" });
     }
-    // Patch v10 — merge live telemetry events for the allowlisted kinds with
-    // the static demo seed so promoted-to-collective, cap-table-mutated and
-    // application-submitted events appear in the admin dashboard activity feed.
-    const live = getRecentEvents(50)
-      .filter((e) => LIVE_ACTIVITY_ALLOWLIST.has(e.eventType))
-      .map((e, i) => ({
-        id: `live_${e.eventId ?? i}`,
-        ts: e.occurredAt,
-        actor: e.actor?.userId ?? "u_system",
-        entity: e.aggregateId,
-        kind: e.eventType,
-        text: `${e.eventType} on ${e.aggregateKind}:${e.aggregateId}`,
-      }));
-    const merged = [...live, ...activityFeed]
-      .sort((a, b) => (a.ts < b.ts ? 1 : -1))
-      .slice(0, 30);
-    res.json({ items: merged });
   });
 
   /* ====== Companies detail ====== */
   app.get("/api/admin/companies/:id/stats", (req: Request, res: Response) => {
+    // v25.42h — DB-driven company stats + cap-table from real tables. Was a
+    // mix of mockData fixtures and hardcoded literals (holders:12,
+    // totalShares:12500000, softCircleConversionPct:64.4, maSignals…). Fields
+    // with no canonical source return null so the UI shows "N/A" rather than
+    // fabricated numbers. Fail-closed: 503 + ok:false on a hard DB error.
     const id = req.params.id;
-    const co = companies.find(c => c.id === id);
-    const companyRounds = rounds.filter(r => r.companyId === id);
-    const cs = softCircles.filter(s => companyRounds.find(r => r.id === s.roundId));
-    const totalRaised = companyRounds.reduce((s, r) => s + (r.amountRaised ?? 0), 0);
-    const dr = dataroomFiles.filter(f => f.companyId === id);
-    const reps = reports.filter(r => r.companyId === id);
-    res.json({
-      id, name: co?.name ?? id,
-      capTable: { holders: 12, totalShares: "12500000" },
-      totalRaised,
-      investorCount: cs.length || 6,
-      softCircleConversionPct: 64.4,
-      dataroom: { topDocs: dr.slice(0, 5).map(f => ({ id: f.id, name: f.fileName, viewers: 7 })) },
-      reportReadRatePct: 78,
-      maSignals: { compositeScore: 82, mnaScore: 76, roundScore: 88, autoTier: "A" },
-      reports: reps.length || 4,
-    });
+    try {
+      const coRow = dbGet(`SELECT id, name FROM companies WHERE id = ? AND deleted_at IS NULL`, id) as { id: string; name: string } | undefined;
+      // Cap-table holders + total shares from the real securities table.
+      const capRow = dbGet(
+        `SELECT COUNT(*) AS holders, COALESCE(SUM(CAST(shares AS INTEGER)), 0) AS totalShares
+           FROM securities WHERE company_id = ? AND deleted_at IS NULL`,
+        id,
+      ) as { holders: number; totalShares: number } | undefined;
+      const holders = Number(capRow?.holders ?? 0);
+      const totalShares = String(capRow?.totalShares ?? 0);
+      // Distinct investors holding securities in this company.
+      const investorRow = dbGet(
+        `SELECT COUNT(DISTINCT holder_name) AS n FROM securities WHERE company_id = ? AND deleted_at IS NULL`,
+        id,
+      ) as { n: number } | undefined;
+      const investorCount = Number(investorRow?.n ?? 0);
+      // Dataroom top docs from the real dataroom_files table.
+      let topDocs: { id: string; name: string; viewers: number | null }[] = [];
+      try {
+        topDocs = (dbAll(
+          `SELECT id, name FROM dataroom_files WHERE company_id = ? AND deleted_at IS NULL ORDER BY uploaded_at DESC LIMIT 5`,
+          id,
+        ) as Array<{ id: string; name: string }>).map((f) => ({ id: f.id, name: f.name, viewers: null }));
+      } catch (err) {
+        // v25.42h round-2 (Blocker 2c) — fail-closed: rethrow rather than returning
+        // an empty topDocs list as if the company genuinely had no dataroom files.
+        // Caught by the outer handler → 503 + ok:false.
+        log.warn("[adminPlatformStore.companies.stats.topDocs] DB read failed:", (err as Error).message);
+        throw new DbUnavailableError("company dataroom files", err);
+      }
+      return res.json({
+        id, name: coRow?.name ?? id,
+        capTable: { holders, totalShares },
+        totalRaised: null,            // no canonical per-company raised aggregate this wave
+        investorCount,
+        softCircleConversionPct: null,
+        dataroom: { topDocs },
+        reportReadRatePct: null,
+        maSignals: null,              // M&A signal engine has no canonical store yet
+        reports: null,
+      });
+    } catch (err) {
+      if (err instanceof DbUnavailableError) {
+        log.error({ route: "admin.companies.stats", errorType: "COMPANY_STATS_DB_ERROR", resource: err.resource, message: err.message, companyId: id });
+        return res.status(503).json({ ok: false, error: "db_unavailable", message: `${err.resource} temporarily unavailable` });
+      }
+      log.error({ route: "admin.companies.stats", errorType: "COMPANY_STATS_DB_ERROR", message: (err as Error).message, companyId: id });
+      return res.status(503).json({ ok: false, error: "db_unavailable", message: "Company stats temporarily unavailable" });
+    }
   });
   app.get("/api/admin/companies/:id/export.csv", (req: Request, res: Response) => {
     const id = req.params.id;
@@ -960,25 +1233,62 @@ export function registerAdminPlatformRoutes(app: Express): void {
     res.json({ items: Array.from(byKey.values()) });
   });
   app.get("/api/admin/investors/:id", (req: Request, res: Response) => {
-    res.json({
-      id: req.params.id,
-      profile: { name: "Aisha Patel · Hydra Ventures", region: "UK", tier: "Standard", checkSizeUsd: 250_000, accreditation: "verified" },
-      holdings: [
-        { companyId: "co_novapay", company: "NovaPay AI", ownershipPct: 0.041, valueUsd: 720_000, instrument: "SAFE+Common" },
-        { companyId: "co_arboreal", company: "Arboreal Health", ownershipPct: 0.012, valueUsd: 95_000, instrument: "Note" },
-      ],
-      softCircleHistory: [
-        { roundId: "rnd_novapay_seed", at: "2026-04-09", amount: 250_000, status: "funded" },
-        { roundId: "rnd_arboreal_pre", at: "2025-11-20", amount:  95_000, status: "funded" },
-      ],
-      committedUsd: 2_400_000,
-      fundedUsd: 1_900_000,
-      irrContributionPct: 22.4,
-      ltvUsd: 4_200_000,
-      churnRiskPct: 8,
-      behaviorSignals: { dataroomViews: 41, messagesSent: 18, reportsRead: 9 },
-      score: 88,
-    });
+    // v25.42h — DB-driven investor lookup. Was a 100% hardcoded fixture (Aisha
+    // Patel + fake holdings/IRR/LTV). Profile now comes from the real `users`
+    // table; holdings from the real `securities` table (matched by holder).
+    // Investor portfolio analytics (IRR/LTV/churn/behaviour) have no canonical
+    // source table in this wave and return null — the UI shows "N/A" rather
+    // than fabricated numbers. Fail-closed: 503 + ok:false on a hard DB error;
+    // 404 when the id is unknown.
+    const id = req.params.id;
+    try {
+      const u = dbGet(
+        `SELECT id, COALESCE(name, email, id) AS name, email, role FROM users WHERE id = ? AND deleted_at IS NULL`,
+        id,
+      ) as { id: string; name: string; email: string | null; role: string } | undefined;
+      if (!u) return res.status(404).json({ ok: false, error: "not_found" });
+      // Holdings: securities rows whose holder matches this user's id/name/email.
+      let holdings: { companyId: string; company: string; ownershipPct: number | null; valueUsd: number | null; instrument: string }[] = [];
+      try {
+        const candidates = [u.id, u.name, u.email].filter(Boolean) as string[];
+        const ph = candidates.map(() => "?").join(",");
+        holdings = (dbAll(
+          `SELECT s.company_id AS companyId, COALESCE(c.name, s.company_id) AS company, s.instrument AS instrument
+             FROM securities s
+             LEFT JOIN companies c ON c.id = s.company_id AND c.deleted_at IS NULL
+            WHERE s.deleted_at IS NULL AND s.holder_name IN (${ph})`,
+          ...candidates,
+        ) as Array<{ companyId: string; company: string; instrument: string }>).map((h) => ({
+          companyId: h.companyId, company: h.company, ownershipPct: null, valueUsd: null, instrument: h.instrument,
+        }));
+      } catch (err) {
+        // v25.42h round-2 (Blocker 2d) — fail-closed: rethrow rather than returning
+        // an empty holdings list as if the investor genuinely held nothing.
+        // Caught by the outer handler → 503 + ok:false.
+        log.warn("[adminPlatformStore.investors.byId.holdings] DB read failed:", (err as Error).message);
+        throw new DbUnavailableError("investor holdings", err);
+      }
+      return res.json({
+        id: u.id,
+        profile: { name: u.name, region: null, tier: null, checkSizeUsd: null, accreditation: null },
+        holdings,
+        softCircleHistory: [],          // no per-investor soft-circle history source this wave
+        committedUsd: null,
+        fundedUsd: null,
+        irrContributionPct: null,
+        ltvUsd: null,
+        churnRiskPct: null,
+        behaviorSignals: { dataroomViews: null, messagesSent: null, reportsRead: null },
+        score: null,
+      });
+    } catch (err) {
+      if (err instanceof DbUnavailableError) {
+        log.error({ route: "admin.investors.byId", errorType: "INVESTOR_LOOKUP_DB_ERROR", resource: err.resource, message: err.message, investorId: id });
+        return res.status(503).json({ ok: false, error: "db_unavailable", message: `${err.resource} temporarily unavailable` });
+      }
+      log.error({ route: "admin.investors.byId", errorType: "INVESTOR_LOOKUP_DB_ERROR", message: (err as Error).message, investorId: id });
+      return res.status(503).json({ ok: false, error: "db_unavailable", message: "Investor lookup temporarily unavailable" });
+    }
   });
   app.post("/api/admin/investors/bulk", (req: Request, res: Response) => {
     const { action, ids } = req.body ?? {};
@@ -1012,20 +1322,25 @@ export function registerAdminPlatformRoutes(app: Express): void {
    * deletes durable auth_sessions rows for that user. */
   app.get("/api/admin/users/:id", (req: Request, res: Response) => {
     const id = req.params.id;
-    // Try the legacy hardcoded array first (for demo seed users).
-    const hardcoded = users.find(x => x.id === id);
-    if (hardcoded) {
-      const userAudit = auditLog.filter(a => a.actor === hardcoded.id);
-      return res.json({ ...hardcoded, audit: userAudit });
-    }
-    // Fall back to the durable auth_users table.
+    // v25.42h — the legacy hardcoded `users` short-circuit (fake login history,
+    // sessions, geo) has been REMOVED. The durable `auth_users` table is now
+    // the sole source. Audit history is read DB-direct from audit_log so it no
+    // longer depends on the in-memory mirror. Fail-closed: 503 + ok:false on a
+    // hard DB error; 404 when the id is unknown (never a fabricated user).
     try {
       const db = rawDb();
       const row = db.prepare(
         `SELECT id, email, role, status, last_login, created_at FROM auth_users WHERE id = ?`,
       ).get(id) as { id: string; email: string; role: string; status: string; last_login: string | null; created_at: string } | undefined;
-      if (!row) return res.status(404).json({ error: "not_found" });
-      const userAudit = auditLog.filter(a => a.actor === row.id);
+      if (!row) return res.status(404).json({ ok: false, error: "not_found" });
+      // Audit history DB-direct (actor_id = this user), not the in-memory mirror.
+      let userAudit: Array<{ id: string; ts: string; actor: string; entity: string; eventType: string }> = [];
+      try {
+        userAudit = (db.prepare(
+          `SELECT id, created_at AS ts, actor_id AS actor, target AS entity, action AS eventType
+             FROM audit_log WHERE deleted_at IS NULL AND actor_id = ? ORDER BY created_at DESC LIMIT 100`,
+        ).all(id)) as typeof userAudit;
+      } catch { userAudit = []; }
       return res.json({
         id: row.id,
         email: row.email,
@@ -1038,19 +1353,16 @@ export function registerAdminPlatformRoutes(app: Express): void {
         sessions: [],
         audit: userAudit,
       });
-    } catch {
-      return res.status(500).json({ error: "db_error" });
+    } catch (err) {
+      log.error({ route: "admin.users.byId", errorType: "USER_LOOKUP_DB_ERROR", message: (err as Error).message, userId: id });
+      return res.status(503).json({ ok: false, error: "db_unavailable" });
     }
   });
   app.post("/api/admin/users/:id/sessions/revoke", (req: Request, res: Response) => {
     const id = req.params.id;
-    // Legacy: clear the hardcoded sessions array.
-    const hardcoded = users.find(x => x.id === id);
+    // v25.42h — the legacy hardcoded `users` sessions short-circuit has been
+    // REMOVED. Revocation now operates solely on the durable auth_sessions table.
     let revoked = 0;
-    if (hardcoded) {
-      revoked += hardcoded.sessions.length;
-      hardcoded.sessions = [];
-    }
     // Durable: delete all auth_sessions rows for this user.
     try {
       const db = rawDb();

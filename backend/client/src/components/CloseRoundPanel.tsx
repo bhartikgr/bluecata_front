@@ -169,12 +169,12 @@ export default function CloseRoundPanel({ roundId, companyId = "co-acme", roundN
  {/* Step 1 — reconciliation */}
  <Card>
  <CardHeader className="pb-3">
- <CardTitle className="text-base flex items-center gap-2"><GitCompareArrows className="h-4 w-4 text-[hsl(184_98%_22%)]" />Step 1 — Run reconciliation</CardTitle>
+ <CardTitle className="text-base flex items-center gap-2"><GitCompareArrows className="h-4 w-4 text-[hsl(0_100%_40%)]" />Step 1 — Run reconciliation</CardTitle>
  </CardHeader>
  <CardContent>
  <p className="text-sm text-muted-foreground mb-3">Compute the projected post-close cap table with both the primary engine (decimal.js) and the independent reference engine (BigInt scaled fixed-point). They must agree to the share / cent for the round to close.</p>
  <div className="flex items-center gap-2 mb-3">
- <Button onClick={runRecon} disabled={running || state.closed} className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" data-testid="button-run-recon">
+ <Button onClick={runRecon} disabled={running || state.closed} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-run-recon">
  <RefreshCw className={`h-4 w-4 mr-2 ${running ? "animate-spin" : ""}`} />
  {state.reconciliation ? "Re-run reconciliation" : "Run reconciliation"}
  </Button>
@@ -232,7 +232,7 @@ export default function CloseRoundPanel({ roundId, companyId = "co-acme", roundN
  {state.reconciliation?.status === "match" && !state.closed && (
  <Card>
  <CardHeader className="pb-3">
- <CardTitle className="text-base flex items-center gap-2"><Stamp className="h-4 w-4 text-[hsl(184_98%_22%)]" />Step 2 — Sign-offs</CardTitle>
+ <CardTitle className="text-base flex items-center gap-2"><Stamp className="h-4 w-4 text-[hsl(0_100%_40%)]" />Step 2 — Sign-offs</CardTitle>
  </CardHeader>
  <CardContent>
  <SignoffRow label={`I, ${founderName}, confirm the projected post-close cap table is correct.`}
@@ -248,14 +248,14 @@ export default function CloseRoundPanel({ roundId, companyId = "co-acme", roundN
 
  {/* Step 3 — commit close */}
  {state.reconciliation?.status === "match" && state.founderSignoff && state.adminSignoff && !state.closed && (
- <Card className="border-[hsl(184_98%_22%)] bg-[hsl(184_98%_22%)]/5">
+ <Card className="border-[hsl(0_100%_40%)] bg-[hsl(0_100%_40%)]/5">
  <CardContent className="py-4 flex items-center gap-3">
- <CheckCircle2 className="h-5 w-5 text-[hsl(184_98%_22%)]" />
+ <CheckCircle2 className="h-5 w-5 text-[hsl(0_100%_40%)]" />
  <div className="flex-1">
  <div className="font-semibold">All sign-offs captured</div>
  <p className="text-sm text-muted-foreground">Click <strong>Close round</strong> to write the immutable close transaction to the ledger and emit final telemetry events.</p>
  </div>
- <Button onClick={commitClose} className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" data-testid="button-commit-close">
+ <Button onClick={commitClose} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-commit-close">
  Close round <ChevronRight className="h-4 w-4 ml-1" />
  </Button>
  </CardContent>

@@ -319,7 +319,7 @@ export default function PostDetail({ role }: { role: "founder" | "investor" }) {
                       <div className="text-muted-foreground">{c.body}</div>
                       <button
                         onClick={() => setReplyTo(c.id)}
-                        className="text-[10px] inline-flex items-center gap-1 text-[hsl(184_98%_22%)] hover:underline mt-0.5"
+                        className="text-[10px] inline-flex items-center gap-1 text-[hsl(0_100%_40%)] hover:underline mt-0.5"
                         data-testid={`button-reply-${c.id}`}
                       >
                         <CornerDownRight className="h-2.5 w-2.5" /> Reply
@@ -378,7 +378,7 @@ export default function PostDetail({ role }: { role: "founder" | "investor" }) {
                   size="sm"
                   onClick={() => comment.mutate()}
                   disabled={!draft.trim() || comment.isPending}
-                  className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+                  className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
                   data-testid="button-comment-submit-detail"
                 >
                   <Send className="h-3.5 w-3.5 mr-1.5" /> Comment

@@ -101,7 +101,7 @@ export default function CoSoftCircleBox({ roundId, hasSoftCircled }: Props) {
     <Card data-testid="co-soft-circle-box">
       <CardHeader className="pb-3">
         <CardTitle className="text-base flex items-center gap-2">
-          <Users className="h-4 w-4 text-[hsl(184_98%_22%)]" />
+          <Users className="h-4 w-4 text-[hsl(0_100%_40%)]" />
           Co-soft-circle members
         </CardTitle>
       </CardHeader>
@@ -152,7 +152,7 @@ export default function CoSoftCircleBox({ roundId, hasSoftCircled }: Props) {
                       </td>
                       <td className="py-2.5 text-right font-mono text-xs">
                         {m.disclosesAmount && m.amountBucket ? (
-                          <span className="text-[hsl(184_98%_22%)]">{m.amountBucket}</span>
+                          <span className="text-[hsl(0_100%_40%)]">{m.amountBucket}</span>
                         ) : (
                           <span className="text-muted-foreground">Confidential</span>
                         )}

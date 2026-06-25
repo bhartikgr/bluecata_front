@@ -281,7 +281,7 @@ function ChipSelectInput({
         {items.map((item) => (
           <span
             key={item}
-            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-[hsl(184_98%_22%)]/10 text-[hsl(184_98%_22%)]"
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-[hsl(0_100%_40%)]/10 text-[hsl(0_100%_40%)]"
             data-testid={`chip-${label.toLowerCase().replace(/\s/g, "-")}-${item}`}
           >
             {item}
@@ -599,7 +599,7 @@ export default function AdminInvestorDetail() {
                 <CardContent className="pt-5 space-y-4">
                   <div className="flex items-start gap-4">
                     <Avatar className="h-12 w-12">
-                      <AvatarFallback className="bg-[hsl(184_98%_22%)]/15 text-[hsl(184_98%_22%)] font-semibold text-base">
+                      <AvatarFallback className="bg-[hsl(0_100%_40%)]/15 text-[hsl(0_100%_40%)] font-semibold text-base">
                         {initials(merged.displayName)}
                       </AvatarFallback>
                     </Avatar>
@@ -855,7 +855,7 @@ export default function AdminInvestorDetail() {
                         className="flex items-center gap-3 px-3 py-2 rounded-md bg-secondary/50"
                         data-testid={`row-company-${cid}`}
                       >
-                        <span className="font-mono text-xs text-[hsl(184_98%_22%)]">{cid}</span>
+                        <span className="font-mono text-xs text-[hsl(0_100%_40%)]">{cid}</span>
                         <div className="flex-1" />
                         <button
                           type="button"

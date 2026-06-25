@@ -201,7 +201,7 @@ export default function Redeem() {
       subtitle="Set your password to view the round."
       footer={
         <div className="text-xs">
-          Already redeemed? <Link href="/auth/login?portal=investor" className="text-[hsl(184_98%_22%)] hover:underline" data-testid="link-redeem-existing">Sign in</Link>
+          Already redeemed? <Link href="/auth/login?portal=investor" className="text-[#cc0001] hover:underline" data-testid="link-redeem-existing">Sign in</Link>
         </div>
       }
     >
@@ -235,7 +235,9 @@ export default function Redeem() {
             {submitErr}
           </div>
         )}
-        <Button type="submit" className="w-full" disabled={submitting} data-testid="button-submit-redeem">
+        {/* v25.43 R4-1 — capavate.com red pill CTA (default Button variant
+           inherits the red --primary token; pill + semibold added). */}
+        <Button type="submit" className="w-full rounded-full font-semibold" disabled={submitting} data-testid="button-submit-redeem">
           {submitting ? "Redeeming…" : "View this round"}
         </Button>
       </form>

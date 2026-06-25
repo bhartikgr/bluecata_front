@@ -331,8 +331,8 @@ function CompanyRowComponent({
               {isExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
             </button>
             <Link href={`/admin/companies/${c.id}`} className="font-medium hover:underline flex items-center gap-2">
-              <div className="h-7 w-7 rounded bg-[hsl(184_98%_22%)]/10 flex items-center justify-center">
-                <Building className="h-3.5 w-3.5 text-[hsl(184_98%_22%)]" />
+              <div className="h-7 w-7 rounded bg-[hsl(0_100%_40%)]/10 flex items-center justify-center">
+                <Building className="h-3.5 w-3.5 text-[hsl(0_100%_40%)]" />
               </div>
               <span>
                 {c.name}

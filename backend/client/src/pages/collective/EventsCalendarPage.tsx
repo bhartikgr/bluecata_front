@@ -34,6 +34,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { AlertCircle, CalendarDays, ChevronLeft, ChevronRight } from "lucide-react";
+// v25.42 R7 — compose modal that POSTs an event-flagged announcement to the
+// existing /api/collective/announcements endpoint (server unchanged).
+import { CalendarComposeSheet } from "@/components/collective/CalendarComposeSheet";
 
 interface FeatureFlagsResponse {
   COLLECTIVE_ENABLED?: boolean;
@@ -176,6 +179,8 @@ export default function EventsCalendarPage(): JSX.Element | null {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {/* v25.42 R7 — add-event compose modal (chapter-admin guarded server-side). */}
+          <CalendarComposeSheet chapterId={chapterId || undefined} />
           <Button
             variant="outline"
             size="icon"

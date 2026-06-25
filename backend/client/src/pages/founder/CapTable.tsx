@@ -44,7 +44,7 @@ import { useEntitlement, evaluate } from "@/lib/entitlement";
 
 const INSTRUMENT_COLORS: Record<string, string> = {
  common: "hsl(219 45% 30%)",
- preferred: "hsl(184 98% 28%)",
+ preferred: "hsl(0 100% 40%)",
  safe: "hsl(333 75% 40%)",
  note: "hsl(38 92% 50%)",
  warrant: "hsl(158 64% 38%)",
@@ -74,7 +74,7 @@ const VIEW_BLURBS: Record<View, { title: string; body: string }> = {
 const HOLDER_GROUPS: { label: string; types: string[]; key: string; tone: string }[] = [
  { key: "founder", label: "Founders", types: ["founder"], tone: "border-[hsl(219_45%_30%)]/40 bg-[hsl(219_45%_30%)]/5" },
  { key: "employee", label: "Employees & Pool", types: ["employee", "pool"], tone: "border-[hsl(219_70%_55%)]/40 bg-[hsl(219_70%_55%)]/5" },
- { key: "investor", label: "Investors", types: ["investor"], tone: "border-[hsl(184_98%_28%)]/40 bg-[hsl(184_98%_28%)]/5" },
+ { key: "investor", label: "Investors", types: ["investor"], tone: "border-[hsl(0_100%_40%)]/40 bg-[hsl(0_100%_40%)]/5" },
  { key: "advisor", label: "Advisors", types: ["advisor"], tone: "border-[hsl(38_92%_50%)]/40 bg-[hsl(38_92%_50%)]/5" },
  { key: "other", label: "Other", types: ["other"], tone: "border-border bg-secondary/30" },
 ];
@@ -506,7 +506,7 @@ export default function CapTable() {
  </div>
  {view === "as_converted" && (
  <div className="mt-4 flex items-start gap-2 p-3 rounded-md bg-secondary/40 border border-border text-xs text-muted-foreground">
- <Info className="h-3.5 w-3.5 mt-0.5 text-[hsl(184_98%_22%)] shrink-0" />
+ <Info className="h-3.5 w-3.5 mt-0.5 text-[hsl(0_100%_40%)] shrink-0" />
  <span>SAFEs are converted to Common-equivalent shares at the lower of (cap-implied price) and (last priced round PPS × (1 − discount)). The math is illustrative — the engine reconciles to the share when the round actually closes.</span>
  </div>
  )}
@@ -733,7 +733,7 @@ function AntiDilutionDialog({ open, onClose, rows, sym }: { open: boolean; onClo
  <td className="p-2 font-medium">{s.holder}</td>
  <td className="p-2 text-right font-mono" title={`OCP: ${s.oldPps}`}>{s.ownPre.toFixed(2)}%</td>
  <td className="p-2 text-right font-mono text-[hsl(7_61%_43%)]">{s.ownPostUnprot.toFixed(2)}%</td>
- <td className="p-2 text-right font-mono text-[hsl(184_98%_22%)]" title={`Engine: ${s.sharesAfterWeighted} shares`}>{s.ownPostWeighted.toFixed(2)}%</td>
+ <td className="p-2 text-right font-mono text-[hsl(0_100%_40%)]" title={`Engine: ${s.sharesAfterWeighted} shares`}>{s.ownPostWeighted.toFixed(2)}%</td>
  <td className="p-2 text-right font-mono" title={`Engine: ${s.sharesAfterRatchet} shares`}>{s.ownPostRatchet.toFixed(2)}%</td>
  </tr>
  ))}
@@ -809,7 +809,7 @@ function BulkMessageDialog({ open, onClose, rows, toast }: { open: boolean; onCl
  </div>
  <DialogFooter>
  <Button variant="outline" onClick={onClose}>Cancel</Button>
- <Button className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" onClick={send} disabled={!body.trim() || isSending} data-testid="button-send-bulk">{isSending ? "Sending…" : `Send to ${holders.length}`}</Button>
+ <Button className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" onClick={send} disabled={!body.trim() || isSending} data-testid="button-send-bulk">{isSending ? "Sending…" : `Send to ${holders.length}`}</Button>
  </DialogFooter>
  </DialogContent>
  </Dialog>
@@ -918,7 +918,7 @@ function HoldingRow({ r, sym, idx, viewerId }: { r: any; sym: string; idx: numbe
  <td className="px-4 py-2.5 font-mono text-[10px] text-muted-foreground">{orig?.certificateNumber ?? "—"}</td>
  <td className="px-2 py-2.5">
  <div className="font-medium">{displayName}</div>
- <div className="text-[10px] text-muted-foreground capitalize">{r.holderType}{orig?.leadInvestorOfRound ? <span className="ml-1 text-[hsl(327_77%_30%)] font-medium">· LEAD</span> : ""}</div>
+ <div className="text-[10px] text-muted-foreground capitalize">{r.holderType}{orig?.leadInvestorOfRound ? <span className="ml-1 text-[hsl(0_100%_40%)] font-medium">· LEAD</span> : ""}</div>
  </td>
  <td className="px-2 py-2.5">
  {round ? (
@@ -947,7 +947,7 @@ function HoldingRow({ r, sym, idx, viewerId }: { r: any; sym: string; idx: numbe
  <span className="inline-flex items-center gap-1 cursor-help" data-testid={`vest-${idx}`}>
  <span className="text-[10px] font-mono">{orig.vesting.percentVested}%</span>
  <span className="h-1 w-8 bg-secondary rounded-full overflow-hidden inline-block">
- <span className="h-full bg-[hsl(184_98%_22%)] block" style={{ width: `${orig.vesting.percentVested}%` }} />
+ <span className="h-full bg-[hsl(0_100%_40%)] block" style={{ width: `${orig.vesting.percentVested}%` }} />
  </span>
  </span>
  </TooltipTrigger>
@@ -967,7 +967,7 @@ function HoldingRow({ r, sym, idx, viewerId }: { r: any; sym: string; idx: numbe
  {orig?.drag && <Badge variant="outline" className="text-[9px] px-1 py-0">D</Badge>}
  {orig?.rofr && <Badge variant="outline" className="text-[9px] px-1 py-0">R</Badge>}
  {orig?.coSale && <Badge variant="outline" className="text-[9px] px-1 py-0">C</Badge>}
- {orig?.proRata && <Badge variant="outline" className="text-[9px] px-1 py-0 border-[hsl(327_77%_30%)] text-[hsl(327_77%_30%)]">P</Badge>}
+ {orig?.proRata && <Badge variant="outline" className="text-[9px] px-1 py-0 border-[hsl(0_100%_40%)] text-[hsl(0_100%_40%)]">P</Badge>}
  </span>
  </TooltipTrigger>
  <TooltipContent className="text-xs space-y-0.5">
@@ -999,7 +999,7 @@ function EngineBadge({ result, region }: { result: ReturnType<typeof runEngine> 
  return (
  <Tooltip>
  <TooltipTrigger asChild>
- <Badge variant="outline" className="gap-1.5 cursor-help bg-[hsl(327_77%_30%)]/10 border-[hsl(327_77%_30%)]/40 text-[hsl(327_77%_30%)] " data-testid="badge-engine">
+ <Badge variant="outline" className="gap-1.5 cursor-help bg-[hsl(0_100%_40%)]/10 border-[hsl(0_100%_40%)]/40 text-[hsl(0_100%_40%)] " data-testid="badge-engine">
  <Cpu className="h-3 w-3" /> {label}
  </Badge>
  </TooltipTrigger>

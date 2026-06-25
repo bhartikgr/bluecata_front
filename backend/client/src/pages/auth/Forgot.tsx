@@ -32,7 +32,7 @@ export default function Forgot() {
       subtitle="We'll send you a magic link if an account exists."
       footer={
         <div>
-          <Link href="/auth/login" className="text-[hsl(184_98%_22%)] hover:underline" data-testid="link-back-to-login">
+          <Link href="/auth/login" className="text-[#cc0001] hover:underline" data-testid="link-back-to-login">
             Back to sign in
           </Link>
         </div>
@@ -41,7 +41,7 @@ export default function Forgot() {
       {done ? (
         <div className="text-sm text-muted-foreground" data-testid="text-forgot-done">
           If an account exists for <span className="font-medium text-foreground">{email}</span>, a reset link is on its way.
-          <p className="mt-3 text-xs">Magic links expire in 15 minutes. If your link expires you can <Link href="/auth/forgot" className="text-[hsl(184_98%_22%)] underline">request a new one</Link>.</p>
+          <p className="mt-3 text-xs">Magic links expire in 15 minutes. If your link expires you can <Link href="/auth/forgot" className="text-[#cc0001] underline">request a new one</Link>.</p>
         </div>
       ) : (
         <form onSubmit={handleSubmit} className="space-y-4" data-testid="form-forgot">
@@ -49,7 +49,10 @@ export default function Forgot() {
             <Label htmlFor="email">Email</Label>
             <Input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required data-testid="input-email" />
           </div>
-          <Button type="submit" className="w-full" disabled={submitting} data-testid="button-submit-forgot">
+          {/* v25.43 R4-1 — capavate.com red pill CTA. The default Button variant
+             now inherits the red --primary token; the pill shape + semibold are
+             added to match the brand button. */}
+          <Button type="submit" className="w-full rounded-full font-semibold" disabled={submitting} data-testid="button-submit-forgot">
             {submitting ? "Sending…" : "Send reset link"}
           </Button>
         </form>

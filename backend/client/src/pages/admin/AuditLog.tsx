@@ -288,10 +288,10 @@ export default function AdminAuditLog() {
         {signoffChains.length > 0 && (
           <Card className="mb-4">
             <CardContent className="py-4">
-              <div className="text-sm font-medium mb-2 flex items-center gap-2"><Stamp className="h-4 w-4 text-[hsl(327_77%_30%)]" />Sign-off chains</div>
+              <div className="text-sm font-medium mb-2 flex items-center gap-2"><Stamp className="h-4 w-4 text-[hsl(0_100%_40%)]" />Sign-off chains</div>
               <div className="space-y-2 text-xs">
                 {signoffChains.map((c) => (
-                  <div key={c.roundId} className="border-l-2 border-[hsl(327_77%_30%)] pl-3 py-1" data-testid={`signoff-chain-${c.roundId}`}>
+                  <div key={c.roundId} className="border-l-2 border-[hsl(0_100%_40%)] pl-3 py-1" data-testid={`signoff-chain-${c.roundId}`}>
                     <div>Round <span className="font-mono">{c.roundId}</span> at <span className="font-mono">{c.companyId}</span> closed on <span className="font-mono">{new Date(c.closedAt).toLocaleString()}</span>.</div>
                     <div className="text-muted-foreground mt-0.5">
                       Founder: {c.founder ? <>{c.founder.actorId} <span className="font-mono">({c.founder.identityHash})</span> at {new Date(c.founder.ts).toLocaleString()}</> : <span className="italic">missing</span>}
@@ -352,7 +352,7 @@ export default function AdminAuditLog() {
           <span className="text-xs text-muted-foreground mr-1">Filter:</span>
           {(["all", "signoff", "reconciliation", "divergence"] as FilterMode[]).map((f) => (
             <Button key={f} size="sm" variant={filter === f ? "default" : "outline"}
-              className={filter === f ? "bg-[hsl(327_77%_30%)] hover:bg-[hsl(327_77%_25%)] h-7" : "h-7"}
+              className={filter === f ? "bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] h-7" : "h-7"}
               onClick={() => setFilter(f)} data-testid={`filter-${f}`}>
               {f === "all" ? "All" : f === "signoff" ? "Sign-off" : f === "reconciliation" ? "Reconciliation" : "Divergence"}
             </Button>
@@ -416,7 +416,7 @@ export default function AdminAuditLog() {
                   <tr key={`${e.source}-${e.id}`} className="border-b border-border/60 hover:bg-secondary/40" data-testid={`row-audit-${e.id}`}>
                     <td className="px-6 py-3 text-xs text-muted-foreground">{new Date(e.ts).toLocaleString()}</td>
                     <td className="px-3 py-3">
-                      <Badge variant="outline" className={`text-[10px] ${e.source === "telemetry" ? "border-[hsl(327_77%_30%)] text-[hsl(327_77%_30%)]" : ""}`}>
+                      <Badge variant="outline" className={`text-[10px] ${e.source === "telemetry" ? "border-[hsl(0_100%_40%)] text-[hsl(0_100%_40%)]" : ""}`}>
                         {e.source === "telemetry" ? <><GitCompareArrows className="h-2.5 w-2.5 mr-1" />telemetry</> : "admin"}
                       </Badge>
                     </td>

@@ -250,9 +250,11 @@ export default function SetPasswordPage() {
             </div>
           )}
 
+          {/* v25.43 R4-1 — capavate.com red pill CTA (default Button variant
+             inherits the red --primary token; pill + semibold added). */}
           <Button
             type="submit"
-            className="w-full"
+            className="w-full rounded-full font-semibold"
             disabled={!canSubmit}
             data-testid="button-submit"
           >

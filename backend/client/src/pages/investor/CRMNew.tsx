@@ -261,7 +261,7 @@ export default function InvestorCRMNew() {
               <Button
                 onClick={() => saveMut.mutate()}
                 disabled={saveMut.isPending || !canSave}
-                className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+                className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
                 data-testid="button-save"
               >
                 {saveMut.isPending ? "Saving…" : "Save contact"}

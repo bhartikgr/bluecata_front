@@ -87,7 +87,7 @@ export default function CollectiveDscScores() {
             style={{ color: "#1A1A2E" }}
             data-testid="heading-dsc-scores"
           >
-            <TrendingUp className="h-5 w-5 text-[#8E2A4E]" />
+            <TrendingUp className="h-5 w-5 text-[#cc0001]" />
             Composite Scores
           </h1>
           <p className="text-sm text-slate-500 mt-1">
@@ -95,7 +95,7 @@ export default function CollectiveDscScores() {
           </p>
         </div>
         {data && (
-          <Badge className="bg-[#8E2A4E]/10 text-[#8E2A4E] border-0" data-testid="badge-total-scores">
+          <Badge className="bg-[#cc0001]/10 text-[#cc0001] border-0" data-testid="badge-total-scores">
             {data.total} companies scored
           </Badge>
         )}
@@ -191,7 +191,7 @@ export default function CollectiveDscScores() {
                     <TableCell>
                       <span
                         className="text-sm font-bold"
-                        style={{ color: "#8E2A4E" }}
+                        style={{ color: "#cc0001" }}
                         data-testid={`composite-${row.companyId}`}
                       >
                         {row.compositeScore}

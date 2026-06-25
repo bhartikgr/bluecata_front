@@ -54,7 +54,7 @@ const STAGES: Array<{ key: Stage; label: string; tone: string }> = [
   { key: "committed",    label: "Committed",           tone: "bg-violet-100 text-violet-700" },
   { key: "signing",      label: "Signing",             tone: "bg-blue-100 text-blue-700" },
   { key: "invested",     label: "Invested",            tone: "bg-emerald-100 text-emerald-700" },
-  { key: "longterm",     label: "Long-term Partner",   tone: "bg-[hsl(184_98%_22%)]/10 text-[hsl(184_98%_22%)]" },
+  { key: "longterm",     label: "Long-term Partner",   tone: "bg-[hsl(0_100%_40%)]/10 text-[hsl(0_100%_40%)]" },
 ];
 
 type CrmContact = {
@@ -368,7 +368,7 @@ export default function FounderInvestorCRM() {
                 </div>
                 <DialogFooter>
                   <Button variant="ghost" onClick={() => setBcOpen(false)}>Cancel</Button>
-                  <Button onClick={() => broadcast.mutate()} disabled={!bcMsg.trim() || broadcast.isPending} className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" data-testid="button-bc-send">
+                  <Button onClick={() => broadcast.mutate()} disabled={!bcMsg.trim() || broadcast.isPending} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-bc-send">
                     {broadcast.isPending ? "Sending…" : "Send broadcast"}
                   </Button>
                 </DialogFooter>
@@ -386,7 +386,7 @@ export default function FounderInvestorCRM() {
           <CardContent className="p-4">
             <div className="flex flex-wrap items-start gap-6">
               <div className="flex items-center gap-2">
-                <Network className="h-5 w-5 text-[hsl(184_98%_22%)]" />
+                <Network className="h-5 w-5 text-[hsl(0_100%_40%)]" />
                 <span className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Network reach</span>
               </div>
               <div className="flex-1 grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
@@ -406,7 +406,7 @@ export default function FounderInvestorCRM() {
               key={s.key}
               onClick={() => setFilterStage(filterStage === s.key ? "all" : s.key)}
               data-testid={`stage-${s.key}`}
-              className={`rounded-md border p-3 text-left transition ${filterStage === s.key ? "border-[hsl(184_98%_22%)] ring-1 ring-[hsl(184_98%_22%)]" : "border-border"}`}
+              className={`rounded-md border p-3 text-left transition ${filterStage === s.key ? "border-[hsl(0_100%_40%)] ring-1 ring-[hsl(0_100%_40%)]" : "border-border"}`}
             >
               <div className="text-xs uppercase tracking-wide text-muted-foreground">{s.label}</div>
               <div className="text-2xl font-semibold mt-0.5">{counts[s.key]}</div>
@@ -432,8 +432,8 @@ export default function FounderInvestorCRM() {
                 data-testid={`chip-${chip.key}`}
                 className={`text-xs px-3 py-1.5 rounded-full border transition ${
                   active
-                    ? "bg-[hsl(184_98%_22%)] text-white border-[hsl(184_98%_22%)]"
-                    : "bg-card text-foreground border-border hover:border-[hsl(184_98%_22%)]/40"
+                    ? "bg-[hsl(0_100%_40%)] text-white border-[hsl(0_100%_40%)]"
+                    : "bg-card text-foreground border-border hover:border-[hsl(0_100%_40%)]/40"
                 }`}
               >
                 {chip.label}
@@ -471,7 +471,7 @@ export default function FounderInvestorCRM() {
         </Card>
 
         {selectedIds.size > 0 && (
-          <Card className="mb-4 border-[hsl(184_98%_22%)]/40 bg-[hsl(184_98%_22%)]/5" data-testid="bulk-actions-bar">
+          <Card className="mb-4 border-[hsl(0_100%_40%)]/40 bg-[hsl(0_100%_40%)]/5" data-testid="bulk-actions-bar">
             <CardContent className="p-3 flex items-center justify-between">
               <span className="text-sm font-medium">{selectedIds.size} selected</span>
               <div className="flex gap-2">
@@ -492,7 +492,7 @@ export default function FounderInvestorCRM() {
             const stageInfo = STAGES.find(s => s.key === c.stage) ?? STAGES[0];
             const checked = selectedIds.has(c.id);
             return (
-              <Card key={c.id} data-testid={`card-crm-${c.id}`} className={checked ? "border-[hsl(184_98%_22%)]" : ""}>
+              <Card key={c.id} data-testid={`card-crm-${c.id}`} className={checked ? "border-[hsl(0_100%_40%)]" : ""}>
                 <CardContent className="p-4 flex flex-col md:flex-row md:items-center gap-4">
                   <input
                     type="checkbox"
@@ -638,7 +638,7 @@ export default function FounderInvestorCRM() {
               <Button
                 onClick={() => editContact && updateContact.mutate({ id: editContact.id, patch: editForm })}
                 disabled={updateContact.isPending || !editForm.name.trim()}
-                className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+                className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
                 data-testid="button-save-edit-contact"
               >
                 {updateContact.isPending ? "Saving…" : "Save changes"}

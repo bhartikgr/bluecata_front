@@ -260,7 +260,7 @@ export default function ActivityPage() {
               </div>
             </div>
             <div className="flex items-center gap-2 mt-3 text-xs text-muted-foreground">
-              <Shield className="h-3 w-3 text-[hsl(184_98%_22%)]" />
+              <Shield className="h-3 w-3 text-[hsl(0_100%_40%)]" />
               <span data-testid="text-activity-count">
                 Showing {visible.length} of {filtered.length} matching entries (total {rows.length}) · audit-grade hash-chained ledger
               </span>

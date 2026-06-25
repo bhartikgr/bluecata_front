@@ -324,7 +324,7 @@ export default function FounderDashboard() {
           <>
             <GlossaryLink />
             <Link href="/founder/rounds/new"><Button variant="outline" data-testid="button-new-round"><Briefcase className="h-4 w-4 mr-2" /> New round</Button></Link>
-            <Link href="/founder/reports/new"><Button className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" data-testid="button-new-report"><FileText className="h-4 w-4 mr-2" /> Send investor update</Button></Link>
+            <Link href="/founder/reports/new"><Button className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-new-report"><FileText className="h-4 w-4 mr-2" /> Send investor update</Button></Link>
           </>
         }
       />
@@ -338,12 +338,12 @@ export default function FounderDashboard() {
         >
           {/* Hero tile — col-span-4 */}
           <Card
-            className="col-span-1 md:col-span-2 lg:col-span-4 bg-gradient-to-br from-[hsl(184_98%_22%/0.06)] to-[hsl(184_98%_22%/0.02)] border-[hsl(184_98%_22%/0.15)]"
+            className="col-span-1 md:col-span-2 lg:col-span-4 bg-gradient-to-br from-[hsl(0_100%_40%/0.06)] to-[hsl(0_100%_40%/0.02)] border-[hsl(0_100%_40%/0.15)]"
             data-testid="bento-tile-founder-hero"
           >
             <CardContent className="p-6 flex items-center justify-between gap-4 flex-wrap">
               <div>
-                <div className="text-xs uppercase tracking-wide text-[hsl(184_98%_22%)] font-medium">Founder workspace</div>
+                <div className="text-xs uppercase tracking-wide text-[hsl(0_100%_40%)] font-medium">Founder workspace</div>
                 <div className="text-xl font-semibold mt-1">{company ? company.companyName : "Your dashboard"}</div>
                 <div className="text-sm text-muted-foreground mt-0.5">{company?.sector ?? ""} {company?.hq ? `· ${company.hq}` : ""}</div>
               </div>
@@ -358,7 +358,7 @@ export default function FounderDashboard() {
             <CardContent className="p-5">
               <div className="flex items-center justify-between">
                 <div className="text-xs uppercase tracking-wide text-muted-foreground">Founder ownership</div>
-                <ShieldCheck className="h-4 w-4 text-[hsl(184_98%_22%)]" />
+                <ShieldCheck className="h-4 w-4 text-[hsl(0_100%_40%)]" />
               </div>
               <div className="text-2xl font-semibold tracking-tight mt-2 tabular-nums">{fmtPct((company?.kpi?.ownershipPct ?? 0) * 100, 1)}</div>
               <div className="text-xs text-muted-foreground mt-1">of fully-diluted</div>
@@ -370,7 +370,7 @@ export default function FounderDashboard() {
             <CardContent className="p-5">
               <div className="flex items-center justify-between">
                 <div className="text-xs uppercase tracking-wide text-muted-foreground">Cap-table holders</div>
-                <Users className="h-4 w-4 text-[hsl(184_98%_22%)]" />
+                <Users className="h-4 w-4 text-[hsl(0_100%_40%)]" />
               </div>
               <div className="text-2xl font-semibold tracking-tight mt-2 tabular-nums">{company?.kpi?.capTableHolders ?? 0}</div>
               <div className="text-xs text-muted-foreground mt-1">fully-diluted</div>
@@ -394,7 +394,7 @@ export default function FounderDashboard() {
             <CardContent className="p-5">
               <div className="flex items-center justify-between">
                 <div className="text-xs uppercase tracking-wide text-muted-foreground">Dataroom views</div>
-                <Eye className="h-4 w-4 text-[hsl(184_98%_22%)]" />
+                <Eye className="h-4 w-4 text-[hsl(0_100%_40%)]" />
               </div>
               <div className="text-2xl font-semibold tracking-tight mt-2 tabular-nums">{engagement.data?.topDocs.reduce((s, d) => s + d.totalViews, 0) ?? 0}</div>
               <div className="text-xs text-muted-foreground mt-1">{engagement.data?.investors.length ?? 0} unique viewers</div>
@@ -410,7 +410,7 @@ export default function FounderDashboard() {
               <ul className="space-y-1.5">
                 {(activity.data ?? []).slice(0, 3).map(a => (
                   <li key={`bento-${a.id}`} className="flex items-start gap-2 text-xs" data-testid={`bento-activity-${a.id}`}>
-                    <div className="mt-1 h-1.5 w-1.5 rounded-full bg-[hsl(184_98%_22%)] shrink-0" />
+                    <div className="mt-1 h-1.5 w-1.5 rounded-full bg-[hsl(0_100%_40%)] shrink-0" />
                     <div className="flex-1 min-w-0 truncate">
                       <span className="font-medium">{formatActorDashboard(a.actor, selfId, selfName)}</span> <span className="text-muted-foreground">{a.action}</span> <span className="font-medium">{a.target}</span>
                     </div>
@@ -473,7 +473,7 @@ export default function FounderDashboard() {
                 <CardTitle className="text-base flex items-center gap-2"><MessageSquare className="h-4 w-4" /> Cap-table communication center</CardTitle>
                 <p className="text-sm text-muted-foreground mt-0.5">Open a thread to your entire cap table or to a single round.</p>
               </div>
-              <Button onClick={() => broadcastAll.mutate()} disabled={broadcastAll.isPending} data-testid="button-broadcast-all" className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white">
+              <Button onClick={() => broadcastAll.mutate()} disabled={broadcastAll.isPending} data-testid="button-broadcast-all" className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white">
                 <MailPlus className="h-4 w-4 mr-2" /> {broadcastAll.isPending ? "Sending…" : "Open thread to entire cap table"}
               </Button>
             </CardHeader>
@@ -571,7 +571,7 @@ export default function FounderDashboard() {
                         <div className="w-24 text-xs text-muted-foreground">{f.label}</div>
                         <div className="flex-1 h-7 bg-secondary rounded overflow-hidden">
                           <div
-                            className="h-full bg-gradient-to-r from-[hsl(184_98%_22%)] to-[hsl(184_98%_30%)] flex items-center px-2 text-xs text-white font-medium"
+                            className="h-full bg-gradient-to-r from-[hsl(0_100%_40%)] to-[hsl(0_100%_40%)] flex items-center px-2 text-xs text-white font-medium"
                             style={{ width: `${Math.max(8, w)}%` }}
                             data-testid={`funnel-bar-${f.key}`}
                           >
@@ -641,7 +641,7 @@ export default function FounderDashboard() {
                 <div className="text-sm text-muted-foreground">soft-circled of {fmtUSD(activeRound.targetAmount)} target</div>
               </div>
               <div className="h-3 rounded-full bg-secondary overflow-hidden">
-                <div className="h-full bg-gradient-to-r from-[hsl(184_98%_22%)] to-[hsl(184_98%_30%)]" style={{ width: `${Math.min(100, (activeRound.raisedAmount / activeRound.targetAmount) * 100)}%` }} />
+                <div className="h-full bg-gradient-to-r from-[hsl(0_100%_40%)] to-[hsl(0_100%_40%)]" style={{ width: `${Math.min(100, (activeRound.raisedAmount / activeRound.targetAmount) * 100)}%` }} />
               </div>
               <div className="flex justify-between text-xs text-muted-foreground mt-2">
                 <span>{fmtPct((activeRound.raisedAmount / activeRound.targetAmount) * 100, 0)} committed</span>
@@ -667,12 +667,12 @@ export default function FounderDashboard() {
               {activity.data?.length === 0 && (
                 <li className="px-3 py-4 text-center text-sm text-muted-foreground" data-testid="activity-empty">
                   No recent activity.{" "}
-                  <Link href="/founder/glossary" className="text-[hsl(184_98%_22%)] underline">Browse glossary →</Link>
+                  <Link href="/founder/glossary" className="text-[hsl(0_100%_40%)] underline">Browse glossary →</Link>
                 </li>
               )}
               {activity.data?.slice(0, 5).map(a => (
                 <li key={a.id} className="px-3 py-2.5 flex items-start gap-3 text-sm" data-testid={`row-activity-${a.id}`}>
-                  <div className="mt-1 h-1.5 w-1.5 rounded-full bg-[hsl(184_98%_22%)]" />
+                  <div className="mt-1 h-1.5 w-1.5 rounded-full bg-[hsl(0_100%_40%)]" />
                   <div className="flex-1 min-w-0">
                     <div><span className="font-medium">{formatActorDashboard(a.actor, selfId, selfName)}</span> <span className="text-muted-foreground">{a.action}</span> <span className="font-medium">{a.target}</span></div>
                     <div className="text-[11px] text-muted-foreground"><Clock className="inline h-3 w-3 mr-1" />{timeAgo(a.ts)}</div>

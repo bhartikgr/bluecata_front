@@ -94,7 +94,7 @@ export default function AdminFormulaDetail() {
  <>
  <Button variant="outline" onClick={() => navigate("/admin/formulas")} data-testid="button-back"><ArrowLeft className="h-4 w-4 mr-2" /> Back</Button>
  <Button variant="outline" onClick={clone} data-testid="button-clone"><Copy className="h-4 w-4 mr-2" /> Clone</Button>
- <Button onClick={runTests} disabled={running} data-testid="button-run-tests" className="bg-[hsl(327_77%_30%)] hover:bg-[hsl(327_77%_24%)] text-white">
+ <Button onClick={runTests} disabled={running} data-testid="button-run-tests" className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white">
  <Play className="h-4 w-4 mr-2" /> {running ? "Running…" : "Run tests"}
  </Button>
  </>
@@ -160,7 +160,7 @@ export default function AdminFormulaDetail() {
  <div className="font-medium">{formula.citation.source}</div>
  {/* v25.18 Lane D NC1 — protocol-checked citation URL */}
  {safeExternalHref(formula.citation.url) ? (
- <a href={safeExternalHref(formula.citation.url)!} target="_blank" rel="noopener noreferrer" className="text-xs text-[hsl(184_98%_22%)] hover:underline inline-flex items-center gap-1">
+ <a href={safeExternalHref(formula.citation.url)!} target="_blank" rel="noopener noreferrer" className="text-xs text-[hsl(0_100%_40%)] hover:underline inline-flex items-center gap-1">
  {formula.citation.url} <ExternalLink className="h-3 w-3" />
  </a>
  ) : (formula.citation.url ? <span className="text-xs text-muted-foreground">{formula.citation.url}</span> : null)}

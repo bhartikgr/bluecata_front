@@ -59,7 +59,7 @@ export function MessagesWidget({ basePath }: { basePath: "/founder/messages" | "
  <Card data-testid="widget-messages">
  <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
  <div className="flex items-center gap-2 min-w-0">
- <MessageSquare className="h-4 w-4 text-[hsl(184_98%_22%)] shrink-0" />
+ <MessageSquare className="h-4 w-4 text-[hsl(0_100%_40%)] shrink-0" />
  {/* Sprint 20 Wave 2 — role-aware title (defect 51) */}
  <CardTitle className="text-base truncate">{widgetTitle}</CardTitle>
  {totalUnread > 0 && (
@@ -194,7 +194,7 @@ function FilterChip({
 function ChannelKindBadge({ kind }: { kind: ChannelView["kind"] }) {
  const map: Record<ChannelView["kind"], { label: string; cls: string }> = {
  dm: { label: "DM", cls: "bg-secondary text-secondary-foreground" },
- cap_table: { label: "Cap Table", cls: "bg-[hsl(184_98%_22%)]/10 text-[hsl(184_98%_22%)] " },
+ cap_table: { label: "Cap Table", cls: "bg-[hsl(0_100%_40%)]/10 text-[hsl(0_100%_40%)] " },
  soft_circle: { label: "Soft-Circle", cls: "bg-amber-500/10 text-amber-700 " },
  company_followers: { label: "Followers", cls: "bg-secondary" },
  network: { label: "Network", cls: "bg-secondary" },

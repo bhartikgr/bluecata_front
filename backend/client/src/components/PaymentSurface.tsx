@@ -130,7 +130,7 @@ export function PaymentSurface({
         <Button
           onClick={() => { setErrorMsg(null); checkout.mutate(); }}
           disabled={checkout.isPending}
-          className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white w-full"
+          className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white w-full"
           data-testid="button-continue-to-airwallex"
         >
           {checkout.isPending ? (

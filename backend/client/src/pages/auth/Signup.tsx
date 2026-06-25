@@ -244,7 +244,7 @@ export default function Signup() {
                 Once confirmed, return to{" "}
                 <Link
                   href="/auth/login?portal=founder"
-                  className="text-[hsl(184_98%_22%)] hover:underline"
+                  className="text-[#cc0001] hover:underline"
                 >
                   sign in
                 </Link>
@@ -261,7 +261,7 @@ export default function Signup() {
                 type="button"
                 onClick={() => navigate("/founder/dashboard")}
                 data-testid="button-continue-dashboard"
-                className="inline-flex h-10 items-center justify-center rounded-md bg-[hsl(184_98%_22%)] px-4 text-sm font-medium text-white hover:opacity-90"
+                className="inline-flex h-10 items-center justify-center rounded-md bg-[#cc0001] px-4 text-sm font-semibold text-white hover:bg-[#a30001]"
               >
                 Continue to your dashboard →
               </button>
@@ -297,10 +297,14 @@ export default function Signup() {
     <AuthShell
       title="Create a founder account"
       subtitle="Run your cap table, structure rounds, communicate with investors."
+      // v25.43 F7 — signup is founder-only, so the brand panel uses the F5
+      // founder copy (DRAFT for Ozan red-line).
+      tagline="Run your cap table, structure your rounds, and turn every shareholder into a verified contact — in one place."
+      subline="Activate the network already inside your ownership structure."
       footer={
         <div>
           Already have an account?{" "}
-          <Link href="/auth/login?portal=founder" className="text-[hsl(184_98%_22%)] hover:underline" data-testid="link-login">
+          <Link href="/auth/login?portal=founder" className="text-[#cc0001] hover:underline" data-testid="link-login">
             Sign in
           </Link>
         </div>
@@ -459,7 +463,7 @@ export default function Signup() {
          * accessible (screen readers announce role="alert" content). */}
         <Button
           type="submit"
-          className="w-full bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+          className="w-full bg-[#cc0001] hover:bg-[#a30001] text-white rounded-full font-semibold"
           disabled={submitting}
           data-testid="button-submit-signup"
         >
@@ -504,7 +508,7 @@ export default function Signup() {
       >
         <span className="font-medium text-foreground">Investors:</span> Capavate is invitation-only on the
         investor side. Check your email for a secure invitation link, or{" "}
-        <Link href="/auth/redeem" className="text-[hsl(184_98%_22%)] hover:underline" data-testid="link-redeem-from-signup">
+        <Link href="/auth/redeem" className="text-[#cc0001] hover:underline" data-testid="link-redeem-from-signup">
           redeem an invitation token
         </Link>
         .

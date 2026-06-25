@@ -36,7 +36,7 @@ export function DscFeedbackBox({ companyDscState }: Props) {
             </Button>
           </Link>
           <Link href="/founder/crm?context=intro-broker">
-            <Button size="sm" className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" data-testid="button-dsc-promote">
+            <Button size="sm" className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-dsc-promote">
               <Users className="h-3.5 w-3.5 mr-1.5" /> Have a cap-table member promote you
             </Button>
           </Link>

@@ -82,13 +82,13 @@ export function LearnMore({
  e.stopPropagation();
  setOpen((o) => !o);
  }}
- className="inline-flex items-center gap-1 text-[11px] font-medium text-[hsl(184_98%_22%)] hover:underline"
+ className="inline-flex items-center gap-1 text-[11px] font-medium text-[hsl(0_100%_40%)] hover:underline"
  >
  <ChevronDown className={`h-3 w-3 transition-transform ${open ? "rotate-180" : ""}`} />
  {label}
  </button>
  {open && (
- <div className="mt-2 text-xs text-muted-foreground leading-relaxed border-l-2 border-[hsl(184_98%_22%)]/30 pl-3 space-y-2">
+ <div className="mt-2 text-xs text-muted-foreground leading-relaxed border-l-2 border-[hsl(0_100%_40%)]/30 pl-3 space-y-2">
  {children}
  </div>
  )}

@@ -105,10 +105,10 @@ export default function Messages() {
   return (
     <div data-testid="founder-messages">
       {/* Unified-link context strip — Sprint 11 D8 */}
-      <Card className="mb-3 border-[hsl(184_98%_22%)]/30">
+      <Card className="mb-3 border-[hsl(0_100%_40%)]/30">
         <CardContent className="p-3">
           <div className="flex flex-wrap items-center gap-3">
-            <div className="flex items-center gap-2 text-xs font-semibold text-[hsl(184_98%_22%)]">
+            <div className="flex items-center gap-2 text-xs font-semibold text-[hsl(0_100%_40%)]">
               <Filter className="h-3.5 w-3.5" /> Cross-surface jump
             </div>
 
@@ -145,7 +145,7 @@ export default function Messages() {
             {activeRounds.map(r => (
               <Link key={r.id} href={`/founder/rounds/${r.id}`}>
                 <Button size="sm" variant="outline" className="h-7 text-xs" data-testid={`link-round-${r.id}`}>
-                  <Badge variant="outline" className="h-4 mr-1 px-1 text-[9px] border-[hsl(184_98%_22%)] text-[hsl(184_98%_22%)]">{r.state}</Badge>
+                  <Badge variant="outline" className="h-4 mr-1 px-1 text-[9px] border-[hsl(0_100%_40%)] text-[hsl(0_100%_40%)]">{r.state}</Badge>
                   {r.name}
                   <ExternalLink className="h-3 w-3 ml-1 opacity-60" />
                 </Button>
@@ -169,10 +169,10 @@ export default function Messages() {
                 <Link key={h.id} href={`/founder/crm?contactId=${encodeURIComponent(h.investorId)}`}>
                   <Badge
                     variant="outline"
-                    className="text-[10px] cursor-pointer hover:bg-[hsl(184_98%_22%)]/10"
+                    className="text-[10px] cursor-pointer hover:bg-[hsl(0_100%_40%)]/10"
                     data-testid={`badge-holder-${h.investorId}`}
                   >
-                    <Users className="h-2.5 w-2.5 mr-1 text-[hsl(184_98%_22%)]" />
+                    <Users className="h-2.5 w-2.5 mr-1 text-[hsl(0_100%_40%)]" />
                     {h.name} · {h.firmName}
                   </Badge>
                 </Link>
@@ -195,7 +195,7 @@ export default function Messages() {
         </div>
         <Button
           size="sm"
-          className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white h-8"
+          className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white h-8"
           onClick={() => setPickerOpen(true)}
           data-testid="button-new-message"
         >
@@ -268,7 +268,7 @@ export default function Messages() {
                       data-testid={`pick-contact-${c.investorId}`}
                     >
                       <span className="flex items-center gap-2">
-                        <MessageSquare className="h-3 w-3 text-[hsl(184_98%_22%)]" />
+                        <MessageSquare className="h-3 w-3 text-[hsl(0_100%_40%)]" />
                         <span className="font-medium">{c.name}</span>
                         <span className="text-muted-foreground">· {c.firmName}</span>
                       </span>

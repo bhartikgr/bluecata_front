@@ -173,7 +173,7 @@ export function CompanySwitcher() {
               <div className="flex items-start gap-2 w-full">
                 <div className="mt-0.5 w-4 flex-shrink-0">
                   {isActive ? (
-                    <Check className="h-4 w-4 text-[hsl(184_98%_22%)]" />
+                    <Check className="h-4 w-4 text-[hsl(0_100%_40%)]" />
                   ) : null}
                 </div>
                 <div className="flex-1 min-w-0">

@@ -202,12 +202,12 @@ export default function FounderWelcome() {
       >
         {/* 1) HERO TILE — col-span-4 row-span-1 (always full-width) */}
         <Card
-          className={`col-span-1 md:col-span-2 lg:col-span-4 bg-gradient-to-br from-[hsl(184_98%_22%/0.06)] to-[hsl(184_98%_22%/0.02)] border-[hsl(184_98%_22%/0.15)]`}
+          className={`col-span-1 md:col-span-2 lg:col-span-4 bg-gradient-to-br from-[hsl(0_100%_40%/0.06)] to-[hsl(0_100%_40%/0.02)] border-[hsl(0_100%_40%/0.15)]`}
           data-testid="bento-tile-hero"
         >
           <CardContent className="p-6 sm:p-8 flex items-start justify-between gap-6 flex-wrap">
             <div>
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[hsl(184_98%_22%/0.08)] text-[hsl(184_98%_22%)] text-xs font-medium mb-4">
+              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[hsl(0_100%_40%/0.08)] text-[hsl(0_100%_40%)] text-xs font-medium mb-4">
                 <Rocket className="h-3.5 w-3.5" />
                 Welcome to Capavate
               </div>
@@ -246,7 +246,7 @@ export default function FounderWelcome() {
               <CardContent className="p-5">
                 <div className="flex items-center justify-between">
                   <div className="text-xs uppercase tracking-wide text-muted-foreground">{k.label}</div>
-                  <Icon className="h-4 w-4 text-[hsl(184_98%_22%)]" />
+                  <Icon className="h-4 w-4 text-[hsl(0_100%_40%)]" />
                 </div>
                 <div className="text-2xl font-semibold tracking-tight mt-2 tabular-nums">{k.value}</div>
                 <div className="text-xs text-muted-foreground mt-1">{k.hint}</div>
@@ -279,7 +279,7 @@ export default function FounderWelcome() {
                     className="flex items-center gap-3 rounded-md border border-border/60 p-3 hover:bg-secondary/40 cursor-pointer transition-colors"
                     data-testid={`card-welcome-${s.step}`}
                   >
-                    <div className="h-8 w-8 rounded-md bg-[hsl(184_98%_22%/0.08)] flex items-center justify-center text-[hsl(184_98%_22%)] shrink-0">
+                    <div className="h-8 w-8 rounded-md bg-[hsl(0_100%_40%/0.08)] flex items-center justify-center text-[hsl(0_100%_40%)] shrink-0">
                       {s.done ? <CheckCircle2 className="h-4 w-4 text-emerald-600" /> : <Icon className="h-4 w-4" />}
                     </div>
                     <div className="flex-1 min-w-0">
@@ -314,7 +314,7 @@ export default function FounderWelcome() {
             <ul className="space-y-2">
               {(activity.data ?? []).slice(0, 5).map(a => (
                 <li key={a.id} className="flex items-start gap-2 text-sm" data-testid={`activity-${a.id}`}>
-                  <div className="mt-1.5 h-1.5 w-1.5 rounded-full bg-[hsl(184_98%_22%)] shrink-0" />
+                  <div className="mt-1.5 h-1.5 w-1.5 rounded-full bg-[hsl(0_100%_40%)] shrink-0" />
                   <div className="flex-1 min-w-0">
                     <span className="font-medium">{a.actor ?? "—"}</span>
                     <span className="text-muted-foreground"> {a.action ?? ""} </span>
@@ -384,7 +384,7 @@ export default function FounderWelcome() {
               {TIPS.map((_, i) => (
                 <span
                   key={i}
-                  className={`h-1 flex-1 rounded-full ${i === tipIdx ? "bg-[hsl(184_98%_22%)]" : "bg-muted"}`}
+                  className={`h-1 flex-1 rounded-full ${i === tipIdx ? "bg-[hsl(0_100%_40%)]" : "bg-muted"}`}
                 />
               ))}
             </div>
@@ -406,7 +406,7 @@ export default function FounderWelcome() {
             onClick={() => ackMut.mutate()}
             disabled={ackMut.isPending}
             data-testid="button-ack-welcome"
-            className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)]"
+            className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)]"
           >
             {ackMut.isPending ? "Saving…" : "Got it — go to dashboard"}
           </Button>

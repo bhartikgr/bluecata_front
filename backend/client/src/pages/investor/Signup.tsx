@@ -188,9 +188,9 @@ export default function InvestorSignup() {
 
  <div className="max-w-3xl mx-auto px-6 py-10">
  {/* Invitation banner */}
- <Card className="border-[hsl(184_98%_22%)] mb-6" data-testid="card-invitation-summary">
+ <Card className="border-[hsl(0_100%_40%)] mb-6" data-testid="card-invitation-summary">
  <CardContent className="p-5 flex items-start gap-4">
- <div className="h-10 w-10 rounded-md bg-[hsl(184_98%_22%)]/10 text-[hsl(184_98%_22%)] flex items-center justify-center shrink-0">
+ <div className="h-10 w-10 rounded-md bg-[hsl(0_100%_40%)]/10 text-[hsl(0_100%_40%)] flex items-center justify-center shrink-0">
  <Lock className="h-5 w-5" />
  </div>
  <div className="flex-1 min-w-0">
@@ -219,7 +219,7 @@ export default function InvestorSignup() {
  done
  ? "bg-emerald-500 text-white border-emerald-500"
  : active
- ? "bg-[hsl(184_98%_22%)] text-white border-[hsl(184_98%_22%)]"
+ ? "bg-[hsl(0_100%_40%)] text-white border-[hsl(0_100%_40%)]"
  : "bg-muted text-muted-foreground border-border"
  }`}
  data-testid={`step-${s.id}`}
@@ -314,7 +314,7 @@ export default function InvestorSignup() {
  {step === 3 && (
  <div className="space-y-4">
  <div className="rounded-md border border-border bg-muted/40 p-4 text-sm space-y-1">
- <div className="font-medium flex items-center gap-1.5"><Shield className="h-4 w-4 text-[hsl(184_98%_22%)]" /> Privacy by default</div>
+ <div className="font-medium flex items-center gap-1.5"><Shield className="h-4 w-4 text-[hsl(0_100%_40%)]" /> Privacy by default</div>
  <p className="text-muted-foreground text-xs leading-relaxed">
  All visibility is opt-in. If you leave these toggles off, your identity is hidden from co-investors,
  your portfolio is yours alone, and no one can message you through Capavate.
@@ -370,14 +370,14 @@ export default function InvestorSignup() {
  </Button>
  <div className="text-xs text-muted-foreground">Step {step} of 3</div>
  {step < 3 ? (
- <Button onClick={() => setStep(s => s + 1)} className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" data-testid="button-step-next">
+ <Button onClick={() => setStep(s => s + 1)} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-step-next">
  Continue <ChevronRight className="h-4 w-4 ml-1" />
  </Button>
  ) : (
  <Button
  onClick={() => redeem.mutate()}
  disabled={!canSubmit || redeem.isPending}
- className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+ className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
  data-testid="button-submit-signup"
  >
  {redeem.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}

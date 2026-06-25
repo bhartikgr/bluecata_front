@@ -228,7 +228,7 @@ function EditContactDialog({
           <Button
             onClick={() => m.mutate()}
             disabled={m.isPending || !form.name.trim()}
-            className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)]"
+            className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)]"
             data-testid="button-save-edit"
           >
             {m.isPending ? "Saving…" : "Save changes"}
@@ -306,7 +306,7 @@ function AddNoteDialog({
           <Button
             onClick={() => m.mutate()}
             disabled={!body.trim() || m.isPending}
-            className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)]"
+            className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)]"
             data-testid="button-save-note"
           >
             {m.isPending ? "Saving…" : "Save note"}
@@ -388,7 +388,7 @@ function AddTaskDialog({
           <Button
             onClick={() => m.mutate()}
             disabled={!title.trim() || m.isPending}
-            className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)]"
+            className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)]"
             data-testid="button-save-task"
           >
             {m.isPending ? "Saving…" : "Add task"}
@@ -486,7 +486,7 @@ function ContactDetailPanel({ contact, onClose }: { contact: InvestorCrmContact;
               <Button
                 size="sm"
                 variant="default"
-                className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white disabled:opacity-50"
+                className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white disabled:opacity-50"
                 onClick={() => contact.platformUserId && navigate(`/investor/messages?targetUserId=${encodeURIComponent(contact.platformUserId)}`)}
                 disabled={!contact.platformUserId}
                 title={contact.platformUserId ? undefined : "No platform account linked"}
@@ -512,7 +512,7 @@ function ContactDetailPanel({ contact, onClose }: { contact: InvestorCrmContact;
             {contact.email && (
               <div className="flex items-center gap-1.5">
                 <Mail className="w-3.5 h-3.5 text-muted-foreground" />
-                <a className="text-[hsl(184_98%_22%)] hover:underline" href={`mailto:${contact.email}`}>{contact.email}</a>
+                <a className="text-[hsl(0_100%_40%)] hover:underline" href={`mailto:${contact.email}`}>{contact.email}</a>
               </div>
             )}
           </div>
@@ -762,7 +762,7 @@ export default function InvestorCRM() {
               <Megaphone className="w-4 h-4 mr-1" /> Broadcast
             </Button>
             <Link href="/investor/crm/new">
-              <Button className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" data-testid="button-add-contact">
+              <Button className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-add-contact">
                 <UserPlus className="w-4 h-4 mr-1" /> Add contact
               </Button>
             </Link>
@@ -799,8 +799,8 @@ export default function InvestorCRM() {
                 data-testid={`chip-${chip.key}`}
                 className={`text-xs px-3 py-1.5 rounded-full border transition ${
                   active
-                    ? "bg-[hsl(184_98%_22%)] text-white border-[hsl(184_98%_22%)]"
-                    : "bg-card text-foreground border-border hover:border-[hsl(184_98%_22%)]/40"
+                    ? "bg-[hsl(0_100%_40%)] text-white border-[hsl(0_100%_40%)]"
+                    : "bg-card text-foreground border-border hover:border-[hsl(0_100%_40%)]/40"
                 }`}
               >
                 {chip.label}
@@ -814,7 +814,7 @@ export default function InvestorCRM() {
 
         {/* Bulk actions bar */}
         {selectedIds.size > 0 && (
-          <Card className="mb-4 border-[hsl(184_98%_22%)]/40 bg-[hsl(184_98%_22%)]/5" data-testid="bulk-actions-bar">
+          <Card className="mb-4 border-[hsl(0_100%_40%)]/40 bg-[hsl(0_100%_40%)]/5" data-testid="bulk-actions-bar">
             <CardContent className="p-3 flex items-center justify-between">
               <span className="text-sm font-medium">{selectedIds.size} selected</span>
               <div className="flex gap-2">
@@ -848,7 +848,7 @@ export default function InvestorCRM() {
                 </div>
               </div>
               <Link href="/investor/crm/new">
-                <Button className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" data-testid="button-empty-add">
+                <Button className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-empty-add">
                   <UserPlus className="w-4 h-4 mr-1" /> Add contact
                 </Button>
               </Link>
@@ -872,7 +872,7 @@ export default function InvestorCRM() {
                       key={c.id}
                       className={`flex items-center gap-2 p-3 rounded-md border transition-colors cursor-pointer ${
                         selected?.id === c.id
-                          ? "border-[hsl(184_98%_22%)] bg-[hsl(184_98%_22%)]/5"
+                          ? "border-[hsl(0_100%_40%)] bg-[hsl(0_100%_40%)]/5"
                           : "border-transparent hover:bg-slate-50"
                       }`}
                       data-testid={`row-contact-${c.id}`}

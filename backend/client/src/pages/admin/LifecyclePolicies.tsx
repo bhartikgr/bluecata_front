@@ -124,7 +124,7 @@ export default function AdminLifecyclePolicies() {
         actions={
           <>
             <Button variant="outline" onClick={resetDefaults} data-testid="button-reset" disabled={saveMut.isPending}><RotateCcw className="h-4 w-4 mr-2" /> Reset</Button>
-            <Button onClick={() => saveMut.mutate(draft)} data-testid="button-save" disabled={saveMut.isPending} className="bg-[hsl(327_77%_30%)] hover:bg-[hsl(327_77%_24%)] text-white"><Save className="h-4 w-4 mr-2" /> {saveMut.isPending ? "Saving…" : "Save"}</Button>
+            <Button onClick={() => saveMut.mutate(draft)} data-testid="button-save" disabled={saveMut.isPending} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"><Save className="h-4 w-4 mr-2" /> {saveMut.isPending ? "Saving…" : "Save"}</Button>
           </>
         }
       />

@@ -41,7 +41,7 @@ export default function InvestorNetworkPosts() {
               data-testid={`chip-topic-${topic.replace(/[^a-z0-9]/gi, "-").toLowerCase()}`}
               className={`px-3 py-1 text-xs rounded-full border transition-colors ${
                 activeTopic === topic
-                  ? "bg-[hsl(184_98%_22%)] text-white border-transparent"
+                  ? "bg-[hsl(0_100%_40%)] text-white border-transparent"
                   : "bg-white text-slate-700 hover:bg-slate-50"
               }`}
             >

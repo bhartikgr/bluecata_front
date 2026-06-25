@@ -525,7 +525,7 @@ export default function ApplyToCollective() {
                 <Button
                   onClick={next}
                   disabled={!stepOk(step) || submit.isPending}
-                  className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)]"
+                  className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)]"
                   data-testid="button-next"
                 >
                   {step === 6 ? (submit.isPending ? "Submitting…" : "Submit application") : "Continue"} <ChevronRight className="w-4 h-4 ml-1" />
@@ -550,7 +550,7 @@ export default function ApplyToCollective() {
                 <div className="flex justify-center gap-2 pt-2">
                   <Button
                     onClick={() => window.open("https://capavate.com/collective/", "_blank")}
-                    className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)]"
+                    className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)]"
                     data-testid="button-go-collective-home"
                   >
                     Open the Collective <ArrowUpRight className="h-4 w-4 ml-1.5" />
@@ -582,14 +582,14 @@ function Stepper({ step }: { step: number }) {
               <div
                 className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-medium ${
                   done ? "bg-emerald-600 text-white" :
-                  active ? "bg-[hsl(184_98%_22%)] text-white" :
+                  active ? "bg-[hsl(0_100%_40%)] text-white" :
                   "bg-slate-100 text-slate-500"
                 }`}
                 data-testid={`step-${s.n}`}
               >
                 {done ? <CheckCircle2 className="w-5 h-5" /> : <Icon className="w-4 h-4" />}
               </div>
-              <span className={`text-[10px] uppercase tracking-wider ${active ? "text-[hsl(184_98%_22%)] font-semibold" : "text-muted-foreground"} hidden md:block`}>
+              <span className={`text-[10px] uppercase tracking-wider ${active ? "text-[hsl(0_100%_40%)] font-semibold" : "text-muted-foreground"} hidden md:block`}>
                 {s.t}
               </span>
             </div>
@@ -697,7 +697,7 @@ function Step2Profile({ form, setForm }: { form: CollectiveApplication; setForm:
                 type="button"
                 onClick={() => toggleSector(s)}
                 data-testid={`chip-sector-${s.replace(/\W/g, "_")}`}
-                className={`px-2.5 py-1 text-xs rounded-full border ${form.sectors.includes(s) ? "bg-[hsl(184_98%_22%)] text-white border-transparent" : "bg-white text-slate-700"}`}
+                className={`px-2.5 py-1 text-xs rounded-full border ${form.sectors.includes(s) ? "bg-[hsl(0_100%_40%)] text-white border-transparent" : "bg-white text-slate-700"}`}
               >{s}</button>
             ))}
           </div>
@@ -712,7 +712,7 @@ function Step2Profile({ form, setForm }: { form: CollectiveApplication; setForm:
                 type="button"
                 onClick={() => toggleStage(s)}
                 data-testid={`chip-stage-${s.replace(/\W/g, "_")}`}
-                className={`px-3 py-1 text-sm rounded-full border ${form.stages.includes(s) ? "bg-[hsl(184_98%_22%)] text-white border-transparent" : "bg-white text-slate-700"}`}
+                className={`px-3 py-1 text-sm rounded-full border ${form.stages.includes(s) ? "bg-[hsl(0_100%_40%)] text-white border-transparent" : "bg-white text-slate-700"}`}
               >{s}</button>
             ))}
           </div>
@@ -727,7 +727,7 @@ function Step2Profile({ form, setForm }: { form: CollectiveApplication; setForm:
                 type="button"
                 onClick={() => toggleGeo(g)}
                 data-testid={`chip-geo-${g.replace(/\W/g, "_")}`}
-                className={`px-3 py-1 text-sm rounded-full border ${form.geoFocus.includes(g) ? "bg-[hsl(184_98%_22%)] text-white border-transparent" : "bg-white text-slate-700"}`}
+                className={`px-3 py-1 text-sm rounded-full border ${form.geoFocus.includes(g) ? "bg-[hsl(0_100%_40%)] text-white border-transparent" : "bg-white text-slate-700"}`}
               >{g}</button>
             ))}
           </div>
@@ -843,7 +843,7 @@ function Step3Identity({ form, setForm }: { form: CollectiveApplication; setForm
           )}
         </div>
         <div className="text-xs text-muted-foreground border-t border-border/40 pt-3">
-          Files are encrypted in transit. Capavate stores documents in a SOC 2-compliant vault and shares
+          Files are encrypted in transit. Capavate stores documents in an access-controlled vault and shares
           them only with the licensed KYC provider.
         </div>
       </CardContent>
@@ -1041,7 +1041,7 @@ function Step7Success({ applicationId, navigate }: { applicationId: string | nul
           <Button variant="outline" onClick={() => navigate("/investor/dashboard")} data-testid="button-go-dashboard">Back to dashboard</Button>
           <Button
             onClick={() => window.open("https://capavate.com/collective/", "_blank")}
-            className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)]"
+            className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)]"
             data-testid="button-go-collective"
           >
             Open the Collective <ArrowUpRight className="h-4 w-4 ml-1.5" />

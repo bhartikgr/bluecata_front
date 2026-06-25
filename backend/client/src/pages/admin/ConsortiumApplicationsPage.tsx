@@ -338,7 +338,7 @@ export default function AdminConsortiumApplicationsPage() {
                 key={f}
                 size="sm"
                 variant={statusFilter === f ? "default" : "outline"}
-                className={statusFilter === f ? "bg-[hsl(327_77%_30%)] hover:bg-[hsl(327_77%_25%)] h-7" : "h-7"}
+                className={statusFilter === f ? "bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] h-7" : "h-7"}
                 onClick={() => setStatusFilter(f)}
                 data-testid={`filter-${f}`}
               >
@@ -464,7 +464,7 @@ export default function AdminConsortiumApplicationsPage() {
                           <li key={u}>
                             {safe ? (
                               <a
-                                className="underline text-[hsl(327_77%_30%)]"
+                                className="underline text-[hsl(0_100%_40%)]"
                                 href={u}
                                 target="_blank"
                                 rel="noreferrer noopener"
@@ -617,7 +617,7 @@ export default function AdminConsortiumApplicationsPage() {
 
         {/* Promotion moderation queue */}
         <div className="mb-2 flex items-center gap-2">
-          <ShieldCheck className="h-4 w-4 text-[hsl(327_77%_30%)]" />
+          <ShieldCheck className="h-4 w-4 text-[hsl(0_100%_40%)]" />
           <h2 className="text-sm font-medium">Promotion moderation queue</h2>
           <Badge variant="outline" className="text-xs">{promotions.length} pending</Badge>
         </div>

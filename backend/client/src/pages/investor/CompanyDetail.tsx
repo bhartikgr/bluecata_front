@@ -158,7 +158,7 @@ export default function InvestorCompanyDetail() {
     {founderQ.data?.userId ? (
      <Link href={`/investor/messages?targetUserId=${encodeURIComponent(founderQ.data.userId)}`}>
       <Button
-       className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+       className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
        data-testid="button-request-access"
       >
        <MessageSquare className="h-4 w-4 mr-2" /> Request access
@@ -260,7 +260,7 @@ export default function InvestorCompanyDetail() {
  <ul className="space-y-3">
  {company.data.team.map((m, i) => (
  <li key={i} className="flex items-start gap-3">
- <div className="h-9 w-9 rounded-full bg-[hsl(184_98%_22%)]/15 text-[hsl(184_98%_22%)] flex items-center justify-center text-xs font-semibold">
+ <div className="h-9 w-9 rounded-full bg-[hsl(0_100%_40%)]/15 text-[hsl(0_100%_40%)] flex items-center justify-center text-xs font-semibold">
  {m.role.slice(0, 3).toUpperCase()}
  </div>
  <div><div className="font-medium">{m.name}</div><div className="text-xs text-muted-foreground">{m.role}{m.bio ? ` — ${m.bio}` : ""}</div></div>
@@ -563,7 +563,7 @@ function YourDecisionPanel({ inv, toast }: { inv: Inv; toast: ReturnType<typeof 
  "border-border"
  }>
  <CardContent className="p-4 flex items-start gap-3">
- <ShieldCheck className="h-4 w-4 mt-0.5 text-[hsl(184_98%_22%)] shrink-0" />
+ <ShieldCheck className="h-4 w-4 mt-0.5 text-[hsl(0_100%_40%)] shrink-0" />
  <div className="flex-1">
  <div className="font-medium">{banner.title}</div>
  <div className="text-xs text-muted-foreground mt-0.5 capitalize">Current state — <span className="font-mono">{state.replace("_", " ")}</span></div>
@@ -637,7 +637,7 @@ function YourDecisionPanel({ inv, toast }: { inv: Inv; toast: ReturnType<typeof 
  <div><Label>Your email</Label><Input className="mt-1" value={signerEmail} onChange={(e) => setSignerEmail(e.target.value)} data-testid="input-sc-email" /></div>
  </div>
  <Button
- className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white w-full h-11"
+ className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white w-full h-11"
  disabled={submitMut.isPending || !amount || !signerName.trim()}
  onClick={() => submitMut.mutate()}
  data-testid="button-submit-softcircle">
@@ -648,7 +648,7 @@ function YourDecisionPanel({ inv, toast }: { inv: Inv; toast: ReturnType<typeof 
 
  {/* Accept */}
  {decisionRadio === "accept" && allowed.includes("accepted") && (
- <Button className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" onClick={() => acceptMut.mutate()} disabled={acceptMut.isPending} data-testid="button-confirm-accept">
+ <Button className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" onClick={() => acceptMut.mutate()} disabled={acceptMut.isPending} data-testid="button-confirm-accept">
  <Check className="h-4 w-4 mr-2" /> Confirm acceptance
  </Button>
  )}
@@ -668,7 +668,7 @@ function YourDecisionPanel({ inv, toast }: { inv: Inv; toast: ReturnType<typeof 
  <MessageSquare className="h-3.5 w-3.5 mr-1.5" /> Ask the founder a question
  </Button>
  {allowed.includes("signed") && (
- <Button size="sm" className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" onClick={() => signMut.mutate()} disabled={signMut.isPending} data-testid="button-sign-termsheet">
+ <Button size="sm" className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" onClick={() => signMut.mutate()} disabled={signMut.isPending} data-testid="button-sign-termsheet">
  <ShieldCheck className="h-3.5 w-3.5 mr-1.5" /> Sign term sheet
  </Button>
  )}
@@ -760,7 +760,7 @@ function MaIntelligenceSection({ intel, companyId }: { intel: MaIntelligence; co
  </div>
  <div className="flex gap-2">
  <Button size="sm" variant="outline" onClick={() => startInitiative.mutate("discussion")} disabled={startInitiative.isPending} data-testid="button-ma-discuss"><MessageSquare className="h-3.5 w-3.5 mr-1" />Discuss</Button>
- <Button size="sm" className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" onClick={() => startInitiative.mutate("lead_initiative")} disabled={startInitiative.isPending} data-testid="button-ma-lead"><Megaphone className="h-3.5 w-3.5 mr-1" />Lead initiative</Button>
+ <Button size="sm" className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" onClick={() => startInitiative.mutate("lead_initiative")} disabled={startInitiative.isPending} data-testid="button-ma-lead"><Megaphone className="h-3.5 w-3.5 mr-1" />Lead initiative</Button>
  </div>
  </CardHeader>
  <CardContent>
@@ -770,7 +770,7 @@ function MaIntelligenceSection({ intel, companyId }: { intel: MaIntelligence; co
  <ul className="space-y-2">
  {intel.topStrategicBuyers.map(b => (
  <li key={b.name} className="flex items-start gap-2 text-sm" data-testid={`row-buyer-${b.name}`}>
- <Building2 className="h-4 w-4 text-[hsl(184_98%_22%)] mt-0.5 shrink-0" />
+ <Building2 className="h-4 w-4 text-[hsl(0_100%_40%)] mt-0.5 shrink-0" />
  <div>
  <div className="font-medium">{b.name}</div>
  <div className="text-xs text-muted-foreground">{b.rationale}</div>

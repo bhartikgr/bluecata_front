@@ -8,8 +8,9 @@
  *   - Edges + nodes use opacity / stroke-dashoffset animations
  *     (GPU-friendly, no layout reflows)
  *   - prefers-reduced-motion freezes all animations
- *   - Trust-badge grid below the tagline (with "Trusted by founders and
- *     investors at" caption)
+ *
+ * v25.43 F8: the former trust-badge / monogram grid was removed app-wide.
+ * The brand panel now shows only the tagline, subline, and network graph.
  *
  * Source-level assertions only (no jsdom render).
  */
@@ -90,23 +91,17 @@ describe("Wave G G2 — animated network-graph hero", () => {
   });
 });
 
-describe("Wave G G2 — trust badge grid", () => {
-  it("renders a trust grid container", () => {
-    expect(src).toMatch(/data-testid="auth-shell-trust-grid"/);
+describe("v25.43 F8 — trust badge / monogram grid removed", () => {
+  it("no longer renders a trust grid container", () => {
+    expect(src).not.toMatch(/data-testid="auth-shell-trust-grid"/);
   });
 
-  it("includes the 'Trusted by founders and investors at' caption", () => {
-    expect(src).toMatch(/Trusted by founders and investors at/i);
+  it("no longer renders trust-badge slots", () => {
+    expect(src).not.toMatch(/data-testid="auth-shell-trust-badge"/);
   });
 
-  it("renders at least four trust-badge slots", () => {
-    const badgeMatches = src.match(/data-testid="auth-shell-trust-badge"/g) || [];
-    expect(badgeMatches.length).toBeGreaterThanOrEqual(1);
-    // The slot array has four entries — verify the four monograms exist.
-    expect(src).toMatch(/NV/);
-    expect(src).toMatch(/AC/);
-    expect(src).toMatch(/HL/);
-    expect(src).toMatch(/QF/);
+  it("no longer includes the old 'Trusted by founders and investors at' caption", () => {
+    expect(src).not.toMatch(/Trusted by founders and investors at/i);
   });
 });
 
@@ -127,8 +122,8 @@ describe("Wave G G2 — backwards compatibility with Wave E E16 contract", () =>
     expect(src).toMatch(/\{children\}/);
   });
 
-  it("preserves the consortium-partners sub-tagline", () => {
+  it("preserves the sub-tagline region with the new network copy", () => {
     expect(src).toMatch(/data-testid="auth-shell-subtagline"/);
-    expect(src).toMatch(/consortium partners/i);
+    expect(src).toMatch(/Activate the network already inside your ownership structure/i);
   });
 });

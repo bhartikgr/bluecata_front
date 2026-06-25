@@ -30,7 +30,7 @@ export default function PartnerSignup() {
           Already approved?{" "}
           <Link
             href="/partner/login"
-            className="text-[hsl(184_98%_22%)] hover:underline"
+            className="text-[#cc0001] hover:underline"
             data-testid="link-partner-login-from-signup"
           >
             Sign in to the partner workspace
@@ -40,9 +40,9 @@ export default function PartnerSignup() {
     >
       <div className="space-y-5" data-testid="partner-signup-content">
         {/* Hero CTA card */}
-        <div className="rounded-lg border-2 border-[hsl(184_98%_22%)] bg-[hsl(184_98%_97%)] p-5">
+        <div className="rounded-lg border-2 border-[hsl(0_100%_40%)] bg-[hsl(0_100%_97%)] p-5">
           <div className="flex items-center gap-2 mb-2">
-            <Handshake className="h-5 w-5 text-[hsl(184_98%_22%)]" />
+            <Handshake className="h-5 w-5 text-[#cc0001]" />
             <h2 className="text-base font-semibold text-[hsl(219_45%_20%)]" data-testid="text-partner-cta-heading">
               Apply to become a consortium partner
             </h2>
@@ -55,7 +55,7 @@ export default function PartnerSignup() {
              nested <a><button> producing invalid HTML. */}
           <Button
             asChild
-            className="w-full bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_17%)] text-white"
+            className="w-full bg-[#cc0001] hover:bg-[#a30001] text-white rounded-full font-semibold"
             data-testid="button-apply-consortium"
           >
             <Link href="/apply/consortium">
@@ -123,7 +123,7 @@ export default function PartnerSignup() {
            * we instruct the user to open the full link from their email
            * rather than typing it in here. */}
           <span className="font-medium text-foreground">Already received a partner invite token?</span>{" "}
-          <span className="text-[hsl(184_98%_22%)] inline-flex items-center gap-1" data-testid="link-redeem-partner-token">
+          <span className="text-[#cc0001] inline-flex items-center gap-1" data-testid="link-redeem-partner-token">
             <KeyRound className="h-3 w-3" />
             Open the full activation link from your invitation email
           </span>

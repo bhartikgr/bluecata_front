@@ -110,7 +110,7 @@ export default function Rounds() {
                             <div className="text-xs text-muted-foreground">{fmtPct(pct, 0)} of target</div>
                           </div>
                           <div className="h-2 bg-secondary rounded-full overflow-hidden">
-                            <div className="h-full bg-[hsl(184_98%_22%)]" style={{ width: `${Math.min(100, pct)}%` }} />
+                            <div className="h-full bg-[hsl(0_100%_40%)]" style={{ width: `${Math.min(100, pct)}%` }} />
                           </div>
                         </div>
 
@@ -320,7 +320,7 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
           <Button
             disabled={saveMut.isPending}
             onClick={() => saveMut.mutate()}
-            className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+            className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
             data-testid="button-save-terms"
           >Save terms</Button>
         </DialogFooter>

@@ -298,7 +298,7 @@ export default function RoundDetail() {
  <GlossaryLink />
  <Link href="/founder/rounds"><Button variant="ghost" data-testid="button-back"><ArrowLeft className="h-4 w-4 mr-2" /> All rounds</Button></Link>
  <Button variant="outline" onClick={() => setBulkOpen(true)} data-testid="button-bulk-invite"><Upload className="h-4 w-4 mr-2" /> Bulk CSV</Button>
- <Button onClick={() => setInviteOpen(true)} className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" data-testid="button-invite"><Send className="h-4 w-4 mr-2" /> Invite investor</Button>
+ <Button onClick={() => setInviteOpen(true)} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-invite"><Send className="h-4 w-4 mr-2" /> Invite investor</Button>
  <CollectiveDeepLink entity="round" id={r.id} label="View in Collective Deal Room" />
  </>
  }
@@ -322,7 +322,7 @@ export default function RoundDetail() {
  </div>
  {r.state === "soft_circle_open" && (
  <div className="mb-4 flex items-start gap-2 p-3 rounded-md bg-secondary/40 border border-border text-xs leading-relaxed">
- <Info className="h-3.5 w-3.5 mt-0.5 text-[hsl(184_98%_22%)] shrink-0" />
+ <Info className="h-3.5 w-3.5 mt-0.5 text-[hsl(0_100%_40%)] shrink-0" />
  <div>
  <span className="font-semibold">What's a soft circle?</span> A non-binding commitment from an investor to participate at a stated amount. It's a strong signal but not a contract — signing the subscription docs is what makes it real. Track which soft circles have firmed up in the Soft-circle book tab.
  </div>
@@ -333,7 +333,7 @@ export default function RoundDetail() {
  <div className="text-sm text-muted-foreground">{fmtPct(pct, 0)} of target</div>
  </div>
  <div className="h-2.5 bg-secondary rounded-full overflow-hidden">
- <div className="h-full bg-gradient-to-r from-[hsl(184_98%_22%)] to-[hsl(184_98%_30%)]" style={{ width: `${Math.min(100, pct)}%` }} />
+ <div className="h-full bg-gradient-to-r from-[hsl(0_100%_40%)] to-[hsl(0_100%_40%)]" style={{ width: `${Math.min(100, pct)}%` }} />
  </div>
  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-5 pt-4 border-t border-border text-sm">
  <div><div className="text-xs text-muted-foreground flex items-center gap-1">Pre-money <HelpTip>The agreed value of your company BEFORE this round closes. Pre-money + new money = post-money.</HelpTip></div><div className="font-medium">{fmtUSD(r.preMoney, { compact: true })}</div></div>
@@ -833,7 +833,7 @@ function ProjectionPanel({ round }: { round: Round }) {
  <CardHeader className="pb-3">
  <CardTitle className="text-base flex items-center gap-2">
  Pre-close vs post-close projection
- <Badge variant="outline" className="gap-1.5 bg-[hsl(327_77%_30%)]/10 border-[hsl(327_77%_30%)]/40 text-[hsl(327_77%_30%)] " data-testid="badge-engine-projection">
+ <Badge variant="outline" className="gap-1.5 bg-[hsl(0_100%_40%)]/10 border-[hsl(0_100%_40%)]/40 text-[hsl(0_100%_40%)] " data-testid="badge-engine-projection">
  <Cpu className="h-3 w-3" /> Engine v1.0.0
  </Badge>
  </CardTitle>
@@ -861,8 +861,8 @@ function ProjectionPanel({ round }: { round: Round }) {
 
 function SideTable({ title, rows, totalShares, testid, highlight }: { title: string; rows: { holderName: string; holderType: string; kind: string; shares: bigint; ownershipPercent: string }[]; totalShares: bigint; testid: string; highlight?: boolean }) {
  return (
- <div className={`rounded-lg border ${highlight ? "border-[hsl(327_77%_30%)]/40 bg-[hsl(327_77%_30%)]/5" : "border-border"}`}>
- <div className={`px-4 py-3 border-b ${highlight ? "border-[hsl(327_77%_30%)]/30" : "border-border"} flex items-center justify-between`}>
+ <div className={`rounded-lg border ${highlight ? "border-[hsl(0_100%_40%)]/40 bg-[hsl(0_100%_40%)]/5" : "border-border"}`}>
+ <div className={`px-4 py-3 border-b ${highlight ? "border-[hsl(0_100%_40%)]/30" : "border-border"} flex items-center justify-between`}>
  <h4 className="text-sm font-semibold">{title}</h4>
  <span className="text-xs text-muted-foreground font-mono tabular-nums">{fmtNum(Number(totalShares))} shares</span>
  </div>
@@ -921,8 +921,8 @@ function RoundLifecycleProgress({ state }: { state: string }) {
  const active = i === currentIdx;
  return (
  <div key={s.id} className="flex items-center gap-1 shrink-0" data-testid={`lifecycle-${s.id}`}>
- <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] ${active ? "border-[hsl(184_98%_22%)] bg-[hsl(184_98%_22%)]/10 text-foreground font-medium" : done ? "border-emerald-300/60 bg-emerald-50 text-emerald-700 " : "border-border text-muted-foreground"}`}>
- <div className={`h-4 w-4 rounded-full flex items-center justify-center text-[9px] font-bold ${active ? "bg-[hsl(184_98%_22%)] text-white" : done ? "bg-emerald-500 text-white" : "bg-secondary text-muted-foreground"}`}>
+ <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] ${active ? "border-[hsl(0_100%_40%)] bg-[hsl(0_100%_40%)]/10 text-foreground font-medium" : done ? "border-emerald-300/60 bg-emerald-50 text-emerald-700 " : "border-border text-muted-foreground"}`}>
+ <div className={`h-4 w-4 rounded-full flex items-center justify-center text-[9px] font-bold ${active ? "bg-[hsl(0_100%_40%)] text-white" : done ? "bg-emerald-500 text-white" : "bg-secondary text-muted-foreground"}`}>
  {done ? <Check className="h-2.5 w-2.5" /> : i + 1}
  </div>
  {s.label}
@@ -963,7 +963,7 @@ function LeadAndCoInvestors({ round, softCircles }: { round: Round; softCircles:
  </Card>
 
  <Card data-testid="card-coinvestors">
- <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-2"><Users className="h-4 w-4 text-[hsl(184_98%_22%)]" />Co-investors <HelpTip>The follower book. Investors who join after the lead's terms are set.</HelpTip></CardTitle></CardHeader>
+ <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-2"><Users className="h-4 w-4 text-[hsl(0_100%_40%)]" />Co-investors <HelpTip>The follower book. Investors who join after the lead's terms are set.</HelpTip></CardTitle></CardHeader>
  <CardContent className="text-xs space-y-1">
  {round.coInvestors && round.coInvestors.length > 0 ? (
  <ul className="space-y-1">
@@ -979,7 +979,7 @@ function LeadAndCoInvestors({ round, softCircles }: { round: Round; softCircles:
  </Card>
 
  <Card data-testid="card-timeline">
- <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-2"><Calendar className="h-4 w-4 text-[hsl(327_77%_30%)]" />Timing <HelpTip>Carta benchmark: median seed round closes in 65 days from open. Series A in 90 days.</HelpTip></CardTitle></CardHeader>
+ <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-2"><Calendar className="h-4 w-4 text-[hsl(0_100%_40%)]" />Timing <HelpTip>Carta benchmark: median seed round closes in 65 days from open. Series A in 90 days.</HelpTip></CardTitle></CardHeader>
  <CardContent className="text-xs space-y-1">
  {round.openDate && (
  <div className="flex justify-between"><span className="text-muted-foreground">Opened</span><span>{fmtDate(round.openDate)}</span></div>
@@ -1005,7 +1005,7 @@ function UseOfProceeds({ round }: { round: Round }) {
  return (
  <Card>
  <CardHeader className="pb-3">
- <CardTitle className="text-base flex items-center gap-2"><Wallet className="h-4 w-4 text-[hsl(184_98%_22%)]" />Use of proceeds <HelpTip>How the round capital will be deployed. Standard pitch-deck slide; investors review this before committing. Aim for explicit per-bucket % + dollar amounts.</HelpTip></CardTitle>
+ <CardTitle className="text-base flex items-center gap-2"><Wallet className="h-4 w-4 text-[hsl(0_100%_40%)]" />Use of proceeds <HelpTip>How the round capital will be deployed. Standard pitch-deck slide; investors review this before committing. Aim for explicit per-bucket % + dollar amounts.</HelpTip></CardTitle>
  <p className="text-sm text-muted-foreground mt-0.5">{round.name} target: {fmtCurrency(round.targetAmount, round.region ?? "US", { compact: true })}. Actual deployment to be reported quarterly per IRA.</p>
  </CardHeader>
  <CardContent>
@@ -1023,7 +1023,7 @@ function UseOfProceeds({ round }: { round: Round }) {
  <span className="font-mono tabular-nums">{sym}{row.amount.toLocaleString()} <span className="text-muted-foreground ml-1.5">{row.percent}%</span></span>
  </div>
  <div className="h-2 rounded-full bg-secondary overflow-hidden">
- <div className="h-full bg-gradient-to-r from-[hsl(184_98%_22%)] to-[hsl(184_98%_30%)]" style={{ width: `${row.percent}%` }} />
+ <div className="h-full bg-gradient-to-r from-[hsl(0_100%_40%)] to-[hsl(0_100%_40%)]" style={{ width: `${row.percent}%` }} />
  </div>
  </div>
  ))}
@@ -1106,7 +1106,7 @@ function DocumentsTab({ roundId, softs, navigate }: { roundId: string; softs: So
  <div className="py-10 text-center border border-dashed border-border rounded-md" data-testid="empty-documents">
  <FileText className="h-8 w-8 mx-auto text-muted-foreground mb-2" />
  <div className="text-sm text-muted-foreground">No documents yet — generate or upload a term sheet to get started.</div>
- <Button size="sm" className="mt-3 bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" onClick={() => navigate(`/founder/rounds/${roundId}/termsheet`)} data-testid="button-empty-termsheet">
+ <Button size="sm" className="mt-3 bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" onClick={() => navigate(`/founder/rounds/${roundId}/termsheet`)} data-testid="button-empty-termsheet">
  Open term sheet workspace <ArrowRight className="h-3.5 w-3.5 ml-1" />
  </Button>
  </div>
@@ -1114,7 +1114,7 @@ function DocumentsTab({ roundId, softs, navigate }: { roundId: string; softs: So
  <ul className="divide-y divide-border -mx-3">
  {ts && (
  <li className="px-3 py-3 flex items-center gap-3" data-testid="doc-termsheet">
- <FileText className="h-4 w-4 text-[hsl(184_98%_22%)]" />
+ <FileText className="h-4 w-4 text-[hsl(0_100%_40%)]" />
  <div className="flex-1 min-w-0">
  <div className="text-sm font-medium">{ts.templateName}</div>
  <div className="text-xs text-muted-foreground flex flex-wrap items-center gap-2 mt-0.5">
@@ -1245,7 +1245,7 @@ function FounderConfirmDialog({ open, softId, softName, softAmount, roundId, sig
  </div>
  <DialogFooter>
  <Button variant="ghost" onClick={onClose} data-testid="button-founder-confirm-cancel"><X className="h-4 w-4 mr-1" />Cancel</Button>
- <Button onClick={handleConfirm} className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" data-testid="button-founder-confirm-submit"><ShieldCheck className="h-4 w-4 mr-1" />Confirm + sign</Button>
+ <Button onClick={handleConfirm} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-founder-confirm-submit"><ShieldCheck className="h-4 w-4 mr-1" />Confirm + sign</Button>
  </DialogFooter>
  </DialogContent>
  </Dialog>
@@ -1260,7 +1260,7 @@ function ScenariosPanel({ round }: { round: Round }) {
  <Card>
  <CardHeader className="pb-3 flex flex-row items-center justify-between space-y-0">
  <div>
- <CardTitle className="text-base flex items-center gap-2"><GitBranch className="h-4 w-4 text-[hsl(327_77%_30%)]" />What-if scenarios <HelpTip>Compare alternate term scenarios side-by-side. Founders use this to negotiate pre-money with the lead investor.</HelpTip></CardTitle>
+ <CardTitle className="text-base flex items-center gap-2"><GitBranch className="h-4 w-4 text-[hsl(0_100%_40%)]" />What-if scenarios <HelpTip>Compare alternate term scenarios side-by-side. Founders use this to negotiate pre-money with the lead investor.</HelpTip></CardTitle>
  <p className="text-sm text-muted-foreground mt-0.5">Side-by-side sensitivity on pre-money and dilution. Math is reconstructed by the engine on the live ledger.</p>
  </div>
  <Button size="sm" variant="outline" onClick={() => toast({ title: "Add scenario", description: "Scenario editor stubbed for the preview — wire this to the engine in production." })} data-testid="button-add-scenario"><Plus className="h-3.5 w-3.5 mr-1" /> Add scenario</Button>
@@ -1276,10 +1276,10 @@ function ScenariosPanel({ round }: { round: Round }) {
  const isBase = s.name === "Base case";
  const isUp = s.preMoney > (round.preMoney ?? 0);
  return (
- <div key={i} className={`p-4 rounded-lg border-2 ${isBase ? "border-[hsl(184_98%_22%)]/40 bg-[hsl(184_98%_22%)]/5" : "border-border bg-card"}`} data-testid={`scenario-${i}`}>
+ <div key={i} className={`p-4 rounded-lg border-2 ${isBase ? "border-[hsl(0_100%_40%)]/40 bg-[hsl(0_100%_40%)]/5" : "border-border bg-card"}`} data-testid={`scenario-${i}`}>
  <div className="flex items-center justify-between mb-2">
  <span className="font-semibold text-sm">{s.name}</span>
- {isBase && <Badge className="text-[10px] bg-[hsl(184_98%_22%)] text-white">Selected</Badge>}
+ {isBase && <Badge className="text-[10px] bg-[hsl(0_100%_40%)] text-white">Selected</Badge>}
  {!isBase && (isUp ? <Badge variant="outline" className="text-[10px] text-emerald-600 border-emerald-300/60">+ up</Badge> : <Badge variant="outline" className="text-[10px] text-rose-600 border-rose-300/60">− down</Badge>)}
  </div>
  <div className="space-y-1.5 text-xs">
@@ -1435,7 +1435,7 @@ function CommitPipeline({ roundId, companyId }: { roundId: string; companyId: st
     <Card className="mb-6" data-testid="card-commit-pipeline">
       <CardHeader className="pb-2">
         <CardTitle className="text-sm flex items-center gap-2">
-          <GitBranch className="h-4 w-4 text-[hsl(184_98%_22%)]" /> Commit pipeline
+          <GitBranch className="h-4 w-4 text-[hsl(0_100%_40%)]" /> Commit pipeline
           <HelpTip>Visualizes the path from invitation through funded → committed-to-cap-table. Commit fires the immutable cap-table mutation event and emits captable_committed telemetry.</HelpTip>
         </CardTitle>
       </CardHeader>
@@ -1454,7 +1454,7 @@ function CommitPipeline({ roundId, companyId }: { roundId: string; companyId: st
           {STAGES.map((s, i) => (
             <div key={s.id} className="flex items-center gap-1 shrink-0" data-testid={`stage-${s.id}`}>
               <div className="flex flex-col items-center gap-1 px-3 py-2 rounded-md border bg-secondary/30 min-w-[100px]">
-                <s.icon className="h-4 w-4 text-[hsl(184_98%_22%)]" />
+                <s.icon className="h-4 w-4 text-[hsl(0_100%_40%)]" />
                 <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{s.label}</div>
                 <div className="text-lg font-bold tabular-nums">{counts[s.id]}</div>
               </div>
@@ -1481,7 +1481,7 @@ function CommitPipeline({ roundId, companyId }: { roundId: string; companyId: st
         <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-border">
           <Badge variant="outline" className="text-[10px]" data-testid="badge-reconciliation">
             <Hash className="h-3 w-3 mr-1" />
-            Reconciliation: <span className={`ml-1 font-mono ${ledger.data?.verified?.ok ? "text-[hsl(184_98%_22%)]" : "text-[hsl(7_61%_43%)]"}`}>{ledger.data?.verified?.ok ? "verified" : "drift"}</span>
+            Reconciliation: <span className={`ml-1 font-mono ${ledger.data?.verified?.ok ? "text-[hsl(0_100%_40%)]" : "text-[hsl(7_61%_43%)]"}`}>{ledger.data?.verified?.ok ? "verified" : "drift"}</span>
           </Badge>
           <Badge variant="outline" className="text-[10px]">
             <Layers className="h-3 w-3 mr-1" /> Ledger entries: {ledger.data?.entries?.length ?? 0}
@@ -1490,7 +1490,7 @@ function CommitPipeline({ roundId, companyId }: { roundId: string; companyId: st
           <Button
             size="sm"
             disabled={ledger.data?.complianceHold || fundedQueueCount === 0}
-            className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+            className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
             onClick={commitFunded}
             data-testid="button-commit-funded"
           >

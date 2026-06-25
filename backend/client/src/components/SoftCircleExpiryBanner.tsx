@@ -59,7 +59,7 @@ export function SoftCircleExpiryBanner({ submittedAtIso, onConfirm, onRelease, r
           {onConfirm && (
             <Button
               size="sm"
-              className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white h-7"
+              className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white h-7"
               onClick={onConfirm}
               data-testid="button-expiry-confirm"
             >

@@ -19,7 +19,6 @@ const LOGO_PLACEHOLDERS = Array.from({ length: 8 }, (_, i) => ({
 }));
 
 const COMPLIANCE_BADGES = [
-  { label: "SOC 2 Type II", note: "in progress", icon: "🛡️" },
   { label: "GDPR Ready",    note: null,          icon: "🇪🇺" },
   { label: "CCPA Ready",    note: null,          icon: "🛡" },
   { label: "AES-256 Encryption", note: null,     icon: "🔒" },

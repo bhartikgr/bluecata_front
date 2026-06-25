@@ -1,5 +1,5 @@
 /**
- * Sprint 27 — Dedicated admin login.
+ * Dedicated admin login.
  *
  * The public /auth/login page is restricted to founders + investors. Admin
  * sign-in lives here on a separate page so:
@@ -156,7 +156,7 @@ export default function AdminLogin() {
         <div className="space-y-2 text-xs">
           <div>
             Not an admin?{" "}
-            <Link href="/auth/login" className="text-[hsl(184_98%_22%)] hover:underline" data-testid="link-back-to-public-login">
+            <Link href="/auth/login" className="text-[#cc0001] hover:underline" data-testid="link-back-to-public-login">
               Back to founder / investor sign-in
             </Link>
           </div>
@@ -183,11 +183,11 @@ export default function AdminLogin() {
       {/* Preview-only one-click sign-in — auto-removed on production hostnames */}
       {previewMode && (
         <div
-          className="mb-5 rounded-md border-2 border-dashed border-[hsl(184_98%_22%)] bg-[hsl(184_98%_97%)] p-4"
+          className="mb-5 rounded-md border-2 border-dashed border-[hsl(0_100%_40%)] bg-[hsl(0_100%_97%)] p-4"
           data-testid="preview-quick-signin-panel"
         >
           <div className="flex items-center gap-2 mb-2">
-            <Zap className="h-4 w-4 text-[hsl(184_98%_22%)]" />
+            <Zap className="h-4 w-4 text-[#cc0001]" />
             <span className="text-sm font-semibold text-[hsl(219_45%_20%)]">Preview environment — one-click sign-in</span>
           </div>
           <p className="text-xs text-muted-foreground mb-3">
@@ -197,7 +197,7 @@ export default function AdminLogin() {
             type="button"
             onClick={quickSignIn}
             disabled={submitting}
-            className="w-full bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_17%)] text-white"
+            className="w-full bg-[#cc0001] hover:bg-[#a30001] text-white rounded-full font-semibold"
             data-testid="button-preview-quick-signin"
           >
             <Zap className="h-4 w-4 mr-2" />

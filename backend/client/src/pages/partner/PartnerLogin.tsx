@@ -5,7 +5,7 @@
  * founder/investor portal) and the page silently probed /api/partner/me
  * after authentication. That worked but was undiscoverable and confusing.
  *
- * This page parallels /admin/login (Sprint 27) so each persona has its own
+ * This page parallels /admin/login (admin separation) so each persona has its own
  * front door:
  *
  *   /auth/login    \u2014 founders + investors (PUBLIC self-signup for founders)
@@ -190,7 +190,7 @@ export default function PartnerLogin() {
             Not a partner yet?{" "}
             <Link
               href="/partner/signup"
-              className="text-[hsl(184_98%_22%)] hover:underline"
+              className="text-[#cc0001] hover:underline"
               data-testid="link-partner-apply"
             >
               Apply to join the consortium
@@ -200,7 +200,7 @@ export default function PartnerLogin() {
             Founder or investor?{" "}
             <Link
               href="/auth/login"
-              className="text-[hsl(184_98%_22%)] hover:underline"
+              className="text-[#cc0001] hover:underline"
               data-testid="link-back-to-public-login"
             >
               Sign in here
@@ -225,11 +225,11 @@ export default function PartnerLogin() {
       {/* Restricted-access banner — less alarming than admin, but clear about scope */}
       <div
         role="note"
-        className="mb-5 flex items-start gap-2 rounded-md border border-[hsl(184_98%_22%_/0.35)] bg-[hsl(184_98%_97%)] px-3 py-2 text-xs leading-relaxed"
+        className="mb-5 flex items-start gap-2 rounded-md border border-[hsl(0_100%_40%_/0.35)] bg-[hsl(0_100%_97%)] px-3 py-2 text-xs leading-relaxed"
         data-testid="banner-partner-info"
       >
-        <Handshake className="h-3.5 w-3.5 mt-0.5 text-[hsl(184_98%_22%)] shrink-0" />
-        <span className="text-[hsl(184_98%_18%)]">
+        <Handshake className="h-3.5 w-3.5 mt-0.5 text-[#cc0001] shrink-0" />
+        <span className="text-[hsl(0_100%_32%)]">
           This is the Consortium Partner portal. Membership is by approved application only.
           {" "}
           <Link href="/apply/consortium" className="font-semibold underline" data-testid="link-apply-from-banner">
@@ -242,11 +242,11 @@ export default function PartnerLogin() {
       {/* Preview-only one-click sign-in */}
       {previewMode && (
         <div
-          className="mb-5 rounded-md border-2 border-dashed border-[hsl(184_98%_22%)] bg-[hsl(184_98%_97%)] p-4"
+          className="mb-5 rounded-md border-2 border-dashed border-[hsl(0_100%_40%)] bg-[hsl(0_100%_97%)] p-4"
           data-testid="preview-quick-signin-panel"
         >
           <div className="flex items-center gap-2 mb-2">
-            <Zap className="h-4 w-4 text-[hsl(184_98%_22%)]" />
+            <Zap className="h-4 w-4 text-[#cc0001]" />
             <span className="text-sm font-semibold text-[hsl(219_45%_20%)]">Preview environment — one-click sign-in</span>
           </div>
           <p className="text-xs text-muted-foreground mb-3">
@@ -256,7 +256,7 @@ export default function PartnerLogin() {
             type="button"
             onClick={quickSignIn}
             disabled={submitting}
-            className="w-full bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_17%)] text-white"
+            className="w-full bg-[#cc0001] hover:bg-[#a30001] text-white rounded-full font-semibold"
             data-testid="button-preview-quick-signin"
           >
             <Zap className="h-4 w-4 mr-2" />
@@ -322,7 +322,7 @@ export default function PartnerLogin() {
 
         <Button
           type="submit"
-          className="w-full bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_17%)] text-white"
+          className="w-full bg-[#cc0001] hover:bg-[#a30001] text-white rounded-full font-semibold"
           disabled={submitting || email.trim().length === 0 || password.length === 0}
           data-testid="button-submit-partner-login"
         >

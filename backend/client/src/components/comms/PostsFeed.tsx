@@ -330,7 +330,7 @@ export function PostsFeed({
  size="sm"
  disabled={!draft.trim() || createPost.isPending}
  onClick={() => createPost.mutate()}
- className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+ className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
  data-testid="button-post-submit"
  >
  <Send className="h-3.5 w-3.5 mr-1.5" />
@@ -411,7 +411,7 @@ export function PostsFeed({
  {viewAllHref && asArray(posts.data).length > (maxPosts ?? 12) && (
  <Link
  href={viewAllHref}
- className="block text-center text-xs text-[hsl(184_98%_22%)] hover:underline pt-1"
+ className="block text-center text-xs text-[hsl(0_100%_40%)] hover:underline pt-1"
  data-testid="link-view-all-posts"
  >
  View all {asArray(posts.data).length} posts →
@@ -563,7 +563,7 @@ function PostCard({
  <div className="flex gap-2 justify-end">
  <Button variant="ghost" size="sm" onClick={onEditCancel}>Cancel</Button>
  <Button size="sm" onClick={onEditSave} disabled={!editDraft.trim()}
- className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+ className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
  data-testid={`button-edit-save-${post.id}`}
  >Save</Button>
  </div>
@@ -699,7 +699,7 @@ function RichPostBody({ body }: { body: string }) {
  <>
  {parts.map((part, i) => {
  if (part.startsWith("@"))
- return <span key={i} className="text-[hsl(184_98%_22%)] font-medium">{part}</span>;
+ return <span key={i} className="text-[hsl(0_100%_40%)] font-medium">{part}</span>;
  if (part.startsWith("#"))
  return <span key={i} className="text-[hsl(219_45%_40%)] font-medium">{part}</span>;
  return <span key={i}>{part}</span>;

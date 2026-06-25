@@ -146,7 +146,7 @@ export function evaluate(check: EntitlementCheck, ctx: UserContext | null): { al
 
 /* ---------- Hook ---------- */
 
-// Sprint 27 fix: deploy_website DOES substitute the __PORT_5000__ sentinel into
+// Admin-separation fix: deploy_website DOES substitute the __PORT_5000__ sentinel into
 // the proxy path at upload time. Without using it, /api/auth/me escapes the
 // proxy in production and 404s. Same logic as client/src/lib/queryClient.ts.
 const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";

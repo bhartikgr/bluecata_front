@@ -26,7 +26,7 @@
  * touches Capavate.
  */
 import { useState, useEffect } from "react";
-import { useLocation } from "wouter";
+import { useLocation, Redirect } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -40,6 +40,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useEntitlement } from "@/lib/entitlement";
 import { useRef } from "react";
 import { LegalConsentCheckbox, type LegalConsentCheckboxRef } from "@/components/LegalConsentCheckbox";
+import capavateLogoUrl from "@/assets/capavate-logo.png";
 
 /* ---------- Types ---------- */
 interface Subscription {
@@ -65,6 +66,8 @@ interface BillingTier {
   currency: string;
   status: "live" | "draft" | "preview" | "deprecated";
   billingCycle?: "monthly" | "annual" | "biennial" | "one_time" | "perpetual";
+  /** v25.43 F12 — DB-backed plan description from pricing_models.description. */
+  description?: string;
 }
 
 /* ---------- Helpers ---------- */
@@ -137,13 +140,13 @@ function PlanCard({
       data-testid={`plan-card-${tier.slug}`}
       className={`w-full text-left p-4 rounded-lg border-2 transition-all ${
         selected
-          ? "border-[hsl(184_98%_22%)] bg-[hsl(184_98%_22%)]/5"
-          : "border-border hover:border-[hsl(184_98%_22%)]/40"
+          ? "border-[hsl(0_100%_40%)] bg-[hsl(0_100%_40%)]/5"
+          : "border-border hover:border-[hsl(0_100%_40%)]/40"
       }`}
     >
       <div className="flex items-start justify-between mb-2">
         <div className="flex items-center gap-2">
-          <Building2 className="h-5 w-5 text-[hsl(184_98%_22%)]" />
+          <Building2 className="h-5 w-5 text-[hsl(0_100%_40%)]" />
           <div>
             <div className="font-semibold text-sm">{tier.name}</div>
           </div>
@@ -162,6 +165,14 @@ function PlanCard({
           )}
         </div>
       </div>
+      {/* v25.43 F12 — render the admin-configured plan description beneath the
+          price line. When the tier has no description we render nothing (clean
+          empty state, no placeholder copy). */}
+      {tier.description && tier.description.trim().length > 0 && (
+        <p className="text-xs text-muted-foreground mt-1" data-testid={`plan-description-${tier.slug}`}>
+          {tier.description}
+        </p>
+      )}
     </button>
   );
 }
@@ -183,7 +194,7 @@ function NoTiersState() {
               check back shortly, or contact your administrator.
             </p>
             <p className="text-[11px] text-amber-700">
-              Capavate intentionally ships with no source-baked prices —
+              This platform intentionally ships with no source-baked prices —
               everything you see here is what your admin has configured.
             </p>
           </div>
@@ -199,6 +210,13 @@ export default function FounderSubscribe() {
   const { toast } = useToast();
   const { data: entCtx } = useEntitlement();
   const companyId = entCtx?.founder?.activeCompanyId ?? "";
+
+  /* v25.43 R3-8 — Subscribe gate (evaluated below, after all hooks, to honour
+   * the Rules of Hooks). Per Ozan's QA (EDITS-version2-CAPAVATE.pptx, slide 1):
+   * "If the user does not have a registered company, GO DIRECTLY to the Add
+   * Company page. No need to show this page at all." */
+  const companies = entCtx?.founder?.companies ?? [];
+  const noCompany = !!entCtx && companies.length === 0;
 
   /* v25.27 — fetch the admin-configured tier list. */
   const {
@@ -352,6 +370,14 @@ export default function FounderSubscribe() {
 
   const isFree = !!(selectedTier && isFreeTier(selectedTier));
 
+  /* v25.43 R3-8 — a company-less founder must NEVER see the "Choose your plan"
+   * UI. This guards stale tabs, direct URL navigation, and bookmarked
+   * /founder/subscribe URLs by redirecting to the company-creation onboarding
+   * step. Placed after all hooks so hook order stays stable across renders. */
+  if (noCompany) {
+    return <Redirect to="/company-profile?onboarding=1" />;
+  }
+
   return (
     <div className="min-h-screen bg-[hsl(210_20%_98%)] flex items-start justify-center py-12 px-4">
       <div className="w-full max-w-4xl">
@@ -376,9 +402,12 @@ export default function FounderSubscribe() {
 
         {/* Header */}
         <div className="text-center mb-8">
+          {/* v25.43 F10 — replaced the text-only "Capavate" wordmark with the
+              actual brand logo image. The flex wrapper carries layout semantics
+              (centred, gap, bottom margin) so it stays. */}
           <div className="flex items-center justify-center gap-2 mb-3">
-            <Sparkles className="h-6 w-6 text-[hsl(184_98%_22%)]" />
-            <span className="text-lg font-semibold text-[hsl(184_98%_22%)]">Capavate</span>
+            <Sparkles className="h-6 w-6 text-[hsl(0_100%_40%)]" />
+            <img src={capavateLogoUrl} alt="Capavate" className="h-7 w-auto" data-testid="subscribe-logo" />
           </div>
           <h1 className="text-xl font-semibold mb-2">Choose your plan</h1>
           <p className="text-sm text-muted-foreground max-w-md mx-auto">
@@ -390,9 +419,9 @@ export default function FounderSubscribe() {
               &nbsp;·&nbsp;Status: {subData.subscription.status}
             </div>
           )}
-          <div className="inline-flex items-center gap-1.5 mt-3 px-3 py-1 bg-[hsl(184_98%_22%)]/10 rounded-full border border-[hsl(184_98%_22%)]/20 ml-2">
-            <Lock className="h-3 w-3 text-[hsl(184_98%_22%)]" />
-            <span className="text-[11px] font-medium text-[hsl(184_98%_22%)]">Annual billing</span>
+          <div className="inline-flex items-center gap-1.5 mt-3 px-3 py-1 bg-[hsl(0_100%_40%)]/10 rounded-full border border-[hsl(0_100%_40%)]/20 ml-2">
+            <Lock className="h-3 w-3 text-[hsl(0_100%_40%)]" />
+            <span className="text-[11px] font-medium text-[hsl(0_100%_40%)]">Annual billing</span>
           </div>
         </div>
 
@@ -481,7 +510,7 @@ export default function FounderSubscribe() {
 
                   {isFree ? (
                     <Button
-                      className="w-full bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_17%)] text-white"
+                      className="w-full bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
                       onClick={() => checkoutMut.mutate()}
                       disabled={checkoutMut.isPending || !selectedTier}
                       data-testid="button-activate-free"
@@ -496,19 +525,26 @@ export default function FounderSubscribe() {
                       >
                         <ShieldCheck className="h-4 w-4 shrink-0 mt-0.5" />
                         <div>
-                          You'll be redirected to our payment provider (Airwallex) to enter your card securely. Card details never touch Capavate servers.
+                          You'll be redirected to our payment provider (Airwallex) to enter your card securely. Card details never touch our servers.
                         </div>
                       </div>
-                      <LegalConsentCheckbox
-                        ref={legalConsentRef}
-                        docs={["terms", "privacy"]}
-                        context="new_company"
-                        required
-                        onCheckedChange={setLegalChecked}
-                      />
+                      {/* v25.43 F11 — 1px border on the legal-agreement checkbox
+                          (the consent group just above "Continue to Airwallex")
+                          to lift its contrast off the card background. This is
+                          the checkbox, NOT the Airwallex hosted-checkout callout
+                          above it. */}
+                      <div className="border border-slate-300 rounded-md p-2" data-testid="legal-consent-wrapper">
+                        <LegalConsentCheckbox
+                          ref={legalConsentRef}
+                          docs={["terms", "privacy"]}
+                          context="new_company"
+                          required
+                          onCheckedChange={setLegalChecked}
+                        />
+                      </div>
                       <Button
                         type="button"
-                        className="w-full bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_17%)] text-white"
+                        className="w-full bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
                         disabled={checkoutMut.isPending || !legalChecked || !selectedTier}
                         onClick={() => checkoutMut.mutate()}
                         data-testid="button-subscribe"
@@ -525,7 +561,7 @@ export default function FounderSubscribe() {
                   {/* Trust signals */}
                   <div className="mt-3 pt-3 border-t space-y-1.5">
                     <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                      <ShieldCheck className="h-3 w-3 text-emerald-600" />256-bit SSL encryption
+                      <ShieldCheck className="h-3 w-3 text-emerald-600" />Encrypted payment processing
                     </div>
                     <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
                       <CheckCircle2 className="h-3 w-3 text-emerald-600" />Cancel any time

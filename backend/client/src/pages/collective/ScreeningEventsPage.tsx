@@ -237,7 +237,7 @@ export default function ScreeningEventsPage() {
       <header className="flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-[#1A1A2E] flex items-center gap-2">
-            <Calendar className="w-6 h-6 text-[#8E2A4E]" />
+            <Calendar className="w-6 h-6 text-[#cc0001]" />
             Screening Events
           </h1>
           <p className="text-sm text-slate-600 mt-1">
@@ -248,7 +248,7 @@ export default function ScreeningEventsPage() {
           <Button
             onClick={() => setCreateOpen(true)}
             data-testid="schedule-event-btn"
-            className="bg-[#8E2A4E] hover:bg-[#6E1F3C] text-white"
+            className="bg-[#cc0001] hover:bg-[#a30001] text-white"
           >
             <CalendarPlus className="w-4 h-4 mr-2" />
             Schedule event
@@ -415,7 +415,7 @@ function EventRow(props: {
                 toast({ variant: "destructive", title: "Could not download ICS", description: (e as Error).message });
               }
             }}
-            className="inline-flex items-center text-xs px-3 py-1.5 rounded border border-[#8E2A4E]/30 text-[#8E2A4E] hover:bg-[#8E2A4E]/5"
+            className="inline-flex items-center text-xs px-3 py-1.5 rounded border border-[#cc0001]/30 text-[#cc0001] hover:bg-[#cc0001]/5"
             data-testid={`ics-download-${ev.id}`}
           >
             <Download className="w-3 h-3 mr-1" />
@@ -467,7 +467,7 @@ function EventRow(props: {
                       <span className="font-mono text-slate-600">
                         {a.userId}
                         {a.userId === ev.organizerUserId ? (
-                          <span className="ml-2 text-[#8E2A4E]">(organizer)</span>
+                          <span className="ml-2 text-[#cc0001]">(organizer)</span>
                         ) : null}
                       </span>
                       <span className="flex items-center gap-2">
@@ -713,7 +713,7 @@ function CreateEventDialog(props: {
           <Button
             onClick={() => createMut.mutate()}
             disabled={!!submitError || createMut.isPending}
-            className="bg-[#8E2A4E] hover:bg-[#6E1F3C] text-white"
+            className="bg-[#cc0001] hover:bg-[#a30001] text-white"
             data-testid="create-submit"
           >
             {createMut.isPending ? "Scheduling…" : "Schedule event"}

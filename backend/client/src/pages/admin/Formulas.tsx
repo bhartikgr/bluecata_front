@@ -56,7 +56,7 @@ export default function AdminFormulas() {
  description="Versioned, region-aware formulas drive the cap-table engine. Built-in formulas are read-only; clone to create regional variants."
  breadcrumbs={[{ label: "Admin" }, { label: "Formulas" }]}
  actions={
- <Button onClick={() => navigate("/admin/formulas/new")} data-testid="button-new-formula" className="bg-[hsl(327_77%_30%)] hover:bg-[hsl(327_77%_24%)] text-white">
+ <Button onClick={() => navigate("/admin/formulas/new")} data-testid="button-new-formula" className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white">
  <Plus className="h-4 w-4 mr-2" /> New variant
  </Button>
  }

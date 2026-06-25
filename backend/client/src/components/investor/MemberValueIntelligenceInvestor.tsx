@@ -48,7 +48,7 @@ type CoMember = {
 const TIER_COLOR: Record<string, string> = {
   Angel: "bg-amber-500/10 text-amber-700",
   "Pre-seed": "bg-violet-500/10 text-violet-700",
-  Seed: "bg-[hsl(184_98%_22%)]/10 text-[hsl(184_98%_22%)]",
+  Seed: "bg-[hsl(0_100%_40%)]/10 text-[hsl(0_100%_40%)]",
   "Series A+": "bg-blue-500/10 text-blue-700",
   "Multi-stage": "bg-rose-500/10 text-rose-700",
 };
@@ -121,7 +121,7 @@ export function MemberValueIntelligenceInvestor() {
     <Card data-testid="card-member-value-intelligence">
       <CardHeader className="pb-3">
         <div className="flex items-center gap-2">
-          <Users className="h-4 w-4 text-[hsl(184_98%_22%)]" />
+          <Users className="h-4 w-4 text-[hsl(0_100%_40%)]" />
           <CardTitle className="text-base">Member Value &amp; Intelligence</CardTitle>
         </div>
         <p className="text-sm text-muted-foreground mt-0.5">
@@ -146,7 +146,7 @@ export function MemberValueIntelligenceInvestor() {
                   onClick={() => setActiveCompanyId(p.companyId)}
                   className={`text-xs px-2.5 py-1 rounded-md capitalize transition-colors ${
                     p.companyId === resolvedCompanyId
-                      ? "bg-[hsl(184_98%_22%)] text-white"
+                      ? "bg-[hsl(0_100%_40%)] text-white"
                       : "text-muted-foreground hover:bg-secondary"
                   }`}
                   data-testid={`tab-company-${p.companyId}`}

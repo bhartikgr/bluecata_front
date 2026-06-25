@@ -67,11 +67,11 @@ export default function ReportNew() {
                   key={t.id}
                   type="button"
                   onClick={() => setTemplate(t.id)}
-                  className={`text-left rounded-md border p-3 transition-colors ${template === t.id ? "border-[hsl(184_98%_22%)] bg-[hsl(184_98%_22%)]/5" : "border-border hover:bg-secondary/40"}`}
+                  className={`text-left rounded-md border p-3 transition-colors ${template === t.id ? "border-[hsl(0_100%_40%)] bg-[hsl(0_100%_40%)]/5" : "border-border hover:bg-secondary/40"}`}
                   data-testid={`button-template-${t.id}`}
                 >
                   <div className="flex items-center gap-2">
-                    <FileText className="h-4 w-4 text-[hsl(184_98%_22%)]" />
+                    <FileText className="h-4 w-4 text-[hsl(0_100%_40%)]" />
                     <div className="font-semibold text-sm">{t.label}</div>
                   </div>
                   <div className="text-xs text-muted-foreground mt-1">{t.desc}</div>
@@ -101,7 +101,7 @@ export default function ReportNew() {
                 </Select>
               </div>
               <Button
-                className="w-full bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+                className="w-full bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
                 onClick={() => createMut.mutate()}
                 disabled={createMut.isPending}
                 data-testid="button-create-report"

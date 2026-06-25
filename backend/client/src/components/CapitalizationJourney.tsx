@@ -270,7 +270,7 @@ export default function CapitalizationJourney({ companyId }: { companyId?: strin
  <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
  <div>
  <CardTitle className="text-base flex items-center gap-2">
- <Sparkles className="h-4 w-4 text-[hsl(184_98%_22%)]" />
+ <Sparkles className="h-4 w-4 text-[hsl(0_100%_40%)]" />
  Capitalization Journey
  </CardTitle>
  <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
@@ -279,7 +279,7 @@ export default function CapitalizationJourney({ companyId }: { companyId?: strin
  </div>
  <Tooltip>
  <TooltipTrigger asChild>
- <Badge variant="outline" className="text-[10px] gap-1.5 cursor-help bg-[hsl(327_77%_30%)]/10 border-[hsl(327_77%_30%)]/40 text-[hsl(327_77%_30%)] self-start md:self-end">
+ <Badge variant="outline" className="text-[10px] gap-1.5 cursor-help bg-[hsl(0_100%_40%)]/10 border-[hsl(0_100%_40%)]/40 text-[hsl(0_100%_40%)] self-start md:self-end">
  <Cpu className="h-3 w-3" /> Reconstructed by @capavate/cap-table-engine
  </Badge>
  </TooltipTrigger>
@@ -447,7 +447,7 @@ export default function CapitalizationJourney({ companyId }: { companyId?: strin
  <div className="w-[280px] shrink-0 cursor-pointer relative" data-testid={`journey-card-${r.id}`}>
  {/* timeline dot */}
  <div className="flex justify-center mb-2 relative z-10">
- <div className={`h-4 w-4 rounded-full border-4 border-background ${isClosed ? "bg-[hsl(184_98%_22%)]" : "bg-[#D4A857]"}`} />
+ <div className={`h-4 w-4 rounded-full border-4 border-background ${isClosed ? "bg-[hsl(0_100%_40%)]" : "bg-[#D4A857]"}`} />
  </div>
  <div className="bg-card border border-border rounded-lg p-4 hover-elevate space-y-2.5">
  <div className="flex items-center justify-between gap-2">
@@ -502,7 +502,7 @@ export default function CapitalizationJourney({ companyId }: { companyId?: strin
  <span className="text-muted-foreground">Founders</span>
  <span className="font-mono tabular-nums">{fmtPct(founderBefore ?? 0, 0)}</span>
  <ArrowRight className="h-3 w-3 text-muted-foreground" />
- <span className="font-mono tabular-nums font-semibold text-[hsl(184_98%_22%)] ">{fmtPct(founderAfter, 0)}</span>
+ <span className="font-mono tabular-nums font-semibold text-[hsl(0_100%_40%)] ">{fmtPct(founderAfter, 0)}</span>
  </div>
  )}
  <div className="flex items-center gap-1.5 text-[10px] pt-1">

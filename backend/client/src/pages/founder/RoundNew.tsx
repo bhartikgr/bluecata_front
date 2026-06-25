@@ -366,7 +366,7 @@ export default function RoundNew() {
  }
  }
  toast({ title: "Round created", description: `Round ${data.id} is now active.` });
- // Sprint 27 fix: respect the user's term-sheet choice from Step 3. If they
+ // Admin-separation fix: respect the user's term-sheet choice from Step 3. If they
  // picked Generate or Upload, route them straight to the term-sheet page
  // instead of dropping them on an empty round-detail screen with no UI hint.
  if (termsheetChoice === "generate" || termsheetChoice === "upload") {
@@ -535,7 +535,7 @@ export default function RoundNew() {
  </p>
  <Button
  asChild
- className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+ className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
  >
  <a href="/founder/company">Create company profile</a>
  </Button>
@@ -577,8 +577,8 @@ export default function RoundNew() {
  const done = s.id < step;
  return (
  <li key={s.id} className="flex items-center gap-2 shrink-0">
- <button onClick={() => setStep(s.id)} className={`flex items-center gap-3 px-4 py-2 rounded-md border transition ${active ? "border-[hsl(184_98%_22%)] bg-[hsl(184_98%_22%)]/10" : done ? "border-emerald-300/70 bg-emerald-50 " : "border-border text-muted-foreground hover:bg-secondary"}`}>
- <div className={`h-6 w-6 rounded-full flex items-center justify-center text-xs font-semibold ${active ? "bg-[hsl(184_98%_22%)] text-white" : done ? "bg-emerald-500 text-white" : "bg-secondary text-muted-foreground"}`}>
+ <button onClick={() => setStep(s.id)} className={`flex items-center gap-3 px-4 py-2 rounded-md border transition ${active ? "border-[hsl(0_100%_40%)] bg-[hsl(0_100%_40%)]/10" : done ? "border-emerald-300/70 bg-emerald-50 " : "border-border text-muted-foreground hover:bg-secondary"}`}>
+ <div className={`h-6 w-6 rounded-full flex items-center justify-center text-xs font-semibold ${active ? "bg-[hsl(0_100%_40%)] text-white" : done ? "bg-emerald-500 text-white" : "bg-secondary text-muted-foreground"}`}>
  {done ? <Check className="h-3.5 w-3.5" /> : s.id}
  </div>
  <div className="text-left">
@@ -667,8 +667,8 @@ export default function RoundNew() {
  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); update("instrument", inst.value); } }}
  data-testid={`instrument-${inst.value}`}
  className={`text-left p-4 rounded-lg border-2 transition cursor-pointer ${selected
- ? "border-[hsl(184_98%_22%)] bg-[hsl(184_98%_22%)]/5 ring-2 ring-[hsl(184_98%_22%)]/20"
- : "border-border hover:border-[hsl(184_98%_22%)]/50 hover:bg-secondary/50"}`}
+ ? "border-[hsl(0_100%_40%)] bg-[hsl(0_100%_40%)]/5 ring-2 ring-[hsl(0_100%_40%)]/20"
+ : "border-border hover:border-[hsl(0_100%_40%)]/50 hover:bg-secondary/50"}`}
  >
  <div className="flex items-start justify-between gap-2 mb-1">
  <div className="font-semibold text-sm">{inst.label}</div>
@@ -679,7 +679,7 @@ export default function RoundNew() {
  </Badge>
  )}
  {selected && (
- <Badge className="text-[10px] bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_22%)] text-white"><Check className="h-2.5 w-2.5 mr-1" />selected</Badge>
+ <Badge className="text-[10px] bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_40%)] text-white"><Check className="h-2.5 w-2.5 mr-1" />selected</Badge>
  )}
  </div>
  </div>
@@ -707,7 +707,7 @@ export default function RoundNew() {
  </div>
 
  <div className="flex items-start gap-2 p-3 rounded-md bg-secondary/40 border border-border text-xs text-muted-foreground">
- <Info className="h-3.5 w-3.5 mt-0.5 text-[hsl(184_98%_22%)] shrink-0" />
+ <Info className="h-3.5 w-3.5 mt-0.5 text-[hsl(0_100%_40%)] shrink-0" />
  <span>The selected vehicle is wired to <code className="px-1 py-0.5 bg-background border border-border rounded">@capavate/cap-table-engine</code> region <code className="px-1 py-0.5 bg-background border border-border rounded">{form.region}</code>. Step 2 only renders the fields this instrument needs. Cap-table impact is computed live on Review.</span>
  </div>
  </div>
@@ -976,7 +976,7 @@ export default function RoundNew() {
  setManualDraft({ name: "", email: "", checkSize: "" });
  setManualOpen(false);
  }}
- className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+ className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
  data-testid="button-confirm-manual-shareholder"
  >Add to round</Button>
  </DialogFooter>
@@ -991,9 +991,9 @@ export default function RoundNew() {
  <h3 className="text-base font-semibold">{form.name}</h3>
  <div className="flex flex-wrap gap-2">
  <Badge variant="outline">{ROUND_TYPES.find(t => t.value === form.type)?.label}</Badge>
- <Badge className="bg-[hsl(184_98%_22%)]">{instrument.label}</Badge>
+ <Badge className="bg-[hsl(0_100%_40%)]">{instrument.label}</Badge>
  <Badge variant="outline">Region: {form.region}</Badge>
- {attachToRound && <Badge variant="outline" className="border-[hsl(184_98%_22%)] text-[hsl(184_98%_22%)]">Attached to {attachToRound}</Badge>}
+ {attachToRound && <Badge variant="outline" className="border-[hsl(0_100%_40%)] text-[hsl(0_100%_40%)]">Attached to {attachToRound}</Badge>}
  </div>
  <div className="p-3 rounded-md bg-secondary/40 border border-border font-mono text-xs">{engineSummary()}</div>
  <p className="pt-3 text-muted-foreground">{form.notes}</p>
@@ -1024,7 +1024,7 @@ export default function RoundNew() {
  <HelpTip>A term sheet is a non-binding summary of the principal investment terms (instrument, valuation, liquidation preference, etc.). Investors expect to see one before they commit. Capavate generates region-appropriate templates citing NVCA, BVCA, J-KISS, CCPS and other standards — then you sign electronically (SES, ESIGN-compliant).</HelpTip>
  </div>
  {(form.instrument === "warrant" || form.instrument === "option_pool") && (
- <div className="rounded-md border border-[hsl(184_98%_22%)]/40 bg-[hsl(184_98%_22%)]/5 p-3 text-xs" data-testid="banner-no-termsheet">
+ <div className="rounded-md border border-[hsl(0_100%_40%)]/40 bg-[hsl(0_100%_40%)]/5 p-3 text-xs" data-testid="banner-no-termsheet">
  <strong>{instrument.label}</strong> issuances don't require a separate term sheet — the parent round's terms govern. We'll skip term-sheet generation for this issuance.
  </div>
  )}
@@ -1081,7 +1081,7 @@ export default function RoundNew() {
  {step < 5 ? (
  <Button onClick={() => setStep(s => s + 1)} className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] text-white" data-testid="button-next">Continue <ArrowRight className="h-4 w-4 ml-2" /></Button>
  ) : (
- <Button onClick={() => createRoundMut.mutate()} disabled={createRoundMut.isPending} className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" data-testid="button-create">{createRoundMut.isPending ? "Creating..." : "Create round"}</Button>
+ <Button onClick={() => createRoundMut.mutate()} disabled={createRoundMut.isPending} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-create">{createRoundMut.isPending ? "Creating..." : "Create round"}</Button>
  )}
  </div>
  </CardContent>

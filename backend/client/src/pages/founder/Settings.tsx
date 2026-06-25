@@ -388,7 +388,7 @@ export default function Settings() {
                       Auto-detected from your browser ({detectBrowserTimezone()}). Used for scheduled reports, due dates, and activity timestamps.
                     </p>
                   </div>
-                  <Button className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" onClick={() => saveProfileMut.mutate()} disabled={saveProfileMut.isPending} data-testid="button-save-profile">{saveProfileMut.isPending ? "Saving…" : "Save profile"}</Button>
+                  <Button className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" onClick={() => saveProfileMut.mutate()} disabled={saveProfileMut.isPending} data-testid="button-save-profile">{saveProfileMut.isPending ? "Saving…" : "Save profile"}</Button>
                 </CardContent>
               </Card>
 
@@ -442,7 +442,7 @@ export default function Settings() {
                 <div><Label>Region of incorporation</Label><Input className="mt-1" value={coRegion} onChange={(e) => setCoRegion(e.target.value)} data-testid="input-region" /></div>
                 <div className="md:col-span-2"><Label>Tagline</Label><Input className="mt-1" value={coTagline} onChange={(e) => setCoTagline(e.target.value)} placeholder="One-line value proposition" data-testid="input-tagline" /></div>
                 <div className="md:col-span-2"><Label>Description</Label><Textarea rows={3} className="mt-1" value={coDescription} onChange={(e) => setCoDescription(e.target.value)} placeholder="What does your company do?" data-testid="textarea-description" /></div>
-                <div className="md:col-span-2"><Button className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" onClick={() => saveCompanyMut.mutate()} disabled={saveCompanyMut.isPending} data-testid="button-save-company">{saveCompanyMut.isPending ? "Saving…" : "Save"}</Button></div>
+                <div className="md:col-span-2"><Button className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" onClick={() => saveCompanyMut.mutate()} disabled={saveCompanyMut.isPending} data-testid="button-save-company">{saveCompanyMut.isPending ? "Saving…" : "Save"}</Button></div>
               </CardContent>
             </Card>
           </TabsContent>
@@ -465,7 +465,7 @@ export default function Settings() {
                     className="h-8 w-48 text-xs"
                     data-testid="input-invite-email"
                   />
-                  <Button size="sm" className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" onClick={() => inviteMemberMut.mutate()} disabled={inviteMemberMut.isPending || !inviteEmail} data-testid="button-invite-member"><Plus className="h-3.5 w-3.5 mr-1" /> Invite</Button>
+                  <Button size="sm" className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" onClick={() => inviteMemberMut.mutate()} disabled={inviteMemberMut.isPending || !inviteEmail} data-testid="button-invite-member"><Plus className="h-3.5 w-3.5 mr-1" /> Invite</Button>
                 </div>
               </CardHeader>
               <CardContent className="p-0">
@@ -524,11 +524,11 @@ export default function Settings() {
                 const price = effectiveCycle === "monthly" ? t.monthlyUsd : t.annualUsd;
                 const isActive = t.id === activeTier;
                 return (
-                  <Card key={t.id} className={isActive ? "border-[hsl(184_98%_22%)] border-2" : ""} data-testid={`card-tier-${t.id}`}>
+                  <Card key={t.id} className={isActive ? "border-[hsl(0_100%_40%)] border-2" : ""} data-testid={`card-tier-${t.id}`}>
                     <CardHeader>
                       <CardTitle className="text-base flex items-center justify-between">
                         {t.name}
-                        {isActive && <Badge className="bg-[hsl(184_98%_22%)] text-white">Active</Badge>}
+                        {isActive && <Badge className="bg-[hsl(0_100%_40%)] text-white">Active</Badge>}
                       </CardTitle>
                       <p className="text-xs text-muted-foreground">{t.blurb}</p>
                     </CardHeader>
@@ -550,7 +550,7 @@ export default function Settings() {
                         {t.features.map(f => (
                           <li key={f.key} className="flex items-start gap-2">
                             {f.included
-                              ? <Check className="h-3.5 w-3.5 text-[hsl(184_98%_22%)] shrink-0 mt-0.5" />
+                              ? <Check className="h-3.5 w-3.5 text-[hsl(0_100%_40%)] shrink-0 mt-0.5" />
                               : <X className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />}
                             <span className={f.included ? "" : "text-muted-foreground line-through"}>
                               {f.label}{f.limit && f.included ? ` — ${f.limit}` : ""}
@@ -559,7 +559,7 @@ export default function Settings() {
                         ))}
                       </ul>
                       {!isActive && (
-                        <Button size="sm" className="w-full bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" onClick={() => switchPlanMut.mutate(t.id)} disabled={switchPlanMut.isPending} data-testid={`button-switch-${t.id}`}>Switch to {t.name}</Button>
+                        <Button size="sm" className="w-full bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" onClick={() => switchPlanMut.mutate(t.id)} disabled={switchPlanMut.isPending} data-testid={`button-switch-${t.id}`}>Switch to {t.name}</Button>
                       )}
                     </CardContent>
                   </Card>
@@ -934,7 +934,7 @@ function PrivacyControls(props: {
 
       <Button
         size="sm"
-        className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+        className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
         disabled={!!screenErr}
         onClick={onSave}
         data-testid="button-save-privacy"

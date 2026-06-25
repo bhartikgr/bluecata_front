@@ -120,7 +120,7 @@ function StepperBar({ currentStatus }: { currentStatus: RegionStatus }) {
                 className={[
                   "h-5 w-5 rounded-full flex items-center justify-center text-[10px] font-bold border-2",
                   done ? "border-emerald-500 bg-emerald-500 text-white" : "",
-                  active ? "border-[hsl(327_77%_35%)] bg-[hsl(327_77%_35%)] text-white" : "",
+                  active ? "border-[hsl(0_100%_40%)] bg-[hsl(0_100%_40%)] text-white" : "",
                   future ? "border-zinc-300 bg-white text-zinc-400" : "",
                   isTerminal && currentStatus === "rejected" ? "border-rose-300 bg-rose-50 text-rose-400" : "",
                   isTerminal && currentStatus === "archived" ? "border-zinc-200 bg-zinc-50 text-zinc-300" : "",
@@ -128,7 +128,7 @@ function StepperBar({ currentStatus }: { currentStatus: RegionStatus }) {
               >
                 {done ? "✓" : idx + 1}
               </div>
-              <span className={`text-[10px] mt-1 font-medium ${active ? "text-[hsl(327_77%_35%)]" : done ? "text-emerald-600" : "text-muted-foreground"}`}>
+              <span className={`text-[10px] mt-1 font-medium ${active ? "text-[hsl(0_100%_40%)]" : done ? "text-emerald-600" : "text-muted-foreground"}`}>
                 {step.label}
               </span>
             </div>
@@ -379,7 +379,7 @@ function ResearchTab({
 
       {!isReadOnly && dirty && (
         <Button
-          className="bg-[hsl(327_77%_30%)] hover:bg-[hsl(327_77%_24%)] text-white"
+          className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
           onClick={() => { onSave({ research }); setDirty(false); }}
           disabled={saving}
           data-testid="button-save-research-bottom"
@@ -670,7 +670,7 @@ function DraftTab({
 
       {!isReadOnly && dirty && (
         <Button
-          className="bg-[hsl(327_77%_30%)] hover:bg-[hsl(327_77%_24%)] text-white"
+          className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
           onClick={() => { onSave({ draft }); setDirty(false); }}
           disabled={saving}
           data-testid="button-save-draft-bottom"
@@ -753,7 +753,7 @@ function DraftTab({
               onClick={saveFormula}
               disabled={!editingFormula?.id || !editingFormula?.name}
               data-testid="button-formula-save"
-              className="bg-[hsl(327_77%_30%)] hover:bg-[hsl(327_77%_24%)] text-white"
+              className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
             >
               Save formula
             </Button>
@@ -970,7 +970,7 @@ function ReviewTab({
               Cancel
             </Button>
             <Button
-              className={transitionTarget === "rejected" ? "bg-rose-600 hover:bg-rose-700 text-white" : "bg-[hsl(327_77%_30%)] hover:bg-[hsl(327_77%_24%)] text-white"}
+              className={transitionTarget === "rejected" ? "bg-rose-600 hover:bg-rose-700 text-white" : "bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"}
               onClick={() => {
                 if (transitionTarget) onTransition(transitionTarget, notes);
                 setTransitionDialogOpen(false);

@@ -73,7 +73,7 @@ export default function Reports() {
         title="Investor reports"
         description="Templates, scheduling, recipient targeting, read receipts, and per-section comments."
         breadcrumbs={[{ href: "/founder/dashboard", label: "Workspace" }, { label: "Reports" }]}
-        actions={<Link href="/founder/reports/new"><Button className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" data-testid="button-new-report"><Plus className="h-4 w-4 mr-2" /> New report</Button></Link>}
+        actions={<Link href="/founder/reports/new"><Button className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-new-report"><Plus className="h-4 w-4 mr-2" /> New report</Button></Link>}
       />
       <PageBody>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
@@ -125,7 +125,7 @@ export default function Reports() {
                         )}
                         <Button size="sm" variant="ghost" onClick={() => setScheduleId(r.id)} data-testid={`button-schedule-${r.id}`}><Calendar className="h-3.5 w-3.5 mr-1" /> Schedule</Button>
                         {r.status !== "sent" && (
-                          <Button size="sm" onClick={() => setSendId(r.id)} className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" data-testid={`button-send-${r.id}`}><Send className="h-3.5 w-3.5 mr-1" /> Send</Button>
+                          <Button size="sm" onClick={() => setSendId(r.id)} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid={`button-send-${r.id}`}><Send className="h-3.5 w-3.5 mr-1" /> Send</Button>
                         )}
                       </div>
                     </div>
@@ -229,7 +229,7 @@ function PreviewDialog({ report, onClose }: { report: Report; onClose: () => voi
                   key={s.id}
                   type="button"
                   onClick={() => setActiveSec(s.id)}
-                  className={`w-full text-left rounded px-2 py-1.5 text-xs ${activeSec === s.id ? "bg-[hsl(184_98%_22%)] text-white" : "hover:bg-secondary"}`}
+                  className={`w-full text-left rounded px-2 py-1.5 text-xs ${activeSec === s.id ? "bg-[hsl(0_100%_40%)] text-white" : "hover:bg-secondary"}`}
                   data-testid={`button-section-${s.kind}`}
                 >
                   {s.title}
@@ -390,7 +390,7 @@ function SendDialog({ report, onClose, onSent }: { report: Report; onClose: () =
           <Button
             onClick={() => sendMut.mutate()}
             disabled={selected.size === 0 || sendMut.isPending}
-            className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+            className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
             data-testid="button-confirm-send"
           >
             <Mail className="h-3.5 w-3.5 mr-1" /> Send to {selected.size}
@@ -440,7 +440,7 @@ function ScheduleDialog({ report, onClose, onSaved }: { report: Report; onClose:
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button onClick={() => saveMut.mutate()} disabled={saveMut.isPending} className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" data-testid="button-confirm-schedule">Save schedule</Button>
+          <Button onClick={() => saveMut.mutate()} disabled={saveMut.isPending} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-confirm-schedule">Save schedule</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -515,7 +515,7 @@ function EditDraftDialog({ report, onClose, onSaved }: { report: Report; onClose
           <Button
             onClick={() => saveMut.mutate()}
             disabled={saveMut.isPending || !title.trim()}
-            className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+            className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
             data-testid="button-edit-save"
           >
             Save draft

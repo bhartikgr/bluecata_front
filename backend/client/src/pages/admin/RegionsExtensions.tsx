@@ -33,6 +33,8 @@ import { Globe, Plus, Search, ChevronRight, AlertCircle } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { RegionStatus, RegionExtension } from "./types/regionExtension";
+// v25.42 R9 — regional KPI rollup card (members + companies aggregated by region).
+import { RegionalKpiRollup } from "@/components/collective/RegionalKpiRollup";
 
 /* ============================================================
  * Types
@@ -88,7 +90,7 @@ function WorkflowPills({ status }: { status: RegionStatus }) {
             className={[
               "h-2 rounded-full transition-all",
               idx === 0 ? "w-5" : "w-3",
-              done ? "bg-emerald-500" : active ? "bg-[hsl(327_77%_38%)]" : future ? "bg-zinc-200" : "",
+              done ? "bg-emerald-500" : active ? "bg-[hsl(0_100%_40%)]" : future ? "bg-zinc-200" : "",
               status === "rejected" ? "bg-rose-300" : "",
               status === "archived" ? "bg-zinc-200" : "",
             ]
@@ -221,7 +223,7 @@ export default function AdminRegionsExtensions() {
           <Button
             onClick={() => { setProposeOpen(true); setProposeError(""); }}
             data-testid="button-propose-region"
-            className="bg-[hsl(327_77%_30%)] hover:bg-[hsl(327_77%_24%)] text-white"
+            className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
           >
             <Plus className="h-4 w-4 mr-2" /> Propose new region
           </Button>
@@ -229,6 +231,8 @@ export default function AdminRegionsExtensions() {
       />
 
       <PageBody>
+        {/* v25.42 R9 — regional KPI rollup (members + companies by region). */}
+        <RegionalKpiRollup />
         {/* Stats bar */}
         {stats && (
           <div
@@ -331,7 +335,7 @@ export default function AdminRegionsExtensions() {
                       data-testid={`row-region-${ext.id}`}
                     >
                       <td className="px-6 py-3">
-                        <span className="font-mono font-semibold text-sm text-[hsl(327_77%_35%)]">{ext.code}</span>
+                        <span className="font-mono font-semibold text-sm text-[hsl(0_100%_40%)]">{ext.code}</span>
                       </td>
                       <td className="px-3 py-3 font-medium">{ext.name}</td>
                       <td className="px-3 py-3">
@@ -424,7 +428,7 @@ export default function AdminRegionsExtensions() {
               onClick={handleProposeSubmit}
               disabled={!proposeCode.trim() || !proposeName.trim() || !proposeConfirm}
               data-testid="button-propose-submit"
-              className="bg-[hsl(327_77%_30%)] hover:bg-[hsl(327_77%_24%)] text-white"
+              className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
             >
               Propose region
             </Button>

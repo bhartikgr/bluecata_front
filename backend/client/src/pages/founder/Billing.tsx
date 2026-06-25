@@ -239,7 +239,7 @@ function ChangePaymentDialog({
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button
-            className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_17%)] text-white"
+            className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
             disabled={changeMut.isPending}
             onClick={handleSubmit}
             data-testid="button-save-payment-method"
@@ -347,7 +347,7 @@ function EmailInvoiceDialog({
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button
-            className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_17%)] text-white"
+            className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
             disabled={emailMut.isPending}
             onClick={() => emailMut.mutate()}
             data-testid="button-send-invoice-email"
@@ -511,7 +511,7 @@ export default function FounderBilling() {
               ) : (
                 <div className="text-sm text-muted-foreground">
                   No active subscription.{" "}
-                  <button className="underline text-[hsl(184_98%_22%)]" onClick={() => navigate("/founder/subscribe")} data-testid="button-subscribe-link">Subscribe now</button>
+                  <button className="underline text-[hsl(0_100%_40%)]" onClick={() => navigate("/founder/subscribe")} data-testid="button-subscribe-link">Subscribe now</button>
                 </div>
               )}
             </CardContent>

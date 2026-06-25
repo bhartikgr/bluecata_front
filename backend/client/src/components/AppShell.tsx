@@ -25,7 +25,6 @@ import { Badge } from "@/components/ui/badge";
 import { CapCollectiveToggle } from "./CapCollectiveToggle";
 import { NotificationBell } from "./NotificationBell";
 import { useEntitlement } from "@/lib/entitlement";
-import { SPRINT_BANNER } from "@/lib/sprint-banner";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 
 /** Role-aware glossary link rendered in the page header. */
@@ -62,7 +61,7 @@ function AdminChip() {
   const { role } = useRole();
   if (role !== "admin") return null;
   return (
-    <Badge className="hidden md:inline-flex bg-[hsl(327_77%_30%)] text-white border-0 text-[10px] ml-1" data-testid="badge-admin-mode">
+    <Badge className="hidden md:inline-flex bg-[hsl(0_100%_40%)] text-white border-0 text-[10px] ml-1" data-testid="badge-admin-mode">
       Admin mode
     </Badge>
   );
@@ -397,9 +396,9 @@ function Header({ onMobileMenu }: { onMobileMenu: () => void }) {
         <span className="flex items-center bg-white rounded-md px-2 py-1 shadow-sm">
           <CapavateLogo className="h-6 w-auto" />
         </span>
-        {import.meta.env.DEV && (
-    <Badge className="hidden md:inline-flex bg-white/15 text-white/90 border-0 text-[10px] ml-1" data-testid="badge-sprint">{SPRINT_BANNER}</Badge>
-  )}
+        {/* v25.43 R3-7 — removed the internal-dev sprint/admin-separation debug
+            badge entirely. It was internal metadata that should never have
+            shipped to the production header. */}
         <AdminChip />
       </Link>
 
@@ -425,7 +424,7 @@ function Header({ onMobileMenu }: { onMobileMenu: () => void }) {
         <DropdownMenuTrigger asChild>
           <button data-testid="button-user-menu" className="rounded-full hover:ring-2 hover:ring-white/20">
             <Avatar className="h-8 w-8">
-              <AvatarFallback className="bg-[hsl(184_98%_22%)] text-white text-xs font-semibold" data-testid="avatar-user-initials">
+              <AvatarFallback className="bg-[hsl(0_100%_40%)] text-white text-xs font-semibold" data-testid="avatar-user-initials">
               <AvatarInitials />
             </AvatarFallback>
             </Avatar>
@@ -473,9 +472,6 @@ export function AppShell({ children }: { children: ReactNode }) {
       <div className="flex flex-1 min-h-0">
         <aside className="hidden md:flex w-64 shrink-0 bg-sidebar text-sidebar-foreground border-r border-sidebar-border flex-col">
           <SidebarContent />
-          <div className="px-3 pb-4 pt-2 border-t border-sidebar-border text-[10px] text-sidebar-foreground/50">
-            v0.27.0 — Capavate (admin separation)
-          </div>
         </aside>
         <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
           <SheetContent side="left" className="bg-sidebar text-sidebar-foreground p-0 w-72 border-sidebar-border">

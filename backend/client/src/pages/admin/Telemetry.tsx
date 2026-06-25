@@ -134,7 +134,7 @@ export default function AdminTelemetry() {
  {/* Funnel */}
  <Card>
  <CardHeader className="pb-3">
- <CardTitle className="text-base flex items-center gap-2"><BarChart3 className="h-4 w-4 text-[hsl(327_77%_30%)]" />Round funnel — all-time</CardTitle>
+ <CardTitle className="text-base flex items-center gap-2"><BarChart3 className="h-4 w-4 text-[hsl(0_100%_40%)]" />Round funnel — all-time</CardTitle>
  </CardHeader>
  <CardContent>
  <Funnel f={funnel} />
@@ -144,7 +144,7 @@ export default function AdminTelemetry() {
  {/* Cohort benchmarks */}
  <Card>
  <CardHeader className="pb-3">
- <CardTitle className="text-base flex items-center gap-2"><Sparkles className="h-4 w-4 text-[hsl(327_77%_30%)]" />Cohort benchmarks</CardTitle>
+ <CardTitle className="text-base flex items-center gap-2"><Sparkles className="h-4 w-4 text-[hsl(0_100%_40%)]" />Cohort benchmarks</CardTitle>
  </CardHeader>
  <CardContent>
  <div className="flex gap-2 mb-3 flex-wrap">
@@ -181,7 +181,7 @@ export default function AdminTelemetry() {
  {/* Signal pool */}
  <Card>
  <CardHeader className="pb-3">
- <CardTitle className="text-base flex items-center gap-2"><Sparkles className="h-4 w-4 text-[hsl(327_77%_30%)]" />M&A intelligence signal pool</CardTitle>
+ <CardTitle className="text-base flex items-center gap-2"><Sparkles className="h-4 w-4 text-[hsl(0_100%_40%)]" />M&A intelligence signal pool</CardTitle>
  </CardHeader>
  <CardContent>
  <p className="text-xs text-muted-foreground mb-3">Cohorts populated by sector × stage × region. Sparse cohorts are flagged so platform admins know where to recruit more activity.</p>
@@ -210,7 +210,7 @@ export default function AdminTelemetry() {
  {/* Event explorer */}
  <Card>
  <CardHeader className="pb-3">
- <CardTitle className="text-base flex items-center gap-2"><Filter className="h-4 w-4 text-[hsl(327_77%_30%)]" />Event explorer</CardTitle>
+ <CardTitle className="text-base flex items-center gap-2"><Filter className="h-4 w-4 text-[hsl(0_100%_40%)]" />Event explorer</CardTitle>
  </CardHeader>
  <CardContent className="px-0">
  <div className="px-6 mb-3 flex flex-wrap gap-2 items-center">
@@ -299,7 +299,7 @@ function Funnel({ f }: { f: ReturnType<typeof funnelDropoff> }) {
  <div key={s.label} className="flex items-center gap-3">
  <div className="w-24 text-xs text-muted-foreground">{s.label}</div>
  <div className="flex-1 h-7 rounded-md bg-secondary overflow-hidden relative">
- <div className="h-full bg-[hsl(327_77%_30%)] transition-all" style={{ width: `${(s.value / max) * 100}%` }} />
+ <div className="h-full bg-[hsl(0_100%_40%)] transition-all" style={{ width: `${(s.value / max) * 100}%` }} />
  <div className="absolute inset-0 flex items-center px-3 text-xs font-medium">
  <span className="font-mono tabular-nums">{s.value.toLocaleString()}</span>
  {i > 0 && <span className="ml-2 text-muted-foreground">{(s.rate * 100).toFixed(0)}% conv.</span>}

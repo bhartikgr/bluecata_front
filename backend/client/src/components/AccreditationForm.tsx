@@ -164,7 +164,7 @@ export function AccreditationForm({ initialJurisdiction = "US", onSubmit }: Accr
             {pathways.map(p => (
               <label
                 key={p.id}
-                className={`flex items-start gap-2 rounded-md border p-2.5 cursor-pointer hover-elevate ${pathway === p.id ? "border-[hsl(184_98%_22%)] ring-1 ring-[hsl(184_98%_22%)]" : "border-border"}`}
+                className={`flex items-start gap-2 rounded-md border p-2.5 cursor-pointer hover-elevate ${pathway === p.id ? "border-[hsl(0_100%_40%)] ring-1 ring-[hsl(0_100%_40%)]" : "border-border"}`}
                 data-testid={`pathway-${p.id}`}
               >
                 <input
@@ -223,7 +223,7 @@ export function AccreditationForm({ initialJurisdiction = "US", onSubmit }: Accr
 
         <Button
           onClick={submit}
-          className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+          className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
           data-testid="button-submit-accreditation"
         >
           <ShieldCheck className="h-4 w-4 mr-2" /> Submit declaration

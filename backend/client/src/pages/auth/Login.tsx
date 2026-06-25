@@ -38,7 +38,7 @@ import { useRole } from "@/lib/role";
 import type { UserContext } from "@/lib/entitlement";
 import { Lock, Mail, ArrowRight, Briefcase, Users } from "lucide-react";
 
-// Sprint 27 — public login is FOUNDER + INVESTOR only. Admin login lives at
+// Public login is FOUNDER + INVESTOR only. Admin login lives at
 // /admin/login on a separate page so the public portal does not advertise the
 // existence of an admin surface to uninvited visitors.
 type Portal = "founder" | "investor";
@@ -48,10 +48,26 @@ const PORTAL_META: Record<Portal, { label: string; icon: typeof Briefcase; subti
   investor: { label: "Investor", icon: Users,     subtitle: "Track your positions, deal flow, and Collective network — invitation only." },
 };
 
+// v25.43 F4/F5 — brand-panel copy per portal (DRAFT for Ozan red-line). The
+// AuthShell left-panel tagline/subline now reflect the chosen audience.
+const PORTAL_BRAND_COPY: Record<Portal, { tagline: string; subline: string }> = {
+  founder: {
+    tagline:
+      "Run your cap table, structure your rounds, and turn every shareholder into a verified contact — in one place.",
+    subline: "Activate the network already inside your ownership structure.",
+  },
+  investor: {
+    tagline:
+      "Where your portfolio companies’ cap tables, rounds, and term sheets live — and your invitations are verified before you act.",
+    subline:
+      "Invitation-only access to verified ownership. Your seat on the cap table, your view of the round.",
+  },
+};
+
 // Demo personas — ONLY compiled in dev builds with VITE_ENABLE_DEMO_SEED="1",
 // AND only rendered when ?demo=1 is present in the URL. In production builds
 // the array is empty so no persona strings ship in the bundle.
-// Sprint 27 — admin persona removed from the public login page. Admin demo
+// Admin persona removed from the public login page (admin-separation). Admin demo
 // credentials live on /admin/login (separate page).
 const DEMO_PRESETS: Array<{ email: string; password: string; label: string; portal: Portal }> =
   (import.meta.env.MODE !== "production" && import.meta.env.VITE_ENABLE_DEMO_SEED === "1")
@@ -74,7 +90,7 @@ export default function Login() {
   const { setRole } = useRole();
   const query = useMemo(readHashQuery, []);
   const rawPortal = (query.get("portal") ?? "founder").toLowerCase();
-  // Sprint 27 — if a stale URL or email link asks for portal=admin, redirect
+  // If a stale URL or email link asks for portal=admin, redirect
   // to the dedicated /admin/login page. Public login is founder + investor only.
   useEffect(() => {
     if (rawPortal === "admin") navigate("/admin/login");
@@ -93,7 +109,7 @@ export default function Login() {
   //   companies.length > 1  → /select-company
   //   companies.length === 1 → /founder/dashboard
   //   no companies, hasPaidPlan → /onboarding (post-pay, pre-company)
-  //   no companies, no paid plan → /founder/subscribe (canonical empty state)
+  //   no companies, no paid plan → /company-profile?onboarding=1 (company first; then subscribe)
   const meProbe = useQuery<{ isAuthed: boolean; isAdmin?: boolean; founder?: { companies: unknown[] }; investor?: { state?: string }; hasPaidPlan?: boolean }>({
     queryKey: ["/api/auth/me", "login-redirect-probe"],
     queryFn: async () => {
@@ -127,12 +143,12 @@ export default function Login() {
     if (companyCount > 1) { navigate("/select-company"); return; }
     if (companyCount === 1) { navigate("/founder/dashboard"); return; }
     if (isInvestor) { navigate("/investor/dashboard"); return; }
-    // Authenticated user with NO companies. If they’ve already paid for a
-    // plan but haven’t completed company onboarding (rare but real), send
-    // them to the onboarding wizard. Otherwise the canonical empty state
-    // is /founder/subscribe.
+    // Authenticated founder with NO company → canonical first step is
+    // /company-profile?onboarding=1 (then subscribe). If they’ve already
+    // paid for a plan but haven’t completed company onboarding (rare but
+    // real), send them to the onboarding wizard instead.
     if (me.hasPaidPlan) { navigate("/onboarding"); return; }
-    navigate("/founder/subscribe");
+    navigate("/company-profile?onboarding=1");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meProbe.data]);
   const initialPortal: Portal = rawPortal === "investor" ? "investor" : "founder";
@@ -149,6 +165,7 @@ export default function Login() {
 
   const meta = PORTAL_META[portal];
   const PortalIcon = meta.icon;
+  const brandCopy = PORTAL_BRAND_COPY[portal];
 
   function switchPortal(p: Portal) {
     setPortal(p);
@@ -214,7 +231,7 @@ export default function Login() {
   }
 
   function route(ctx: UserContext) {
-    // Sprint 27 — admin accounts cannot enter through the public portal. Surface
+    // Admin accounts cannot enter through the public portal. Surface
     // a clear error and point them to /admin/login. We do NOT silently route
     // an admin into the admin dashboard from here — the dedicated admin page
     // is the only authorised entry point.
@@ -247,15 +264,15 @@ export default function Login() {
       return;
     }
     if (portal === "founder" && !isFounder && !isInvestor) {
-      // v23.4.7 Phase 6 (BUG 001) — brand-new founder with no companies.
-      // RequireActiveSubscription gates /founder/dashboard and would bounce
-      // them to /founder/subscribe anyway; send them there directly so the
-      // first render is the canonical empty state, not a redirect flicker.
+      // v25.43 F13 R2-2 — brand-new founder with NO company. Canonical first
+      // step is /company-profile?onboarding=1 (then subscribe): F13 requires
+      // the founder to create a company BEFORE the subscription gate, so we
+      // send them to the company-onboarding step rather than /founder/subscribe.
       // B-V11-1 (the original loop) was caused by routing to /auth/signup;
-      // /founder/subscribe is loop-safe because it is in the isAuthRoute
-      // allowlist and renders its own empty state.
+      // /company-profile is loop-safe because it is auth-only (not
+      // subscription-gated) and renders its own onboarding empty state.
       setRole("founder");
-      navigate("/founder/subscribe");
+      navigate("/company-profile?onboarding=1");
       return;
     }
 
@@ -300,17 +317,19 @@ export default function Login() {
     <AuthShell
       title="Sign in to Capavate"
       subtitle={meta.subtitle}
+      tagline={brandCopy.tagline}
+      subline={brandCopy.subline}
       footer={
         <div className="space-y-3">
           <div>
-            <Link href="/auth/forgot" className="text-[hsl(184_98%_22%)] hover:underline" data-testid="link-forgot">
+            <Link href="/auth/forgot" className="text-[#cc0001] hover:underline" data-testid="link-forgot">
               Forgot password?
             </Link>
           </div>
           {portal === "founder" && (
             <div>
               New here?{" "}
-              <Link href="/auth/signup" className="text-[hsl(184_98%_22%)] hover:underline" data-testid="link-signup">
+              <Link href="/auth/signup" className="text-[#cc0001] hover:underline" data-testid="link-signup">
                 Create a founder account
               </Link>
             </div>
@@ -320,7 +339,7 @@ export default function Login() {
               <div className="text-muted-foreground">Investors join Capavate by invitation only.</div>
               <div>
                 Have an invitation token?{" "}
-                <Link href="/auth/redeem" className="text-[hsl(184_98%_22%)] hover:underline" data-testid="link-redeem">
+                <Link href="/auth/redeem" className="text-[#cc0001] hover:underline" data-testid="link-redeem">
                   Redeem your invitation
                 </Link>
               </div>
@@ -342,18 +361,27 @@ export default function Login() {
         {(Object.keys(PORTAL_META) as Portal[]).map((p) => {
           const isActive = portal === p;
           const Icon = PORTAL_META[p].icon;
+          // v25.43 R4-1 — capavate.com brand flip. Both portal tabs now use the
+          // single Capavate brand red (#cc0001) when active: a red FILLED pill
+          // with white text + red focus ring. The per-portal teal/burgundy
+          // distinction is retired; the brand color is the same for both, and
+          // the active/inactive distinction is filled-vs-de-emphasised. Both
+          // tabs ALWAYS render — the inactive tab is never removed.
+          const activeFill =
+            "bg-[#cc0001] text-white shadow-sm ring-2 ring-[#cc0001]/40 font-semibold";
           return (
             <button
               key={p}
               type="button"
               role="tab"
               aria-selected={isActive}
+              data-active={isActive ? "true" : "false"}
               onClick={() => switchPortal(p)}
               data-testid={`tab-portal-${p}`}
               className={[
                 "flex items-center justify-center gap-1.5 px-2 py-1.5 rounded text-xs font-medium transition-colors",
                 isActive
-                  ? "bg-white shadow-sm text-foreground"
+                  ? activeFill
                   : "text-muted-foreground hover:text-foreground",
               ].join(" ")}
             >
@@ -424,7 +452,7 @@ export default function Login() {
                 type="button"
                 size="sm"
                 onClick={acceptSuggestedPortal}
-                className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+                className="bg-[#cc0001] hover:bg-[#a30001] text-white rounded-full font-semibold"
                 data-testid="button-accept-portal"
               >
                 Continue as {PORTAL_META[wrongPortalSuggest.to].label} <ArrowRight className="h-3.5 w-3.5 ml-1" />
@@ -444,7 +472,7 @@ export default function Login() {
 
         <Button
           type="submit"
-          className="w-full bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+          className="w-full bg-[#cc0001] hover:bg-[#a30001] text-white rounded-full font-semibold"
           disabled={submitting || email.trim().length === 0 || password.length === 0}
           data-testid="button-submit-login"
         >

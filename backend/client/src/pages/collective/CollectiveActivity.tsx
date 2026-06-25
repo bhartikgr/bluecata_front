@@ -45,10 +45,10 @@ const EVENT_COLORS: Record<string, string> = {
   "dsc.score.recomputed": "bg-purple-100 text-purple-700",
   "transaction_prep.updated": "bg-blue-100 text-blue-700",
   "company.profile.updated": "bg-slate-100 text-slate-700",
-  "collective.member.updated": "bg-[#8E2A4E]/10 text-[#8E2A4E]",
+  "collective.member.updated": "bg-[#cc0001]/10 text-[#cc0001]",
   "collective.deal_room.opened": "bg-emerald-100 text-emerald-700",
   // Final Partner CRM
-  "partner.deal.promoted_to_collective": "bg-[#8E2A4E]/10 text-[#8E2A4E]",
+  "partner.deal.promoted_to_collective": "bg-[#cc0001]/10 text-[#cc0001]",
   "partner.deal.referred_to_capavate": "bg-indigo-100 text-indigo-700",
 };
 
@@ -67,7 +67,7 @@ export default function CollectiveActivity() {
           style={{ color: "#1A1A2E" }}
           data-testid="heading-activity"
         >
-          <Activity className="h-5 w-5 text-[#8E2A4E]" />
+          <Activity className="h-5 w-5 text-[#cc0001]" />
           Activity Feed
         </h1>
         <p className="text-sm text-slate-500 mt-1">

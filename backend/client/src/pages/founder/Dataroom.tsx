@@ -147,7 +147,7 @@ export default function Dataroom() {
         actions={
           <>
             <Button variant="outline" onClick={() => setNewFolderOpen(true)} data-testid="button-new-folder"><Plus className="h-4 w-4 mr-2" /> New folder</Button>
-            <Button onClick={onUploadClick} disabled={!activeFolder} title={!activeFolder ? "Select a folder before uploading" : undefined} className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white disabled:opacity-50" data-testid="button-upload">
+            <Button onClick={onUploadClick} disabled={!activeFolder} title={!activeFolder ? "Select a folder before uploading" : undefined} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white disabled:opacity-50" data-testid="button-upload">
               <Upload className="h-4 w-4 mr-2" /> Upload
             </Button>
             <input
@@ -191,7 +191,7 @@ export default function Dataroom() {
                 <CardContent className="p-2">
                   <ul className="space-y-1">
                     <li>
-                      <button onClick={() => setActiveFolder(null)} className={`w-full flex items-center justify-between px-3 py-2 rounded-md text-sm text-left ${!activeFolder ? "bg-[hsl(184_98%_22%)] text-white" : "hover:bg-secondary"}`} data-testid="folder-all">
+                      <button onClick={() => setActiveFolder(null)} className={`w-full flex items-center justify-between px-3 py-2 rounded-md text-sm text-left ${!activeFolder ? "bg-[hsl(0_100%_40%)] text-white" : "hover:bg-secondary"}`} data-testid="folder-all">
                         <span className="flex items-center gap-2"><FolderOpen className="h-4 w-4" /> All</span>
                         <Badge variant="outline" className={`text-[10px] ${!activeFolder ? "border-white/40 text-white" : ""}`}>{files.length}</Badge>
                       </button>
@@ -201,7 +201,7 @@ export default function Dataroom() {
                       const sel = activeFolder === f.id;
                       return (
                         <li key={f.id}>
-                          <button onClick={() => setActiveFolder(f.id)} className={`w-full flex items-center justify-between px-3 py-2 rounded-md text-sm text-left ${sel ? "bg-[hsl(184_98%_22%)] text-white" : "hover:bg-secondary"}`} data-testid={`folder-${f.id}`}>
+                          <button onClick={() => setActiveFolder(f.id)} className={`w-full flex items-center justify-between px-3 py-2 rounded-md text-sm text-left ${sel ? "bg-[hsl(0_100%_40%)] text-white" : "hover:bg-secondary"}`} data-testid={`folder-${f.id}`}>
                             <span className="flex items-center gap-2 truncate"><FolderOpen className="h-4 w-4 shrink-0" /> <span className="truncate">{f.name}</span></span>
                             <Badge variant="outline" className={`text-[10px] ${sel ? "border-white/40 text-white" : ""}`}>{count}</Badge>
                           </button>
@@ -295,7 +295,7 @@ export default function Dataroom() {
                   <div className="relative h-[calc(85vh-49px)] bg-secondary/30 flex items-center justify-center overflow-hidden">
                     {previewFile.watermark && (
                       <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                        <div className="text-[hsl(184_98%_22%)]/10 text-3xl font-bold rotate-[-30deg] select-none whitespace-pre-wrap text-center leading-tight" data-testid="watermark-overlay">
+                        <div className="text-[hsl(0_100%_40%)]/10 text-3xl font-bold rotate-[-30deg] select-none whitespace-pre-wrap text-center leading-tight" data-testid="watermark-overlay">
                           Confidential — Provided to Authorized Recipient
                           {"\n"}
                           {new Date().toISOString().slice(0, 10)}

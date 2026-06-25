@@ -96,7 +96,7 @@ export default function FounderQABox({ roundId }: Props) {
     <Card data-testid="founder-qa-box">
       <CardHeader className="pb-3">
         <CardTitle className="text-base flex items-center gap-2">
-          <MessageCircle className="h-4 w-4 text-[hsl(184_98%_22%)]" />
+          <MessageCircle className="h-4 w-4 text-[hsl(0_100%_40%)]" />
           Ask the founder
         </CardTitle>
       </CardHeader>
@@ -127,7 +127,7 @@ export default function FounderQABox({ roundId }: Props) {
                 <div
                   className={`h-8 w-8 rounded-full flex items-center justify-center text-xs font-semibold shrink-0 ${
                     msg.authorRole === "founder"
-                      ? "bg-[hsl(184_98%_22%)] text-white"
+                      ? "bg-[hsl(0_100%_40%)] text-white"
                       : "bg-[hsl(219_45%_20%)] text-white"
                   }`}
                 >
@@ -142,7 +142,7 @@ export default function FounderQABox({ roundId }: Props) {
                 <div
                   className={`flex-1 rounded-lg p-3 text-sm ${
                     msg.authorRole === "founder"
-                      ? "bg-[hsl(184_98%_22%)]/10 border border-[hsl(184_98%_22%)]/20"
+                      ? "bg-[hsl(0_100%_40%)]/10 border border-[hsl(0_100%_40%)]/20"
                       : "bg-secondary border border-border"
                   }`}
                 >
@@ -190,7 +190,7 @@ export default function FounderQABox({ roundId }: Props) {
               size="sm"
               onClick={handleSend}
               disabled={sendMutation.isPending || !questionBody.trim()}
-              className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white gap-2"
+              className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white gap-2"
               data-testid="button-send-question"
             >
               <Send className="h-3.5 w-3.5" />

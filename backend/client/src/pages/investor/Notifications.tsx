@@ -125,7 +125,7 @@ export default function InvestorNotificationsPage() {
               data-testid={`chip-notif-kind-${k}`}
               className={`px-3 py-1 text-xs rounded-full border capitalize transition-colors ${
                 kindFilter === k
-                  ? "bg-[hsl(184_98%_22%)] text-white border-transparent"
+                  ? "bg-[hsl(0_100%_40%)] text-white border-transparent"
                   : "bg-white text-slate-700 hover:bg-slate-50"
               }`}
             >
@@ -163,10 +163,10 @@ export default function InvestorNotificationsPage() {
             <Card
               key={n.id}
               data-testid={`notification-${n.id}`}
-              className={`transition-colors ${n.read ? "" : "border-[hsl(184_98%_22%)]/30 bg-[hsl(184_98%_22%)]/3"}`}
+              className={`transition-colors ${n.read ? "" : "border-[hsl(0_100%_40%)]/30 bg-[hsl(0_100%_40%)]/3"}`}
             >
               <CardContent className="p-4 flex items-start gap-3">
-                <Bell className={`h-4 w-4 mt-0.5 shrink-0 ${n.read ? "text-muted-foreground" : "text-[hsl(184_98%_22%)]"}`} />
+                <Bell className={`h-4 w-4 mt-0.5 shrink-0 ${n.read ? "text-muted-foreground" : "text-[hsl(0_100%_40%)]"}`} />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-sm font-medium">{n.title}</span>

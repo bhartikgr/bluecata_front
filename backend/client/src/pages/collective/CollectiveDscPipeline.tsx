@@ -69,7 +69,7 @@ function RadarMini({ mnaReadiness }: { mnaReadiness: PipelineCard["mnaReadiness"
           <div
             className="h-8 rounded-sm mx-auto w-3"
             style={{
-              backgroundColor: "#8E2A4E",
+              backgroundColor: "#cc0001",
               opacity: f.value !== null ? f.value / 100 : 0.1,
               minHeight: 2,
             }}
@@ -91,7 +91,7 @@ function CompanyCard({
 }) {
   return (
     <Card
-      className="cursor-pointer hover:border-[#8E2A4E]/30 transition-colors"
+      className="cursor-pointer hover:border-[#cc0001]/30 transition-colors"
       onClick={() => onNavigate(card.companyId)}
       data-testid={`card-pipeline-${card.companyId}`}
     >
@@ -109,7 +109,7 @@ function CompanyCard({
             {card.compositeScore !== null && (
               <span
                 className="text-xs font-bold"
-                style={{ color: "#8E2A4E" }}
+                style={{ color: "#cc0001" }}
                 data-testid={`score-pipeline-${card.companyId}`}
               >
                 {card.compositeScore}
@@ -149,7 +149,7 @@ export default function CollectiveDscPipeline() {
             style={{ color: "#1A1A2E" }}
             data-testid="heading-dsc-pipeline"
           >
-            <BarChart3 className="h-5 w-5 text-[#8E2A4E]" />
+            <BarChart3 className="h-5 w-5 text-[#cc0001]" />
             DSC Pipeline
           </h1>
           <p className="text-sm text-slate-500 mt-1">
@@ -157,7 +157,7 @@ export default function CollectiveDscPipeline() {
           </p>
         </div>
         {data && (
-          <Badge className="bg-[#8E2A4E]/10 text-[#8E2A4E] border-0" data-testid="badge-pipeline-total">
+          <Badge className="bg-[#cc0001]/10 text-[#cc0001] border-0" data-testid="badge-pipeline-total">
             {data.total} companies
           </Badge>
         )}

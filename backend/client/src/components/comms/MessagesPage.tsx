@@ -404,7 +404,7 @@ export function MessagesPage({ role }: { role: "founder" | "investor" }) {
  >
  <div className="flex items-start gap-3">
  <Avatar className="h-9 w-9 shrink-0">
- <AvatarFallback className={`text-xs ${c.kind === "cap_table" ? "bg-[hsl(184_98%_22%)]/15 text-[hsl(184_98%_22%)]" : c.kind === "soft_circle" ? "bg-amber-500/15 text-amber-700" : "bg-secondary"}`}>
+ <AvatarFallback className={`text-xs ${c.kind === "cap_table" ? "bg-[hsl(0_100%_40%)]/15 text-[hsl(0_100%_40%)]" : c.kind === "soft_circle" ? "bg-amber-500/15 text-amber-700" : "bg-secondary"}`}>
  {c.kind === "cap_table" ? <Briefcase className="h-3.5 w-3.5" /> :
  c.kind === "soft_circle" ? <Users2 className="h-3.5 w-3.5" /> :
  isAnon ? <Lock className="h-3.5 w-3.5" /> : initials}
@@ -449,7 +449,7 @@ export function MessagesPage({ role }: { role: "founder" | "investor" }) {
  {/* Header */}
  <div className="p-4 border-b border-border flex items-center gap-3">
  <Avatar className="h-10 w-10 shrink-0">
- <AvatarFallback className={`text-sm ${active.kind === "cap_table" ? "bg-[hsl(184_98%_22%)]/15 text-[hsl(184_98%_22%)]" : active.kind === "soft_circle" ? "bg-amber-500/15 text-amber-700" : "bg-secondary"}`}>
+ <AvatarFallback className={`text-sm ${active.kind === "cap_table" ? "bg-[hsl(0_100%_40%)]/15 text-[hsl(0_100%_40%)]" : active.kind === "soft_circle" ? "bg-amber-500/15 text-amber-700" : "bg-secondary"}`}>
  {active.kind === "cap_table" ? <Briefcase className="h-4 w-4" /> :
  active.kind === "soft_circle" ? <Users2 className="h-4 w-4" /> :
  active.displayTitle.split(" ").map((p) => p[0]).filter(Boolean).slice(0, 2).join("").toUpperCase()}
@@ -623,7 +623,7 @@ export function MessagesPage({ role }: { role: "founder" | "investor" }) {
  <div className="flex items-center justify-between gap-2">
  <div className="flex items-center gap-1">
  <Button variant="ghost" size="sm" data-testid="button-emoji"><Smile className="h-3.5 w-3.5" /></Button>
- <Button variant="ghost" size="sm" data-testid="button-attach" title="Attach from dataroom" onClick={() => setAttachDialog(true)} className={attachment ? "text-[hsl(184_98%_22%)]" : ""}>
+ <Button variant="ghost" size="sm" data-testid="button-attach" title="Attach from dataroom" onClick={() => setAttachDialog(true)} className={attachment ? "text-[hsl(0_100%_40%)]" : ""}>
  <Paperclip className="h-3.5 w-3.5" />
  {attachment && <span className="ml-1 text-[10px] truncate max-w-[80px]">{attachment.name}</span>}
  </Button>
@@ -632,7 +632,7 @@ export function MessagesPage({ role }: { role: "founder" | "investor" }) {
  size="sm"
  onClick={() => sendMessage.mutate()}
  disabled={!draft.trim() || sendMessage.isPending}
- className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+ className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
  data-testid="button-send"
  >
  <Send className="h-3.5 w-3.5 mr-1.5" /> Send
@@ -686,7 +686,7 @@ export function MessagesPage({ role }: { role: "founder" | "investor" }) {
 function ChannelKindBadge({ kind }: { kind: ChannelKind }) {
  const map: Record<ChannelKind, { label: string; cls: string }> = {
  dm: { label: "DM", cls: "bg-secondary text-secondary-foreground" },
- cap_table: { label: "Cap Table", cls: "bg-[hsl(184_98%_22%)]/10 text-[hsl(184_98%_22%)] " },
+ cap_table: { label: "Cap Table", cls: "bg-[hsl(0_100%_40%)]/10 text-[hsl(0_100%_40%)] " },
  soft_circle: { label: "Soft-Circle", cls: "bg-amber-500/10 text-amber-700 " },
  company_followers: { label: "Followers", cls: "bg-secondary" },
  network: { label: "Network", cls: "bg-secondary" },
@@ -699,8 +699,8 @@ function ContextBanner({ channel }: { channel: ChannelView }) {
  if (channel.kind === "cap_table") {
  const visibleMembers = (channel.metadata?.visibleMemberCount as number) ?? channel.participantUserIds.length;
  return (
- <div className="px-4 py-2.5 bg-[hsl(184_98%_22%)]/5 border-b border-border text-xs flex items-start gap-2" data-testid="banner-cap-table">
- <ShieldCheck className="h-3.5 w-3.5 mt-0.5 text-[hsl(184_98%_22%)] shrink-0" />
+ <div className="px-4 py-2.5 bg-[hsl(0_100%_40%)]/5 border-b border-border text-xs flex items-start gap-2" data-testid="banner-cap-table">
+ <ShieldCheck className="h-3.5 w-3.5 mt-0.5 text-[hsl(0_100%_40%)] shrink-0" />
  <div>
  <span className="font-medium">Cap Table Channel for {String(channel.metadata?.title ?? "this company").replace("— Cap Table", "").trim()}</span>
  {" — visible to founder + "}

@@ -37,9 +37,16 @@ import { useToast } from "@/hooks/use-toast";
 export type NewCompanyDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /**
+   * v25.43 F13 — optional success callback fired AFTER the company is created
+   * and activated. Used by the onboarding (company-first) flow to forward the
+   * founder to /founder/subscribe. Existing callers omit it and keep the
+   * default close-on-success behaviour unchanged.
+   */
+  onCreated?: (companyId: string) => void;
 };
 
-export function NewCompanyDialog({ open, onOpenChange }: NewCompanyDialogProps) {
+export function NewCompanyDialog({ open, onOpenChange, onCreated }: NewCompanyDialogProps) {
   const { toast } = useToast();
   const [name, setName] = useState("");
   const [legalName, setLegalName] = useState("");
@@ -105,6 +112,8 @@ export function NewCompanyDialog({ open, onOpenChange }: NewCompanyDialogProps) 
       setHq("");
       setPlan("founder_free");
       onOpenChange(false);
+      // v25.43 F13 — notify the onboarding flow so it can forward to subscribe.
+      onCreated?.(data.companyId);
     },
     onError: (e: any) =>
       toast({

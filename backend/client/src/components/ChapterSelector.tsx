@@ -114,7 +114,7 @@ export function ChapterSelector(props: ChapterSelectorProps) {
   return (
     <Select value={active ?? undefined} onValueChange={handleChange}>
       <SelectTrigger
-        className="h-8 min-w-[180px] text-xs border-[#8E2A4E]/30 text-[#1A1A2E]"
+        className="h-8 min-w-[180px] text-xs border-[#cc0001]/30 text-[#1A1A2E]"
         data-testid={testId ?? "chapter-selector-trigger"}
         aria-label="Active chapter"
       >

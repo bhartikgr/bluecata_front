@@ -213,7 +213,7 @@ export default function AdminUsers() {
                   <tr key={u.id} className="border-b border-border/60 hover:bg-secondary/40" data-testid={`row-user-${u.id}`}>
                     <td className="px-6 py-3">
                       <div className="flex items-center gap-3">
-                        <Avatar className="h-8 w-8"><AvatarFallback className="bg-[hsl(184_98%_22%)]/15 text-[hsl(184_98%_22%)] text-xs font-semibold">{u.name.split(" ").map(s => s[0]).join("").slice(0, 2)}</AvatarFallback></Avatar>
+                        <Avatar className="h-8 w-8"><AvatarFallback className="bg-[hsl(0_100%_40%)]/15 text-[hsl(0_100%_40%)] text-xs font-semibold">{u.name.split(" ").map(s => s[0]).join("").slice(0, 2)}</AvatarFallback></Avatar>
                         <div>
                           <div className="font-medium" data-testid={`text-user-name-${u.id}`}>{u.name}</div>
                           <div className="text-xs text-muted-foreground">{u.email}</div>
@@ -221,7 +221,7 @@ export default function AdminUsers() {
                       </div>
                     </td>
                     <td className="px-3 py-3 capitalize">
-                      <Badge className={u.role === "admin" ? "bg-[hsl(327_77%_30%)] text-white border-0" : "bg-secondary"}>{u.role}</Badge>
+                      <Badge className={u.role === "admin" ? "bg-[hsl(0_100%_40%)] text-white border-0" : "bg-secondary"}>{u.role}</Badge>
                     </td>
                     <td className="px-3 py-3 text-muted-foreground">{u.tenant}</td>
                     <td className="px-3 py-3">

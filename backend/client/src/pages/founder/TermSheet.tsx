@@ -281,7 +281,7 @@ export default function TermSheet() {
  onError: (e: Error) => toast({ title: "Send failed", description: e.message, variant: "destructive" }),
  });
 
- // Sprint 27 fix: differentiate "still loading" from "round doesn't exist".
+ // Admin-separation fix: differentiate "still loading" from "round doesn't exist".
  // A 404 (or non-OK) from /api/rounds/:id resolves to null via the default
  // queryFn — without this branch the page hung on "Loading…" forever.
  if (round.isLoading) return <PageBody>Loading…</PageBody>;
@@ -293,7 +293,7 @@ export default function TermSheet() {
    <div className="text-amber-800 mb-3">
     We couldn't load round <code className="bg-amber-100 px-1 rounded">{id}</code>. It may have been deleted, or the server restarted before it was saved.
    </div>
-   <a href="#/founder/rounds" className="inline-block bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white px-3 py-1.5 rounded text-xs font-medium">
+   <a href="#/founder/rounds" className="inline-block bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white px-3 py-1.5 rounded text-xs font-medium">
     Back to rounds list
    </a>
    </div>
@@ -579,7 +579,7 @@ export default function TermSheet() {
  <Card data-testid="card-generate">
  <CardHeader className="pb-3">
  <CardTitle className="text-base flex items-center gap-2">
- <Sparkles className="h-4 w-4 text-[hsl(184_98%_22%)]" /> Generate term sheet
+ <Sparkles className="h-4 w-4 text-[hsl(0_100%_40%)]" /> Generate term sheet
  <HelpTip>Pick a region + instrument; we render a citation-backed template (NVCA, BVCA, J-KISS, CCPS, etc.) populated with your round terms.</HelpTip>
  </CardTitle>
  </CardHeader>
@@ -614,7 +614,7 @@ export default function TermSheet() {
  ))}
  </div>
  </div>
- <Button onClick={handleGenerate} className="w-full bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" data-testid="button-generate-termsheet">
+ <Button onClick={handleGenerate} className="w-full bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-generate-termsheet">
  <ScrollText className="h-4 w-4 mr-2" /> Generate term sheet
  </Button>
  </CardContent>
@@ -623,7 +623,7 @@ export default function TermSheet() {
  <Card data-testid="card-upload">
  <CardHeader className="pb-3">
  <CardTitle className="text-base flex items-center gap-2">
- <Upload className="h-4 w-4 text-[hsl(327_77%_30%)]" /> Upload my own term sheet
+ <Upload className="h-4 w-4 text-[hsl(0_100%_40%)]" /> Upload my own term sheet
  <HelpTip>Upload a PDF or DOCX you (or your counsel) prepared. We extract headline terms and diff them against your round.</HelpTip>
  </CardTitle>
  </CardHeader>
@@ -657,7 +657,7 @@ export default function TermSheet() {
  <CardTitle className="text-base flex items-center gap-2">
  <FileText className="h-4 w-4" /> {stored.templateName}
  <Badge variant="outline" className="text-[10px]">{stored.source}</Badge>
- <Badge className="text-[10px] bg-[hsl(184_98%_22%)] text-white">draft</Badge>
+ <Badge className="text-[10px] bg-[hsl(0_100%_40%)] text-white">draft</Badge>
  </CardTitle>
  <p className="text-sm text-muted-foreground mt-0.5">
  {stored.citations.slice(0, 2).map((c) => (
@@ -672,7 +672,7 @@ export default function TermSheet() {
  <Card data-testid="card-reconciliation">
  <CardHeader className="pb-3">
  <CardTitle className="text-base flex items-center gap-2">
- <ShieldCheck className="h-4 w-4 text-[hsl(184_98%_22%)]" /> Reconciliation against round terms
+ <ShieldCheck className="h-4 w-4 text-[hsl(0_100%_40%)]" /> Reconciliation against round terms
  </CardTitle>
  <p className="text-sm text-muted-foreground mt-0.5">Each mismatch must be acknowledged below before signing.</p>
  </CardHeader>
@@ -748,7 +748,7 @@ export default function TermSheet() {
  <h4 className="text-sm font-semibold">{s.heading}</h4>
  <div className="flex gap-1">
  {s.edited && <Badge variant="outline" className="text-[10px]">edited</Badge>}
- {s.descriptionEdited && <Badge variant="outline" className="text-[10px] border-[hsl(184_98%_22%)]/40 text-[hsl(184_98%_22%)]">description edited</Badge>}
+ {s.descriptionEdited && <Badge variant="outline" className="text-[10px] border-[hsl(0_100%_40%)]/40 text-[hsl(0_100%_40%)]">description edited</Badge>}
  {stored.source === "generated" && (
  <Button size="sm" variant="ghost" onClick={() => resetSection(s.id)} data-testid={`button-reset-${s.id}`}>Reset</Button>
  )}
@@ -825,7 +825,7 @@ export default function TermSheet() {
  I understand this term sheet is a draft and recommended for review by qualified legal counsel before signing or sending. Capavate is not a law firm.
  </span>
  </label>
- <Button onClick={handleSign} className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" data-testid="button-sign-termsheet">
+ <Button onClick={handleSign} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-sign-termsheet">
  <Lock className="h-4 w-4 mr-2" /> Sign + lock
  </Button>
  </CardContent>
@@ -851,7 +851,7 @@ export default function TermSheet() {
  <div className="md:col-span-2"><div className="text-xs text-muted-foreground">Signature hash</div><div className="font-mono text-[11px] break-all">{stored.signature?.hash}</div></div>
  </div>
  <div className="flex flex-wrap gap-2 pt-3 border-t border-border">
- <Button onClick={handleSendToInvestors} className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" data-testid="button-send-termsheet">
+ <Button onClick={handleSendToInvestors} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-send-termsheet">
  <Send className="h-4 w-4 mr-2" /> Send to investors ({invs.data?.length ?? 0})
  </Button>
  <Button variant="outline" onClick={() => setShowConsortium(true)} data-testid="button-request-intro">
@@ -879,7 +879,7 @@ export default function TermSheet() {
  <p className="whitespace-pre-wrap text-muted-foreground">{s.body}</p>
  {/* Sprint 26 — print the investor-grade description inline beneath each clause. */}
  {s.description && (s.description.whatItMeans || s.description.whyItMatters) && (
- <div className="mt-2 pl-3 border-l-2 border-[hsl(184_98%_22%)]/30 text-[11px] text-muted-foreground space-y-1" data-testid={`description-locked-${s.id}`}>
+ <div className="mt-2 pl-3 border-l-2 border-[hsl(0_100%_40%)]/30 text-[11px] text-muted-foreground space-y-1" data-testid={`description-locked-${s.id}`}>
  {s.description.whatItMeans && <div><strong className="text-foreground">What it means:</strong> {s.description.whatItMeans}</div>}
  {s.description.whyItMatters && <div><strong className="text-foreground">Why it matters:</strong> {s.description.whyItMatters}</div>}
  {s.description.commonVariants && <div><strong className="text-foreground">Common variants:</strong> {s.description.commonVariants}</div>}
@@ -930,7 +930,7 @@ export default function TermSheet() {
  <div>
  <div className="font-medium">{p.firmName}</div>
  <div className="text-muted-foreground">{p.regionalSpecialty}</div>
- <div className="text-[10px] mt-1 text-[hsl(184_98%_22%)]">SLA {p.slaBusinessDays} business days</div>
+ <div className="text-[10px] mt-1 text-[hsl(0_100%_40%)]">SLA {p.slaBusinessDays} business days</div>
  </div>
  </label>
  ))}
@@ -977,7 +977,7 @@ export default function TermSheet() {
  </div>
  <div className="flex justify-end gap-2 pt-2 border-t border-border">
  <Button variant="ghost" onClick={() => setShowConsortium(false)}>Cancel</Button>
- <Button onClick={handleRequestIntro} className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" data-testid="button-consortium-submit">
+ <Button onClick={handleRequestIntro} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-consortium-submit">
  <ArrowRight className="h-4 w-4 mr-2" /> Request introduction
  </Button>
  </div>
@@ -1028,11 +1028,11 @@ function ClauseDescriptionEditor({
  const isEmpty = !description || (!description.whatItMeans && !description.whyItMatters);
 
  return (
- <div className="mt-3 rounded-md border border-dashed border-[hsl(184_98%_22%)]/30 bg-[hsl(184_98%_22%)]/5" data-testid={`description-panel-${testIdPrefix}`}>
+ <div className="mt-3 rounded-md border border-dashed border-[hsl(0_100%_40%)]/30 bg-[hsl(0_100%_40%)]/5" data-testid={`description-panel-${testIdPrefix}`}>
  <button
  type="button"
  onClick={() => setOpen((v) => !v)}
- className="w-full flex items-center justify-between gap-2 px-3 py-2 text-left text-xs font-medium text-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_22%)]/10 rounded-md"
+ className="w-full flex items-center justify-between gap-2 px-3 py-2 text-left text-xs font-medium text-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_40%)]/10 rounded-md"
  data-testid={`description-toggle-${testIdPrefix}`}
  aria-expanded={open}
  >

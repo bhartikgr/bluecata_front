@@ -73,7 +73,7 @@ export default function AdminFormulaNew() {
         actions={
           <>
             <Button variant="outline" onClick={() => navigate("/admin/formulas")} data-testid="button-cancel"><ArrowLeft className="h-4 w-4 mr-2" /> Cancel</Button>
-            <Button onClick={save} data-testid="button-save" className="bg-[hsl(327_77%_30%)] hover:bg-[hsl(327_77%_24%)] text-white"><Save className="h-4 w-4 mr-2" /> Save draft</Button>
+            <Button onClick={save} data-testid="button-save" className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"><Save className="h-4 w-4 mr-2" /> Save draft</Button>
           </>
         }
       />

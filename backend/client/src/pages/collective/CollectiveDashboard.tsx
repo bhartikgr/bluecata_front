@@ -12,6 +12,18 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Users, Briefcase, BarChart3, Clock, FileText, TrendingUp } from "lucide-react";
+// v25.42 (Bucket A) — 8 composable Collective dashboard widgets. Each is a
+// self-contained TanStack Query consumer of an EXISTING endpoint with its own
+// loading / error / empty states. No in-memory state.
+import { HeroCard } from "@/components/collective/widgets/HeroCard";
+import { MembershipBadgesStrip } from "@/components/collective/widgets/MembershipBadgesStrip";
+import { FeaturedDealsGrid } from "@/components/collective/widgets/FeaturedDealsGrid";
+import { VettingPipelineDonut } from "@/components/collective/widgets/VettingPipelineDonut";
+import { MyScreenings } from "@/components/collective/widgets/MyScreenings";
+import { UpcomingMeetingsCard } from "@/components/collective/widgets/UpcomingMeetingsCard";
+import { RegionalChaptersBarList } from "@/components/collective/widgets/RegionalChaptersBarList";
+import { OperationsConsoleCard } from "@/components/collective/widgets/OperationsConsoleCard";
+import { MarketWatchWidget } from "@/components/feeds/MarketWatchWidget"; /* v25.43 R3-4 (B) — market/crypto/macro + Capavate Pulse */
 
 interface DashboardData {
   kpis: {
@@ -44,7 +56,7 @@ function KpiCard({
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
           <CardTitle className="text-sm font-medium text-slate-600">{title}</CardTitle>
-          <Icon className="h-4 w-4 text-[#8E2A4E]" />
+          <Icon className="h-4 w-4 text-[#cc0001]" />
         </div>
       </CardHeader>
       <CardContent>
@@ -171,6 +183,20 @@ export default function CollectiveDashboard() {
         </div>
       )}
 
+      {/* v25.43 R3-4 (B) — Market Watch widget, mounted above the existing
+          stat cards. Market & macro snapshot + crypto snapshot + Capavate
+          Pulse (real DB numbers). */}
+      <MarketWatchWidget />
+
+      {/* v25.42 W1 — Hero card. */}
+      <HeroCard />
+
+      {/* v25.42 W2 — Membership badges strip. */}
+      <MembershipBadgesStrip />
+
+      {/* v25.42 W8 — Operations console (admin-only; renders null otherwise). */}
+      <OperationsConsoleCard />
+
       {/* KPI grid */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
         <KpiCard
@@ -210,11 +236,26 @@ export default function CollectiveDashboard() {
         />
       </div>
 
+      {/* v25.42 W3 — Featured deals 6-tile grid. */}
+      <FeaturedDealsGrid />
+
+      {/* v25.42 W4 + W5 — Vetting pipeline donut + My screenings. */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <VettingPipelineDonut />
+        <MyScreenings />
+      </div>
+
+      {/* v25.42 W6 + W7 — Upcoming meetings + Regional chapters. */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <UpcomingMeetingsCard />
+        <RegionalChaptersBarList />
+      </div>
+
       {/* Recent activity */}
       <Card>
         <CardHeader>
           <CardTitle className="text-sm font-semibold flex items-center gap-2" style={{ color: "#1A1A2E" }}>
-            <Clock className="h-4 w-4 text-[#8E2A4E]" />
+            <Clock className="h-4 w-4 text-[#cc0001]" />
             Recent Activity
           </CardTitle>
         </CardHeader>

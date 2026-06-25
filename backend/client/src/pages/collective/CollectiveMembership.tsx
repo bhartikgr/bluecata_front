@@ -45,7 +45,7 @@ export default function CollectiveMembership() {
           style={{ color: "#1A1A2E" }}
           data-testid="heading-membership"
         >
-          <UserCircle className="h-5 w-5 text-[#8E2A4E]" />
+          <UserCircle className="h-5 w-5 text-[#cc0001]" />
           My Membership
         </h1>
         <p className="text-sm text-slate-500 mt-1">
@@ -75,7 +75,7 @@ export default function CollectiveMembership() {
             {/* v25.12 NM1 — wire "Contact Admin" to a mailto link so the button is no longer dead. */}
             <Button
               variant="outline"
-              className="mt-4 text-sm border-[#8E2A4E]/30 text-[#8E2A4E] hover:bg-[#8E2A4E]/05"
+              className="mt-4 text-sm border-[#cc0001]/30 text-[#cc0001] hover:bg-[#cc0001]/05"
               data-testid="button-contact-admin"
               onClick={() => {
                 if (typeof window !== "undefined") {
@@ -149,7 +149,7 @@ export default function CollectiveMembership() {
           {/* v25.12 NM2 — wire "Upgrade Membership" to the membership page so the CTA is no longer dead. */}
           <Button
             variant="outline"
-            className="w-full border-[#8E2A4E]/30 text-[#8E2A4E] hover:bg-[#8E2A4E]/05"
+            className="w-full border-[#cc0001]/30 text-[#cc0001] hover:bg-[#cc0001]/05"
             data-testid="button-upgrade"
             onClick={() => {
               if (typeof window !== "undefined") {

@@ -171,7 +171,7 @@ function InvitationCard({ inv: i }: { inv: Inv }) {
               <StateBadge state={i.state} />
               <Badge variant="outline" className="text-[10px] capitalize" data-testid={`chip-stage-${i.id}`}>{i.round.type.replace("_", " ")}</Badge>
               <Badge variant="outline" className="text-[10px]" data-testid={`chip-sector-${i.id}`}>{i.company.sector}</Badge>
-              {proRata && <Badge variant="outline" className="text-[10px] bg-[hsl(184_98%_22%)]/10 text-[hsl(184_98%_22%)] border-[hsl(184_98%_22%)]/40" data-testid={`chip-prorata-${i.id}`}><Users className="h-3 w-3 mr-1" />Pro-rata</Badge>}
+              {proRata && <Badge variant="outline" className="text-[10px] bg-[hsl(0_100%_40%)]/10 text-[hsl(0_100%_40%)] border-[hsl(0_100%_40%)]/40" data-testid={`chip-prorata-${i.id}`}><Users className="h-3 w-3 mr-1" />Pro-rata</Badge>}
               {maHigh && <Badge variant="outline" className="text-[10px] bg-[hsl(7_61%_43%)]/10 text-[hsl(7_61%_43%)] border-[hsl(7_61%_43%)]/40" data-testid={`chip-ma-${i.id}`}><AlertTriangle className="h-3 w-3 mr-1" />M&amp;A signal</Badge>}
             </div>
 
@@ -181,13 +181,13 @@ function InvitationCard({ inv: i }: { inv: Inv }) {
             {/* Company description (from API, not hardcoded map) */}
             <div className="grid md:grid-cols-2 gap-2 mt-3 text-sm">
               <div className="flex items-start gap-1.5">
-                <Check className="h-3.5 w-3.5 text-[hsl(184_98%_22%)] mt-1 shrink-0" />
+                <Check className="h-3.5 w-3.5 text-[hsl(0_100%_40%)] mt-1 shrink-0" />
                 <div data-testid={`text-bio-${i.id}`}>
                   <span className="text-muted-foreground">About — </span>{description}
                 </div>
               </div>
               <div className="flex items-start gap-1.5">
-                <Activity className="h-3.5 w-3.5 text-[hsl(184_98%_22%)] mt-1 shrink-0" />
+                <Activity className="h-3.5 w-3.5 text-[hsl(0_100%_40%)] mt-1 shrink-0" />
                 <div data-testid={`text-traction-${i.id}`}>
                   <span className="text-muted-foreground">Traction — </span>Details inside the deal room.
                 </div>
@@ -204,7 +204,7 @@ function InvitationCard({ inv: i }: { inv: Inv }) {
                 <div className="text-xs text-muted-foreground">{fmtPct(pct, 0)}</div>
               </div>
               <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
-                <div className="h-full bg-[hsl(184_98%_22%)]" style={{ width: `${Math.min(100, pct)}%` }} />
+                <div className="h-full bg-[hsl(0_100%_40%)]" style={{ width: `${Math.min(100, pct)}%` }} />
               </div>
               <div className="flex items-center justify-between text-xs text-muted-foreground mt-1.5">
                 <span>Min ticket {fmtUSD(i.minTicket, { compact: true })} · pre-money {fmtUSD(i.preMoney, { compact: true })}</span>
@@ -219,7 +219,7 @@ function InvitationCard({ inv: i }: { inv: Inv }) {
           {/* CTA column — B1: "Review Deal and Soft-Circle" primary button */}
           <div className="md:w-52 flex flex-col gap-2 shrink-0">
             <Link href={`/investor/invitations/${i.id}`}>
-              <Button className="w-full bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" data-testid={`button-open-${i.id}`}>
+              <Button className="w-full bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid={`button-open-${i.id}`}>
                 Review Deal and Soft-Circle <ArrowRight className="h-4 w-4 ml-2" />
               </Button>
             </Link>

@@ -143,7 +143,7 @@ export default function PrivacyPage() {
         <Card className="mb-4">
           <CardContent className="py-4">
             <div className="flex items-start gap-3">
-              <Download className="h-5 w-5 text-[hsl(327_77%_30%)] mt-0.5" />
+              <Download className="h-5 w-5 text-[hsl(0_100%_40%)] mt-0.5" />
               <div className="flex-1">
                 <div className="text-sm font-medium mb-1">Export your data</div>
                 <div className="text-xs text-muted-foreground mb-3">
@@ -154,7 +154,7 @@ export default function PrivacyPage() {
                 </div>
                 <Button
                   size="sm"
-                  className="bg-[hsl(327_77%_30%)] hover:bg-[hsl(327_77%_25%)] h-8"
+                  className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] h-8"
                   onClick={() => void doExport()}
                   disabled={exporting}
                   data-testid="button-export"

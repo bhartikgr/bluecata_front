@@ -48,7 +48,7 @@ export function CapTableChannelCard({
  <Card data-testid="card-cap-table-channel">
  <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
  <div className="flex items-center gap-2 min-w-0">
- <Briefcase className="h-4 w-4 text-[hsl(184_98%_22%)] shrink-0" />
+ <Briefcase className="h-4 w-4 text-[hsl(0_100%_40%)] shrink-0" />
  <CardTitle className="text-base truncate flex items-center gap-1.5"><MessageCircle className="h-4 w-4 shrink-0" /> Cap Table Channel</CardTitle>
  </div>
  <Badge variant="secondary" className="text-[10px]">
@@ -56,8 +56,8 @@ export function CapTableChannelCard({
  </Badge>
  </CardHeader>
  <CardContent className="space-y-3">
- <div className="rounded-md border border-[hsl(184_98%_22%)]/20 bg-[hsl(184_98%_22%)]/5 px-3 py-2 text-xs flex items-start gap-2">
- <ShieldCheck className="h-3.5 w-3.5 mt-0.5 text-[hsl(184_98%_22%)] shrink-0" />
+ <div className="rounded-md border border-[hsl(0_100%_40%)]/20 bg-[hsl(0_100%_40%)]/5 px-3 py-2 text-xs flex items-start gap-2">
+ <ShieldCheck className="h-3.5 w-3.5 mt-0.5 text-[hsl(0_100%_40%)] shrink-0" />
  <div>
  This channel is visible to the founder + cap-table holders who opted into co-member visibility.
  Holders without screen names appear as <span className="italic">[Anonymous Holder]</span> and cannot post.

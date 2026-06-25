@@ -78,7 +78,7 @@ export default function CollectiveTransactionPrep() {
           style={{ color: "#1A1A2E" }}
           data-testid="heading-transaction-prep"
         >
-          <ClipboardList className="h-5 w-5 text-[#8E2A4E]" />
+          <ClipboardList className="h-5 w-5 text-[#cc0001]" />
           Transaction Prep Tracker
         </h1>
         <p className="text-sm text-slate-500 mt-1">

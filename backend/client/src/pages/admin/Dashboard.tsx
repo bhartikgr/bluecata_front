@@ -33,20 +33,26 @@ import { HelpTip } from "@/components/HelpTip";
 import { AdminPageIntro } from "@/components/AdminPageIntro";
 import { apiRequest } from "@/lib/queryClient";
 
+// v25.42h round-2 — the backend now returns `null` (never a fabricated number)
+// for any metric without a defensible source. Reflect that in the type so the
+// consuming UI is forced to null-check before calling .toFixed()/.toLocaleString().
 type Kpis = {
-  summary: { totalCompanies: number; totalInvestors: number; totalCommittedSoftCircle: number; totalFunded: number; momGrowthPct: number; churnPct: number; nrr: number };
-  queues: Record<string, number>;
-  health: { capTableReconcile: { runs: number; success: number; successRatePct: number }; closeGateFailures: number; dataroomUploadErrors: number; messageDelivery: { sent: number; delivered: number; deliveryRatePct: number }; emailSlaSec: number };
+  summary: { totalCompanies: number; totalInvestors: number; totalCommittedSoftCircle: number | null; totalFunded: number | null; momGrowthPct: number | null; churnPct: number | null; nrr: number | null };
+  queues: Record<string, number | null>;
+  health: { capTableReconcile: { runs: number; success: number; successRatePct: number | null }; closeGateFailures: number | null; dataroomUploadErrors: number | null; messageDelivery: { sent: number | null; delivered: number | null; deliveryRatePct: number | null }; emailSlaSec: number | null };
   funnels: { onboarding: { step: string; count: number }[]; investor: { step: string; count: number }[] };
-  topCompanies: { id: string; name: string; traction: number; raised: number }[];
-  topInvestors: { id: string; name: string; activity: number; committed: number }[];
-  regions: { code: string; companies: number; raised: number }[];
+  topCompanies: { id: string; name: string; traction: number; raised: number | null }[];
+  topInvestors: { id: string; name: string; activity: number; committed: number | null }[];
+  regions: { code: string; companies: number; raised: number | null }[];
 };
 
 type Surface = "capavate" | "collective";
 
-const fmtUsd = (n: number) => "$" + n.toLocaleString();
-const fmtUsdShort = (n: number) =>
+// v25.42h round-2 — null-safe currency formatters. Backend metrics can now be
+// null; show an em-dash placeholder instead of crashing on .toLocaleString()/.toFixed().
+const fmtUsd = (n: number | null | undefined) => (n == null ? "—" : "$" + n.toLocaleString());
+const fmtUsdShort = (n: number | null | undefined) =>
+  n == null ? "—" :
   n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(1)}M` :
   n >= 1_000 ? `$${(n / 1_000).toFixed(0)}K` :
   `$${n}`;
@@ -103,13 +109,18 @@ export default function AdminDashboard() {
   const [surface, setSurface] = useState<Surface>("capavate");
   const copy = SURFACE_COPY[surface];
 
-  const { data, isLoading } = useQuery<Kpis>({
+  // v25.42h round-2 — the KPI endpoint now returns 503 (ok:false) on a hard DB
+  // read failure instead of a fabricated payload. apiRequest() throws on non-2xx,
+  // so `isError` surfaces that here and we render an explicit banner (not zeros,
+  // not a crash).
+  const { data, isLoading, isError } = useQuery<Kpis>({
     queryKey: ["/api/admin/dashboard/kpis", surface],
     queryFn: async () => {
       const r = await apiRequest("GET", `/api/admin/dashboard/kpis?surface=${surface}`);
       return r.json();
     },
     refetchInterval: 15_000,
+    retry: false,
   });
 
   const activity = useQuery<{ items: { id: string; ts: string; actor: string; entity: string; kind: string; text: string }[] }>({
@@ -128,9 +139,13 @@ export default function AdminDashboard() {
     const inv = data.funnels.investor;
     const topToBottom = (arr: { count: number }[]) =>
       arr.length >= 2 ? ((arr[arr.length - 1].count / (arr[0].count || 1)) * 100).toFixed(1) : "—";
+    // v25.42h round-2 — totalFunded/totalCommittedSoftCircle are now nullable.
+    // Only compute the ratio when BOTH are real, positive numbers.
+    const sc = data.summary.totalCommittedSoftCircle;
+    const funded = data.summary.totalFunded;
     const softCircleToFunded =
-      data.summary.totalCommittedSoftCircle > 0
-        ? ((data.summary.totalFunded / data.summary.totalCommittedSoftCircle) * 100).toFixed(1)
+      sc != null && funded != null && sc > 0
+        ? ((funded / sc) * 100).toFixed(1)
         : "—";
     return {
       onboardingEndToEnd: topToBottom(onb) + "%",
@@ -142,8 +157,10 @@ export default function AdminDashboard() {
   // Sprint 28 — micro analytics: per-region density (capital ÷ companies).
   const regionDensity = useMemo(() => {
     if (!data) return [];
+    // v25.42h round-2 — r.raised is now nullable (collective surface has no
+    // per-region raised aggregate). Treat null as 0 capital for density.
     return [...data.regions]
-      .map(r => ({ ...r, density: r.companies > 0 ? r.raised / r.companies : 0 }))
+      .map(r => ({ ...r, density: r.companies > 0 && r.raised != null ? r.raised / r.companies : 0 }))
       .sort((a, b) => b.density - a.density);
   }, [data]);
 
@@ -173,6 +190,23 @@ export default function AdminDashboard() {
           }}
         />
 
+        {/* v25.42h round-2 — DB-unavailable banner. When the KPI endpoint returns
+            503 (ok:false), surface an explicit "temporarily unavailable" message
+            instead of rendering fabricated zeros or letting the page crash. */}
+        {isError && (
+          <Card className="p-4 mb-5 bg-amber-50 border-amber-300" data-testid="banner-kpis-unavailable">
+            <div className="flex items-center gap-2 text-amber-900">
+              <AlertCircle className="h-4 w-4" />
+              <span className="text-sm font-medium">Health data temporarily unavailable</span>
+            </div>
+            <p className="text-xs text-amber-800 mt-1">
+              The platform metrics service could not reach the database. Figures are
+              not shown rather than displaying stale or fabricated numbers. This view
+              auto-retries every 15 seconds.
+            </p>
+          </Card>
+        )}
+
         {/* Surface toggle — prominent, distinct from header nav. */}
         <div
           className="mb-6 inline-flex items-center gap-1 rounded-lg border bg-card p-1 shadow-sm"
@@ -200,7 +234,7 @@ export default function AdminDashboard() {
             variant={surface === "collective" ? "default" : "ghost"}
             onClick={() => setSurface("collective")}
             className={surface === "collective"
-              ? "bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_17%)] text-white"
+              ? "bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
               : "text-foreground"}
             data-testid="button-surface-collective"
             aria-selected={surface === "collective"}
@@ -220,7 +254,7 @@ export default function AdminDashboard() {
           <Card className="p-4" data-testid="stat-kpi-1">
             <div className="flex items-center justify-between mb-1">
               <Building2 className="h-4 w-4 text-muted-foreground" />
-              <Badge variant="outline" className="text-[10px]">+{(data?.summary.momGrowthPct ?? 0).toFixed(1)}% MoM</Badge>
+              <Badge variant="outline" className="text-[10px]">{data?.summary.momGrowthPct != null ? `+${data.summary.momGrowthPct.toFixed(1)}% MoM` : "MoM —"}</Badge>
             </div>
             <div className="text-[10px] uppercase tracking-wider text-muted-foreground flex items-center gap-1">
               {copy.kpi1Label}
@@ -231,7 +265,7 @@ export default function AdminDashboard() {
           <Card className="p-4" data-testid="stat-kpi-2">
             <div className="flex items-center justify-between mb-1">
               <Users className="h-4 w-4 text-muted-foreground" />
-              <Badge variant="outline" className="text-[10px]">NRR {(data?.summary.nrr ?? 1).toFixed(2)}x</Badge>
+              <Badge variant="outline" className="text-[10px]">{data?.summary.nrr != null ? `NRR ${data.summary.nrr.toFixed(2)}x` : "NRR —"}</Badge>
             </div>
             <div className="text-[10px] uppercase tracking-wider text-muted-foreground flex items-center gap-1">
               {copy.kpi2Label}
@@ -253,7 +287,7 @@ export default function AdminDashboard() {
           <Card className="p-4" data-testid="stat-kpi-4">
             <div className="flex items-center justify-between mb-1">
               <TrendingUp className="h-4 w-4 text-muted-foreground" />
-              <Badge variant="outline" className="text-[10px]">Churn {(data?.summary.churnPct ?? 0).toFixed(1)}%</Badge>
+              <Badge variant="outline" className="text-[10px]">{data?.summary.churnPct != null ? `Churn ${data.summary.churnPct.toFixed(1)}%` : "Churn —"}</Badge>
             </div>
             <div className="text-[10px] uppercase tracking-wider text-muted-foreground flex items-center gap-1">
               {copy.kpi4Label}
@@ -265,7 +299,7 @@ export default function AdminDashboard() {
 
         {/* Sprint 28 — Conversion analytics row (new). */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-5">
-          <Card className="p-4 bg-[hsl(184_98%_97%)] border-[hsl(184_98%_22%)]/30" data-testid="card-conv-onboarding">
+          <Card className="p-4 bg-[hsl(0_100%_97%)] border-[hsl(0_100%_40%)]/30" data-testid="card-conv-onboarding">
             <div className="text-[10px] uppercase tracking-wider text-muted-foreground flex items-center gap-1">
               <BarChart3 className="h-3 w-3" />
               {surface === "capavate" ? "Founder end-to-end" : "Application end-to-end"}
@@ -273,7 +307,7 @@ export default function AdminDashboard() {
             </div>
             <div className="text-xl font-semibold mt-1">{conversions?.onboardingEndToEnd ?? "—"}</div>
           </Card>
-          <Card className="p-4 bg-[hsl(184_98%_97%)] border-[hsl(184_98%_22%)]/30" data-testid="card-conv-investor">
+          <Card className="p-4 bg-[hsl(0_100%_97%)] border-[hsl(0_100%_40%)]/30" data-testid="card-conv-investor">
             <div className="text-[10px] uppercase tracking-wider text-muted-foreground flex items-center gap-1">
               <BarChart3 className="h-3 w-3" />
               {surface === "capavate" ? "Invited → Funded" : "Shared → Joined"}
@@ -283,7 +317,7 @@ export default function AdminDashboard() {
             </div>
             <div className="text-xl font-semibold mt-1">{conversions?.investorEndToEnd ?? "—"}</div>
           </Card>
-          <Card className="p-4 bg-[hsl(184_98%_97%)] border-[hsl(184_98%_22%)]/30" data-testid="card-conv-softcircle">
+          <Card className="p-4 bg-[hsl(0_100%_97%)] border-[hsl(0_100%_40%)]/30" data-testid="card-conv-softcircle">
             <div className="text-[10px] uppercase tracking-wider text-muted-foreground flex items-center gap-1">
               <DollarSign className="h-3 w-3" />
               {surface === "capavate" ? "Soft-circle → Funded ($)" : "Committed → Deployed ($)"}
@@ -305,11 +339,11 @@ export default function AdminDashboard() {
               : "Live SLO trackers for the Collective surface: reconciliation against shared cap tables, deal-room close-gate, dataroom uploads from members and partners, member message delivery, and email SLA on member comms."}</HelpTip>
           </div>
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-            <HealthTile icon={<ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />} label="Reconcile success" value={`${data?.health.capTableReconcile.successRatePct.toFixed(2) ?? "—"}%`} hint={`${data?.health.capTableReconcile.runs ?? 0} runs`} tone={(data?.health.capTableReconcile.successRatePct ?? 0) < 99 ? "warn" : "ok"} testId="card-health-reconcile" />
-            <HealthTile icon={<AlertCircle className="h-3.5 w-3.5" />} label="Close-gate fails" value={String(data?.health.closeGateFailures ?? 0)} tone={(data?.health.closeGateFailures ?? 0) > 5 ? "warn" : "ok"} testId="card-health-closegate" />
-            <HealthTile icon={<FileText className="h-3.5 w-3.5" />} label="Dataroom errors" value={String(data?.health.dataroomUploadErrors ?? 0)} tone={(data?.health.dataroomUploadErrors ?? 0) > 3 ? "warn" : "ok"} testId="card-health-dataroom" />
-            <HealthTile icon={<Send className="h-3.5 w-3.5" />} label="Message delivery" value={`${data?.health.messageDelivery.deliveryRatePct.toFixed(2) ?? "—"}%`} tone={(data?.health.messageDelivery.deliveryRatePct ?? 0) < 99.5 ? "warn" : "ok"} testId="card-health-msgs" />
-            <HealthTile icon={<Mail className="h-3.5 w-3.5" />} label="Email SLA" value={`${data?.health.emailSlaSec ?? "—"}s`} hint="P95 send time" tone={(data?.health.emailSlaSec ?? 0) > 60 ? "warn" : "ok"} testId="card-health-email" />
+            <HealthTile icon={<ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />} label="Reconcile success" value={data?.health.capTableReconcile.successRatePct != null ? `${data.health.capTableReconcile.successRatePct.toFixed(2)}%` : "—"} hint={`${data?.health.capTableReconcile.runs ?? 0} runs`} tone={data?.health.capTableReconcile.successRatePct != null && data.health.capTableReconcile.successRatePct < 99 ? "warn" : "ok"} testId="card-health-reconcile" />
+            <HealthTile icon={<AlertCircle className="h-3.5 w-3.5" />} label="Close-gate fails" value={data?.health.closeGateFailures != null ? String(data.health.closeGateFailures) : "—"} tone={data?.health.closeGateFailures != null && data.health.closeGateFailures > 5 ? "warn" : "ok"} testId="card-health-closegate" />
+            <HealthTile icon={<FileText className="h-3.5 w-3.5" />} label="Dataroom errors" value={data?.health.dataroomUploadErrors != null ? String(data.health.dataroomUploadErrors) : "—"} tone={data?.health.dataroomUploadErrors != null && data.health.dataroomUploadErrors > 3 ? "warn" : "ok"} testId="card-health-dataroom" />
+            <HealthTile icon={<Send className="h-3.5 w-3.5" />} label="Message delivery" value={data?.health.messageDelivery.deliveryRatePct != null ? `${data.health.messageDelivery.deliveryRatePct.toFixed(2)}%` : "—"} tone={data?.health.messageDelivery.deliveryRatePct != null && data.health.messageDelivery.deliveryRatePct < 99.5 ? "warn" : "ok"} testId="card-health-msgs" />
+            <HealthTile icon={<Mail className="h-3.5 w-3.5" />} label="Email SLA" value={data?.health.emailSlaSec != null ? `${data.health.emailSlaSec}s` : "—"} hint="P95 send time" tone={data?.health.emailSlaSec != null && data.health.emailSlaSec > 60 ? "warn" : "ok"} testId="card-health-email" />
           </div>
         </Card>
 
@@ -326,7 +360,7 @@ export default function AdminDashboard() {
               return (
                 <Card key={key} className="p-3" data-testid={`card-queue-${key}`}>
                   <div className="text-[10px] uppercase tracking-wider text-muted-foreground">{prettyQueueLabel(key)}</div>
-                  <div className={`text-base font-semibold ${isDead && value > 0 ? "text-rose-700" : ""}`}>{value}</div>
+                  <div className={`text-base font-semibold ${isDead && (value ?? 0) > 0 ? "text-rose-700" : ""}`}>{value ?? "—"}</div>
                 </Card>
               );
             })}
@@ -353,7 +387,7 @@ export default function AdminDashboard() {
             </div>
             <Funnel
               steps={data?.funnels.investor ?? []}
-              colorClass="bg-[hsl(184_98%_22%)]"
+              colorClass="bg-[hsl(0_100%_40%)]"
               testIdPrefix="funnel-investor"
             />
           </Card>

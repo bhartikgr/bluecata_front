@@ -50,6 +50,7 @@ import { registerFounderCollectiveApplyRoutes } from "./founderCollectiveApplySt
 import { registerCollectiveWaitlistRoutes } from "./collectiveWaitlistRoutes"; /* v16 Fix 6 */
 import { registerWelcomeRoutes, ack as welcomeAck, getAck as getWelcomeAck } from "./welcomeStore";
 import { registerNetworkPostsRoutes } from "./networkPostsStore";
+import { registerFeedsRoutes } from "./feedsStore"; // v25.43 R3-4 — live market/crypto/macro + Capavate-internal ticker feeds
 import { registerBulkMessageRoutes } from "./bulkMessageStore";
 import { registerPortfolioAnalyticsRoutes } from "./portfolioAnalyticsStore";
 import { registerSprint21Routes } from "./sprint21Routes";
@@ -485,6 +486,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   registerNetworkPostsRoutes(app);
+  registerFeedsRoutes(app); // v25.43 R3-4
   registerBulkMessageRoutes(app);
   registerPortfolioAnalyticsRoutes(app);
   registerSprint21Routes(app);
@@ -3131,7 +3133,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         });
       }
       const amountMinor = billingCycle === "annual" ? annual : monthly;
-      // const amountMinor = 1;
       const currency = tier.currency ?? "USD";
       if (!amountMinor || amountMinor <= 0) {
         return res.status(400).json({ ok: false, error: "invalid_tier_price" });

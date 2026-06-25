@@ -116,13 +116,13 @@ export default function BillingReturn() {
       <Card className="w-full max-w-md">
         <CardContent className="py-10 px-6 text-center">
           <div className="flex items-center justify-center gap-2 mb-6">
-            <Sparkles className="h-5 w-5 text-[hsl(184_98%_22%)]" />
-            <span className="text-base font-semibold text-[hsl(184_98%_22%)]">Capavate</span>
+            <Sparkles className="h-5 w-5 text-[hsl(0_100%_40%)]" />
+            <span className="text-base font-semibold text-[hsl(0_100%_40%)]">Capavate</span>
           </div>
 
           {phase === "polling" && (
             <div data-testid="billing-return-polling">
-              <Loader2 className="h-10 w-10 mx-auto mb-4 animate-spin text-[hsl(184_98%_22%)]" />
+              <Loader2 className="h-10 w-10 mx-auto mb-4 animate-spin text-[hsl(0_100%_40%)]" />
               <h1 className="text-lg font-semibold mb-1">Activating your plan…</h1>
               <p className="text-sm text-muted-foreground">
                 We’re confirming your payment with Airwallex. This usually takes a
@@ -150,7 +150,7 @@ export default function BillingReturn() {
                 were not charged. You can try again at any time.
               </p>
               <Button
-                className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_17%)] text-white"
+                className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
                 data-testid="button-billing-return-retry"
                 onClick={() => navigate("/founder/subscribe")}
               >
@@ -177,7 +177,7 @@ export default function BillingReturn() {
                   Check again
                 </Button>
                 <Button
-                  className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_17%)] text-white"
+                  className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
                   data-testid="button-billing-return-billing"
                   onClick={() => navigate("/founder/billing")}
                 >
@@ -196,7 +196,7 @@ export default function BillingReturn() {
                 paid, head to billing to check your plan status.
               </p>
               <Button
-                className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_17%)] text-white"
+                className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
                 data-testid="button-billing-return-billing-missing"
                 onClick={() => navigate("/founder/billing")}
               >

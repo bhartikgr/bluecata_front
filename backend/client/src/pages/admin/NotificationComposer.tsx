@@ -823,7 +823,7 @@ export default function AdminNotificationComposer() {
                           type="button"
                           className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${
                             form.industries.includes(ind)
-                              ? "bg-[hsl(184_98%_22%)] text-white border-[hsl(184_98%_22%)]"
+                              ? "bg-[hsl(0_100%_40%)] text-white border-[hsl(0_100%_40%)]"
                               : "border-border text-muted-foreground hover:bg-muted/50"
                           }`}
                           onClick={() => !isTerminal && toggleIndustry(ind)}
@@ -847,7 +847,7 @@ export default function AdminNotificationComposer() {
                           type="button"
                           className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${
                             form.regions.includes(r.code)
-                              ? "bg-[hsl(184_98%_22%)] text-white border-[hsl(184_98%_22%)]"
+                              ? "bg-[hsl(0_100%_40%)] text-white border-[hsl(0_100%_40%)]"
                               : "border-border text-muted-foreground hover:bg-muted/50"
                           }`}
                           onClick={() => !isTerminal && toggleRegion(r.code)}
@@ -914,7 +914,7 @@ export default function AdminNotificationComposer() {
                     <button
                       type="button"
                       className={`flex-1 py-2 rounded-md border text-sm transition-colors ${
-                        form.sendMode === "now" ? "bg-[hsl(184_98%_22%)] text-white border-[hsl(184_98%_22%)]" : "border-border text-muted-foreground"
+                        form.sendMode === "now" ? "bg-[hsl(0_100%_40%)] text-white border-[hsl(0_100%_40%)]" : "border-border text-muted-foreground"
                       }`}
                       onClick={() => !isTerminal && setField("sendMode", "now")}
                       disabled={isTerminal}
@@ -925,7 +925,7 @@ export default function AdminNotificationComposer() {
                     <button
                       type="button"
                       className={`flex-1 py-2 rounded-md border text-sm transition-colors ${
-                        form.sendMode === "scheduled" ? "bg-[hsl(184_98%_22%)] text-white border-[hsl(184_98%_22%)]" : "border-border text-muted-foreground"
+                        form.sendMode === "scheduled" ? "bg-[hsl(0_100%_40%)] text-white border-[hsl(0_100%_40%)]" : "border-border text-muted-foreground"
                       }`}
                       onClick={() => !isTerminal && setField("sendMode", "scheduled")}
                       disabled={isTerminal}

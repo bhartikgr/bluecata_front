@@ -2,7 +2,7 @@
  * Wave C-3 — Collective Shell
  *
  * Standalone shell with its own sidebar + topbar for the Collective experience.
- * Visual identity: plum #8E2A4E accent, cream #F7F6F2 background, navy text.
+ * Visual identity: v25.43 R3-2 re-skin — brand red #cc0001 accent, cream #F7F6F2 background, navy text.
  * Light-mode only. No web storage.
  */
 
@@ -13,6 +13,8 @@ import {
   TrendingUp, ClipboardList, UserCircle, Activity, Settings, Menu, X,
   ArrowLeftRight, LogOut, Scale, UserPlus, FileText, ListTodo, FolderOpen,
   PiggyBank, CalendarDays, Trophy, Receipt,
+  /* v25.42 (Bucket B) — icons for the 7 new Collective nav entries. */
+  Network, Handshake, ClipboardCheck, Inbox,
   /* v25.33 Consortium Partner Payment Model — icons for the new partner
      self-service nav items (Subscribe / Agreement / Tax Forms). */
   CreditCard, FileSignature, FileCheck,
@@ -26,6 +28,7 @@ import { usePartnerMembership } from "@/lib/partner/usePartnerMembership";
 import { useQuery } from "@tanstack/react-query"; /* v16 Fix 6 — read COLLECTIVE_ENABLED */
 import { apiRequest } from "@/lib/queryClient"; /* v16 Fix 6 */
 import { ChapterSelector } from "@/components/ChapterSelector"; /* v17 Phase A — chapter scope dropdown in topbar */
+import { MarketTicker } from "@/components/feeds/MarketTicker"; /* v25.43 R3-4 — persistent live ticker strip */
 
 /* ============================================================
  * v25.41 Bug-1 — Consortium Partner vs Collective separation
@@ -95,6 +98,9 @@ const NAV_GROUPS: NavGroup[] = [
       { href: "/collective/members", label: "Member Directory", icon: Users, "data-testid": "nav-collective-members" },
       { href: "/collective/companies", label: "Companies", icon: Building2, "data-testid": "nav-collective-companies" },
       { href: "/collective/soft-circles", label: "Soft Circles", icon: Circle, "data-testid": "nav-collective-soft-circles" },
+      /* v25.42 R1 + R8 — connections + member-facing partners directory. */
+      { href: "/collective/connections", label: "Connections", icon: Network, "data-testid": "nav-collective-connections" },
+      { href: "/collective/partners", label: "Partners", icon: Handshake, "data-testid": "nav-collective-partners" },
     ],
   },
   {
@@ -113,12 +119,18 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: "/collective/calendar", label: "Calendar", icon: CalendarDays, "data-testid": "nav-collective-calendar" },
       { href: "/collective/leaderboard", label: "Leaderboard", icon: Trophy, "data-testid": "nav-collective-leaderboard" },
+      /* v25.42 R2 + R3 + R4 — recaps, screening recaps, chapters. */
+      { href: "/collective/chapters", label: "Chapters", icon: Building2, "data-testid": "nav-collective-chapters" },
+      { href: "/collective/recaps", label: "Recaps", icon: FileText, "data-testid": "nav-collective-recaps" },
+      { href: "/collective/screening-recaps", label: "Screening Recaps", icon: ClipboardCheck, "data-testid": "nav-collective-screening-recaps" },
     ],
   },
   {
     title: "YOUR ACCOUNT",
     items: [
       { href: "/collective/membership", label: "My Membership", icon: UserCircle, "data-testid": "nav-collective-membership" },
+      /* v25.42 R5 — read-only requests portal. */
+      { href: "/collective/portal/requests", label: "My Requests", icon: Inbox, "data-testid": "nav-collective-requests" },
       { href: "/collective/activity", label: "Activity", icon: Activity, "data-testid": "nav-collective-activity" },
       { href: "/collective/settings", label: "Settings", icon: Settings, "data-testid": "nav-collective-settings" },
     ],
@@ -165,9 +177,12 @@ function NavLink({ item }: { item: NavItem }) {
         data-testid={item["data-testid"]}
         className={[
           "w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors",
+          /* v25.43 R3-2 — sidebar active/hover re-skinned from the old plum
+             (#8E2A4E) to the capavate.com brand red (#cc0001) at a soft 8%
+             tint, matching the live site's nav treatment. */
           isActive
-            ? "bg-[#8E2A4E]/15 text-[#8E2A4E]"
-            : "text-slate-700 hover:bg-[#8E2A4E]/08 hover:text-[#8E2A4E]",
+            ? "bg-[rgba(204,0,1,0.08)] text-[#cc0001]"
+            : "text-slate-700 hover:bg-[rgba(204,0,1,0.08)] hover:text-[#cc0001]",
         ].join(" ")}
         style={{ textDecoration: "none" }}
       >
@@ -229,11 +244,11 @@ function CollectiveSidebar({ onClose }: { onClose?: () => void }) {
         <div className="flex items-center gap-2">
           <div
             className="w-7 h-7 rounded-md flex items-center justify-center text-white text-xs font-bold"
-            /* v25.41 Bug-2 — partner-only sessions use the capavate.com navy
-               (existing --cap-site-navy value #041e41) rather than the
-               Collective plum, so the consortium brand is visually distinct
-               from the Collective brand. No new theme token introduced. */
-            style={{ backgroundColor: partnerOnly ? "#041e41" : "#8E2A4E" }}
+            /* v25.41 Bug-2 / v25.43 R3-2 — partner-only sessions use the
+               capavate.com navy (#041e41); Collective sessions use the
+               capavate.com brand red (#cc0001), re-skinned from the old plum
+               (#8E2A4E) to match the live site. */
+            style={{ backgroundColor: partnerOnly ? "#041e41" : "#cc0001" }}
           >
             C
           </div>
@@ -243,7 +258,7 @@ function CollectiveSidebar({ onClose }: { onClose?: () => void }) {
             </span>
             <span
               className="text-xs font-medium ml-1 px-1.5 py-0.5 rounded"
-              style={{ backgroundColor: partnerOnly ? "#041e41" : "#8E2A4E", color: "#fff", fontSize: "9px" }}
+              style={{ backgroundColor: partnerOnly ? "#041e41" : "#cc0001", color: "#fff", fontSize: "9px" }}
               data-testid="brand-chip"
             >
               {/* v25.41 Bug-1 — partner-only sessions are branded CONSORTIUM. */}
@@ -269,7 +284,8 @@ function CollectiveSidebar({ onClose }: { onClose?: () => void }) {
             <div key={group.title} className="mb-4">
               <p
                 className="px-3 mb-1 text-[10px] font-semibold tracking-wider uppercase"
-                style={{ color: "#8E2A4E", opacity: 0.7 }}
+                /* v25.43 R3-2 — group labels re-skinned plum → brand red. */
+                style={{ color: "#cc0001", opacity: 0.7 }}
               >
                 {group.title}
               </p>
@@ -365,7 +381,7 @@ function CollectiveTopbar({ onMenuClick }: { onMenuClick: () => void }) {
             size="sm"
             onClick={switchToCapavate}
             data-testid="button-switch-to-capavate"
-            className="gap-2 text-xs border-[#8E2A4E]/30 text-[#8E2A4E] hover:bg-[#8E2A4E]/05"
+            className="gap-2 text-xs border-[#cc0001]/30 text-[#cc0001] hover:bg-[rgba(204,0,1,0.05)]"
           >
             <ArrowLeftRight className="h-3 w-3" />
             Switch to Capavate
@@ -420,6 +436,10 @@ export function CollectiveShell({ children }: CollectiveShellProps) {
       {/* Main content */}
       <div className="flex flex-col flex-1 min-w-0 h-full overflow-hidden">
         <CollectiveTopbar onMenuClick={() => setMobileOpen(true)} />
+        {/* v25.43 R3-4 — persistent live ticker strip, always visible across the
+            Collective + Consortium Partner shells, immediately under the top
+            app header. */}
+        <MarketTicker />
         <main className="flex-1 overflow-auto bg-[#FAFAF8]">
           {children}
         </main>

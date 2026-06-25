@@ -51,6 +51,7 @@ const CRITICAL_COLUMNS: Record<string, string[]> = {
   "user_credentials":            ["user_id", "email", "password_hash"],
   "partner_organizations":       ["id", "tenant_id", "name", "partner_type"],
   "chapter_memberships":         ["id", "chapter_id", "user_id", "role", "status"],
+  "telemetry_events":            ["id", "tenant_id", "event_type", "aggregate_id", "aggregate_kind", "occurred_at", "actor_user_id", "actor_ip", "payload_json", "schema_version", "created_at"],  // v25.42h
 };
 
 /* ------------------------------------------------------------------ */

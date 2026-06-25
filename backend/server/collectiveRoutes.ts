@@ -50,6 +50,7 @@ import { getRecentEvents } from "./sprint10Telemetry";
 import { requireCollectiveMember } from "./lib/requireCollectiveMember"; /* v14 Tier-1 Fix 3 */
 import { getUserContext } from "./lib/userContext"; /* B12 (v24.0) tenant filter */
 import { rawDb } from "./db/connection"; /* v25.36 — chapter-scoped reads for /members */
+import { log } from "./lib/logger"; /* v25.42 R8 — partners/public fail-closed logging */
 import { getApplicationFeeMinor } from "./lib/collectiveApplicationFeeResolver"; /* v25.38 — DB-driven application fee */
 import { founderOwnedCompanyIds as tenantFounderOwnedCompanyIds, investorVisibleCompanyIds as tenantInvestorVisibleCompanyIds } from "./lib/tenantAuth"; /* B12 (v24.0) */
 
@@ -250,6 +251,119 @@ export function registerCollectiveRoutes(app: Express): void {
       : "USD";
     const fee = getApplicationFeeMinor(currency);
     res.json(fee);
+  });
+
+  /* -----------------------------------------------------------------
+   * v25.42 R8 (Bucket C) — GET /api/collective/partners/public
+   *
+   * Member-facing public partner directory cards. ECONOMICS REDACTED
+   * (Ozan HARD CONSTRAINT #1): the projection NEVER selects/exposes
+   * adminFeePerDeal, carryPct, mgmtFeePct, revShareToCapavate or
+   * hurdleRatePct. Reads the EXISTING partner_organizations table
+   * directly via rawDb() (the same raw-SQL pattern used elsewhere in
+   * this file), so no Drizzle table coupling and no schema change.
+   *
+   * Column mapping (existing partner_organizations → public card):
+   *   name        ← name
+   *   logoUrl     ← logo_url
+   *   governance  ← partner_type   (governance/structure label)
+   *   hq          ← jurisdiction
+   *   memberCount ← (not stored — null; never economics-derived)
+   *   aumUsd      ← aum_range      (disclosed band only, never exact)
+   *   sectors     ← (not stored — [] )
+   * Only `status = 'active'` rows are returned, ordered by name.
+   *
+   * Fail-closed: any DB error → 503 PARTNERS_UNAVAILABLE (no leak, no
+   * synthetic fallback). This is the ONE new endpoint in v25.42.
+   * ----------------------------------------------------------------- */
+  app.get("/api/collective/partners/public", requireCollectiveMember, async (req: Request, res: Response) => {
+    try {
+      const db: any = rawDb();
+      // v25.42 round-2 fix — chapter-scoped read (mirrors the NC-6 fix on
+      // /api/collective/companies). The previous handler returned every active
+      // partner across ALL tenants/chapters to any member. We now resolve the
+      // caller's chapters via `listChaptersForUser` and filter partner_organizations
+      // to that set (chapter-agnostic partners with null primary_chapter_id remain
+      // visible to all). Platform admins still see all partners (CROSS-TENANT).
+      //
+      // EXPLICITLY SELECT ONLY public-safe columns. Economics columns are
+      // never referenced here (and do not exist on this table) — defense in
+      // depth so a future additive economics column cannot leak through a
+      // `SELECT *`.
+      const ctx = await getUserContext(req);
+      const isAdmin = ctx?.isAdmin === true || (ctx as any)?.role === "platform_admin";
+
+      type PartnerRow = {
+        id: string;
+        name: string;
+        logo_url: string | null;
+        partner_type: string | null;
+        jurisdiction: string | null;
+        aum_range: string | null;
+      };
+
+      let rows: PartnerRow[];
+      if (isAdmin) {
+        // Platform admins see all active partners across all tenants.
+        rows = db
+          .prepare(
+            `SELECT id, name, logo_url, partner_type, jurisdiction, aum_range
+               FROM partner_organizations
+              WHERE status = 'active'
+              ORDER BY name ASC`,
+          )
+          .all() as PartnerRow[];
+      } else {
+        // Members see partners scoped to their chapters (and chapter-agnostic
+        // null primary_chapter_id partners visible to all).
+        const userId = ctx?.userId;
+        if (!userId) {
+          return res.status(401).json({ ok: false, error: "UNAUTHORIZED", message: "Sign in to continue." });
+        }
+        const chapterIds = listChaptersForUser(userId).map((c: any) => c.id);
+        if (!chapterIds || chapterIds.length === 0) {
+          return res.json({ count: 0, total: 0, limit: 0, offset: 0, items: [] });
+        }
+        const placeholders = chapterIds.map(() => "?").join(",");
+        rows = db
+          .prepare(
+            `SELECT id, name, logo_url, partner_type, jurisdiction, aum_range
+               FROM partner_organizations
+              WHERE status = 'active'
+                AND (primary_chapter_id IS NULL OR primary_chapter_id IN (${placeholders}))
+              ORDER BY name ASC`,
+          )
+          .all(...chapterIds) as PartnerRow[];
+      }
+
+      const items = rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        logoUrl: r.logo_url ?? null,
+        governance: r.partner_type ?? null,
+        hq: r.jurisdiction ?? null,
+        memberCount: null as number | null,
+        // aumUsd: disclosed band only (e.g. "50m-250m"); exact AUM is never
+        // stored on this table and is never exposed.
+        aumUsd: r.aum_range && r.aum_range !== "undisclosed" ? r.aum_range : null,
+        sectors: [] as string[],
+      }));
+
+      res.json({
+        count: items.length,
+        total: items.length,
+        limit: items.length,
+        offset: 0,
+        items,
+      });
+    } catch (err) {
+      log.warn("[partners/public] DB read failed:", (err as Error).message);
+      res.status(503).json({
+        ok: false,
+        error: "PARTNERS_UNAVAILABLE",
+        message: "Public partners directory temporarily unavailable",
+      });
+    }
   });
 
   /* -----------------------------------------------------------------

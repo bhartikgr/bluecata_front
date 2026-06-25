@@ -147,7 +147,7 @@ export function MaIntelligenceCard({ positions }: { positions: Position[] }) {
       data-testid="ma-intelligence-card"
     >
       <div className="flex items-center gap-2 mb-2">
-        <TrendingUp className="h-3.5 w-3.5 text-[hsl(184_98%_22%)]" />
+        <TrendingUp className="h-3.5 w-3.5 text-[hsl(0_100%_40%)]" />
         <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           M&amp;A Readiness Rollup
         </span>

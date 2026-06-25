@@ -53,11 +53,11 @@ export default function UpgradeToProInterstitial({
           className="max-w-xl mx-auto mt-12"
           data-testid="round-upgrade-interstitial"
         >
-          <Card className="border-[hsl(184_98%_22%)]/30">
+          <Card className="border-[hsl(0_100%_40%)]/30">
             <CardHeader>
               <div className="flex items-center gap-3">
-                <div className="h-10 w-10 rounded-full bg-[hsl(184_98%_22%)]/10 flex items-center justify-center shrink-0">
-                  <Lock className="h-5 w-5 text-[hsl(184_98%_22%)]" />
+                <div className="h-10 w-10 rounded-full bg-[hsl(0_100%_40%)]/10 flex items-center justify-center shrink-0">
+                  <Lock className="h-5 w-5 text-[hsl(0_100%_40%)]" />
                 </div>
                 <CardTitle className="text-xl">Rounds require the Pro plan</CardTitle>
               </div>
@@ -72,7 +72,7 @@ export default function UpgradeToProInterstitial({
 
               <div className="flex flex-col sm:flex-row gap-3">
                 <Button
-                  className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+                  className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
                   onClick={() => navigate("/founder/subscribe")}
                   data-testid="button-upgrade-active-company"
                 >

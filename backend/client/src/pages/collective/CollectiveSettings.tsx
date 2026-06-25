@@ -92,7 +92,7 @@ export default function CollectiveSettings() {
           style={{ color: "#1A1A2E" }}
           data-testid="heading-settings"
         >
-          <Settings className="h-5 w-5 text-[#8E2A4E]" />
+          <Settings className="h-5 w-5 text-[#cc0001]" />
           Collective Settings
         </h1>
         <p className="text-sm text-slate-500 mt-1">
@@ -210,7 +210,7 @@ export default function CollectiveSettings() {
             type="submit"
             disabled={mutation.isPending}
             className="w-full"
-            style={{ backgroundColor: "#8E2A4E" }}
+            style={{ backgroundColor: "#cc0001" }}
             data-testid="button-save-settings"
           >
             {mutation.isPending ? "Saving…" : "Save Settings"}

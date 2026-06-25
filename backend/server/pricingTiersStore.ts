@@ -54,6 +54,13 @@ export interface BillingPricingTier {
   status: "live" | "draft" | "preview" | "deprecated";
   /** UI billing-cycle hint when only one cadence is offered. */
   billingCycle?: "monthly" | "annual" | "biennial" | "one_time" | "perpetual";
+  /**
+   * v25.43 F12 — plan description sourced from the admin-editable
+   * `pricing_models.description` row (read through pricingModelStore, which is
+   * hydrated from the DB at request time). Optional: a tier with an empty
+   * description omits this field so the client renders nothing.
+   */
+  description?: string;
 }
 
 /* v25.27 — NO LEGACY ALIASES. Per the standing rule, pricing is admin-driven
@@ -101,6 +108,10 @@ function priceForCadence(m: PricingModel, cadence: "monthly" | "annual"): number
 function normalise(m: PricingModel): BillingPricingTier {
   const monthlyPriceCents = priceForCadence(m, "monthly");
   const annualPriceCents = priceForCadence(m, "annual");
+  // v25.43 F12 — pass the DB-backed description through. We only include the
+  // field when it is a non-empty string so a blank description yields a clean
+  // empty state on the client (no placeholder text).
+  const description = typeof m.description === "string" ? m.description.trim() : "";
   return {
     id: m.id,
     slug: m.slug,
@@ -110,6 +121,7 @@ function normalise(m: PricingModel): BillingPricingTier {
     currency: (m.currency || "USD").toUpperCase(),
     status: m.status as BillingPricingTier["status"],
     billingCycle: m.cadence,
+    ...(description ? { description } : {}),
   };
 }
 

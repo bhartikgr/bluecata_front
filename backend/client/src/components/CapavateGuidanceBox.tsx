@@ -49,7 +49,7 @@ export function CapavateGuidanceBox({ variant = "founder" }: { variant?: Variant
       className="relative rounded-xl p-5 mb-6 text-white shadow-md"
       style={{
         background:
-          "linear-gradient(135deg, hsl(219 45% 18%) 0%, hsl(219 45% 25%) 55%, hsl(184 70% 28%) 100%)",
+          "linear-gradient(135deg, hsl(219 45% 18%) 0%, hsl(219 45% 25%) 55%, hsl(0 100% 40%) 100%)",
       }}
       data-testid="box-capavate-guidance"
     >

@@ -240,7 +240,7 @@ function PricingModelsTab() {
       </Card>
       <div className="grid lg:grid-cols-2 gap-4">
         {filtered.map(m => (
-          <Card key={m.id} className="hover:border-[hsl(184_98%_22%)]/40 transition-colors" data-testid={`card-pm-${m.id}`}>
+          <Card key={m.id} className="hover:border-[hsl(0_100%_40%)]/40 transition-colors" data-testid={`card-pm-${m.id}`}>
             <CardContent className="pt-5">
               <div className="flex items-start justify-between gap-3 mb-2">
                 <div>
@@ -253,7 +253,7 @@ function PricingModelsTab() {
                   <div className="text-[11px] text-muted-foreground font-mono">{m.slug}</div>
                 </div>
                 <div className="text-right">
-                  <div className="text-xl font-semibold font-mono tabular-nums" style={{ color: "hsl(184 98% 22%)" }}>
+                  <div className="text-xl font-semibold font-mono tabular-nums" style={{ color: "hsl(0 100% 40%)" }}>
                     {m.basePriceMinor === 0 ? "Free" : fmtMoney(m.basePriceMinor, m.currency)}
                   </div>
                   <div className="text-[10px] text-muted-foreground">/ {m.cadence}</div>
@@ -267,7 +267,7 @@ function PricingModelsTab() {
               </div>
               <div className="flex gap-2">
                 <Link href={`/admin/pricing-models/${m.id}`}>
-                  <Button size="sm" variant="default" className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_17%)] text-white" data-testid={`button-edit-${m.id}`}>
+                  <Button size="sm" variant="default" className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid={`button-edit-${m.id}`}>
                     <Eye className="h-3.5 w-3.5 mr-1.5" />Open
                   </Button>
                 </Link>
@@ -820,7 +820,7 @@ function CreatePricingModelDialog({ open, setOpen, onCreated }: { open: boolean;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <Button size="sm" className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_17%)] text-white" onClick={() => setOpen(true)} data-testid="button-new-pricing-model">
+      <Button size="sm" className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" onClick={() => setOpen(true)} data-testid="button-new-pricing-model">
         <Plus className="h-3.5 w-3.5 mr-1.5" />New model
       </Button>
       <DialogContent className="max-w-md">
@@ -878,7 +878,7 @@ function CreatePricingModelDialog({ open, setOpen, onCreated }: { open: boolean;
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-          <Button onClick={() => createMut.mutate()} disabled={!name || !slug || createMut.isPending} className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_17%)] text-white" data-testid="button-create-pm">
+          <Button onClick={() => createMut.mutate()} disabled={!name || !slug || createMut.isPending} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-create-pm">
             <Plus className="h-3.5 w-3.5 mr-1.5" />Create draft
           </Button>
         </DialogFooter>

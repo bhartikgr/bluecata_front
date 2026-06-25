@@ -194,6 +194,14 @@ import LeaderboardPage from "@/pages/collective/LeaderboardPage";
  * items, and notification CTAs no longer land on NotFoundOrLogin. */
 import ScreeningEventsPage from "@/pages/collective/ScreeningEventsPage";
 import AskExpertPage from "@/pages/collective/AskExpertPage";
+// v25.42 (Bucket B) — 9 new Collective routes/components.
+import CollectiveConnections from "@/pages/collective/Connections";
+import CollectiveRecaps from "@/pages/collective/Recaps";
+import CollectiveScreeningRecaps from "@/pages/collective/ScreeningRecaps";
+import CollectiveChapters from "@/pages/collective/Chapters";
+import CollectiveMyRequests from "@/pages/collective/MyRequests";
+import CollectivePublicProfile from "@/pages/collective/PublicProfile";
+import CollectivePartnersDirectory from "@/pages/collective/PartnersDirectory";
 import QuestionDetailPage from "@/pages/collective/QuestionDetailPage";
 
 // Bootstrap demo telemetry once at app load
@@ -246,9 +254,14 @@ function RequireActiveSubscription({ children }: { children: ReactNode }) {
     );
   }
 
-  // No active company yet (fresh user) — route to subscribe/onboarding
+  // No active company yet (fresh user) — v25.43 F13: send first-time founders
+  // to the company-creation step FIRST (company-before-subscribe onboarding),
+  // not straight to the paywall. The ?onboarding=1 flag tells /company-profile
+  // it's the create-company step; on a successful create it forwards to
+  // /founder/dashboard (R3-8 — no longer the paywall). The INACTIVE_STATUSES redirect below (inactive
+  // subscription state machine) is a DIFFERENT case and still goes to subscribe.
   if (!companyId) {
-    return <Redirect to="/founder/subscribe" />;
+    return <Redirect to="/company-profile?onboarding=1" />;
   }
 
   if (isLoading) {
@@ -289,7 +302,11 @@ function isAuthRoute(path: string) {
     path === "/dashboard" ||
     path === "/cap-table" ||
     path === "/rounds" ||
-    path === "/company-profile" ||
+    // v25.43 R3-6 — /company-profile is NO LONGER force-bare. The onboarding
+    // step (/company-profile?onboarding=1) must render INSIDE the founder app
+    // shell (sidebar + header + brand). Anonymous visitors are still protected
+    // because AppRouter's `bare` flag also becomes true when `!isAuthed`, so
+    // the shell never leaks to unauthenticated probers.
     path.startsWith("/invite/")
   );
 }
@@ -454,7 +471,7 @@ function AppRouter() {
         {/* A1 (v24.0) — alias for cached forgot-password email links that point to /auth/set-password */}
         <Route path="/auth/set-password" component={SetPasswordPage} />
 
-        {/* Sprint 27 — dedicated admin login (public) */}
+        {/* dedicated admin login (public) */}
         <Route path="/admin/login" component={AdminLogin} />
 
         {/* 23-May Fix 7 — dedicated Consortium Partner login + signup-apply (public).
@@ -845,6 +862,29 @@ function AppRouter() {
           {() => <RequireAuth><CollectiveShell><CollectiveSettings /></CollectiveShell></RequireAuth>}
         </Route>
 
+        {/* ===== v25.42 (Bucket B) — new Collective routes R1–R6, R8 ===== */}
+        <Route path="/collective/connections">
+          {() => <RequireAuth><CollectiveShell><CollectiveConnections /></CollectiveShell></RequireAuth>}
+        </Route>
+        <Route path="/collective/recaps">
+          {() => <RequireAuth><CollectiveShell><CollectiveRecaps /></CollectiveShell></RequireAuth>}
+        </Route>
+        <Route path="/collective/screening-recaps">
+          {() => <RequireAuth><CollectiveShell><CollectiveScreeningRecaps /></CollectiveShell></RequireAuth>}
+        </Route>
+        <Route path="/collective/chapters">
+          {() => <RequireAuth><CollectiveShell><CollectiveChapters /></CollectiveShell></RequireAuth>}
+        </Route>
+        <Route path="/collective/portal/requests">
+          {() => <RequireAuth><CollectiveShell><CollectiveMyRequests /></CollectiveShell></RequireAuth>}
+        </Route>
+        <Route path="/collective/profile/:userId">
+          {() => <RequireAuth><CollectiveShell><CollectivePublicProfile /></CollectiveShell></RequireAuth>}
+        </Route>
+        <Route path="/collective/partners">
+          {() => <RequireAuth><CollectiveShell><CollectivePartnersDirectory /></CollectiveShell></RequireAuth>}
+        </Route>
+
         {/* v19 Phase A — Events Calendar (month view) + Leaderboard.
          * Both pages are hidden client-side when COLLECTIVE_ENABLED is off
          * (the components return null on the feature-flag check). */}
@@ -951,7 +991,14 @@ function AppRouter() {
         <Route path="/dashboard" component={LegacyDashboardRedirect} />
         <Route path="/cap-table" component={LegacyDashboardRedirect} />
         <Route path="/rounds" component={LegacyDashboardRedirect} />
-        <Route path="/company-profile" component={LegacyDashboardRedirect} />
+        {/* v25.43 F13 — /company-profile now renders the founder Company page so
+            the first-time create-company onboarding step (?onboarding=1) lands
+            on a real create-company surface instead of the legacy dashboard
+            redirect. Company.tsx reads ?onboarding=1 and, after a successful
+            create, forwards to /founder/subscribe. */}
+        <Route path="/company-profile">
+          {() => <RequireAuth><FounderCompany /></RequireAuth>}
+        </Route>
         <Route path="/invite/:token" component={LegacyInviteRedirect} />
 
         {/* Wave B FIX 3 (F-BUG-004) — explicit /onboarding handler is the

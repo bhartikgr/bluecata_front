@@ -206,7 +206,7 @@ export const CATEGORY_ORDER = [
 ] as const;
 
 export const CATEGORY_COLORS: Record<string, string> = {
- "Equity Instruments": "bg-[hsl(184_98%_22%)]/10 text-[hsl(184_98%_22%)] border-[hsl(184_98%_22%)]/30",
+ "Equity Instruments": "bg-[hsl(0_100%_40%)]/10 text-[hsl(0_100%_40%)] border-[hsl(0_100%_40%)]/30",
  "Round Mechanics": "bg-amber-100 text-amber-800 border-amber-300/40",
  "Investor Rights": "bg-rose-100 text-rose-800 border-rose-300/40",
  "Regulatory": "bg-blue-100 text-blue-800 border-blue-300/40",
@@ -245,7 +245,7 @@ export function GlossaryDialog({ trigger }: { trigger: React.ReactNode }) {
  <DialogContent className="max-w-3xl max-h-[85vh] flex flex-col p-0">
  <DialogHeader className="px-6 pt-6 pb-3 border-b border-border">
  <DialogTitle className="flex items-center gap-2 text-base">
- <BookOpen className="h-4 w-4 text-[hsl(184_98%_22%)]" />
+ <BookOpen className="h-4 w-4 text-[hsl(0_100%_40%)]" />
  Capavate glossary
  </DialogTitle>
  <p className="text-xs text-muted-foreground mt-1">
@@ -295,7 +295,7 @@ export function GlossaryDialog({ trigger }: { trigger: React.ReactNode }) {
  </div>
  <p className="text-muted-foreground mt-0.5 leading-relaxed">{e.definition}</p>
  {e.example && (
- <p className="text-[11px] text-foreground/80 mt-1 pl-3 border-l-2 border-[hsl(184_98%_22%)]/40 italic">
+ <p className="text-[11px] text-foreground/80 mt-1 pl-3 border-l-2 border-[hsl(0_100%_40%)]/40 italic">
  {e.example}
  </p>
  )}

@@ -44,7 +44,7 @@ const ACTION_LABELS: Record<string, string> = {
 
 function getActionIcon(action: string) {
   switch (action) {
-    case "invitation_received": return <Mail className="h-3.5 w-3.5 text-[hsl(184_98%_22%)]" />;
+    case "invitation_received": return <Mail className="h-3.5 w-3.5 text-[hsl(0_100%_40%)]" />;
     case "soft_circle": return <TrendingUp className="h-3.5 w-3.5 text-emerald-600" />;
     case "declined": return <XCircle className="h-3.5 w-3.5 text-muted-foreground" />;
     case "signed": return <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />;
@@ -75,7 +75,7 @@ export default function InvestmentHistoryPanel({ companyId, companyName }: Props
     <Card data-testid="investment-history-panel">
       <CardHeader className="pb-3">
         <CardTitle className="text-base flex items-center gap-2">
-          <History className="h-4 w-4 text-[hsl(184_98%_22%)]" />
+          <History className="h-4 w-4 text-[hsl(0_100%_40%)]" />
           Previous engagement history
         </CardTitle>
       </CardHeader>
@@ -99,7 +99,7 @@ export default function InvestmentHistoryPanel({ companyId, companyName }: Props
             {data.events.map((evt) => (
               <li key={evt.id} className="ml-4" data-testid={`history-event-${evt.id}`}>
                 {/* Timeline dot */}
-                <div className="absolute -left-[5px] mt-1.5 h-2.5 w-2.5 rounded-full bg-[hsl(184_98%_22%)]" />
+                <div className="absolute -left-[5px] mt-1.5 h-2.5 w-2.5 rounded-full bg-[hsl(0_100%_40%)]" />
                 <div className="flex flex-wrap items-start gap-x-3 gap-y-0.5">
                   <div className="flex items-center gap-1.5 text-xs text-muted-foreground whitespace-nowrap">
                     {getActionIcon(evt.action)}
@@ -112,7 +112,7 @@ export default function InvestmentHistoryPanel({ companyId, companyName }: Props
                       {ACTION_LABELS[evt.action] ?? evt.action}
                     </span>
                     {evt.amount != null && (
-                      <span className="ml-1.5 text-[hsl(184_98%_22%)] font-mono text-xs">
+                      <span className="ml-1.5 text-[hsl(0_100%_40%)] font-mono text-xs">
                         {fmtUSD(evt.amount, { compact: true })}
                       </span>
                     )}

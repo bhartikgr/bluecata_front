@@ -80,7 +80,7 @@ export default function InvestorGlossaryPage() {
               <div className="grid grid-cols-7 lg:grid-cols-4 gap-1">
                 <button
                   onClick={() => setLetter(null)}
-                  className={`text-xs px-1.5 py-1 rounded ${letter === null ? "bg-[hsl(184_98%_22%)] text-white" : "hover:bg-muted"}`}
+                  className={`text-xs px-1.5 py-1 rounded ${letter === null ? "bg-[hsl(0_100%_40%)] text-white" : "hover:bg-muted"}`}
                   data-testid="filter-letter-all"
                 >
                   All
@@ -98,7 +98,7 @@ export default function InvestorGlossaryPage() {
                       onClick={() => setLetter(l)}
                       title={has ? undefined : `No glossary entries starting with ${l}`}
                       aria-label={has ? `Filter to letter ${l}` : `Letter ${l} — no entries`}
-                      className={`text-xs px-1.5 py-1 rounded transition-opacity disabled:opacity-50 disabled:cursor-not-allowed ${active ? "bg-[hsl(184_98%_22%)] text-white" : has ? "hover:bg-muted" : "text-muted-foreground/40"}`}
+                      className={`text-xs px-1.5 py-1 rounded transition-opacity disabled:opacity-50 disabled:cursor-not-allowed ${active ? "bg-[hsl(0_100%_40%)] text-white" : has ? "hover:bg-muted" : "text-muted-foreground/40"}`}
                       data-testid={`filter-letter-${l}`}
                     >
                       {l}
@@ -227,7 +227,7 @@ export default function InvestorGlossaryPage() {
                                     e.preventDefault();
                                     document.getElementById(`term-${r.replace(/\s+/g, "-")}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
                                   }}
-                                  className="text-xs text-[hsl(184_98%_22%)] hover:underline"
+                                  className="text-xs text-[hsl(0_100%_40%)] hover:underline"
                                   data-testid={`link-related-${r.replace(/\s+/g, "-").toLowerCase()}`}
                                 >
                                   {r}

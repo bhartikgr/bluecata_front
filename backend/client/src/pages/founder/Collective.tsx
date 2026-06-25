@@ -49,7 +49,7 @@ export default function Collective() {
           <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${statusBadge.className}`} data-testid="badge-collective-status">{statusBadge.label}</span>
         </div>
         <Card className="overflow-hidden mb-6" data-testid="card-collective-hero">
-          <div className="bg-gradient-to-br from-[hsl(219_45%_20%)] via-[hsl(219_45%_18%)] to-[hsl(184_98%_22%)] text-white p-8">
+          <div className="bg-gradient-to-br from-[hsl(219_45%_20%)] via-[hsl(219_45%_18%)] to-[hsl(0_100%_40%)] text-white p-8">
             <Badge className="bg-white/20 text-white border-0 mb-3">Collective</Badge>
             <h2 className="text-2xl md:text-3xl font-semibold tracking-tight max-w-2xl">
               An invitation-only network of accredited investors.
@@ -91,7 +91,7 @@ export default function Collective() {
         <Card className="mb-6" data-testid="card-eligibility">
           <CardContent className="p-6">
             <div className="flex items-start gap-3 mb-4">
-              <ShieldCheck className="h-5 w-5 text-[hsl(184_98%_22%)] mt-0.5" />
+              <ShieldCheck className="h-5 w-5 text-[hsl(0_100%_40%)] mt-0.5" />
               <div>
                 <h3 className="font-semibold text-sm">Eligibility</h3>
                 <p className="text-xs text-muted-foreground mt-1 max-w-3xl leading-relaxed">
@@ -140,7 +140,7 @@ export default function Collective() {
               },
             ].map((f, i) => (
               <div key={i} className="flex gap-3">
-                <f.icon className="h-5 w-5 text-[hsl(184_98%_22%)] mt-0.5" />
+                <f.icon className="h-5 w-5 text-[hsl(0_100%_40%)] mt-0.5" />
                 <div>
                   <div className="font-medium text-sm">{f.title}</div>
                   <div className="text-xs text-muted-foreground mt-1 leading-relaxed">{f.desc}</div>
@@ -154,7 +154,7 @@ export default function Collective() {
         <Card data-testid="card-for-founders">
           <CardContent className="p-6">
             <div className="flex items-start gap-3 mb-3">
-              <Building2 className="h-5 w-5 text-[hsl(184_98%_22%)] mt-0.5" />
+              <Building2 className="h-5 w-5 text-[hsl(0_100%_40%)] mt-0.5" />
               <div>
                 <h3 className="font-semibold text-sm">For founders</h3>
                 <p className="text-xs text-muted-foreground mt-1 max-w-3xl leading-relaxed">
@@ -168,7 +168,7 @@ export default function Collective() {
             <div className="flex flex-wrap gap-3 mt-4">
               <Link href="/founder/apply-to-collective">
                 <Button
-                  className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+                  className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
                   data-testid="button-go-apply"
                 >
                   Apply to present

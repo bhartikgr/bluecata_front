@@ -206,7 +206,7 @@ export default function InvestorSettings() {
                   <div className="flex gap-2">
                     <Button
                       size="sm"
-                      className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+                      className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
                       onClick={() => saveMut.mutate({ timezone: tzValue })}
                       disabled={saveMut.isPending}
                       data-testid="button-save-settings"
@@ -279,7 +279,7 @@ export default function InvestorSettings() {
                   <div className="flex gap-2">
                     <Button
                       size="sm"
-                      className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+                      className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
                       onClick={() => saveMut.mutate({ notificationPrefs: notifPrefs })}
                       disabled={saveMut.isPending}
                       data-testid="button-save-notif-settings"

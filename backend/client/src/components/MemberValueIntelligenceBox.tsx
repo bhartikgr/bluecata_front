@@ -47,7 +47,7 @@ export function MemberValueIntelligenceBox({ rows }: { rows: Holder[] }) {
     <Card className="mt-4" data-testid="card-member-value-intelligence">
       <CardHeader>
         <CardTitle className="text-sm flex items-center gap-2">
-          <Sparkles className="h-4 w-4 text-[hsl(184_98%_22%)]" />
+          <Sparkles className="h-4 w-4 text-[hsl(0_100%_40%)]" />
           Member value & intelligence
         </CardTitle>
         <p className="text-xs text-muted-foreground mt-1">
@@ -76,7 +76,7 @@ export function MemberValueIntelligenceBox({ rows }: { rows: Holder[] }) {
                 data-testid={`card-holder-${i}`}
               >
                 <div className="flex items-center gap-2">
-                  <div className="h-9 w-9 rounded-full bg-[hsl(184_98%_22%)]/10 text-[hsl(184_98%_22%)] flex items-center justify-center text-xs font-semibold">
+                  <div className="h-9 w-9 rounded-full bg-[hsl(0_100%_40%)]/10 text-[hsl(0_100%_40%)] flex items-center justify-center text-xs font-semibold">
                     {initials}
                   </div>
                   <div className="min-w-0 flex-1">

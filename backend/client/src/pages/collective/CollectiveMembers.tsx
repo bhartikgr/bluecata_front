@@ -71,14 +71,14 @@ export default function CollectiveMembers() {
             style={{ color: "#1A1A2E" }}
             data-testid="heading-members"
           >
-            <Users className="h-5 w-5 text-[#8E2A4E]" />
+            <Users className="h-5 w-5 text-[#cc0001]" />
             Member Directory
           </h1>
           <p className="text-sm text-slate-500 mt-1">
             Investors and consortium partners in the Collective.
           </p>
         </div>
-        <Badge className="bg-[#8E2A4E]/10 text-[#8E2A4E] border-0" data-testid="badge-total-members">
+        <Badge className="bg-[#cc0001]/10 text-[#cc0001] border-0" data-testid="badge-total-members">
           {data?.total ?? 0} members
         </Badge>
       </div>
@@ -144,7 +144,7 @@ export default function CollectiveMembers() {
           {filtered.map((member) => (
             <Card
               key={member.id}
-              className="cursor-pointer hover:border-[#8E2A4E]/30 transition-colors"
+              className="cursor-pointer hover:border-[#cc0001]/30 transition-colors"
               onClick={() => setSelectedMember(member)}
               data-testid={`card-member-${member.id}`}
             >
@@ -153,7 +153,7 @@ export default function CollectiveMembers() {
                   <Avatar className="h-9 w-9 shrink-0">
                     <AvatarFallback
                       className="text-sm font-semibold text-white"
-                      style={{ backgroundColor: "#8E2A4E" }}
+                      style={{ backgroundColor: "#cc0001" }}
                       data-testid={`avatar-${member.id}`}
                     >
                       {member.initials}
@@ -206,7 +206,7 @@ export default function CollectiveMembers() {
                   <Avatar className="h-10 w-10">
                     <AvatarFallback
                       className="text-sm font-semibold text-white"
-                      style={{ backgroundColor: "#8E2A4E" }}
+                      style={{ backgroundColor: "#cc0001" }}
                     >
                       {selectedMember.initials}
                     </AvatarFallback>
@@ -258,7 +258,7 @@ export default function CollectiveMembers() {
                     href={safeExternalHref(selectedMember.website)!}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-xs text-[#8E2A4E] hover:underline block"
+                    className="text-xs text-[#cc0001] hover:underline block"
                     data-testid="link-detail-website"
                   >
                     {selectedMember.website}

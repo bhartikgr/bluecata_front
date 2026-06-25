@@ -35,7 +35,7 @@ function ReadinessBar({ label, value, testId }: { label: string; value: number |
       <div className="flex items-center justify-between text-xs">
         <span className="text-slate-600">{label}</span>
         {value !== null ? (
-          <span className="font-medium" style={{ color: "#8E2A4E" }}>{value}%</span>
+          <span className="font-medium" style={{ color: "#cc0001" }}>{value}%</span>
         ) : (
           <span className="text-slate-400">No data</span>
         )}
@@ -107,7 +107,7 @@ export default function CollectiveDealRoomDetail() {
         ) : (
           <div
             className="h-14 w-14 rounded-lg flex items-center justify-center text-xl font-bold text-white shrink-0"
-            style={{ backgroundColor: "#8E2A4E" }}
+            style={{ backgroundColor: "#cc0001" }}
             data-testid="avatar-company-initials"
           >
             {profile.companyName?.[0] ?? "?"}
@@ -156,17 +156,17 @@ export default function CollectiveDealRoomDetail() {
             {/* v25.17 Lane D NC3 — safeExternalHref hides any link whose URL is not http/https */}
             {safeExternalHref(profile.linkedinUrl) && (
               <a href={safeExternalHref(profile.linkedinUrl)!} target="_blank" rel="noopener noreferrer" data-testid="link-linkedin">
-                <Linkedin className="h-4 w-4 text-slate-400 hover:text-[#8E2A4E]" />
+                <Linkedin className="h-4 w-4 text-slate-400 hover:text-[#cc0001]" />
               </a>
             )}
             {safeExternalHref(profile.crunchbaseUrl) && (
               <a href={safeExternalHref(profile.crunchbaseUrl)!} target="_blank" rel="noopener noreferrer" data-testid="link-crunchbase">
-                <Globe className="h-4 w-4 text-slate-400 hover:text-[#8E2A4E]" />
+                <Globe className="h-4 w-4 text-slate-400 hover:text-[#cc0001]" />
               </a>
             )}
             {safeExternalHref(profile.pitchbookUrl) && (
               <a href={safeExternalHref(profile.pitchbookUrl)!} target="_blank" rel="noopener noreferrer" data-testid="link-pitchbook">
-                <BookOpen className="h-4 w-4 text-slate-400 hover:text-[#8E2A4E]" />
+                <BookOpen className="h-4 w-4 text-slate-400 hover:text-[#cc0001]" />
               </a>
             )}
           </div>
@@ -238,7 +238,7 @@ export default function CollectiveDealRoomDetail() {
                 {mnaReadiness.composite ? (
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-slate-500">Composite score:</span>
-                    <span className="text-lg font-bold" style={{ color: "#8E2A4E" }} data-testid="text-composite-score">
+                    <span className="text-lg font-bold" style={{ color: "#cc0001" }} data-testid="text-composite-score">
                       {mnaReadiness.composite.compositeScore}
                     </span>
                     <Badge className={`text-[10px] ${TIER_COLORS[mnaReadiness.composite.autoTier] ?? ""}`} data-testid="badge-composite-tier">
@@ -264,7 +264,7 @@ export default function CollectiveDealRoomDetail() {
             <Card data-testid="card-sector-benchmark">
               <CardContent className="p-4">
                 <div className="flex items-center gap-3">
-                  <BarChart3 className="h-5 w-5 text-[#8E2A4E]" />
+                  <BarChart3 className="h-5 w-5 text-[#cc0001]" />
                   <div>
                     <p className="text-xs text-slate-500">Sector benchmark (median)</p>
                     <p className="text-lg font-bold" style={{ color: "#1A1A2E" }} data-testid="text-sector-benchmark">

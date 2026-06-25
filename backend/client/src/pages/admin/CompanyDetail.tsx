@@ -299,7 +299,7 @@ export default function AdminCompanyDetail() {
                 v{profile.version}
               </span>
             )}
-            <Badge className="bg-[hsl(327_77%_30%)] text-white border-0" data-testid="badge-audited">
+            <Badge className="bg-[hsl(0_100%_40%)] text-white border-0" data-testid="badge-audited">
               Audited
             </Badge>
           </div>

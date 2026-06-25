@@ -81,7 +81,7 @@ export default function CollectiveDealRoom() {
             style={{ color: "#1A1A2E" }}
             data-testid="heading-dealroom"
           >
-            <Briefcase className="h-5 w-5 text-[#8E2A4E]" />
+            <Briefcase className="h-5 w-5 text-[#cc0001]" />
             Deal Room
           </h1>
           <p className="text-sm text-slate-500 mt-1">
@@ -89,7 +89,7 @@ export default function CollectiveDealRoom() {
           </p>
         </div>
         <Badge
-          className="bg-[#8E2A4E]/10 text-[#8E2A4E] border-0"
+          className="bg-[#cc0001]/10 text-[#cc0001] border-0"
           data-testid="badge-total-companies"
         >
           {data?.total ?? 0} companies
@@ -181,7 +181,7 @@ export default function CollectiveDealRoom() {
                           {company.source === "partner" && (
                             <Badge
                               variant="outline"
-                              className="text-[10px] py-0 border-[#8E2A4E]/40 text-[#8E2A4E]"
+                              className="text-[10px] py-0 border-[#cc0001]/40 text-[#cc0001]"
                               data-testid={`badge-partner-source-${company.companyId}`}
                               title={`Promoted by ${company.sourcePartnerName ?? "a partner"}`}
                             >
@@ -219,7 +219,7 @@ export default function CollectiveDealRoom() {
                       {company.compositeScore !== null ? (
                         <span
                           className="text-sm font-semibold"
-                          style={{ color: "#8E2A4E" }}
+                          style={{ color: "#cc0001" }}
                           data-testid={`score-${company.companyId}`}
                         >
                           {company.compositeScore}

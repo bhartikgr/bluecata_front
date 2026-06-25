@@ -45,7 +45,7 @@ export default function CollectiveSoftCircles() {
             style={{ color: "#1A1A2E" }}
             data-testid="heading-soft-circles"
           >
-            <Circle className="h-5 w-5 text-[#8E2A4E]" />
+            <Circle className="h-5 w-5 text-[#cc0001]" />
             Soft Circles
           </h1>
           <p className="text-sm text-slate-500 mt-1">
@@ -53,7 +53,7 @@ export default function CollectiveSoftCircles() {
           </p>
         </div>
         {data && (
-          <Badge className="bg-[#8E2A4E]/10 text-[#8E2A4E] border-0" data-testid="badge-total-rounds">
+          <Badge className="bg-[#cc0001]/10 text-[#cc0001] border-0" data-testid="badge-total-rounds">
             {data.total} round{data.total !== 1 ? "s" : ""}
           </Badge>
         )}
@@ -96,7 +96,7 @@ export default function CollectiveSoftCircles() {
               <CardContent className="space-y-3">
                 <div className="flex items-center justify-between text-xs text-slate-600">
                   <span>Soft-circled</span>
-                  <span className="font-semibold" style={{ color: "#8E2A4E" }} data-testid={`total-${agg.roundId}`}>
+                  <span className="font-semibold" style={{ color: "#cc0001" }} data-testid={`total-${agg.roundId}`}>
                     {fmtUsd(agg.softCircledTotal)}
                   </span>
                 </div>

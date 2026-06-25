@@ -173,7 +173,7 @@ export function InvestorBroadcastDialog({
                 </Label>
                 <button
                   onClick={toggleAll}
-                  className="text-xs text-[hsl(184_98%_22%)] hover:underline"
+                  className="text-xs text-[hsl(0_100%_40%)] hover:underline"
                   data-testid="button-toggle-all"
                 >
                   {contacts.every((c) => selectedIds.has(c.id)) ? "Deselect all" : "Select all"}
@@ -252,7 +252,7 @@ export function InvestorBroadcastDialog({
             <Button
               onClick={handleSendDms}
               disabled={!body.trim() || selectedIds.size === 0 || sending}
-              className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+              className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
               data-testid="button-send-dms"
             >
               {sending ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <MessageSquare className="w-3.5 h-3.5 mr-1" />}

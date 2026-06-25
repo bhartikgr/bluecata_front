@@ -161,7 +161,7 @@ export function DiscussWithCapTableDialog({
             onClick={() => setMode("message")}
             className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded ${
               mode === "message"
-                ? "bg-[hsl(184_98%_22%)] text-white"
+                ? "bg-[hsl(0_100%_40%)] text-white"
                 : "text-muted-foreground hover:bg-secondary"
             }`}
             data-testid="button-mode-message"
@@ -173,7 +173,7 @@ export function DiscussWithCapTableDialog({
             onClick={() => setMode("post")}
             className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded ${
               mode === "post"
-                ? "bg-[hsl(184_98%_22%)] text-white"
+                ? "bg-[hsl(0_100%_40%)] text-white"
                 : "text-muted-foreground hover:bg-secondary"
             }`}
             data-testid="button-mode-post"
@@ -205,7 +205,7 @@ export function DiscussWithCapTableDialog({
                 <button
                   type="button"
                   onClick={toggleAll}
-                  className="text-xs text-[hsl(184_98%_22%)] hover:underline"
+                  className="text-xs text-[hsl(0_100%_40%)] hover:underline"
                   data-testid="button-toggle-all-recipients"
                 >
                   {allSelected ? "Deselect all" : "Select all"}
@@ -283,7 +283,7 @@ export function DiscussWithCapTableDialog({
           </DialogClose>
           <Button
             size="sm"
-            className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white"
+            className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
             disabled={
               !messageBody.trim() ||
               discussMutation.isPending ||

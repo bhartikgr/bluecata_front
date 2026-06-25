@@ -71,14 +71,14 @@ export default function CollectiveCompanies() {
             style={{ color: "#1A1A2E" }}
             data-testid="heading-companies"
           >
-            <Building2 className="h-5 w-5 text-[#8E2A4E]" />
+            <Building2 className="h-5 w-5 text-[#cc0001]" />
             Companies
           </h1>
           <p className="text-sm text-slate-500 mt-1">
             All companies on the Capavate Collective platform.
           </p>
         </div>
-        <Badge className="bg-[#8E2A4E]/10 text-[#8E2A4E] border-0" data-testid="badge-total">
+        <Badge className="bg-[#cc0001]/10 text-[#cc0001] border-0" data-testid="badge-total">
           {data?.total ?? 0} companies
         </Badge>
       </div>
@@ -175,7 +175,7 @@ export default function CollectiveCompanies() {
                     </TableCell>
                     <TableCell>
                       {company.compositeScore !== null ? (
-                        <span className="text-sm font-semibold" style={{ color: "#8E2A4E" }}
+                        <span className="text-sm font-semibold" style={{ color: "#cc0001" }}
                           data-testid={`score-${company.companyId}`}>
                           {company.compositeScore}
                         </span>

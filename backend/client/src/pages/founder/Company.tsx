@@ -11,7 +11,8 @@
  * the storage layer.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
+import { NewCompanyDialog } from "@/components/NewCompanyDialog";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { PageBody, PageHeader } from "@/components/AppShell";
@@ -61,6 +62,17 @@ export default function Company() {
  const { toast } = useToast();
  const companyId = useActiveCompanyId();
  const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
+ const [, navigate] = useLocation();
+
+ // v25.43 F13 — onboarding (company-first) mode. App.tsx redirects a fresh
+ // founder with no company to /company-profile?onboarding=1. In that mode we
+ // show a "create your company first" welcome and, on a successful create,
+ // forward to /founder/subscribe. Outside onboarding mode the page keeps its
+ // existing in-place profile-edit behaviour.
+ const onboardingMode =
+   typeof window !== "undefined" &&
+   new URLSearchParams(window.location.search).get("onboarding") === "1";
+ const [newCompanyOpen, setNewCompanyOpen] = useState(onboardingMode);
 
  // v23.4.7 Phase 10 / B-104 — Company Profile context snap-back.
  //
@@ -126,6 +138,39 @@ export default function Company() {
  }
 
  if (!companyId) {
+ // v25.43 F13 — first-time onboarding: prompt to create the company first,
+ // then forward to /founder/subscribe on success.
+ if (onboardingMode) {
+ return (
+ <>
+ <PageHeader
+ title="Welcome to Capavate. Create your company first."
+ description="Set up your company to start your cap table, rounds, and investor relations."
+ />
+ <PageBody>
+ <Card>
+ <CardContent className="p-6 space-y-4" data-testid="company-onboarding-create">
+ <div className="text-sm text-muted-foreground">
+ Create the company you’ll be managing on Capavate. You can refine the
+ full profile right after, and choose a plan whenever you’re ready.
+ </div>
+ <Button
+ onClick={() => setNewCompanyOpen(true)}
+ data-testid="button-onboarding-create-company"
+ >
+ Create your company
+ </Button>
+ </CardContent>
+ </Card>
+ <NewCompanyDialog
+ open={newCompanyOpen}
+ onOpenChange={setNewCompanyOpen}
+ onCreated={() => navigate("/founder/dashboard")}
+ />
+ </PageBody>
+ </>
+ );
+ }
  return (
  <>
  <PageHeader title="Company profile" description="No active company" />
@@ -395,7 +440,7 @@ function CompanyWizard({
  >
  <div className="text-sm text-muted-foreground italic text-center pt-8">
  Investor preview — opens full-page at{" "}
- <a href={`/investor/companies/${profile.id}`} target="_blank" rel="noreferrer" className="text-[hsl(184_98%_22%)] underline">
+ <a href={`/investor/companies/${profile.id}`} target="_blank" rel="noreferrer" className="text-[hsl(0_100%_40%)] underline">
    /investor/companies/{profile.id}
  </a>
  </div>

@@ -101,7 +101,7 @@ export default function InvestorDashboard() {
               <Button variant="outline" data-testid="button-go-crm"><Building2 className="h-4 w-4 mr-2" /> CRM</Button>
             </Link>
             <Link href="/investor/invitations">
-              <Button className="bg-[hsl(184_98%_22%)] hover:bg-[hsl(184_98%_18%)] text-white" data-testid="button-invitations">
+              <Button className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-invitations">
                 <Inbox className="h-4 w-4 mr-2" /> Invitations
               </Button>
             </Link>
@@ -138,12 +138,12 @@ export default function InvestorDashboard() {
         >
           {/* Hero — Portfolio overview */}
           <Card
-            className="col-span-1 md:col-span-2 lg:col-span-4 bg-gradient-to-br from-[hsl(184_98%_22%/0.06)] to-[hsl(184_98%_22%/0.02)] border-[hsl(184_98%_22%/0.15)]"
+            className="col-span-1 md:col-span-2 lg:col-span-4 bg-gradient-to-br from-[hsl(0_100%_40%/0.06)] to-[hsl(0_100%_40%/0.02)] border-[hsl(0_100%_40%/0.15)]"
             data-testid="bento-tile-investor-hero"
           >
             <CardContent className="p-6 flex items-start justify-between gap-4 flex-wrap">
               <div>
-                <div className="text-xs uppercase tracking-wide text-[hsl(184_98%_22%)] font-medium">Portfolio overview</div>
+                <div className="text-xs uppercase tracking-wide text-[hsl(0_100%_40%)] font-medium">Portfolio overview</div>
                 <div className="text-xl font-semibold mt-1">{a ? fmtUSD(a.totalCurrentValue, { compact: true }) : "—"} current value</div>
                 <div className="text-sm text-muted-foreground mt-0.5">{a ? `MOIC ${a.moic.toFixed(2)}x · IRR ${a.irr.toFixed(1)}%` : "Loading analytics…"}</div>
               </div>
@@ -158,7 +158,7 @@ export default function InvestorDashboard() {
             <CardContent className="p-5">
               <div className="flex items-center justify-between">
                 <div className="text-xs uppercase tracking-wide text-muted-foreground">Total committed</div>
-                <Target className="h-4 w-4 text-[hsl(184_98%_22%)]" />
+                <Target className="h-4 w-4 text-[hsl(0_100%_40%)]" />
               </div>
               <div className="text-2xl font-semibold tracking-tight mt-2 tabular-nums">{a ? fmtUSD(a.totalInvested, { compact: true }) : "—"}</div>
               <div className="text-xs text-muted-foreground mt-1">across portfolio</div>
@@ -170,7 +170,7 @@ export default function InvestorDashboard() {
             <CardContent className="p-5">
               <div className="flex items-center justify-between">
                 <div className="text-xs uppercase tracking-wide text-muted-foreground">Companies</div>
-                <Building2 className="h-4 w-4 text-[hsl(184_98%_22%)]" />
+                <Building2 className="h-4 w-4 text-[hsl(0_100%_40%)]" />
               </div>
               <div className="text-2xl font-semibold tracking-tight mt-2 tabular-nums">{portfolio.data?.length ?? 0}</div>
               <div className="text-xs text-muted-foreground mt-1">in your cap tables</div>
@@ -210,7 +210,7 @@ export default function InvestorDashboard() {
               <ul className="space-y-1.5">
                 {(activity.data ?? []).slice(0, 3).map(act => (
                   <li key={`bento-${act.id}`} className="flex items-start gap-2 text-xs" data-testid={`bento-activity-${act.id}`}>
-                    <div className="mt-1 h-1.5 w-1.5 rounded-full bg-[hsl(184_98%_22%)] shrink-0" />
+                    <div className="mt-1 h-1.5 w-1.5 rounded-full bg-[hsl(0_100%_40%)] shrink-0" />
                     <div className="flex-1 min-w-0 truncate">
                       <span className="font-medium">{act.company}</span>
                       <span className="text-muted-foreground"> · {act.text}</span>
@@ -283,7 +283,7 @@ export default function InvestorDashboard() {
               <div className="inline-flex rounded-md border border-border p-0.5">
                 {(["stage", "region", "vintage"] as const).map(k => (
                   <button key={k}
-                    className={`text-xs px-2.5 py-1 rounded-sm capitalize ${analyticsView === k ? "bg-[hsl(184_98%_22%)] text-white" : "text-muted-foreground hover:bg-secondary"}`}
+                    className={`text-xs px-2.5 py-1 rounded-sm capitalize ${analyticsView === k ? "bg-[hsl(0_100%_40%)] text-white" : "text-muted-foreground hover:bg-secondary"}`}
                     onClick={() => setAnalyticsView(k)}
                     data-testid={`button-view-${k}`}>{k}</button>
                 ))}
@@ -336,7 +336,7 @@ export default function InvestorDashboard() {
               <tbody>
                 {portfolio.isLoading && (
                   <tr><td colSpan={6} className="text-center py-12 text-sm text-muted-foreground">
-                    <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-muted border-t-[hsl(184_98%_22%)] mr-2 align-middle" />
+                    <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-muted border-t-[hsl(0_100%_40%)] mr-2 align-middle" />
                     Loading portfolio…
                   </td></tr>
                 )}
@@ -386,7 +386,7 @@ export default function InvestorDashboard() {
               })}
               {activity.isLoading && (
                 <li className="text-center py-12 text-sm text-muted-foreground">
-                  <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-muted border-t-[hsl(184_98%_22%)] mr-2 align-middle" />
+                  <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-muted border-t-[hsl(0_100%_40%)] mr-2 align-middle" />
                   Loading activity…
                 </li>
               )}
@@ -414,7 +414,7 @@ function MaRow({ pos, navigate, toast }: { pos: Position; navigate: (to: string)
   const [discussOpen, setDiscussOpen] = useState(false);
   const i = intel.data;
   const intentColor = i?.intentSignal === "active_negotiation" ? "bg-[hsl(7_61%_43%)]/10 text-[hsl(7_61%_43%)] border-[hsl(7_61%_43%)]/40"
-    : i?.intentSignal === "inbound" ? "bg-[hsl(184_98%_22%)]/10 text-[hsl(184_98%_22%)] border-[hsl(184_98%_22%)]/40"
+    : i?.intentSignal === "inbound" ? "bg-[hsl(0_100%_40%)]/10 text-[hsl(0_100%_40%)] border-[hsl(0_100%_40%)]/40"
     : i?.intentSignal === "outbound" ? "bg-[hsl(333_75%_35%)]/10 text-[hsl(333_75%_35%)] border-[hsl(333_75%_35%)]/40"
     : "bg-muted text-muted-foreground border-border";
 
@@ -482,7 +482,7 @@ function KpiSpark({
         </div>
         <div className="text-lg font-semibold mt-1" data-testid={`${testid}-value`}>{value}</div>
         <div className="mt-1.5">
-          <Sparkline data={data.length ? data : [0, 0]} stroke={positive ? "hsl(184 98% 22%)" : "hsl(7 61% 43%)"} />
+          <Sparkline data={data.length ? data : [0, 0]} stroke={positive ? "hsl(0 100% 40%)" : "hsl(7 61% 43%)"} />
         </div>
         {sub && <div className={`text-[11px] mt-1 ${positive ? "text-emerald-700 " : "text-rose-700 "}`}>{sub}</div>}
       </CardContent>
@@ -507,7 +507,7 @@ function AnalyticsBlock({ buckets }: { buckets: Record<string, { invested: numbe
               </span>
             </div>
             <div className="h-2 bg-secondary rounded-full overflow-hidden">
-              <div className="h-full bg-[hsl(184_98%_22%)]" style={{ width: `${(v.invested / max) * 100}%` }} />
+              <div className="h-full bg-[hsl(0_100%_40%)]" style={{ width: `${(v.invested / max) * 100}%` }} />
             </div>
           </div>
         );
@@ -522,9 +522,9 @@ function CohortBar({ p25, p50, p75, you }: { p25: number; p50: number; p75: numb
   return (
     <div className="space-y-3 pt-2">
       <div className="relative h-12 bg-secondary rounded-md">
-        <div className="absolute inset-y-0 left-0 bg-[hsl(184_98%_22%)]/20 rounded-l-md" style={{ width: pct(p25) }} />
-        <div className="absolute inset-y-0 left-0 bg-[hsl(184_98%_22%)]/40" style={{ width: pct(p50) }} />
-        <div className="absolute inset-y-0 left-0 bg-[hsl(184_98%_22%)]/60" style={{ width: pct(p75) }} />
+        <div className="absolute inset-y-0 left-0 bg-[hsl(0_100%_40%)]/20 rounded-l-md" style={{ width: pct(p25) }} />
+        <div className="absolute inset-y-0 left-0 bg-[hsl(0_100%_40%)]/40" style={{ width: pct(p50) }} />
+        <div className="absolute inset-y-0 left-0 bg-[hsl(0_100%_40%)]/60" style={{ width: pct(p75) }} />
         <div className="absolute inset-y-0 w-0.5 bg-[hsl(333_75%_35%)]" style={{ left: pct(you) }} title="You" data-testid="marker-you" />
       </div>
       <div className="grid grid-cols-4 gap-2 text-xs">

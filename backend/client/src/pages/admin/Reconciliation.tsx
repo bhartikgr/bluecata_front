@@ -109,7 +109,7 @@ export default function AdminReconciliation() {
  description="Belt-and-suspenders cap-table accuracy. Primary engine (decimal.js) vs reference engine (BigInt scaled fixed-point). Match required to close any round."
  breadcrumbs={[{ label: "Admin" }, { label: "Reconciliation" }]}
  actions={
- <Badge className="bg-[hsl(327_77%_30%)] text-white border-0">
+ <Badge className="bg-[hsl(0_100%_40%)] text-white border-0">
  Dual-engine gate
  </Badge>
  }
@@ -143,7 +143,7 @@ export default function AdminReconciliation() {
  <Card>
  <CardHeader className="pb-3">
  <CardTitle className="text-base flex items-center gap-2">
- <GitCompareArrows className="h-4 w-4 text-[hsl(327_77%_30%)]" />
+ <GitCompareArrows className="h-4 w-4 text-[hsl(0_100%_40%)]" />
  Live reconciliation runner
  </CardTitle>
  </CardHeader>
@@ -162,7 +162,7 @@ export default function AdminReconciliation() {
  </SelectContent>
  </Select>
  </div>
- <Button onClick={handleRun} disabled={!companyId} className="bg-[hsl(327_77%_30%)] hover:bg-[hsl(327_77%_25%)]" data-testid="button-run-reconciliation">
+ <Button onClick={handleRun} disabled={!companyId} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)]" data-testid="button-run-reconciliation">
  <RefreshCw className="h-4 w-4 mr-2" />
  Run reconciliation now
  </Button>

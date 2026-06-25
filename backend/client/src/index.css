@@ -1,3 +1,12 @@
+/* v25.43 F9 — Capavate.com brand typography. Body uses Montserrat (falling
+   back to the existing Inter stack); display headings use Instrument Serif.
+   This is additive: it only feeds the EXISTING --font-sans / --font-serif
+   custom properties already wired into tailwind.config.ts (fontFamily.sans /
+   fontFamily.serif), so no new font infrastructure or breaking changes are
+   introduced. If the webfont fails to load, the prior Inter/Georgia stacks
+   remain as fallbacks. */
+@import url("https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Instrument+Serif:ital@0;1&display=swap");
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -17,7 +26,13 @@
      to `bg-cap-primary` / `bg-cap-secondary`. Additive: no existing styles
      are altered. v23 supports BOTH the literal and the var.
      Values mirror the Hydra Teal accent and Navy primary above. */
-  --cap-primary: 184 98% 22%;        /* Hydra Teal */
+  /* v25.43 R4 — retained: legacy --cap-* token namespace (Wave E). These are
+     NOT consumed by any live surface (only referenced in comments) and are
+     asserted byte-for-byte by brandColorVars.test.ts + design-tokens.ts. The
+     app-wide red flip is driven through --primary/--accent/--ring above; this
+     dormant token stays at its historical Hydra-Teal value to avoid breaking
+     the design-token contract test. No visual impact. */
+  --cap-primary: 184 98% 22%;        /* Hydra Teal (dormant token; see note) */
   --cap-primary-hover: 184 98% 18%;
   --cap-secondary: 219 45% 20%;      /* Navy */
   --cap-secondary-hover: 219 45% 16%;
@@ -55,18 +70,23 @@
   --sidebar: 219 45% 20%;            /* Navy */
   --sidebar-foreground: 210 40% 96%;
   --sidebar-border: 219 40% 28%;
-  --sidebar-primary: 184 98% 22%;    /* Hydra Teal */
+  /* v25.43 R4 — Capavate brand red (#cc0001 = 0 100% 40%). The sidebar active
+     item now reads in the brand red rather than the old Hydra Teal. */
+  --sidebar-primary: 0 100% 40%;     /* Capavate Red #cc0001 */
   --sidebar-primary-foreground: 0 0% 100%;
   --sidebar-accent: 219 40% 27%;
   --sidebar-accent-foreground: 210 40% 96%;
-  --sidebar-ring: 184 98% 30%;
+  --sidebar-ring: 0 100% 40%;        /* Capavate Red */
 
   --popover: 0 0% 100%;
   --popover-foreground: 219 45% 14%;
   --popover-border: 215 20% 88%;
 
-  --primary: 219 45% 20%;            /* Navy */
-  --primary-foreground: 210 40% 98%;
+  /* v25.43 R4 — APP-WIDE brand flip. --primary is the Capavate brand red
+     (#cc0001 = 0 100% 40%). Every bg-primary / text-primary / ring-primary /
+     border-primary surface inherits red automatically (shadcn token pattern). */
+  --primary: 0 100% 40%;             /* Capavate Red #cc0001 */
+  --primary-foreground: 0 0% 100%;   /* white text on red */
 
   --secondary: 215 25% 94%;
   --secondary-foreground: 219 45% 16%;
@@ -74,7 +94,9 @@
   --muted: 215 25% 95%;
   --muted-foreground: 219 15% 42%;
 
-  --accent: 184 98% 22%;             /* Hydra Teal */
+  /* v25.43 R4 — accent flipped from Hydra Teal to brand red so every
+     bg-accent / text-accent surface also reads in the Capavate red. */
+  --accent: 0 100% 40%;              /* Capavate Red #cc0001 */
   --accent-foreground: 0 0% 100%;
 
   --highlight: 333 75% 35%;          /* Plum */
@@ -90,17 +112,20 @@
   --warning-foreground: 0 0% 100%;
 
   --input: 215 20% 80%;
-  --ring: 184 98% 26%;
+  /* v25.43 R4 — focus ring flipped to brand red. */
+  --ring: 0 100% 40%;                /* Capavate Red #cc0001 */
 
   --chart-1: 219 45% 28%;            /* Navy lighter */
-  --chart-2: 184 98% 28%;            /* Hydra */
+  --chart-2: 184 98% 28%;            /* retained: multi-hue data-viz palette (not a brand surface) */
   --chart-3: 333 75% 40%;            /* Plum */
   --chart-4: 38 92% 50%;             /* Amber */
   --chart-5: 158 64% 38%;            /* Green */
   --chart-6: 219 70% 55%;            /* Bright blue */
 
-  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-  --font-serif: Georgia, serif;
+  /* v25.43 F9 — Montserrat (brand body) prepended to the existing Inter stack. */
+  --font-sans: Montserrat, Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  /* v25.43 F9 — Instrument Serif (brand display) prepended to the serif stack. */
+  --font-serif: "Instrument Serif", Georgia, serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
   --radius: 0.5rem;
   --shadow-2xs: 0px 1px 2px 0px hsl(219 45% 14% / 0.04);
@@ -196,8 +221,10 @@
   /* Capavate brand utilities */
   .bg-navy { background-color: hsl(219 45% 20%); }
   .text-navy { color: hsl(219 45% 20%); }
-  .bg-hydra { background-color: hsl(184 98% 22%); }
-  .text-hydra { color: hsl(184 98% 22%); }
+  /* v25.43 R4 — the legacy .bg-hydra/.text-hydra brand utilities now emit the
+     Capavate brand red so any remaining consumer reads in the new palette. */
+  .bg-hydra { background-color: hsl(0 100% 40%); }
+  .text-hydra { color: hsl(0 100% 40%); }
   .bg-plum { background-color: hsl(333 75% 35%); }
   .text-plum { color: hsl(333 75% 35%); }
 

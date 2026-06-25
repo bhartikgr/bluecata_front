@@ -63,7 +63,7 @@ export function DscSummaryCard({ companyId, isDscMember }: DscSummaryCardProps) 
     <Card data-testid="card-dsc-summary">
       <CardHeader className="pb-3">
         <CardTitle className="text-base flex items-center gap-2">
-          <ScrollText className="h-4 w-4 text-[hsl(184_98%_22%)]" /> DSC review feedback
+          <ScrollText className="h-4 w-4 text-[hsl(0_100%_40%)]" /> DSC review feedback
           {!isDscMember && (
             <Badge variant="outline" className="text-[10px] flex items-center gap-1">
               <Lock className="h-3 w-3" /> Tier only
@@ -101,7 +101,7 @@ export function DscSummaryCard({ companyId, isDscMember }: DscSummaryCardProps) 
                 <div className="text-xs uppercase tracking-wide text-muted-foreground">Aggregate</div>
                 <div className="text-2xl font-semibold">{fb.aggregate.toFixed(1)}</div>
               </div>
-              <Badge className="bg-[hsl(184_98%_22%)] text-white capitalize">{fb.autoTier}</Badge>
+              <Badge className="bg-[hsl(0_100%_40%)] text-white capitalize">{fb.autoTier}</Badge>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div data-testid="dsc-top-three">

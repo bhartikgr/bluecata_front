@@ -309,7 +309,7 @@ function MarkHistoryChart({ positionId }: { positionId: string }) {
                 <Line
                   type="monotone"
                   dataKey="value"
-                  stroke="hsl(184 98% 22%)"
+                  stroke="hsl(0 100% 40%)"
                   strokeWidth={2}
                   dot={false}
                 />

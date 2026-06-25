@@ -170,8 +170,8 @@ function StatusBadge({ s }: { s: ContactStatus }) {
 
 function KindBadge({ kind }: { kind: ContactKind }) {
   const map: Record<ContactKind, { label: string; className: string }> = {
-    investor: { label: "Investor", className: "bg-[hsl(184_98%_22%)]/10 text-[hsl(184_98%_22%)]" },
-    founder: { label: "Founder", className: "bg-[hsl(327_77%_30%)]/10 text-[hsl(327_77%_30%)]" },
+    investor: { label: "Investor", className: "bg-[hsl(0_100%_40%)]/10 text-[hsl(0_100%_40%)]" },
+    founder: { label: "Founder", className: "bg-[hsl(0_100%_40%)]/10 text-[hsl(0_100%_40%)]" },
     consortium_partner: { label: "Partner", className: "bg-violet-100 text-violet-900 border-0" },
   };
   const { label, className } = map[kind];
@@ -199,8 +199,8 @@ function StatCard({
     <Card>
       <CardContent className="pt-4 pb-4">
         <div className="flex items-center gap-3">
-          <div className={`h-9 w-9 rounded-lg flex items-center justify-center ${accent ?? "bg-[hsl(184_98%_22%)]/10"}`}>
-            <Icon className={`h-4 w-4 ${accent ? "text-white" : "text-[hsl(184_98%_22%)]"}`} />
+          <div className={`h-9 w-9 rounded-lg flex items-center justify-center ${accent ?? "bg-[hsl(0_100%_40%)]/10"}`}>
+            <Icon className={`h-4 w-4 ${accent ? "text-white" : "text-[hsl(0_100%_40%)]"}`} />
           </div>
           <div>
             <div className="text-xs text-muted-foreground uppercase tracking-wide">{label}</div>
@@ -489,7 +489,7 @@ function ContactsTable({ contacts, tab, selected, onToggleSelect, onToggleAll }:
             <td className="px-4 py-3">
               <div className="flex items-center gap-3">
                 <Avatar className="h-8 w-8">
-                  <AvatarFallback className="bg-[hsl(184_98%_22%)]/15 text-[hsl(184_98%_22%)] text-xs font-semibold">
+                  <AvatarFallback className="bg-[hsl(0_100%_40%)]/15 text-[hsl(0_100%_40%)] text-xs font-semibold">
                     {initials(c.displayName)}
                   </AvatarFallback>
                 </Avatar>

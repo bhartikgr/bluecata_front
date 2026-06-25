@@ -7,7 +7,7 @@ import { asArray } from "@/lib/safeArray";
  *   - Hero: "The capital-formation OS for founders and the investors who back them. ..."
  *   - Two big CTA cards: "I'M A FOUNDER" + "I'M AN INVESTOR"
  *   - Investor disclaimer below
- *   - Footer chips: SOC 2 Type II + Connected to Capavate Collective
+ *   - Footer chip: Connected to Capavate Collective
  *
  * NO third button (no role-chip system). Investors NEVER self-sign-up.
  *
@@ -16,7 +16,7 @@ import { asArray } from "@/lib/safeArray";
 import { Link, useLocation } from "wouter";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowRight, ShieldCheck, Sparkles, Briefcase, Wallet, Copy, Check } from "lucide-react";
+import { ArrowRight, Sparkles, Briefcase, Wallet, Copy, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { CapavateLogo } from "@/components/CapavateLogo";
@@ -105,7 +105,7 @@ export default function Landing() {
             type="button"
             onClick={goFounder}
             aria-label="Continue as founder — sign in or get started"
-            className="text-left rounded-lg group cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[hsl(184_98%_22%)]"
+            className="text-left rounded-lg group cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[hsl(0_100%_40%)]"
             data-testid="card-founder-path"
           >
             <Card className="border-[hsl(219_45%_14%)]/15 group-hover:border-[hsl(219_45%_14%)]/40 group-hover:shadow-md transition-all">
@@ -122,7 +122,7 @@ export default function Landing() {
                 <p className="mt-2 text-sm text-[hsl(219_25%_30%)] leading-relaxed">
                   Run your company(ies). Cap table, rounds, dataroom, and investor comms — all in one place.
                 </p>
-                <div className="mt-6 inline-flex items-center text-sm font-medium text-[hsl(184_98%_22%)] group-hover:translate-x-1 transition-transform">
+                <div className="mt-6 inline-flex items-center text-sm font-medium text-[hsl(0_100%_40%)] group-hover:translate-x-1 transition-transform">
                   Sign in / Get started <ArrowRight className="ml-1.5 h-4 w-4" />
                 </div>
               </CardContent>
@@ -133,16 +133,16 @@ export default function Landing() {
             type="button"
             onClick={goInvestor}
             aria-label="Continue as investor — sign in to view your invitation or portfolio"
-            className="text-left rounded-lg group cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[hsl(184_98%_22%)]"
+            className="text-left rounded-lg group cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[hsl(0_100%_40%)]"
             data-testid="card-investor-path"
           >
             <Card className="border-[hsl(219_45%_14%)]/15 group-hover:border-[hsl(219_45%_14%)]/40 group-hover:shadow-md transition-all">
               <CardContent className="p-7 md:p-8">
                 <div className="flex items-center justify-between mb-5">
-                  <span className="inline-flex h-10 w-10 items-center justify-center rounded-md bg-[hsl(327_77%_30%)] text-white">
+                  <span className="inline-flex h-10 w-10 items-center justify-center rounded-md bg-[hsl(0_100%_40%)] text-white">
                     <Wallet className="h-5 w-5" />
                   </span>
-                  <span className="text-[10px] tracking-widest font-semibold text-[hsl(327_77%_30%)]">
+                  <span className="text-[10px] tracking-widest font-semibold text-[hsl(0_100%_40%)]">
                     INVESTOR
                   </span>
                 </div>
@@ -150,7 +150,7 @@ export default function Landing() {
                 <p className="mt-2 text-sm text-[hsl(219_25%_30%)] leading-relaxed">
                   Sign in to view your invitation or portfolio.
                 </p>
-                <div className="mt-6 inline-flex items-center text-sm font-medium text-[hsl(184_98%_22%)] group-hover:translate-x-1 transition-transform">
+                <div className="mt-6 inline-flex items-center text-sm font-medium text-[hsl(0_100%_40%)] group-hover:translate-x-1 transition-transform">
                   Sign in <ArrowRight className="ml-1.5 h-4 w-4" />
                 </div>
               </CardContent>
@@ -199,7 +199,7 @@ export default function Landing() {
                     </Button>
                     <Link
                       href={`/auth/redeem?token=${t.rawToken}`}
-                      className="text-[11px] text-[hsl(184_98%_22%)] underline underline-offset-2"
+                      className="text-[11px] text-[hsl(0_100%_40%)] underline underline-offset-2"
                       data-testid={`link-token-${t.id}`}
                     >
                       Open
@@ -215,9 +215,6 @@ export default function Landing() {
 
       {/* Footer chips */}
       <footer className="px-6 md:px-10 py-6 border-t border-black/5 flex items-center gap-6 text-xs text-[hsl(219_25%_30%)]">
-        <span className="inline-flex items-center gap-1.5" data-testid="chip-soc2">
-          <ShieldCheck className="h-3.5 w-3.5" /> SOC 2 Type II
-        </span>
         <span className="inline-flex items-center gap-1.5" data-testid="chip-collective">
           <Sparkles className="h-3.5 w-3.5" /> Connected to Capavate Collective
         </span>

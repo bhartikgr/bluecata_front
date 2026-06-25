@@ -212,6 +212,14 @@ function applyInlineMigrations(db: any) {
    * literal in partnerConsortiumRoutes.ts is UNTOUCHED — these tables back the
    * new resolvers only. CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE. */
   applyV2538PricingConfigSchema(db);
+
+  /* v25.42h -- Housekeeping wave. Replaces the in-memory telemetry envelope
+   * buffer in sprint10Telemetry.ts with a DB-backed `telemetry_events` table
+   * (the high-volume KPI firehose alongside audit_log). Additive only:
+   * CREATE TABLE IF NOT EXISTS + CREATE INDEX IF NOT EXISTS. No columns are
+   * altered on existing tables and there are NO foreign keys to Avi-owned
+   * tables, so this cannot constrain Avi data. Idempotent + boot-safe. */
+  applyV2542HTelemetryEventsSchema(db);
 }
 
 
@@ -580,6 +588,56 @@ function applyV2538PricingConfigSchema(db: any) {
     tx();
   } catch (err) {
     log.warn("[db] v25.38 pricing-config bootstrap failed (continuing):", (err as Error).message);
+  }
+}
+
+/* ==========================================================================
+ * v25.42h Housekeeping — telemetry_events firehose table.
+ *
+ * sprint10Telemetry.ts previously buffered SyncEnvelope<T> rows in a
+ * module-level `const events: SyncEnvelope<unknown>[] = []`. Its header
+ * documented this as a preview-only in-memory store ("In production this is
+ * replaced by the outbox table -> webhook relay"). This wave makes it durable.
+ *
+ * Schema (per the v25.42h brief):
+ *   id PK, tenant_id, event_type, aggregate_id, aggregate_kind, occurred_at,
+ *   actor_user_id, actor_ip, payload_json, schema_version, created_at
+ * Plus a trace_json column to persist the Sprint 14 D7 trace[] array that the
+ * envelope carries (so downstream replay/regression tooling still sees it).
+ *
+ * Index on (tenant_id, occurred_at DESC) backs getRecentEvents()'s
+ * ORDER BY occurred_at DESC LIMIT ? read path.
+ *
+ * Additive only; no FKs to existing tables. Idempotent. Boot-safe.
+ * ========================================================================== */
+function applyV2542HTelemetryEventsSchema(db: any) {
+  const stmts: string[] = [
+    `CREATE TABLE IF NOT EXISTS telemetry_events (
+      id             TEXT PRIMARY KEY NOT NULL,
+      tenant_id      TEXT NOT NULL,
+      event_type     TEXT NOT NULL,
+      aggregate_id   TEXT NOT NULL,
+      aggregate_kind TEXT NOT NULL,
+      occurred_at    TEXT NOT NULL,
+      actor_user_id  TEXT,
+      actor_ip       TEXT,
+      payload_json   TEXT,
+      trace_json     TEXT,
+      schema_version TEXT NOT NULL DEFAULT '1.0',
+      created_at     TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_telemetry_events_tenant_occurred
+       ON telemetry_events(tenant_id, occurred_at DESC);`,
+    `CREATE INDEX IF NOT EXISTS idx_telemetry_events_type
+       ON telemetry_events(event_type);`,
+    `CREATE INDEX IF NOT EXISTS idx_telemetry_events_occurred
+       ON telemetry_events(occurred_at DESC);`,
+  ];
+  try {
+    const tx = db.transaction(() => { for (const sql of stmts) db.exec(sql); });
+    tx();
+  } catch (err) {
+    log.warn("[db] v25.42h telemetry_events bootstrap failed (continuing):", (err as Error).message);
   }
 }
 
