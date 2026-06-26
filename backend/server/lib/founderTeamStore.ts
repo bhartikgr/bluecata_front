@@ -56,6 +56,10 @@ function ensureTables(): void {
       accepted_at TEXT,
       deleted_at TEXT
     );`);
+    // v25.45 F8d — add sent_at so we can PROVE the invite email send path was
+    // invoked (the bug: invites were inserted but no email ever sent and no
+    // send was recorded). Idempotent ALTER for existing DBs.
+    try { db.exec(`ALTER TABLE founder_team_invitations ADD COLUMN sent_at TEXT;`); } catch { /* column exists */ }
     db.exec(`CREATE INDEX IF NOT EXISTS idx_fti_company ON founder_team_invitations(company_id);`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_fti_email ON founder_team_invitations(invited_email);`);
 
@@ -152,6 +156,34 @@ export function registerFounderTeamRoutes(app: Express): void {
          ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
       ).run(id, companyId, ctx.userId, email, name, roleRaw, tokenHash, expires, now);
 
+      /* v25.45 F8d — actually INVOKE the email send path (the prior code never
+       * sent anything). We use the shared emailTransport.sendMail, which in
+       * dev/test runs in console/dry_run mode (no real email leaves the box but
+       * the send path IS exercised) and in prod sends via the configured SMTP
+       * transport. On a successful send we stamp sent_at so the row proves the
+       * invite was dispatched. A send failure no longer silently swallows — it
+       * is logged and surfaced via sent_at staying NULL. */
+      let sentAt: string | null = null;
+      try {
+        const { sendMail } = require("../emailTransport") as typeof import("../emailTransport");
+        const redeemUrl = `https://capavate.com/team/invite/${token}`;
+        const sendResult = await sendMail({
+          to: email,
+          subject: "You've been invited to a Capavate workspace",
+          html: `<p>${name ? name + ", you" : "You"} have been invited to join a Capavate company workspace as <strong>${roleRaw}</strong>.</p>` +
+                `<p><a href="${redeemUrl}">Accept your invitation</a> (expires in 14 days).</p>`,
+          text: `You've been invited to a Capavate workspace as ${roleRaw}. Accept: ${redeemUrl}`,
+          idempotencyKey: `team_invite_${id}`,
+        });
+        if (sendResult.ok) {
+          sentAt = new Date().toISOString();
+          db.prepare(`UPDATE founder_team_invitations SET sent_at = ? WHERE id = ?`).run(sentAt, id);
+        }
+      } catch (sendErr) {
+        // Do not block the invitation row creation; surface the failure in logs.
+        try { const { log } = require("./logger"); log.warn("[founderTeamStore] invite email send failed:", (sendErr as Error).message); } catch { /* logger optional */ }
+      }
+
       /* Bridge event so other components (e.g. notification campaign worker,
        * partner sync) can react. */
       try {
@@ -175,6 +207,7 @@ export function registerFounderTeamRoutes(app: Express): void {
           status: "pending",
           expiresAt: expires,
           createdAt: now,
+          sentAt,
         },
         redeemUrl: `https://capavate.com/team/invite/${token}`,
       });

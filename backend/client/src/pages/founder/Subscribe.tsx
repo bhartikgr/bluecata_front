@@ -218,6 +218,28 @@ export default function FounderSubscribe() {
   const companies = entCtx?.founder?.companies ?? [];
   const noCompany = !!entCtx && companies.length === 0;
 
+  /* v25.45 ROUND 2 (BLOCKER 2) — self-serve workspace revival. The archived
+   * dashboard banner links here as /founder/subscribe?reactivate=1. When that
+   * flag is present we (a) render "Reactivate {companyName}" instead of "Choose
+   * your plan", (b) show a reactivation notice, (c) pre-select the founder's
+   * last_active_plan, and (d) on successful payment call
+   * POST /api/founder/workspace/reactivate to clear the archive flags before
+   * routing to the dashboard. */
+  const isReactivate = typeof window !== "undefined"
+    && new URLSearchParams(window.location.search).get("reactivate") === "1";
+
+  const { data: archiveState } = useQuery<{
+    ok: boolean; companyName: string | null; lastActivePlan: string | null; archiveStatus: string;
+  }>({
+    queryKey: ["/api/founder/workspace/archive-state", companyId],
+    queryFn: async () =>
+      (await apiRequest("GET", `/api/founder/workspace/archive-state?companyId=${companyId}`)).json(),
+    retry: false,
+    enabled: isReactivate && !!companyId,
+  });
+  const reactivateCompanyName = archiveState?.companyName ?? "";
+  const lastActivePlan = archiveState?.lastActivePlan ?? "";
+
   /* v25.27 — fetch the admin-configured tier list. */
   const {
     data: tiersData,
@@ -244,6 +266,17 @@ export default function FounderSubscribe() {
       setSelectedTierId(recommended.id);
     }
   }, [tiers, selectedTierId]);
+
+  /* v25.45 ROUND 2 (BLOCKER 2) — in the reactivate flow, pre-select the
+   * founder's last_active_plan (matched by tier id OR slug) once both the tier
+   * list and the archive-state have loaded. */
+  useEffect(() => {
+    if (!isReactivate || !lastActivePlan || tiers.length === 0) return;
+    const match = tiers.find(
+      (t) => t.id === lastActivePlan || t.slug === lastActivePlan,
+    );
+    if (match) setSelectedTierId(match.id);
+  }, [isReactivate, lastActivePlan, tiers]);
 
   const selectedTier = tiers.find((t) => t.id === selectedTierId);
 
@@ -340,8 +373,31 @@ export default function FounderSubscribe() {
         queryClient.invalidateQueries({ queryKey: ["/api/founder/active-company"] });
         queryClient.invalidateQueries({ queryKey: ["/api/founder/companies"] });
         queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
-        toast({ title: "Subscribed!", description: "Your subscription is now active." });
         legalConsentRef.current?.recordConsent().catch(() => null);
+        // v25.45 ROUND 2 (BLOCKER 2) — on successful payment in the reactivate
+        // flow, clear the archive flags BEFORE routing to the dashboard so the
+        // archived banner does not reappear. Failure to reactivate surfaces a
+        // toast and keeps the founder on the page to retry.
+        if (isReactivate && companyId) {
+          try {
+            const rr = await apiRequest("POST", "/api/founder/workspace/reactivate", { companyId });
+            const rj = await rr.json();
+            if (!rj?.ok) throw new Error(rj?.error ?? "reactivate_failed");
+            queryClient.invalidateQueries({ queryKey: ["/api/founder/workspace/archive-state"] });
+            queryClient.invalidateQueries({ queryKey: ["/api/founder/workspace/archive-status"] });
+            toast({ title: "Workspace reactivated", description: "Welcome back — your workspace is active again." });
+            navigate("/founder/dashboard");
+            return;
+          } catch (reErr: any) {
+            toast({
+              title: "Reactivation failed",
+              description: reErr?.message ?? "Payment succeeded but we could not reactivate the workspace. Please retry.",
+              variant: "destructive",
+            });
+            return;
+          }
+        }
+        toast({ title: "Subscribed!", description: "Your subscription is now active." });
         navigate("/founder/dashboard");
       } else {
         toast({ title: "Payment failed", description: data.error ?? "Please try again.", variant: "destructive" });
@@ -409,10 +465,22 @@ export default function FounderSubscribe() {
             <Sparkles className="h-6 w-6 text-[hsl(0_100%_40%)]" />
             <img src={capavateLogoUrl} alt="Capavate" className="h-7 w-auto" data-testid="subscribe-logo" />
           </div>
-          <h1 className="text-xl font-semibold mb-2">Choose your plan</h1>
+          <h1 className="text-xl font-semibold mb-2" data-testid="subscribe-header">
+            {isReactivate
+              ? `Reactivate ${reactivateCompanyName || "your workspace"}`
+              : "Choose your plan"}
+          </h1>
           <p className="text-sm text-muted-foreground max-w-md mx-auto">
             Start managing your cap table, fundraising, and investor relations. Annual billing — cancel any time.
           </p>
+          {isReactivate && (
+            <div
+              className="mt-3 mx-auto max-w-md px-3 py-2 rounded-md border border-[#cc0001]/30 bg-[#cc0001]/5 text-[12px] text-[#cc0001]"
+              data-testid="reactivate-notice"
+            >
+              Reactivating your archived workspace. Your previous plan will be restored on successful payment.
+            </div>
+          )}
           {subData?.subscription && (
             <div className="inline-flex items-center gap-2 mt-2 px-3 py-1 bg-sky-50 border border-sky-200 rounded-full text-[11px] text-sky-700">
               Current plan: <strong>{subData.subscription.plan.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}</strong>

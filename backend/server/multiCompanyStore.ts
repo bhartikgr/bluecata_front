@@ -130,6 +130,14 @@ const USER_COMPANIES = new Map<string, FounderCompanyMembership[]>();
 // PATCH v3: Per-user active company. Keyed by userId.
 const USER_ACTIVE_COMPANY = new Map<string, string>();
 
+// v25.45 Bug B FIX — reserved internal bucket key for companies that exist in
+// the `companies` table but have no live `company_members` link. Hydration
+// backfills these here so the admin Companies panel can see every persisted
+// company. The double-underscore prefix guarantees it can never collide with a
+// real userId (all real ids are `u_*`), so getCompaniesForFounder(userId) and
+// the legacy no-arg path (u_maya_chen) are never affected.
+const ORPHAN_OWNER_KEY = "__orphan_unlinked_companies__";
+
 // Patch v4: demo data ONLY for u_maya_chen, AND only when demo gate is on.
 if (DEMO_SEED_ENABLED) {
 USER_COMPANIES.set("u_maya_chen", [
@@ -407,6 +415,74 @@ export function getAllCompanies(): FounderCompanyMembership[] {
 }
 
 /**
+ * v25.45 Bug B FIX — DB-authoritative company list for the admin surface.
+ *
+ * ROOT CAUSE: getAllCompanies() reads ONLY the in-memory USER_COMPANIES Map,
+ * and that Map is rebuilt at boot by iterating `company_members` (see
+ * hydrateMultiCompanyStore). A company that exists in the `companies` table
+ * but has no live `company_members` row is dropped from the Map after every
+ * restart, so the admin Companies panel cannot see it (founder-reported:
+ * "my company is not recorded in the Admin area").
+ *
+ * v25.45 Bug B ROUND-2 FIX (GPT-5.5 blocker 1): the admin list is now
+ * STRICTLY DB-AUTHORITATIVE. The membership set is defined exclusively by the
+ * live `companies` table SELECT where `deletedAt IS NULL`. The in-memory Map
+ * may ONLY overlay field details (KPI/billing/role) for company IDs that still
+ * exist in that DB result set. A Map-only entry that has no DB row is NEVER
+ * included, and a soft-deleted company (deletedAt set, or absent from the live
+ * SELECT) is excluded even when a stale Map entry remains in process memory.
+ *
+ * This closes the prior fail-open behavior where all USER_COMPANIES entries
+ * were inserted first and DB rows were only an overlay — a company removed or
+ * soft-deleted in DB after hydration could still appear in Admin. Now the DB
+ * is the source of truth for existence; the Map is the source of detail only.
+ *
+ * 100% DB-driven: the canonical set comes from `companies`, not a cache.
+ */
+export function getAllCompaniesFromDb(): FounderCompanyMembership[] {
+  // Build a detail-overlay index from the in-memory Map, keyed by companyId.
+  // This is used ONLY to enrich rows that the DB confirms exist; it never
+  // contributes membership on its own.
+  const mapDetailById = new Map<string, FounderCompanyMembership>();
+  for (const companies of Array.from(USER_COMPANIES.values())) {
+    for (const c of companies as FounderCompanyMembership[]) {
+      if (!mapDetailById.has(c.companyId)) mapDetailById.set(c.companyId, c);
+    }
+  }
+
+  // The live DB rows are AUTHORITATIVE for the admin membership set. Only
+  // non-soft-deleted companies (deletedAt IS NULL) are selected.
+  const db = getDb();
+  const rows = db
+    .select()
+    .from(companiesTable)
+    .where(crossTenant(isNull(companiesTable.deletedAt), companiesTable, { skipSoftDelete: true }))
+    .all() as any[];
+
+  const byId = new Map<string, FounderCompanyMembership>();
+  for (const coRow of rows) {
+    if (byId.has(coRow.id)) continue;
+    const mapDetail = mapDetailById.get(coRow.id);
+    if (mapDetail) {
+      // DB confirms this company exists and is not soft-deleted; overlay the
+      // richer in-process Map detail (live KPI/billing/role) but keep the DB
+      // row as the authority for existence. Re-stamp identity fields from the
+      // DB row so a stale Map name/logo never overrides current DB values.
+      byId.set(coRow.id, {
+        ...mapDetail,
+        companyId: coRow.id,
+        companyName: coRow.name ?? mapDetail.companyName,
+        legalName: coRow.legalName ?? mapDetail.legalName,
+        logoUrl: coRow.logoUrl ?? mapDetail.logoUrl ?? null,
+      });
+    } else {
+      byId.set(coRow.id, dbRowToMembership(coRow, null));
+    }
+  }
+  return Array.from(byId.values());
+}
+
+/**
  * Get active company for a specific founder by userId.
  * PATCH v3: scoped by userId when provided.
  * Legacy backward-compat: no-arg returns u_maya_chen's active company.
@@ -569,10 +645,24 @@ export function addCompanyForFounder(userId: string, company: FounderCompanyMemb
       }
     });
   } catch (err) {
-    log.warn("[multiCompanyStore.addCompanyForFounder] DB write failed (non-fatal):", (err as Error).message);
+    // v25.45 Bug B FIX — the DB write is now AUTHORITATIVE. Previously this was
+    // swallowed as "non-fatal" and the company was still mirrored into the Map
+    // below, so the route returned 201 "Company created" even when nothing
+    // persisted. After the next restart the (member-keyed) hydrate found no
+    // row and the company vanished from the Admin area — the exact founder-
+    // reported symptom. We now re-throw so the caller surfaces a real error
+    // and NEVER mirrors a phantom company into the in-memory cache.
+    log.error({
+      route: "multiCompanyStore.addCompanyForFounder",
+      errorType: "company_persist_failed",
+      companyId: company.companyId,
+      userId,
+      message: (err as Error).message,
+    });
+    throw new Error(`COMPANY_PERSIST_FAILED: ${(err as Error).message}`);
   }
 
-  // Mirror into Maps after DB commit.
+  // Mirror into Maps ONLY after the DB transaction has committed successfully.
   companies.push(company);
   USER_COMPANIES.set(userId, companies);
   if (isFirstCompany) {
@@ -756,6 +846,31 @@ export async function hydrateMultiCompanyStore(): Promise<void> {
     USER_COMPANIES.set(m.userId, list);
   }
 
+  // v25.45 Bug B FIX — backfill companies that exist in the `companies` table
+  // but have NO live `company_members` row. The member-driven loop above would
+  // silently drop these (the root cause of the founder-reported "not in the
+  // Admin area" bug: a company row persisted to DB but vanished from the Map
+  // after restart). We register each orphaned company under a reserved internal
+  // owner bucket so getAllCompanies() (and the admin Companies panel) still see
+  // every persisted company. This bucket is keyed under ORPHAN_OWNER_KEY, which
+  // is NEVER a real userId, so getCompaniesForFounder(userId) is unaffected and
+  // no founder's company list is polluted.
+  {
+    const membershipCompanyIds = new Set<string>();
+    for (const lists of Array.from(USER_COMPANIES.values())) {
+      for (const c of lists as FounderCompanyMembership[]) membershipCompanyIds.add(c.companyId);
+    }
+    const orphans: FounderCompanyMembership[] = [];
+    for (const coRow of companyRows) {
+      if (membershipCompanyIds.has(coRow.id)) continue;
+      orphans.push(dbRowToMembership(coRow, null));
+    }
+    if (orphans.length > 0) {
+      USER_COMPANIES.set(ORPHAN_OWNER_KEY, orphans);
+      log.warn(`[hydrate] multiCompanyStore: ${orphans.length} company row(s) had no company_members link; backfilled for admin visibility.`);
+    }
+  }
+
   // user_prefs → active company per user.
   const prefs = (await db
     .select()
@@ -866,9 +981,34 @@ export function registerMultiCompanyRoutes(app: Express): void {
     // upgrade-on-create. Whitelist enforced against the Plan union.
     const ALLOWED_PLANS = ["founder_free", "founder_pro", "founder_scale"] as const;
     type AllowedPlan = (typeof ALLOWED_PLANS)[number];
+    // v25.45 F1b/F1d — the Add Company dialog no longer sends a plan (the plan
+    // picker was removed). When no plan is supplied we resolve the DEFAULT tier
+    // from the ACTIVE pricing model rather than hardcoding a tier string (the
+    // "no hardcoded plan tier" rule): pick the cheapest live founder tier
+    // (price 0 → free) and map it to the subscription plan slug. If the pricing
+    // store is unavailable we degrade to founder_free so company creation never
+    // blocks on a pricing read.
+    function resolveDefaultPlan(): AllowedPlan {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { listTiers } = require("./pricingTiersStore") as typeof import("./pricingTiersStore");
+        const tiers = listTiers();
+        if (!tiers.length) return "founder_free";
+        // Cheapest live tier = the default a new founder lands on.
+        const cheapest = [...tiers].sort(
+          (a, b) => (a.monthlyPriceCents ?? 0) - (b.monthlyPriceCents ?? 0),
+        )[0];
+        const slug = String(cheapest?.slug ?? "").toLowerCase();
+        if (slug.includes("scale")) return "founder_scale";
+        if (slug.includes("pro")) return "founder_pro";
+        return "founder_free";
+      } catch {
+        return "founder_free";
+      }
+    }
     const requestedPlan: AllowedPlan = ALLOWED_PLANS.includes(planRaw)
       ? (planRaw as AllowedPlan)
-      : "founder_free";
+      : resolveDefaultPlan();
     const planLabel =
       requestedPlan === "founder_pro"
         ? "Founder Pro"
@@ -890,7 +1030,22 @@ export function registerMultiCompanyRoutes(app: Express): void {
       stage: stage ?? "",
       hq: hq ?? "",
     };
-    addCompanyForFounder(ctx.userId, newCompany);
+    // v25.45 Bug B FIX — addCompanyForFounder is now DB-authoritative and
+    // throws if the company did not persist. Surface a real error to the
+    // founder instead of a false "Company created" success that would later
+    // vanish from the Admin area after a restart.
+    try {
+      addCompanyForFounder(ctx.userId, newCompany);
+    } catch (err) {
+      log.error({
+        route: "POST /api/founder/companies/new",
+        errorType: "company_persist_failed",
+        companyId,
+        userId: ctx.userId,
+        message: (err as Error).message,
+      });
+      return res.status(500).json({ ok: false, error: "COMPANY_PERSIST_FAILED", message: "We could not save your company. Please try again." });
+    }
     // V1: ensure subscriptionsStore row exists — idempotent.
     // Side-effect runs AFTER addCompanyForFounder's transaction has committed.
     //
@@ -953,9 +1108,22 @@ export function registerMultiCompanyRoutes(app: Express): void {
     } catch {
       invoices = [];
     }
+    // v25.45 F3c/F10d — expose the live subscription status so the Save-Profile
+    // post-save router (and the Billing & Subscription surface) can branch on
+    // "is this plan active?" without inferring it from the plan label. DB-driven:
+    // read straight from subscriptionsStore (the canonical subscription row).
+    let subscriptionStatus: string | null = null;
+    let planTier: string | null = null;
+    try {
+      const sub = getSubscription(c.companyId);
+      subscriptionStatus = sub?.status ?? null;
+      planTier = sub?.plan ?? null;
+    } catch { /* non-fatal — leave null */ }
     res.json({
       companyId: c.companyId,
       plan: c.billing.plan,
+      planTier,
+      subscriptionStatus,
       monthlyUsd: c.billing.monthlyUsd,
       nextBillingDate: c.billing.nextBillingDate,
       card: c.billing.cardLast4 ? { last4: c.billing.cardLast4, brand: "Visa", exp: "11/28" } : null,

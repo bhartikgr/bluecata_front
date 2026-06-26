@@ -35,6 +35,8 @@ import {
   currentInvestor,
 } from "./mockData";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
+// v25.45 F13a/F13b — durable user-privacy store + resolveDisplayName helper.
+import { writeUserPrivacy as f13WriteUserPrivacy, readUserPrivacyRaw as f13ReadUserPrivacyRaw } from "./lib/userPrivacyResolver";
 import { sanitizeErrorMessage } from "./lib/sanitize"; /* v25.32 burndown — item 33 */
 // v17 Phase A — chapter scoping store (used by /api/me/chapters).
 import { listChaptersForUser as v17ListChaptersForUser } from "./chaptersStore";
@@ -60,7 +62,7 @@ import { setSessionCookie, clearSessionCookie, readSessionCookie } from "./lib/s
 import { revokeSession } from "./lib/sessionRevocation.js";
 import { getRecentEvents, findEventsByType } from "./sprint10Telemetry";
 // Sprint 11 — founder build
-import { registerMultiCompanyRoutes, updateCompanyDetails, getCompanyNameById, getCompanyRecordById, getAllCompanies, addCompanyForFounder } from "./multiCompanyStore"; // B-509/C-011 v23.6 added getCompanyNameById; v23.7.1 added getCompanyRecordById (BUG 019 follow-up); v23.8 added getAllCompanies (W-8); v24.2 E2E fix added addCompanyForFounder (founder-creates-company auto-registers ownership)
+import { registerMultiCompanyRoutes, updateCompanyDetails, getCompanyNameById, getCompanyRecordById, getAllCompanies, getAllCompaniesFromDb, addCompanyForFounder } from "./multiCompanyStore"; // B-509/C-011 v23.6 added getCompanyNameById; v23.7.1 added getCompanyRecordById (BUG 019 follow-up); v23.8 added getAllCompanies (W-8); v24.2 E2E fix added addCompanyForFounder (founder-creates-company auto-registers ownership)
 import { registerMembershipRoutes } from "./membershipStore";
 import { registerDataroomRoutes } from "./dataroomStore";
 // v23.4.7 Phase 13 / BUG 030 — dedicated server endpoint for company-logo
@@ -79,7 +81,9 @@ import { registerEmailRoutes } from "./emailStore";
 import { registerEmailCampaignRoutes, registerEmailTransportRoutes } from "./emailCampaignStore";
 import { registerAdminPlatformRoutes, appendAdminAudit, getAuditLog } from "./adminPlatformStore";
 import { registerAdminV25Routes } from "./adminV25Store";
-import { createRound as roundsStoreCreate, getRoundsForCompany as roundsStoreForCompany, listRounds as roundsStoreList, getRoundById as roundsStoreGetById } from "./roundsStore";
+import { createRound as roundsStoreCreate, getRoundsForCompany as roundsStoreForCompany, listRounds as roundsStoreList, getRoundById as roundsStoreGetById, updateRound as roundsStoreUpdate } from "./roundsStore";
+// v25.45 Bug C — durable backing for the LEGACY in-memory invitationStore array.
+import { persistLegacyInvitationStrict, registerLegacyInvitationTarget } from "./legacyInvitationStore";
 // v15 P0-4..P0-11 — real invitation + soft-circle stores.
 import {
   createInvitation as roundInvitationsCreate,
@@ -138,6 +142,9 @@ import { registerCompanyProfileRoutes } from "./companyProfileStore";
 import { registerStripeWebhookRoute } from "./stripeGatewayAdapter";
 // Wave C-3 + C-4 — Collective Shell + M&A Intelligence
 import { registerCollectiveRoutes } from "./collectiveRoutes";
+import { registerCollectiveWaveARoutes } from "./collectiveWaveAStore"; /* v25.44 Wave A surfaces 1-12 */
+import { registerCollectiveMaIntelRoutes } from "./collectiveMaIntelStore"; /* v25.44 surface 13 */
+import { registerVentureMarketsRoutes } from "./ventureMarketsStore"; /* v25.44 surface 14 */
 import { registerCollectiveInterestRoutes } from "./collectiveInterestStore"; /* v25.0 Track 2 B */
 // v24.4.1 Bug 1 — Sprint 20 Wave 2 routes (collective network, investor CRM,
 // portfolio marks, tax export, mute-author, report) were defined but never
@@ -232,6 +239,18 @@ import { getOutbox } from "./bridgeStore";
 import { loadUserContext, requireEntitlement } from "./lib/requireEntitlement";
 import { registerPersona } from "./lib/userContext";
 import { getUserContextForId, getUserContext } from "./lib/userContext";
+// v25.45 ROUND 2 — per-route archive gate (canonical enforcement; the
+// /api/founder path-prefix middleware is defense-in-depth only).
+import { assertWorkspaceNotArchived } from "./middleware/archiveCheck";
+// v25.45 ROUND 2 (F13b) — privacy resolver for cap-table PDF shareholder labels.
+import { resolveDisplayName } from "./lib/userPrivacyResolver";
+// v25.45 ROUND 8 (GPT-5.5 finding) — cap-table PDF must compute counterparty
+// status dynamically. The route admits invitation-only viewers (via
+// requireCanAccessCompany) who are NOT committed cap-table members; they must
+// NOT be treated as counterparties. areCoMembersOnAnyCapTable reads the SACRED
+// captable_commits ledger (read-only) to verify a real shared-cap-table
+// relationship per rendered member.
+import { areCoMembersOnAnyCapTable } from "./lib/capTableMembership";
 // B (v24.0) — canonical tenant-isolation helpers.
 import {
   canAccessCompany as tenantCanAccessCompany,
@@ -292,6 +311,11 @@ const invitationStore: InvitationStoreEntry[] = demoInvitationTokens.map((d) => 
   };
 });
 
+/* v25.45 Bug C — hand the legacy invitation array to the durable store module
+ * so the HYDRATE_ORDER entry can rehydrate persisted tokens / redemption state
+ * into THIS exact array on boot (hydrateAllStores runs before registerRoutes). */
+registerLegacyInvitationTarget(invitationStore);
+
 /* Coarse rate-limiter: 10 req / minute / IP for /api/invitations/check + redeem */
 const rateBuckets = new Map<string, number[]>();
 function allow(ip: string, limitPerMin = 10): boolean {
@@ -347,6 +371,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   /* ------------ Sprint 22 Wave 1: loadUserContext MUST be first so every downstream
    * handler has req.userContext populated (DEF-022 root fix). ------------ */
   app.use(loadUserContext);
+
+  /* ------------ v25.45 F20c — archived-workspace read-only enforcement.
+   * Mounted on /api/founder immediately after loadUserContext (so req.userContext
+   * is populated) and BEFORE any /api/founder/* handler registers. Rejects every
+   * mutating (non-GET) founder request with 403 WORKSPACE_ARCHIVED when the
+   * resolved company.archive_status === 'archived'. GETs and the reactivate
+   * escape-hatch always pass. Cap-table hash chains are never modified. ------ */
+  {
+    const { archiveCheck } = await import("./middleware/archiveCheck");
+    app.use("/api/founder", archiveCheck);
+  }
 
   /* ------------ v25.17 Lane C NC2 — the /api/admin mount guard MUST be installed
    * BEFORE any admin router is registered. Express runs path-mounted middleware
@@ -514,6 +549,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // Fix: register the founder via addCompanyForFounder so ownedCompanyIds
     // resolution finds the company on subsequent reads/writes.
     if (userId) {
+      // v25.45 Bug B ROUND-2 FIX (GPT-5.5 blocker 2): the company persist is now
+      // AUTHORITATIVE on this caller too. Previously this caught the
+      // addCompanyForFounder() failure as "Non-fatal" and still created and
+      // returned the subscription with HTTP 201 — recreating the original Bug B
+      // class (API success with no durable company/member record, vanishing
+      // from Admin after restart). If the durable company/member write fails we
+      // now refuse the request with a 500 and DO NOT create or return any
+      // subscription. The error message is a fixed, client-safe constant — no
+      // internal stack trace or driver detail is leaked. The full server-side
+      // error is logged for audit.
       try {
         addCompanyForFounder(userId, {
           companyId,
@@ -530,11 +575,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           billing: { plan: "Founder Free" },
         } as any);
       } catch (e) {
-        // Non-fatal — subscription still created. Log so we can audit.
         log.error({
           route: "POST /api/founder/companies",
           errorType: "addCompanyForFounder_failed",
+          companyId,
+          userId,
           message: (e as Error).message,
+        });
+        return res.status(500).json({
+          ok: false,
+          error: "COMPANY_PERSIST_FAILED",
+          message: "Could not durably save the company. No subscription was created. Please retry.",
         });
       }
     }
@@ -655,6 +706,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // session. Anonymous callers get 401 {"error":"AUTH_REQUIRED"}.
   app.use("/api/collective", requireAuthenticated);
   registerCollectiveRoutes(app);
+  registerCollectiveWaveARoutes(app); /* v25.44 Wave A surfaces 1-12 */
+  registerCollectiveMaIntelRoutes(app); /* v25.44 surface 13 — M&A Intelligence */
+  registerVentureMarketsRoutes(app); /* v25.44 surface 14 — venture markets */
   registerCollectiveInterestRoutes(app); /* v25.0 Track 2 B1/B2/B4 */
   registerCollectiveSettingsRoutes(app);
   // v24.4.1 Bug 1 — register the Sprint 20 Wave 2 surface (collective network,
@@ -730,6 +784,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
    * MUST register BEFORE the legacy 501 stubs in this file so Express picks
    * up our real handlers first. */
   registerFounderTeamRoutes(app);
+  // v25.45 F20 — workspace archive + revival routes.
+  (await import("./lib/workspaceArchiveStore")).registerWorkspaceArchiveRoutes(app);
 
   /* v25.7 — M&A initiative respond/decline (closes fake-success P0 gap).
    * Same ordering rationale: registers before the legacy fake-success stubs. */
@@ -1050,8 +1106,27 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         if (entry.revoked) return { ok: false, reason: "revoked" };
         if (entry.redeemed) return { ok: false, reason: "already_redeemed" };
         if (Date.now() > new Date(entry.expiresAt).getTime()) return { ok: false, reason: "expired" };
+        // v25.45 Bug C ROUND-2 (GPT-5.5 blocker 4 / auth-shell redeem callback):
+        // FAIL-CLOSED. Mark redeemed, durably persist STRICTLY, and only report
+        // success once the token-state write confirms. On persist failure roll
+        // back the in-memory mutation and return reason "persist_failed" so the
+        // auth-shell route returns 500 and does NOT register a persona / set a
+        // session. After a restart the token therefore cannot be reused.
         entry.redeemed = true;
         entry.redeemedAt = new Date().toISOString();
+        try {
+          persistLegacyInvitationStrict(entry);
+        } catch (err) {
+          entry.redeemed = false;
+          entry.redeemedAt = null;
+          log.error({
+            route: "authShell.redeem (legacy invitation)",
+            errorType: "legacy_invitation_redeem_persist_failed",
+            invitationId: entry.id,
+            message: (err as Error).message,
+          });
+          return { ok: false, reason: "persist_failed" };
+        }
         return { ok: true, invitationId: entry.id, roundId: entry.roundId, companyId: entry.companyId };
       }
 
@@ -1359,6 +1434,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // admin) may edit terms. Previously any authenticated user could PATCH.
     const check = requireFounderOwnsRound(req, res);
     if (!check.ok) return;
+    // v25.45 ROUND 2 — archive gate: block term edits on archived workspaces.
+    if (assertWorkspaceNotArchived(req, res, check.companyId ?? companyIdForRound(paramStr(req.params.id)))) return;
     /* 23-May Fix 3 — same legacy/db merge fix as GET /api/rounds/:id. */
     const r = mergeLegacyAndDbRounds().find((rr: any) => rr.id === req.params.id);
     if (!r) return res.status(404).json({ message: "Not found" });
@@ -1414,16 +1491,60 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (numericTerm("expiryYears")) return;
     // MFN is a boolean SAFE/Note term carried as an extra.
     if (typeof body.mfn === "boolean") updates.mfn = body.mfn;
+
+    // v25.45 Bug C (Ozan QA wave) — PERSISTENCE FIX.
+    //
+    // Previously this route did `Object.assign(r, updates)` and returned — it
+    // mutated ONLY the in-memory round object (which, for DB-created rounds, is
+    // a throwaway copy from mergeLegacyAndDbRounds()/roundsStoreList()). NO DB
+    // write occurred, so every term edit (valuation, target raise, MFN, cap,
+    // discount, etc.) was silently lost on a server restart — exactly the
+    // "variables not stored in db" corruption Ozan flagged. These terms feed the
+    // cap table, so the gap was CRITICAL.
+    //
+    // The canonical, transactional, mass-assignment-guarded, audited writer is
+    // roundsStore.updateRound(): core columns map via UPDATE_WHITELIST and the
+    // long-tail TERM extras (valuationCap/discount/mfn/...) round-trip through
+    // the extras_json column via UPDATE_EXTRAS_WHITELIST. We route every patched
+    // field through it so the DB is the source of truth. NOTE: this does NOT
+    // touch cap-table math or the captable_commits ledger — it fixes the round
+    // WRITE side only.
+    const updResult = roundsStoreUpdate(String(req.params.id), updates, {
+      actor: check.userId ?? "u_unknown",
+    });
+    if (!updResult.ok) {
+      // Fail closed: surface a typed error rather than reporting a phantom save.
+      // ROUND_NOT_FOUND can happen for a legacy seed-only round that never made
+      // it into roundsStore; fall back to the legacy in-memory mutation so the
+      // pre-existing seed-round flows keep working, but still never report a
+      // success that wasn't persisted for DB-backed rounds.
+      if (updResult.error === "ROUND_NOT_FOUND") {
+        // Legacy seed-only round not in roundsStore — the legacy in-memory
+        // mirror update below (Object.assign(r, updates)) is the only store for
+        // it, matching pre-fix behaviour for those rows.
+      } else if (updResult.error === "NO_CHANGES") {
+        // No persistable fields supplied — return the unchanged round.
+      } else {
+        return res.status(500).json({ ok: false, error: updResult.error ?? "ROUND_TERMS_PERSIST_FAILED" });
+      }
+    }
+    // Re-read the canonical (now-persisted) round for the response so the client
+    // reflects exactly what landed in the DB.
+    const persisted = roundsStoreGetById(String(req.params.id)) ?? { ...r, ...updates };
+    // Keep the legacy in-memory `rounds` array object in sync so the dozens of
+    // existing read paths (mergeLegacyAndDbRounds().find / rounds.filter) reflect
+    // the change without a wide refactor. The DB row written above is the durable
+    // source of truth; this is only a hot-read mirror.
     Object.assign(r, updates);
     void BridgeOutbound;
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (BridgeOutbound as any).roundTermsUpdated
-        ? (BridgeOutbound as any).roundTermsUpdated(r.id, { roundId: r.id, companyId: r.companyId, updates })
-        : (BridgeOutbound as any).auditLogAppended?.(r.companyId, { eventType: "round.terms_updated", roundId: r.id, updates });
+        ? (BridgeOutbound as any).roundTermsUpdated(persisted.id, { roundId: persisted.id, companyId: persisted.companyId, updates })
+        : (BridgeOutbound as any).auditLogAppended?.(persisted.companyId, { eventType: "round.terms_updated", roundId: persisted.id, updates });
     } catch { /* non-fatal */ }
-    emitMutation({ aggregate: "round", id: r.id, change: "update" });
-    res.json({ ok: true, round: { ...r, company: companies.find(c => c.id === r.companyId)?.name }, eventType: "round.terms_updated" });
+    emitMutation({ aggregate: "round", id: persisted.id, change: "update" });
+    res.json({ ok: true, round: { ...persisted, company: companies.find(c => c.id === persisted.companyId)?.name }, eventType: "round.terms_updated" });
   });
 
   app.get("/api/rounds/:id/invitations", requireAuth, (req, res) => {
@@ -1480,7 +1601,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.status(404).json({ ok: false, error: "round_not_found" });
       return { ok: false };
     }
-    return tenantRequireFounderOwnsCompany(req, res, cid);
+    const owns = tenantRequireFounderOwnsCompany(req, res, cid);
+    if (!owns.ok) return owns;
+    // v25.45 ROUND 2 — catch-all archive gate for every round-scoped mutation
+    // that funnels through this helper (wire-instructions, etc.). No-ops on GET.
+    if (assertWorkspaceNotArchived(req, res, owns.companyId ?? cid)) return { ok: false };
+    return owns;
   }
 
   // Founder — set (upsert) wire instructions for a round.
@@ -2010,6 +2136,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       redeemedAt: null,
       revoked: false,
     };
+    // v25.45 Bug C ROUND-2 (GPT-5.5 blocker 4 / issue path): PERSIST BEFORE
+    // EXPOSING THE TOKEN. Previously we pushed the entry into the in-memory
+    // array and returned the raw token via best-effort persist that ignored DB
+    // failure, so a token could be handed to the client while nothing was
+    // durably written (lost on restart). We now write to the DB FIRST and only
+    // push to memory + return the raw token AFTER the write confirms. If the
+    // write fails we return 500 with a safe error and NO token is returned.
+    try {
+      persistLegacyInvitationStrict(entry);
+    } catch (err) {
+      log.error({
+        route: "POST /api/rounds/:id/invitations/issue",
+        errorType: "legacy_invitation_persist_failed",
+        invitationId: entry.id,
+        message: (err as Error).message,
+      });
+      return res.status(500).json({ ok: false, error: "INVITATION_PERSIST_FAILED", message: "Could not durably issue the invitation. No token was created. Please retry." });
+    }
     invitationStore.push(entry);
     return res.json({
       ok: true,
@@ -2083,8 +2227,30 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (entry.redeemed) return res.status(409).json({ ok: false, reason: "already_redeemed" });
       if (Date.now() > new Date(entry.expiresAt).getTime())
         return res.status(410).json({ ok: false, reason: "expired" });
+      // v25.45 Bug C ROUND-2 (GPT-5.5 blocker 4 / redeem path): FAIL-CLOSED +
+      // PERSIST BEFORE SESSION. Previously we mutated entry.redeemed in memory,
+      // best-effort persisted (ignoring DB failure), then registered the
+      // persona / set the session. A failed persist left the token redeemed in
+      // memory only — after restart the token could be reused. We now mark the
+      // redemption, durably persist it STRICTLY, and only proceed to persona /
+      // session creation once the token-state write is confirmed. On persist
+      // failure we ROLL BACK the in-memory mutation and return 500 — the token
+      // is NOT marked redeemed in any durable sense and NO session is created.
       entry.redeemed = true;
       entry.redeemedAt = new Date().toISOString();
+      try {
+        persistLegacyInvitationStrict(entry);
+      } catch (err) {
+        entry.redeemed = false;
+        entry.redeemedAt = null;
+        log.error({
+          route: "POST /api/invitations/redeem",
+          errorType: "legacy_invitation_redeem_persist_failed",
+          invitationId: entry.id,
+          message: (err as Error).message,
+        });
+        return res.status(500).json({ ok: false, error: "INVITATION_REDEEM_PERSIST_FAILED", message: "Could not durably record the redemption. Please retry." });
+      }
       const personaId = registerPersona({
         email: entry.inviteeEmail,
         name: entry.inviteeName,
@@ -2226,7 +2392,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.status(404).json({ ok: false, error: "round_not_found" });
       return { ok: false };
     }
-    return tenantRequireFounderOwnsCompany(req, res, cid);
+    const owns = tenantRequireFounderOwnsCompany(req, res, cid);
+    if (!owns.ok) return owns;
+    // v25.45 ROUND 2 — catch-all archive gate for every round-scoped mutation
+    // that funnels through this helper. No-ops on GET/HEAD/OPTIONS.
+    if (assertWorkspaceNotArchived(req, res, owns.companyId ?? cid)) return { ok: false };
+    return owns;
   }
 
   // Founder — create a new invitation. Sends email, NEVER returns raw token.
@@ -2348,6 +2519,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!ctx?.userId) return res.status(401).json({ ok: false, error: "unauthenticated" });
     const id = paramStr(req.params.id);
     const cid = companyIdForRound(id);
+    // v25.45 ROUND 2 — archive gate: block soft-circle creation on archived workspaces.
+    if (assertWorkspaceNotArchived(req, res, cid ?? (req.body ?? {}).companyId)) return;
     const body = req.body ?? {};
     // v25.4 — when an authorized caller (founder of this round / admin) supplies
     // body.investorUserId, honor it so on-behalf-of soft-circles link to the actual
@@ -2386,6 +2559,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // Validation is a founder action.
     const check = requireFounderOwnsRound(req, res);
     if (!check.ok) return;
+    // v25.45 ROUND 2 — archive gate.
+    if (assertWorkspaceNotArchived(req, res, check.companyId ?? companyIdForRound(paramStr(req.params.id)))) return;
     const scId = paramStr(req.params.scId);
     const sc = softCircleValidate(scId);
     if (!sc) return res.status(404).json({ ok: false, error: "soft_circle_not_found" });
@@ -2507,11 +2682,32 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       for (const id_ of holderIds) totalSharesNum += byHolder[id_].shares;
       const entries: CapTableEntry[] = [];
       let totalInvested = 0;
+      // v25.45 ROUND 7 — the cap-table PDF IS the cap table itself: everyone on
+      // it is a counterparty (isCoMember:true). The shareholder label routes
+      // through the privacy resolver (externalCapTable context); the
+      // counterparty default reveals the legal name UNLESS a holder explicitly
+      // opted out (visibleToCoMembers:false → "Private Investor"). The ledger
+      // investorId is still the aggregation key (cap-table math is SACRED and
+      // untouched); only the rendered LABEL is resolved. We fall back to the raw
+      // investorId when no legal name is available.
+      //
+      // v25.45 ROUND 8 (GPT-5.5 finding) — isCoMember is NO LONGER hardcoded
+      // true. The route admits invitation-only viewers via
+      // requireCanAccessCompany who are NOT committed cap-table members. Such a
+      // viewer is not a counterparty, so each member's counterparty status is
+      // computed dynamically against the SACRED captable_commits ledger. An
+      // invitation-only viewer therefore sees "Private Investor" for holders who
+      // have not opted into broader visibility.
+      const viewerForPdf = (req.userContext ?? getUserContext(req))?.userId ?? null;
       for (const investorId of holderIds) {
         const v = byHolder[investorId];
         const pct = totalSharesNum > 0 ? (v.shares / totalSharesNum) * 100 : 0;
+        const isCoMember = viewerForPdf
+          ? areCoMembersOnAnyCapTable(investorId, viewerForPdf)
+          : false;
+        const shareholderLabel = resolveDisplayName(investorId, viewerForPdf, "externalCapTable", { legalName: investorId, isCoMember });
         entries.push({
-          shareholder: investorId,
+          shareholder: shareholderLabel,
           securityKind: v.kinds.join(",") || "commit",
           shares: v.shares,
           pctOwnership: pct,
@@ -2553,6 +2749,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // may add a security. Previously any authenticated user could POST.
     const check = tenantRequireFounderOwnsCompany(req, res, id);
     if (!check.ok) return;
+    // v25.45 ROUND 2 — archive gate: block securities issuance on archived workspaces.
+    if (assertWorkspaceNotArchived(req, res, id)) return;
     const { kind, principal, terms } = req.body ?? {};
     const sec = { id: `sec-${Date.now()}`, companyId: id, kind, principal, terms, issuedAt: new Date().toISOString() };
     // B9 — persist so the matching GET /api/companies/:id/securities reflects
@@ -2816,6 +3014,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // may mutate it.
     const check = tenantRequireFounderOwnsCompany(req, res, id);
     if (!check.ok) return;
+    // v25.45 ROUND 2 — archive gate: block company mutation on archived workspaces.
+    if (assertWorkspaceNotArchived(req, res, id)) return;
     // B-V11-5 fix: actually persist the patch into USER_COMPANIES so the next
     // GET /api/founder/active-company / /api/founder/companies returns the
     // updated display name + legal name. Previously this was a no-op stub
@@ -2888,14 +3088,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     };
     if (userId) {
       try {
-        /* Lazy-import to avoid a circular module init order issue. */
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const { persistEntry } = require("./lib/storePersistenceShim");
-        persistEntry("founderPrivacyStore", userId, payload);
+        /* v25.45 F13a — the prior best-effort persistEntry("founderPrivacyStore")
+         * call did NOT reliably create/commit its kv table in every runtime
+         * (the privacy toggle looked saved but reverted — Ozan's in-memory bug).
+         * We now write to a dedicated, durable profilestore_user_privacy table
+         * directly via rawDb, with an idempotent CREATE TABLE. This is the
+         * canonical DB store the resolver (F13b) reads from. */
+        f13WriteUserPrivacy(userId, {
+          screenName: payload.screenName,
+          visibleToCoMembers: payload.visibleToCoMembers,
+          visibleInCollectiveDirectory: payload.visibleToCollectiveNetwork,
+        });
       } catch (err) {
         log.warn({
           route: "founder.privacy.put",
-          message: `persist failed (non-fatal): ${(err as Error).message}`,
+          message: `privacy persist failed: ${(err as Error).message}`,
         });
       }
     }
@@ -2916,18 +3123,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     /* v25.10 fix C3 — read persisted privacy if available, else defaults.
      * The shim's hydrateEntries can be called per-store cheaply; we just
      * look up by userId here. */
+    // v25.45 F13a — read from the durable profilestore_user_privacy table
+    // (single source of truth, shared with the resolver). Falls back to
+    // sensible defaults (with the identity's display name) when no row exists.
     let persisted: any = null;
     if (userId) {
       try {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const { hydrateEntries } = require("./lib/storePersistenceShim");
-        const rows = hydrateEntries("founderPrivacyStore") as Array<[string, any]>;
-        const found = rows.find(([id]) => id === userId);
-        if (found) persisted = found[1];
+        persisted = f13ReadUserPrivacyRaw(userId);
       } catch (err) {
         log.warn({
           route: "founder.privacy.get",
-          message: `hydrate read failed: ${(err as Error).message}`,
+          message: `privacy read failed: ${(err as Error).message}`,
         });
       }
     }
@@ -3342,11 +3548,50 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // v24.2 Airwallex wiring — subscription status poll (drives BillingReturn.tsx
   // after the founder returns from the Airwallex hosted page).
   app.get("/api/founder/subscription/status", requireAuth, async (req, res) => {
-    const { paymentIntentId } = req.query;
+    const { paymentIntentId, companyId } = req.query;
+    const subStore = await import("./subscriptionStore");
+
+    /* v25.45 Bug A — per-company status contract.
+     * The task requires GET /api/founder/subscription/status?companyId=... to
+     * report whether THAT company's subscription is active. Previously this
+     * endpoint ONLY accepted paymentIntentId (used by BillingReturn.tsx polling)
+     * and returned 400 missing_paymentIntentId for a companyId query. We now
+     * support companyId DB-direct (most-recent active row wins, else newest),
+     * ownership-gated, while preserving the legacy paymentIntentId behavior. */
+    if (companyId && !paymentIntentId) {
+      const cid = String(companyId);
+      // Tenant isolation: caller must own the company (admins bypass).
+      if (!req.userContext?.isAdmin) {
+        const owns = (req.userContext?.founder?.companies ?? []).some(
+          (c: any) => (c.companyId ?? c.id) === cid,
+        );
+        if (!owns) return res.status(403).json({ ok: false, error: "not_owner" });
+      }
+      let rows;
+      try {
+        rows = subStore.listForCompany(cid);
+      } catch (e) {
+        return res.status(503).json({ ok: false, error: "subscription_read_failed" });
+      }
+      if (!rows.length) return res.status(404).json({ ok: false, error: "not_found" });
+      const byNewest = (a: any, b: any) =>
+        (b.activatedAt ?? b.createdAt).localeCompare(a.activatedAt ?? a.createdAt);
+      const active = rows.filter((r) => r.status === "active").sort(byNewest);
+      const chosen = active[0] ?? [...rows].sort(byNewest)[0];
+      return res.json({
+        ok: true,
+        status: chosen.status,
+        tierId: chosen.tierId,
+        companyId: chosen.companyId,
+        activatedAt: chosen.activatedAt,
+        currentPeriodEnd: chosen.currentPeriodEnd ?? null,
+      });
+    }
+
     if (!paymentIntentId) {
       return res.status(400).json({ ok: false, error: "missing_paymentIntentId" });
     }
-    const sub = (await import("./subscriptionStore")).getByPaymentIntent(String(paymentIntentId));
+    const sub = subStore.getByPaymentIntent(String(paymentIntentId));
     if (!sub) return res.status(404).json({ ok: false, error: "not_found" });
     // Verify the caller owns the subscription.
     if (sub.userId !== req.userContext?.userId) {
@@ -3416,6 +3661,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!ownsCompany) {
       return res.status(403).json({ ok: false, error: "FOUNDER_WRONG_COMPANY", message: "You do not own this company." });
     }
+    // v25.45 ROUND 2 — archive gate: block round creation on archived workspaces.
+    if (assertWorkspaceNotArchived(req, res, companyId)) return;
     // v23.9 A2/AV-03 — numeric coercion + validation. The round-form sends
     // human-typed money strings ("500,000", "$1,000,000"); a bare Number()
     // on those yields NaN which used to reach roundsStore and surface as a
@@ -4037,7 +4284,16 @@ function registerAdminCompaniesFullRoute(app: Express) {
     // id; canonical entries win when both exist.
     type CompanyStub = { id: string; name: string; legalName: string; region?: string; sector: string; stage: string; hq: string; maScore?: number };
     const stubById = new Map<string, CompanyStub>();
-    for (const mc of getAllCompanies()) {
+    // v25.45 Bug B FIX — read the company set from the DB-authoritative reader
+    // (getAllCompaniesFromDb) instead of the in-memory-Map-only getAllCompanies().
+    // ROOT CAUSE: getAllCompanies() returned only companies present in the
+    // USER_COMPANIES Map, which is rebuilt at boot by iterating company_members.
+    // A company with a `companies` row but no membership row was invisible to
+    // admin after every restart (the founder-reported bug). The DB reader
+    // unions the live Map with the `companies` table so the admin Companies
+    // panel reflects every persisted company. No tenant filter is applied —
+    // admin sees all tenants by design.
+    for (const mc of getAllCompaniesFromDb()) {
       stubById.set(mc.companyId, {
         id: mc.companyId,
         name: mc.companyName,

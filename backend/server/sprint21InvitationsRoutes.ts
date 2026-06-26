@@ -21,6 +21,7 @@ import type { Express, Request, Response } from "express";
 import { randomBytes } from "node:crypto";
 import { emitMutation } from "./lib/eventBus";
 import { getUserContext } from "./lib/userContext";
+import { resolveDisplayName } from "./lib/userPrivacyResolver";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 
 // ---------------------------------------------------------------------------
@@ -382,8 +383,20 @@ export function registerSprint21InvitationsRoutes(app: Express): void {
       );
       // Return last 10
       const last10 = visible.slice(-10);
+      // v25.45 ROUND 7 — route author names through the single privacy resolver
+      // at read time. Founder Q&A threads are FORUM-style, NOT a counterparty
+      // surface (isCoMember:false), so an author with no privacy row renders as
+      // "Private Investor" in the "message" posture. The stored authorName is
+      // treated as the legal-name fallback.
+      const projected = last10.map((m) => ({
+        ...m,
+        authorName: resolveDisplayName(m.authorId, ctx.userId, "message", {
+          legalName: m.authorName,
+          isCoMember: false,
+        }),
+      }));
       const channelId = `qa_co_${roundIdToCompanyId(roundId)}_${roundId}`;
-      return res.json({ roundId, messages: last10, channelId });
+      return res.json({ roundId, messages: projected, channelId });
     },
   );
 

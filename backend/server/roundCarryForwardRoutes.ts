@@ -51,6 +51,12 @@ import {
  * shadows the global `require` with a module-scoped `createRequire` binding,
  * which can interfere with vitest's hoisting of aliased named imports. */
 import * as _storePersist from "./lib/storePersistenceShim";
+/* v25.45 Bug C — raw better-sqlite3 driver for the additive
+ * round_chain_head_freezes table (typed, append-only-by-use). Mirrors the
+ * wireInstructionsStore pattern: rawDb() throws on the Postgres backend / no-DB
+ * sandbox, in which case we degrade to the in-memory Map only. */
+import { rawDb } from "./db/connection";
+import { log } from "./lib/logger";
 
 // ─── Audit log ────────────────────────────────────────────────────────────
 
@@ -160,27 +166,191 @@ export function getCarryForwardAuditLog(): ReadonlyArray<CarryForwardAuditEntry>
  * carry-forward entries yet). */
 const frozenRoundChainHead = new Map<string, { roundId: string; companyId: string; chainHead: string; frozenAt: string }>();
 
+/* ---------- v25.45 Bug C: durable backing for the freeze snapshot ----------
+ * The Map above used to be the ONLY home for the per-round frozen chain-head
+ * snapshot, so a server restart lost every closed round's audit baseline and a
+ * post-restart re-freeze could re-snapshot against a DIFFERENT chain head,
+ * corrupting the round-close audit baseline. We now mirror the snapshot into
+ * the round_chain_head_freezes table (round_id PRIMARY KEY -> idempotent).
+ * Mirrors the wireInstructionsStore pattern: rawDb() throws on the Postgres
+ * backend / no-DB sandbox, in which case we degrade to the Map only. */
+let chainHeadFreezeTableReady = false;
+
+function chainHeadFreezeDb(): { exec: (s: string) => void; prepare: (s: string) => any } | null {
+  try {
+    return rawDb();
+  } catch {
+    return null; // Postgres backend or no-DB sandbox -- Map is authoritative.
+  }
+}
+
+function ensureChainHeadFreezeTable(): void {
+  if (chainHeadFreezeTableReady) return;
+  const driver = chainHeadFreezeDb();
+  if (!driver) {
+    chainHeadFreezeTableReady = true;
+    return;
+  }
+  try {
+    driver.exec(`CREATE TABLE IF NOT EXISTS round_chain_head_freezes (
+      round_id TEXT PRIMARY KEY NOT NULL,
+      company_id TEXT NOT NULL,
+      chain_head TEXT NOT NULL,
+      frozen_at TEXT NOT NULL
+    );`);
+    chainHeadFreezeTableReady = true;
+  } catch (err) {
+    log.warn("[roundCarryForward.ensureChainHeadFreezeTable] CREATE TABLE failed (non-fatal):", (err as Error).message);
+    chainHeadFreezeTableReady = true; // fall back to Map; don't retry every call
+  }
+}
+
+function readFrozenRoundChainHeadFromDb(
+  roundId: string,
+): { roundId: string; companyId: string; chainHead: string; frozenAt: string } | null {
+  const driver = chainHeadFreezeDb();
+  if (!driver) return null;
+  try {
+    const r: any = driver
+      .prepare(`SELECT round_id, company_id, chain_head, frozen_at FROM round_chain_head_freezes WHERE round_id = ?`)
+      .get(roundId);
+    if (r) {
+      return {
+        roundId: r.round_id,
+        companyId: r.company_id,
+        chainHead: r.chain_head,
+        frozenAt: r.frozen_at,
+      };
+    }
+  } catch (err) {
+    log.warn("[roundCarryForward.readFrozenRoundChainHeadFromDb] read failed:", (err as Error).message);
+  }
+  return null;
+}
+
 export function getCarryForwardChainHead(companyId: string): string {
   return lastEntryHashByCompany.get(companyId) ?? "CARRY_FORWARD_GENESIS";
 }
 
-export function freezeRoundChainHead(roundId: string, companyId: string): string {
+/* v25.45 Bug C ROUND-2 (GPT-5.5 blocker 3): the freeze persist is now
+ * FAIL-CLOSED. Thrown when present (when a DB driver is available, which is
+ * the production + SQLite-test path). A closed-but-not-frozen round must NEVER
+ * be reported as successfully closed, so closeRound() drives the strict freeze
+ * BEFORE it commits the terminal round state and refuses to close if the
+ * freeze cannot be durably persisted (see roundsStore.closeRound).
+ *
+ * `strict` (default false) preserves the legacy best-effort behavior for any
+ * non-close caller; closeRound passes strict=true. When no DB driver is
+ * present (Postgres backend or no-DB sandbox) the Map is authoritative and we
+ * cannot prove a durable write, so strict mode is a no-op on persistence (the
+ * snapshot is still recorded in the Map) — exactly as before.
+ */
+export class FreezePersistError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "FreezePersistError";
+  }
+}
+
+export function freezeRoundChainHead(
+  roundId: string,
+  companyId: string,
+  opts?: { strict?: boolean },
+): string {
+  const strict = opts?.strict === true;
   /* Idempotent: a second freeze for the same round returns the already-frozen
-     head and never re-snapshots (the round can only close once). */
+     head and never re-snapshots (the round can only close once). The DB row's
+     round_id PRIMARY KEY + ON CONFLICT DO NOTHING enforces the same invariant
+     across restarts even if the in-memory Map was cleared. */
   const existing = frozenRoundChainHead.get(roundId);
   if (existing) return existing.chainHead;
+
+  ensureChainHeadFreezeTable();
+
+  /* If a freeze already exists in the DB (e.g. after a restart that cleared the
+     Map), honor it -- never re-snapshot against a possibly-different chain head. */
+  const persisted = readFrozenRoundChainHeadFromDb(roundId);
+  if (persisted) {
+    frozenRoundChainHead.set(roundId, persisted);
+    return persisted.chainHead;
+  }
+
   const chainHead = getCarryForwardChainHead(companyId);
-  frozenRoundChainHead.set(roundId, {
+  const snapshot = {
     roundId,
     companyId,
     chainHead,
     frozenAt: new Date().toISOString(),
-  });
+  };
+
+  const driver = chainHeadFreezeDb();
+  if (driver) {
+    try {
+      driver
+        .prepare(
+          `INSERT INTO round_chain_head_freezes
+             (round_id, company_id, chain_head, frozen_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(round_id) DO NOTHING`,
+        )
+        .run(snapshot.roundId, snapshot.companyId, snapshot.chainHead, snapshot.frozenAt);
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (strict) {
+        /* FAIL-CLOSED: do NOT record the in-memory snapshot, so the round
+           cannot be observed as frozen. Propagate so closeRound aborts and the
+           terminal round state is never committed. */
+        log.error("[roundCarryForward.freezeRoundChainHead] strict persist FAILED — aborting close:", msg);
+        throw new FreezePersistError(msg);
+      }
+      log.warn("[roundCarryForward.freezeRoundChainHead] persist failed (kept in-memory):", msg);
+    }
+  }
+
+  /* Persist confirmed (or no-DB sandbox where the Map is authoritative): record
+     the in-memory snapshot only AFTER a successful/uncontested write. */
+  frozenRoundChainHead.set(roundId, snapshot);
+
   return chainHead;
 }
 
 export function getFrozenRoundChainHead(roundId: string): string | null {
-  return frozenRoundChainHead.get(roundId)?.chainHead ?? null;
+  const cached = frozenRoundChainHead.get(roundId);
+  if (cached) return cached.chainHead;
+  ensureChainHeadFreezeTable();
+  const persisted = readFrozenRoundChainHeadFromDb(roundId);
+  if (persisted) {
+    frozenRoundChainHead.set(roundId, persisted);
+    return persisted.chainHead;
+  }
+  return null;
+}
+
+/** v25.45 Bug C: rehydrate the frozen-chain-head Map from the durable
+ *  round_chain_head_freezes table on boot. Returns the number of snapshots
+ *  loaded. Safe to call when there is no DB (returns 0). */
+export function hydrateRoundChainHeadFreezes(): number {
+  ensureChainHeadFreezeTable();
+  const driver = chainHeadFreezeDb();
+  if (!driver) return 0;
+  let n = 0;
+  try {
+    const rows: any[] = driver
+      .prepare(`SELECT round_id, company_id, chain_head, frozen_at FROM round_chain_head_freezes`)
+      .all();
+    for (const r of rows) {
+      frozenRoundChainHead.set(r.round_id, {
+        roundId: r.round_id,
+        companyId: r.company_id,
+        chainHead: r.chain_head,
+        frozenAt: r.frozen_at,
+      });
+      n++;
+    }
+  } catch (err) {
+    log.warn("[roundCarryForward.hydrateRoundChainHeadFreezes] hydrate failed:", (err as Error).message);
+  }
+  return n;
 }
 
 export function clearCarryForwardAuditLog(): void {

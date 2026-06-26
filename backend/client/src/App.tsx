@@ -36,6 +36,8 @@ import SelectCompany from "@/pages/SelectCompany";
 
 import FounderDashboard from "@/pages/founder/Dashboard";
 import FounderCompany from "@/pages/founder/Company";
+// v25.45 F8 — Company Management parent landing page (new left-nav item).
+import FounderCompanyManagement from "@/pages/founder/CompanyManagement";
 import FounderCapTable from "@/pages/founder/CapTable";
 import FounderRounds from "@/pages/founder/Rounds";
 import FounderRoundNew from "@/pages/founder/RoundNew";
@@ -203,6 +205,14 @@ import CollectiveMyRequests from "@/pages/collective/MyRequests";
 import CollectivePublicProfile from "@/pages/collective/PublicProfile";
 import CollectivePartnersDirectory from "@/pages/collective/PartnersDirectory";
 import QuestionDetailPage from "@/pages/collective/QuestionDetailPage";
+// v25.44 Wave A + M&A + venture pages
+import MaIntel from "@/pages/collective/MaIntel";
+import MyPortfolioPage from "@/pages/collective/MyPortfolioPage";
+import PresentationsPage from "@/pages/collective/PresentationsPage";
+import NetworkPostsPage from "@/pages/collective/NetworkPostsPage";
+import MonthlyMeetingsPage from "@/pages/collective/MonthlyMeetingsPage";
+import SchedulePage from "@/pages/collective/SchedulePage";
+import SyndicateApplyPage from "@/pages/collective/SyndicateApplyPage";
 
 // Bootstrap demo telemetry once at app load
 if (import.meta.env.MODE !== "production") {
@@ -294,6 +304,11 @@ function isAuthRoute(path: string) {
     path.startsWith("/investor/signup") ||
     path.startsWith("/collective/preview") ||
     path.startsWith("/collective/") ||
+    // v25.44 R3 — /ma-intel renders inside CollectiveShell. Mark it bare
+    // so the global AppShell doesn't double-wrap it (which was rendering
+    // both the founder Workspace sidebar and the Collective sidebar side
+    // by side).
+    path === "/ma-intel" ||
     path.startsWith("/auth/") ||
     path === "/set-password" || // v23.4.1 Task C — public invite redemption
     path === "/select-company" ||
@@ -499,8 +514,11 @@ function AppRouter() {
         <Route path="/founder/subscribe">
           {() => <RequireAuth><FounderSubscribe /></RequireAuth>}
         </Route>
+        {/* v25.45 F10c — Billing left-nav removed; /founder/billing now
+            redirects to Settings → Billing & Subscription (the canonical full
+            Billing surface). */}
         <Route path="/founder/billing">
-          {() => <RequireAuth><FounderBilling /></RequireAuth>}
+          {() => <Redirect to="/founder/settings?tab=billing-subscription" />}
         </Route>
         {/* v24.2 Airwallex wiring — return from hosted checkout; NOT subscription-gated
             (the plan may still be activating when the browser lands here). */}
@@ -555,6 +573,15 @@ function AppRouter() {
         {/* Founder routes — auth required, NOT subscription-gated */}
         <Route path="/founder/company">
           {() => <RequireAuth><FounderCompany /></RequireAuth>}
+        </Route>
+        {/* v25.45 F8b — Company Management parent landing page (Team sub-tab). */}
+        <Route path="/founder/company-management">
+          {() => <RequireAuth><FounderCompanyManagement /></RequireAuth>}
+        </Route>
+        {/* v25.45 F7 — Settings → Company tab deleted; redirect any deep-link
+            to the canonical Company Profile page. */}
+        <Route path="/founder/settings/company">
+          {() => <Redirect to="/founder/company" />}
         </Route>
         <Route path="/founder/profile/wizard">
           {() => <RequireAuth><FounderProfileWizard /></RequireAuth>}
@@ -883,6 +910,35 @@ function AppRouter() {
         </Route>
         <Route path="/collective/partners">
           {() => <RequireAuth><CollectiveShell><CollectivePartnersDirectory /></CollectiveShell></RequireAuth>}
+        </Route>
+
+        {/* v25.44 Wave A + M&A + venture routes. */}
+        <Route path="/ma-intel">
+          {() => <RequireAuth><CollectiveShell><MaIntel /></CollectiveShell></RequireAuth>}
+        </Route>
+        <Route path="/collective/ma-intel">
+          {() => <RequireAuth><CollectiveShell><MaIntel /></CollectiveShell></RequireAuth>}
+        </Route>
+        <Route path="/collective/me/portfolio">
+          {() => <RequireAuth><CollectiveShell><MyPortfolioPage /></CollectiveShell></RequireAuth>}
+        </Route>
+        <Route path="/collective/presentations">
+          {() => <RequireAuth><CollectiveShell><PresentationsPage /></CollectiveShell></RequireAuth>}
+        </Route>
+        <Route path="/collective/posts">
+          {() => <RequireAuth><CollectiveShell><NetworkPostsPage /></CollectiveShell></RequireAuth>}
+        </Route>
+        <Route path="/collective/monthly-meetings">
+          {() => <RequireAuth><CollectiveShell><MonthlyMeetingsPage /></CollectiveShell></RequireAuth>}
+        </Route>
+        <Route path="/collective/schedule">
+          {() => <RequireAuth><CollectiveShell><SchedulePage /></CollectiveShell></RequireAuth>}
+        </Route>
+        <Route path="/syndicate/apply">
+          {() => <RequireAuth><CollectiveShell><SyndicateApplyPage /></CollectiveShell></RequireAuth>}
+        </Route>
+        <Route path="/collective/syndicate/apply">
+          {() => <RequireAuth><CollectiveShell><SyndicateApplyPage /></CollectiveShell></RequireAuth>}
         </Route>
 
         {/* v19 Phase A — Events Calendar (month view) + Leaderboard.

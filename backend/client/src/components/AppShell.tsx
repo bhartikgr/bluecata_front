@@ -26,6 +26,7 @@ import { CapCollectiveToggle } from "./CapCollectiveToggle";
 import { NotificationBell } from "./NotificationBell";
 import { useEntitlement } from "@/lib/entitlement";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { ArchivedWorkspaceBanner } from "./ArchivedWorkspaceBanner";
 
 /** Role-aware glossary link rendered in the page header. */
 function GlossaryLink() {
@@ -84,6 +85,9 @@ function useFounderNav(): NavGroup[] {
       items: [
         { href: "/founder/dashboard", label: "Dashboard", icon: LayoutDashboard },
         { href: "/founder/company", label: "Company Profile", icon: Building2 },
+        // v25.45 F8b — new left-nav item directly below Company Profile. Parent
+        // landing page hosting the Team sub-tab (Team moved out of Settings).
+        { href: "/founder/company-management", label: "Company Management", icon: Users, testId: "nav-company-management" },
         { href: "/founder/captable", label: "Cap Table", icon: PieChart },
       ],
     },
@@ -108,7 +112,9 @@ function useFounderNav(): NavGroup[] {
       items: [
         { href: "/founder/activity", label: "Activity Log", icon: Activity },
         { href: "/founder/settings", label: "Settings", icon: Settings },
-        { href: "/founder/billing", label: "Billing", icon: DollarSign },
+        // v25.45 F10c — Billing left-nav item removed; the full Billing surface
+        // is now Settings → Billing & Subscription. /founder/billing redirects
+        // there (App.tsx).
         { href: "/founder/collective", label: "Capavate Collective", icon: Sparkles },
         { href: "/founder/apply-to-collective", label: "Apply to Collective", icon: FileSignature },
       ],
@@ -487,6 +493,8 @@ export function AppShell({ children }: { children: ReactNode }) {
           </SheetContent>
         </Sheet>
         <main className="flex-1 min-w-0 overflow-x-hidden">
+          {/* v25.45 F20c — archived-workspace banner on every founder page. */}
+          {location.startsWith("/founder") && <ArchivedWorkspaceBanner />}
           {children}
         </main>
       </div>

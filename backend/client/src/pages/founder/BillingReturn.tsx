@@ -6,8 +6,16 @@
  * (?paymentIntentId=int_...). Activation happens server-side via the Airwallex
  * `payment_intent.succeeded` webhook, which flips the pending capavate
  * subscription to `active`. That webhook can land slightly before OR after the
- * browser redirect, so this page POLLS GET /api/founder/subscription/status
- * for up to ~10s:
+ * browser redirect — and in production it can LAG or FAIL entirely (signature
+ * mismatch, endpoint unreachable, transient network). Relying on it alone is
+ * exactly what caused the v25.45 "card charged but platform not unlocked" bug.
+ *
+ * v25.45 Bug A — this page now also RECONCILES server-side on each poll:
+ * POST /api/founder/subscription/reconcile verifies the authoritative Airwallex
+ * intent status (retrievePaymentIntent) and, if SUCCEEDED, finalizes the
+ * subscription via the SAME atomic path the webhook uses. So the platform
+ * unlocks immediately on return even if the webhook never arrives. We then
+ * POLL GET /api/founder/subscription/status for up to ~10s:
  *
  *   - status === "active"  → redirect to /founder/dashboard
  *   - status === "failed"  → show a clear failure message + retry link
@@ -63,6 +71,20 @@ export default function BillingReturn() {
     const poll = async () => {
       if (cancelledRef.current) return;
       try {
+        /* v25.45 Bug A — webhook-independent activation. Ask the server to
+         * reconcile against the authoritative Airwallex status BEFORE reading
+         * the local status. This activates the subscription on the client
+         * return path even when the webhook lags or never lands. It is
+         * idempotent (safe if the webhook already activated the row). */
+        try {
+          await apiRequest("POST", "/api/founder/subscription/reconcile", {
+            paymentIntentId,
+          });
+        } catch {
+          // Reconcile is best-effort (e.g. gateway briefly unreachable); the
+          // status read below still drives the UI and we keep polling.
+        }
+
         const res = await apiRequest(
           "GET",
           `/api/founder/subscription/status?paymentIntentId=${encodeURIComponent(paymentIntentId)}`,

@@ -166,6 +166,19 @@ function CompanyDetailsView({
  const geoLabel = (v: string) => OPERATING_GEOGRAPHY_OPTIONS.find(o => o.value === v)?.label ?? v;
  const segmentLabel = (v: string) => CUSTOMER_SEGMENT_OPTIONS.find(o => o.value === v)?.label ?? v;
 
+ // v25.45 F18d — "Formal Board of Directors" derives from the canonical Board
+ // Composition data migrated into profile.legal.boardComposition (F18c, Step 3),
+ // not from the legacy ma.hasFormalBoard boolean. The checkmark is true when the
+ // company has at least one director recorded (count > 0) OR a non-empty
+ // directors snapshot. We OR-in the legacy boolean so pre-v25.45 profiles that
+ // only set hasFormalBoard still score correctly (additive, no regression).
+ const board = profile?.legal.boardComposition;
+ const hasFormalBoardDerived = !!profile && (
+ (board?.directorsCount ?? 0) > 0
+ || (board?.directorsSnapshot?.length ?? 0) > 0
+ || profile.ma.hasFormalBoard
+ );
+
  return (
  <>
  <PageHeader
@@ -352,7 +365,7 @@ function CompanyDetailsView({
  {profile && (
  <SectionCard icon={Shield} title="Corporate governance scorecard">
  <div className="grid sm:grid-cols-2 gap-2" data-testid="section-governance">
- <GovRow label="Formal Board of Directors" v={profile.ma.hasFormalBoard} positive />
+ <GovRow label="Formal Board of Directors" v={hasFormalBoardDerived} positive />
  <GovRow label="No pending litigation" v={!profile.ma.hasPendingLitigation} positive />
  <GovRow label="Regulatory compliant" v={profile.ma.isRegulatoryCompliant} positive />
  <GovRow label="External legal counsel" v={profile.ma.hasExternalLegalCounsel} positive />
@@ -430,7 +443,7 @@ function CompanyDetailsView({
  <KV k="Entity type" v={profile.legal.entityType ?? "—"} />
  <KV k="Business number" v={profile.legal.businessNumber || "—"} />
  <KV k="Public exchange" v={profile.legal.isPubliclyTraded ? "Yes" : "No"} />
- <KV k="Formal board" v={profile.ma.hasFormalBoard ? "Yes" : "No"} />
+ <KV k="Formal board" v={hasFormalBoardDerived ? "Yes" : "No"} />
  <KV k="Regulatory compliant" v={profile.ma.isRegulatoryCompliant ? "Yes" : "No"} />
  <KV k="IP holdings" v={profile.ma.holdsMaterialIp ? "Yes" : "No"} />
  <KV k="Financials audited" v={profile.ma.isFinanciallyAudited ? "Yes" : "No"} />

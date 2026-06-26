@@ -114,7 +114,8 @@ import { hydrateCompanyLogos as realHydrateCompanyLogos } from "./companyLogoRou
  * mute/report stores, initial shareholders). */
 import { hydrateYourDecisionStore as realHydrateYourDecision } from "../yourDecisionStore";
 import { hydrateMilestoneBroadcastStore as realHydrateMilestoneBroadcasts } from "../milestoneBroadcastStore";
-import { hydrateCarryForwardAuditLog as realHydrateCarryForwardAudit } from "../roundCarryForwardRoutes";
+import { hydrateCarryForwardAuditLog as realHydrateCarryForwardAudit, hydrateRoundChainHeadFreezes as realHydrateRoundChainHeadFreezes } from "../roundCarryForwardRoutes";
+import { hydrateLegacyInvitations as realHydrateLegacyInvitations } from "../legacyInvitationStore";
 import { hydrateQaMessagesStore as realHydrateQaMessages } from "../sprint21InvitationsRoutes";
 import { hydrateFinancialRequestTokens as realHydrateFinancialReqTokens } from "../companyProfileStore";
 import { hydrateSprint20Wave2Stores as realHydrateSprint20Wave2 } from "../sprint20Wave2Routes";
@@ -330,6 +331,25 @@ const HYDRATE_ORDER: Array<{ name: string; fn: () => Promise<void> }> = [
     fn: async () => {
       const n = realHydrateCarryForwardAudit();
       if (n > 0) log.info({ route: "hydrate.carryForwardAuditLog", count: n });
+    },
+  },
+  /* v25.45 Bug C — round-close frozen chain-head snapshots (round_chain_head_freezes).
+     Hydrates after carryForwardAuditLog so the chain itself is loaded first. */
+  {
+    name: "roundChainHeadFreezes",
+    fn: async () => {
+      const n = realHydrateRoundChainHeadFreezes();
+      if (n > 0) log.info({ route: "hydrate.roundChainHeadFreezes", count: n });
+    },
+  },
+  /* v25.45 Bug C — legacy in-memory invitationStore (routes.ts) durable tokens +
+     redemption state. routes.ts registers its array reference at import time;
+     this merges persisted rows into that exact array. */
+  {
+    name: "legacyInvitationStore",
+    fn: async () => {
+      const n = realHydrateLegacyInvitations();
+      if (n > 0) log.info({ route: "hydrate.legacyInvitationStore", count: n });
     },
   },
   /* v25.11 NH5 — founder Q&A messages thread. Hydrates after roundsStore. */

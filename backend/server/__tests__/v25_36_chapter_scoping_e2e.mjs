@@ -38,6 +38,7 @@ import * as membershipStore from "../collectiveMembershipStore.ts";
 import { updateCompanyProfile } from "../companyProfileStore.ts";
 import { upsertDirectoryListing } from "../collectiveInterestStore.ts";
 import { createContact } from "../adminContactsStore.ts";
+import { writeUserPrivacy } from "../lib/userPrivacyResolver.ts";
 import { createChannel } from "../transactionPrepStore.ts";
 import { createSoftCircle } from "../softCircleStore.ts";
 import { _testPartnerStore } from "../partnerWorkspaceStore.ts";
@@ -274,6 +275,13 @@ beforeAll(async () => {
     { kind: "investor", type: "individual", legalName: `Investor B ${STAMP}`, displayName: `Investor B ${STAMP}`, email: EMAIL_B, status: "active", region: "NA", hqCountry: "CA", industries: [], stages: [], tags: [] },
     ADMIN,
   );
+  // v25.45 ROUND 3 — the Collective directory now defaults no-row members to
+  // "Private Investor" (opt-in required). This suite tests CHAPTER SCOPING, not
+  // privacy, so opt both seeded investors INTO the directory by name; the
+  // scoping assertions below still verify member_a sees only Investor A and
+  // member_b sees only Investor B.
+  writeUserPrivacy(MEMBER_A, { screenName: `Investor A ${STAMP}`, visibleToCoMembers: true, visibleInCollectiveDirectory: true });
+  writeUserPrivacy(MEMBER_B, { screenName: `Investor B ${STAMP}`, visibleToCoMembers: true, visibleInCollectiveDirectory: true });
 
   // ── Seed transaction-prep channels (drives /dsc/prep) ──────────
   createChannel({ companyId: COMPANY_A, founderUserId: `f_${COMPANY_A}` });

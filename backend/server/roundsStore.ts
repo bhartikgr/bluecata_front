@@ -361,6 +361,40 @@ const UPDATE_WHITELIST: Record<string, keyof typeof roundsTable.$inferInsert> = 
    only the whitelisted keys without duplicating the list. */
 export const UPDATE_ROUND_WHITELIST_KEYS: string[] = Object.keys(UPDATE_WHITELIST);
 
+/* v25.45 Bug C — long-tail TERM extras that the Edit-Terms dialog can patch.
+ * These are NOT first-class `rounds` columns; they live in `extras_json` (the
+ * round shape carries a [extra: string] index signature). Before this fix the
+ * PATCH /api/rounds/:id/terms route mutated the in-memory round object only
+ * (Object.assign) and never wrote ANY of these to the DB — so SAFE/note/warrant
+ * term edits (cap, discount, MFN, pro-rata, etc.) were silently lost on a server
+ * restart. They feed the cap table, so this is a CRITICAL persistence gap.
+ *
+ * Listed explicitly so the mass-assignment guard stays intact: an extras key
+ * NOT on this list is still rejected as UNKNOWN_FIELD. Adding a key here is the
+ * deliberate, reviewed way to let it round-trip through extras_json. */
+const UPDATE_EXTRAS_WHITELIST: ReadonlySet<string> = new Set([
+  "valuationCap",
+  "discount",
+  "interestRate",
+  "maturityMonths",
+  "maturityDate",
+  "strikePrice",
+  "expiryYears",
+  "expiryDate",
+  "sharesAuthorized",
+  "poolSize",
+  "mfn",
+  "proRata",
+  "liquidationPreference",
+  "antiDilutionType",
+  "useOfProceeds",
+  "cap",
+]);
+
+/* Exported so the route layer can pre-filter a terms patch into core-column
+ * keys vs extras keys without duplicating either list. */
+export const UPDATE_ROUND_EXTRAS_KEYS: string[] = Array.from(UPDATE_EXTRAS_WHITELIST);
+
 export interface UpdateRoundOpts {
   actor: string;
   /** Optimistic-concurrency guard. When supplied, the update only applies if
@@ -404,10 +438,21 @@ export function updateRound(
      in-memory cache patch from the same validated keys. */
   const dbSet: Record<string, unknown> = {};
   const cachePatch: Record<string, unknown> = {};
+  /* v25.45 Bug C — long-tail TERM extras that must round-trip through the
+     `extras_json` column rather than a first-class round column. */
+  const extrasPatch: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(patch)) {
     if (value === undefined) continue; /* absent — leave untouched */
     const column = UPDATE_WHITELIST[key];
     if (!column) {
+      /* v25.45 Bug C — not a core column; is it a whitelisted TERM extra? If so
+         persist it into extras_json. Otherwise keep failing closed (the
+         mass-assignment guard is preserved). */
+      if (UPDATE_EXTRAS_WHITELIST.has(key)) {
+        extrasPatch[key] = value;
+        cachePatch[key] = value;
+        continue;
+      }
       return { ok: false, error: "UNKNOWN_FIELD", rejectedKey: key };
     }
     dbSet[column as string] = value;
@@ -423,8 +468,28 @@ export function updateRound(
     cachePatch[cacheKey] = value;
   }
 
-  if (Object.keys(dbSet).length === 0) {
+  if (Object.keys(dbSet).length === 0 && Object.keys(extrasPatch).length === 0) {
     return { ok: false, error: "NO_CHANGES" };
+  }
+
+  /* v25.45 Bug C — when any TERM extra changed, merge it onto the round's
+     EXISTING extras and serialize the full blob into the extras_json column so
+     the long-tail terms survive a restart. We read the current extras off the
+     cached Round (which rowToRound already spreads from extras_json on hydrate)
+     and re-derive the persisted blob by stripping the known first-class fields. */
+  if (Object.keys(extrasPatch).length > 0) {
+    const KNOWN_ROUND_FIELDS = new Set([
+      "id", "companyId", "name", "type", "state", "targetAmount", "raisedAmount",
+      "preMoney", "postMoney", "pricePerShare", "minTicket", "closeDate",
+      "termsSummary", "leadInvestor", "currency", "region", "openDate",
+      "instrument", "createdAt", "updatedAt", "closedAt",
+    ]);
+    const currentExtras: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(round)) {
+      if (!KNOWN_ROUND_FIELDS.has(k)) currentExtras[k] = v;
+    }
+    const mergedExtras = { ...currentExtras, ...extrasPatch };
+    dbSet["extrasJson"] = JSON.stringify(mergedExtras);
   }
 
   const now = new Date().toISOString();
@@ -502,7 +567,7 @@ export interface CloseRoundResult {
   round?: Round;
   alreadyClosed?: boolean;
   frozenChainHead?: string | null;
-  error?: "ROUND_NOT_FOUND" | "DB_WRITE_FAILED";
+  error?: "ROUND_NOT_FOUND" | "DB_WRITE_FAILED" | "FREEZE_PERSIST_FAILED";
 }
 
 /**
@@ -535,6 +600,25 @@ export function closeRound(roundId: string, opts: CloseRoundOpts): CloseRoundRes
   const finalState = opts.finalState ?? "closed";
   const now = new Date().toISOString();
   const tenantId = tenantForCompany(round.companyId);
+
+  /* v25.45 Bug C ROUND-2 (GPT-5.5 blocker 3): the chain-head freeze is now
+     FAIL-CLOSED and happens BEFORE the terminal round-state UPDATE is
+     committed. Previously the round state was committed first and the freeze
+     ran afterward in best-effort mode, so a DB write failure on the freeze
+     produced a closed round with no durable audit baseline (lost on restart).
+     Now we persist the freeze strictly first: if it cannot be durably written
+     we abort the close entirely and the round stays OPEN. A
+     closed-but-not-frozen round can therefore never be reported as
+     successfully closed. We do NOT touch the cap-table commit ledger here —
+     this only reorders the (separate) round_chain_head_freezes insert ahead of
+     the rounds-table state UPDATE. */
+  let frozenChainHead: string;
+  try {
+    frozenChainHead = freezeRoundChainHead(roundId, round.companyId, { strict: true });
+  } catch (err) {
+    log.error("[roundsStore.closeRound] freeze persistence FAILED — refusing to close round:", (err as Error).message);
+    return { ok: false, error: "FREEZE_PERSIST_FAILED", round };
+  }
 
   let changes = 0;
   let tableMissing = false;
@@ -572,9 +656,10 @@ export function closeRound(roundId: string, opts: CloseRoundOpts): CloseRoundRes
   };
   cacheUpsert(closed);
 
-  /* Cap-table hash chain — freeze the per-company carry-forward chain head for
-     this round (v25.18 NH4). Append-only chain is NOT mutated. */
-  const frozenChainHead = freezeRoundChainHead(roundId, round.companyId);
+  /* Cap-table hash chain — the per-company carry-forward chain head was already
+     frozen FAIL-CLOSED above, BEFORE the terminal round-state UPDATE committed
+     (v25.18 NH4 + v25.45 Bug C round-2). The append-only chain is NOT mutated;
+     `frozenChainHead` is the durably-persisted tip captured prior to close. */
 
   /* Audit. */
   try {

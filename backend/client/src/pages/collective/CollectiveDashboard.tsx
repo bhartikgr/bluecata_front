@@ -24,6 +24,14 @@ import { UpcomingMeetingsCard } from "@/components/collective/widgets/UpcomingMe
 import { RegionalChaptersBarList } from "@/components/collective/widgets/RegionalChaptersBarList";
 import { OperationsConsoleCard } from "@/components/collective/widgets/OperationsConsoleCard";
 import { MarketWatchWidget } from "@/components/feeds/MarketWatchWidget"; /* v25.43 R3-4 (B) — market/crypto/macro + Capavate Pulse */
+// v25.44 Wave A + M&A + venture widgets (additive — NO removals).
+import { EngagementScoreCard } from "@/components/collective/widgets/EngagementScoreCard";
+import { PlatformPulseCard } from "@/components/collective/widgets/PlatformPulseCard";
+import { MyPortfolioCard } from "@/components/collective/widgets/MyPortfolioCard";
+import { PresentationsCard } from "@/components/collective/widgets/PresentationsCard";
+import { NetworkPostsCard } from "@/components/collective/widgets/NetworkPostsCard";
+import { MaIntelCard } from "@/components/collective/widgets/MaIntelCard";
+import { VentureMarketsCard } from "@/components/collective/widgets/VentureMarketsCard";
 
 interface DashboardData {
   kpis: {
@@ -183,10 +191,19 @@ export default function CollectiveDashboard() {
         </div>
       )}
 
-      {/* v25.43 R3-4 (B) — Market Watch widget, mounted above the existing
-          stat cards. Market & macro snapshot + crypto snapshot + Capavate
-          Pulse (real DB numbers). */}
+      {/* v25.43 R3-4 (B) — Market Watch widget (the live intraday tape). Kept
+          as the "live tape". v25.44 adds the lower-churn structural Venture
+          Markets widget alongside it (NO removal). */}
       <MarketWatchWidget />
+
+      {/* v25.44 Surface 2 — Platform Pulse (6-tile strip, auto-refresh 60s). */}
+      <PlatformPulseCard />
+
+      {/* v25.44 Surfaces 1 + 13 — Engagement Score + M&A Intelligence card. */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <EngagementScoreCard />
+        <MaIntelCard />
+      </div>
 
       {/* v25.42 W1 — Hero card. */}
       <HeroCard />
@@ -249,6 +266,18 @@ export default function CollectiveDashboard() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <UpcomingMeetingsCard />
         <RegionalChaptersBarList />
+      </div>
+
+      {/* v25.44 Surfaces 3 + 4 — My Portfolio + Presentations. */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <MyPortfolioCard />
+        <PresentationsCard />
+      </div>
+
+      {/* v25.44 Surfaces 5 + 14 — Network Posts + Venture Markets. */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <NetworkPostsCard />
+        <VentureMarketsCard />
       </div>
 
       {/* Recent activity */}

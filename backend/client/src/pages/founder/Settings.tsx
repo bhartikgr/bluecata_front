@@ -200,6 +200,32 @@ export default function Settings() {
   });
   const recentInvoices: FounderInvoice[] = asArray<FounderInvoice>(invoicesQ.data?.invoices);
 
+  // v25.45 F10d — DB-driven Billing & Subscription state. The Current plan,
+  // payment method, and pending-request fields below read from the canonical
+  // subscription projection (capavate_subscriptions → /api/founder/subscription),
+  // never from hardcoded "Free" / "Pending request" placeholder text.
+  type FounderSubscription = {
+    plan?: string;
+    planLabel?: string;
+    status?: string;
+    amountMinor?: number;
+    monthlyUsd?: number;
+    currency?: string;
+    cardLast4?: string | null;
+    nextBillingDate?: string | null;
+    pendingRequest?: { tier?: string; status?: string } | null;
+  };
+  const subscriptionQ = useQuery<{ ok: boolean; subscription?: FounderSubscription }>({
+    queryKey: ["/api/founder/subscription", companyId],
+    queryFn: async () => {
+      const r = await fetch(`/api/founder/subscription?companyId=${encodeURIComponent(companyId)}`, { credentials: "include" });
+      if (!r.ok) return { ok: false };
+      return r.json();
+    },
+    enabled: Boolean(companyId),
+  });
+  const subscription = subscriptionQ.data?.subscription ?? null;
+
   const saveProfileMut = useMutation({
     mutationFn: async () => (await apiRequest("PATCH", "/api/auth/me", { timezone, name: profileName, email: profileEmail, title: profileTitle })).json(),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] }); toast({ title: "Profile saved" }); },
@@ -336,24 +362,22 @@ export default function Settings() {
       <PageBody>
         <Tabs defaultValue="profile" className="w-full">
           <TabsList className="flex flex-wrap h-auto gap-1 justify-start" data-testid="tabs-settings">
+            {/* v25.45 Settings restructure (F6-F20):
+                - DELETED tabs: Company (F7 → redirect to /founder/company),
+                  Plan (F9), Preferences (F16), Financials (F17),
+                  Governance (F18a → Step 3 Board Composition),
+                  M&A Prep (F19a → Step 4 Section 5).
+                - MOVED to left-nav: Team (F8a → /founder/company-management).
+                - HIDDEN (route + code kept): Notifications (F11), Data (F12).
+                - RENAMED: Billing → "Billing & Subscription" (F10a),
+                  Delete → "Delete Workspace" (F20a). */}
             <TabsTrigger value="profile" data-testid="tab-profile"><User className="h-3.5 w-3.5 mr-1" /> Profile</TabsTrigger>
-            <TabsTrigger value="company" data-testid="tab-company"><Building2 className="h-3.5 w-3.5 mr-1" /> Company</TabsTrigger>
-            {/* v23.4.4 (BUG 015) — "Coming soon" badges removed. Team / Billing / Notifications tabs are wired to their respective stores and persist via the standard API mutation path. */}
-            <TabsTrigger value="team" data-testid="tab-team"><Users className="h-3.5 w-3.5 mr-1" /> Team</TabsTrigger>
-            <TabsTrigger value="plan" data-testid="tab-plan"><CreditCard className="h-3.5 w-3.5 mr-1" /> Plan</TabsTrigger>
-            <TabsTrigger value="billing" data-testid="tab-billing"><Receipt className="h-3.5 w-3.5 mr-1" /> Billing</TabsTrigger>
-            <TabsTrigger value="notifications" data-testid="tab-notifications"><Bell className="h-3.5 w-3.5 mr-1" /> Notifications</TabsTrigger>
-            <TabsTrigger value="data" data-testid="tab-data"><Database className="h-3.5 w-3.5 mr-1" /> Data</TabsTrigger>
+            <TabsTrigger value="billing" data-testid="tab-billing"><Receipt className="h-3.5 w-3.5 mr-1" /> Billing &amp; Subscription</TabsTrigger>
             <TabsTrigger value="privacy" data-testid="tab-privacy"><ShieldAlert className="h-3.5 w-3.5 mr-1" /> Privacy</TabsTrigger>
-            {/* Wave C-1 — new tabs before Legal */}
             <TabsTrigger value="public-profile" data-testid="tab-public-profile"><Globe className="h-3.5 w-3.5 mr-1" /> Public</TabsTrigger>
             <TabsTrigger value="region" data-testid="tab-region"><MapPin className="h-3.5 w-3.5 mr-1" /> Region</TabsTrigger>
-            <TabsTrigger value="preferences" data-testid="tab-preferences"><Settings2 className="h-3.5 w-3.5 mr-1" /> Preferences</TabsTrigger>
-            <TabsTrigger value="financials" data-testid="tab-financials"><DollarSign className="h-3.5 w-3.5 mr-1" /> Financials</TabsTrigger>
-            <TabsTrigger value="governance" data-testid="tab-governance"><Gavel className="h-3.5 w-3.5 mr-1" /> Governance</TabsTrigger>
-            <TabsTrigger value="mna-prep" data-testid="tab-mna-prep"><Activity className="h-3.5 w-3.5 mr-1" /> M&amp;A Prep</TabsTrigger>
             <TabsTrigger value="legal" data-testid="tab-legal"><ShieldCheck className="h-3.5 w-3.5 mr-1" /> Legal</TabsTrigger>
-            <TabsTrigger value="delete" data-testid="tab-delete"><Trash2 className="h-3.5 w-3.5 mr-1" /> Delete</TabsTrigger>
+            <TabsTrigger value="delete" data-testid="tab-delete"><Trash2 className="h-3.5 w-3.5 mr-1" /> Delete Workspace</TabsTrigger>
           </TabsList>
 
           {/* PROFILE */}
@@ -392,21 +416,10 @@ export default function Settings() {
                 </CardContent>
               </Card>
 
-              <Card data-testid="section-privacy" className="border-2 border-destructive/70">
-                <CardHeader>
-                  <CardTitle className="text-base flex items-center gap-2"><ShieldAlert className="h-4 w-4 text-destructive" /> Privacy & visibility</CardTitle>
-                  <p className="text-xs text-muted-foreground mt-1">Read carefully. These toggles control how you appear across cap tables and messaging. See the full Privacy tab for details.</p>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <PrivacyControls
-                    screenName={screenName} setScreenName={setScreenName}
-                    visibleCo={visibleCo} setVisibleCo={setVisibleCo}
-                    visibleNet={visibleNet} setVisibleNet={setVisibleNet}
-                    screenValid={screenValid}
-                    onSave={() => savePrivacyMut.mutate()}
-                  />
-                </CardContent>
-              </Card>
+              {/* v25.45 F6b — the "Privacy & visibility" card was REMOVED from the
+                  Profile tab. Privacy controls now live solely on the Privacy
+                  tab (F13), which is the single source of truth + propagates via
+                  resolveDisplayName. The Save-privacy button moved there too. */}
             </div>
           </TabsContent>
 
@@ -574,33 +587,57 @@ export default function Settings() {
           {/* BILLING */}
           <TabsContent value="billing" className="mt-4">
             <TabIntro
-              title="Billing"
-              body="Payment methods, invoice history, and billing-contact emails. PCI-DSS scope is limited — card data never touches Capavate servers. Receipts are exported as audit-grade PDFs with hash verification."
+              title="Billing & Subscription"
+              body="Your current plan, payment method, pending requests, and invoice history — the canonical billing surface for your workspace. PCI-DSS scope is limited: card data never touches Capavate servers. Receipts export as audit-grade PDFs with hash verification."
             />
-            {/* BUG 016 fix v23.7 — the billing tab previously embedded the
-             * PaymentSurface in demo mode, which surfaced a "Demo" badge and a
-             * placeholder charge form to founders. Until a real Stripe billing
-             * relationship is connected we show an honest connect-account CTA
-             * instead of any demo wording or a non-functional charge form. */}
-            <Card className="mb-4" data-testid="card-billing-connect">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base flex items-center gap-2">
-                  <CreditCard className="h-4 w-4" /> Payment method
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm text-muted-foreground mb-3">
-                  Connect your Stripe account in Billing &amp; Plans to manage your
-                  subscription and payment method. Your workspace stays fully
-                  functional until billing is activated.
-                </p>
-                <Link href="/founder/billing">
-                  <Button variant="outline" size="sm" data-testid="button-connect-billing">
-                    Go to Billing &amp; Plans <ArrowRight className="h-3.5 w-3.5 ml-1.5" />
-                  </Button>
-                </Link>
-              </CardContent>
-            </Card>
+            {/* v25.45 F10d — Current plan + payment method + pending request are
+             * DB-driven from the canonical subscription projection
+             * (/api/founder/subscription → capavate_subscriptions). No hardcoded
+             * "Free" / "Pending request" placeholder text. When no subscription
+             * row exists yet we say so honestly (DB returned nothing) rather than
+             * fabricating a plan. */}
+            <div className="grid md:grid-cols-3 gap-4 mb-4">
+              <Card data-testid="card-billing-current-plan">
+                <CardHeader className="pb-3"><CardTitle className="text-base flex items-center gap-2"><Receipt className="h-4 w-4" /> Current plan</CardTitle></CardHeader>
+                <CardContent className="space-y-1">
+                  <div className="text-lg font-semibold" data-testid="text-current-plan">
+                    {subscription?.planLabel ?? subscription?.plan ?? "No active subscription"}
+                  </div>
+                  {subscription?.status && (
+                    <Badge variant={subscription.status === "active" ? "default" : "secondary"} data-testid="badge-subscription-status">{subscription.status}</Badge>
+                  )}
+                  {typeof subscription?.amountMinor === "number" && (
+                    <div className="text-sm text-muted-foreground tabular-nums" data-testid="text-plan-amount">{fmtUSD(subscription.amountMinor / 100, { currency: subscription.currency || "USD" })}/mo</div>
+                  )}
+                  {subscription?.nextBillingDate && (
+                    <div className="text-xs text-muted-foreground">Next billing {fmtDate(subscription.nextBillingDate)}</div>
+                  )}
+                </CardContent>
+              </Card>
+              <Card data-testid="card-billing-payment-method">
+                <CardHeader className="pb-3"><CardTitle className="text-base flex items-center gap-2"><CreditCard className="h-4 w-4" /> Payment method</CardTitle></CardHeader>
+                <CardContent>
+                  {subscription?.cardLast4 ? (
+                    <div className="text-sm" data-testid="text-payment-method">Card ending •••• {subscription.cardLast4}</div>
+                  ) : (
+                    <div className="text-sm text-muted-foreground" data-testid="empty-payment-method-top">No payment method on file.</div>
+                  )}
+                  <Link href="/founder/billing">
+                    <Button variant="outline" size="sm" className="mt-3" data-testid="button-connect-billing">Manage <ArrowRight className="h-3.5 w-3.5 ml-1.5" /></Button>
+                  </Link>
+                </CardContent>
+              </Card>
+              <Card data-testid="card-billing-pending-request">
+                <CardHeader className="pb-3"><CardTitle className="text-base">Pending request</CardTitle></CardHeader>
+                <CardContent>
+                  {subscription?.pendingRequest?.tier ? (
+                    <div className="text-sm" data-testid="text-pending-request">{subscription.pendingRequest.tier} — {subscription.pendingRequest.status ?? "pending"}</div>
+                  ) : (
+                    <div className="text-sm text-muted-foreground" data-testid="empty-pending-request">No pending plan changes.</div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
             {/* v25.20 Lane 5 NC fix: remove fabricated invoice rows + "Visa 4242"
              * mock card per the NO-MOCK-DATA rule. Real invoices and payment
              * methods are managed in Billing & Plans (Stripe), which is where
@@ -789,25 +826,21 @@ export default function Settings() {
             <SettingsRegionTab companyId={companyId} />
           </TabsContent>
 
-          {/* Wave C-1 — Preferences tab */}
-          <TabsContent value="preferences" className="mt-4">
-            <SettingsPreferencesTab companyId={companyId} />
-          </TabsContent>
-
-          {/* Wave C-1 — Financials tab */}
-          <TabsContent value="financials" className="mt-4">
-            <SettingsFinancialsTab companyId={companyId} />
-          </TabsContent>
-
-          {/* Wave C-1 — Governance tab */}
-          <TabsContent value="governance" className="mt-4">
-            <SettingsGovernanceTab companyId={companyId} />
-          </TabsContent>
-
-          {/* Wave C-1 — M&A Transaction Prep tab */}
-          <TabsContent value="mna-prep" className="mt-4">
-            <SettingsMnaPrepTab companyId={companyId} />
-          </TabsContent>
+          {/* v25.45 — the Preferences (F16), Financials (F17), Governance (F18a),
+              and M&A Prep (F19a) tab CONTENT blocks were removed from Settings.
+              • Preferences (F16) + Financials (F17): UI dropped. The underlying
+                columns are KEPT (they are still referenced — Preferences by
+                server/lib/companySyncFields.ts + ProfileWizard.tsx; Financials
+                by collectiveRoutes/partnerRoutes/dscScoringEngine/companySync
+                Fields/admin CompanyDetail/Collective Deal Room). No DROP COLUMN
+                migration (0063/0064) was applied because the fields are in use.
+              • Governance (F18a) → moved to Company Profile Step 3 (Board
+                Composition) and the Full-Page scorecard (F18d).
+              • M&A Prep (F19a) → moved to Company Profile Step 4 Section 5.
+              The SettingsPreferencesTab / SettingsFinancialsTab /
+              SettingsGovernanceTab / SettingsMnaPrepTab components remain defined
+              below (retained for rollback per ROLLBACK_v25_45.md) but are no
+              longer mounted, so the fields cannot be edited from Settings. */}
 
           {/* DELETE — T11.2 dedicated tab */}
           {/* LEGAL & PRIVACY */}
@@ -910,10 +943,10 @@ function PrivacyControls(props: {
         <div>
           <Label className="text-sm">Visible to co-members on cap tables you join</Label>
           <p className="text-xs text-muted-foreground mt-0.5">
-            When ON: other investors and the founder team on the same cap table see your screen name. When OFF: you appear as <em>Anonymous Investor</em>.
+            When ON: other investors and the founder team on the same cap table see your screen name. When OFF: you appear as <em>Private Investor</em>.
           </p>
           {expanded && (
-            <p className="text-xs mt-1">Preview: <code className="bg-muted px-1 rounded">{visibleCo ? previewName : "Anonymous Investor"}</code></p>
+            <p className="text-xs mt-1">Preview: <code className="bg-muted px-1 rounded">{visibleCo ? previewName : "Private Investor"}</code></p>
           )}
         </div>
         <Switch checked={visibleCo} onCheckedChange={setVisibleCo} data-testid="switch-visible-co" />
@@ -923,10 +956,10 @@ function PrivacyControls(props: {
         <div>
           <Label className="text-sm">Visible in the Collective network directory</Label>
           <p className="text-xs text-muted-foreground mt-0.5">
-            When ON: your screen name appears in the public Collective member list and in pitch-meeting attendee rosters. When OFF: you are listed as a private member.
+            When ON: your screen name appears in the public Collective member list and in pitch-meeting attendee rosters. When OFF: you are listed as a private investor.
           </p>
           {expanded && (
-            <p className="text-xs mt-1">Preview: <code className="bg-muted px-1 rounded">{visibleNet ? previewName : "Private member"}</code></p>
+            <p className="text-xs mt-1">Preview: <code className="bg-muted px-1 rounded">{visibleNet ? previewName : "Private Investor"}</code></p>
           )}
         </div>
         <Switch checked={visibleNet} onCheckedChange={setVisibleNet} data-testid="switch-visible-net" />
@@ -1184,48 +1217,48 @@ function SettingsPublicProfileTab({ companyId }: { companyId: string | undefined
 }
 
 // ── Region Tab ───────────────────────────────────────────────
+// v25.45 F15 — Region is now a READ-ONLY mirror of the Legal Entity Information
+// captured in Company Profile → Step 3. The three jurisdiction values are
+// sourced from profilestore_company_profile.profile_json.legalEntity.* and are
+// edited there, not here. The Save button is removed and inputs are disabled.
 function SettingsRegionTab({ companyId }: { companyId: string | undefined }) {
-  const { toast } = useToast();
   const profileQ = useProfileData(companyId);
   const profile = profileQ.data?.profile ?? {};
-  const [fields, setFields] = useState({ incorporationJurisdiction: "", secondaryJurisdiction: "", taxResidencyJurisdiction: "" });
-  const [synced, setSynced] = useState(false);
-  if (!synced && profileQ.data) {
-    setFields({ incorporationJurisdiction: profile.incorporationJurisdiction ?? "", secondaryJurisdiction: profile.secondaryJurisdiction ?? "", taxResidencyJurisdiction: profile.taxResidencyJurisdiction ?? "" });
-    setSynced(true);
-  }
-  const saveMut = useMutation({
-    mutationFn: async () => {
-      const patch: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(fields)) if (v !== "") patch[k] = v;
-      const result = await saveProfilePatch(companyId!, patch);
-      if (!result.ok) throw new Error(result.error);
-    },
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/founder/profile", companyId] }); queryClient.invalidateQueries({ queryKey: ["/api/founder/profile/completion", companyId] }); toast({ title: "Region settings saved" }); },
-    onError: (e: any) => toast({ title: "Save failed", description: e?.message, variant: "destructive" }),
-  });
-  function f(key: keyof typeof fields, v: string) { setFields(prev => ({ ...prev, [key]: v })); }
+  // Read from the canonical legalEntity sub-object first (Step 3 source of
+  // truth); fall back to the legacy flat fields for pre-migration profiles.
+  const legal = (profile.legalEntity ?? {}) as Record<string, string>;
+  const values = {
+    incorporationJurisdiction: legal.incorporationJurisdiction ?? profile.incorporationJurisdiction ?? "",
+    secondaryJurisdiction: legal.secondaryJurisdiction ?? profile.secondaryJurisdiction ?? "",
+    taxResidencyJurisdiction: legal.taxResidencyJurisdiction ?? profile.taxResidencyJurisdiction ?? "",
+  };
   return (
     <div className="space-y-6" data-testid="section-region">
       <Card>
         <CardHeader><CardTitle className="text-sm flex items-center gap-2"><MapPin className="h-4 w-4" /> Jurisdiction & Tax Residency</CardTitle></CardHeader>
         <CardContent className="space-y-4">
-          <p className="text-sm text-muted-foreground">Start each field with a 2-letter ISO country code (e.g., "US Delaware", "GB London", "SG").</p>
+          <p className="text-sm text-muted-foreground" data-testid="text-region-helper">
+            These values are managed in Company Profile → Legal Entity Information.{" "}
+            <Link href="/founder/company"><span className="underline cursor-pointer text-foreground" data-testid="link-region-open-company">Open Company Profile</span></Link>.
+          </p>
           {[
-            { key: "incorporationJurisdiction", label: "Incorporation Jurisdiction", placeholder: "US Delaware" },
-            { key: "secondaryJurisdiction", label: "Secondary Jurisdiction", placeholder: "GB London" },
-            { key: "taxResidencyJurisdiction", label: "Tax Residency Jurisdiction", placeholder: "US" },
-          ].map(({ key, label, placeholder }) => (
+            { key: "incorporationJurisdiction", label: "Incorporation Jurisdiction" },
+            { key: "secondaryJurisdiction", label: "Secondary Jurisdiction" },
+            { key: "taxResidencyJurisdiction", label: "Tax Residency Jurisdiction" },
+          ].map(({ key, label }) => (
             <div key={key} className="space-y-1.5">
               <Label className="text-xs">{label}</Label>
-              <Input data-testid={`input-settings-${key}`} value={fields[key as keyof typeof fields]} onChange={e => f(key as keyof typeof fields, e.target.value)} placeholder={placeholder} />
+              <Input
+                data-testid={`input-settings-${key}`}
+                value={values[key as keyof typeof values]}
+                readOnly
+                disabled
+                placeholder="—"
+              />
             </div>
           ))}
         </CardContent>
       </Card>
-      <Button onClick={() => saveMut.mutate()} disabled={saveMut.isPending} data-testid="button-save-region">
-        {saveMut.isPending ? "Saving…" : "Save changes"}
-      </Button>
     </div>
   );
 }
@@ -1658,3 +1691,12 @@ function SettingsMnaPrepTab({ companyId }: { companyId: string | undefined }) {
     </div>
   );
 }
+
+/* v25.45 F16/F17/F18a/F19a — these tab components are retained for rollback
+ * (ROLLBACK_v25_45.md) but no longer mounted in the Settings tab strip. The
+ * void-references below keep them clearly "intentionally retained" without
+ * remounting them, and keep their imports/SACRED-store field references alive. */
+void SettingsPreferencesTab;
+void SettingsFinancialsTab;
+void SettingsGovernanceTab;
+void SettingsMnaPrepTab;

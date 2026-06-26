@@ -344,6 +344,25 @@ function applyV2533PartnerPaymentSchema(db: any) {
     ["spvs", "ALTER TABLE spvs ADD COLUMN deployment_fee_paid_at TEXT"],
     ["spvs", "ALTER TABLE spvs ADD COLUMN deployment_fee_schedule_id TEXT"],
     ["spvs", "ALTER TABLE spvs ADD COLUMN sourcing_partner_id TEXT"],
+
+    // v25.44 — M&A Intelligence privacy gate. ONE additive jsonb (TEXT in
+    // SQLite) column on companies. Default is opt-OUT of Collective-wide
+    // aggregation (shareWithCollective:false) but chapter/advisor visible by
+    // default. Additive + reversible (DROP COLUMN to roll back).
+    ["companies", `ALTER TABLE companies ADD COLUMN ma_privacy_json TEXT DEFAULT '{"shareWithCollective":false,"shareWithChapter":true,"shareWithAdvisors":true,"redactNarrativeFromAggregates":true}'`],
+
+    // v25.44 — Surface 11 decline-with-reason. ONE additive NULLABLE column on
+    // the collective applications table. (canonical table is `collective_apps`.)
+    ["collective_apps", "ALTER TABLE collective_apps ADD COLUMN declined_reason TEXT"],
+
+    // v25.45 F20 — Workspace archive + 8-year retention + revival. Four additive
+    // NULLABLE columns on companies (migration 0062). archive_status defaults to
+    // 'active'. last_active_plan is captured on archive for revival pre-select.
+    // All additive + reversible (DROP COLUMN to roll back).
+    ["companies", "ALTER TABLE companies ADD COLUMN archived_at TEXT"],
+    ["companies", "ALTER TABLE companies ADD COLUMN archive_retention_until TEXT"],
+    ["companies", "ALTER TABLE companies ADD COLUMN archive_status TEXT DEFAULT 'active'"],
+    ["companies", "ALTER TABLE companies ADD COLUMN last_active_plan TEXT"],
   ];
   for (const [table, sql] of alters) {
     try {
@@ -1511,6 +1530,21 @@ function buildProductionTableStatements(): string[] {
       updated_at TEXT,
       created_by TEXT,
       deleted_at TEXT
+    );`,
+    // ---------- v25.45 Bug C (Ozan QA wave) — round-close chain-head freezes ----------
+    // Persists the per-round, append-only snapshot of the company carry-forward
+    // hash-chain head captured at round-close time (freezeRoundChainHead).
+    // Previously this lived ONLY in an in-memory Map (frozenRoundChainHead),
+    // so on a server restart every closed round lost its frozen baseline and a
+    // re-freeze could re-snapshot against a different chain head — corrupting the
+    // round-close audit baseline. This table is ADDITIVE and append-only-by-use
+    // (round_id PRIMARY KEY → a round can only freeze once). It does NOT touch the
+    // sacred carry-forward chain itself or captable_commits.
+    `CREATE TABLE IF NOT EXISTS round_chain_head_freezes (
+      round_id TEXT PRIMARY KEY NOT NULL,
+      company_id TEXT NOT NULL,
+      chain_head TEXT NOT NULL,
+      frozen_at TEXT NOT NULL
     );`,
     `CREATE TABLE IF NOT EXISTS reports (
       id TEXT PRIMARY KEY NOT NULL,

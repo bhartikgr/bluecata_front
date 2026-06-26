@@ -27,6 +27,7 @@
 import type { Express, Request, Response } from "express";
 import { requireAdmin, requireAuth } from "./lib/authMiddleware";
 import { getUserContext } from "./lib/userContext";
+import { resolveDisplayName } from "./lib/userPrivacyResolver";
 import { rawDb } from "./db/connection";
 import { log } from "./lib/logger";
 
@@ -194,21 +195,32 @@ function handleFounderChannels(req: Request, res: Response): void {
     if (st === "collective" && row.source_id) {
       const uid = row.source_id;
       if (!byCollectiveMemberMap.has(uid)) {
-        let memberName = uid;
+        let rawMemberName = uid;
         try {
           const uRow = rawDb()
             .prepare(`SELECT name FROM users WHERE id = ? LIMIT 1`)
             .get(uid) as { name?: string } | undefined;
-          if (uRow?.name) memberName = uRow.name;
+          if (uRow?.name) rawMemberName = uRow.name;
         } catch { /* best-effort — try profilestore_investor_profile */ }
         try {
-          if (memberName === uid) {
+          if (rawMemberName === uid) {
             const pRow = rawDb()
               .prepare(`SELECT display_name FROM profilestore_investor_profile WHERE investor_id = ? LIMIT 1`)
               .get(uid) as { display_name?: string } | undefined;
-            if (pRow?.display_name) memberName = pRow.display_name;
+            if (pRow?.display_name) rawMemberName = pRow.display_name;
           }
         } catch { /* best-effort */ }
+        // v25.45 ROUND 7 — founder-channels exposes the founder's own
+        // soft-circle investors who funded THIS company (the endpoint is gated
+        // by ownsCompany: the viewer is the founder of, or an admin over, this
+        // company). These investors are cap-table counterparties of the founder
+        // (isCoMember:true), so the counterparty default reveals the legal name
+        // UNLESS the member explicitly opted out (visibleToCoMembers:false →
+        // "Private Investor"). Never return raw users.name.
+        const memberName = resolveDisplayName(uid, ctx.userId, "externalCapTable", {
+          legalName: rawMemberName,
+          isCoMember: true,
+        });
         byCollectiveMemberMap.set(uid, { userId: uid, name: memberName, countSCs: 0, totalMinor: 0 });
       }
       const bucket = byCollectiveMemberMap.get(uid)!;

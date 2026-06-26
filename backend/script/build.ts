@@ -1,6 +1,7 @@
 import { build as esbuild } from "esbuild";
 import { build as viteBuild } from "vite";
-import { rm, readFile } from "node:fs/promises";
+import { rm, readFile, cp, mkdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
 
 // server deps to bundle to reduce openat(2) syscalls
 // which helps cold start times
@@ -35,6 +36,20 @@ async function buildAll() {
 
   console.log("building client...");
   await viteBuild();
+
+  // v25.45 ROUND 2 (BLOCKER 7) — keep server/public in lock-step with the
+  // freshly built dist/public. Production serves from dist/public (see
+  // server/static.ts BUNDLE_DIR → dist/public), so dist is canonical, but a
+  // stale server/public/ left over from an older build referenced asset hashes
+  // that no longer existed (e.g. index-DmULJAIq.js). Any deploy path that ever
+  // serves server/public would then ship a broken page. We mirror dist/public
+  // → server/public on every build so the two can never drift again.
+  console.log("syncing server/public from dist/public...");
+  await rm("server/public", { recursive: true, force: true });
+  if (existsSync("dist/public")) {
+    await mkdir("server/public", { recursive: true });
+    await cp("dist/public", "server/public", { recursive: true });
+  }
 
   console.log("building server...");
   const pkg = JSON.parse(await readFile("package.json", "utf-8"));

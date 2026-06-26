@@ -40,6 +40,14 @@ merged.test.include = [
   "server/__tests__/v25_39_*_e2e.mjs",
   "server/__tests__/v25_40_*_e2e.mjs",
   "server/__tests__/v25_41_*_e2e.mjs",
+  // v25.42 — add the Collective dashboard revival E2E suite (17 surface tests).
+  "server/__tests__/v25_42_*_e2e.mjs",
+  // v25.43 — add the auth/onboarding/subscribe QA-fix E2E suite (7 tests).
+  "server/__tests__/v25_43_*_e2e.mjs",
+  // v25.44 — Wave A + M&A Intelligence + Venture Markets E2E suite (13+ tests).
+  "server/__tests__/v25_44_*_e2e.mjs",
+  // v25.45 — Founder QA wave (F1-F20) E2E suite (25+ tests).
+  "server/__tests__/v25_45_*_e2e.mjs",
 ];
 
 export default merged;

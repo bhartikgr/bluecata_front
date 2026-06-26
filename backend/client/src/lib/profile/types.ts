@@ -133,6 +133,26 @@ export interface CompanyLegalEntity {
   kycVariant: KycVariantValue;
   /** engine_attribution — denormalised display string */
   engineAttribution: string;
+  /** v25.45 F18c — Board Composition (migrated from Settings → Governance). */
+  boardComposition?: {
+    directorsCount: number;
+    directorsSnapshot: Array<{ name: string; role?: string }>;
+  };
+}
+
+/** v25.45 F19 — Transaction status for the M&A readiness section. */
+export type MaTransactionStatus =
+  | "not_pursuing" | "exploring" | "outbound" | "inbound" | "active_negotiation";
+
+/** v25.45 F19d — M&A readiness sliders (0-100) + transaction status. */
+export interface MaReadiness {
+  ipDueDiligence: number;
+  customerContracts: number;
+  financialAudit: number;
+  dataRoomOrganization: number;
+  regulatoryFilings: number;
+  esgDisclosure: number;
+  transactionStatus: MaTransactionStatus;
 }
 
 /**
@@ -184,6 +204,11 @@ export interface CompanyMAIntelligence {
   /* Section 5 — Narrative (2 textareas) */
   maReadinessNarrative: string;
   uniqueValueProposition: string;
+
+  /* v25.45 F19d — Section 5 (qualitative) readiness sliders + transaction
+   * status, migrated from the removed Settings → M&A Prep tab. Optional +
+   * additive; pre-v25.45 profiles omit it. */
+  readiness?: MaReadiness;
 }
 
 /** The full assembled company profile. */
@@ -321,7 +346,15 @@ const countryEnum             = z.enum(COUNTRY_CODES as unknown as [string, ...s
 
 export const companyContactSchema = z.object({
   companyName: z.string().min(1).max(100),
-  companyEmail: z.string().email(),
+  // v25.45 F2 — accept the empty string for in-progress PATCH saves. The
+  // 4-step wizard re-sends the WHOLE contact block on every keystroke, so a
+  // founder editing the Name field on a fresh company (companyEmail still "")
+  // previously tripped z.string().email() and threw "Save failed · Invalid
+  // patch" on EVERY Step-1 edit (the platform-wide blocker Ozan reported).
+  // The field is still UI-required (*) and the final-save gate enforces a
+  // non-empty value; this only relaxes intermediate partial-patch saves,
+  // mirroring how companyWebsiteUrl already allows "".
+  companyEmail: z.string().email().or(z.literal("")),
   industry: industryEnum.nullable(),
   phoneCountryCode: countryEnum.or(z.literal("")),
   phoneNumber: z.string().max(40),
@@ -377,6 +410,18 @@ export const companyLegalSchema = z.object({
   region: z.string(),
   kycVariant: kycVariantEnum,
   engineAttribution: z.string(),
+  // v25.45 F18c — Board Composition migrated from the (now-removed) Settings →
+  // Governance tab into Step 3 (Legal Entity Info). Persists to
+  // profilestore_company_profile.profile_json.legalEntity.boardComposition.
+  // Drives the Full-Page "Formal Board of Directors" scorecard checkmark
+  // (F18d). Optional + additive so existing profiles parse unchanged.
+  boardComposition: z.object({
+    directorsCount: z.number().int().nonnegative().default(0),
+    directorsSnapshot: z.array(z.object({
+      name: z.string().max(120),
+      role: z.string().max(80).optional().default(""),
+    })).default([]),
+  }).optional(),
 });
 
 export const companyMaSchema = z.object({
@@ -415,6 +460,24 @@ export const companyMaSchema = z.object({
 
   maReadinessNarrative: z.string().max(2000),
   uniqueValueProposition: z.string().max(800),
+
+  // v25.45 F19d — M&A readiness sliders + transaction status migrated from the
+  // (now-removed) Settings → M&A Prep tab into Step 4. Persists to
+  // profilestore_company_profile.profile_json.ma.readiness. Additive: the
+  // existing ma.intelligence-derived fields above are unchanged. Optional so
+  // pre-v25.45 profiles parse cleanly; computeMaReadinessScore treats a
+  // missing readiness block as all-zero.
+  readiness: z.object({
+    ipDueDiligence: z.number().min(0).max(100).default(0),
+    customerContracts: z.number().min(0).max(100).default(0),
+    financialAudit: z.number().min(0).max(100).default(0),
+    dataRoomOrganization: z.number().min(0).max(100).default(0),
+    regulatoryFilings: z.number().min(0).max(100).default(0),
+    esgDisclosure: z.number().min(0).max(100).default(0),
+    transactionStatus: z.enum([
+      "not_pursuing", "exploring", "outbound", "inbound", "active_negotiation",
+    ]).default("not_pursuing"),
+  }).optional(),
 });
 
 export const companyProfileSchema = z.object({
@@ -624,7 +687,63 @@ export function computeMaReadinessScore(ma: CompanyMAIntelligence): {
            + (ma.uniqueValueProposition.trim().length >= 50 ? 4 : 0),
   });
 
-  const score = Math.round(components.reduce((acc, c) => acc + Math.min(c.weight, c.awarded), 0));
+  // The six components above sum to a 100-pt "qualitative" sub-score.
+  const existingRaw = components.reduce((acc, c) => acc + Math.min(c.weight, c.awarded), 0);
+
+  // v25.45 F19e — composite reweight. When the founder has filled the new
+  // Step-4 Section-5 readiness sliders (ma.readiness), the maScore becomes a
+  // 50/50 blend of (a) the existing qualitative sub-score above and (b) the new
+  // quantitative readiness sliders. The slider sub-score is itself a weighted
+  // average on a 0-100 scale (IP DD 15%, Customer Contracts 20%, Financial
+  // Audit 25%, Data Room 15%, Regulatory Filings 15%, ESG 10% — sums to 100%).
+  // Backward-compatible: a profile WITHOUT a readiness block (pre-v25.45) keeps
+  // the original 100% existing-score behaviour exactly, so historical maScores
+  // are unchanged and the /ma-intel aggregation does not shift for old data.
+  const r = ma.readiness;
+  // v25.45 ROUND 2 (BLOCKER 4) — backward-compat guard. Round 1 applied the
+  // 50/50 blend whenever a `readiness` object merely EXISTED, but the Step-4 UI
+  // initialises an all-zero readiness block as soon as the founder touches any
+  // readiness control (Company.tsx ~1303-1309). That all-zero block silently
+  // HALVED a strong qualitative score (e.g. 80 → 40) for companies that had set
+  // no meaningful readiness data — a regression vs v25.44. The blend must only
+  // apply when the readiness data is MEANINGFUL: at least one slider > 0, OR the
+  // founder explicitly set a transaction state other than 'not_pursuing'.
+  // Otherwise we fall through to the original qualitative-only score (v25.44
+  // behaviour, byte-for-byte for these inputs).
+  const clampGuard = (n: unknown) => {
+    const num = typeof n === "number" ? n : Number(n);
+    return Math.max(0, Math.min(100, Number.isFinite(num) ? num : 0));
+  };
+  const anySliderSet = r
+    ? [r.ipDueDiligence, r.customerContracts, r.financialAudit, r.dataRoomOrganization, r.regulatoryFilings, r.esgDisclosure]
+        .some((s) => clampGuard(s) > 0)
+    : false;
+  const transactionStateSet = !!r && !!r.transactionStatus && r.transactionStatus !== "not_pursuing";
+  const readinessIsMeaningful = !!r && (anySliderSet || transactionStateSet);
+  if (r && readinessIsMeaningful) {
+    const clamp = (n: number) => Math.max(0, Math.min(100, Number.isFinite(n) ? n : 0));
+    const sliderSubScore =
+        clamp(r.ipDueDiligence) * 0.15
+      + clamp(r.customerContracts) * 0.20
+      + clamp(r.financialAudit) * 0.25
+      + clamp(r.dataRoomOrganization) * 0.15
+      + clamp(r.regulatoryFilings) * 0.15
+      + clamp(r.esgDisclosure) * 0.10;
+    // Surface the readiness contribution as its own component (max 50) so the
+    // Full-Page / Step-4 breakdown shows the new signal, and halve every
+    // existing component's effective weight so the displayed parts still sum to
+    // ~100 and reflect the 50/50 blend.
+    const composite = existingRaw * 0.5 + sliderSubScore * 0.5;
+    const blended: Array<{ label: string; weight: number; awarded: number }> = components.map((c) => ({
+      label: c.label,
+      weight: c.weight / 2,
+      awarded: Math.min(c.weight, c.awarded) / 2,
+    }));
+    blended.push({ label: "M&A readiness (qualitative)", weight: 50, awarded: Math.round(sliderSubScore * 0.5) });
+    return { score: Math.max(0, Math.min(100, Math.round(composite))), components: blended };
+  }
+
+  const score = Math.round(existingRaw);
   return { score: Math.max(0, Math.min(100, score)), components };
 }
 

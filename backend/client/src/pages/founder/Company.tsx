@@ -29,11 +29,15 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import {
  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
+import { Slider } from "@/components/ui/slider";
 import {
  Building2, Mail, MapPin, Briefcase, Target, Eye, ArrowLeft, ArrowRight, Check,
  Upload, Save, Globe, Shield, Users, AlertTriangle, FileText, FlaskConical, ScanFace,
 } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+// v25.45 F4 — the founder Investor View modal embeds the real investor company
+// view in preview mode (Option A).
+import InvestorCompanyDetail from "@/pages/investor/CompanyDetail";
 import { LegalConsentCheckbox, type LegalConsentCheckboxRef } from "@/components/LegalConsentCheckbox";
 import { CountryPicker, PhoneCountryPicker } from "@/components/profile/CountryPicker";
 import { ChipMultiSelect, YesNoRadio } from "@/components/profile/ChipMultiSelect";
@@ -47,6 +51,7 @@ import { computeMaReadinessScore, deriveLegalFields } from "@/lib/profile/types"
 import { EXCHANGE_COUNTRIES, exchangesForCountry } from "@/lib/profile/data/exchanges";
 import { engineAttribution } from "@/lib/profile/region";
 import { useActiveCompanyId } from "@/lib/useActiveCompany";
+import { MaPrivacyConsent } from "@/components/founder/MaPrivacyConsent"; /* v25.44 — M&A privacy gate */
 
 // Defect 7 — removed hardcoded COMPANY_ID; use hook
 const _COMPANY_ID_REMOVED = null; void _COMPANY_ID_REMOVED;
@@ -249,14 +254,25 @@ function CompanyWizard({
  setStep: (s: 1 | 2 | 3 | 4) => void;
  toast: ReturnType<typeof useToast>["toast"];
 }) {
+ // v25.45 F3c — post-save routing needs the wouter navigator inside the wizard.
+ const [, navigate] = useLocation();
  const [contact, setContact] = useState(profile.contact);
  const [address, setAddress] = useState(profile.address);
+ // v25.45 F2 — the legal fallback must produce a schema-VALID block.
+ // The previous fallback seeded kycVariant: "standard" (not a member of
+ // KYC_VARIANT_OPTIONS) and listingCountryCode/exchangeCode/tickerSymbol as
+ // null (the schema requires string), so the FIRST Step-3 edit re-sent the
+ // whole invalid block and threw "Save failed · Invalid patch". We now derive
+ // region/kycVariant/engineAttribution from the default "US" jurisdiction
+ // (same source the server's emptyCompanyProfile uses) and default the
+ // optional listing fields to "" instead of null.
  const [legal, setLegal] = useState(profile.legal ?? {
-   legalEntityName: "", businessNumber: "", countryOfIncorporationCode: "",
+   legalEntityName: "", businessNumber: "", countryOfIncorporationCode: "US",
    entityType: null, articlesFileName: null, articlesFileSizeBytes: null,
-   isPubliclyTraded: false, listingCountryCode: null, exchangeCode: null,
-   tickerSymbol: null, registeredOfficeAddress: "", region: "US",
-   kycVariant: "standard", engineAttribution: "US-default v1.0.0",
+   articlesFileSha256: null,
+   isPubliclyTraded: false, listingCountryCode: "", exchangeCode: "",
+   tickerSymbol: "", registeredOfficeAddress: "",
+   ...deriveLegalFields("US"),
  });
  const [ma, setMa] = useState(profile.ma);
  const [savedAt, setSavedAt] = useState<Date | null>(new Date(profile.updatedAt));
@@ -327,9 +343,20 @@ function CompanyWizard({
   * The full zod schema enforces additional shape constraints (email, URL, etc)
   * — those still surface server-side, but the three below are the
   * “cannot save profile without these” fields the audit asks for. */
+ // v25.45 ROUND 2 (BLOCKER 5) — the final-save gate now also requires a
+ // non-empty, well-formed companyEmail. The in-progress autosave validator
+ // (companyEmailSchema = z.string().email().or(z.literal(""))) intentionally
+ // accepts empty so per-keystroke autosaves never throw "Invalid patch" while a
+ // new founder is still filling Step 1 — but an empty email must NOT reach the
+ // durable FINAL save (Save Profile on Step 4). The server enforces the same on
+ // a final=true PATCH (profileStore.ts).
+ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  const missingRequired = (): string[] => {
  const missing: string[] = [];
  if (!contact.companyName || !contact.companyName.trim()) missing.push("Company name");
+ const email = contact.companyEmail?.trim() ?? "";
+ if (!email) missing.push("Company email");
+ else if (!EMAIL_RE.test(email)) missing.push("Valid company email");
  if (!legal.countryOfIncorporationCode) missing.push("Country of incorporation");
  if (!legal.entityType) missing.push("Entity type");
  return missing;
@@ -434,16 +461,14 @@ function CompanyWizard({
  <Badge variant="outline" className="border-emerald-300 text-emerald-700 text-[10px] ml-2">Live preview · auto-syncs on save</Badge>
  </DialogTitle>
  </DialogHeader>
+ {/* v25.45 F4 — render the ACTUAL investor-facing company view inline
+     (Option A), in preview mode (no navigate-away side effects). Replaces
+     the old "opens full-page at …" placeholder text. */}
  <div
  className="w-full h-full overflow-auto bg-background p-4"
- data-testid="iframe-investor-preview"
+ data-testid="investor-preview-embed"
  >
- <div className="text-sm text-muted-foreground italic text-center pt-8">
- Investor preview — opens full-page at{" "}
- <a href={`/investor/companies/${profile.id}`} target="_blank" rel="noreferrer" className="text-[hsl(0_100%_40%)] underline">
-   /investor/companies/{profile.id}
- </a>
- </div>
+ <InvestorCompanyDetail companyIdOverride={profile.id} mode="preview" />
  </div>
  </DialogContent>
  </Dialog>
@@ -516,7 +541,34 @@ function CompanyWizard({
  {step === 3 && <Step3LegalEntity value={legal} onChange={updateLegal} />}
  {step === 4 && <Step4MaIntent value={ma} onChange={updateMa} />}
 
- <div className="flex items-center justify-between mt-6">
+ {/* v25.45 F3a/F3b — on Step 4 the legal-consent checkbox now sits on its
+     OWN line ABOVE the button row, inside a brand-red bordered container, and
+     stays visible (in checked state) after the founder checks it. Previously
+     it lived inline on the button row and was wrapped in
+     {!legalConsentChecked && (...)}, so the whole consent line VANISHED the
+     instant it was checked (the "checkbox disappears on check" bug). */}
+ {step === 4 && (
+ <div
+ className="mt-6 border border-[#cc0001] rounded-md p-3 bg-[#cc0001]/5 space-y-1.5"
+ data-testid="legal-consent-container"
+ >
+ <LegalConsentCheckbox
+ ref={legalConsentRef}
+ docs={["terms", "privacy", "acceptable-use"]}
+ context="new_company"
+ required
+ onCheckedChange={setLegalConsentChecked}
+ />
+ {!legalConsentChecked && (
+ <p className="text-sm text-[#cc0001]" data-testid="text-save-requires-consent">Please accept the terms to continue.</p>
+ )}
+ {legalConsentChecked && !isProfileValid && (
+ <p className="text-xs text-amber-700" data-testid="text-save-missing-count">{requiredMissingList.length} required field{requiredMissingList.length !== 1 ? "s" : ""} missing: {requiredMissingList.join(", ")}</p>
+ )}
+ </div>
+ )}
+
+ <div className="flex items-center justify-between mt-4">
  <Button variant="outline" onClick={goBack} disabled={step === 1} data-testid="button-step-back">
  <ArrowLeft className="h-4 w-4 mr-1.5" /> Back
  </Button>
@@ -529,23 +581,6 @@ function CompanyWizard({
  Continue <ArrowRight className="h-4 w-4 ml-1.5" />
  </Button>
  ) : (
- <>
- {!legalConsentChecked && (
- <LegalConsentCheckbox
- ref={legalConsentRef}
- docs={["terms", "privacy", "acceptable-use"]}
- context="new_company"
- required
- onCheckedChange={setLegalConsentChecked}
- />
- )}
- {/* L-005 fix v23.4.13: save profile validation feedback — show count near button */}
- {!legalConsentChecked && (
- <p className="text-xs text-muted-foreground" data-testid="text-save-requires-consent">Please accept the terms to continue.</p>
- )}
- {legalConsentChecked && !isProfileValid && (
- <p className="text-xs text-amber-700" data-testid="text-save-missing-count">{requiredMissingList.length} required field{requiredMissingList.length !== 1 ? "s" : ""} missing: {requiredMissingList.join(", ")}</p>
- )}
  <Button
  onClick={() => {
  if (!legalConsentChecked) { legalConsentRef.current?.recordConsent().catch(() => null); return; }
@@ -556,7 +591,6 @@ function CompanyWizard({
  description: `Please fill in: ${missing.join(", ")}.`,
  variant: "destructive",
  });
- // L-005 fix v23.4.13: scroll to first missing field
  const firstMissingTestId = missing[0]?.toLowerCase().includes("company name") ? "input-company-name"
  : missing[0]?.toLowerCase().includes("country of incorp") ? "picker-country-incorp"
  : missing[0]?.toLowerCase().includes("entity") ? "select-entity-type" : null;
@@ -566,19 +600,35 @@ function CompanyWizard({
  }
  return;
  }
- saveDraft();
+ // v25.45 F3c — persist, then route on the LIVE subscription status
+ // (DB-driven). Free = active = Dashboard; no live plan = Subscribe.
+ // Routing fires only after a real 200 (honest-save contract).
+ patchMutation.mutate(
+ { contact, address, legal, ma },
+ {
+ onSuccess: async () => {
  legalConsentRef.current?.recordConsent().catch(() => null);
  toast({ title: "Profile saved", description: "All four steps captured. Sync to Collective queued." });
+ let active = false;
+ try {
+ const r = await apiRequest("GET", `/api/founder/companies/${profile.id}/billing`);
+ const b = await r.json();
+ active = b?.subscriptionStatus === "active";
+ } catch { active = false; }
+ navigate(active ? "/founder/dashboard" : "/founder/subscribe");
+ },
+ },
+ );
  }}
  disabled={false}
  data-testid="button-save-profile"
  >
  <Check className="h-4 w-4 mr-1.5" /> Save profile
  </Button>
- </>
  )}
  </div>
  </div>
+
  </PageBody>
  </>
  );
@@ -1024,6 +1074,55 @@ function Step3LegalEntity({
  <Textarea value={value.registeredOfficeAddress} onChange={(e) => set("registeredOfficeAddress", e.target.value)} rows={3} data-testid="textarea-registered-office" />
  </div>
 
+ {/* v25.45 F18c — Board Composition (migrated from the removed Settings →
+ Governance tab). Persists to profile.legal.boardComposition and drives the
+ Full-Page "Formal Board of Directors" scorecard checkmark (F18d). */}
+ <div className="rounded-md border border-border p-3 space-y-3" data-testid="section-board-composition">
+ <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">Board Composition</div>
+ <div className="grid md:grid-cols-2 gap-3">
+ <div className="space-y-1.5">
+ <Label className="text-xs">Number of Directors</Label>
+ <Input
+ type="number" min={0} step={1}
+ value={value.boardComposition?.directorsCount ?? 0}
+ onChange={(e) => set("boardComposition", {
+ directorsCount: Math.max(0, parseInt(e.target.value || "0", 10) || 0),
+ directorsSnapshot: value.boardComposition?.directorsSnapshot ?? [],
+ })}
+ data-testid="input-board-director-count"
+ />
+ </div>
+ </div>
+ <div className="space-y-1.5">
+ <Label className="text-xs">Directors snapshot <span className="text-muted-foreground font-normal">(optional JSON: [{"{"}&quot;name&quot;,&quot;role&quot;{"}"}])</span></Label>
+ <Textarea
+ rows={3}
+ className="font-mono text-xs"
+ defaultValue={value.boardComposition?.directorsSnapshot?.length ? JSON.stringify(value.boardComposition.directorsSnapshot) : ""}
+ placeholder='[{"name": "Alice Chen", "role": "CEO"}, {"name": "Bob Smith", "role": "Independent"}]'
+ onBlur={(e) => {
+ const raw = e.target.value.trim();
+ let snapshot: Array<{ name: string; role?: string }> = [];
+ if (raw) {
+ try {
+ const parsed = JSON.parse(raw);
+ if (Array.isArray(parsed)) {
+ snapshot = parsed
+ .filter((d) => d && typeof d.name === "string")
+ .map((d) => ({ name: String(d.name), role: d.role ? String(d.role) : "" }));
+ }
+ } catch { /* keep prior on parse error */ snapshot = value.boardComposition?.directorsSnapshot ?? []; }
+ }
+ set("boardComposition", {
+ directorsCount: value.boardComposition?.directorsCount ?? 0,
+ directorsSnapshot: snapshot,
+ });
+ }}
+ data-testid="input-board-directors-snapshot"
+ />
+ </div>
+ </div>
+
  {/* Read-only adaptations */}
  <div className="grid md:grid-cols-3 gap-3 rounded-md border border-border bg-muted/30 p-3">
  <div>
@@ -1204,9 +1303,70 @@ function Step4MaIntent({
  </CardContent>
  </Card>
 
- {/* Section 5 — Narrative */}
+ {/* v25.45 F19b/c — Section 5: M&A Readiness (qualitative). Migrated from the
+ removed Settings → M&A Prep tab. Six 0-100% sliders + Transaction Status,
+ persisted to profile.ma.readiness (F19d) and folded into the maScore
+ composite at 50% weight (F19e). */}
+ <Card data-testid="card-ma-readiness-section">
+ <CardHeader><CardTitle className="text-sm flex items-center gap-2"><FlaskConical className="h-4 w-4" /> Section 5 — M&A Readiness (qualitative)</CardTitle></CardHeader>
+ <CardContent className="space-y-5">
+ {(() => {
+ const READINESS = value.readiness ?? {
+ ipDueDiligence: 0, customerContracts: 0, financialAudit: 0,
+ dataRoomOrganization: 0, regulatoryFilings: 0, esgDisclosure: 0,
+ transactionStatus: "not_pursuing" as const,
+ };
+ const setReadiness = (k: keyof typeof READINESS, v: number | string) =>
+ set("readiness", { ...READINESS, [k]: v } as typeof READINESS);
+ const SLIDERS: Array<{ key: keyof typeof READINESS; label: string }> = [
+ { key: "ipDueDiligence", label: "IP Due Diligence Readiness" },
+ { key: "customerContracts", label: "Customer Contracts Readiness" },
+ { key: "financialAudit", label: "Financial Audit Readiness" },
+ { key: "dataRoomOrganization", label: "Data Room Organization" },
+ { key: "regulatoryFilings", label: "Regulatory Filings Complete" },
+ { key: "esgDisclosure", label: "ESG Disclosure Completeness" },
+ ];
+ return (
+ <>
+ <div className="space-y-1.5">
+ <Label className="text-xs">Transaction Status</Label>
+ <Select value={READINESS.transactionStatus} onValueChange={(v) => setReadiness("transactionStatus", v)}>
+ <SelectTrigger data-testid="select-ma-transaction-status"><SelectValue /></SelectTrigger>
+ <SelectContent>
+ <SelectItem value="not_pursuing">Not pursuing a transaction</SelectItem>
+ <SelectItem value="exploring">Exploring</SelectItem>
+ <SelectItem value="outbound">Outbound (we are seeking)</SelectItem>
+ <SelectItem value="inbound">Inbound (approached by a buyer)</SelectItem>
+ <SelectItem value="active_negotiation">Active negotiation</SelectItem>
+ </SelectContent>
+ </Select>
+ </div>
+ {SLIDERS.map((s) => {
+ const cur = (READINESS[s.key] as number) ?? 0;
+ return (
+ <div key={s.key} data-testid={`row-ma-readiness-${s.key}`}>
+ <div className="flex items-center justify-between mb-1.5">
+ <Label className="text-xs">{s.label}</Label>
+ <span className="text-sm font-semibold tabular-nums" data-testid={`value-ma-readiness-${s.key}`}>{cur}%</span>
+ </div>
+ <Slider
+ min={0} max={100} step={5}
+ value={[cur]}
+ onValueChange={([v]) => setReadiness(s.key, v)}
+ data-testid={`slider-ma-readiness-${s.key}`}
+ />
+ </div>
+ );
+ })}
+ </>
+ );
+ })()}
+ </CardContent>
+ </Card>
+
+ {/* Section 6 — Narrative (renumbered from Section 5 by F19c) */}
  <Card>
- <CardHeader><CardTitle className="text-sm flex items-center gap-2"><FileText className="h-4 w-4" /> Section 5 — Readiness Narrative</CardTitle></CardHeader>
+ <CardHeader><CardTitle className="text-sm flex items-center gap-2"><FileText className="h-4 w-4" /> Section 6 — Readiness Narrative</CardTitle></CardHeader>
  <CardContent className="space-y-5">
  <div className="space-y-1.5">
  <Label className="text-xs">M&A readiness narrative — why are you (or aren&apos;t you) ready?</Label>
@@ -1220,6 +1380,9 @@ function Step4MaIntent({
  </div>
  </CardContent>
  </Card>
+
+ {/* v25.44 — M&A privacy gate consent (additive; writes only ma_privacy_json). */}
+ <MaPrivacyConsent />
  </div>
  );
 }

@@ -49,6 +49,8 @@ import { randomBytes } from "node:crypto";
 import { isNull } from "drizzle-orm";
 import { emitSync } from "./sprint10Telemetry";
 import { getUserContext, getUserContextForId } from "./lib/userContext";
+// v25.45 ROUND 2 (F13b) — route co-member names through the privacy resolver.
+import { resolveDisplayName } from "./lib/userPrivacyResolver";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 // Patch v10 — F9 investor-update fanout
 import { listMembersForCompany } from "./membershipStore";
@@ -492,7 +494,14 @@ export function registerReportsRoutes(app: Express): void {
       } catch {
         // best-effort enrichment; id still usable as recipient
       }
-      return { userId: m.userId, name, email, ownershipPct: m.ownershipPct };
+      // v25.45 ROUND 7 — recipients ARE cap-table members: the founder is
+      // sending a report to their own company's cap table, so every recipient
+      // is a counterparty (isCoMember:true). The counterparty default reveals
+      // the legal name UNLESS the member explicitly opted out
+      // (visibleToCoMembers:false → "Private Investor"). The email is still
+      // required for delivery routing, but the displayed name honors privacy.
+      const displayName = resolveDisplayName(m.userId, ctx.userId, "externalCapTable", { legalName: name, isCoMember: true });
+      return { userId: m.userId, name: displayName, email, ownershipPct: m.ownershipPct };
     });
     res.json(members);
   });

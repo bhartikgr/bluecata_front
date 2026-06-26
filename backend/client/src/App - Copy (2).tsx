@@ -243,7 +243,7 @@ function AppRouter() {
         <Route path="/auth/forgot" component={Forgot} />
         <Route path="/auth/redeem" component={Redeem} />
 
-        {/* Sprint 27 — dedicated admin login (public) */}
+        {/* dedicated admin login (public) */}
         <Route path="/admin/login" component={AdminLogin} />
         <Route path="/select-company" component={SelectCompany} />
 

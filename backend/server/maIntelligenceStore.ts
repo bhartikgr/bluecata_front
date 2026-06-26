@@ -31,6 +31,12 @@ import {
 } from "@shared/schema";
 import { emitSync } from "./sprint10Telemetry";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
+/* v25.44 ROUND 2 (BLOCKER 1) — shared M&A authz gate + real stored-profile
+ * source. The legacy per-company endpoint below MUST apply the exact same
+ * privacy tiers as /api/collective/ma-intel. */
+import { getUserContext } from "./lib/userContext";
+import { decideMaAccess } from "./lib/maAuthzGate";
+import { deriveMaIntelFromProfile, readMaReadinessNarrative } from "./lib/maProfileSource";
 
 /* ----------------- deterministic acquirer-fit math ----------------- */
 
@@ -71,6 +77,13 @@ export function filterComparableExits<T extends { date: string; sector: string }
 }
 
 /* ----------------- seeded data per company ----------------- */
+// DEMO SEED — not production data. The maps below are retained ONLY as
+// optional demo-mode seed content (gated by DEMO_SEED_ENABLED in
+// getMaIntelligenceFor). v25.44 ROUND 2 removed them from BOTH the legacy
+// per-company endpoint and the Collective aggregation; real M&A intelligence
+// is now derived from stored Company Profile Step 4 fields
+// (see server/lib/maProfileSource.ts). Do NOT reintroduce these into any
+// authenticated production read path.
 
 const COMPS_LIBRARY: Array<{ target: string; acquirer: string; date: string; valuationUsd: number; revenueMultiple: number; sector: string }> = [
   { target: "BridgeFX",     acquirer: "Visa",      date: "2025-11-04", valuationUsd:  680_000_000, revenueMultiple: 11.4, sector: "Fintech" },
@@ -84,6 +97,7 @@ const COMPS_LIBRARY: Array<{ target: string; acquirer: string; date: string; val
   { target: "Bristle Grid", acquirer: "Schneider", date: "2025-02-14", valuationUsd:  310_000_000, revenueMultiple:  6.0, sector: "Climate / Grid" },
 ];
 
+// DEMO SEED — not production data. (see note above)
 const COMPANY_FEATURES: Record<string, {
   sector: string;
   pmf: number; tech: number; mgmt: number; growth: number; share: number; lowChurn: number;
@@ -219,10 +233,90 @@ export function hydrateMaInitiativesStore(): number {
 }
 
 export function registerMaIntelligenceRoutes(app: Express): void {
-  app.get("/api/investor/ma/intelligence/:companyId", (req: Request, res: Response) => {
+  /**
+   * v25.44 ROUND 2 (BLOCKER 1) — legacy per-company M&A intelligence endpoint,
+   * now behind the SAME shared privacy gate as /api/collective/ma-intel.
+   *
+   * Tiers (see server/lib/maAuthzGate.ts):
+   *   FULL      — founder/admin/member of the company OR DB admin → all fields
+   *               + maReadinessNarrative.
+   *   DETAIL    — same-chapter member when shareWithChapter → scores + buyers,
+   *               narrative only when NOT redacted.
+   *   AGGREGATE — cross-Collective member when shareWithCollective → scores +
+   *               sector + buyer COUNT only (NO buyer names/rationale/narrative).
+   *   NONE      → 403.
+   *
+   * The data itself is now derived from REAL stored Step 4 profile fields
+   * (deriveMaIntelFromProfile), NOT the static COMPANY_FEATURES mocks.
+   */
+  app.get("/api/investor/ma/intelligence/:companyId", async (req: Request, res: Response) => {
     const companyId = String(req.params.companyId ?? "");
-    const intel = getMaIntelligenceFor(companyId);
-    res.json(intel);
+    const ctx = await getUserContext(req);
+    const userId = ctx?.userId;
+    if (!userId) {
+      res.status(401).json({ ok: false, error: "missing_identity" });
+      return;
+    }
+
+    const decision = decideMaAccess({
+      companyId,
+      userId,
+      isAdminFromCtx: ctx?.isAdmin === true,
+    });
+
+    // (d) NONE — no access for this requester to this company.
+    if (decision.level === "NONE") {
+      res.status(403).json({ ok: false, error: "ma_intel_forbidden" });
+      return;
+    }
+
+    const intel = deriveMaIntelFromProfile(companyId);
+    if (!intel) {
+      // Company exists in scope policy-wise but has no stored Step 4 data.
+      res.status(404).json({ ok: false, error: "ma_intel_not_available" });
+      return;
+    }
+
+    // (c) AGGREGATE — scores + sector + buyer COUNT only.
+    if (decision.level === "AGGREGATE") {
+      res.json({
+        companyId,
+        accessLevel: "AGGREGATE",
+        maScore: intel.maScore,
+        acquirerFitScore: intel.acquirerFitScore,
+        intentSignal: intel.intentSignal,
+        productMarketFit: intel.productMarketFit,
+        technologyDifferentiation: intel.technologyDifferentiation,
+        customerConcentration: intel.customerConcentration,
+        growthRate: intel.growthRate,
+        marketShare: intel.marketShare,
+        managementTeamStrength: intel.managementTeamStrength,
+        strategicBuyerCount: intel.topBuyer ? 1 : 0,
+      });
+      return;
+    }
+
+    // (a) FULL / (b) DETAIL — full detail; narrative only when authorized.
+    const body: Record<string, unknown> = {
+      companyId,
+      accessLevel: decision.level,
+      maScore: intel.maScore,
+      acquirerFitScore: intel.acquirerFitScore,
+      intentSignal: intel.intentSignal,
+      productMarketFit: intel.productMarketFit,
+      technologyDifferentiation: intel.technologyDifferentiation,
+      customerConcentration: intel.customerConcentration,
+      growthRate: intel.growthRate,
+      marketShare: intel.marketShare,
+      managementTeamStrength: intel.managementTeamStrength,
+      strategicPriorities: intel.strategicPriorities,
+      transactionInterests: intel.transactionInterests,
+      topStrategicBuyers: decision.canSeeBuyers && intel.topBuyer ? [intel.topBuyer] : [],
+    };
+    if (decision.canSeeNarrative) {
+      body.maReadinessNarrative = readMaReadinessNarrative(companyId) ?? "";
+    }
+    res.json(body);
   });
 
   app.post("/api/investor/ma/initiative", (req: Request, res: Response) => {

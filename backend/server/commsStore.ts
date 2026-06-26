@@ -54,6 +54,13 @@ import {
 import {
   resolveDisplayIdentity,
 } from "../client/src/lib/comms/visibility";
+// v25.45 ROUND 2 (F13b) — DB-backed privacy prefs override messaging sender
+// names so the Settings → Privacy toggle (visibleToCoMembers) actually takes
+// effect on the messaging surface. readUserPrivacyRaw returns null when the
+// user has no saved row, in which case we keep the legacy resolveDisplayIdentity
+// behavior (backward-compatible — no retroactive masking).
+import { resolveDisplayName } from "./lib/userPrivacyResolver";
+import { areCoMembersOnAnyCapTable } from "./lib/capTableMembership";
 import { emitMutation } from "./lib/eventBus";
 import { publish as ssePublish } from "./lib/sseHub";
 import { emitNotification } from "./notificationsStore";
@@ -513,7 +520,10 @@ function seedAll(): void {
     kind: "dm",
     participantUserIds: ["u_aisha_patel", "u_maya_chen"],
     createdAt: "2026-04-25T10:00:00Z",
-    metadata: { title: "DM — Aisha Patel ↔ Maya Chen" },
+    // v25.45 R9 — neutral seeded DM title; projectChannel() rebuilds the
+    // viewer-resolved displayTitle through resolveIdentity() at render time.
+    // Storing raw legal names here was a privacy leak via channel.metadata.title.
+    metadata: { title: "Direct message" },
   });
   const dm2 = dmChannelId("u_aisha_patel", "u_hydra_capital");
   seedChannel({
@@ -521,7 +531,8 @@ function seedAll(): void {
     kind: "dm",
     participantUserIds: ["u_aisha_patel", "u_hydra_capital"],
     createdAt: "2026-04-19T15:30:00Z",
-    metadata: { title: "DM — Aisha Patel ↔ Hydra Capital" },
+    // v25.45 R9 — neutral seeded DM title (see above).
+    metadata: { title: "Direct message" },
   });
   const dm3 = dmChannelId("u_maya_chen", "u_hydra_capital");
   seedChannel({
@@ -529,7 +540,8 @@ function seedAll(): void {
     kind: "dm",
     participantUserIds: ["u_maya_chen", "u_hydra_capital"],
     createdAt: "2026-04-15T09:00:00Z",
-    metadata: { title: "DM — Maya Chen ↔ Hydra Capital" },
+    // v25.45 R9 — neutral seeded DM title (see above).
+    metadata: { title: "Direct message" },
   });
 
   /* ---- Messages: cap-table channel ---- */
@@ -834,7 +846,7 @@ function resolveIdentity(
     capTables: [], collectiveChapters: [], roles: [],
   } as UserRef;
   const shared = sharedContextBetween(v, a);
-  return resolveDisplayIdentity({
+  const resolved = resolveDisplayIdentity({
     viewerUserId,
     authorUserId,
     authorLegalName: a.legalName,
@@ -845,6 +857,29 @@ function resolveIdentity(
       founderUserId,
     },
   });
+  // v25.45 ROUND 7 — messaging is a counterparty surface ONLY between users who
+  // are actually on a shared cap table. The viewer is never masked from
+  // themselves, and a founder viewing their OWN channel (founderUserId ===
+  // authorUserId) still sees real names per F13c. For every other pairing we
+  // re-resolve the sender's display name through the single privacy resolver in
+  // the "message" context, passing isCoMember computed from the SACRED
+  // captable_commits ledger:
+  //   - co-members on a shared cap table (no explicit opt-out) → legal name
+  //   - non-counterparties → "Private Investor"
+  //   - explicit opt-out (visibleToCoMembers:false) → "Private Investor" / screen
+  //     name, EVEN between co-members (explicit opt-out wins).
+  if (authorUserId && authorUserId !== viewerUserId && authorUserId !== founderUserId) {
+    const isCoMember = areCoMembersOnAnyCapTable(authorUserId, viewerUserId);
+    const policyName = resolveDisplayName(authorUserId, viewerUserId, "message", {
+      legalName: a.legalName,
+      isCoMember,
+    });
+    if (policyName === "Private Investor") {
+      return { ...resolved, displayName: policyName, isAnonymous: true };
+    }
+    return { ...resolved, displayName: policyName, isAnonymous: false };
+  }
+  return resolved;
 }
 
 /** Last message of a channel (used for previews). */
@@ -1168,8 +1203,27 @@ function projectChannel(channel: Channel, viewerUserId: string): ChannelView {
       break;
     }
   }
+  // v25.45 R9 — DM channel metadata must NEVER expose either party's raw legal
+  // name in the projected JSON. Even though displayTitle is resolved through
+  // resolveIdentity(), the spread of `channel` carries `metadata.title` through
+  // to the API response. For DMs (current and any legacy persisted rows) we
+  // rebuild metadata with a sanitized title and strip any other string-valued
+  // metadata fields that could plausibly carry a legal name. The neutral title
+  // "Direct message" is used; the per-viewer displayTitle (resolver-safe) is
+  // the only place a counterparty name may appear, and only when policy allows.
+  let safeChannel: Channel = channel;
+  if (channel.kind === "dm") {
+    const meta = (channel.metadata ?? {}) as Record<string, unknown>;
+    const sanitizedMeta: Record<string, unknown> = { ...meta, title: "Direct message" };
+    // Defense-in-depth: drop any optional descriptor strings that older seed
+    // data may have used to carry counterparty names.
+    delete sanitizedMeta.memberSummary;
+    delete sanitizedMeta.subtitle;
+    delete sanitizedMeta.displayTitle;
+    safeChannel = { ...channel, metadata: sanitizedMeta as Channel["metadata"] };
+  }
   return {
-    ...channel,
+    ...safeChannel,
     displayTitle,
     displaySubtitle,
     lastMessage: lastView,
@@ -1897,7 +1951,11 @@ export function registerCommsRoutes(app: Express): void {
         id, kind: "dm",
         participantUserIds: [actorId, target.id],
         createdAt: nowIso(),
-        metadata: { title: `DM — ${me.legalName} ↔ ${target.legalName}` },
+        // v25.45 R9 — never persist raw legal names in DM channel metadata.
+        // The viewer-resolved displayTitle is computed at render time by
+        // projectChannel() via resolveIdentity(); persisting raw names here
+        // would leak them through the channel JSON regardless of resolver.
+        metadata: { title: "Direct message" },
       };
       channels.set(id, ch);
       /* v25.9 — persist DM channel so it survives restart */

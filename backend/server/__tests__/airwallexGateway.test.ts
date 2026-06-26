@@ -124,7 +124,14 @@ describe("AirWallex client — createPaymentIntent", () => {
       idempotencyKey: "idem_test_1",
     });
     expect(intent.status).toBe("SUCCEEDED");
-    expect(intent.amount).toBe(84_000);
+    // v25.45 ROUND 2 (BLOCKER 6) — the Airwallex PaymentIntent contract returns
+    // `amount` in MAJOR units (dollars), per the v25.28 minorToAirwallexMajor
+    // conversion (84_000 cents → 840 dollars). This assertion was stale since
+    // v25.28 (pre-existing failure carried from the v25.44 baseline, NOT a
+    // v25.45 regression — airwallexGateway.ts is byte-identical to v25.44). The
+    // standing-gate file v24_2_airwallex_billing.test.ts was already 5/5 green;
+    // this corrects the older gateway-unit test to the documented contract.
+    expect(intent.amount).toBe(840); // 84_000 minor ÷ 100 = 840 major (USD)
     expect(intent.currency).toBe("USD");
     expect(intent.merchant_order_id).toBe("co_demo");
     expect(intent.id.startsWith("int_stub_")).toBe(true);
@@ -171,7 +178,9 @@ describe("AirWallex client — createPaymentIntent", () => {
       idempotencyKey: "idem_r",
     });
     expect(ref.status).toBe("SUCCEEDED");
-    expect(ref.amount).toBe(1_000);
+    // v25.45 ROUND 2 (BLOCKER 6) — refund `amount` is also MAJOR units
+    // (1_000 cents ÷ 100 = 10 dollars). Same stale-assertion correction as above.
+    expect(ref.amount).toBe(10);
     expect(ref.payment_intent_id).toBe("int_test_x");
   });
 });

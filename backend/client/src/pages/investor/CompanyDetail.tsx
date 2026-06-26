@@ -74,9 +74,21 @@ const STATE_BANNER: Record<YourDecisionState, { title: string; tone: "neutral" |
 
 // readTabFromHash is replaced by useSearch() in the component body
 
-export default function InvestorCompanyDetail() {
+/**
+ * v25.45 F4 — the founder "Investor View" modal renders this SAME component
+ * inline (Option A) instead of a placeholder. It passes companyIdOverride (so
+ * the component does not depend on the /investor/companies/:id route param when
+ * embedded) and mode="preview" (to skip side effects like view-tracking
+ * analytics). Standalone route usage passes neither prop and behaves exactly
+ * as before.
+ */
+export default function InvestorCompanyDetail({
+  companyIdOverride,
+  mode,
+}: { companyIdOverride?: string; mode?: "preview" } = {}) {
  const [, params] = useRoute("/investor/companies/:id");
- const id = params?.id;
+ const id = companyIdOverride ?? params?.id;
+ const isPreview = mode === "preview";
  const { toast } = useToast();
  const [, navigate] = useLocation();
  // Sprint 20 Wave 2 — use wouter useSearch() for tab routing (replaces readTabFromHash)
@@ -131,7 +143,8 @@ export default function InvestorCompanyDetail() {
  if (!r.ok) throw new Error(`HTTP ${r.status}`);
  return r.json() as Promise<{ channelId: string }>;
  },
- onSuccess: (d) => navigate(`/investor/messages?thread=${encodeURIComponent(d.channelId)}`),
+ // v25.45 F4 — in founder preview mode do not navigate away from the modal.
+ onSuccess: (d) => { if (!isPreview) navigate(`/investor/messages?thread=${encodeURIComponent(d.channelId)}`); },
  onError: (e: Error) => toast({ title: "Could not start DM", description: e.message, variant: "destructive" }),
  });
 

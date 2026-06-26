@@ -411,7 +411,13 @@ export function registerAuthShellRoutes(app: Express, redemption: {
 
     const r = redemption.redeem(body.token);
     if (!r.ok) {
-      const httpCode = r.reason === "expired" ? 410 : r.reason === "already_redeemed" ? 409 : 404;
+      // v25.45 Bug C ROUND-2 (GPT-5.5 blocker 4): a durable token-state persist
+      // failure during redemption is fail-closed — surface 500 and do NOT create
+      // a persona or session below.
+      const httpCode = r.reason === "persist_failed" ? 500
+        : r.reason === "expired" ? 410
+        : r.reason === "already_redeemed" ? 409
+        : 404;
       return res.status(httpCode).json({ ok: false, error: r.reason ?? "INVALID_TOKEN" });
     }
 
@@ -467,4 +473,7 @@ export type RedemptionPreview =
 
 export type RedemptionResult =
   | { ok: true; invitationId: string; roundId: string; companyId: string }
-  | { ok: false; reason: "not_found" | "revoked" | "already_redeemed" | "expired" };
+  // v25.45 Bug C ROUND-2 (GPT-5.5 blocker 4): "persist_failed" lets the legacy
+  // redeem callback fail closed when the token-state DB write fails, so the
+  // auth-shell route refuses to register a persona / create a session.
+  | { ok: false; reason: "not_found" | "revoked" | "already_redeemed" | "expired" | "persist_failed" };

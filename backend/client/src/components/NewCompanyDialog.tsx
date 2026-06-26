@@ -30,9 +30,18 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+// v25.45 F1a — Sector binds to the SAME Industry enum as Company Profile →
+// Step 1 → Industry (single source of truth). No more freeform text.
+import { INDUSTRY_OPTIONS } from "@/lib/profile/data/enums";
 
 export type NewCompanyDialogProps = {
   open: boolean;
@@ -53,11 +62,10 @@ export function NewCompanyDialog({ open, onOpenChange, onCreated }: NewCompanyDi
   const [sector, setSector] = useState("");
   const [stage, setStage] = useState("");
   const [hq, setHq] = useState("");
-  // v23.4.7 Phase 3 (BUG 031): plan-picker. Default 'founder_free' so a
-  // brand-new company is NOT auto-labeled "PRO". Whitelisted by the server
-  // route to founder_free | founder_pro | founder_scale.
-  type PlanPick = "founder_free" | "founder_pro" | "founder_scale";
-  const [plan, setPlan] = useState<PlanPick>("founder_free");
+  // v25.45 F1b — the Free/Pro/Scale plan picker was removed from this dialog.
+  // New companies default to the active pricing model's free/lowest tier,
+  // resolved server-side (F1d). The founder picks/upgrades a plan later from
+  // Settings → Billing & Subscription.
 
   const create = useMutation({
     mutationFn: async () => {
@@ -72,7 +80,8 @@ export function NewCompanyDialog({ open, onOpenChange, onCreated }: NewCompanyDi
         sector: sector.trim(),
         stage: stage.trim(),
         hq: hq.trim(),
-        plan, // v23.4.7 Phase 3 (BUG 031): explicit plan selection
+        // v25.45 F1b/F1d — no `plan`: server resolves the default tier from the
+        // active pricing model.
       });
       const body = await res.json().catch(() => ({}));
       return body as { ok: boolean; companyId: string; company: unknown; error?: string };
@@ -110,7 +119,6 @@ export function NewCompanyDialog({ open, onOpenChange, onCreated }: NewCompanyDi
       setSector("");
       setStage("");
       setHq("");
-      setPlan("founder_free");
       onOpenChange(false);
       // v25.43 F13 — notify the onboarding flow so it can forward to subscribe.
       onCreated?.(data.companyId);
@@ -131,7 +139,9 @@ export function NewCompanyDialog({ open, onOpenChange, onCreated }: NewCompanyDi
         <DialogHeader>
           <DialogTitle>Add a new company</DialogTitle>
           <DialogDescription>
-            Spin up another company under your account. You start with a 14-day trial — no card required.
+            {/* v25.45 F1c — company-creation-focused sub-copy (replaces the
+                old plan-centric trial line). */}
+            Set up your company profile to start managing your cap table, rounds, and investors.
           </DialogDescription>
         </DialogHeader>
         <form
@@ -165,14 +175,18 @@ export function NewCompanyDialog({ open, onOpenChange, onCreated }: NewCompanyDi
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
+              {/* v25.45 F1a — Sector is the Industry enum dropdown. */}
               <Label htmlFor="nc-sector">Sector</Label>
-              <Input
-                id="nc-sector"
-                data-testid="input-new-company-sector"
-                value={sector}
-                onChange={(e) => setSector(e.target.value)}
-                placeholder="Robotics"
-              />
+              <Select value={sector} onValueChange={setSector}>
+                <SelectTrigger id="nc-sector" data-testid="select-new-company-sector">
+                  <SelectValue placeholder="Select industry…" />
+                </SelectTrigger>
+                <SelectContent className="max-h-72">
+                  {INDUSTRY_OPTIONS.map((o) => (
+                    <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="space-y-1">
               <Label htmlFor="nc-stage">Stage</Label>
@@ -195,52 +209,7 @@ export function NewCompanyDialog({ open, onOpenChange, onCreated }: NewCompanyDi
               placeholder="San Francisco, USA"
             />
           </div>
-          {/*
-           * v23.4.10 Phase 5 (J-001): plan picker. Default = Free.
-           * Replaced the v23.4.7 radio-card layout with a tighter
-           * ToggleGroup (type="single") segmented control (same pattern as
-           * v23.4.9 Phase 2 "Warrants & Options"). The old radio cards had
-           * oversized click targets (title + descriptive sub-text wrapped in
-           * a label with htmlFor), so stray clicks anywhere in the modal
-           * flipped Free->Pro. The segmented control keeps a tight click area.
-           * onValueChange is guarded against the empty string Radix emits when
-           * a user deselects the active item, so the plan can never become "".
-           */}
-          <div className="space-y-2 pt-1">
-            <Label className="text-sm font-medium">Plan</Label>
-            <ToggleGroup
-              type="single"
-              value={plan}
-              onValueChange={(v) => { if (v) setPlan(v as PlanPick); }}
-              data-testid="toggle-group-new-company-plan"
-              className="grid grid-cols-3 gap-2"
-            >
-              <ToggleGroupItem
-                value="founder_free"
-                data-testid="toggle-plan-free"
-                className="h-auto py-2 flex flex-col gap-0.5"
-              >
-                <span className="font-medium text-sm">Free</span>
-                <span className="text-xs text-muted-foreground">Default — recommended</span>
-              </ToggleGroupItem>
-              <ToggleGroupItem
-                value="founder_pro"
-                data-testid="toggle-plan-pro"
-                className="h-auto py-2 flex flex-col gap-0.5"
-              >
-                <span className="font-medium text-sm">Pro</span>
-                <span className="text-xs text-muted-foreground">14-day trial, no card</span>
-              </ToggleGroupItem>
-              <ToggleGroupItem
-                value="founder_scale"
-                data-testid="toggle-plan-scale"
-                className="h-auto py-2 flex flex-col gap-0.5"
-              >
-                <span className="font-medium text-sm">Scale</span>
-                <span className="text-xs text-muted-foreground">Talk to sales</span>
-              </ToggleGroupItem>
-            </ToggleGroup>
-          </div>
+          {/* v25.45 F1b — Plan picker (Free / Pro / Scale) removed; default tier resolved server-side. */}
           <DialogFooter className="pt-2">
             <Button
               type="button"

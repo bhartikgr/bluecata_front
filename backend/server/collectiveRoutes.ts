@@ -26,6 +26,9 @@ import { getSubscription } from "./subscriptionsStore";
 import { getLatestForCompany, listFeedback, ingestDscScores } from "./dscFeedbackStore";
 import { getChannelByCompany, listChannels, TRANSACTION_PREP_THREADS } from "./transactionPrepStore";
 import { listContacts } from "./adminContactsStore";
+// v25.45 ROUND 2 (F13b) — privacy resolver: every rendered user name MUST route
+// through resolveDisplayName so the founder/member privacy toggles take effect.
+import { resolveDisplayName } from "./lib/userPrivacyResolver";
 import { getAuditLog } from "./adminPlatformStore";
 import { getOutbox } from "./bridgeStore";
 import { computeCompositeForCompany, computeAllComposites, computeAutoTier } from "./dscScoringEngine";
@@ -147,6 +150,33 @@ async function resolveCallerScope(req: Request): Promise<CallerScope> {
  * non-admin caller (fail-closed). Returns an empty set when the caller has
  * no chapters. Admins bypass this entirely (they see every contact).
  */
+/**
+ * v25.45 ROUND 2 (F13b) — map lowercased contact emails to their owning
+ * users.id so the directory can route each member's name through
+ * resolveDisplayName(). Contacts are keyed by ac_* ids, not user ids; the only
+ * durable linkage is contact.email → users.email → users.id. Fail-closed on any
+ * DB error (returns an empty map; resolver then sees an empty userId and applies
+ * the directory default, which is "Private Investor" — the privacy-safe choice).
+ */
+function getEmailToUserId(emails: string[]): Map<string, string> {
+  const out = new Map<string, string>();
+  const uniq = Array.from(new Set(emails.filter(Boolean).map((e) => e.toLowerCase())));
+  if (uniq.length === 0) return out;
+  try {
+    const db: any = rawDb();
+    const placeholders = uniq.map(() => "?").join(",");
+    const rows = db
+      .prepare(`SELECT id, LOWER(email) AS email FROM users WHERE LOWER(email) IN (${placeholders})`)
+      .all(...uniq) as any[];
+    for (const r of rows) {
+      if (r.email && r.id) out.set(String(r.email), String(r.id));
+    }
+  } catch {
+    /* fail-closed — empty map */
+  }
+  return out;
+}
+
 function getChapterMemberEmails(chapterIds: string[]): Set<string> {
   const out = new Set<string>();
   if (!chapterIds || chapterIds.length === 0) return out;
@@ -901,21 +931,51 @@ export function registerCollectiveRoutes(app: Express): void {
      * match. Contacts with no matching active chapter member are invisible to
      * non-admins (fail-closed). A caller with no chapters sees []. Admins see
      * the full roster (NOT chapter-scoped). */
-    const { isAdmin, myChapterIds } = await resolveCallerScope(req);
+    const { isAdmin, myChapterIds, userId: viewerUserId } = await resolveCallerScope(req);
     const allContacts = filterSeedInProd(listContacts({}));
     const memberEmails = isAdmin ? null : getChapterMemberEmails(myChapterIds);
 
     // Only investors and consortium_partners, scoped to the caller's chapters.
-    const members = allContacts
+    const scoped = allContacts
       .filter((c) => c.kind === "investor" || c.kind === "consortium_partner")
       .filter((c) => {
         if (isAdmin) return true;
         return !!c.email && memberEmails!.has(c.email.toLowerCase());
-      })
+      });
+
+    // v25.45 ROUND 2 (F13b) — resolve every member's displayName through the
+    // privacy resolver in the collectiveDirectory context. A member who has
+    // opted out of directory visibility renders as "Private Investor" instead of
+    // their raw legal/display name. Map contact email → users.id first.
+    const emailToUserId = getEmailToUserId(scoped.map((c) => c.email ?? ""));
+
+    // Resolve each member's directory display name. v25.45 ROUND 3 (F13 fix):
+    // EVERY linked member routes through the privacy resolver in the
+    // collectiveDirectory context. The resolver's DEFAULT_PREFS default
+    // visibleInCollectiveDirectory:false, so a member WITHOUT any saved privacy
+    // row defaults to opt-out → "Private Investor" (privacy-by-default; opt-in
+    // required via the Privacy tab). The prior round-2 `if (!raw) return
+    // c.displayName` legacy bypass leaked raw display names for no-row members
+    // and has been removed. A member WITH a saved row that sets
+    // visibleInCollectiveDirectory:false also renders as "Private Investor".
+    const dirName = (c: { email?: string | null; displayName: string }): string => {
+      const uid = (c.email && emailToUserId.get(c.email.toLowerCase())) || "";
+      if (!uid) return c.displayName; // no user linkage → keep legacy name
+      // v25.45 ROUND 7 — the Collective directory is a SOCIAL surface, not a
+      // counterparty surface (isCoMember:false). It ALWAYS requires explicit
+      // opt-in (visibleInCollectiveDirectory:true); no-row members render as
+      // "Private Investor".
+      return resolveDisplayName(uid, viewerUserId ?? null, "collectiveDirectory", {
+        legalName: c.displayName,
+        isCoMember: false,
+      });
+    };
+
+    const members = scoped
       .map((c) => ({
         // ALLOWED fields only — no email, no AUM, no check sizes
         id: c.id,
-        displayName: c.displayName,
+        displayName: dirName(c),
         kind: c.kind,
         type: c.type,
         status: c.status,
@@ -928,8 +988,9 @@ export function registerCollectiveRoutes(app: Express): void {
         website: c.website,
         linkedinUrl: c.linkedinUrl,
         tags: c.tags,
-        // Initials for avatar
-        initials: c.displayName.split(/\s+/).map((w) => w[0]).filter(Boolean).slice(0, 2).join("").toUpperCase(),
+        // Initials for avatar — derive from the RESOLVED display name so a
+        // private investor never leaks initials from their real name.
+        initials: dirName(c).split(/\s+/).map((w) => w[0]).filter(Boolean).slice(0, 2).join("").toUpperCase(),
       }));
 
     res.json({ members, total: members.length });

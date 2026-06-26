@@ -53,6 +53,7 @@ import { getDb, rawDb } from "./db/connection";
 import { companies as companiesTable } from "../shared/schema";
 import { eq, isNull, and } from "drizzle-orm";
 import { log as profileLog } from "./lib/logger";
+import { assertWorkspaceNotArchived } from "./middleware/archiveCheck";
 
 /* ---------------- Stores ---------------- */
 const companyProfiles = new Map<string, CompanyProfile>();
@@ -461,6 +462,10 @@ export function registerProfileRoutes(app: Express): void {
 
   app.patch("/api/companies/:id/profile", (req, res) => {
     const id = req.params.id;
+    // v25.45 ROUND 2 — archive gate at company-id resolution time. This route
+    // lives OUTSIDE the /api/founder mount, so the path-prefix middleware never
+    // saw it (GPT-5.5 archive-bypass). Block all mutations on archived workspaces.
+    if (assertWorkspaceNotArchived(req, res, id)) return;
     // v24.2 Bug 6 — durable read-through so a PATCH after a restart merges into
     // the founder's last-saved profile rather than 404ing on a cold cache.
     let current = companyProfiles.get(id);
@@ -469,6 +474,31 @@ export function registerProfileRoutes(app: Express): void {
       if (durable) {
         companyProfiles.set(id, durable);
         current = durable;
+      }
+    }
+    // v25.45 F2 — synthesise an empty-but-schema-complete base when a freshly
+    // created company has no profile row AND no warm cache yet. Previously the
+    // PATCH 404'd ("COMPANY_NOT_FOUND") whenever the founder's FIRST Step-1
+    // edit fired before any GET had warmed the cache (the create → edit race),
+    // so the very first save on every new company failed. The GET path already
+    // synthesises this base from the companies table; we mirror it here so the
+    // first PATCH merges into a valid base and persists durably. DB-driven: the
+    // base is derived from the canonical companies row, no Map-only mock.
+    if (!current) {
+      try {
+        const db = getDb();
+        const row = db
+          .select({ id: companiesTable.id, tenantId: companiesTable.tenantId, name: companiesTable.name })
+          .from(companiesTable)
+          .where(and(eq(companiesTable.id, id), isNull(companiesTable.deletedAt)))
+          .get() as { id: string; tenantId: string; name: string } | undefined;
+        if (row) {
+          const seeded = makeEmptyCompanyProfile({ id: row.id, tenantId: row.tenantId, companyName: row.name });
+          companyProfiles.set(id, seeded);
+          current = seeded;
+        }
+      } catch (err) {
+        profileLog.warn("[profileStore.patchProfile] companies lookup failed:", (err as Error).message);
       }
     }
     if (!current) return res.status(404).json({ ok: false, error: "COMPANY_NOT_FOUND", message: `Company ${id} not found.` });
@@ -506,6 +536,27 @@ export function registerProfileRoutes(app: Express): void {
     }
 
     const patched = applyProfilePatch(current, parsed.data);
+
+    // v25.45 ROUND 2 (BLOCKER 5) — final-save email gate. The partial schema
+    // accepts an empty companyEmail so per-keystroke in-progress autosaves never
+    // throw. But when the founder marks the profile complete (final=true on the
+    // Save Profile action), an empty/invalid companyEmail must NOT durably
+    // persist. Mirror the client missingRequired() gate server-side so a client
+    // that bypasses the UI gate still cannot finalize without a valid email.
+    const isFinalSave = (req.body as Record<string, unknown>)?.final === true
+      || (req.body as Record<string, unknown>)?.markComplete === true;
+    if (isFinalSave) {
+      const email = String((patched.contact as { companyEmail?: string } | undefined)?.companyEmail ?? "").trim();
+      const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!email || !EMAIL_RE.test(email)) {
+        return res.status(400).json({
+          ok: false,
+          error: "VALIDATION_FAILED",
+          message: "Invalid patch",
+          errors: { "contact.companyEmail": email ? "Invalid email format" : "Company email is required to finalize the profile" },
+        });
+      }
+    }
 
     // Re-derive legal fields whenever the country changes.
     if (patched.legal.countryOfIncorporationCode !== current.legal.countryOfIncorporationCode) {
@@ -555,6 +606,8 @@ export function registerProfileRoutes(app: Express): void {
 
   app.patch("/api/companies/:id/ma-intelligence", (req, res) => {
     const id = req.params.id;
+    // v25.45 ROUND 2 — archive gate (see /profile above).
+    if (assertWorkspaceNotArchived(req, res, id)) return;
     const current = companyProfiles.get(id);
     if (!current) return res.status(404).json({ ok: false, error: "COMPANY_NOT_FOUND", message: `Company ${id} not found.` });
 

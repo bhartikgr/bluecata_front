@@ -89,6 +89,9 @@ export const companies = sqliteTable("companies", {
   // v12 additions (additive, non-breaking):
   isDemo: integer("is_demo").notNull().default(0),
   deletedAt: text("deleted_at"),
+  // v25.44 — M&A Intelligence privacy gate (additive). Stored as JSON TEXT.
+  // See maPrivacySchema below. Default opt-OUT of Collective-wide aggregation.
+  maPrivacyJson: text("ma_privacy_json"),
 });
 
 /**
@@ -774,6 +777,23 @@ export const maIntelligenceSchema = z.object({
 });
 export type MaIntelligence = z.infer<typeof maIntelligenceSchema>;
 
+/* v25.44 — M&A privacy gate (per-company consent for cross-Collective sharing).
+ * Default opt-OUT of Collective-wide aggregation; chapter + advisors visible by
+ * default; narrative redacted from aggregates by default. */
+export const maPrivacySchema = z.object({
+  shareWithCollective: z.boolean().default(false),
+  shareWithChapter: z.boolean().default(true),
+  shareWithAdvisors: z.boolean().default(true),
+  redactNarrativeFromAggregates: z.boolean().default(true),
+});
+export type MaPrivacy = z.infer<typeof maPrivacySchema>;
+export const MA_PRIVACY_DEFAULT: MaPrivacy = {
+  shareWithCollective: false,
+  shareWithChapter: true,
+  shareWithAdvisors: true,
+  redactNarrativeFromAggregates: true,
+};
+
 export const maInitiativeSchema = z.object({
   companyId: z.string(),
   initiativeType: z.enum(["discussion", "lead_initiative"]),
@@ -1449,6 +1469,8 @@ export const collectiveApps = sqliteTable("collective_apps", {
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at"),
   deletedAt: text("deleted_at"),
+  // v25.44 Surface 11 — decline-with-reason (additive, NULLABLE).
+  declinedReason: text("declined_reason"),
 });
 
 /** Store 2 — collectiveMembership (active membership rows). */
