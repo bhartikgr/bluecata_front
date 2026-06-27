@@ -59,6 +59,62 @@ export default function Settings() {
   const company = activeCompanyResp?.company;
   const companyId = useActiveCompanyId();
 
+  /* v25.45.1 Bug E/F — the Settings Tabs were previously UNCONTROLLED
+     (defaultValue="profile"). We now track the active tab in state so the
+     Billing & Subscription tab can (a) drive a 15s auto-refresh ONLY while it
+     is visible [Bug E — billing not dynamic] and (b) fire a reconcile on mount
+     so the platform auto-unlocks the instant the founder opens it, with no
+     dependency on the post-payment redirect [Bug F].
+
+     v25.45.1 GPT-5.5 Blocker 2 — the canonical path /founder/billing now
+     redirects to /founder/settings?tab=billing-subscription. Settings.tsx must
+     read the ?tab= query string and initialize the controlled Tabs accordingly,
+     otherwise the Billing tab never mounts on the canonical entry point and
+     neither the Bug E auto-refresh nor the Bug F reconcile-on-mount fires.
+
+     Tab name mapping: the URL uses the descriptive "billing-subscription"
+     (matches the visible tab label) but the internal Tabs `value=` is the
+     short "billing". We translate at the boundary so external links remain
+     stable across UI renames. Any unknown ?tab= value falls back to "profile". */
+  const TAB_ALIAS: Record<string, string> = {
+    "billing-subscription": "billing",
+    "billing": "billing",
+    "profile": "profile",
+    "company": "company",
+    "team": "team",
+    "plan": "plan",
+    "notifications": "notifications",
+    "data": "data",
+    "privacy": "privacy",
+    "public-profile": "public-profile",
+    "public": "public-profile",
+    "region": "region",
+    "legal": "legal",
+    "delete": "delete",
+  };
+  const initialTab = (() => {
+    if (typeof window === "undefined") return "profile";
+    const raw = new URLSearchParams(window.location.search).get("tab");
+    if (!raw) return "profile";
+    return TAB_ALIAS[raw] ?? "profile";
+  })();
+  const [settingsTab, setSettingsTab] = useState(initialTab);
+  const billingTabActive = settingsTab === "billing";
+
+  /* v25.45.1 GPT-5.5 Blocker 2 — keep the URL ?tab= in sync with the controlled
+     state, so deep links from /founder/billing land on Billing AND so users who
+     click a different tab in the UI get a stable URL they can copy/share. */
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const current = params.get("tab");
+    if (current === settingsTab) return;
+    if (current && TAB_ALIAS[current] === settingsTab) return;
+    params.set("tab", settingsTab);
+    const next = `${window.location.pathname}?${params.toString()}`;
+    window.history.replaceState(null, "", next);
+  }, [settingsTab]);
+
   const tiersQ = useQuery<PricingTier[]>({
     queryKey: ["/api/admin/pricing-tiers"],
     queryFn: async () => (await apiRequest("GET", "/api/admin/pricing-tiers")).json(),
@@ -197,6 +253,13 @@ export default function Settings() {
       return { invoices: Array.isArray(data?.invoices) ? data.invoices : [] };
     },
     enabled: Boolean(companyId),
+    /* v25.45.1 Bug E — refresh invoices ALONGSIDE the subscription so the first
+       invoice (created in the same finalize transaction as activation) appears
+       in the same poll cycle the plan flips to active. Same visibility-gated
+       polling rules as subscriptionQ. */
+    refetchInterval: billingTabActive ? 15000 : false,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
   });
   const recentInvoices: FounderInvoice[] = asArray<FounderInvoice>(invoicesQ.data?.invoices);
 
@@ -223,8 +286,73 @@ export default function Settings() {
       return r.json();
     },
     enabled: Boolean(companyId),
+    /* v25.45.1 Bug E — billing not dynamic. The subscription projection now
+       refreshes on a 15s baseline AND whenever the founder refocuses the tab,
+       so a webhook / reconcile / plan change appears within seconds without a
+       full page reload. The GET endpoint also auto-heals pending rows server
+       side (Bug F), so each of these polls can flip a freshly-paid plan to
+       active on its own.
+       - refetchInterval is gated on billingTabActive so polling STOPS the
+         moment the founder leaves the Billing tab (no wasted requests).
+       - refetchIntervalInBackground:false → no polling when the browser tab is
+         hidden. */
+    refetchInterval: billingTabActive ? 15000 : false,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
   });
   const subscription = subscriptionQ.data?.subscription ?? null;
+
+  /* v25.45.1 Bug F — Billing-tab self-healing reconcile.
+     Bug A's v25.45 fix added POST /api/founder/subscription/reconcile but only
+     called it from BillingReturn.tsx (the post-payment redirect). If the
+     founder closed that tab, the redirect failed, or they opened the Billing
+     tab directly to check on their subscription, reconcile NEVER ran and the
+     platform stayed locked even though their card was charged.
+
+     The Billing tab now reconciles for the WHOLE active company (it does not
+     know an individual paymentIntentId) via the new company-scoped endpoint.
+     The server endpoint is idempotent, ownership-checked, and a no-op when no
+     pending row exists, so this is safe to call on mount, on each poll, and on
+     an explicit Refresh click. On a successful heal we invalidate the billing
+     queries so the freshly-active plan + first invoice render immediately. */
+  const reconcileCompanyMut = useMutation({
+    mutationFn: async () => {
+      if (!companyId) return { ok: false } as any;
+      return (await apiRequest("POST", "/api/founder/subscription/reconcile-company", { companyId })).json();
+    },
+    onSuccess: (data: any) => {
+      // Only churn the cache when the heal actually activated something, so a
+      // routine no-op poll does not trigger needless refetches.
+      if (data?.activated && data.activated > 0) {
+        queryClient.invalidateQueries({ queryKey: ["/api/founder/subscription", companyId] });
+        queryClient.invalidateQueries({ queryKey: ["/api/founder/invoices", companyId] });
+        queryClient.invalidateQueries({ queryKey: ["/api/founder/active-company"] });
+        toast({ title: "Subscription updated", description: "Your payment was confirmed and your plan is now active." });
+      }
+    },
+    // Best-effort: a transient gateway hiccup must never surface as a scary
+    // error on a tab the founder merely opened. The 15s poll + GET auto-heal
+    // will retry on their own.
+    onError: () => {},
+  });
+
+  /* Fire reconcile ONLY when (a) the Billing tab is the active tab, (b) we have
+     a company, and (c) there is a pending request showing — i.e. there is
+     plausibly an unconfirmed payment to heal. Re-fires whenever the projected
+     status or pending-request flips, which is exactly the 15s poll cadence, so
+     the tab keeps trying until the plan is active. Idempotent server-side. */
+  const subPending = subscription?.status && subscription.status !== "active";
+  const hasPendingRequest = Boolean(subscription?.pendingRequest?.tier);
+  useEffect(() => {
+    if (!billingTabActive) return;
+    if (!companyId) return;
+    // Mount/poll heal: attempt whenever the canonical status is non-active or a
+    // pending request exists. The endpoint no-ops if there is nothing pending.
+    if (subPending || hasPendingRequest) {
+      reconcileCompanyMut.mutate();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [billingTabActive, companyId, subPending, hasPendingRequest, subscriptionQ.dataUpdatedAt]);
 
   const saveProfileMut = useMutation({
     mutationFn: async () => (await apiRequest("PATCH", "/api/auth/me", { timezone, name: profileName, email: profileEmail, title: profileTitle })).json(),
@@ -360,7 +488,7 @@ export default function Settings() {
         breadcrumbs={[{ href: "/founder/dashboard", label: "Workspace" }, { label: "Settings" }]}
       />
       <PageBody>
-        <Tabs defaultValue="profile" className="w-full">
+        <Tabs value={settingsTab} onValueChange={setSettingsTab} className="w-full">
           <TabsList className="flex flex-wrap h-auto gap-1 justify-start" data-testid="tabs-settings">
             {/* v25.45 Settings restructure (F6-F20):
                 - DELETED tabs: Company (F7 → redirect to /founder/company),
@@ -590,6 +718,26 @@ export default function Settings() {
               title="Billing & Subscription"
               body="Your current plan, payment method, pending requests, and invoice history — the canonical billing surface for your workspace. PCI-DSS scope is limited: card data never touches Capavate servers. Receipts export as audit-grade PDFs with hash verification."
             />
+            {/* v25.45.1 Bug E/F — manual Refresh. This page already auto-refreshes
+                every 15s and on window focus (Bug E), and auto-reconciles pending
+                payments on the server (Bug F), but a visible Refresh lets a
+                founder force an immediate re-check + reconcile right after paying. */}
+            <div className="flex items-center justify-end mb-3">
+              <Button
+                variant="outline"
+                size="sm"
+                data-testid="button-refresh-billing"
+                disabled={subscriptionQ.isFetching || reconcileCompanyMut.isPending}
+                onClick={() => {
+                  reconcileCompanyMut.mutate();
+                  subscriptionQ.refetch();
+                  invoicesQ.refetch();
+                }}
+              >
+                <Activity className="h-3.5 w-3.5 mr-1.5" />
+                {subscriptionQ.isFetching || reconcileCompanyMut.isPending ? "Refreshing…" : "Refresh"}
+              </Button>
+            </div>
             {/* v25.45 F10d — Current plan + payment method + pending request are
              * DB-driven from the canonical subscription projection
              * (/api/founder/subscription → capavate_subscriptions). No hardcoded

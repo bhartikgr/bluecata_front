@@ -409,6 +409,167 @@ async function acquireAutoProvisionLock(
   }
 }
 
+/* ============================================================================
+ * v25.45.1 Bug F — reconcile core (extracted so multiple callers can auto-heal)
+ *
+ * Bug A's v25.45 fix added POST /api/founder/subscription/reconcile but it was
+ * ONLY called from BillingReturn.tsx (the post-payment redirect page). If the
+ * founder closes that tab, the redirect fails, or they navigate away during
+ * webhook processing, reconcile never ran and the capavate_subscriptions row
+ * stayed `pending` forever — platform stays locked even though the card was
+ * charged. Bug A's blast radius was too narrow.
+ *
+ * The logic below is LIFTED VERBATIM from the original reconcile route handler
+ * (no behavioural change) into a reusable, side-effect-isolated core so it can
+ * also be invoked:
+ *   - opportunistically on GET /api/founder/subscription (auto-heal on every
+ *     Billing-tab query — the most important new caller), and
+ *   - explicitly by the Billing tab's mount/poll/Refresh-button reconcile call.
+ *
+ * Idempotency / safety invariants preserved EXACTLY from the route version:
+ *   - active rows are a no-op (reconciled:false) — never re-finalize.
+ *   - only an AUTHORITATIVE Airwallex SUCCEEDED finalizes (never on pending).
+ *   - finalize runs inside getDb().transaction with a reconcile-scoped
+ *     idempotency-key claim (_claimWebhookKey) AND the ledger insert is
+ *     ON CONFLICT(intent_id) DO NOTHING, so a concurrent/late webhook cannot
+ *     double-finalize or double-charge. Both paths converge on the same row.
+ *   - ownership is enforced by the CALLER (capSub.userId === ctx.userId, or
+ *     ctx.isAdmin) before this core is reached.
+ * ========================================================================== */
+type ReconcileCoreResult =
+  | { ok: true; status: string; companyId: string; reconciled: boolean; currentPeriodEnd?: string | null; gatewayStatus?: string }
+  | { ok: false; httpStatus: number; error: string; message?: string };
+
+/**
+ * Reconcile a single payment intent against the authoritative Airwallex status
+ * and finalize the local subscription if SUCCEEDED. Caller MUST have already
+ * verified ownership of `capSub`. Returns a structured result; never throws for
+ * the expected gateway/finalize failure modes (those map to httpStatus).
+ */
+async function reconcilePaymentIntentCore(paymentIntentId: string): Promise<ReconcileCoreResult> {
+  // Resolve the local pending/active row (DB-direct via subscriptionStore).
+  const capSub = getCapSubByPaymentIntent(paymentIntentId);
+  if (!capSub) return { ok: false, httpStatus: 404, error: "not_found" };
+
+  // Already finalized by the webhook (or a prior reconcile) - idempotent OK.
+  if (capSub.status === "active") {
+    return { ok: true, status: "active", companyId: capSub.companyId, reconciled: false };
+  }
+
+  // Ask Airwallex for the AUTHORITATIVE intent status. In stub mode this
+  // deterministically returns SUCCEEDED; in test/live it hits the real API.
+  const { retrievePaymentIntent } = await import("./lib/airwallexGateway");
+  let intentStatus: string;
+  try {
+    const intent = await retrievePaymentIntent(paymentIntentId);
+    intentStatus = String(intent?.status ?? "").trim().toUpperCase();
+  } catch (e) {
+    log.warn("[reconcile] retrievePaymentIntent failed:", (e as Error).message);
+    return { ok: false, httpStatus: 502, error: "gateway_unreachable", message: "Could not verify payment status with Airwallex. Please retry." };
+  }
+
+  if (intentStatus !== "SUCCEEDED") {
+    // Not paid (yet). Report the current local status so the client keeps
+    // polling; do NOT activate on anything but an authoritative SUCCEEDED.
+    return { ok: true, status: capSub.status, companyId: capSub.companyId, reconciled: false, gatewayStatus: intentStatus };
+  }
+
+  // Authoritative SUCCEEDED - run the SAME atomic finalize the webhook uses.
+  // Claim a reconcile-scoped idempotency key inside the transaction so a
+  // concurrent webhook for the same intent cannot double-finalize; both the
+  // ledger insert (ON CONFLICT intent_id DO NOTHING) and the claim make this
+  // safe and repeatable.
+  const merchantOrderId = capSub.merchantOrderId ?? null;
+  const reconcileKey = webhookKey(paymentIntentId, "reconcile.succeeded");
+  const pendingBillingEvents: Array<Record<string, unknown>> = [];
+  let didFinalize = false;
+  try {
+    getDb().transaction((tx: any) => {
+      // If a webhook already finalized this intent, the activation will be a
+      // no-op (status already active); the claim just prevents duplicate
+      // billing events from THIS path.
+      const claimed = _claimWebhookKey(reconcileKey);
+      if (!claimed) return; // another reconcile already ran
+
+      const activated = activateCapSub(paymentIntentId);
+      if (activated) {
+        pendingBillingEvents.push({
+          kind: "subscription.activated",
+          paymentIntentId: activated.paymentIntentId,
+          companyId: activated.companyId,
+          tierId: activated.tierId,
+          userId: activated.userId,
+          gateway: "airwallex",
+        });
+      }
+      finalizeWebhookSuccessInTx(tx, { intentId: paymentIntentId, companyId: merchantOrderId, gateway: "airwallex" });
+      didFinalize = true;
+    });
+  } catch (txErr) {
+    log.warn("[reconcile] finalize transaction rolled back:", (txErr as Error).message);
+    return { ok: false, httpStatus: 500, error: "reconcile_finalize_failed" };
+  }
+
+  // Emit billing events AFTER commit (post-transaction side-effects).
+  for (const evt of pendingBillingEvents) {
+    try { emitBillingEvent(evt as any); } catch (e) { log.warn("[reconcile] emitBillingEvent failed:", (e as Error).message); }
+  }
+
+  // Re-read the now-finalized row DB-direct for the response.
+  const finalRow = getCapSubByPaymentIntent(paymentIntentId);
+  return {
+    ok: true,
+    status: finalRow?.status ?? "active",
+    companyId: finalRow?.companyId ?? capSub.companyId,
+    currentPeriodEnd: finalRow?.currentPeriodEnd ?? null,
+    reconciled: didFinalize,
+  };
+}
+
+/**
+ * v25.45.1 Bug F — opportunistic auto-heal for an entire company.
+ *
+ * Lists this company's capavate_subscriptions rows (DB-direct), and for every
+ * row still `pending` calls reconcilePaymentIntentCore. This is the engine
+ * behind the GET-endpoint auto-heal and the Billing-tab mount/poll reconcile:
+ * the platform unlocks the moment the founder so much as LOOKS at the Billing
+ * tab, with NO client cooperation and NO dependency on the redirect URL.
+ *
+ * Best-effort and FAIL-OPEN for reads: any gateway/finalize error on an
+ * individual intent is logged and skipped so the surrounding GET/read never
+ * fails because of a reconcile hiccup. Ownership is the CALLER's responsibility
+ * (every caller already asserts the founder owns `companyId`).
+ *
+ * Idempotency: active rows are skipped; the shared idempotency-key claim +
+ * ON CONFLICT ledger insert guarantee no double-charge even if this races the
+ * webhook or a concurrent BillingReturn reconcile for the same intent.
+ */
+async function reconcilePendingForCompany(companyId: string): Promise<{ attempted: number; activated: number }> {
+  let attempted = 0;
+  let activated = 0;
+  if (!companyId) return { attempted, activated };
+  let rows: CapavateSubscription[];
+  try {
+    rows = listCapSubsForCompany(companyId);
+  } catch (err) {
+    log.warn("[reconcile] auto-heal listForCompany failed:", (err as Error).message);
+    return { attempted, activated };
+  }
+  for (const row of rows) {
+    if (row.status !== "pending") continue;
+    if (!row.paymentIntentId) continue;
+    attempted++;
+    try {
+      const r = await reconcilePaymentIntentCore(row.paymentIntentId);
+      if (r.ok && r.reconciled) activated++;
+    } catch (e) {
+      // Fail-open: never let an auto-heal attempt break the caller's read.
+      log.warn("[reconcile] auto-heal intent failed:", row.paymentIntentId, (e as Error).message);
+    }
+  }
+  return { attempted, activated };
+}
+
 export function registerPaymentGatewayRoutes(app: Express): void {
   /**
    * GET /api/admin/payment-gateway/config
@@ -702,6 +863,26 @@ export function registerPaymentGatewayRoutes(app: Express): void {
        authenticated user could pass ?companyId=co_victim and read another
        company's plan, cardLast4, status. Now ownership-gated. */
     if (!(await assertSubscriptionOwnership(req, res, companyId))) return;
+
+    /* v25.45.1 Bug F — AUTO-HEAL ON READ (the single most impactful fix).
+       Before projecting the canonical subscription, opportunistically reconcile
+       any PENDING capavate_subscriptions row for this company against the
+       authoritative Airwallex status. This means the platform unlocks the
+       instant the founder's Billing tab queries this endpoint — with NO
+       dependency on the post-payment redirect URL (BillingReturn.tsx), NO need
+       for the webhook to land, and NO client cooperation.
+
+       Safety: reconcilePendingForCompany delegates to the SAME idempotent core
+       the POST /reconcile route and the webhook use (idempotency-key claim +
+       ledger ON CONFLICT(intent_id) DO NOTHING), so this can NEVER double-charge
+       or race the webhook into a double-finalize. It is ownership-scoped
+       (assertSubscriptionOwnership already ran above) and FAIL-OPEN: any gateway
+       hiccup is swallowed so the read below still returns the current DB state. */
+    try {
+      await reconcilePendingForCompany(companyId);
+    } catch (e) {
+      log.warn("[founder/subscription] auto-heal reconcile failed (non-fatal):", (e as Error).message);
+    }
 
     /* v25.32 deep Fix 6 — canonical billing source. The real hosted-checkout
        state lives in capavate_subscriptions (written by the payment webhook /
@@ -1037,7 +1218,11 @@ export function registerPaymentGatewayRoutes(app: Express): void {
         return res.status(400).json({ ok: false, error: "missing_paymentIntentId" });
       }
 
-      // Resolve the local pending/active row (DB-direct via subscriptionStore).
+      // Resolve the local pending/active row (DB-direct via subscriptionStore)
+      // purely to enforce ownership BEFORE any gateway/finalize work. The
+      // finalize logic itself lives in reconcilePaymentIntentCore (v25.45.1
+      // Bug F refactor) so the GET endpoint and Billing-tab callers share the
+      // EXACT same idempotent path.
       const capSub = getCapSubByPaymentIntent(paymentIntentId);
       if (!capSub) return res.status(404).json({ ok: false, error: "not_found" });
 
@@ -1046,81 +1231,53 @@ export function registerPaymentGatewayRoutes(app: Express): void {
         return res.status(403).json({ ok: false, error: "not_owner" });
       }
 
-      // Already finalized by the webhook (or a prior reconcile) - idempotent OK.
-      if (capSub.status === "active") {
-        return res.json({ ok: true, status: "active", companyId: capSub.companyId, reconciled: false });
+      const result = await reconcilePaymentIntentCore(paymentIntentId);
+      if (!result.ok) {
+        const { httpStatus, ok: _ok, ...body } = result;
+        return res.status(httpStatus).json({ ok: false, ...body });
       }
-
-      // Ask Airwallex for the AUTHORITATIVE intent status. In stub mode this
-      // deterministically returns SUCCEEDED; in test/live it hits the real API.
-      const { retrievePaymentIntent } = await import("./lib/airwallexGateway");
-      let intentStatus: string;
-      try {
-        const intent = await retrievePaymentIntent(paymentIntentId);
-        intentStatus = String(intent?.status ?? "").trim().toUpperCase();
-      } catch (e) {
-        log.warn("[reconcile] retrievePaymentIntent failed:", (e as Error).message);
-        return res.status(502).json({ ok: false, error: "gateway_unreachable", message: "Could not verify payment status with Airwallex. Please retry." });
-      }
-
-      if (intentStatus !== "SUCCEEDED") {
-        // Not paid (yet). Report the current local status so the client keeps
-        // polling; do NOT activate on anything but an authoritative SUCCEEDED.
-        return res.json({ ok: true, status: capSub.status, companyId: capSub.companyId, reconciled: false, gatewayStatus: intentStatus });
-      }
-
-      // Authoritative SUCCEEDED - run the SAME atomic finalize the webhook uses.
-      // Claim a reconcile-scoped idempotency key inside the transaction so a
-      // concurrent webhook for the same intent cannot double-finalize; both the
-      // ledger insert (ON CONFLICT intent_id DO NOTHING) and the claim make this
-      // safe and repeatable.
-      const merchantOrderId = capSub.merchantOrderId ?? null;
-      const reconcileKey = webhookKey(paymentIntentId, "reconcile.succeeded");
-      const pendingBillingEvents: Array<Record<string, unknown>> = [];
-      let didFinalize = false;
-      try {
-        getDb().transaction((tx: any) => {
-          // If a webhook already finalized this intent, the activation will be a
-          // no-op (status already active); the claim just prevents duplicate
-          // billing events from THIS path.
-          const claimed = _claimWebhookKey(reconcileKey);
-          if (!claimed) return; // another reconcile already ran
-
-          const activated = activateCapSub(paymentIntentId);
-          if (activated) {
-            pendingBillingEvents.push({
-              kind: "subscription.activated",
-              paymentIntentId: activated.paymentIntentId,
-              companyId: activated.companyId,
-              tierId: activated.tierId,
-              userId: activated.userId,
-              gateway: "airwallex",
-            });
-          }
-          finalizeWebhookSuccessInTx(tx, { intentId: paymentIntentId, companyId: merchantOrderId, gateway: "airwallex" });
-          didFinalize = true;
-        });
-      } catch (txErr) {
-        log.warn("[reconcile] finalize transaction rolled back:", (txErr as Error).message);
-        return res.status(500).json({ ok: false, error: "reconcile_finalize_failed" });
-      }
-
-      // Emit billing events AFTER commit (post-transaction side-effects).
-      for (const evt of pendingBillingEvents) {
-        try { emitBillingEvent(evt as any); } catch (e) { log.warn("[reconcile] emitBillingEvent failed:", (e as Error).message); }
-      }
-
-      // Re-read the now-finalized row DB-direct for the response.
-      const finalRow = getCapSubByPaymentIntent(paymentIntentId);
-      return res.json({
-        ok: true,
-        status: finalRow?.status ?? "active",
-        companyId: finalRow?.companyId ?? capSub.companyId,
-        currentPeriodEnd: finalRow?.currentPeriodEnd ?? null,
-        reconciled: didFinalize,
-      });
+      // Preserve the original response shape exactly (status/companyId/
+      // reconciled, plus currentPeriodEnd/gatewayStatus when present).
+      return res.json(result);
     } catch (err) {
       log.error("[reconcile] unexpected error:", (err as Error).message);
+      return res.status(500).json({ ok: false, error: "server_error" });
+    }
+  });
+
+  /**
+   * v25.45.1 Bug F — POST /api/founder/subscription/reconcile-company { companyId }
+   *
+   * Company-scoped reconcile for the Billing & Subscription tab. The tab does
+   * NOT know an individual paymentIntentId (that only existed on the post-payment
+   * redirect, BillingReturn.tsx), so it calls THIS to auto-heal every pending
+   * row for the active company on mount, on each poll, and when the founder
+   * clicks "Refresh". Ownership-checked, idempotent (delegates to the same core
+   * as POST /reconcile and the GET auto-heal), and a safe no-op when there is no
+   * pending row. Never double-charges (shared idempotency-key + ledger ON
+   * CONFLICT). Returns { ok, companyId, attempted, activated, status } where
+   * status is the canonical projected status after the heal.
+   */
+  app.post("/api/founder/subscription/reconcile-company", requireAuth, async (req: Request, res: Response) => {
+    try {
+      const companyId = String(req.body?.companyId ?? (req as any).userContext?.founder?.activeCompanyId ?? "").trim();
+      // Reuse the exact same ownership gate as the GET reader (401/400/403).
+      if (!(await assertSubscriptionOwnership(req, res, companyId))) return;
+
+      const { attempted, activated } = await reconcilePendingForCompany(companyId);
+
+      // Report the post-heal canonical status so the client can decide whether
+      // to keep polling without a second round-trip.
+      const canonical = projectCanonicalSubscription(companyId);
+      return res.json({
+        ok: true,
+        companyId,
+        attempted,
+        activated,
+        status: canonical?.status ?? null,
+      });
+    } catch (err) {
+      log.error("[reconcile-company] unexpected error:", (err as Error).message);
       return res.status(500).json({ ok: false, error: "server_error" });
     }
   });
