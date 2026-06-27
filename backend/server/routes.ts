@@ -3077,14 +3077,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const ctx = (req as any).userContext;
     const userId: string | undefined = ctx?.userId;
     const body = (req.body && typeof req.body === "object") ? req.body : {};
-    /* Defensive coerce of known fields; preserve any extra keys verbatim so
-     * future fields the client adds don't get silently dropped. */
+    /* v25.45.3 Bug H fix #2 — defensive coercion now runs AFTER the `...body`
+     * spread, not before it. Previously the spread of raw `body` was placed
+     * LAST in the object literal, so a malformed non-boolean
+     * `visibleToCoMembers` / `visibleToCollectiveNetwork` in the request body
+     * would override the coerced boolean defaults and a malformed value could
+     * be written that the GET hydration silently ignores. By spreading `body`
+     * first and applying the coerced known fields last, malformed inputs can
+     * never bypass the boolean coercion. Unknown future keys are still
+     * preserved (no silent drop). */
     const payload = {
+      ...body,
       screenName: typeof body.screenName === "string" ? body.screenName : (ctx?.identity?.screenName ?? ctx?.identity?.name ?? ""),
       visibleToCoMembers: typeof body.visibleToCoMembers === "boolean" ? body.visibleToCoMembers : true,
       visibleToCollectiveNetwork: typeof body.visibleToCollectiveNetwork === "boolean" ? body.visibleToCollectiveNetwork : false,
       updatedAt: new Date().toISOString(),
-      ...body,
     };
     if (userId) {
       try {
@@ -3100,10 +3107,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           visibleInCollectiveDirectory: payload.visibleToCollectiveNetwork,
         });
       } catch (err) {
+        /* v25.45.3 Bug H fix #1 — FAIL CLOSED. Previously the catch logged the
+         * error but still returned `{ ok:true }`, so the client showed
+         * "Privacy settings saved" while the DB write had failed (a false
+         * success). Per Sacred Tier 2 #27 "Zero in-memory, DB-driven", a
+         * persistence failure MUST be visible to the caller. We now return a
+         * non-2xx (500) with `{ ok:false, error:"PRIVACY_PERSIST_FAILED" }`. */
         log.warn({
           route: "founder.privacy.put",
           message: `privacy persist failed: ${(err as Error).message}`,
         });
+        return res.status(500).json({ ok: false, error: "PRIVACY_PERSIST_FAILED" });
       }
     }
     res.json({ ok: true, updated: payload });

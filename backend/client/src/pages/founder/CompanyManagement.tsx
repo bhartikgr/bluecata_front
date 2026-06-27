@@ -29,10 +29,23 @@ function TeamPanel() {
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteName, setInviteName] = useState("");
 
-  const members = useQuery<TeamMember[]>({
+  // v25.45.2 Bug G — GET /api/founder/team/members returns the documented
+  // `{ members: [...] }` OBJECT shape (see routes.ts Bug L / Settings.tsx),
+  // NOT a bare array. The old `useQuery<TeamMember[]>` + `(members.data ?? [])`
+  // crashed in production with "(o.data ?? []).map is not a function" because
+  // `members.data` was a defined non-array object so the `?? []` fallback
+  // never fired. Type it correctly and extract defensively with Array.isArray.
+  const members = useQuery<{ members: TeamMember[] }>({
     queryKey: ["/api/founder/team/members"],
     enabled: Boolean(companyId),
   });
+  // Safe extraction: tolerate the documented object shape, a legacy bare
+  // array, or any malformed payload — never let render hit `.map` on a non-array.
+  const memberList: TeamMember[] = Array.isArray(members.data)
+    ? (members.data as unknown as TeamMember[])
+    : Array.isArray(members.data?.members)
+      ? members.data.members
+      : [];
   const invites = useQuery<{ invitations: Invitation[] }>({
     queryKey: ["/api/founder/team/invitations", companyId],
     queryFn: () => apiRequest("GET", `/api/founder/team/invitations?companyId=${encodeURIComponent(companyId ?? "")}`).then((r) => r.json()),
@@ -63,10 +76,10 @@ function TeamPanel() {
       <Card>
         <CardHeader><CardTitle className="text-base">Team members</CardTitle></CardHeader>
         <CardContent className="space-y-2">
-          {(members.data ?? []).length === 0 && (
+          {memberList.length === 0 && (
             <p className="text-sm text-muted-foreground" data-testid="team-empty">No team members yet.</p>
           )}
-          {(members.data ?? []).map((m) => (
+          {memberList.map((m) => (
             <div key={m.id} className="flex items-center justify-between text-sm border-b border-border py-1.5" data-testid={`team-member-${m.id}`}>
               <span>{m.name ?? m.email}</span>
               <span className="text-muted-foreground">{m.role}</span>
@@ -83,7 +96,7 @@ function TeamPanel() {
             {inviteMut.isPending ? "Sending…" : "Send invitation"}
           </Button>
           <div className="pt-2 space-y-1">
-            {(invites.data?.invitations ?? []).map((i) => (
+            {(Array.isArray(invites.data?.invitations) ? invites.data!.invitations : []).map((i) => (
               <div key={i.id} className="flex items-center justify-between text-xs text-muted-foreground" data-testid={`invite-${i.id}`}>
                 <span>{i.invitedEmail}</span>
                 <span>{i.sentAt ? "sent" : i.status}</span>

@@ -11,13 +11,112 @@
  */
 import express from "express";
 import http from "node:http";
+import os from "node:os";
+import fsRestart from "node:fs";
+import pathRestart from "node:path";
+import { createRequire } from "node:module";
 import { registerRoutes } from "../routes.ts";
-import { rawDb } from "../db/connection.ts";
+import { rawDb, closeDb, resetDbForTests } from "../db/connection.ts";
 import { __setRuntimePersona } from "../lib/userContext.ts";
 import { reqFactory, reqNoAuthFactory, recorder } from "./v25_42_helpers.mjs";
 import { addCompanyForFounder } from "../multiCompanyStore.ts";
 
 export { recorder };
+
+/* ───────────────────────────────────────────────────────────────────────────
+ * v25.45.3 — Generalizable Save → REAL Restart → Load test helper (Tier 6 #48).
+ *
+ * The prior Bug H "restart" was not a real restart: it reused the same live DB
+ * connection and `await import("../lib/userPrivacyResolver.ts")` returned the
+ * already-cached module. Per Sacred Tier 6 #48, a persistence regression test
+ * MUST perform: (1) Save, (2) a fresh process load — clear module-level state,
+ * re-instantiate stores, RE-OPEN the durable DB connection — (3) Load, and
+ * (4) assert byte-for-byte equality with what was saved.
+ *
+ * Why a FILE-backed DB is required: under vitest NODE_ENV=test the default DB
+ * is `:memory:`, which is wiped the instant `closeDb()` closes the handle.
+ * A real restart can only be proven against a durable, on-disk SQLite file
+ * that survives the close/reopen. `useFileBackedDb()` forces that, and
+ * `simulateRestart()` performs the close + module-cache clear + reconnect.
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+let _restartTmpDir = null;
+let _restartPrevDbUrl;
+
+/**
+ * Force the process onto a fresh file-backed SQLite DB so that a close/reopen
+ * cycle (a real restart) preserves rows on disk. Call BEFORE setupFounder*().
+ * Returns the absolute db file path. Idempotent within a test file.
+ */
+export function useFileBackedDb(tag = "restart") {
+  if (_restartTmpDir) return pathRestart.join(_restartTmpDir, "data.db");
+  _restartTmpDir = fsRestart.mkdtempSync(pathRestart.join(os.tmpdir(), `cap_${tag}_`));
+  const dbFile = pathRestart.join(_restartTmpDir, "data.db");
+  _restartPrevDbUrl = process.env.DATABASE_URL;
+  process.env.DATABASE_URL = `file:${dbFile}`;
+  // Drop any connection opened under the previous URL so the next getDb()/
+  // rawDb() opens the file-backed handle.
+  resetDbForTests();
+  return dbFile;
+}
+
+/**
+ * Tear down the file-backed DB env override (call in afterAll).
+ */
+export async function teardownFileBackedDb() {
+  try { await closeDb(); } catch { /* noop */ }
+  if (_restartPrevDbUrl === undefined) delete process.env.DATABASE_URL;
+  else process.env.DATABASE_URL = _restartPrevDbUrl;
+  if (_restartTmpDir) {
+    try { fsRestart.rmSync(_restartTmpDir, { recursive: true, force: true }); } catch { /* noop */ }
+  }
+  _restartTmpDir = null;
+  _restartPrevDbUrl = undefined;
+  resetDbForTests();
+}
+
+/**
+ * Perform a REAL Save→Restart→Load "restart" step:
+ *   1. Close the live durable DB connection (`closeDb()` ends the SQLite handle
+ *      and nulls all module-level connection state).
+ *   2. Best-effort clear the CJS require.cache entries for the persistence
+ *      modules so a subsequent dynamic import re-evaluates the module rather
+ *      than returning the cached instance. (Under vitest's ESM transform the
+ *      native require.cache may not hold these; the cache-busting query string
+ *      on the dynamic import below is the authoritative fresh-load mechanism.)
+ *   3. Re-open the DB by re-importing the connection module fresh and calling
+ *      rawDb(), which lazily re-opens the on-disk file.
+ *   4. Re-import the resolver fresh (cache-busted) and return its functions so
+ *      callers prove the Load path against a cold module + cold connection.
+ *
+ * @returns {Promise<{ rawDb: Function, readUserPrivacy: Function,
+ *                     readUserPrivacyRaw: Function }>}
+ */
+export async function simulateRestart() {
+  // (1) Close the durable connection — this is the "process exit" half.
+  await closeDb();
+
+  // (2) Best-effort native require.cache clear for the persistence modules.
+  try {
+    const r = createRequire(import.meta.url);
+    for (const mod of ["../lib/userPrivacyResolver.ts", "../db/connection.ts"]) {
+      try { delete r.cache[r.resolve(mod)]; } catch { /* not in native cache under vitest */ }
+    }
+  } catch { /* createRequire unavailable — fall through to query-string busting */ }
+
+  // (3) Re-open the DB fresh (cold connection re-reads the on-disk file).
+  const freshConn = await import("../db/connection.ts?restart=" + Date.now());
+  // Touch rawDb to force the lazy re-open before the Load read.
+  freshConn.rawDb();
+
+  // (4) Re-import the resolver fresh (cold module) and hand back its Load fns.
+  const freshResolver = await import("../lib/userPrivacyResolver.ts?restart=" + Date.now());
+  return {
+    rawDb: freshConn.rawDb,
+    readUserPrivacy: freshResolver.readUserPrivacy,
+    readUserPrivacyRaw: freshResolver.readUserPrivacyRaw,
+  };
+}
 
 export function makeFounderIds(tag) {
   const STAMP = Date.now() + "_" + Math.floor(Math.random() * 1e6);

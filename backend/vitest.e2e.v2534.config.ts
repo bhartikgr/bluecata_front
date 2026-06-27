@@ -48,6 +48,12 @@ merged.test.include = [
   "server/__tests__/v25_44_*_e2e.mjs",
   // v25.45 — Founder QA wave (F1-F20) E2E suite (25+ tests).
   "server/__tests__/v25_45_*_e2e.mjs",
+  // v25.45.2 — Bug G (company-management array shape) + Bug H (privacy
+  // persistence round-trip) live-realistic regression suites.
+  "server/__tests__/v25_45_2_*_e2e.mjs",
+  // v25.45.3 — Bug I (Public tab cross-company stale state) + Bug H server
+  // fail-closed regression suites.
+  "server/__tests__/v25_45_3_*_e2e.mjs",
 ];
 
 export default merged;

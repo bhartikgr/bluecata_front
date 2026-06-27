@@ -129,6 +129,44 @@ export default function Settings() {
   const [visibleNet, setVisibleNet] = useState(false);
   const screenValid = screenName.length === 0 ? { ok: true as const } : validateScreenName(screenName);
 
+  // v25.45.2 Bug H — Privacy tab did NOT persist across a hard refresh.
+  // Root cause: the Save button PUTs /api/founder/privacy (which DOES durably
+  // persist to profilestore_user_privacy server-side), but the client NEVER
+  // loaded the saved value back. The three privacy state vars above were only
+  // ever initialised to their useState defaults (false/false/"") and were
+  // re-set ONLY by user interaction, so after F5 the toggles reverted to OFF
+  // even though the DB row held the saved value. The onSuccess handler even
+  // invalidated ["/api/founder/privacy"] — a query that didn't exist.
+  //
+  // Fix (additive): subscribe to GET /api/founder/privacy and hydrate the
+  // local state once it resolves. The server returns:
+  //   { ok, privacy: { screenName, visibleToCoMembers, visibleToCollectiveNetwork } }
+  const privacyQ = useQuery<{
+    ok: boolean;
+    privacy: { screenName?: string; visibleToCoMembers?: boolean; visibleToCollectiveNetwork?: boolean };
+  }>({
+    queryKey: ["/api/founder/privacy"],
+    queryFn: async () => {
+      try {
+        return (await apiRequest("GET", "/api/founder/privacy")).json();
+      } catch {
+        return { ok: false, privacy: {} };
+      }
+    },
+    retry: false,
+  });
+  // Hydrate the privacy form whenever the load query resolves (initial mount,
+  // refetch after a save invalidation, or window-focus refetch). This closes
+  // the save -> reload round-trip the live QA flagged. Tier-4: state is driven
+  // by the DB-backed load query, not just by in-memory interaction.
+  useEffect(() => {
+    const p = privacyQ.data?.privacy;
+    if (!p) return;
+    if (typeof p.screenName === "string") setScreenName(p.screenName);
+    if (typeof p.visibleToCoMembers === "boolean") setVisibleCo(p.visibleToCoMembers);
+    if (typeof p.visibleToCollectiveNetwork === "boolean") setVisibleNet(p.visibleToCollectiveNetwork);
+  }, [privacyQ.data]);
+
   // Sprint 18 T11.1 — timezone selector (browser-detected default)
   const [timezone, setTimezone] = useState<string>(() => detectBrowserTimezone());
 
@@ -378,10 +416,32 @@ export default function Settings() {
     onError: () => toast({ title: "Save failed", variant: "destructive" }),
   });
 
+  // v25.45.3 Bug H — fail-closed client contract. The server PUT now returns a
+  // non-2xx { ok:false } when the DB write fails (previously it returned a
+  // false-success 200). apiRequest throws on non-2xx, routing to onError. In
+  // addition, before showing the success toast we re-fetch GET /api/founder/
+  // privacy and assert the persisted value EQUALS what we just saved. If the
+  // round-trip does not match (or the PUT body returns ok:false), we surface
+  // "Save failed - please retry" instead of a misleading "saved" toast.
   const savePrivacyMut = useMutation({
-    mutationFn: async () => (await apiRequest("PUT", "/api/founder/privacy", { screenName, visibleToCoMembers: visibleCo, visibleToCollectiveNetwork: visibleNet })).json(),
+    mutationFn: async () => {
+      const saved = { screenName, visibleToCoMembers: visibleCo, visibleToCollectiveNetwork: visibleNet };
+      const putRes = await apiRequest("PUT", "/api/founder/privacy", saved);
+      const putBody = await putRes.json();
+      if (!putBody?.ok) throw new Error(putBody?.error ?? "PRIVACY_PERSIST_FAILED");
+      // Round-trip confirm: re-fetch the canonical Load endpoint and compare.
+      const getRes = await apiRequest("GET", "/api/founder/privacy");
+      const getBody = await getRes.json();
+      const p = getBody?.privacy ?? {};
+      const matches =
+        (p.screenName ?? "") === (saved.screenName ?? "") &&
+        p.visibleToCoMembers === saved.visibleToCoMembers &&
+        p.visibleToCollectiveNetwork === saved.visibleToCollectiveNetwork;
+      if (!matches) throw new Error("PRIVACY_ROUNDTRIP_MISMATCH");
+      return getBody;
+    },
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/founder/privacy"] }); toast({ title: "Privacy settings saved" }); },
-    onError: () => toast({ title: "Save failed", variant: "destructive" }),
+    onError: () => toast({ title: "Save failed - please retry", variant: "destructive" }),
   });
 
   // v24.2 Airwallex wiring — switching a plan now mints a real Airwallex
@@ -966,7 +1026,10 @@ export default function Settings() {
 
           {/* Wave C-1 — Public Profile tab */}
           <TabsContent value="public-profile" className="mt-4">
-            <SettingsPublicProfileTab companyId={companyId} />
+            {/* v25.45.3 Bug I: key={companyId} forces React to remount the tab
+                on active-company switch so stale form state from the previous
+                company can never be saved into the new company's row. */}
+            <SettingsPublicProfileTab key={companyId} companyId={companyId} />
           </TabsContent>
 
           {/* Wave C-1 — Region & Jurisdiction tab */}
@@ -1264,10 +1327,14 @@ function SettingsPublicProfileTab({ companyId }: { companyId: string | undefined
     openingDataRoomUrl: "", publicNewsroomUrl: "",
     tagline: "", shortPitch: "", longPitch: "", subsector: "", missionStatement: "", logoUrl: "",
   });
-  const [synced, setSynced] = useState(false);
-
-  // Sync from profile once loaded
-  if (!synced && profileQ.data) {
+  // v25.45.3 Bug I fix: re-hydrate whenever companyId changes OR profile data
+  // refreshes. The previous one-shot `synced` useState guard left company A's
+  // values in `fields` after the founder switched the active company to B while
+  // this tab stayed mounted — Save then wrote A's values into B's row. A
+  // useEffect keyed on [companyId, profileQ.data] re-hydrates on every company
+  // switch / data refresh. The parent also remounts via key={companyId}.
+  useEffect(() => {
+    if (!profileQ.data) return;
     setFields({
       linkedinUrl: profile.linkedinUrl ?? "",
       twitterUrl: profile.twitterUrl ?? "",
@@ -1282,8 +1349,8 @@ function SettingsPublicProfileTab({ companyId }: { companyId: string | undefined
       missionStatement: profile.missionStatement ?? "",
       logoUrl: profile.logoUrl ?? "",
     });
-    setSynced(true);
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [companyId, profileQ.data]);
 
   const saveMut = useMutation({
     mutationFn: async () => {
@@ -1427,8 +1494,10 @@ function SettingsPreferencesTab({ companyId }: { companyId: string | undefined }
     preferredCurrency: "USD", preferredTimezone: "", preferredLanguage: "en",
     preferredCommunicationChannel: "both", preferredMeetingDuration: "30", preferredMeetingTimes: "",
   });
-  const [synced, setSynced] = useState(false);
-  if (!synced && profileQ.data) {
+  // v25.45.3 Bug I audit: re-hydrate on [companyId, profileQ.data] instead of a
+  // one-shot synced guard so a company switch can never leave stale state.
+  useEffect(() => {
+    if (!profileQ.data) return;
     setFields({
       preferredCurrency: profile.preferredCurrency ?? "USD",
       preferredTimezone: profile.preferredTimezone ?? "",
@@ -1437,8 +1506,8 @@ function SettingsPreferencesTab({ companyId }: { companyId: string | undefined }
       preferredMeetingDuration: profile.preferredMeetingDuration ? String(profile.preferredMeetingDuration) : "30",
       preferredMeetingTimes: profile.preferredMeetingTimes ?? "",
     });
-    setSynced(true);
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [companyId, profileQ.data]);
   const saveMut = useMutation({
     mutationFn: async () => {
       const patch: Record<string, unknown> = {
@@ -1529,8 +1598,9 @@ function SettingsFinancialsTab({ companyId }: { companyId: string | undefined })
 
   // Local field values
   const [values, setValues] = useState<Record<string, string>>({});
-  const [synced, setSynced] = useState(false);
-  if (!synced && profileQ.data) {
+  // v25.45.3 Bug I audit: re-hydrate on [companyId, profileQ.data].
+  useEffect(() => {
+    if (!profileQ.data) return;
     const init: Record<string, string> = {};
     for (const f of FINANCIAL_FIELD_COPY) {
       const v = profile[f.key as keyof typeof profile];
@@ -1546,8 +1616,8 @@ function SettingsFinancialsTab({ companyId }: { companyId: string | undefined })
       }
     }
     setValues(init);
-    setSynced(true);
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [companyId, profileQ.data]);
 
   const saveMut = useMutation({
     mutationFn: async () => {
@@ -1700,12 +1770,13 @@ function SettingsGovernanceTab({ companyId }: { companyId: string | undefined })
   const profile = profileQ.data?.profile ?? {};
   const [directorCount, setDirectorCount] = useState("");
   const [directorSnapshot, setDirectorSnapshot] = useState("");
-  const [synced, setSynced] = useState(false);
-  if (!synced && profileQ.data) {
+  // v25.45.3 Bug I audit: re-hydrate on [companyId, profileQ.data].
+  useEffect(() => {
+    if (!profileQ.data) return;
     setDirectorCount(profile.boardCompositionDirectors != null ? String(profile.boardCompositionDirectors) : "");
     setDirectorSnapshot(profile.boardDirectorsSnapshot ?? "");
-    setSynced(true);
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [companyId, profileQ.data]);
   const saveMut = useMutation({
     mutationFn: async () => {
       const patch: Record<string, unknown> = {};
@@ -1768,16 +1839,17 @@ function SettingsMnaPrepTab({ companyId }: { companyId: string | undefined }) {
   const profile = profileQ.data?.profile ?? {};
   const [values, setValues] = useState<Record<string, number>>({});
   const [txStatus, setTxStatus] = useState("not_pursuing");
-  const [synced, setSynced] = useState(false);
-  if (!synced && profileQ.data) {
+  // v25.45.3 Bug I audit: re-hydrate on [companyId, profileQ.data].
+  useEffect(() => {
+    if (!profileQ.data) return;
     const init: Record<string, number> = {};
     for (const f of MNA_PREP_FIELDS) {
       init[f.key] = profile[f.key as keyof typeof profile] as number ?? 0;
     }
     setValues(init);
     setTxStatus(profile.transactionPrepStatus ?? "not_pursuing");
-    setSynced(true);
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [companyId, profileQ.data]);
   const saveMut = useMutation({
     mutationFn: async () => {
       const patch: Record<string, unknown> = { ...values, transactionPrepStatus: txStatus };
