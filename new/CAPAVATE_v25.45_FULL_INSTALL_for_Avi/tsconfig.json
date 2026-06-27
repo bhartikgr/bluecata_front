@@ -1,0 +1,28 @@
+{
+  "include": ["client/src/**/*", "shared/**/*", "server/**/*", "packages/cap-table-engine/src/**/*", "packages/cap-table-engine-ref/src/**/*", "packages/telemetry/src/**/*", "packages/math-fns/src/**/*", "packages/math-fns-ref/src/**/*"],
+  "exclude": ["node_modules", "build", "dist", "**/*.test.ts", "packages/cap-table-engine/test/**", "packages/cap-table-engine-ref/test/**", "packages/telemetry/test/**", "packages/math-fns/test/**", "packages/math-fns-ref/test/**"],
+  "compilerOptions": {
+    "incremental": true,
+    "tsBuildInfoFile": "./node_modules/typescript/tsbuildinfo",
+    "noEmit": true,
+    "module": "ESNext",
+    "strict": true,
+    "lib": ["esnext", "dom", "dom.iterable"],
+    "jsx": "preserve",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "moduleResolution": "bundler",
+    "baseUrl": ".",
+    "types": ["node", "vite/client"],
+    "paths": {
+      "@/*": ["./client/src/*"],
+      "@shared/*": ["./shared/*"],
+      "@capavate/cap-table-engine": ["./packages/cap-table-engine/src/index.ts"],
+      "@capavate/cap-table-engine-ref": ["./packages/cap-table-engine-ref/src/index.ts"],
+      "@capavate/telemetry": ["./packages/telemetry/src/index.ts"],
+      "@capavate/math-fns": ["./packages/math-fns/src/index.ts"],
+      "@capavate/math-fns-ref": ["./packages/math-fns-ref/src/index.ts"]
+    }
+  }
+}

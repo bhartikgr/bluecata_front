@@ -1,0 +1,2 @@
+TSC error count: 613 (budget 700)
+GATE 1 PASS

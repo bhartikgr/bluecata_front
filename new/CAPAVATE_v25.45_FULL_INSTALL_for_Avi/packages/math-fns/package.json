@@ -1,0 +1,19 @@
+{
+  "name": "@capavate/math-fns",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "decimal.js": "^10.4.3"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.9"
+  }
+}
