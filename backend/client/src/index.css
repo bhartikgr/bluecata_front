@@ -6,6 +6,10 @@
    introduced. If the webfont fails to load, the prior Inter/Georgia stacks
    remain as fallbacks. */
 @import url("https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Instrument+Serif:ital@0;1&display=swap");
+/* v25.46 Track 6 — canonical Capavate design tokens (LookFeel-Parity).
+   Additive `--cv-*` namespace consumed only by the new v25.46 primitives.
+   Must precede @tailwind per CSS @import ordering rules. */
+@import "./styles/capavate-tokens.css";
 
 @tailwind base;
 @tailwind components;

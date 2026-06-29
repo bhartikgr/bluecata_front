@@ -220,6 +220,115 @@ function applyInlineMigrations(db: any) {
    * altered on existing tables and there are NO foreign keys to Avi-owned
    * tables, so this cannot constrain Avi data. Idempotent + boot-safe. */
   applyV2542HTelemetryEventsSchema(db);
+
+  /* v25.45.4 -- Ozan live-QA wave. Mirrors migrations 0064-0066 idempotently so
+   * the dual bootstrap+migration path keeps these tables present on a fresh
+   * boot / fresh test DB:
+   *   - profile_wizard_state    (M-4 wizard persistence)
+   *   - collective_pitch_decks  (M-7 pitch-deck upload metadata)
+   *   - platform_fees           (L-2 DB-backed platform fees; v25.46 foundation)
+   * Additive only: CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE. The dataroom
+   * storage pointer columns (migration 0067) are handled by applyV12AdditiveAlters. */
+  applyV2545_4Schema(db);
+}
+
+/* v25.45.4 — see call-site comment above. Idempotent + boot-safe. */
+function applyV2545_4Schema(db: any) {
+  const stmts: string[] = [
+    `CREATE TABLE IF NOT EXISTS profile_wizard_state (
+       company_id  TEXT NOT NULL,
+       user_id     TEXT NOT NULL,
+       state_json  TEXT NOT NULL DEFAULT '{}',
+       updated_at  TEXT NOT NULL,
+       PRIMARY KEY (company_id, user_id)
+     )`,
+    `CREATE TABLE IF NOT EXISTS collective_pitch_decks (
+       id                  TEXT PRIMARY KEY NOT NULL,
+       company_id          TEXT NOT NULL,
+       application_id      TEXT,
+       s3_key              TEXT NOT NULL,
+       kms_key_id          TEXT,
+       storage_backend     TEXT NOT NULL DEFAULT 'fs',
+       mime_type           TEXT NOT NULL,
+       size_bytes          INTEGER NOT NULL,
+       original_name       TEXT NOT NULL,
+       uploaded_by_user_id TEXT NOT NULL,
+       uploaded_at         TEXT NOT NULL
+     )`,
+    `CREATE INDEX IF NOT EXISTS idx_collective_pitch_decks_company ON collective_pitch_decks (company_id)`,
+    `CREATE TABLE IF NOT EXISTS platform_fees (
+       key                 TEXT PRIMARY KEY NOT NULL,
+       amount_minor        INTEGER NOT NULL,
+       currency            TEXT NOT NULL DEFAULT 'USD',
+       updated_at          TEXT NOT NULL,
+       updated_by_user_id  TEXT,
+       billing_period      TEXT,
+       deleted_at          TEXT
+     )`,
+    // v25.46 Track 5 — editorial press feed. Additive table (CREATE IF NOT
+    // EXISTS); read-only for non-admin, admin-CRUD at /admin/press. Soft-delete
+    // via deleted_at (never destructive). Tier 3 #29 additive-only migrations.
+    `CREATE TABLE IF NOT EXISTS press_items (
+       id                  TEXT PRIMARY KEY NOT NULL,
+       title               TEXT NOT NULL,
+       source              TEXT NOT NULL,
+       url                 TEXT NOT NULL,
+       published_at        TEXT,
+       editorial_note      TEXT,
+       created_at          TEXT NOT NULL,
+       updated_at          TEXT,
+       created_by_user_id  TEXT,
+       deleted_at          TEXT
+     )`,
+    `CREATE INDEX IF NOT EXISTS idx_press_items_published ON press_items (published_at)`,
+  ];
+  const tx = db.transaction(() => {
+    for (const sql of stmts) db.exec(sql);
+    // Seed the single v25.45.4 platform-fee row (matches the $2,500 hardcode;
+    // platform_fees stores TRUE minor units → 250000 cents == $2,500.00).
+    db.prepare(
+      `INSERT OR IGNORE INTO platform_fees (key, amount_minor, currency, updated_at, updated_by_user_id)
+         VALUES ('collective_application_fee', 250000, 'USD', '2026-06-27T00:00:00.000Z', 'system:seed')`,
+    ).run();
+    // v25.46.1 — Multi-section fee admin seeds (APD-018). Additive only; mirrors
+    // migration 0068_v25_46_1_consortium_fees.sql so the dual bootstrap+migration
+    // path keeps these rows present on a fresh boot / test DB. INSERT OR IGNORE so
+    // admin edits are never clobbered on restart (DB remains canonical). These are
+    // SEPARATE/PARALLEL to the Capavate founder/investor subscription flow
+    // (Sacred Rule 76) — they live only in platform_fees and never touch
+    // capavate_subscriptions / pricing tiers / paymentGatewayAdapter.
+    //
+    //   Section: Collective → Cap Table Investor Membership Subscription (recurring)
+    //     collective.member_subscription.basic       $99/mo
+    //     collective.member_subscription.pro         $249/mo
+    //     collective.member_subscription.enterprise  $999/mo
+    //   Section: Consortium Partners → Partner Subscription Tiers (recurring)
+    //     consortium.subscription.partner_basic       $499/mo
+    //     consortium.subscription.partner_pro         $999/mo
+    //     consortium.subscription.partner_enterprise  $2,499/mo
+    //   Section: Consortium Partners → SPV Deployment flat fee (one-time)
+    //     consortium.spv_deployment_fee               $5,000
+    //
+    // billing_period: 'monthly' for the recurring subscription tiers; NULL for the
+    // one-time SPV flat fee (treated as one-time at the resolver/UI layer).
+    const v25461SubTierSeed = db.prepare(
+      `INSERT OR IGNORE INTO platform_fees
+         (key, amount_minor, currency, updated_at, updated_by_user_id, billing_period, deleted_at)
+         VALUES (?, ?, 'USD', '2026-06-28T00:00:00.000Z', 'system:seed', 'monthly', NULL)`,
+    );
+    v25461SubTierSeed.run('collective.member_subscription.basic', 9900);
+    v25461SubTierSeed.run('collective.member_subscription.pro', 24900);
+    v25461SubTierSeed.run('collective.member_subscription.enterprise', 99900);
+    v25461SubTierSeed.run('consortium.subscription.partner_basic', 49900);
+    v25461SubTierSeed.run('consortium.subscription.partner_pro', 99900);
+    v25461SubTierSeed.run('consortium.subscription.partner_enterprise', 249900);
+    db.prepare(
+      `INSERT OR IGNORE INTO platform_fees
+         (key, amount_minor, currency, updated_at, updated_by_user_id, billing_period, deleted_at)
+         VALUES ('consortium.spv_deployment_fee', 500000, 'USD', '2026-06-28T00:00:00.000Z', 'system:seed', NULL, NULL)`,
+    ).run();
+  });
+  tx();
 }
 
 
@@ -700,6 +809,10 @@ function applyV12AdditiveAlters(db: any) {
     ["dataroom_files", "ALTER TABLE dataroom_files ADD COLUMN sha256 TEXT NOT NULL DEFAULT ''"],
     ["dataroom_files", "ALTER TABLE dataroom_files ADD COLUMN watermark INTEGER NOT NULL DEFAULT 0"],
     ["dataroom_files", "ALTER TABLE dataroom_files ADD COLUMN deleted_at TEXT"],
+    // ---- v25.45.4 M-5/M-6: durable dataroom storage pointers (migration 0067) ----
+    ["dataroom_files", "ALTER TABLE dataroom_files ADD COLUMN storage_key TEXT"],
+    ["dataroom_files", "ALTER TABLE dataroom_files ADD COLUMN storage_kms_key_id TEXT"],
+    ["dataroom_files", "ALTER TABLE dataroom_files ADD COLUMN storage_backend TEXT"],
     // ---- Patch v12 Day 2 Wave 2: contacts.tenant_id ----
     ["contacts", "ALTER TABLE contacts ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_platform'"],
     ["contacts", "ALTER TABLE contacts ADD COLUMN deleted_at TEXT"],

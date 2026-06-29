@@ -55,6 +55,25 @@ interface ConfigRow {
 export function getApplicationFeeMinor(
   currency: string = DEFAULT_APPLICATION_FEE_CURRENCY,
 ): ResolvedApplicationFee {
+  // ---------------------------------------------------------------------------
+  // SOURCE PRECEDENCE (v25.45.4 L-2 — FINAL):
+  //   1. `collective_application_fee_config` (the ACTIVE admin editor at
+  //      /admin/application-fee, wired since v25.39). When its row exists it is
+  //      AUTHORITATIVE — this is what an admin edits today, so it must win.
+  //   2. Hardcoded historical seed default (2500) with source='default' — the
+  //      documented v25.38/v25.39 contract: when the config row is genuinely
+  //      MISSING the resolver reports source='default' (and the endpoint still
+  //      returns a clean 200). This MUST be preserved.
+  //
+  // L-2 BRIDGE (no resolver change to the source-precedence above): the new
+  // /admin/platform-fees PUT path MIRROR-WRITES the collective_application_fee
+  // value (cents ÷ 100) into `collective_application_fee_config` via
+  // updateApplicationFee(). This way an admin edit through the new Platform Fees
+  // panel flows to the founder Billing surface THROUGH the existing
+  // config-table resolver (source='db'), WITHOUT inserting platform_fees as a
+  // silent fallback here — which would have broken the documented source='default'
+  // contract when the config row is absent. See server/adminPlatformFeesRoutes.ts.
+  // ---------------------------------------------------------------------------
   try {
     const row = rawDb()
       .prepare(
@@ -69,9 +88,9 @@ export function getApplicationFeeMinor(
       };
     }
   } catch {
-    // Fall through to the seed default — never block the application UI on a
-    // transient DB / missing-table condition. The dual bootstrap+migration
-    // path guarantees the table normally exists.
+    // Fall through — never block the application UI on a transient DB / missing-
+    // table condition. The dual bootstrap+migration path guarantees the table
+    // normally exists.
   }
   return {
     amountMinor: DEFAULT_APPLICATION_FEE_MINOR,

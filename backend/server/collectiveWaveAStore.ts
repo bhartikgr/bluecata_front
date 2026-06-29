@@ -495,6 +495,69 @@ export function getNetworkPosts(
   return { posts, nextCursor };
 }
 
+/* ------------------------------------------------------------------
+ * v25.46 Track 2 — single-post read + self-moderation soft-delete.
+ * Both read/write the SAME network_posts table the feed reads; the
+ * delete is SOFT (deleted_at) per Tier 3 #28/#29 (never destructive).
+ * ------------------------------------------------------------------ */
+export interface NetworkPostLite {
+  id: string;
+  authorUserId: string;
+  body: string;
+  createdAt: string;
+  deletedAt: string | null;
+}
+
+/** Fetch a single network post by id (including already-deleted rows so the
+ *  route can return 404 vs 403 deterministically). Returns null if absent. */
+export function getNetworkPostById(id: string): NetworkPostLite | null {
+  if (typeof id !== "string" || id.trim().length === 0) return null;
+  try {
+    const row = rawDb()
+      .prepare(
+        `SELECT id, author_user_id, body, created_at, deleted_at
+           FROM network_posts WHERE id = ? LIMIT 1`,
+      )
+      .get(id.trim()) as
+      | { id: string; author_user_id: string; body: string; created_at: string; deleted_at: string | null }
+      | undefined;
+    if (!row || row.deleted_at) return null;
+    return {
+      id: row.id,
+      authorUserId: row.author_user_id,
+      body: row.body,
+      createdAt: row.created_at,
+      deletedAt: row.deleted_at ?? null,
+    };
+  } catch (err) {
+    log.warn("[waveA.posts] getNetworkPostById failed:", (err as Error).message);
+    return null;
+  }
+}
+
+/** Soft-delete a network post (self-moderation). Marks deleted_at; never drops
+ *  the row. Returns true if a live row was marked deleted. */
+export function softDeleteNetworkPost(id: string, actorUserId: string): boolean {
+  if (typeof id !== "string" || id.trim().length === 0) return false;
+  try {
+    const now = new Date().toISOString();
+    const info = rawDb()
+      .prepare(
+        `UPDATE network_posts SET deleted_at = ?
+           WHERE id = ? AND deleted_at IS NULL`,
+      )
+      .run(now, id.trim());
+    if (info?.changes && info.changes > 0) {
+      log.info(`[waveA.posts] soft-deleted ${id} by ${actorUserId}`);
+      return true;
+    }
+    return false;
+  } catch (err) {
+    log.warn("[waveA.posts] softDeleteNetworkPost failed:", (err as Error).message);
+    return false;
+  }
+}
+
 /* ============================================================
  * SURFACE 6 — Connections extended (mutualDeals + sharedSoftCircles)
  * ============================================================ */

@@ -16,6 +16,17 @@
  */
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
+import { AppCard } from "@/components/ui/app-card";
+import { PageHeader } from "@/components/ui/page-header";
+
+/* v25.46 Track 6 — LookFeel-Parity. Per the 2026-06-28 parity audit, this
+ * public Consortium application page diverged from canonical Capavate chrome:
+ * centered naked form column, borderless inputs, and a navy full-width submit.
+ * It is now wrapped in the canonical PageHeader (left-aligned title/subtitle)
+ * + AppCard, its fields use the canonical FormField styling (visible #ddd9d3
+ * border + red focus ring), and the primary submit is the canonical red pill.
+ * ALL form state, the submit handler, success/error branches, and every
+ * data-testid are preserved verbatim (wrapper pattern — no behavior dropped). */
 
 type PartnerType =
   | "vc"
@@ -164,14 +175,12 @@ export default function ConsortiumApplyPage() {
 
   return (
     <div style={{ maxWidth: 720, margin: "40px auto", padding: 24 }}>
-      <h1 style={{ fontSize: 28, fontWeight: 600 }}>
-        Apply to join the Capavate Consortium
-      </h1>
-      <p style={{ marginTop: 8, color: "#555" }}>
-        Partners get access to the Capavate Collective Deal Room, syndication
-        tooling, and chapter membership. All applications are reviewed.
-      </p>
-      <form onSubmit={onSubmit} style={{ marginTop: 24, display: "grid", gap: 12 }}>
+      <PageHeader
+        title="Apply to join the Capavate Consortium"
+        subtitle="Partners get access to the Capavate Collective Deal Room, syndication tooling, and chapter membership. All applications are reviewed."
+      />
+      <AppCard>
+      <form onSubmit={onSubmit} style={{ display: "grid", gap: 12 }}>
         <Field label="Organization name" required>
           <input
             value={organizationName}
@@ -307,44 +316,45 @@ export default function ConsortiumApplyPage() {
         )}
         {/* Wave E Fix E3 — was raw <button disabled> with no design-system styling.
             Now uses <Button> which has consistent disabled:opacity-50 disabled:cursor-not-allowed. */}
+        {/* v25.46 Track 6 — canonical RED primary pill (per audit: red =
+            primary workspace action; navy = secondary). The prior navy
+            full-width inline style is removed; <Button> default variant is the
+            #cc0001 pill. Behavior (disabled while submitting) is unchanged. */}
         <Button
           type="submit"
           disabled={submitting}
           title={submitting ? "Submitting your application—please wait" : undefined}
           aria-label={submitting ? "Submitting application" : "Submit application"}
           className="mt-2"
-          style={{
-            background: "#1f2a44",
-            color: "white",
-          }}
           data-testid="button-consortium-apply-submit"
         >
           {submitting ? "Submitting…" : "Submit application"}
         </Button>
       </form>
+      </AppCard>
     </div>
   );
 }
 
+/* v25.46 Track 6 — canonical FormField. Label above, then a `cv-field__input`
+ * wrapper that styles ANY native <input>/<select>/<textarea> child with the
+ * canonical white surface, visible #ddd9d3 border, 8px radius, and red focus
+ * ring (the `[&_*]:` arbitrary selectors apply the cv-field input token styles
+ * to the field's controls without rewriting each call site). */
 function Field(props: {
   label: string;
   required?: boolean;
   children: React.ReactNode;
 }) {
   return (
-    <label style={{ display: "block" }}>
-      <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 4 }}>
+    <label className="cv-field" style={{ display: "block" }}>
+      <div className="cv-field__label" style={{ marginBottom: 4 }}>
         {props.label}
-        {props.required && <span style={{ color: "#c00" }}> *</span>}
+        {props.required && (
+          <span style={{ color: "var(--cv-color-primary)" }}> *</span>
+        )}
       </div>
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-        }}
-      >
-        {props.children}
-      </div>
+      <div className="cv-field-controls flex flex-col">{props.children}</div>
     </label>
   );
 }

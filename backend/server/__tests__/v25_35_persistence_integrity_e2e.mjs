@@ -95,7 +95,13 @@ function seedBillingRow(userId, chapterId, tier) {
 }
 
 /** v25.35 fix-2 — minimal FounderCompanyMembership so the founder ownership
- * gate on POST /api/founder/collective/applications passes for a seeded user. */
+ * gate on POST /api/founder/collective/applications passes for a seeded user.
+ *
+ * v25.45.4 L-3 (Ozan decision b) — Collective apply now requires the company
+ * to have an active or live funding round. We seed one here so this v25.35
+ * persistence-integrity sweep exercises the post-gate paths (founder duplicate
+ * 409, admin reject fail-closed, etc.) instead of being short-circuited by
+ * the new NO_ACTIVE_ROUND gate. The gate itself is covered by v25_45_4_regression. */
 function seedFounderCompany(founderId, companyId) {
   addCompanyForFounder(founderId, {
     companyId,
@@ -111,6 +117,19 @@ function seedFounderCompany(founderId, companyId) {
     stage: "Seed",
     hq: "SF",
   });
+  /* v25.45.4 L-3 active-round seed (additive, idempotent via INSERT OR IGNORE) */
+  try {
+    rawDb()
+      .prepare(
+        `INSERT OR IGNORE INTO rounds
+           (id, company_id, name, type, state, target_amount, raised_amount, created_at, updated_at)
+         VALUES (?, ?, ?, 'priced', 'active', 1000000, 0, datetime('now'), datetime('now'))`
+      )
+      .run(`rnd_v2535_${companyId}`, companyId, `Seed Round ${companyId}`);
+  } catch {
+    /* silent: if rawDb or rounds table is unavailable, the L-3 gate will
+       short-circuit and the test will still report a clear failure */
+  }
 }
 
 const FOUNDER_APP_BODY = {

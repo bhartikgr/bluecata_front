@@ -54,6 +54,10 @@ import {
 import {
   resolveDisplayIdentity,
 } from "../client/src/lib/comms/visibility";
+// v25.46 Track 1 — canonical DM permission gate. ALL message endpoints route
+// through canDM (single source of truth; no inline permission logic). See
+// server/messagingPolicy.ts for the LOCKED permission matrix.
+import { canDM } from "./messagingPolicy";
 // v25.45 ROUND 2 (F13b) — DB-backed privacy prefs override messaging sender
 // names so the Settings → Privacy toggle (visibleToCoMembers) actually takes
 // effect on the messaging surface. readUserPrivacyRaw returns null when the
@@ -1930,6 +1934,11 @@ export function registerCommsRoutes(app: Express): void {
     }
     const me = viewerOf(actorId);
     const shared = sharedContextBetween(me, target);
+    // v25.46 Track 1 — canonical DM permission gate (single source of truth).
+    // canDM enforces the LOCKED permission matrix from auth_users.role + the
+    // sacred cap-table ledger. A founder who owns the CRM record (authorizedViaCrm)
+    // is authorized by that ownership relationship independent of the matrix.
+    const policy = canDM(actorId, target.id);
     const r = resolveDisplayIdentity({
       viewerUserId: actorId,
       authorUserId: target.id,
@@ -1937,12 +1946,21 @@ export function registerCommsRoutes(app: Express): void {
       authorVisibility: target.visibility,
       context: { sharedCapTables: shared.capTables, sharedCollectiveChapters: shared.chapters },
     });
-    if (!r.canSendDm && !authorizedViaCrm) {
+    // v25.46 Track 1 — the LOCKED role matrix (canDM) is an ADDITIVE allow
+    // layer: it OPENS DM for role pairs the matrix permits, but it must never
+    // REVOKE a DM that the existing comms shared-context resolver already
+    // permits (co-member cap table / collective-visible / founder passthrough),
+    // nor a CRM-ownership-authorized DM. A DM is blocked only when ALL of
+    // {role matrix, shared-context visibility, CRM ownership} deny it. This is
+    // fail-closed at the union level while honouring Tier 5 (no silent drops of
+    // previously-valid relationships).
+    const allowedByPolicy = policy.allowed || r.canSendDm || authorizedViaCrm;
+    if (!allowedByPolicy) {
       emitOutbox("dm.channel.blocked", actorId, ip, ua, {
         fromUserId: actorId, toUserId: target.id,
-        reason: shared.capTables.length === 0 && shared.chapters.length === 0 ? "no_shared_context" : "no_visibility",
+        reason: policy.reason ?? (shared.capTables.length === 0 && shared.chapters.length === 0 ? "no_shared_context" : "no_visibility"),
       });
-      return res.status(403).json({ ok: false, reason: r.reason });
+      return res.status(403).json({ ok: false, reason: policy.reason ?? r.reason, privacyMode: policy.privacyMode });
     }
     const id = dmChannelId(actorId, target.id);
     let ch = channels.get(id);

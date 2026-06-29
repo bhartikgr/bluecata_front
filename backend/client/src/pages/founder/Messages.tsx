@@ -11,6 +11,7 @@ import { useMemo, useState, useEffect } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useLocation, useSearch } from "wouter";
 import { MessagesPage } from "@/components/comms/MessagesPage";
+import { PageHeader } from "@/components/AppShell";
 import { useToast } from "@/hooks/use-toast";
 import { CommsTiersTabs } from "@/components/comms/CommsTiersTabs";
 import { Card, CardContent } from "@/components/ui/card";
@@ -104,6 +105,16 @@ export default function Messages() {
 
   return (
     <div data-testid="founder-messages">
+      {/* v25.45.4 C-5 (LIVE-20) — render the page title + breadcrumb ABOVE the
+          sticky cross-surface jump toolbar (was rendering below it via the inner
+          MessagesPage header, a visual inversion). The inner MessagesPage header
+          is suppressed via hideHeader so the title appears exactly once, on top. */}
+      <PageHeader
+        title="Messages"
+        description="Direct messages, cap-table channels, and soft-circle channels — all in one place."
+        breadcrumbs={[{ href: "/founder/dashboard", label: "Workspace" }, { label: "Messages" }]}
+      />
+
       {/* Unified-link context strip — Sprint 11 D8 */}
       <Card className="mb-3 border-[hsl(0_100%_40%)]/30">
         <CardContent className="p-3">
@@ -291,7 +302,7 @@ export default function Messages() {
 
       {/* Patch v4: only render tiers when we have a real session id. */}
       {meQ?.data?.id ? <CommsTiersTabs userId={meQ.data.id} /> : null}
-      <MessagesPage role="founder" />
+      <MessagesPage role="founder" hideHeader />
     </div>
   );
 }

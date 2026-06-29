@@ -296,6 +296,11 @@ export const dataroomFiles = sqliteTable("dataroom_files", {
   uploadedById: text("uploaded_by_id"),
   sha256: text("sha256").notNull().default(""),
   watermark: integer("watermark", { mode: "boolean" }).notNull().default(false),
+  // v25.45.4 M-5/M-6 (migration 0067) — durable object-storage pointer so the
+  // download/view route serves REAL bytes across restarts instead of a stub.
+  storageKey: text("storage_key"),
+  storageKmsKeyId: text("storage_kms_key_id"),
+  storageBackend: text("storage_backend"),
   deletedAt: text("deleted_at"),
 });
 

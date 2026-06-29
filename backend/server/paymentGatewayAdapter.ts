@@ -61,6 +61,7 @@ import {
   type CapavateSubscription,
 } from "./subscriptionStore";
 import { emitBillingEvent } from "./lib/billingEvents";
+import { resolveCanonicalPlan } from "./lib/canonicalPlanResolver"; /* v25.45.4 B-2/H-1/M-1 shared canonical plan projection */
 import { getDb, rawDb } from "./db/connection"; // v25.32 deep — webhook claim+finalize transaction (top-level import so the lazy require() is never evaluated INSIDE a better-sqlite3 transaction, which breaks the tsx TS-require hook)
 import * as pricingTiers from "./pricingTiersStore"; // v25.32 deep — static import: the plan-label lookup runs INSIDE the webhook transaction, where a first-time lazy require() of a .ts module throws "Unexpected token 'const'" under the createRequire shim. No circular dep (pricingTiersStore -> pricingModelStore only).
 
@@ -1473,29 +1474,15 @@ function projectCanonicalSubscription(companyId: string): Subscription | null {
   }
   if (!rows.length) return null;
 
-  // Most recent ACTIVE row wins; otherwise the most recently created row.
-  const byNewest = (a: CapavateSubscription, b: CapavateSubscription) =>
-    (b.activatedAt ?? b.createdAt).localeCompare(a.activatedAt ?? a.createdAt);
-  const active = rows.filter((r) => r.status === "active").sort(byNewest);
-  const chosen = active[0] ?? [...rows].sort(byNewest)[0];
-  if (!chosen) return null;
-
-  // Map tierId -> human plan label / annual amount via the configured tier.
-  let plan: Subscription["plan"] = "founder_pro";
-  try {
-    const tier = pricingTiers.getById(chosen.tierId);
-    const slug = (tier?.id ?? chosen.tierId ?? "").toLowerCase();
-    if (slug.includes("free")) plan = "founder_free";
-    else if (slug.includes("scale")) plan = "founder_scale";
-    else if (slug.includes("enter")) plan = "founder_enterprise";
-    else plan = "founder_pro";
-  } catch { /* default plan */ }
-
-  // Map canonical status -> legacy SubscriptionStatus.
-  const status: Subscription["status"] =
-    chosen.status === "active" ? "active"
-    : chosen.status === "failed" ? "past_due"
-    : "pending_payment";
+  /* v25.45.4 B-2/H-1/M-1 — delegate plan-tier + status selection to the SINGLE
+     shared canonical resolver (server/lib/canonicalPlanResolver.ts) so this
+     route and multiCompanyStore.mergeBillingFromSubscription (the badge / gate /
+     wizard-CTA projection) can never diverge again. */
+  const resolved = resolveCanonicalPlan(companyId);
+  if (!resolved) return null;
+  const chosen = resolved.chosen;
+  const plan: Subscription["plan"] = resolved.plan;
+  const status: Subscription["status"] = resolved.status;
 
   // Annualize the canonical (per-cycle) amount for the UI's annual field.
   const cycle = (chosen.billingCycle ?? "monthly").toLowerCase();

@@ -22,6 +22,9 @@ import { CheckCircle2, ArrowRight, ArrowLeft, SkipForward, Globe, MapPin, Settin
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useActiveCompany, useActiveCompanyId } from "@/lib/useActiveCompany";
+import { CountryPicker } from "@/components/profile/CountryPicker"; /* v25.45.4 M-2 — ISO country dropdown */
+import { isPaidFounderPlan } from "@/pages/founder/UpgradeToProInterstitial"; /* v25.45.4 M-1 — gate subscribe CTA for already-paid founders */
+import { TIMEZONES_IANA } from "@/lib/timezones"; /* v25.45.4 M-3 — IANA timezone dropdown */
 
 /* ============================================================
  * Supported field definitions per step
@@ -174,30 +177,30 @@ function Step2({ data, onChange }: { data: WizardData; onChange: (k: keyof Wizar
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
-        Jurisdiction data is used for compliance and Collective matching. Start with a 2-letter ISO country code (e.g., "US New York" or "DE Berlin").
+        Jurisdiction data is used for compliance and Collective matching. Select the country from the searchable list — values are stored as ISO 3166-1 alpha-2 country codes.
       </p>
-      <FieldRow label="Incorporation Jurisdiction" hint='Format: "US Delaware" or "SG"'>
-        <Input
-          data-testid="input-incorporation-jurisdiction"
-          placeholder="US Delaware"
+      <FieldRow label="Incorporation Jurisdiction" hint="Country where your company is incorporated">
+        <CountryPicker
+          testId="input-incorporation-jurisdiction"
+          placeholder="Select incorporation country…"
           value={data.incorporationJurisdiction}
-          onChange={e => onChange("incorporationJurisdiction", e.target.value)}
+          onChange={code => onChange("incorporationJurisdiction", code)}
         />
       </FieldRow>
-      <FieldRow label="Secondary Jurisdiction" hint="Optional — if you operate or are registered in a second jurisdiction">
-        <Input
-          data-testid="input-secondary-jurisdiction"
-          placeholder="GB London"
+      <FieldRow label="Secondary Jurisdiction" hint="Optional — if you operate or are registered in a second country">
+        <CountryPicker
+          testId="input-secondary-jurisdiction"
+          placeholder="Select secondary country…"
           value={data.secondaryJurisdiction}
-          onChange={e => onChange("secondaryJurisdiction", e.target.value)}
+          onChange={code => onChange("secondaryJurisdiction", code)}
         />
       </FieldRow>
-      <FieldRow label="Tax Residency Jurisdiction" hint='Country where your company files taxes'>
-        <Input
-          data-testid="input-tax-residency-jurisdiction"
-          placeholder="US"
+      <FieldRow label="Tax Residency Jurisdiction" hint="Country where your company files taxes">
+        <CountryPicker
+          testId="input-tax-residency-jurisdiction"
+          placeholder="Select tax residency country…"
           value={data.taxResidencyJurisdiction}
-          onChange={e => onChange("taxResidencyJurisdiction", e.target.value)}
+          onChange={code => onChange("taxResidencyJurisdiction", code)}
         />
       </FieldRow>
     </div>
@@ -260,13 +263,17 @@ function Step3({ data, onChange }: { data: WizardData; onChange: (k: keyof Wizar
           </Select>
         </FieldRow>
       </div>
-      <FieldRow label="Timezone (IANA)" hint='e.g., "America/New_York" or "Europe/London"'>
-        <Input
-          data-testid="input-preferred-timezone"
-          placeholder="America/New_York"
-          value={data.preferredTimezone}
-          onChange={e => onChange("preferredTimezone", e.target.value)}
-        />
+      <FieldRow label="Timezone (IANA)" hint="Used for scheduled reports, due dates, and activity timestamps">
+        <Select value={data.preferredTimezone} onValueChange={v => onChange("preferredTimezone", v)}>
+          <SelectTrigger data-testid="input-preferred-timezone">
+            <SelectValue placeholder="Select timezone…" />
+          </SelectTrigger>
+          <SelectContent>
+            {TIMEZONES_IANA.map(tz => (
+              <SelectItem key={tz.value} value={tz.value}>{tz.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </FieldRow>
       <FieldRow label="Preferred Meeting Times" hint='e.g., "Mon-Fri 09:00-17:00 EDT"'>
         <Input
@@ -360,6 +367,14 @@ export default function FounderProfileWizard() {
   const { toast } = useToast();
   // Patch v4: useActiveCompanyId now returns "" when no active company; no demo fallback.
   const companyId = useActiveCompanyId();
+  // v25.45.4 M-1 (LIVE-4) — the wizard funneled an ALREADY-PAID founder_pro
+  // founder to /founder/subscribe. The canonical plan now projects onto
+  // activeCompany.billing.plan (B-2/H-1/M-1 server fix). When the active
+  // company is already on a paid plan we send the founder to the dashboard
+  // (profile complete, nothing left to subscribe to) and relabel the CTA.
+  const activeCompanyQ = useActiveCompany();
+  const isPaid = isPaidFounderPlan(activeCompanyQ.data?.company?.billing?.plan ?? null);
+  const postWizardDest = isPaid ? "/founder/dashboard" : "/founder/subscribe";
 
   const [step, setStep] = useState(0);
   const [data, setData] = useState<WizardData>(INITIAL_DATA);
@@ -401,6 +416,58 @@ export default function FounderProfileWizard() {
     }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profileQ.data]);
+
+  /* v25.45.4 M-4 — durable wizard-state draft. The wizard previously kept all
+   * step values in React state only, so values typed on Step 2/3 were lost by
+   * the time you reached Step 4 Confirm (and across a page reload / server
+   * restart). We now persist the full `data` blob to a DB-backed wizard-state
+   * row on every step Next, and hydrate it on mount. The wizard-state draft is
+   * applied AFTER the profile prefill so an in-progress draft wins over the
+   * last-saved profile values — enabling a true Save -> Restart -> Load
+   * round-trip. We only overlay non-empty keys so a sparse draft never blanks
+   * a profile-prefilled field. */
+  const wizardStateQ = useQuery({
+    queryKey: ["/api/founder/profile/wizard-state", companyId],
+    queryFn: async () =>
+      (await apiRequest("GET", `/api/founder/profile/wizard-state?companyId=${companyId}`)).json(),
+    enabled: !!companyId,
+  });
+  const [draftHydrated, setDraftHydrated] = useState(false);
+
+  useEffect(() => {
+    if (draftHydrated) return;
+    const res = wizardStateQ.data as any;
+    if (!res) return;
+    const saved = (res?.state ?? {}) as Partial<WizardData>;
+    setData(prev => {
+      const next = { ...prev };
+      (Object.keys(prev) as (keyof WizardData)[]).forEach(k => {
+        const v = saved[k];
+        if (typeof v === "string" && v.trim() !== "") {
+          (next[k] as string) = v;
+        }
+      });
+      return next;
+    });
+    setDraftHydrated(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wizardStateQ.data]);
+
+  /* Persist the full wizard payload to the durable draft row. Best-effort:
+   * a draft-save failure must never block wizard navigation. */
+  async function persistWizardDraft(snapshot: WizardData) {
+    if (!companyId) return;
+    try {
+      await fetch(`/api/founder/profile/wizard-state?companyId=${companyId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ state: snapshot }),
+        credentials: "include",
+      });
+    } catch {
+      /* non-blocking */
+    }
+  }
 
   function onChange(key: keyof WizardData, value: string) {
     setData(prev => ({ ...prev, [key]: value }));
@@ -496,13 +563,16 @@ export default function FounderProfileWizard() {
   async function handleNext() {
     if (step < 2) {
       await saveCurrentStep();
+      await persistWizardDraft(data); /* v25.45.4 M-4 — durable draft */
       setStep(s => s + 1);
     } else if (step === 2) {
       await saveCurrentStep();
+      await persistWizardDraft(data); /* v25.45.4 M-4 — durable draft */
       setStep(3);
     } else {
       // Step 4 — final save all and redirect
-      navigate("/founder/subscribe");
+      await persistWizardDraft(data); /* v25.45.4 M-4 — durable draft */
+      navigate(postWizardDest); /* v25.45.4 M-1 — paid founders go to dashboard, not subscribe */
     }
   }
 
@@ -511,7 +581,7 @@ export default function FounderProfileWizard() {
   }
 
   function handleCompleteLater() {
-    navigate("/founder/subscribe");
+    navigate(postWizardDest); /* v25.45.4 M-1 — paid founders go to dashboard, not subscribe */
   }
 
   const stepProgress = ((step + 1) / STEP_LABELS.length) * 100;
@@ -591,7 +661,7 @@ export default function FounderProfileWizard() {
                 disabled={saving}
                 data-testid="button-wizard-next"
               >
-                {saving ? "Saving…" : step === STEP_LABELS.length - 1 ? "Go to Subscribe" : "Next"}
+                {saving ? "Saving…" : step === STEP_LABELS.length - 1 ? (isPaid ? "Finish — Go to Dashboard" : "Go to Subscribe") : "Next"}
                 {step < STEP_LABELS.length - 1 && <ArrowRight className="h-4 w-4 ml-1" />}
               </Button>
             </div>

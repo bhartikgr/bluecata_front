@@ -209,6 +209,8 @@ const adminNav: NavGroup[] = [
       { href: "/admin/collective/settings", label: "Collective Settings", icon: Settings },
       /* v25.39 — DB-driven founder application-fee editor. */
       { href: "/admin/application-fee", label: "Application Fee", icon: DollarSign },
+      /* v25.45.4 L-2 — DB-driven Platform Fees admin (foundation for v25.46). */
+      { href: "/admin/platform-fees", label: "Platform Fees", icon: DollarSign },
       /* v25.34 Collective Payment Model — admin surfaces for the Collective fee
          catalogue and Collective P&L (DB-driven via /api/admin/collective-payments/*). */
       { href: "/admin/collective-payment-schedules", label: "Collective Payment Schedules", icon: DollarSign },
@@ -388,6 +390,89 @@ function FounderCompanySwitcherSlot() {
   return <CompanySwitcher />;
 }
 
+/**
+ * v25.45.4 H-2 — Global search. Replaces the previously DEAD header input (no
+ * state, no onSubmit) with a controlled box wired to GET /api/founder/search.
+ * Founder-scoped (the endpoint scopes to owned companies); shows a results
+ * dropdown with rounds / contacts / files, an empty-state when nothing matches,
+ * and navigates to the hit's href on click. Debounced; min 2 chars.
+ */
+function GlobalSearch() {
+  const [, navigate] = useLocation();
+  const [q, setQ] = useState("");
+  const [debounced, setDebounced] = useState("");
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(q.trim()), 250);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  const enabled = debounced.length >= 2;
+  const searchQ = useQuery<{ ok: boolean; results: Array<{ kind: string; id: string; title: string; subtitle: string; href: string }> }>({
+    queryKey: ["/api/founder/search", debounced],
+    queryFn: async () => (await apiRequest("GET", `/api/founder/search?q=${encodeURIComponent(debounced)}`)).json(),
+    enabled,
+  });
+  const results = enabled ? (searchQ.data?.results ?? []) : [];
+
+  return (
+    <div className="relative hidden md:flex max-w-xs flex-1" data-testid="global-search">
+      <div className="flex items-center gap-2 text-white/80 text-xs px-3 py-1.5 rounded-md bg-white/5 border border-white/10 w-full">
+        <Search className="h-3.5 w-3.5" />
+        <input
+          placeholder="Search rounds, investors, files…"
+          className="bg-transparent outline-none flex-1 placeholder:text-white/40 text-white"
+          data-testid="input-search"
+          value={q}
+          onChange={(e) => { setQ(e.target.value); setOpen(true); }}
+          onFocus={() => setOpen(true)}
+          onBlur={() => setTimeout(() => setOpen(false), 150)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && results.length > 0) {
+              navigate(results[0].href);
+              setOpen(false);
+            } else if (e.key === "Escape") {
+              setOpen(false);
+            }
+          }}
+        />
+        <span className="text-[10px] opacity-50 px-1 rounded border border-white/15">⌘K</span>
+      </div>
+      {open && enabled && (
+        <div
+          className="absolute top-full left-0 mt-1 w-80 max-h-96 overflow-auto rounded-md border border-border bg-popover text-popover-foreground shadow-lg z-50"
+          data-testid="search-results"
+        >
+          {searchQ.isPending ? (
+            <div className="px-3 py-3 text-xs text-muted-foreground">Searching…</div>
+          ) : results.length === 0 ? (
+            <div className="px-3 py-3 text-xs text-muted-foreground" data-testid="search-empty">
+              No matches for “{debounced}”.
+            </div>
+          ) : (
+            <ul className="py-1">
+              {results.map((r) => (
+                <li key={`${r.kind}-${r.id}`}>
+                  <button
+                    type="button"
+                    className="w-full text-left px-3 py-2 hover:bg-muted flex flex-col"
+                    data-testid={`search-hit-${r.kind}-${r.id}`}
+                    onMouseDown={(e) => { e.preventDefault(); navigate(r.href); setOpen(false); }}
+                  >
+                    <span className="text-sm font-medium truncate">{r.title}</span>
+                    <span className="text-xs text-muted-foreground truncate">{r.kind} · {r.subtitle}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Header({ onMobileMenu }: { onMobileMenu: () => void }) {
   // Sprint 11: light-only — theme toggle removed.
   const [, navigate] = useLocation();
@@ -410,15 +495,8 @@ function Header({ onMobileMenu }: { onMobileMenu: () => void }) {
 
       <div className="flex-1" />
 
-      <div className="hidden md:flex items-center gap-2 text-white/80 text-xs px-3 py-1.5 rounded-md bg-white/5 border border-white/10 max-w-xs flex-1">
-        <Search className="h-3.5 w-3.5" />
-        <input
-          placeholder="Search rounds, investors, files…"
-          className="bg-transparent outline-none flex-1 placeholder:text-white/40 text-white"
-          data-testid="input-search"
-        />
-        <span className="text-[10px] opacity-50 px-1 rounded border border-white/15">⌘K</span>
-      </div>
+      {/* v25.45.4 H-2 — wired global search (was a dead input) */}
+      <GlobalSearch />
 
       <FounderCompanySwitcherSlot />
       <CapCollectiveToggle />

@@ -12,7 +12,7 @@ import { CAPAVATE_LOGO_URL } from "@/components/CapavateLogo";
 import {
  Download, Plus, PieChart as PieIcon, Layers, TrendingUp, Cpu, Info,
  FileText as FileIcon, Printer, Shield, Calendar, ChevronDown, ChevronRight,
- FileSpreadsheet, Calculator, Send as SendIcon, X as XIcon,
+ FileSpreadsheet, Send as SendIcon, X as XIcon,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
@@ -21,12 +21,10 @@ import { fmtNum, fmtUSD, fmtPct, fmtDate } from "@/lib/format";
 import { useToast } from "@/hooks/use-toast";
 import { runEngine, type ApiSecurity } from "@/lib/engineDemo";
 import type { View, Region } from "@capavate/cap-table-engine";
-import {
-  applyBroadBasedWeightedAverage,
-  applyFullRatchet,
-  decimalToShares,
-  D as DecimalFromString,
-} from "@capavate/cap-table-engine";
+/* v25.45.4 3c (APD-013) — Anti-Dilution UI control removed from /founder/captable.
+   The anti-dilution math (applyBroadBasedWeightedAverage / applyFullRatchet /
+   decimalToShares / Decimal) lives in the sacred cap-table engine and is NOT
+   touched; only the unused/misplaced UI simulator + its engine imports are gone. */
 import { GlossaryLink } from "@/components/Glossary";
 import { HelpTip } from "@/components/HelpTip";
 import { currencySymbol } from "@/lib/currency";
@@ -40,7 +38,8 @@ import { useQuery as _useQuery } from "@tanstack/react-query";
 import { resolveCoMemberLabel } from "@/lib/privacy/visibility";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { MemberValueIntelligenceBox } from "@/components/MemberValueIntelligenceBox";
-import { useEntitlement, evaluate } from "@/lib/entitlement";
+/* v25.45.4 3c (APD-013) — useEntitlement/evaluate import removed; they were only
+   used to gate the now-removed Anti-Dilution control. */
 
 const INSTRUMENT_COLORS: Record<string, string> = {
  common: "hsl(219 45% 30%)",
@@ -100,11 +99,9 @@ export default function CapTable() {
  }, [profileQ.data?.legal.region]);
  const [asOf, setAsOf] = useState<string>(new Date().toISOString().slice(0, 10));
  const [groupView, setGroupView] = useState(true);
- const [showAntiDil, setShowAntiDil] = useState(false);
  const [showAddSecurity, setShowAddSecurity] = useState(false);
- // Defect F1 — anti-dilution modeling is gated on founder.ofActiveCompany.
- const { data: entitlementCtx } = useEntitlement();
- const canAccessAntiDil = evaluate("founder.ofActiveCompany", entitlementCtx ?? null);
+ /* v25.45.4 3c (APD-013) — Anti-Dilution control removed (showAntiDil state +
+    canAccessAntiDil entitlement gate deleted). Cap-table page is informative only. */
  const [showBulkMsg, setShowBulkMsg] = useState(false);
  const [showDrillId, setShowDrillId] = useState<string | null>(null);
  const { toast } = useToast();
@@ -287,11 +284,8 @@ export default function CapTable() {
  <Button variant="outline" onClick={exportCSV} data-testid="button-export-csv"><Download className="h-4 w-4 mr-2" /> CSV</Button>
  <Button variant="outline" onClick={exportPDFSnapshot} data-testid="button-export-pdf"><FileIcon className="h-4 w-4 mr-2" /> PDF snapshot</Button>
  <Button variant="outline" onClick={exportXLSX} data-testid="button-export-xlsx"><FileSpreadsheet className="h-4 w-4 mr-2" /> Excel</Button>
- {/* v25.19 Lane 3 NH1 (hard close) — the pre-v25.19 gate was `(canAccessAntiDil.allow || true)`,
-     which short-circuited the plan gate so EVERY founder (even free plan) saw
-     the anti-dilution button. Removing the `|| true` restores the entitlement
-     gate as designed. */}
- {canAccessAntiDil.allow && <Button variant="outline" onClick={() => setShowAntiDil(true)} data-testid="button-anti-dilution"><Calculator className="h-4 w-4 mr-2" /> Anti-dilution</Button>}
+ {/* v25.45.4 3c (APD-013) — Anti-Dilution button removed (unused/misplaced control;
+     cap-table page is informative only). Anti-dilution math remains in the sacred engine. */}
  <Button variant="outline" onClick={() => setShowBulkMsg(true)} data-testid="button-bulk-message"><SendIcon className="h-4 w-4 mr-2" /> Bulk message</Button>
  <Button variant="outline" onClick={exportPDFSnapshot} data-testid="button-print" className="hidden md:inline-flex"><Printer className="h-4 w-4 mr-2" /> Print</Button>
  <Button onClick={() => setShowAddSecurity(true)} className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] text-white" data-testid="button-add-security">
@@ -569,8 +563,7 @@ export default function CapTable() {
  </div>
  </PageBody>
 
- {/* Sprint 11 D3 — Anti-dilution simulator */}
- <AntiDilutionDialog open={showAntiDil} onClose={() => setShowAntiDil(false)} rows={enrichedRows} sym={sym} />
+ {/* v25.45.4 3c (APD-013) — Anti-dilution simulator dialog removed. */}
 
  {/* Sprint 11 D3 — Bulk message */}
  <BulkMessageDialog open={showBulkMsg} onClose={() => setShowBulkMsg(false)} rows={enrichedRows} toast={toast} />
@@ -596,159 +589,8 @@ export default function CapTable() {
  );
 }
 
-// Sprint 11 D3 / Sprint 25 — Anti-dilution simulator dialog.
-//
-// CRITICAL: Models a hypothetical down-round applying broad-based weighted-average
-// vs full-ratchet conversion BY CALLING THE PRODUCTION ENGINE DIRECTLY. Previously
-// this simulator re-implemented the NVCA broad-based-WA formula in float64, which
-// could diverge from the production engine's decimal.js / BigInt result by up to
-// several shares for typical Series A inputs.
-//
-// Sprint 25 rule: the simulator output MUST equal the engine output for the same
-// inputs. No alternative implementations of the formula anywhere in the codebase.
-function AntiDilutionDialog({ open, onClose, rows, sym }: { open: boolean; onClose: () => void; rows: any[]; sym: string }) {
- // Inputs are entered as Decimal-as-strings so a founder can type a full-precision
- // price like "1.234567890123" without lossy Number() truncation.
- const [newPreMoney, setNewPreMoney] = useState("8000000");
- const [newRaise, setNewRaise] = useState("2000000");
- const [newPps, setNewPps] = useState("1.00");
- // newPreMoney is informational only — the formula uses newRaise + newPps. We keep
- // the input so a founder can sanity-check their pre-money assumption.
- void newPreMoney;
-
- // Holders with anti-dilution clauses (assume preferred holders qualify).
- const protected_ = rows.filter((r: any) => r.kind === "preferred" || r.kind === "safe" || r.kind === "note");
- // Total pre-round outstanding (broad-based: include all visible rows).
- const totalSharesPreBn: bigint = rows.reduce<bigint>(
- (s: bigint, r: any) => s + BigInt(String(r.shares ?? 0)),
- 0n,
- );
-
- // Shares newly issued in the dilutive round (BigInt floor of raise / pps).
- const newSharesBn: bigint = (() => {
- try {
- const pps = DecimalFromString(newPps);
- if (pps.lte(0)) return 0n;
- return decimalToShares(DecimalFromString(newRaise).div(pps), "floor");
- } catch { return 0n; }
- })();
- const totalSharesPostBn = totalSharesPreBn + newSharesBn;
-
- // Compute dilution per holder using the real engine.
- const sims = protected_.slice(0, 8).map((r: any) => {
- const oldPpsStr = String(r.orig?.pricePerShare ?? "1.00");
- const oldSharesBn: bigint = BigInt(String(r.shares ?? 0));
- const FORMULA_STUB = { formulaId: "antiDilution.broadBased.simulator", formulaVersion: "1.0.0", region: "US" as Region, formulaDef: {} };
- // Engine call: broad-based weighted-average.
- let sharesAfterWeightedBn = oldSharesBn;
- try {
- const wa = applyBroadBasedWeightedAverage({
- originalConversionPrice: oldPpsStr,
- newIssuePrice: newPps,
- moneyRaised: newRaise,
- outstandingBroadBased: totalSharesPreBn,
- sharesIssuedInRound: newSharesBn,
- protectedShares: oldSharesBn,
- ...FORMULA_STUB,
- });
- sharesAfterWeightedBn = wa.newShares;
- } catch { /* leave as oldSharesBn on invalid input */ }
- // Engine call: full-ratchet.
- let sharesAfterRatchetBn = oldSharesBn;
- try {
- const fr = applyFullRatchet({
- originalIssuePrice: oldPpsStr,
- newIssuePrice: newPps,
- protectedShares: oldSharesBn,
- ...FORMULA_STUB,
- });
- sharesAfterRatchetBn = fr.newShares;
- } catch { /* leave as oldSharesBn */ }
-
- // Percentages computed at Decimal precision then converted to display number
- // (display-only — the binding share counts above remain BigInt).
- const pct = (numer: bigint, denom: bigint): number => {
- if (denom === 0n) return 0;
- return Number(DecimalFromString(numer.toString()).div(DecimalFromString(denom.toString())).mul(100).toFixed(6));
- };
- const ownPre = pct(oldSharesBn, totalSharesPreBn);
- const ownPostUnprot = pct(oldSharesBn, totalSharesPostBn);
- const postWeightedDenom = totalSharesPostBn - oldSharesBn + sharesAfterWeightedBn;
- const postRatchetDenom = totalSharesPostBn - oldSharesBn + sharesAfterRatchetBn;
- const ownPostWeighted = pct(sharesAfterWeightedBn, postWeightedDenom);
- const ownPostRatchet = pct(sharesAfterRatchetBn, postRatchetDenom);
- return {
- holder: r.holderName,
- oldPps: oldPpsStr,
- ownPre, ownPostUnprot, ownPostWeighted, ownPostRatchet,
- sharesAfterWeighted: sharesAfterWeightedBn.toString(),
- sharesAfterRatchet: sharesAfterRatchetBn.toString(),
- };
- });
- // Display helpers for the new-shares-issued line.
- const newSharesDisplay = newSharesBn.toString();
- const totalSharesPostDisplay = totalSharesPostBn.toString();
-
- return (
- <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
- <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
- <DialogHeader>
- <DialogTitle className="flex items-center gap-2"><Calculator className="h-4 w-4" /> Anti-dilution simulator</DialogTitle>
- </DialogHeader>
- <div className="space-y-4">
- <div className="text-xs text-muted-foreground rounded-md bg-secondary/30 p-3">
- Models a hypothetical financing event and shows how protected holders' positions move under <strong>broad-based weighted-average</strong> (NVCA standard) vs <strong>full-ratchet</strong> (founder-unfriendly).
- </div>
- <div className="grid grid-cols-3 gap-3">
- <div>
- <Label className="text-xs">New pre-money ({sym})</Label>
- {/* Sprint 25: string-typed input preserves full precision (no Number() coercion) */}
- <Input type="text" inputMode="decimal" value={newPreMoney} onChange={e => setNewPreMoney(e.target.value)} className="mt-1 font-mono" data-testid="input-pre-money" />
- </div>
- <div>
- <Label className="text-xs">New raise ({sym})</Label>
- <Input type="text" inputMode="decimal" value={newRaise} onChange={e => setNewRaise(e.target.value)} className="mt-1 font-mono" data-testid="input-new-raise" />
- </div>
- <div>
- <Label className="text-xs">New price/share ({sym})</Label>
- <Input type="text" inputMode="decimal" value={newPps} onChange={e => setNewPps(e.target.value)} className="mt-1 font-mono" data-testid="input-new-pps" />
- </div>
- </div>
- <div className="text-xs text-muted-foreground" data-testid="text-antidil-totals">
- {fmtNum(Number(newSharesDisplay))} new shares issued · post-money total: {fmtNum(Number(totalSharesPostDisplay))} shares
- </div>
-
- <div className="rounded-md border">
- <table className="w-full text-xs">
- <thead className="bg-secondary/50"><tr>
- <th className="text-left p-2">Holder</th>
- <th className="text-right p-2">Pre-round %</th>
- <th className="text-right p-2">Unprotected %</th>
- <th className="text-right p-2">Weighted-avg %</th>
- <th className="text-right p-2">Full-ratchet %</th>
- </tr></thead>
- <tbody>
- {sims.map((s, i) => (
- <tr key={i} className="border-t" data-testid={`row-antidil-${i}`}>
- <td className="p-2 font-medium">{s.holder}</td>
- <td className="p-2 text-right font-mono" title={`OCP: ${s.oldPps}`}>{s.ownPre.toFixed(2)}%</td>
- <td className="p-2 text-right font-mono text-[hsl(7_61%_43%)]">{s.ownPostUnprot.toFixed(2)}%</td>
- <td className="p-2 text-right font-mono text-[hsl(0_100%_40%)]" title={`Engine: ${s.sharesAfterWeighted} shares`}>{s.ownPostWeighted.toFixed(2)}%</td>
- <td className="p-2 text-right font-mono" title={`Engine: ${s.sharesAfterRatchet} shares`}>{s.ownPostRatchet.toFixed(2)}%</td>
- </tr>
- ))}
- {sims.length === 0 && <tr><td colSpan={5} className="p-4 text-center text-muted-foreground">No protected holders found.</td></tr>}
- </tbody>
- </table>
- </div>
- </div>
- <DialogFooter>
- <Button variant="outline" onClick={onClose}>Close</Button>
- </DialogFooter>
- </DialogContent>
- </Dialog>
- );
-}
+// v25.45.4 3c (APD-013) — Anti-dilution simulator dialog removed (unused/misplaced
+// UI control). Anti-dilution math remains in the sacred cap-table engine.
 
 // Sprint 11 D3 — Bulk message dialog. Pre-fills recipient list with all current cap-table holders.
 // Sprint 19 H — send() now calls POST /api/founder/investor-crm/broadcast and invalidates /api/comms/channels.
@@ -759,7 +601,7 @@ function BulkMessageDialog({ open, onClose, rows, toast }: { open: boolean; onCl
  const holders = Array.from(new Set(rows.map((r: any) => r.holderName))).slice(0, 50);
  // Derive investor ids: use investorUserId field or fall back to holderName slug.
  const recipientIds = Array.from(new Set(
- rows.map((r: any) => r.investorUserId ?? r.holderName.toLowerCase().replace(/\s+/g, "_"))
+ rows.map((r: any) => r.investorUserId ?? (r.holderName ?? "").toLowerCase().replace(/\s+/g, "_")) /* v25.45.4 B-1 — defensive: holderName may be undefined on production rows */
  )).slice(0, 50);
 
  async function send() {
@@ -926,7 +768,7 @@ function HoldingRow({ r, sym, idx, viewerId }: { r: any; sym: string; idx: numbe
  <TooltipTrigger asChild>
  <span className="text-[10px] inline-flex items-center px-1.5 py-0.5 rounded border border-border bg-secondary/40 cursor-help truncate max-w-[120px]" data-testid={`round-attr-${idx}`}>{round.name}</span>
  </TooltipTrigger>
- <TooltipContent className="text-xs"><div className="font-semibold">{round.name}</div><div className="text-muted-foreground capitalize">{round.type.replace(/_/g, " ")} · {fmtDate(round.closeDate ?? null)}</div></TooltipContent>
+ <TooltipContent className="text-xs"><div className="font-semibold">{round.name}</div><div className="text-muted-foreground capitalize">{(round.type ?? "").replace(/_/g, " ")} · {fmtDate(round.closeDate ?? null)}</div></TooltipContent>
  </Tooltip>
  ) : <span className="text-muted-foreground">—</span>}
  </td>

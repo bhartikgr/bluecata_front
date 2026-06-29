@@ -54,6 +54,7 @@ import {
 } from "../shared/schema";
 import { appendAdminAudit } from "./adminPlatformStore";
 import { log } from "./lib/logger";
+import { putObject, getObject } from "./lib/objectStorage"; /* v25.45.4 M-5/M-6 — durable dataroom bytes */
 
 export type Folder = {
   id: string;
@@ -78,7 +79,33 @@ export type DRFile = {
   watermark: boolean;
   // bytes kept in-memory only for preview
   _buf?: Buffer;
+  // v25.45.4 M-5/M-6 — durable object-storage pointer (S3+KMS / FS fallback) so
+  // bytes survive restarts and the download route serves the REAL file.
+  storageKey?: string | null;
+  storageKmsKeyId?: string | null;
+  storageBackend?: string | null;
 };
+
+/* v25.45.4 M-5/M-6 — a minimal, VALID single-page PDF served as a graceful
+ * fallback when a file row has neither in-memory bytes nor a durable storage
+ * key (e.g. legacy seeded rows from before object-storage was wired). This is a
+ * real application/pdf document a browser PDF viewer can render — NOT the old
+ * text/plain "Sprint 11 preview" stub that LIVE-12/LIVE-13 flagged. */
+function minimalPdf(title: string): Buffer {
+  const safe = (title || "Document").replace(/[()\\]/g, "_").slice(0, 80);
+  const text = `${safe} \u2014 preview unavailable`;
+  const body = [
+    "%PDF-1.4",
+    "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj",
+    "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj",
+    "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >> endobj",
+    `4 0 obj << /Length ${44 + text.length} >> stream\nBT /F1 18 Tf 72 700 Td (${text}) Tj ET\nendstream endobj`,
+    "5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj",
+    "trailer << /Root 1 0 R >>",
+    "%%EOF",
+  ].join("\n");
+  return Buffer.from(body, "utf8");
+}
 
 export type Permission = {
   investorId: string;
@@ -184,6 +211,10 @@ function persistFile(f: DRFile): void {
           uploadedById: f.uploadedById,
           sha256: f.sha256,
           watermark: f.watermark,
+          // v25.45.4 M-5/M-6 — persist the durable object-storage pointer.
+          storageKey: f.storageKey ?? null,
+          storageKmsKeyId: f.storageKmsKeyId ?? null,
+          storageBackend: f.storageBackend ?? null,
           deletedAt: null,
         })
         .onConflictDoNothing({ target: dataroomFilesTable.id })
@@ -380,6 +411,11 @@ export async function hydrateDataroomStore(): Promise<void> {
         uploadedById: r.uploadedById ?? "",
         sha256: r.sha256 ?? "",
         watermark: !!r.watermark,
+        // v25.45.4 M-5/M-6 — rehydrate the storage pointer so post-restart
+        // downloads stream real bytes from object storage.
+        storageKey: r.storageKey ?? null,
+        storageKmsKeyId: r.storageKmsKeyId ?? null,
+        storageBackend: r.storageBackend ?? null,
       });
     }
 
@@ -485,7 +521,7 @@ export function registerDataroomRoutes(app: Express): void {
   });
 
   // PATCH v3: upload stamps actor from session
-  app.post("/api/founder/dataroom/files", upload.single("file"), (req, res) => {
+  app.post("/api/founder/dataroom/files", upload.single("file"), async (req, res) => {
     type MulterReq = Request & { file?: { originalname: string; mimetype: string; buffer: Buffer; size: number } };
     const r = req as MulterReq;
     if (!r.file) return res.status(400).json({ error: "file required" });
@@ -510,6 +546,27 @@ export function registerDataroomRoutes(app: Express): void {
     }
     const sha = createHash("sha256").update(r.file.buffer).digest("hex").slice(0, 16);
 
+    // v25.45.4 M-5/M-6 — persist the bytes to durable object storage (S3+KMS in
+    // prod, FS fallback in dev) so the download/view route serves the REAL file
+    // and survives restarts. If storage fails we still keep the in-memory _buf
+    // so the current session works, but log it.
+    let storageKey: string | null = null;
+    let storageKmsKeyId: string | null = null;
+    let storageBackend: string | null = null;
+    try {
+      const stored = await putObject({
+        prefix: "dataroom",
+        buffer: r.file.buffer,
+        mimeType: r.file.mimetype || "application/octet-stream",
+        originalName: r.file.originalname,
+      });
+      storageKey = stored.storageKey;
+      storageKmsKeyId = stored.kmsKeyId;
+      storageBackend = stored.backend;
+    } catch (err) {
+      log.warn("[dataroomStore.upload] object storage put failed (keeping in-memory buffer):", (err as Error).message);
+    }
+
     // PATCH v3: uploadedBy comes from session identity, not hardcoded "Maya Chen"
     const f: DRFile = {
       id: `drf_${randomBytes(4).toString("hex")}`,
@@ -524,6 +581,9 @@ export function registerDataroomRoutes(app: Express): void {
       sha256: sha,
       watermark: true,
       _buf: r.file.buffer,
+      storageKey,
+      storageKmsKeyId,
+      storageBackend,
     };
     persistFile(f);
     files.push(f);
@@ -565,7 +625,7 @@ export function registerDataroomRoutes(app: Express): void {
     res.json({ ...f, _buf: undefined });
   });
 
-  app.get("/api/founder/dataroom/files/:id/download", requireAuth, (req, res) => {
+  app.get("/api/founder/dataroom/files/:id/download", requireAuth, async (req, res) => {
     const f = files.find((x) => x.id === req.params.id);
     if (!f) return res.status(404).json({ error: "not_found" });
     const gate = dataroomFileOwnerGate(req, res, f);
@@ -597,15 +657,35 @@ export function registerDataroomRoutes(app: Express): void {
        header-injection risk. */
     const safeAsciiName = (f.name || "file").replace(/[\r\n"\\]/g, "_").replace(/[^\x20-\x7e]/g, "_");
     const utf8FilenameStar = `filename*=UTF-8''${encodeURIComponent(f.name || "file")}`;
-    if (!f._buf) {
-      // synthesize a tiny placeholder so download succeeds for seeded files
-      res.setHeader("Content-Type", "text/plain");
-      res.setHeader("Content-Disposition", `${disposition}; filename="${safeAsciiName}.txt"; ${utf8FilenameStar}`);
-      return res.send(`Placeholder content for ${f.name} (Sprint 11 preview).\nsha=${f.sha256}\n`);
+
+    // v25.45.4 M-5/M-6 — serve the REAL file bytes (LIVE-12/LIVE-13 fix).
+    // Order of preference:
+    //   1. in-memory buffer (just-uploaded, this process)
+    //   2. durable object storage (S3+KMS / FS fallback) by storageKey
+    //   3. a VALID minimal PDF fallback for legacy seeded rows that have neither
+    //      (replaces the old text/plain "Sprint 11 preview" stub that was
+    //      misnamed .pdf). The fallback is a real application/pdf a browser
+    //      viewer can render inline.
+    let bytes: Buffer | null = f._buf ?? null;
+    if (!bytes && f.storageKey) {
+      try {
+        bytes = await getObject(f.storageKey);
+        if (bytes) f._buf = bytes; // cache for subsequent requests this process
+      } catch (err) {
+        log.warn("[dataroomStore.download] object storage get failed:", (err as Error).message);
+      }
     }
-    res.setHeader("Content-Type", f.mime);
+    if (!bytes) {
+      // Graceful, VALID-PDF fallback (no real bytes available).
+      const pdf = minimalPdf(f.name || "Document");
+      const pdfName = /\.pdf$/i.test(safeAsciiName) ? safeAsciiName : `${safeAsciiName}.pdf`;
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `${disposition}; filename="${pdfName}"; ${utf8FilenameStar}`);
+      return res.send(pdf);
+    }
+    res.setHeader("Content-Type", f.mime || "application/octet-stream");
     res.setHeader("Content-Disposition", `${disposition}; filename="${safeAsciiName}"; ${utf8FilenameStar}`);
-    return res.send(f._buf);
+    return res.send(bytes);
   });
 
   app.get("/api/founder/dataroom/permissions", requireAuth, (req, res) => {

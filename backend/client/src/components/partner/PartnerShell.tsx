@@ -8,6 +8,10 @@
  */
 import { ReactNode } from "react";
 import type { PartnerTier, PartnerSubRole } from "@/lib/partner/useRequirePartnerRole";
+// v25.46 BLOCKER FIX #4 (Tier 9 #73) — Consortium Partner workspace consumes the
+// canonical Capavate primitives (PageHeader + AppCard) instead of ad-hoc chrome.
+import { PageHeader } from "@/components/ui/page-header";
+import { AppCard } from "@/components/ui/app-card";
 
 const TIER_COLORS: Record<PartnerTier, string> = {
   catalyst: "bg-gray-200 text-gray-800",
@@ -56,30 +60,37 @@ export function PartnerShell({
 }) {
   // Partner pages now live inside CollectiveShell; this component is reduced
   // to a page header + body wrapper. Sidebar nav is provided by CollectiveShell.
+  // v25.46 #4: header chrome is now the canonical PageHeader; the identity
+  // badges (wrapper-pattern custom components) ride in its `actions` slot. All
+  // data-testids preserved (partner-page, partner-page-header, page-title,
+  // partner-name, partner-tier-badge, partner-subrole-badge).
   return (
     <div className="px-6 py-6" data-testid="partner-page">
-      <header className="mb-6 flex flex-col gap-2 md:flex-row md:items-center md:justify-between" data-testid="partner-page-header">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900" data-testid="page-title">{title}</h1>
-          <div className="text-sm text-slate-500 mt-1">Partner workspace</div>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium text-slate-700" data-testid="partner-name">{partnerName}</span>
-          <TierBadge tier={tier} />
-          <SubRoleBadge subRole={subRole} />
-        </div>
-      </header>
+      <div data-testid="partner-page-header">
+        <PageHeader
+          title={<span data-testid="page-title">{title}</span>}
+          subtitle="Partner workspace"
+          actions={
+            <>
+              <span className="text-sm font-medium text-[var(--cv-color-text)]" data-testid="partner-name">{partnerName}</span>
+              <TierBadge tier={tier} />
+              <SubRoleBadge subRole={subRole} />
+            </>
+          }
+        />
+      </div>
       {children}
     </div>
   );
 }
 
 export function PartnerEmptyState({ title, description, cta }: { title: string; description: string; cta?: ReactNode }) {
+  // v25.46 #4: canonical AppCard surface replaces the ad-hoc dashed box.
   return (
-    <div data-testid="partner-empty-state" className="border-2 border-dashed border-slate-200 rounded-xl py-12 px-6 text-center bg-white">
-      <div className="text-lg font-semibold text-slate-900">{title}</div>
-      <div className="text-sm text-slate-500 mt-2 max-w-md mx-auto">{description}</div>
+    <AppCard data-testid="partner-empty-state" className="py-12 px-6 text-center">
+      <div className="text-lg font-semibold text-[var(--cv-color-text)]">{title}</div>
+      <div className="text-sm text-[var(--cv-color-text-muted)] mt-2 max-w-md mx-auto">{description}</div>
       {cta && <div className="mt-4">{cta}</div>}
-    </div>
+    </AppCard>
   );
 }

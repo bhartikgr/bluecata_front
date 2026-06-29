@@ -49,6 +49,8 @@ import { registerMaIntelligenceRoutes } from "./maIntelligenceStore";
 import { registerCrmRoutes } from "./crmStore";
 import { registerCollectiveAppRoutes } from "./collectiveAppStore";
 import { registerFounderCollectiveApplyRoutes } from "./founderCollectiveApplyStore";
+import { registerFounderSearchRoutes } from "./founderSearchStore"; /* v25.45.4 H-2 — global search */
+import { registerProfileWizardStateRoutes } from "./profileWizardStateStore"; /* v25.45.4 M-4 — wizard persistence */
 import { registerCollectiveWaitlistRoutes } from "./collectiveWaitlistRoutes"; /* v16 Fix 6 */
 import { registerWelcomeRoutes, ack as welcomeAck, getAck as getWelcomeAck } from "./welcomeStore";
 import { registerNetworkPostsRoutes } from "./networkPostsStore";
@@ -152,6 +154,9 @@ import { registerCollectiveInterestRoutes } from "./collectiveInterestStore"; /*
 import { registerSprint20Wave2Routes } from "./sprint20Wave2Routes";
 import { registerAdminCollectiveRoutes } from "./adminCollectiveRoutes";
 import { registerAdminCollectiveFeeRoutes } from "./adminCollectiveFeeRoutes"; /* v25.39 — admin write endpoints for fee/commission config */
+import { registerAdminPlatformFeesRoutes } from "./adminPlatformFeesRoutes"; /* v25.45.4 L-2 — DB-backed Platform Fees admin (foundation for v25.46) */
+import { registerAdminFeeTierRoutes } from "./adminFeeTierRoutes"; /* v25.46.1 — multi-section fee admin: collective member-subscription + consortium subscription tiers + SPV deployment flat fee */
+import { registerV2546Routes } from "./v2546Routes"; /* v25.46 — 6-track release: messages, network posts, pulse SSE, markets quote, press */
 import { registerAdminDscRoutes } from "./adminDscRoutes";
 // v17 Phase C — Founder accept/decline offers + DSC vote public endpoint.
 import { registerCollectiveOfferRoutes } from "./collectiveOffersStore";
@@ -179,6 +184,11 @@ import { registerChapterResourceRoutes } from "./chapterResourcesStore";
 import { registerLeaderboardRoutes } from "./chapterLeaderboardStore";
 /* v19 Phase B — Messaging + Partner Workspace remaining DB-backed surfaces. */
 import { registerMessagingRoutes } from "./messagingStore";
+/* v25.46 BLOCKER FIX #1 — canDM guard for the LEGACY /api/messages write routes.
+ * Mounted BEFORE registerMessagingRoutes so it short-circuits forbidden direct
+ * DMs (self / guest / unresolved) before the SACRED messagingStore handler runs.
+ * The sacred store (Tier-1 #12) is NOT edited; enforcement lives at this layer. */
+import { registerLegacyMessagingCanDmGuard } from "./legacyMessagingCanDmGuard";
 import { registerPartnerWorkspaceV19Routes } from "./partnerWorkspaceV19Store";
 import { registerSpvFundRoutes } from "./spvFundStore";
 /* CP Phase B — Apply-to-Join + Promotion Moderation + GDPR. */
@@ -490,6 +500,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   registerCrmRoutes(app);
   registerCollectiveAppRoutes(app);
   registerFounderCollectiveApplyRoutes(app);
+  registerFounderSearchRoutes(app); /* v25.45.4 H-2 — founder global search */
+  registerProfileWizardStateRoutes(app); /* v25.45.4 M-4 — profile wizard persistence */
   /* v16 Fix 6 — Collective Waitlist (honest invite-only beta entry point).
    * Stays available regardless of COLLECTIVE_ENABLED. */
   registerCollectiveWaitlistRoutes(app);
@@ -744,6 +756,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   /* ------------ v25.39 — Admin write endpoints for application-fee + partner commission-rate config ------------ */
   registerAdminCollectiveFeeRoutes(app);
+  registerAdminPlatformFeesRoutes(app); /* v25.45.4 L-2 — /api/admin/platform-fees read+update */
+  registerAdminFeeTierRoutes(app); /* v25.46.1 — /api/admin/collective/member-subscription-tiers + /api/admin/consortium/subscription-tiers + /api/admin/consortium/spv-deployment-fee */
+  registerV2546Routes(app); /* v25.46 — 6-track release endpoints (messages, network posts, pulse, markets, press) */
 
   /* ------------ Patch v10 — Admin DSC promotion + investor submission (P0-9) ------------ */
   registerAdminDscRoutes(app);
@@ -813,6 +828,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
    * + Partner workspace remaining DB-backed surfaces (portfolio, CRM,
    * deal pipeline). The v17 Collective slice owns its own tables; these
    * routes do not touch them. */
+  // v25.46 BLOCKER FIX #1 — enforce canDM() on the legacy direct-send routes
+  // BEFORE the sacred messagingStore handlers are mounted (Express dispatches
+  // matching middleware in registration order). Blocks self-DM, guest, and
+  // unresolved recipients with 403 on POST /api/messages + /api/messages/threads.
+  registerLegacyMessagingCanDmGuard(app);
   registerMessagingRoutes(app);
   registerPartnerWorkspaceV19Routes(app);
   // CP Phase A (CP-028/029/030/031): DB-backed SPV lifecycle endpoints.

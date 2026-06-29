@@ -53,6 +53,7 @@ import { withTenant, crossTenant } from "./lib/withTenant"; /* v14 Tier-1 Fix 4 
 import { getUserContext } from "./lib/userContext";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 import { createSubscriptionForNewCompany, getSubscription, updateSubscription } from "./subscriptionsStore";
+import { resolveCanonicalPlan, planSlugToLabel } from "./lib/canonicalPlanResolver"; /* v25.45.4 B-2/H-1/M-1 canonical plan projection */
 import { getDb, rawDb } from "./db/connection";
 import {
   tenants as tenantsTable,
@@ -1153,12 +1154,37 @@ function mapPlanCode(plan: string): "Founder Free" | "Founder Pro" | "Founder Sc
 }
 
 export function mergeBillingFromSubscription(c: FounderCompanyMembership): FounderCompanyMembership {
+  /* v25.45.4 B-2/H-1/M-1 — CANONICAL plan projection. The top-bar plan badge,
+     company switcher, rounds plan-gate, and in-wizard subscribe CTA all read
+     billing.plan off this projection. Previously we mapped the LEGACY
+     subscriptionsStore.getSubscription() plan, which diverged from the canonical
+     capavate_subscriptions table that GET /api/founder/subscription projects —
+     so a paid founder_pro founder saw "FREE" everywhere. Now the plan TIER is
+     resolved from capavate_subscriptions through the single shared resolver
+     (server/lib/canonicalPlanResolver.ts). When a canonical row exists it wins;
+     otherwise we fall back to the legacy subscription record (and then to the
+     company's inline default) so legacy/free companies are unaffected. */
+  const canonical = resolveCanonicalPlan(c.companyId);
   const sub = getSubscription(c.companyId);
-  if (!sub) return c;
+  if (!sub && !canonical) return c;
+  const planLabel = canonical
+    ? planSlugToLabel(canonical.plan)
+    : mapPlanCode(sub!.plan);
+  if (!sub) {
+    // Canonical row exists but no legacy subscription mirror — surface the
+    // canonical plan with neutral billing-detail defaults.
+    return {
+      ...c,
+      billing: {
+        ...c.billing,
+        plan: planLabel,
+      },
+    };
+  }
   return {
     ...c,
     billing: {
-      plan: mapPlanCode(sub.plan),
+      plan: planLabel,
       /* v25.17 Lane A NM7 — was dividing minor units in float then rounding to
          whole dollars (dropping cents). Now compute monthly in integer minor
          units and divide by 100 at display time. The legacy `monthlyUsd`

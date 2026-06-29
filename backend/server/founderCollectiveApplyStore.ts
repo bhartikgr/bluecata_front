@@ -31,6 +31,26 @@ import {
 import { DEFAULT_CHAPTER_ID, DEFAULT_CHAPTER_TENANT_ID } from "./lib/chapterDefaults";
 import { listChaptersForUser } from "./chaptersStore"; /* v25.41 Q7 */
 import { log } from "./lib/logger";
+import { hasActiveOrLiveRound } from "./roundsStore"; /* v25.45.4 L-3 — Collective apply requires an active/live round */
+import multer from "multer"; /* v25.45.4 M-7 — real pitch-deck multipart upload */
+import { putObject } from "./lib/objectStorage"; /* v25.45.4 M-7 */
+import { recordPitchDeck } from "./collectivePitchDeckStore"; /* v25.45.4 M-7 */
+import { appendAdminAudit } from "./adminPlatformStore"; /* v25.45.4 M-7 — Tier 7 audit on upload */
+
+// v25.45.4 M-7 — in-memory multer for pitch-deck uploads. 50MB cap; the route
+// validates mime/extension (.pdf/.pptx/.ppt). Bytes are handed to objectStorage
+// (S3+KMS when configured, FS fallback otherwise) and metadata is persisted in
+// collective_pitch_decks. Mirrors the dataroom upload pattern.
+const pitchDeckUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024 },
+});
+const PITCH_DECK_ALLOWED_MIME = new Set<string>([
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation", // .pptx
+  "application/vnd.ms-powerpoint", // .ppt
+]);
+const PITCH_DECK_ALLOWED_EXT = new Set<string>([".pdf", ".pptx", ".ppt"]);
 
 /* ============================================================
  * v25.41 Q7 (Avi answer = A): resolve the REAL chapter from the founder's
@@ -411,6 +431,86 @@ export function getLatestApplicationByFounder(founderId: string): CompanyApplica
 }
 
 export function registerFounderCollectiveApplyRoutes(app: Express): void {
+  // v25.45.4 M-7 — REAL pitch-deck upload (Ozan: REQUIRED, multer + S3+KMS, FS
+  // fallback). Accepts a single multipart `file` (.pdf/.pptx/.ppt, ≤50MB),
+  // stores bytes via objectStorage, records metadata in collective_pitch_decks,
+  // and returns the deckId + originalName the client puts on the application.
+  app.post(
+    "/api/founder/collective/pitch-deck",
+    requireCollectiveEnabled,
+    pitchDeckUpload.single("file"),
+    async (req: Request, res: Response) => {
+      const ctx = (req as Request & { userContext?: { userId?: string } }).userContext;
+      const userId = ctx?.userId ?? null;
+      if (!userId) return res.status(401).json({ ok: false, error: "missing_identity" });
+
+      const companyId = (req.body?.companyId as string | undefined) ?? "";
+      if (!companyId) return res.status(400).json({ ok: false, error: "companyId_required" });
+      // Ownership: caller must own the company they're uploading a deck for.
+      const owned = getCompaniesForFounder(userId).some((c) => c.companyId === companyId);
+      if (!owned) return res.status(403).json({ ok: false, error: "FOUNDER_WRONG_COMPANY" });
+
+      const file = (req as Request & { file?: Express.Multer.File }).file;
+      if (!file) return res.status(400).json({ ok: false, error: "file_required", message: "A pitch deck file is required." });
+
+      const lowerName = (file.originalname || "").toLowerCase();
+      const ext = lowerName.includes(".") ? lowerName.slice(lowerName.lastIndexOf(".")) : "";
+      const mimeOk = PITCH_DECK_ALLOWED_MIME.has(file.mimetype);
+      const extOk = PITCH_DECK_ALLOWED_EXT.has(ext);
+      // Accept when EITHER the mime OR the extension matches an allowed type —
+      // browsers occasionally send octet-stream for .ppt/.pptx.
+      if (!mimeOk && !extOk) {
+        return res.status(415).json({
+          ok: false,
+          error: "unsupported_file_type",
+          message: "Pitch deck must be a .pdf, .pptx, or .ppt file.",
+        });
+      }
+
+      try {
+        const stored = await putObject({
+          prefix: "pitch_decks",
+          buffer: file.buffer,
+          mimeType: file.mimetype || "application/octet-stream",
+          originalName: file.originalname || `pitch_deck${ext}`,
+        });
+        const rec = recordPitchDeck({
+          companyId,
+          applicationId: null,
+          s3Key: stored.storageKey,
+          kmsKeyId: stored.kmsKeyId,
+          storageBackend: stored.backend,
+          mimeType: stored.mimeType,
+          sizeBytes: stored.sizeBytes,
+          originalName: file.originalname || `pitch_deck${ext}`,
+          uploadedByUserId: userId,
+        });
+        // Tier 7 — new write behavior emits an audit row.
+        try {
+          appendAdminAudit(userId, `pitch_deck:${rec.id}`, "collective_pitch_deck_uploaded", {
+            deckId: rec.id,
+            companyId,
+            backend: stored.backend,
+            sizeBytes: stored.sizeBytes,
+            originalName: rec.originalName,
+          });
+        } catch (auditErr) {
+          log.warn("[pitch-deck] audit append failed (non-fatal):", (auditErr as Error).message);
+        }
+        return res.json({
+          ok: true,
+          deckId: rec.id,
+          originalName: rec.originalName,
+          backend: stored.backend,
+          sizeBytes: stored.sizeBytes,
+        });
+      } catch (err) {
+        log.error("[pitch-deck] upload failed:", (err as Error).message);
+        return res.status(500).json({ ok: false, error: "PITCH_DECK_UPLOAD_FAILED", message: "Could not store the pitch deck; please retry." });
+      }
+    },
+  );
+
   // C-006 v23.5: GET /api/founder/collective/applications/mine — status endpoint
   app.get("/api/founder/collective/applications/mine", (req: Request, res: Response) => {
     const ctx = (req as Request & { userContext?: { userId?: string } }).userContext;
@@ -430,6 +530,19 @@ export function registerFounderCollectiveApplyRoutes(app: Express): void {
     // v16 F-coll-2 — ownership: caller must be the founder named, and own the company.
     const owner = enforceFounderOwnership(req, res, parsed.data);
     if (!owner) return; // response already sent
+
+    // v25.45.4 L-3 (Ozan decision b) — BOTH Path A & Path B require the company to
+    // have at least one active/live funding round before it can be submitted to the
+    // Collective. The legacy vouch-only path (a nomination with no active round) is
+    // removed: a vouch is no longer sufficient on its own.
+    if (!hasActiveOrLiveRound(parsed.data.companyId)) {
+      return res.status(409).json({
+        ok: false,
+        error: "NO_ACTIVE_ROUND",
+        message:
+          "You must have an active funding round before applying to the Collective. Create your first round, then submit.",
+      });
+    }
 
     // v25.40 FIX-17 (collective P2 #5) — Path A duplicate-guard. Path B (direct
     // application) already has a DB-first duplicate guard; Path A (investor-vouched
@@ -534,6 +647,15 @@ export function registerFounderCollectiveApplyRoutes(app: Express): void {
     // v16 F-coll-2 — ownership: caller must be the founder named, and own the company.
     const owner = enforceFounderOwnership(req, res, parsed.data);
     if (!owner) return; // response already sent
+    // v25.45.4 L-3 (Ozan decision b) — Path B also requires an active/live round.
+    if (!hasActiveOrLiveRound(parsed.data.companyId)) {
+      return res.status(409).json({
+        ok: false,
+        error: "NO_ACTIVE_ROUND",
+        message:
+          "You must have an active funding round before applying to the Collective. Create your first round, then submit.",
+      });
+    }
     // v25.13 NM2 — reject if the same founder already has a non-rejected
     // application for the same company. Without this guard, founders could
     // submit duplicates (or re-apply while waitlisted), flooding the admin

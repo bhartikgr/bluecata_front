@@ -124,6 +124,7 @@ import AdminPayments from "@/pages/admin/Payments"; /* v25.32 P1h */
 import AdminPartners from "@/pages/admin/Partners";
 import AdminPartnerFeeSchedules from "@/pages/admin/PartnerFeeSchedules";
 import AdminApplicationFee from "@/pages/admin/AdminApplicationFee"; /* v25.39 */
+import AdminPlatformFees from "@/pages/admin/AdminPlatformFees"; /* v25.45.4 L-2 — DB-driven Platform Fees admin (foundation for v25.46) */
 import AdminCommissionRates from "@/pages/admin/AdminCommissionRates"; /* v25.39 */
 import AdminPartnerPL from "@/pages/admin/PartnerPL";
 /* v25.34 Collective Payment Model — admin pages (DB-driven). */
@@ -707,6 +708,10 @@ function AppRouter() {
         {/* v25.39 — DB-driven fee config editors (application fee + commission rates). */}
         <Route path="/admin/application-fee">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminApplicationFee /></RequireAuth>}
+        </Route>
+        {/* v25.45.4 L-2 — DB-driven Platform Fees admin (foundation for v25.46). */}
+        <Route path="/admin/platform-fees">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminPlatformFees /></RequireAuth>}
         </Route>
         <Route path="/admin/commission-rates">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminCommissionRates /></RequireAuth>}

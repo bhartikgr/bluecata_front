@@ -136,6 +136,19 @@ beforeAll(async () => {
   // Founder with NO chapter membership, owning COMPANY_NO_CH.
   seedUser(FOUNDER_NO_CH, EMAIL_NO_CH, DEFAULT_CHAPTER_ID);
   addCompanyForFounder(FOUNDER_NO_CH, mkMembership(COMPANY_NO_CH, `Apply NoCh Co ${STAMP}`));
+
+  // v25.45.4 L-3 (Ozan decision b) — Collective apply now requires the
+  // company to have an active or live funding round. Seed one per company so
+  // this v25.41 chapter-resolution contract test exercises the post-gate
+  // success path (NOT the gate itself, which is covered by v25_45_4_regression).
+  for (const cid of [COMPANY, COMPANY_NO_CH]) {
+    rawDb()
+      .prepare(
+        `INSERT INTO rounds (id, company_id, name, type, state, target_amount, raised_amount, created_at, updated_at)
+         VALUES (?, ?, ?, 'priced', 'active', 1000000, 0, datetime('now'), datetime('now'))`
+      )
+      .run(`rnd_v2541_${cid}_${STAMP}`, cid, `Seed Round ${cid}`);
+  }
 }, 60_000);
 
 afterAll(async () => {

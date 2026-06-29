@@ -341,11 +341,13 @@ export function MessagesPage({ role }: { role: "founder" | "investor" }) {
 
  return (
  <>
+ {!hideHeader && (
  <PageHeader
  title="Messages"
  description="Direct messages, cap-table channels, and soft-circle channels — all in one place."
  breadcrumbs={[{ href: role === "founder" ? "/founder/dashboard" : "/investor/dashboard", label: "Workspace" }, { label: "Messages" }]}
  />
+ )}
  <PageBody>
  <Card>
  <CardContent className="p-0">

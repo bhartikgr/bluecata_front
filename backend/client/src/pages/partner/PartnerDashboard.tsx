@@ -9,7 +9,9 @@ import { PartnerShell, PartnerEmptyState } from "@/components/partner/PartnerShe
 import { useRequirePartnerRole, tierAtLeast } from "@/lib/partner/useRequirePartnerRole";
 import { apiRequest } from "@/lib/queryClient";
 import { formatMinor } from "@/lib/currency"; /* v25.40 FIX-12 currency sweep */
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+// v25.46 BLOCKER FIX #4 (Tier 9 #73) — dashboard cards now use the canonical
+// AppCard primitive instead of shadcn Card. Widgets/data-testids unchanged.
+import { AppCard } from "@/components/ui/app-card";
 
 interface DashboardSnapshot {
   portfolio: { attributedCompanies: number; totalSpvCommittedMinor: number; totalFundCommittedMinor: number };
@@ -42,18 +44,14 @@ export default function PartnerDashboard() {
   if (flagsQ.data && flagsQ.data.PARTNER_WORKSPACE_ENABLED === false) {
     return (
       <div className="min-h-[60vh] flex items-center justify-center p-8" data-testid="partner-workspace-preview-banner">
-        <Card className="max-w-lg text-center">
-          <CardHeader>
-            <CardTitle>🚧 Preview / Coming Soon</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-slate-700">
-              The Partner Workspace is an invite-only beta. Reach out to{" "}
-              <a className="text-blue-600 underline" href="mailto:ops@capavate.com">ops@capavate.com</a>{" "}
-              to enable it for your organisation.
-            </p>
-          </CardContent>
-        </Card>
+        <AppCard className="max-w-lg text-center">
+          <div className="cv-card-title text-base font-semibold mb-2">🚧 Preview / Coming Soon</div>
+          <p className="text-[var(--cv-color-text)]">
+            The Partner Workspace is an invite-only beta. Reach out to{" "}
+            <a className="text-[var(--cv-color-primary)] underline" href="mailto:ops@capavate.com">ops@capavate.com</a>{" "}
+            to enable it for your organisation.
+          </p>
+        </AppCard>
       </div>
     );
   }
@@ -81,9 +79,9 @@ export default function PartnerDashboard() {
       )}
       {data && !data.empty && (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <Card data-testid="card-portfolio">
-            <CardHeader><CardTitle className="text-sm">Portfolio</CardTitle></CardHeader>
-            <CardContent>
+          <AppCard data-testid="card-portfolio">
+            <div className="cv-card-title text-sm font-semibold mb-3">Portfolio</div>
+            <div>
               <div className="text-3xl font-bold" data-testid="kpi-companies">{data.portfolio.attributedCompanies}</div>
               <div className="text-xs text-slate-500">attributed companies</div>
               {/* v25.16 NL1 — currency label on committed totals so the
@@ -104,29 +102,29 @@ export default function PartnerDashboard() {
                 Funds committed: {formatMinor(data.portfolio.totalFundCommittedMinor, "USD", { locale: "en-US" })}{" "}
                 <span className="text-slate-400">USD</span>
               </div>
-            </CardContent>
-          </Card>
-          <Card data-testid="card-pipeline">
-            <CardHeader><CardTitle className="text-sm">Pipeline</CardTitle></CardHeader>
-            <CardContent>
+            </div>
+          </AppCard>
+          <AppCard data-testid="card-pipeline">
+            <div className="cv-card-title text-sm font-semibold mb-3">Pipeline</div>
+            <div>
               <ul className="text-xs space-y-1">
                 {Object.entries(data.pipeline.byStage).map(([s, n]) => (
                   <li key={s} className="flex justify-between"><span className="text-slate-500">{s}</span><span className="font-medium">{n}</span></li>
                 ))}
               </ul>
-            </CardContent>
-          </Card>
-          <Card data-testid="card-team">
-            <CardHeader><CardTitle className="text-sm">Team</CardTitle></CardHeader>
-            <CardContent>
+            </div>
+          </AppCard>
+          <AppCard data-testid="card-team">
+            <div className="cv-card-title text-sm font-semibold mb-3">Team</div>
+            <div>
               <div className="text-3xl font-bold" data-testid="kpi-seats">{data.team.activeSeats} / {data.team.seatLimit === 9999 ? "∞" : data.team.seatLimit}</div>
               <div className="text-xs text-slate-500">active seats</div>
               <div className="text-xs mt-2" data-testid="kpi-pending-invites">{data.team.pendingInvitations} pending invitations</div>
-            </CardContent>
-          </Card>
-          <Card className="md:col-span-3" data-testid="card-recent">
-            <CardHeader><CardTitle className="text-sm">Recent activity</CardTitle></CardHeader>
-            <CardContent>
+            </div>
+          </AppCard>
+          <AppCard className="md:col-span-3" data-testid="card-recent">
+            <div className="cv-card-title text-sm font-semibold mb-3">Recent activity</div>
+            <div>
               {data.recentActivity.length === 0 && <div className="text-xs text-slate-500">No activity yet.</div>}
               <ul className="text-xs space-y-2">
                 {data.recentActivity.map((a) => (
@@ -136,15 +134,15 @@ export default function PartnerDashboard() {
                   </li>
                 ))}
               </ul>
-            </CardContent>
-          </Card>
+            </div>
+          </AppCard>
           {tierAtLeast(role.identity.tier, "nexus") && (
-            <Card className="md:col-span-3 border-dashed" data-testid="card-cross-portfolio">
-              <CardHeader><CardTitle className="text-sm">Cross-portfolio investor overlap</CardTitle></CardHeader>
-              <CardContent>
+            <AppCard className="md:col-span-3 border-dashed" data-testid="card-cross-portfolio">
+              <div className="cv-card-title text-sm font-semibold mb-3">Cross-portfolio investor overlap</div>
+              <div>
                 <div className="text-xs text-slate-500">Coming with Sprint 32 consent ledger.</div>
-              </CardContent>
-            </Card>
+              </div>
+            </AppCard>
           )}
         </div>
       )}

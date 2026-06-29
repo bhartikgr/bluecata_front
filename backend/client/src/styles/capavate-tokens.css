@@ -1,0 +1,260 @@
+/*
+ * v25.46 Track 6 — Canonical Capavate design tokens (LookFeel-Parity).
+ *
+ * Source of truth: capavate.com bundled stylesheet, captured in the
+ * 2026-06-28 parity audit (capavate_parity_audit_2026-06-28/report.md).
+ *
+ * ADDITIVE & NON-BREAKING: this file introduces a NEW `--cv-*` token
+ * namespace consumed exclusively by the v25.46 canonical primitives
+ * (AppCard, FilterChip, PageHeader, and the Button/Badge wrappers).
+ * It does NOT touch the existing HSL `--primary` / `--sidebar` / `--cap-*`
+ * token systems wired into tailwind.config.ts, so no live surface changes
+ * unless a component explicitly opts into a `--cv-*` token.
+ *
+ * SACRED Tier 9:
+ *   Rule 74 — Brand colors LOCKED: primary #cc0001, navy #041e41.
+ *   Rule 75 — Typography LOCKED: display = Instrument Serif, body = Montserrat.
+ */
+
+:root {
+  /* ── Typography ─────────────────────────────────────────────────────── */
+  --cv-font-display: "Instrument Serif", serif;
+  --cv-font-body: "Montserrat", sans-serif;
+
+  --cv-text-xs: clamp(0.75rem, 0.7rem + 0.25vw, 0.875rem);
+  --cv-text-sm: clamp(0.875rem, 0.8rem + 0.35vw, 1rem);
+  --cv-text-base: clamp(1rem, 0.95rem + 0.25vw, 1.125rem);
+  --cv-text-lg: clamp(1.125rem, 1rem + 0.75vw, 1.5rem);
+  --cv-text-xl: clamp(1.5rem, 1.2rem + 1.25vw, 2.25rem);
+  --cv-text-2xl: clamp(2rem, 1.2rem + 2.5vw, 3.5rem);
+  --cv-text-3xl: clamp(2.5rem, 1rem + 4vw, 5rem);
+
+  /* ── Spacing ────────────────────────────────────────────────────────── */
+  --cv-space-1: 0.25rem;
+  --cv-space-2: 0.5rem;
+  --cv-space-3: 0.75rem;
+  --cv-space-4: 1rem;
+  --cv-space-5: 1.25rem;
+  --cv-space-6: 1.5rem;
+  --cv-space-8: 2rem;
+  --cv-space-10: 2.5rem;
+  --cv-space-12: 3rem;
+  --cv-space-16: 4rem;
+  --cv-space-20: 5rem;
+  --cv-space-24: 6rem;
+  --cv-space-32: 8rem;
+
+  /* ── Surfaces ───────────────────────────────────────────────────────── */
+  --cv-color-bg: #fafaf8;
+  --cv-color-surface: #ffffff;
+  --cv-color-surface-warm: #fff8f5;
+  --cv-color-surface-cool: #f5f7fa;
+  --cv-color-surface-cream: #f9f6f1;
+  --cv-color-surface-2: #f0ede8;
+  --cv-color-surface-offset: #f0eeea;
+
+  /* ── Borders & dividers ─────────────────────────────────────────────── */
+  --cv-color-border: #ddd9d3;
+  --cv-color-divider: #e8e6e1;
+
+  /* ── Text ───────────────────────────────────────────────────────────── */
+  --cv-color-text: #1a1a1a;
+  --cv-color-text-secondary: #4a4a4a;
+  --cv-color-text-muted: #7a7874;
+  --cv-color-text-faint: #b0ada8;
+  --cv-color-text-inverse: #ffffff;
+
+  /* ── Brand (LOCKED — Tier 9 rule 74) ────────────────────────────────── */
+  --cv-color-primary: #cc0001;
+  --cv-color-primary-hover: #a30001;
+  --cv-color-primary-active: #7a0001;
+  --cv-color-primary-light: #fee8e8;
+  --cv-color-primary-subtle: #ffd0d0;
+  --cv-color-navy: #041e41;
+  --cv-color-navy-light: #0c2d55;
+
+  /* ── Semantic / accent ──────────────────────────────────────────────── */
+  --cv-color-accent: #d4850a;
+  --cv-color-accent-light: rgba(212, 133, 10, 0.12);
+  --cv-color-success: #2d8b4e;
+  --cv-color-success-light: rgba(45, 139, 78, 0.08);
+  --cv-color-warning: #d4850a;
+  --cv-color-warning-light: rgba(212, 133, 10, 0.12);
+
+  /* ── Shadows ────────────────────────────────────────────────────────── */
+  --cv-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --cv-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --cv-shadow-lg: 0 8px 30px rgba(0, 0, 0, 0.1);
+  --cv-shadow-xl: 0 16px 50px rgba(0, 0, 0, 0.14);
+
+  /* ── Radius ─────────────────────────────────────────────────────────── */
+  --cv-radius-sm: 6px;
+  --cv-radius-md: 8px;
+  --cv-radius-lg: 12px;
+  --cv-radius-xl: 16px;
+  --cv-radius-2xl: 20px;
+  --cv-radius-full: 999px;
+}
+
+/* ── Canonical primitive utility classes ──────────────────────────────── *
+ * Thin, token-backed classes the v25.46 primitives compose. These never
+ * override existing component styles; they are opt-in via the new
+ * components only.
+ * ─────────────────────────────────────────────────────────────────────── */
+
+.cv-app-card {
+  background: var(--cv-color-surface);
+  border: 1px solid var(--cv-color-border);
+  border-radius: var(--cv-radius-lg);
+  box-shadow: var(--cv-shadow-sm);
+  padding: var(--cv-space-6);
+}
+
+.cv-app-card--warm {
+  background: var(--cv-color-surface-warm);
+  border-color: var(--cv-color-primary-subtle);
+}
+
+.cv-page-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cv-space-1);
+  margin-bottom: var(--cv-space-6);
+}
+
+.cv-page-header__title {
+  font-family: var(--cv-font-display);
+  font-size: var(--cv-text-xl);
+  line-height: 1.1;
+  color: var(--cv-color-text);
+  margin: 0;
+}
+
+.cv-page-header__subtitle {
+  font-family: var(--cv-font-body);
+  font-size: var(--cv-text-sm);
+  color: var(--cv-color-text-muted);
+  margin: 0;
+}
+
+.cv-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cv-space-1);
+  font-family: var(--cv-font-body);
+  font-size: var(--cv-text-xs);
+  font-weight: 500;
+  padding: var(--cv-space-1) var(--cv-space-3);
+  border-radius: var(--cv-radius-full);
+  border: 1px solid var(--cv-color-border);
+  background: var(--cv-color-surface);
+  color: var(--cv-color-text-secondary);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.cv-filter-chip:hover {
+  background: var(--cv-color-surface-2);
+}
+
+.cv-filter-chip--active {
+  background: var(--cv-color-primary);
+  border-color: var(--cv-color-primary);
+  color: var(--cv-color-text-inverse);
+}
+
+.cv-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--cv-space-2);
+  font-family: var(--cv-font-body);
+  font-size: var(--cv-text-sm);
+  font-weight: 600;
+  padding: var(--cv-space-2) var(--cv-space-6);
+  border-radius: var(--cv-radius-full);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.cv-btn--primary {
+  background: var(--cv-color-primary);
+  color: var(--cv-color-text-inverse);
+}
+
+.cv-btn--primary:hover {
+  background: var(--cv-color-primary-hover);
+}
+
+.cv-btn--secondary {
+  background: var(--cv-color-navy);
+  color: var(--cv-color-text-inverse);
+}
+
+.cv-btn--secondary:hover {
+  background: var(--cv-color-navy-light);
+}
+
+.cv-btn--ghost {
+  background: transparent;
+  color: var(--cv-color-text);
+  border-color: transparent;
+}
+
+.cv-btn--ghost:hover {
+  background: var(--cv-color-surface-2);
+}
+
+.cv-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cv-space-1);
+}
+
+.cv-field__label {
+  font-family: var(--cv-font-body);
+  font-size: var(--cv-text-xs);
+  font-weight: 600;
+  color: var(--cv-color-text-secondary);
+}
+
+.cv-field__input {
+  background: var(--cv-color-surface);
+  border: 1px solid var(--cv-color-border);
+  border-radius: var(--cv-radius-md);
+  padding: var(--cv-space-2) var(--cv-space-3);
+  font-family: var(--cv-font-body);
+  font-size: var(--cv-text-sm);
+  color: var(--cv-color-text);
+}
+
+.cv-field__input:focus {
+  outline: none;
+  border-color: var(--cv-color-primary);
+  box-shadow: 0 0 0 3px var(--cv-color-primary-light);
+}
+
+/* Descendant styling: apply the canonical input look to any native control
+ * placed inside a .cv-field-controls wrapper (used by the FormField helper so
+ * existing call sites keep their plain <input>/<select>/<textarea> markup). */
+.cv-field-controls input,
+.cv-field-controls select,
+.cv-field-controls textarea {
+  width: 100%;
+  background: var(--cv-color-surface);
+  border: 1px solid var(--cv-color-border);
+  border-radius: var(--cv-radius-md);
+  padding: var(--cv-space-2) var(--cv-space-3);
+  font-family: var(--cv-font-body);
+  font-size: var(--cv-text-sm);
+  color: var(--cv-color-text);
+}
+
+.cv-field-controls input:focus,
+.cv-field-controls select:focus,
+.cv-field-controls textarea:focus {
+  outline: none;
+  border-color: var(--cv-color-primary);
+  box-shadow: 0 0 0 3px var(--cv-color-primary-light);
+}

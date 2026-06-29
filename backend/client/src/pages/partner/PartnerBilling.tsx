@@ -19,14 +19,18 @@
  * (GET /api/partner/me/subscription, /spv-fees, /tax-forms). All reads are
  * DB-direct; nothing is hardcoded. Totals are now multi-currency aware.
  */
+import { useState } from "react";
 import { Link } from "wouter";
 import { formatMinor as formatMinorLib } from "@/lib/currency"; /* v25.38 currency sweep */
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest, ApiError } from "@/lib/queryClient";
 import { useRequirePartnerRole } from "@/lib/partner/useRequirePartnerRole";
 import { PartnerShell, PartnerEmptyState } from "@/components/partner/PartnerShell";
-import { Card } from "@/components/ui/card";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+// v25.46 BLOCKER FIX #4 (Tier 9 #73) — billing surfaces consume the canonical
+// AppCard primitive; the tab strip uses canonical FilterChip pills instead of
+// shadcn Tabs. All widgets, data-testids, and data wiring preserved.
+import { AppCard } from "@/components/ui/app-card";
+import { FilterChip } from "@/components/ui/filter-chip";
 
 type BillingEntry = {
   id: string;
@@ -140,30 +144,30 @@ function ReferralCommissionsTab({ ready }: { ready: boolean }) {
           <div className="mb-4 space-y-3" data-testid="partner-billing-totals">
             {currencies.length === 0 ? (
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <Card className="p-4">
+                <AppCard className="p-4">
                   <div className="text-xs uppercase tracking-wide text-slate-500">Pending commission</div>
                   <div className="mt-1 font-mono text-lg" data-testid="partner-billing-total-pending">{formatMinor(0)}</div>
-                </Card>
-                <Card className="p-4">
+                </AppCard>
+                <AppCard className="p-4">
                   <div className="text-xs uppercase tracking-wide text-slate-500">Paid commission</div>
                   <div className="mt-1 font-mono text-lg" data-testid="partner-billing-total-paid">{formatMinor(0)}</div>
-                </Card>
+                </AppCard>
               </div>
             ) : (
               currencies.map((ccy) => (
                 <div key={ccy} className="grid grid-cols-1 gap-3 sm:grid-cols-2" data-testid={`partner-billing-totals-${ccy}`}>
-                  <Card className="p-4">
+                  <AppCard className="p-4">
                     <div className="text-xs uppercase tracking-wide text-slate-500">Pending commission ({ccy})</div>
                     <div className="mt-1 font-mono text-lg" data-testid={`partner-billing-total-pending-${ccy}`}>
                       {formatMinor(totals[ccy].pending, ccy)}
                     </div>
-                  </Card>
-                  <Card className="p-4">
+                  </AppCard>
+                  <AppCard className="p-4">
                     <div className="text-xs uppercase tracking-wide text-slate-500">Paid commission ({ccy})</div>
                     <div className="mt-1 font-mono text-lg" data-testid={`partner-billing-total-paid-${ccy}`}>
                       {formatMinor(totals[ccy].paid, ccy)}
                     </div>
-                  </Card>
+                  </AppCard>
                 </div>
               ))
             )}
@@ -181,7 +185,7 @@ function ReferralCommissionsTab({ ready }: { ready: boolean }) {
           )}
 
           {!isLoading && entries.length > 0 && (
-            <Card className="overflow-hidden" data-testid="partner-billing-table">
+            <AppCard className="overflow-hidden" data-testid="partner-billing-table">
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead className="border-b bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
@@ -220,7 +224,7 @@ function ReferralCommissionsTab({ ready }: { ready: boolean }) {
                   </tbody>
                 </table>
               </div>
-            </Card>
+            </AppCard>
           )}
         </>
       )}
@@ -267,7 +271,7 @@ function SubscriptionTab({ ready }: { ready: boolean }) {
   }
 
   return (
-    <Card className="p-6 max-w-xl" data-testid="partner-subscription-card">
+    <AppCard className="p-6 max-w-xl" data-testid="partner-subscription-card">
       <div className="text-xs uppercase tracking-wide text-slate-500">Active subscription</div>
       <div className="mt-1 text-lg font-semibold text-[#041e41]">{sub.tierId}</div>
       <dl className="mt-3 grid grid-cols-2 gap-2 text-sm">
@@ -278,7 +282,7 @@ function SubscriptionTab({ ready }: { ready: boolean }) {
         <dt className="text-slate-500">Renews</dt>
         <dd>{formatDate(sub.currentPeriodEnd)}</dd>
       </dl>
-    </Card>
+    </AppCard>
   );
 }
 
@@ -325,14 +329,14 @@ function SpvFeesTab({ ready }: { ready: boolean }) {
         <div className="mb-4 space-y-3" data-testid="partner-spvfees-totals">
           {currencies.map((ccy) => (
             <div key={ccy} className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Card className="p-4">
+              <AppCard className="p-4">
                 <div className="text-xs uppercase tracking-wide text-slate-500">Pending SPV fees ({ccy})</div>
                 <div className="mt-1 font-mono text-lg">{formatMinor(totals[ccy].pending, ccy)}</div>
-              </Card>
-              <Card className="p-4">
+              </AppCard>
+              <AppCard className="p-4">
                 <div className="text-xs uppercase tracking-wide text-slate-500">Paid SPV fees ({ccy})</div>
                 <div className="mt-1 font-mono text-lg">{formatMinor(totals[ccy].paid, ccy)}</div>
-              </Card>
+              </AppCard>
             </div>
           ))}
         </div>
@@ -348,7 +352,7 @@ function SpvFeesTab({ ready }: { ready: boolean }) {
       )}
 
       {!isLoading && entries.length > 0 && (
-        <Card className="overflow-hidden" data-testid="partner-spvfees-table">
+        <AppCard className="overflow-hidden" data-testid="partner-spvfees-table">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="border-b bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
@@ -385,7 +389,7 @@ function SpvFeesTab({ ready }: { ready: boolean }) {
               </tbody>
             </table>
           </div>
-        </Card>
+        </AppCard>
       )}
     </>
   );
@@ -433,7 +437,7 @@ function TaxFormsTab({ ready }: { ready: boolean }) {
         />
       )}
       {!isLoading && forms.length > 0 && (
-        <Card className="overflow-hidden" data-testid="partner-taxforms-table">
+        <AppCard className="overflow-hidden" data-testid="partner-taxforms-table">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="border-b bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
@@ -456,41 +460,42 @@ function TaxFormsTab({ ready }: { ready: boolean }) {
               </tbody>
             </table>
           </div>
-        </Card>
+        </AppCard>
       )}
     </>
   );
 }
 
+type BillingTab = "subscription" | "referral" | "spv-fees" | "tax-forms";
+
 export default function PartnerBilling() {
   const role = useRequirePartnerRole();
+  // v25.46 #4: tab selection state (shadcn Tabs handled this internally; the
+  // canonical FilterChip strip is controlled, so we own the active-tab state).
+  // Default tab is "referral" — unchanged from the prior shadcn defaultValue.
+  const [tab, setTab] = useState<BillingTab>("referral");
   if (!role.ready || !role.identity) return null;
   const me = role.identity;
   const ready = role.ready && !!role.identity;
 
   return (
     <PartnerShell title="Billing" tier={me.tier} subRole={me.subRole} partnerName={me.identity.name}>
-      <Tabs defaultValue="referral" className="w-full">
-        <TabsList data-testid="partner-billing-tabs">
-          <TabsTrigger value="subscription" data-testid="tab-subscription">Subscription</TabsTrigger>
-          <TabsTrigger value="referral" data-testid="tab-referral">Referral Commissions</TabsTrigger>
-          <TabsTrigger value="spv-fees" data-testid="tab-spv-fees">SPV Fees</TabsTrigger>
-          <TabsTrigger value="tax-forms" data-testid="tab-tax-forms">Tax Forms</TabsTrigger>
-        </TabsList>
+      {/* Canonical FilterChip tab strip (replaces shadcn TabsList/TabsTrigger).
+          data-testids preserved: partner-billing-tabs + tab-* per tab. */}
+      <div className="flex flex-wrap gap-2" data-testid="partner-billing-tabs" role="tablist">
+        <FilterChip active={tab === "subscription"} onClick={() => setTab("subscription")} data-testid="tab-subscription">Subscription</FilterChip>
+        <FilterChip active={tab === "referral"} onClick={() => setTab("referral")} data-testid="tab-referral">Referral Commissions</FilterChip>
+        <FilterChip active={tab === "spv-fees"} onClick={() => setTab("spv-fees")} data-testid="tab-spv-fees">SPV Fees</FilterChip>
+        <FilterChip active={tab === "tax-forms"} onClick={() => setTab("tax-forms")} data-testid="tab-tax-forms">Tax Forms</FilterChip>
+      </div>
 
-        <TabsContent value="subscription" className="mt-4">
-          <SubscriptionTab ready={ready} />
-        </TabsContent>
-        <TabsContent value="referral" className="mt-4">
-          <ReferralCommissionsTab ready={ready} />
-        </TabsContent>
-        <TabsContent value="spv-fees" className="mt-4">
-          <SpvFeesTab ready={ready} />
-        </TabsContent>
-        <TabsContent value="tax-forms" className="mt-4">
-          <TaxFormsTab ready={ready} />
-        </TabsContent>
-      </Tabs>
+      {/* Tab panels — only the active panel mounts (parity with shadcn TabsContent). */}
+      <div className="mt-4">
+        {tab === "subscription" && <SubscriptionTab ready={ready} />}
+        {tab === "referral" && <ReferralCommissionsTab ready={ready} />}
+        {tab === "spv-fees" && <SpvFeesTab ready={ready} />}
+        {tab === "tax-forms" && <TaxFormsTab ready={ready} />}
+      </div>
     </PartnerShell>
   );
 }

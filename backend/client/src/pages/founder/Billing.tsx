@@ -384,6 +384,16 @@ export default function FounderBilling() {
     retry: false,
   });
 
+  /* v25.45.4 L-2 — surface the DB-driven Collective Application Fee (admin-set via
+     /admin/platform-fees → platform_fees table). Read-only here; the founder sees
+     the current one-time fee that applies when applying to the Collective. The
+     amount is NEVER hardcoded — it resolves through /api/collective/application-fee. */
+  const { data: appFeeData } = useQuery<{ amountMinor: number; currency: string; source: string }>({
+    queryKey: ["/api/collective/application-fee"],
+    queryFn: async () => (await apiRequest("GET", "/api/collective/application-fee")).json(),
+    retry: false,
+  });
+
   const cancelMut = useMutation({
     mutationFn: async () =>
       (await apiRequest("PATCH", "/api/founder/subscription", { companyId, status: "cancel_at_period_end" })).json(),
@@ -559,6 +569,27 @@ export default function FounderBilling() {
             </CardContent>
           </Card>
         </div>
+
+        {/* v25.45.4 L-2 — Collective Application Fee (DB-driven, admin-configurable). */}
+        <Card className="mb-8" data-testid="card-collective-application-fee">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Receipt className="h-4 w-4" />Collective Application Fee
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-baseline justify-between flex-wrap gap-2">
+              <div>
+                <div className="text-xl font-semibold font-mono tabular-nums" data-testid="text-collective-application-fee">
+                  {appFeeData ? `$${Number(appFeeData.amountMinor).toLocaleString("en-US")} ${appFeeData.currency || "USD"}` : "—"}
+                </div>
+                <div className="text-xs text-muted-foreground mt-1">
+                  One-time fee charged when you apply to the Capavate Collective.
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
 
         {/* Invoices table */}
         <Card data-testid="card-invoices">

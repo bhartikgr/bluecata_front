@@ -33,7 +33,12 @@ export function MemberValueIntelligenceBox({ rows }: { rows: Holder[] }) {
   const holders: Holder[] = [];
   for (const r of rows) {
     if (r.holderType === "pool" || r.holderType === "employee") continue;
-    const key = (r.holderId ?? r.holderName).toLowerCase();
+    // v25.45.4 B-1 — defensive: a production cap-table row can have BOTH holderId
+    // and holderName undefined (e.g. an option-pool/unmatched row on a $0 /
+    // 0-holder company). Calling .toLowerCase() on undefined crashed the whole
+    // /founder/captable page ("Cannot read properties of undefined (reading
+    // 'toLowerCase')"). Coalesce to "" so the key is always a string.
+    const key = (r.holderId ?? r.holderName ?? "").toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
     holders.push(r);

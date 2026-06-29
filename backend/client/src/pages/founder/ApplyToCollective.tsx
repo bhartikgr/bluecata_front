@@ -134,6 +134,26 @@ export default function FounderApplyToCollective() {
     [crmQ.data]
   );
 
+  // v25.45.4 L-3 (Ozan decision b) — BOTH apply paths require the company to have
+  // at least one active/live funding round before submission. The server enforces
+  // this (founderCollectiveApplyStore → hasActiveOrLiveRound); the client mirrors
+  // it so the founder sees an actionable empty-state instead of a 409 toast.
+  const ACTIVE_LIVE_ROUND_STATES = useMemo(
+    () => new Set(["active", "live", "open", "signing_open", "soft_circle_open"]),
+    []
+  );
+  const roundsQ = useQuery<Array<{ id: string; state?: string; status?: string }>>({
+    queryKey: ["/api/rounds", companyId],
+    queryFn: async () => (await apiRequest("GET", `/api/rounds?companyId=${companyId}`)).json(),
+    enabled: !!companyId,
+  });
+  const hasActiveRound = useMemo(
+    () => asArray<{ state?: string; status?: string }>(roundsQ.data).some(
+      (r) => ACTIVE_LIVE_ROUND_STATES.has(String(r.state ?? r.status ?? "").toLowerCase())
+    ),
+    [roundsQ.data, ACTIVE_LIVE_ROUND_STATES]
+  );
+
   return (
     <>
       <PageHeader
@@ -165,17 +185,44 @@ export default function FounderApplyToCollective() {
             <Trophy className="h-5 w-5 text-[hsl(0_100%_40%)] shrink-0 mt-0.5" />
             <div className="text-sm">
               <div className="font-semibold mb-1">This applies your <span className="underline">company</span> to PRESENT, not you for membership.</div>
-              <p className="text-muted-foreground">
+              {/* v25.45.4 C-3 — intro paragraph now spans the card width (max-w-none) */}
+              <p className="text-muted-foreground max-w-none">
                 The Capavate Collective is an invitation-only network of accredited investors. Companies can present to the network in two ways:
                 via an investor on your cap table who nominates you (faster), or by applying directly (more diligence required, includes a non-refundable application fee).
               </p>
+              {/* v25.45.4 C-4 — cross-link uses brand-primary red #cc0001 for sufficient contrast */}
               <p className="text-xs text-muted-foreground mt-2">
-                Looking for membership? Investors apply at <span className="font-mono text-[hsl(0_100%_40%)]">/investor/apply-to-collective</span>.
+                Looking for membership? Investors apply at <span className="font-mono text-[#cc0001] font-medium">/investor/apply-to-collective</span>.
               </p>
             </div>
           </div>
         </div>
 
+        {/* v25.45.4 L-3 (Ozan decision b) — gate BOTH paths behind an active/live
+            round. When the company has none, replace the apply tabs with an
+            actionable empty-state that links to the round wizard. */}
+        {!roundsQ.isPending && !hasActiveRound ? (
+          <Card data-testid="banner-no-active-round">
+            <CardContent className="p-8 text-center space-y-4">
+              <AlertTriangle className="h-10 w-10 text-[hsl(0_100%_40%)] mx-auto" />
+              <div>
+                <h2 className="text-lg font-semibold">You need an active funding round first</h2>
+                <p className="text-sm text-muted-foreground mt-1 max-w-md mx-auto">
+                  Applying to the Collective — whether investor-vouched (Path A) or direct (Path B) —
+                  requires at least one active or live funding round for {company?.companyName ?? "your company"}.
+                  Create your first round, then come back to apply.
+                </p>
+              </div>
+              <Button
+                className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
+                onClick={() => (window.location.href = "/founder/rounds/new")}
+                data-testid="button-create-first-round"
+              >
+                Create your first round →
+              </Button>
+            </CardContent>
+          </Card>
+        ) : (
         <Tabs defaultValue="vouch" className="w-full">
           <TabsList className="grid grid-cols-2 max-w-2xl">
             <TabsTrigger value="vouch" data-testid="tab-vouch">
@@ -204,6 +251,7 @@ export default function FounderApplyToCollective() {
             />
           </TabsContent>
         </Tabs>
+        )}
 
         <div className="text-xs text-muted-foreground text-center mt-6 pb-4">
           Looking for Collective membership? <Link href="/investor/apply-to-collective"><span className="text-[hsl(0_100%_40%)] underline cursor-pointer" data-testid="link-investor-membership">Investors apply here</span></Link>.
@@ -356,7 +404,13 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
   const [submittedId, setSubmittedId] = useState<string | null>(null);
 
   // Form state
+  // v25.45.4 M-7 — real pitch-deck upload. `pitchDeck` now holds the uploaded
+  // file's ORIGINAL NAME (used as pitchDeckFilename on submit); `pitchDeckId`
+  // holds the server-side deck record id. The deck is uploaded BEFORE the
+  // application is submitted (separate multipart endpoint).
   const [pitchDeck, setPitchDeck] = useState("");
+  const [pitchDeckId, setPitchDeckId] = useState<string | null>(null);
+  const [pitchUploading, setPitchUploading] = useState(false);
   const [tractionMrr, setTractionMrr] = useState(0);
   const [tractionUsers, setTractionUsers] = useState(0);
   const [tractionGrowthPct, setTractionGrowthPct] = useState(0);
@@ -486,7 +540,7 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
       return;
     }
     const errs: Record<string, string> = {};
-    if (!pitchDeck) errs.pitchDeck = "Pitch deck filename is required.";
+    if (!pitchDeck || !pitchDeckId) errs.pitchDeck = "A pitch deck file (.pdf/.pptx/.ppt) is required — upload one above.";
     if (asks.length < 20) errs.asks = `Asks must be at least 20 characters (${asks.length}/20).`;
     if (coverLetter.length < 100) errs.coverLetter = `Cover letter must be at least 100 characters (${coverLetter.length}/100).`;
     if (!feeAcknowledged) errs.feeAck = "You must acknowledge the application fee.";
@@ -506,7 +560,7 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
 
   // v25.39 Phase 1 — Submit is gated on a resolved fee: never allow posting an
   // application without a confirmed, current price.
-  const canSubmit = !submitMut.isPending && feeReady;
+  const canSubmit = !submitMut.isPending && feeReady && !pitchUploading;
 
   return (
     <div className="space-y-4">
@@ -565,9 +619,56 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
         </CardHeader>
         <CardContent className="space-y-4">
           <div>
-            <Label>Pitch deck filename</Label>
-            <Input value={pitchDeck} onChange={e => setPitchDeck(e.target.value)} placeholder="e.g. novapay_q2_deck.pdf" className="mt-1" data-testid="input-pitch-deck" />
-            <p className="text-xs text-muted-foreground mt-1">In production this would be a multipart upload to S3 + KMS. Filenames accepted for demo.</p>
+            <Label>Pitch deck (.pdf, .pptx, or .ppt — max 50MB)</Label>
+            {/* v25.45.4 M-7 — REAL upload: bytes go to S3+KMS (FS fallback) via
+                POST /api/founder/collective/pitch-deck before the application is
+                submitted. The returned originalName populates pitchDeckFilename. */}
+            <input
+              type="file"
+              accept=".pdf,.pptx,.ppt,application/pdf,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.ms-powerpoint"
+              className="mt-1 block w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-[hsl(0_100%_40%)] file:px-3 file:py-1.5 file:text-white file:cursor-pointer"
+              data-testid="input-pitch-deck"
+              onChange={async (e) => {
+                const f = e.target.files?.[0];
+                if (!f) return;
+                if (f.size > 50 * 1024 * 1024) {
+                  toast({ title: "File too large", description: "Pitch deck must be 50MB or smaller.", variant: "destructive" });
+                  e.target.value = "";
+                  return;
+                }
+                setPitchUploading(true);
+                setPitchDeckId(null);
+                try {
+                  const fd = new FormData();
+                  fd.append("file", f);
+                  fd.append("companyId", companyId);
+                  const res = await fetch("/api/founder/collective/pitch-deck", {
+                    method: "POST",
+                    body: fd,
+                    credentials: "include",
+                  });
+                  const data = await res.json();
+                  if (!res.ok || !data?.ok) throw new Error(data?.message ?? data?.error ?? `Upload failed (${res.status})`);
+                  setPitchDeck(data.originalName ?? f.name);
+                  setPitchDeckId(data.deckId ?? null);
+                  setFieldErrors((prev) => { const { pitchDeck: _omit, ...rest } = prev; return rest; });
+                  toast({ title: "Pitch deck uploaded", description: `${data.originalName ?? f.name} stored (${data.backend ?? "fs"}).` });
+                } catch (err) {
+                  setPitchDeck("");
+                  setPitchDeckId(null);
+                  toast({ title: "Pitch deck upload failed", description: (err as Error).message, variant: "destructive" });
+                } finally {
+                  setPitchUploading(false);
+                }
+              }}
+            />
+            {pitchUploading && (
+              <p className="text-xs text-muted-foreground mt-1 inline-flex items-center gap-1.5"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Uploading…</p>
+            )}
+            {!pitchUploading && pitchDeck && (
+              <p className="text-xs text-emerald-700 mt-1" data-testid="text-pitch-deck-name">Uploaded: {pitchDeck}</p>
+            )}
+            <p className="text-xs text-muted-foreground mt-1">Stored encrypted via S3 + KMS in production (local filesystem in this environment).</p>
           </div>
 
           <div className="grid grid-cols-3 gap-3">
@@ -606,7 +707,8 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
             <div className="font-semibold text-amber-900 mb-1 flex items-center gap-2">
               <FileText className="h-4 w-4" /> Application fee — {feeReady ? <>{fmtUSD(APPLICATION_FEE as number)}</> : <FeeLoading />} non-refundable
             </div>
-            <p className="text-xs text-amber-800 mb-2">In production, payment is processed via Stripe before the application enters the queue. Demo mode does not charge.</p>
+            {/* v25.45.4 M-8 — Airwallex is the active payment provider (was Stripe). */}
+            <p className="text-xs text-amber-800 mb-2">In production, payment is processed via Airwallex before the application enters the queue. Demo mode does not charge.</p>
             <label className="flex items-start gap-2 text-xs text-amber-900 cursor-pointer">
               <Checkbox checked={feeAcknowledged} onCheckedChange={(v) => setFeeAcknowledged(v === true)} data-testid="checkbox-fee-ack" />
               I understand this is a non-refundable application fee and that submission does not guarantee an invitation.
@@ -624,7 +726,7 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
           )}
 
           <div className="flex items-center justify-between pt-3 border-t">
-            <p className="text-xs text-muted-foreground">Required: deck filename, asks (≥20), cover letter (≥100), fee acknowledgement.</p>
+            <p className="text-xs text-muted-foreground">Required: pitch deck file, asks (≥20), cover letter (≥100), fee acknowledgement.</p>
             <Button
               className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
               disabled={!canSubmit}

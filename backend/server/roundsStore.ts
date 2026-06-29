@@ -27,7 +27,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { and, eq, isNull, desc } from "drizzle-orm";
-import { getDb } from "./db/connection";
+import { getDb, rawDb } from "./db/connection"; /* v25.45.4 L-3 — rawDb added for DB-direct active-round check */
 import { rounds as roundsTable } from "../shared/schema";
 import { appendAdminAudit } from "./adminPlatformStore";
 import { log } from "./lib/logger";
@@ -286,6 +286,42 @@ export function getRoundsForCompany(companyId: string): Round[] {
 /** All rounds (cache view). */
 export function listRounds(): Round[] {
   return [...roundsCache];
+}
+
+/**
+ * v25.45.4 L-3 — the set of round states that count as an "active live funding
+ * round" for the Apply-to-Collective gate (Ozan's locked answer (b): a founder
+ * must have at least one round with status active/live before either Path A or
+ * Path B is enabled). The task names 'active' and 'live' explicitly; this tree's
+ * round vocabulary expresses an active/live round through these open/in-flight
+ * states. Terminal states (closed/funded/cancelled) and 'draft' do NOT qualify.
+ */
+export const ACTIVE_LIVE_ROUND_STATES = new Set<string>([
+  "active",
+  "live",
+  "open",
+  "signing_open",
+  "soft_circle_open",
+]);
+
+/**
+ * v25.45.4 L-3 — DB-DIRECT check for whether a company has at least one round in
+ * an active/live state. DB-direct (Tier 3 #27): the gate must not depend on an
+ * in-memory cache that can be empty on a fresh process. Falls back to the cache
+ * only if the DB read throws.
+ */
+export function hasActiveOrLiveRound(companyId: string): boolean {
+  if (!companyId) return false;
+  try {
+    const rows: any[] = rawDb()
+      .prepare(`SELECT state FROM rounds WHERE company_id = ? AND deleted_at IS NULL`)
+      .all(companyId);
+    return rows.some((r) => ACTIVE_LIVE_ROUND_STATES.has(String(r.state ?? "").toLowerCase()));
+  } catch {
+    return getRoundsForCompany(companyId).some((r) =>
+      ACTIVE_LIVE_ROUND_STATES.has(String(r.state ?? "").toLowerCase()),
+    );
+  }
 }
 
 /** Soft delete (kept for symmetry; not currently used by any route). */

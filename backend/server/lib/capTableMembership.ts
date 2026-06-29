@@ -11,6 +11,21 @@
  * users are co-members iff there exists a single company on whose cap table
  * BOTH appear as a committed holder.
  *
+ * ── APD-015 (v25.46, 2026-06-28) — spec-literal vs canonical-schema note ─────
+ * The v25.46 locked spec describes the Investor↔Investor cap-table-share
+ * unblock as "queryable via `cap_table_holders.investor_id`". GPT-5.5's verify
+ * pass flagged that this code instead queries `captable_commits.investor_id`.
+ * RESOLUTION: there is NO `cap_table_holders` table in the canonical schema —
+ * the durable cap-table ledger is `captable_commits` (append-only, hash-chained;
+ * migrations/0007_captable_commits.sql), which carries the `investor_id` and
+ * `company_id` columns this join needs. `captable_commits.investor_id` IS the
+ * cap-table-holder identity. Switching to a non-existent `cap_table_holders`
+ * table would break the unblock. We therefore keep the ledger query (functionally
+ * equivalent to the spec's intent) and register the deviation as APD-015 in
+ * CAPAVATE_SACRED_FILES.md. Cap-table-share unblock uses
+ * `captable_commits.investor_id` (durable ledger) instead of the spec-literal
+ * `cap_table_holders.investor_id`. Functionally equivalent.
+ *
  * Fail-closed: any DB error, missing table, or malformed input returns FALSE
  * (treated as "not co-members" → the resolver masks to "Private Investor").
  */
