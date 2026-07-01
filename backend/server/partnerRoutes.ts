@@ -83,7 +83,9 @@ export function registerPartnerRoutes(app: Express): void {
 
   app.get("/api/admin/partners", requireAdmin, (_req: Request, res: Response) => {
     const list = getAllContacts().filter((c) => c.kind === "consortium_partner");
-    res.json({ partners: list });
+    // v25.47 APD-036 (HIGH-10) — expose a numeric total so the admin Partners
+    // page can render a count without re-deriving partners.length client-side.
+    res.json({ partners: list, total: list.length });
   });
 
   app.get("/api/admin/partners/:id", requireAdmin, (req: Request, res: Response) => {

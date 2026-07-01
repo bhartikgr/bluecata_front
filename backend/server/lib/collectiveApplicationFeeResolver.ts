@@ -26,8 +26,8 @@
  */
 import { rawDb } from "../db/connection";
 
-/** Historical seed/fallback default — the v25.37 literal value, unchanged. */
-export const DEFAULT_APPLICATION_FEE_MINOR = 2500;
+/** APD-028 canonical fallback — $300 = 30000 TRUE minor units. */
+export const DEFAULT_APPLICATION_FEE_MINOR = 30000;
 export const DEFAULT_APPLICATION_FEE_CURRENCY = "USD";
 
 export interface ResolvedApplicationFee {

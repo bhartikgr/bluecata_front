@@ -60,6 +60,11 @@ import {
   setSpvDeploymentFee,
   CONSORTIUM_SPV_DEPLOYMENT_FEE_KEY,
 } from "./consortiumFeesStore";
+import {
+  listSpvDeployments,
+  recordSpvDeployment,
+  isValidSpvId,
+} from "./spvDeploymentStore";
 
 function actorOf(req: Request): string {
   const ctx = (req as Request & {
@@ -427,6 +432,92 @@ export function registerAdminFeeTierRoutes(app: Express): void {
         );
       }
       return res.json({ ok: true, spvDeploymentFee: updated });
+    },
+  );
+
+  /* -----------------------------------------------------------------
+   * v25.47 APD-021 — Consortium SPV deployment ledger.
+   *   GET  /api/admin/consortium/spv-deployments
+   *   POST /api/admin/consortium/spv-deployments  { spvId, note? }
+   *
+   * POST is idempotent on spvId (200 with created:false on repeat). The fee is
+   * DB-resolved from consortium.spv_deployment_fee at record time.
+   * ----------------------------------------------------------------- */
+  app.get(
+    "/api/admin/consortium/spv-deployments",
+    requireAdmin,
+    (_req: Request, res: Response) => {
+      try {
+        return res.json({ ok: true, deployments: listSpvDeployments() });
+      } catch (err) {
+        log.error(
+          "[adminFeeTierRoutes.spv-deployments.list] failed:",
+          (err as Error).message,
+        );
+        return res.status(500).json({
+          ok: false,
+          error: "read_failed",
+          message: sanitizeErrorMessage(err),
+        });
+      }
+    },
+  );
+
+  app.post(
+    "/api/admin/consortium/spv-deployments",
+    requireAdmin,
+    (req: Request, res: Response) => {
+      const b = req.body as { spvId?: unknown; note?: unknown };
+      if (!isValidSpvId(b?.spvId)) {
+        return res.status(400).json({
+          ok: false,
+          error: "spvId must be alphanumeric/dash/underscore (1..128 chars)",
+        });
+      }
+      const note = typeof b?.note === "string" ? b.note : null;
+      let result;
+      try {
+        result = recordSpvDeployment({
+          spvId: b.spvId,
+          recordedByUserId: userIdOf(req),
+          note,
+        });
+      } catch (err) {
+        log.error(
+          "[adminFeeTierRoutes.spv-deployments.record] failed:",
+          (err as Error).message,
+        );
+        return res.status(500).json({
+          ok: false,
+          error: "record_failed",
+          message: sanitizeErrorMessage(err),
+        });
+      }
+      if (result.created) {
+        try {
+          appendAdminAudit(
+            actorOf(req),
+            `spv_deployment:${result.deployment.spvId}`,
+            "consortium_spv_deployment_recorded",
+            {
+              id: result.deployment.id,
+              after: {
+                spvId: result.deployment.spvId,
+                feeMinor: result.deployment.feeMinor,
+                currency: result.deployment.currency,
+              },
+            },
+          );
+        } catch (auditErr) {
+          log.warn(
+            "[adminFeeTierRoutes.spv-deployments.record] audit append failed (non-fatal):",
+            (auditErr as Error).message,
+          );
+        }
+      }
+      return res
+        .status(result.created ? 201 : 200)
+        .json({ ok: true, created: result.created, deployment: result.deployment });
     },
   );
 }

@@ -27,6 +27,7 @@ import { NotificationBell } from "./NotificationBell";
 import { useEntitlement } from "@/lib/entitlement";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { ArchivedWorkspaceBanner } from "./ArchivedWorkspaceBanner";
+import { AuditChainP0Banner } from "./AuditChainP0Banner";
 
 /** Role-aware glossary link rendered in the page header. */
 function GlossaryLink() {
@@ -573,6 +574,8 @@ export function AppShell({ children }: { children: ReactNode }) {
         <main className="flex-1 min-w-0 overflow-x-hidden">
           {/* v25.45 F20c — archived-workspace banner on every founder page. */}
           {location.startsWith("/founder") && <ArchivedWorkspaceBanner />}
+          {/* v25.47 APD-029 — audit-chain P0 banner on admin pages (renders only on incident). */}
+          {location.startsWith("/admin") && <AuditChainP0Banner />}
           {children}
         </main>
       </div>

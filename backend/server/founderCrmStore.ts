@@ -733,6 +733,73 @@ export function upsertCrmContactForInvitation(args: {
 }
 
 /**
+ * v25.47 APD-033 (HIGH-1) — when an invited investor redeems their token and
+ * registers, flip the auto-created CRM contact from "lead" to "engaged" and
+ * stamp the registration in the note so the founder sees the invite converted.
+ * Idempotent: a contact already past "lead" (or already stamped) is left as-is.
+ * Keyed by (companyId, LOWER(TRIM(email))). Non-fatal — redemption is never
+ * blocked by a CRM bookkeeping failure.
+ */
+export function crmMarkInvitedRegistered(args: {
+  companyId: string;
+  email: string;
+}): boolean {
+  if (!args.companyId || !args.email) return false;
+  const normalizedEmail = args.email.trim().toLowerCase();
+  const stamp = "Registered via invitation redemption";
+  const now = new Date().toISOString();
+
+  let targetId: string | undefined;
+  try {
+    const driver = rawDb() as unknown as {
+      prepare?: (sql: string) => {
+        get: (...a: unknown[]) => unknown;
+        run: (...a: unknown[]) => unknown;
+      };
+    };
+    if (driver && typeof driver.prepare === "function") {
+      const dbRow = driver
+        .prepare(
+          `SELECT id, stage, notes FROM founder_crm_contacts WHERE company_id = ? AND LOWER(TRIM(email)) = ? LIMIT 1`,
+        )
+        .get(args.companyId, normalizedEmail) as
+        | { id: string; stage: string; notes: string | null }
+        | undefined;
+      if (dbRow?.id) {
+        targetId = dbRow.id;
+        const alreadyRegistered = (dbRow.notes ?? "").includes(stamp);
+        if (!alreadyRegistered) {
+          const nextStage = dbRow.stage === "lead" ? "engaged" : dbRow.stage;
+          const nextNotes = `${dbRow.notes ?? ""}${dbRow.notes ? " — " : ""}${stamp} (${now})`;
+          driver
+            .prepare(
+              `UPDATE founder_crm_contacts SET stage = ?, notes = ?, notes_updated_at = ? WHERE id = ?`,
+            )
+            .run(nextStage, nextNotes, now, dbRow.id);
+        }
+      }
+    }
+  } catch (err) {
+    log.warn("[crmMarkInvitedRegistered] DB update failed:", (err as Error).message);
+  }
+
+  // Mirror into the read cache when present so reads before the next hydrate
+  // pass reflect the registration.
+  const cached = contacts.find(
+    (c) => c.companyId === args.companyId && c.email.trim().toLowerCase() === normalizedEmail,
+  );
+  if (cached) {
+    targetId = targetId ?? cached.id;
+    if (!cached.notes.includes(stamp)) {
+      if (cached.stage === "lead") cached.stage = "engaged";
+      cached.notes = `${cached.notes}${cached.notes ? " — " : ""}${stamp} (${now})`;
+      cached.notesUpdatedAt = now;
+    }
+  }
+  return Boolean(targetId);
+}
+
+/**
  * v23.9 C8/CP-6 — seed a consortium partner into a founder's CRM when the
  * company is linked to that partner (A4). Idempotent by email + companyId.
  * The partner is recorded as a longterm-stage relationship so it reads as a

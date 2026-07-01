@@ -230,10 +230,166 @@ function applyInlineMigrations(db: any) {
    * Additive only: CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE. The dataroom
    * storage pointer columns (migration 0067) are handled by applyV12AdditiveAlters. */
   applyV2545_4Schema(db);
+
+  /* v25.47 — Tier-6 release. Additive only (CREATE TABLE IF NOT EXISTS +
+   * INSERT OR IGNORE + PRAGMA-guarded ADD COLUMN). Mirrors migrations
+   * 0069-0077 so the dual bootstrap+migration path keeps these present on a
+   * fresh boot / fresh test DB. SEPARATE/PARALLEL to the Capavate founder/
+   * investor subscription flow (Sacred Rule 76) — new subscription structures
+   * live only in platform_fees rows. */
+  applyV2547Schema(db);
+}
+
+/* v25.47 — see call-site comment above. Idempotent + boot-safe.
+ *
+ * Tables (additive): audit_chain_health, collective_admin_settings,
+ * spv_deployments, pulse_index_symbols, moderation_log. Additive columns:
+ * network_posts.attachments, founder_crm_contacts.{invite_status,
+ * invited_round_id,invited_at}. Seeds: collective member single tier
+ * (standard=24900) + consortium 5-tier (catalyst/builder/amplifier/nexus/
+ * founding_member), 10 pulse index symbols, one audit-chain incident row, and
+ * the APD-028 canonical collective_application_fee ($300 = 30000 TRUE minor
+ * units). Legacy collective.member_subscription.{basic,pro,enterprise} and
+ * consortium.subscription.partner_{basic,pro,enterprise} rows are PRESERVED
+ * (seeded above) — deprecated in code only, never destructively removed. */
+function applyV2547Schema(db: any) {
+  const stmts: string[] = [
+    `CREATE TABLE IF NOT EXISTS audit_chain_health (
+       key         TEXT PRIMARY KEY NOT NULL,
+       status      TEXT NOT NULL,
+       detail      TEXT,
+       updated_at  TEXT NOT NULL
+     )`,
+    `CREATE TABLE IF NOT EXISTS collective_admin_settings (
+       key         TEXT PRIMARY KEY NOT NULL,
+       value_json  TEXT,
+       updated_at  TEXT NOT NULL
+     )`,
+    `CREATE TABLE IF NOT EXISTS spv_deployments (
+       id                   TEXT PRIMARY KEY NOT NULL,
+       spv_id               TEXT NOT NULL UNIQUE,
+       fee_minor            INTEGER NOT NULL,
+       currency             TEXT NOT NULL DEFAULT 'USD',
+       recorded_at          TEXT NOT NULL,
+       recorded_by_user_id  TEXT,
+       note                 TEXT
+     )`,
+    `CREATE TABLE IF NOT EXISTS pulse_index_symbols (
+       symbol          TEXT PRIMARY KEY NOT NULL,
+       label           TEXT,
+       category        TEXT,
+       enabled         INTEGER NOT NULL DEFAULT 1,
+       refresh_seconds INTEGER NOT NULL DEFAULT 3600,
+       sort_order      INTEGER NOT NULL DEFAULT 0,
+       updated_at      TEXT NOT NULL
+     )`,
+    `CREATE TABLE IF NOT EXISTS moderation_log (
+       id          TEXT PRIMARY KEY NOT NULL,
+       post_id     TEXT NOT NULL,
+       action      TEXT NOT NULL,
+       actor       TEXT,
+       reason      TEXT,
+       created_at  TEXT NOT NULL
+     )`,
+    `CREATE INDEX IF NOT EXISTS idx_moderation_log_post ON moderation_log (post_id)`,
+  ];
+  const tx = db.transaction(() => {
+    for (const sql of stmts) db.exec(sql);
+
+    // v25.47 canonical subscription rows (SEPARATE/PARALLEL — platform_fees only).
+    const subSeed = db.prepare(
+      `INSERT OR IGNORE INTO platform_fees
+         (key, amount_minor, currency, updated_at, updated_by_user_id, billing_period, deleted_at)
+         VALUES (?, ?, 'USD', '2026-06-30T00:00:00.000Z', 'system:seed', 'monthly', NULL)`,
+    );
+    // Collective — single canonical member tier.
+    subSeed.run('collective.member_subscription.standard', 24900);
+    // Consortium Partners — canonical 5-tier taxonomy.
+    subSeed.run('consortium.subscription.catalyst', 49900);
+    subSeed.run('consortium.subscription.builder', 99900);
+    subSeed.run('consortium.subscription.amplifier', 149900);
+    subSeed.run('consortium.subscription.nexus', 499900);
+    subSeed.run('consortium.subscription.founding_member', 0);
+
+    // APD-028 — canonical collective application fee: $300 = 30000 TRUE minor
+    // units. New rows seed at 30000; existing rows are never clobbered (IGNORE).
+    db.prepare(
+      `INSERT OR IGNORE INTO platform_fees (key, amount_minor, currency, updated_at, updated_by_user_id)
+         VALUES ('collective_application_fee', 30000, 'USD', '2026-06-30T00:00:00.000Z', 'system:seed')`,
+    ).run();
+
+    // 10 Pulse index symbols (DB-driven watchlist; no hardcoded list in code).
+    const pulseSeed = db.prepare(
+      `INSERT OR IGNORE INTO pulse_index_symbols
+         (symbol, label, category, enabled, refresh_seconds, sort_order, updated_at)
+         VALUES (?, ?, ?, 1, 3600, ?, '2026-06-30T00:00:00.000Z')`,
+    );
+    const pulse: Array<[string, string, string]> = [
+      ['SPY', 'S&P 500 ETF', 'equity_index'],
+      ['QQQ', 'Nasdaq 100 ETF', 'equity_index'],
+      ['DIA', 'Dow Jones ETF', 'equity_index'],
+      ['IWM', 'Russell 2000 ETF', 'equity_index'],
+      ['XLK', 'Technology Sector', 'sector'],
+      ['XLF', 'Financials Sector', 'sector'],
+      ['BTC-USD', 'Bitcoin', 'crypto'],
+      ['ETH-USD', 'Ethereum', 'crypto'],
+      ['VIX', 'Volatility Index', 'volatility'],
+      ['USD/EUR', 'US Dollar / Euro', 'fx'],
+    ];
+    pulse.forEach(([symbol, label, category], i) => pulseSeed.run(symbol, label, category, i));
+
+    // Audit-chain health seed — one incident row (BLOCKER-6 / APD-029).
+    db.prepare(
+      `INSERT OR IGNORE INTO audit_chain_health (key, status, detail, updated_at)
+         VALUES ('tenant_admin_capavate', 'incident',
+                 'P0 audit-chain continuity investigation (see blocker6_audit_chain_investigation.md)',
+                 '2026-06-30T00:00:00.000Z')`,
+    ).run();
+  });
+  tx();
+
+  // Additive ADD COLUMNs — outside the txn; each guarded against the
+  // duplicate-column error so re-boots no-op (mirrors applyV12AdditiveAlters).
+  const addColumns: string[] = [
+    `ALTER TABLE network_posts ADD COLUMN attachments TEXT`,
+    `ALTER TABLE founder_crm_contacts ADD COLUMN invite_status TEXT`,
+    `ALTER TABLE founder_crm_contacts ADD COLUMN invited_round_id TEXT`,
+    `ALTER TABLE founder_crm_contacts ADD COLUMN invited_at TEXT`,
+  ];
+  for (const sql of addColumns) {
+    try { db.exec(sql); } catch (err: any) {
+      if (!/duplicate column name/i.test(err?.message ?? String(err))) {
+        // Tolerate a missing base table on very early boot; real shape comes
+        // from the base CREATE statements applied earlier in this pass.
+        if (!/no such table/i.test(err?.message ?? String(err))) throw err;
+      }
+    }
+  }
 }
 
 /* v25.45.4 — see call-site comment above. Idempotent + boot-safe. */
 function applyV2545_4Schema(db: any) {
+  // v25.47 live-DB alignment fix — on the production data.db the platform_fees
+  // table predates the billing_period/deleted_at columns (it was created by an
+  // earlier migration WITHOUT them), so the CREATE TABLE IF NOT EXISTS below is
+  // a no-op and the seed INSERTs that reference those columns would crash with
+  // "table platform_fees has no column named billing_period". These guarded,
+  // additive ALTERs run BEFORE the seed transaction so the column shape is
+  // present on BOTH a fresh DB and the live DB. Mirrors migration 0068's ALTERs
+  // and the applyV12AdditiveAlters() duplicate-column tolerance pattern. Tier 3
+  // #29 additive-only; no destructive change.
+  const platformFeesAddColumns: string[] = [
+    `ALTER TABLE platform_fees ADD COLUMN billing_period TEXT`,
+    `ALTER TABLE platform_fees ADD COLUMN deleted_at TEXT`,
+  ];
+  for (const sql of platformFeesAddColumns) {
+    try { db.exec(sql); } catch (err: any) {
+      const msg = err?.message ?? String(err);
+      // Tolerate "duplicate column name" (already added on fresh DB / re-run) and
+      // "no such table" (base CREATE below will create it on a truly fresh DB).
+      if (!/duplicate column name/i.test(msg) && !/no such table/i.test(msg)) throw err;
+    }
+  }
   const stmts: string[] = [
     `CREATE TABLE IF NOT EXISTS profile_wizard_state (
        company_id  TEXT NOT NULL,
@@ -284,11 +440,13 @@ function applyV2545_4Schema(db: any) {
   ];
   const tx = db.transaction(() => {
     for (const sql of stmts) db.exec(sql);
-    // Seed the single v25.45.4 platform-fee row (matches the $2,500 hardcode;
-    // platform_fees stores TRUE minor units → 250000 cents == $2,500.00).
+    // APD-028 — canonical collective application fee: $300 = 30000 TRUE minor
+    // units. Unified with the applyV2547Schema seed so the dual bootstrap path
+    // never disagrees (this block runs first; INSERT OR IGNORE makes it the
+    // authoritative seed on a fresh DB).
     db.prepare(
       `INSERT OR IGNORE INTO platform_fees (key, amount_minor, currency, updated_at, updated_by_user_id)
-         VALUES ('collective_application_fee', 250000, 'USD', '2026-06-27T00:00:00.000Z', 'system:seed')`,
+         VALUES ('collective_application_fee', 30000, 'USD', '2026-06-30T00:00:00.000Z', 'system:seed')`,
     ).run();
     // v25.46.1 — Multi-section fee admin seeds (APD-018). Additive only; mirrors
     // migration 0068_v25_46_1_consortium_fees.sql so the dual bootstrap+migration
@@ -696,7 +854,7 @@ function applyV2538PricingConfigSchema(db: any) {
       updated_by   TEXT
     );`,
     `INSERT OR IGNORE INTO collective_application_fee_config (id, amount_minor, currency, updated_at)
-       VALUES ('default', 2500, 'USD', datetime('now'));`,
+       VALUES ('default', 30000, 'USD', datetime('now'));`,
     // --- Phase 2: partner commission-rate config (per-tier) ---
     `CREATE TABLE IF NOT EXISTS partner_commission_rate_config (
       tier       TEXT PRIMARY KEY,

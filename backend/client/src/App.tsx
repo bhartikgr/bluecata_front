@@ -158,6 +158,11 @@ import AdminCollectiveApplications from "@/pages/admin/CollectiveApplications";
 import AdminCollectiveMembers from "@/pages/admin/CollectiveMembers";
 import AdminCollectiveSettings from "@/pages/admin/CollectiveSettings";
 import AdminCollectiveWaitlist from "@/pages/admin/CollectiveWaitlist";
+// v25.47 APD-022 / APD-023 — admin Pulse Symbols + Post Moderation surfaces.
+import AdminPulseSymbols from "@/pages/admin/PulseSymbols";
+import AdminPostsModeration from "@/pages/admin/PostsModeration";
+// v25.47 APD-020 — public Consortium Partner pricing.
+import ConsortiumPricing from "@/pages/consortium/ConsortiumPricing";
 import { V25_COLLECTIVE_SHIPPED } from "@/lib/v25Marker"; void V25_COLLECTIVE_SHIPPED;
 import { V26_FIXES_SHIPPED } from "@/lib/v26Marker"; void V26_FIXES_SHIPPED;
 import PartnerOnboardingChecklistPage from "@/pages/partner/OnboardingChecklistPage";
@@ -473,6 +478,8 @@ function AppRouter() {
         <Route path="/privacy-policy" component={LegalPrivacyPage} />
         {/* CP Phase B — Public consortium-partner application */}
         <Route path="/apply/consortium" component={ConsortiumApplyPage} />
+        {/* v25.47 APD-020 — Public Consortium Partner pricing (no auth). */}
+        <Route path="/consortium/pricing" component={ConsortiumPricing} />
         <Route path="/login" component={Login} />
         <Route path="/signup" component={Signup} />
         <Route path="/forgot-password" component={Forgot} />
@@ -638,6 +645,10 @@ function AppRouter() {
           {() => <RequireAuth redirectTo="/investor/login"><InvestorProfile /></RequireAuth>}
         </Route>
         <Route path="/investor/messages">
+          {() => <RequireAuth redirectTo="/investor/login"><InvestorMessages /></RequireAuth>}
+        </Route>
+        {/* v25.47 APD-035 (HIGH-6) — /investor/inbox alias to the investor inbox. */}
+        <Route path="/investor/inbox">
           {() => <RequireAuth redirectTo="/investor/login"><InvestorMessages /></RequireAuth>}
         </Route>
         <Route path="/investor/collective">
@@ -838,6 +849,18 @@ function AppRouter() {
         </Route>
         <Route path="/admin/collective/waitlist">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminCollectiveWaitlist /></RequireAuth>}
+        </Route>
+        {/* v25.47 APD-031 — second canonical path for Collective Settings. */}
+        <Route path="/admin/collective-settings">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminCollectiveSettings /></RequireAuth>}
+        </Route>
+        {/* v25.47 APD-022 — DB-driven Pulse index watchlist CRUD. */}
+        <Route path="/admin/pulse-symbols">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminPulseSymbols /></RequireAuth>}
+        </Route>
+        {/* v25.47 APD-023 — network post moderation. */}
+        <Route path="/admin/posts">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminPostsModeration /></RequireAuth>}
         </Route>
         <Route path="/admin/:rest*">
           {() => (

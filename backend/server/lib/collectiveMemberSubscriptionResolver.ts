@@ -75,3 +75,59 @@ export function resolveCollectiveMemberSubscriptionTier(
     return null;
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * v25.47 APD-019 / APD-032(B) — single canonical member tier.
+ *
+ * The Collective membership ladder has collapsed to ONE canonical recurring
+ * tier: collective.member_subscription.standard ($249/mo == 24900 minor).
+ * Legacy basic/pro/enterprise rows are PRESERVED in platform_fees (deprecated
+ * in code only). The functions below are the canonical read path for the
+ * single-tier membership surface; legacy slugs map onto `standard`.
+ * ------------------------------------------------------------------------- */
+
+/** The one canonical member tier slug. */
+export const CANONICAL_MEMBER_TIER_SLUG = "standard";
+
+/** Legacy slugs that all collapse onto the canonical `standard` tier. */
+const LEGACY_MEMBER_TIER_SLUGS = new Set(["basic", "pro", "enterprise"]);
+
+/** Seed fallback amount if the row is somehow absent (matches connection.ts). */
+const CANONICAL_MEMBER_FALLBACK_MINOR = 24900;
+
+export interface CanonicalMemberTier extends ResolvedMemberSubscriptionTier {
+  /** True when a live DB row backed this result; false on seed fallback. */
+  fromDb: boolean;
+}
+
+/**
+ * Map any tier slug (legacy or current) onto the canonical `standard` slug.
+ * Unknown/empty input also collapses to `standard` — there is only one tier.
+ */
+export function resolveCanonicalMemberTierSlug(slug: unknown): string {
+  if (typeof slug === "string") {
+    const s = slug.trim().toLowerCase();
+    if (s === CANONICAL_MEMBER_TIER_SLUG || LEGACY_MEMBER_TIER_SLUGS.has(s)) {
+      return CANONICAL_MEMBER_TIER_SLUG;
+    }
+  }
+  return CANONICAL_MEMBER_TIER_SLUG;
+}
+
+/**
+ * Resolve the single canonical member tier from the DB. Always returns a tier
+ * (never null) — falls back to the canonical seed amount if the row is missing
+ * so the membership surface can always render.
+ */
+export function resolveCanonicalMemberTier(): CanonicalMemberTier {
+  const t = resolveCollectiveMemberSubscriptionTier(CANONICAL_MEMBER_TIER_SLUG);
+  if (t) return { ...t, fromDb: true };
+  return {
+    slug: CANONICAL_MEMBER_TIER_SLUG,
+    key: `${COLLECTIVE_MEMBER_SUBSCRIPTION_PREFIX}${CANONICAL_MEMBER_TIER_SLUG}`,
+    amountMinor: CANONICAL_MEMBER_FALLBACK_MINOR,
+    currency: "USD",
+    billingPeriod: "monthly",
+    fromDb: false,
+  };
+}

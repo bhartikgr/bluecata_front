@@ -38,6 +38,52 @@ function s3Configured(): boolean {
   return Boolean(process.env.AWS_S3_BUCKET && process.env.AWS_KMS_KEY_ID);
 }
 
+/** True when running under a production NODE_ENV. */
+function isProduction(): boolean {
+  return process.env.NODE_ENV === "production";
+}
+
+/**
+ * v25.47 APD-038 — true when a usable AWS credential mode is configured:
+ * explicit access keys, OR an instance-profile / IAM-role / named-profile flag.
+ * (The SDK can also pick creds up from the environment; these flags are the
+ * operator's explicit assertion that a non-key credential source exists.)
+ */
+function awsCredentialsConfigured(): boolean {
+  return Boolean(
+    (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) ||
+      process.env.AWS_USE_INSTANCE_PROFILE ||
+      process.env.AWS_USE_IAM_ROLE ||
+      process.env.AWS_PROFILE,
+  );
+}
+
+/**
+ * v25.47 APD-038 — fail-fast guard for production object storage. Requires
+ * AWS_S3_BUCKET + AWS_KMS_KEY_ID + AWS_REGION AND a credential mode. Throws a
+ * descriptive error listing the missing pieces. No-op outside production (the
+ * FS fallback is sanctioned for sandbox/dev only). Returns true when satisfied.
+ */
+export function assertProductionStorageConfigured(): boolean {
+  if (!isProduction()) return true;
+  const missing: string[] = [];
+  if (!process.env.AWS_S3_BUCKET) missing.push("AWS_S3_BUCKET");
+  if (!process.env.AWS_KMS_KEY_ID) missing.push("AWS_KMS_KEY_ID");
+  if (!process.env.AWS_REGION) missing.push("AWS_REGION");
+  if (!awsCredentialsConfigured()) {
+    missing.push(
+      "AWS credentials (AWS_ACCESS_KEY_ID+AWS_SECRET_ACCESS_KEY, or AWS_USE_INSTANCE_PROFILE/AWS_USE_IAM_ROLE/AWS_PROFILE)",
+    );
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `[objectStorage] production storage misconfigured — missing: ${missing.join(", ")}. ` +
+        "Refusing to fall back to the local filesystem in production.",
+    );
+  }
+  return true;
+}
+
 let warnedFsFallback = false;
 /** Emit the FS-fallback startup warning exactly once. */
 export function warnIfStorageNotConfigured(): void {
@@ -74,6 +120,11 @@ export async function putObject(args: {
   const id = randomBytes(12).toString("hex");
   const key = `${prefix}/${id}${ext}`;
 
+  // v25.47 APD-038 — in production, refuse to proceed unless real S3+KMS is
+  // configured. This throws BEFORE any FS write so production never silently
+  // persists unencrypted bytes to local disk.
+  assertProductionStorageConfigured();
+
   if (s3Configured()) {
     try {
       // Lazy import — only reached when the SDK is actually configured/installed.
@@ -101,8 +152,14 @@ export async function putObject(args: {
         mimeType,
       };
     } catch (err) {
-      // If the SDK is missing or the call fails, do NOT lose the upload — fall
-      // through to the FS path so the founder's submission still succeeds.
+      // v25.47 APD-038 — in production, a failed S3 put MUST NOT fall back to
+      // unencrypted local disk; re-throw so the upload fails loudly.
+      if (isProduction()) {
+        log.error("[objectStorage] S3 put failed in production (no FS fallback):", (err as Error).message);
+        throw err;
+      }
+      // Sandbox/dev only: do NOT lose the upload — fall through to the FS path
+      // so the founder's submission still succeeds.
       log.warn("[objectStorage] S3 put failed, falling back to FS:", (err as Error).message);
     }
   }

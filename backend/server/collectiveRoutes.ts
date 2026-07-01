@@ -55,6 +55,8 @@ import { getUserContext } from "./lib/userContext"; /* B12 (v24.0) tenant filter
 import { rawDb } from "./db/connection"; /* v25.36 — chapter-scoped reads for /members */
 import { log } from "./lib/logger"; /* v25.42 R8 — partners/public fail-closed logging */
 import { getApplicationFeeMinor } from "./lib/collectiveApplicationFeeResolver"; /* v25.38 — DB-driven application fee */
+import { resolveCanonicalMemberTier } from "./lib/collectiveMemberSubscriptionResolver"; /* v25.47 APD-019 — single canonical member tier */
+import { resolveConsortiumPricing } from "./lib/partnerTiers"; /* v25.47 APD-020/030 — 5-tier consortium pricing */
 import { founderOwnedCompanyIds as tenantFounderOwnedCompanyIds, investorVisibleCompanyIds as tenantInvestorVisibleCompanyIds } from "./lib/tenantAuth"; /* B12 (v24.0) */
 
 /* ============================================================
@@ -281,6 +283,33 @@ export function registerCollectiveRoutes(app: Express): void {
       : "USD";
     const fee = getApplicationFeeMinor(currency);
     res.json(fee);
+  });
+
+  /* -----------------------------------------------------------------
+   * v25.47 APD-019 / APD-032(B) — GET /api/collective/member-tier
+   *
+   * The Collective membership ladder has collapsed to ONE canonical
+   * recurring tier (collective.member_subscription.standard, $249/mo).
+   * This is the single read path the membership surface consumes. Open
+   * to any authed user (non-members view pricing before subscribing).
+   * Reads DB via the canonical resolver; never hardcodes the amount.
+   * ----------------------------------------------------------------- */
+  app.get("/api/collective/member-tier", (_req: Request, res: Response) => {
+    const tier = resolveCanonicalMemberTier();
+    res.json(tier);
+  });
+
+  /* -----------------------------------------------------------------
+   * v25.47 APD-020 — public GET /api/consortium/pricing
+   *
+   * PUBLIC (no auth) Consortium Partner pricing page data: the canonical
+   * 5-tier taxonomy (catalyst/builder/amplifier/nexus/founding_member),
+   * DB-resolved from platform_fees in canonical order. founding_member is
+   * flagged invite-only. No economics beyond the public list price.
+   * ----------------------------------------------------------------- */
+  app.get("/api/consortium/pricing", (_req: Request, res: Response) => {
+    const tiers = resolveConsortiumPricing();
+    res.json({ tiers });
   });
 
   /* -----------------------------------------------------------------

@@ -394,6 +394,38 @@ export function getAuditLog(): AuditEntry[] {
   return auditLog;
 }
 
+/* v25.47 APD-029 (BLOCKER-6) — audit-chain continuity health.
+ *
+ * Reads the additive `audit_chain_health` table (DB-driven; no in-memory
+ * canonical state). Each row is a per-tenant continuity flag the P0 banner
+ * consumes. `incident` is true when ANY row is not "ok", so the admin shell
+ * can surface the banner without re-deriving status client-side. */
+export interface AuditChainHealthRow {
+  key: string;
+  status: string;
+  detail: string | null;
+  updatedAt: string | null;
+}
+
+export function getAuditChainHealth(): { rows: AuditChainHealthRow[]; incident: boolean } {
+  let rows: AuditChainHealthRow[] = [];
+  try {
+    const raw = rawDb()
+      .prepare(`SELECT key, status, detail, updated_at FROM audit_chain_health ORDER BY key`)
+      .all() as Array<{ key: string; status: string; detail: string | null; updated_at: string | null }>;
+    rows = raw.map((r) => ({
+      key: r.key,
+      status: r.status,
+      detail: r.detail ?? null,
+      updatedAt: r.updated_at ?? null,
+    }));
+  } catch {
+    rows = [];
+  }
+  const incident = rows.some((r) => String(r.status).toLowerCase() !== "ok");
+  return { rows, incident };
+}
+
 /**
  * Append a new audit entry. Tenant-scoped, hash-chained, DB-backed.
  *
@@ -1042,6 +1074,17 @@ export function registerAdminPlatformRoutes(app: Express): void {
       return res.status(503).json({ ok: false, error: "db_unavailable", message: "Dashboard metrics temporarily unavailable" });
     }
   });
+  /* v25.47 APD-029 (BLOCKER-6) — audit-chain continuity health. Drives the
+   * admin P0 banner. Router-level requireAdmin (routes.ts) gates this. */
+  app.get("/api/admin/audit-chain-health", (_req: Request, res: Response) => {
+    try {
+      return res.json({ ok: true, ...getAuditChainHealth() });
+    } catch (err) {
+      log.error({ route: "admin.audit-chain-health", message: (err as Error).message });
+      return res.status(503).json({ ok: false, error: "db_unavailable" });
+    }
+  });
+
   app.get("/api/admin/dashboard/activity", (req: Request, res: Response) => {
     const surface = String(req.query.surface ?? "capavate").toLowerCase();
     // v25.42h — fail-closed + DB-driven. The activity feed is now sourced from

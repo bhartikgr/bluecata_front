@@ -38,13 +38,14 @@ describe("v25.38 collective_application_fee_config — table + seed", () => {
     expect(row).toBeTruthy();
   });
 
-  it("the seed default row is present (id='default', amount_minor=2500, currency='USD')", () => {
+  it("the seed default row is present (id='default', amount_minor=30000, currency='USD')", () => {
     const row = rawDb()
       .prepare(`SELECT id, amount_minor, currency FROM collective_application_fee_config WHERE id='default'`)
       .get();
     expect(row).toBeTruthy();
     expect(row.id).toBe("default");
-    expect(row.amount_minor).toBe(2500);
+    // APD-028 — canonical application fee is $300 = 30000 TRUE minor units.
+    expect(row.amount_minor).toBe(30000);
     expect(row.currency).toBe("USD");
   });
 });
@@ -52,7 +53,8 @@ describe("v25.38 collective_application_fee_config — table + seed", () => {
 describe("v25.38 getApplicationFeeMinor — DB-driven resolution", () => {
   it("returns the DB row with source='db' when the config row exists", () => {
     const r = getApplicationFeeMinor();
-    expect(r.amountMinor).toBe(2500);
+    // APD-028 — canonical application fee is $300 = 30000 TRUE minor units.
+    expect(r.amountMinor).toBe(30000);
     expect(r.currency).toBe("USD");
     expect(r.source).toBe("db");
   });
@@ -86,7 +88,7 @@ describe("v25.38 getApplicationFeeMinor — DB-driven resolution", () => {
     }
   });
 
-  it("the seed default equals the historical literal (2500) — displayed amount UNCHANGED", () => {
-    expect(DEFAULT_APPLICATION_FEE_MINOR).toBe(2500);
+  it("the seed default equals the APD-028 canonical fee ($300 = 30000 minor units)", () => {
+    expect(DEFAULT_APPLICATION_FEE_MINOR).toBe(30000);
   });
 });

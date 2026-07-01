@@ -672,7 +672,6 @@ export function markInvitationRedeemed(id: string, redeemedByUserId?: string | n
   // already redeemed; do NOT touch the in-memory copy.
   let dbChanged = 0;
   try {
-    const { rawDb } = require("./db/connection") as typeof import("./db/connection");
     const stmt = rawDb().prepare(
       "UPDATE round_invitations SET state = 'accepted', redeemed_at = ?, redeemed_by_user_id = ?, updated_at = ? " +
       "WHERE id = ? AND state IN ('pending','sent')",

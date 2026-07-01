@@ -290,6 +290,12 @@ export function registerAdminCollectiveRoutes(app: Express): void {
     // C-009 fix v23.5: try legacy store first, fall through to modern store.
     const legacyApp = legacyGetApplicationById(id);
     if (legacyApp) {
+      // v25.47 APD-034 (HIGH-2) — terminal-state idempotency. Re-approving an
+      // already-accepted application is a no-op success: do NOT re-activate the
+      // membership or re-emit the approval notification/audit.
+      if (legacyApp.status === "accepted") {
+        return res.json({ ok: true, application: legacyApp, idempotent: true });
+      }
       // Legacy path: investor-side application — userId is legacyApp.userId
       const updated = legacySetApplicationStatus(id, "accepted");
       /* v25.21 Lane A NH-002 fix — if the status DB write failed,
@@ -351,6 +357,10 @@ export function registerAdminCollectiveRoutes(app: Express): void {
     const modernApp = founderApply.getApplicationById(id);
     if (!modernApp) {
       return res.status(404).json({ ok: false, error: "APPLICATION_NOT_FOUND" });
+    }
+    // v25.47 APD-034 (HIGH-2) — terminal-state idempotency (modern path mirror).
+    if (modernApp.status === "accepted") {
+      return res.json({ ok: true, application: modernApp, idempotent: true });
     }
     // v23.8 W-21: use "accepted" (not "invited") so the status matches the
     // admin filter tab and downstream founder dashboard / member badge.
@@ -422,6 +432,12 @@ export function registerAdminCollectiveRoutes(app: Express): void {
     // C-009 fix v23.5: try legacy store first, fall through to modern store.
     const legacyApp = legacyGetApplicationById(id);
     if (legacyApp) {
+      // v25.47 APD-034 (HIGH-2) — terminal-state idempotency. Re-rejecting an
+      // already-rejected application is a no-op success: do NOT re-deactivate
+      // the membership or re-emit the rejection notification/audit.
+      if (legacyApp.status === "rejected") {
+        return res.json({ ok: true, application: legacyApp, idempotent: true });
+      }
       const updated = legacySetApplicationStatus(id, "rejected");
       /* v25.21 Lane A NH-002 fix — if the status DB write failed, the helper
        * now returns null. Short-circuit BEFORE deactivating the membership
@@ -495,6 +511,10 @@ export function registerAdminCollectiveRoutes(app: Express): void {
     const modernApp = founderApply.getApplicationById(id);
     if (!modernApp) {
       return res.status(404).json({ ok: false, error: "APPLICATION_NOT_FOUND" });
+    }
+    // v25.47 APD-034 (HIGH-2) — terminal-state idempotency (modern path mirror).
+    if (modernApp.status === "rejected") {
+      return res.json({ ok: true, application: modernApp, idempotent: true });
     }
     const updated = founderApply.setApplicationStatus(id, "rejected", adminUserId);
     /* v25.21 Lane A NH-002 fix (REWORK after triple-verify) — mirror the

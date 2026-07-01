@@ -72,7 +72,7 @@ import { registerDataroomRoutes } from "./dataroomStore";
 // base64 data URLs in form state.
 import { registerCompanyLogoRoutes } from "./lib/companyLogoRoutes";
 import { registerReportsRoutes } from "./reportsStore";
-import { registerFounderCrmRoutes, listByFounder as crmListByFounder } from "./founderCrmStore";
+import { registerFounderCrmRoutes, listByFounder as crmListByFounder, crmMarkInvitedRegistered } from "./founderCrmStore";
 import { registerCaptableCommitRoutes, getLedger } from "./captableCommitStore";
 import { closeRoundCascadeStandalone } from "./lib/roundCloseCascade";
 import { registerTermSheetRoutes } from "./termSheetStore";
@@ -157,6 +157,10 @@ import { registerAdminCollectiveFeeRoutes } from "./adminCollectiveFeeRoutes"; /
 import { registerAdminPlatformFeesRoutes } from "./adminPlatformFeesRoutes"; /* v25.45.4 L-2 — DB-backed Platform Fees admin (foundation for v25.46) */
 import { registerAdminFeeTierRoutes } from "./adminFeeTierRoutes"; /* v25.46.1 — multi-section fee admin: collective member-subscription + consortium subscription tiers + SPV deployment flat fee */
 import { registerV2546Routes } from "./v2546Routes"; /* v25.46 — 6-track release: messages, network posts, pulse SSE, markets quote, press */
+import { registerPulseSymbolRoutes } from "./pulseSymbolRoutes"; /* v25.47 APD-022 — DB-driven Pulse symbol registry */
+import { registerPostModerationRoutes } from "./postModerationRoutes"; /* v25.47 APD-023 — network post moderation */
+import { registerPostAttachmentRoutes } from "./postAttachmentRoutes"; /* v25.47 APD-024 — network post attachments */
+import { registerCollectiveAdminSettingsRoutes } from "./collectiveAdminSettingsRoutes"; /* v25.47 APD-031 — collective admin settings */
 import { registerAdminDscRoutes } from "./adminDscRoutes";
 // v17 Phase C — Founder accept/decline offers + DSC vote public endpoint.
 import { registerCollectiveOfferRoutes } from "./collectiveOffersStore";
@@ -759,6 +763,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   registerAdminPlatformFeesRoutes(app); /* v25.45.4 L-2 — /api/admin/platform-fees read+update */
   registerAdminFeeTierRoutes(app); /* v25.46.1 — /api/admin/collective/member-subscription-tiers + /api/admin/consortium/subscription-tiers + /api/admin/consortium/spv-deployment-fee */
   registerV2546Routes(app); /* v25.46 — 6-track release endpoints (messages, network posts, pulse, markets, press) */
+  registerPulseSymbolRoutes(app); /* v25.47 APD-022 — DB-driven Pulse symbol registry */
+  registerPostModerationRoutes(app); /* v25.47 APD-023 — network post moderation */
+  registerPostAttachmentRoutes(app); /* v25.47 APD-024 — network post attachments */
+  registerCollectiveAdminSettingsRoutes(app); /* v25.47 APD-031 — collective admin settings */
 
   /* ------------ Patch v10 — Admin DSC promotion + investor submission (P0-9) ------------ */
   registerAdminDscRoutes(app);
@@ -2280,6 +2288,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         companyId: entry.companyId,
       });
       setSessionCookie(res, personaId);
+      // v25.47 APD-033 (HIGH-1) — mark the auto-created CRM contact registered.
+      if (entry.companyId) {
+        try {
+          crmMarkInvitedRegistered({ companyId: entry.companyId, email: entry.inviteeEmail });
+        } catch (crmErr) {
+          log.warn("[invitations/redeem] crmMarkInvitedRegistered failed (non-fatal):", (crmErr as Error).message);
+        }
+      }
       const ctx = getUserContextForId(personaId);
       return res.json({
         ok: true,
@@ -2315,6 +2331,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const marked = markInvitationRedeemed(modernEntry.id, personaId);
     if (!marked) return res.status(404).json({ ok: false, reason: "not_found" });
     setSessionCookie(res, personaId);
+    // v25.47 APD-033 (HIGH-1) — mark the auto-created CRM contact registered.
+    if (modernEntry.companyId) {
+      try {
+        crmMarkInvitedRegistered({ companyId: modernEntry.companyId, email: modernEntry.investorEmail });
+      } catch (crmErr) {
+        log.warn("[invitations/redeem] crmMarkInvitedRegistered failed (non-fatal):", (crmErr as Error).message);
+      }
+    }
     const ctx = getUserContextForId(personaId);
     return res.json({
       ok: true,
@@ -3849,7 +3873,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         companyId,
         name: String(body.name ?? "Untitled round"),
         type: String(body.type ?? "seed"),
-        state: body.state ?? "draft",
+        // v25.47 BLOCKER-2/3 — new rounds go live immediately so the Collective
+        // apply-gate (hasActiveOrLiveRound) passes without a manual activation
+        // step. Callers may still pass an explicit state to override.
+        state: body.state ?? "active",
         targetAmount: Number(body.targetAmount ?? 0),
         preMoney: body.preMoney ?? null,
         postMoney: derivedPostMoney,

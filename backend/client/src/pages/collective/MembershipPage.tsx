@@ -1,16 +1,19 @@
 /**
- * v18 Phase B — Capavate Collective: Membership tier subscription page.
+ * v25.47 APD-019 / APD-032(B) — Collective Membership page.
  *
- * Responsibilities:
- *   - Render the three-tier pricing catalog (basic / standard / premium)
- *   - "Subscribe" button \u2192 POST /checkout, redirect to Stripe Checkout
- *   - "Manage subscription" button (when user has an active membership)
- *     \u2192 POST /portal, redirect to the Stripe Customer Portal
- *   - Disabled "Contact admin" state for tiers whose price id env var is
- *     unset (server reports `available: false` per tier)
- *   - Hidden when COLLECTIVE_ENABLED feature flag is off
+ * The membership ladder has collapsed to ONE canonical recurring tier
+ * (collective.member_subscription.standard, $249/mo). This page renders a
+ * SINGLE tier card whose price is read DB-direct from GET
+ * /api/collective/member-tier (never hardcoded). The Subscribe CTA still hits
+ * the existing POST /api/collective/membership/checkout (unchanged); the legacy
+ * /api/collective/membership/tiers catalog endpoint is untouched and no longer
+ * consumed here.
  *
- * No mock data, no TODOs, no stubs \u2014 every action hits a real endpoint.
+ * Preserved data-testids (relied on by e2e + Avi alignment):
+ *   collective-membership-page, current-membership-card,
+ *   manage-subscription-btn, tier-card-standard, subscribe-btn-standard.
+ *
+ * No mock data, no TODOs, no stubs — every action hits a real endpoint.
  */
 
 import { useMemo, useEffect, useRef } from "react";
@@ -21,8 +24,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { CheckCircle2, AlertCircle, ExternalLink } from "lucide-react";
-/* v25.12 NH1 + NH2 — toast errors on checkout / portal failures. */
+import { CheckCircle2, ExternalLink } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 // ----- Types --------------------------------------------------------------
@@ -31,29 +33,19 @@ interface FeatureFlagsResponse {
   COLLECTIVE_ENABLED?: boolean;
 }
 
-interface TierDTO {
-  tier: "basic" | "standard" | "premium";
-  label: string;
-  blurb: string;
-  entitlements: string[];
-  membershipRole: "member" | "dsc_member" | "chapter_admin";
-  available: boolean;
-  priceId: string | null;
-  unitAmount: number | null;
-  currency: string | null;
-  interval: string | null;
-  nickname: string | null;
-}
-
-interface TiersResponse {
-  ok: boolean;
-  stripeConfigured: boolean;
-  tiers: TierDTO[];
+/** Shape of GET /api/collective/member-tier (resolveCanonicalMemberTier). */
+interface MemberTierDTO {
+  slug: string;
+  key: string;
+  amountMinor: number;
+  currency: string;
+  billingPeriod: string;
+  fromDb: boolean;
 }
 
 interface BillingDTO {
   id: string;
-  tier: "basic" | "standard" | "premium";
+  tier: string;
   status: "pending" | "active" | "past_due" | "cancelled" | "expired";
   stripeCustomerId: string | null;
   stripeSubscriptionId: string | null;
@@ -67,9 +59,6 @@ interface MeResponse {
   membership: BillingDTO | null;
 }
 
-/** v25.32 final A2 — enriched billing detail from the additive
- *  /api/collective/membership/detail endpoint (DB-direct, read-only). Surfaces
- *  the payment date + period bounds the sacred `/me` DTO omits. */
 interface MembershipDetailDTO {
   id: string | null;
   tier: string | null;
@@ -92,9 +81,9 @@ interface MeChaptersResponse {
 
 // ----- Helpers ------------------------------------------------------------
 
-function formatMoney(unitAmount: number | null, currency: string | null): string {
-  if (unitAmount === null || currency === null) return "—";
-  const dollars = unitAmount / 100;
+function formatMoneyMinor(amountMinor: number | null, currency: string | null): string {
+  if (amountMinor === null || currency === null) return "—";
+  const dollars = amountMinor / 100;
   try {
     return new Intl.NumberFormat("en-US", {
       style: "currency",
@@ -106,13 +95,24 @@ function formatMoney(unitAmount: number | null, currency: string | null): string
   }
 }
 
-/** v25.32 final A2 — format an ISO timestamp for display; em dash when absent. */
 function formatIsoDate(iso: string | null): string {
   if (!iso) return "—";
   try {
     return new Date(iso).toLocaleDateString();
   } catch {
     return iso;
+  }
+}
+
+function periodLabel(billingPeriod: string | undefined): string {
+  switch (billingPeriod) {
+    case "monthly":
+      return "month";
+    case "yearly":
+    case "annual":
+      return "year";
+    default:
+      return billingPeriod || "month";
   }
 }
 
@@ -128,23 +128,32 @@ function statusBadgeVariant(
       return "destructive";
     case "cancelled":
     case "expired":
+    default:
       return "outline";
   }
 }
+
+const MEMBER_ENTITLEMENTS = [
+  "Full Collective member access",
+  "Deal flow, soft circles, and screening events",
+  "Member directory and connections",
+  "Monthly meetings and recaps",
+];
 
 // ----- Component ----------------------------------------------------------
 
 export default function MembershipPage(): JSX.Element | null {
   const qc = useQueryClient();
+  const { toast } = useToast();
 
-  // 1) Feature flag \u2014 hide entirely when COLLECTIVE_ENABLED is off.
+  // 1) Feature flag — hide entirely when COLLECTIVE_ENABLED is off.
   const flagsQ = useQuery<FeatureFlagsResponse>({
     queryKey: ["/api/feature-flags"],
     queryFn: async () => (await apiRequest("GET", "/api/feature-flags")).json(),
   });
   const collectiveOn = flagsQ.data?.COLLECTIVE_ENABLED === true;
 
-  // 2) Active chapter \u2014 default to the user's first chapter.
+  // 2) Active chapter — default to the user's first chapter.
   const meChaptersQ = useQuery<MeChaptersResponse>({
     queryKey: ["/api/me/chapters"],
     queryFn: async () => (await apiRequest("GET", "/api/me/chapters")).json(),
@@ -154,11 +163,10 @@ export default function MembershipPage(): JSX.Element | null {
     return meChaptersQ.data?.chapters?.[0]?.id ?? "chap_keiretsu_canada";
   }, [meChaptersQ.data]);
 
-  // 3) Tier catalog (5-minute server cache; refetch on focus).
-  const tiersQ = useQuery<TiersResponse>({
-    queryKey: ["/api/collective/membership/tiers"],
-    queryFn: async () =>
-      (await apiRequest("GET", "/api/collective/membership/tiers")).json(),
+  // 3) The single canonical member tier (DB-direct price).
+  const tierQ = useQuery<MemberTierDTO>({
+    queryKey: ["/api/collective/member-tier"],
+    queryFn: async () => (await apiRequest("GET", "/api/collective/member-tier")).json(),
     enabled: collectiveOn,
   });
 
@@ -175,9 +183,7 @@ export default function MembershipPage(): JSX.Element | null {
     enabled: collectiveOn && !!activeChapterId,
   });
 
-  // 4b) v25.32 final A2 — enriched billing detail (amount anchor / payment
-  // date / period bounds) from the additive detail endpoint. DB-direct,
-  // read-only; supplements the sacred `/me` DTO without modifying it.
+  // 4b) Enriched billing detail (payment date / period bounds).
   const detailQ = useQuery<MembershipDetailResponse>({
     queryKey: ["/api/collective/membership/detail", activeChapterId],
     queryFn: async () =>
@@ -190,42 +196,18 @@ export default function MembershipPage(): JSX.Element | null {
     enabled: collectiveOn && !!activeChapterId,
   });
 
-  // v18 Phase D — SSE realtime: invalidate `me` membership query on every
-  // `billing` topic frame for this chapter. Polling refetch is the background
-  // fallback when SSE never connects.
   useCollectiveStream({
     chapterId: activeChapterId,
     topics: ["billing"],
     enabled: collectiveOn && !!activeChapterId,
     onMessage: () => {
-      qc.invalidateQueries({
-        queryKey: ["/api/collective/membership/me", activeChapterId],
-      });
-      // v25.32 final A2 — also refresh the enriched detail card on billing SSE.
-      qc.invalidateQueries({
-        queryKey: ["/api/collective/membership/detail", activeChapterId],
-      });
+      qc.invalidateQueries({ queryKey: ["/api/collective/membership/me", activeChapterId] });
+      qc.invalidateQueries({ queryKey: ["/api/collective/membership/detail", activeChapterId] });
     },
   });
 
-  // 5) Checkout mutation \u2014 POST and follow checkout_url.
-  // v25.6: response shape is now Airwallex-shaped. The legacy `checkout_url`
-  // field is preserved for back-compat, but new payments return
-  // `hostedPaymentPageUrl` (Airwallex hosted page). 3DS challenge: the hosted
-  // page handles 3DS itself (Airwallex SCA flow) and redirects back here on
-  // success/failure. PCI scope stays out of Capavate because card data never
-  // touches our origin.
-  /* v25.12 NH1 + NH2 — toast helper. */
-  const { toast } = useToast();
-
-  /* v25.22 NC-7 fix — on the success redirect from Airwallex's hosted
-   * payment page, synchronously verify the intent so the user is activated
-   * even if the webhook never lands. Without this the user pays but stays
-   * in `pending` until webhook arrival (which may take minutes, or fail
-   * entirely). The new `/api/collective/membership/verify` endpoint
-   * verifies the intent against Airwallex AND drives the billing state
-   * machine. We strip the query params on success so a refresh doesn't
-   * re-trigger. Ref guard prevents double-fire under React StrictMode. */
+  // 5) On the success redirect from Airwallex's hosted payment page, verify the
+  // intent synchronously so the user activates even if the webhook never lands.
   const verifyMut = useMutation({
     mutationFn: async (intentId: string): Promise<{ ok: boolean; idempotent?: boolean }> => {
       const resp = await apiRequest("POST", "/api/collective/membership/verify", {
@@ -237,7 +219,8 @@ export default function MembershipPage(): JSX.Element | null {
       qc.invalidateQueries({ queryKey: ["/api/collective/membership/me"] });
       toast({ title: "Membership activated", description: "You're in. Welcome." });
     },
-    onError: (e: Error) => toast({ variant: "destructive", title: "Activation pending", description: e.message }),
+    onError: (e: Error) =>
+      toast({ variant: "destructive", title: "Activation pending", description: e.message }),
   });
   const didVerifyRef = useRef(false);
   useEffect(() => {
@@ -249,7 +232,6 @@ export default function MembershipPage(): JSX.Element | null {
     if (status === "success" && intentId && intentId !== "{PAYMENT_INTENT_ID}") {
       didVerifyRef.current = true;
       verifyMut.mutate(intentId);
-      // Strip query params so a refresh doesn't re-trigger.
       const url = new URL(window.location.href);
       url.searchParams.delete("status");
       url.searchParams.delete("intent_id");
@@ -258,21 +240,15 @@ export default function MembershipPage(): JSX.Element | null {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // 6) Checkout mutation — POST and follow the hosted payment page URL.
   const checkoutMut = useMutation({
-    mutationFn: async (tier: TierDTO["tier"]): Promise<{
+    mutationFn: async (): Promise<{
       checkout_url?: string | null;
       hostedPaymentPageUrl?: string | null;
-      paymentIntentId?: string;
-      clientSecret?: string;
-      gateway?: string;
     }> => {
       const resp = await apiRequest("POST", "/api/collective/membership/checkout", {
-        tier,
+        tier: "standard",
         chapter_id: activeChapterId,
-        /* v25.22 NC-7 fix — ask Airwallex to include the intent_id on the
-         * success redirect so the client can call the new
-         * /api/collective/membership/verify endpoint to drive activation
-         * synchronously rather than waiting for the webhook. */
         success_url:
           typeof window !== "undefined"
             ? `${window.location.origin}/collective/membership?status=success&intent_id={PAYMENT_INTENT_ID}`
@@ -285,18 +261,16 @@ export default function MembershipPage(): JSX.Element | null {
       return resp.json();
     },
     onSuccess: (data) => {
-      // v25.6: prefer Airwallex `hostedPaymentPageUrl`; fall back to legacy
-      // `checkout_url`. The hosted page handles 3DS internally.
       const targetUrl = data.hostedPaymentPageUrl ?? data.checkout_url;
       if (targetUrl && typeof window !== "undefined") {
         window.location.href = targetUrl;
       }
     },
-    /* v25.12 NH1 — surface checkout errors so user knows what to retry. */
-    onError: (e: Error) => toast({ variant: "destructive", title: "Checkout failed", description: e.message }),
+    onError: (e: Error) =>
+      toast({ variant: "destructive", title: "Checkout failed", description: e.message }),
   });
 
-  // 6) Portal mutation \u2014 POST and follow portal_url.
+  // 7) Portal mutation — POST and follow portal_url.
   const portalMut = useMutation({
     mutationFn: async (): Promise<{ portal_url?: string }> => {
       const resp = await apiRequest("POST", "/api/collective/membership/portal", {
@@ -313,35 +287,25 @@ export default function MembershipPage(): JSX.Element | null {
         window.location.href = data.portal_url;
       }
     },
-    /* v25.12 NH2 — surface portal errors. */
-    onError: (e: Error) => toast({ variant: "destructive", title: "Could not open billing portal", description: e.message }),
+    onError: (e: Error) =>
+      toast({ variant: "destructive", title: "Could not open billing portal", description: e.message }),
   });
 
   if (!collectiveOn) return null;
 
   const current = meQ.data?.membership ?? null;
   const hasActive =
-    current !== null &&
-    (current.status === "active" || current.status === "past_due");
-
-  // v25.32 final A2 — enriched detail (payment date / period bounds) and the
-  // amount the member pays, resolved from the tier catalogue by matching the
-  // member's tier. The exact charged amount is NOT persisted as a column on
-  // collective_memberships_billing (flagged Avi-alignment); the tier price is
-  // the authoritative displayed amount.
+    current !== null && (current.status === "active" || current.status === "past_due");
   const detail = detailQ.data?.membership ?? null;
-  const currentTierCatalog =
-    current !== null
-      ? (tiersQ.data?.tiers ?? []).find((t) => t.tier === current.tier) ?? null
-      : null;
+  const tier = tierQ.data ?? null;
+  const isCurrent = hasActive && current?.status === "active";
 
   return (
-    <div className="container mx-auto px-4 py-8 max-w-6xl" data-testid="collective-membership-page">
+    <div className="container mx-auto px-4 py-8 max-w-3xl" data-testid="collective-membership-page">
       <div className="mb-8">
         <h1 className="text-3xl font-bold mb-2">Collective Membership</h1>
         <p className="text-muted-foreground">
-          Choose your tier. Memberships are billed annually and renew
-          automatically until you cancel.
+          One membership, billed monthly and renewing automatically until you cancel.
         </p>
       </div>
 
@@ -351,16 +315,12 @@ export default function MembershipPage(): JSX.Element | null {
             <div>
               <CardTitle className="flex items-center gap-3 text-lg">
                 Your current membership
-                <Badge variant={statusBadgeVariant(current.status)}>
-                  {current.status}
-                </Badge>
+                <Badge variant={statusBadgeVariant(current.status)}>{current.status}</Badge>
               </CardTitle>
               <p className="mt-1 text-sm text-muted-foreground capitalize">
-                {current.tier} tier
+                Collective membership
                 {current.cancelAtPeriodEnd && (
-                  <span className="ml-2 text-amber-600">
-                    — cancels at period end
-                  </span>
+                  <span className="ml-2 text-amber-600">— cancels at period end</span>
                 )}
               </p>
             </div>
@@ -376,10 +336,6 @@ export default function MembershipPage(): JSX.Element | null {
               </Button>
             )}
           </CardHeader>
-          {/* v25.32 final A2 — surface all five Avi billing fields prominently:
-              amount, plan/tier, payment date, expiry/validity, status. Amount
-              is the tier catalogue price (resolved from tiersQ); payment date
-              + expiry come DB-direct from the detail endpoint. */}
           <CardContent>
             <dl
               className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm sm:grid-cols-3"
@@ -388,15 +344,15 @@ export default function MembershipPage(): JSX.Element | null {
               <div>
                 <dt className="text-muted-foreground">Amount</dt>
                 <dd className="font-medium" data-testid="membership-amount">
-                  {currentTierCatalog
-                    ? `${formatMoney(currentTierCatalog.unitAmount, currentTierCatalog.currency)} / ${currentTierCatalog.interval ?? "year"}`
+                  {tier
+                    ? `${formatMoneyMinor(tier.amountMinor, tier.currency)} / ${periodLabel(tier.billingPeriod)}`
                     : "—"}
                 </dd>
               </div>
               <div>
                 <dt className="text-muted-foreground">Plan</dt>
                 <dd className="font-medium capitalize" data-testid="membership-plan">
-                  {current.tier} tier
+                  Collective membership
                 </dd>
               </div>
               <div>
@@ -424,85 +380,52 @@ export default function MembershipPage(): JSX.Element | null {
         </Card>
       )}
 
-      {tiersQ.isLoading ? (
-        <div className="grid gap-6 md:grid-cols-3">
-          {[0, 1, 2].map((i) => (
-            <Skeleton key={i} className="h-80 w-full" />
-          ))}
-        </div>
+      {tierQ.isLoading ? (
+        <Skeleton className="h-80 w-full" />
       ) : (
-        <div className="grid gap-6 md:grid-cols-3">
-          {(tiersQ.data?.tiers ?? []).map((t) => {
-            const isCurrent = current?.tier === t.tier && current.status === "active";
-            return (
-              <Card
-                key={t.tier}
-                className={isCurrent ? "border-primary" : ""}
-                data-testid={`tier-card-${t.tier}`}
-              >
-                <CardHeader>
-                  <CardTitle className="flex items-center justify-between">
-                    <span>{t.label}</span>
-                    {isCurrent && <Badge>Current</Badge>}
-                  </CardTitle>
-                  <p className="text-2xl font-bold">
-                    {formatMoney(t.unitAmount, t.currency)}
-                    <span className="text-sm font-normal text-muted-foreground">
-                      {" "}
-                      / {t.interval ?? "year"}
-                    </span>
-                  </p>
-                  <p className="text-sm text-muted-foreground">{t.blurb}</p>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <ul className="space-y-2 text-sm">
-                    {t.entitlements.map((e) => (
-                      <li key={e} className="flex items-start gap-2">
-                        <CheckCircle2 className="mt-0.5 h-4 w-4 text-green-600 shrink-0" />
-                        <span>{e}</span>
-                      </li>
-                    ))}
-                  </ul>
-                  {t.available ? (
-                    <Button
-                      className="w-full"
-                      onClick={() => checkoutMut.mutate(t.tier)}
-                      disabled={
-                        checkoutMut.isPending ||
-                        (isCurrent && !current?.cancelAtPeriodEnd)
-                      }
-                      data-testid={`subscribe-btn-${t.tier}`}
-                    >
-                      {checkoutMut.isPending
-                        ? "Redirecting…"
-                        : isCurrent
-                          ? "Subscribed"
-                          : "Subscribe"}
-                    </Button>
-                  ) : (
-                    <Button
-                      className="w-full"
-                      variant="outline"
-                      disabled
-                      data-testid={`unavailable-btn-${t.tier}`}
-                    >
-                      <AlertCircle className="mr-2 h-4 w-4" />
-                      Contact admin
-                    </Button>
-                  )}
-                </CardContent>
-              </Card>
-            );
-          })}
-        </div>
-      )}
-
-      {tiersQ.data && !tiersQ.data.stripeConfigured && (
-        <p className="mt-6 text-sm text-muted-foreground">
-          Stripe is not configured in this environment. Membership purchases
-          are temporarily disabled — reach out to your chapter admin to
-          arrange access.
-        </p>
+        <Card
+          className={isCurrent ? "border-primary" : ""}
+          data-testid="tier-card-standard"
+        >
+          <CardHeader>
+            <CardTitle className="flex items-center justify-between">
+              <span>Collective Membership</span>
+              {isCurrent && <Badge>Current</Badge>}
+            </CardTitle>
+            <p className="text-2xl font-bold">
+              {formatMoneyMinor(tier?.amountMinor ?? null, tier?.currency ?? null)}
+              <span className="text-sm font-normal text-muted-foreground">
+                {" "}
+                / {periodLabel(tier?.billingPeriod)}
+              </span>
+            </p>
+            <p className="text-sm text-muted-foreground">
+              Full access to the Capavate Collective.
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <ul className="space-y-2 text-sm">
+              {MEMBER_ENTITLEMENTS.map((e) => (
+                <li key={e} className="flex items-start gap-2">
+                  <CheckCircle2 className="mt-0.5 h-4 w-4 text-green-600 shrink-0" />
+                  <span>{e}</span>
+                </li>
+              ))}
+            </ul>
+            <Button
+              className="w-full"
+              onClick={() => checkoutMut.mutate()}
+              disabled={checkoutMut.isPending || (isCurrent && !current?.cancelAtPeriodEnd)}
+              data-testid="subscribe-btn-standard"
+            >
+              {checkoutMut.isPending
+                ? "Redirecting…"
+                : isCurrent
+                  ? "Subscribed"
+                  : "Subscribe"}
+            </Button>
+          </CardContent>
+        </Card>
       )}
     </div>
   );
