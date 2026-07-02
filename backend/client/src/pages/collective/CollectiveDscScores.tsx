@@ -7,6 +7,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
+import { isCollectiveMembershipError, CollectiveMembershipNotice } from "@/lib/collectiveGateError";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -102,7 +103,7 @@ export default function CollectiveDscScores() {
       </div>
 
       {error && (
-        <div className="rounded-md bg-red-50 border border-red-200 p-4 text-sm text-red-700" data-testid="error-scores">
+        isCollectiveMembershipError(error) ? <CollectiveMembershipNotice /> : <div className="rounded-md bg-red-50 border border-red-200 p-4 text-sm text-red-700" data-testid="error-scores">
           Failed to load scores. Please refresh.
         </div>
       )}

@@ -7,6 +7,7 @@ import { useEffect } from "react";
 import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest, ApiError } from "@/lib/queryClient";
+import { isCollectiveMembershipError, CollectiveMembershipNotice } from "@/lib/collectiveGateError";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -179,7 +180,7 @@ export default function CollectiveDashboard() {
       </div>
 
       {error && (
-        <div
+        isCollectiveMembershipError(error) ? <CollectiveMembershipNotice /> : <div
           className="rounded-md bg-red-50 border border-red-200 p-4 text-sm text-red-700"
           data-testid="error-dashboard"
         >

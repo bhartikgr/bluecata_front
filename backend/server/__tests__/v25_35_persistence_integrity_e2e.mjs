@@ -47,6 +47,11 @@ import {
 // v25.35 fix-2 — round-2 scenario imports.
 import { clearFounderCollectiveStore } from "../founderCollectiveApplyStore.ts";
 import { addCompanyForFounder } from "../multiCompanyStore.ts";
+// v25.48 NEW-1 — Collective apply now also requires an ACTIVE PAID Capavate
+// subscription. seedFounderCompany() below seeds one so this persistence sweep
+// exercises the post-gate paths. The NEW-1 gate itself is covered by
+// v25_48_new1_collective_eligibility_e2e. Production code unchanged.
+import { recordPendingSubscription, activateByPaymentIntent } from "../subscriptionStore.ts";
 
 let app, server, port;
 const ADMIN = `u_v2535_admin_${Date.now()}`;
@@ -129,6 +134,17 @@ function seedFounderCompany(founderId, companyId) {
   } catch {
     /* silent: if rawDb or rounds table is unavailable, the L-3 gate will
        short-circuit and the test will still report a clear failure */
+  }
+  /* v25.48 NEW-1 active-paid-subscriber seed (idempotent per company). */
+  try {
+    const pi = `pi_v2535_${companyId}`;
+    recordPendingSubscription({
+      companyId, tierId: "growth", userId: founderId, billingCycle: "monthly",
+      paymentIntentId: pi, amountMinor: 9900, currency: "USD",
+    });
+    activateByPaymentIntent(pi, { expiresAt: new Date(Date.now() + 30 * 864e5).toISOString() });
+  } catch {
+    /* silent: NEW-1 gate will short-circuit and the test reports a clear failure */
   }
 }
 

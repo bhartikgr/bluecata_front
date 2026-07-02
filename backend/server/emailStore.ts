@@ -14,6 +14,12 @@ import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 // restart. Each mutation now writes through the shim's `kv_emailStoreOutbox`
 // table so the queue resumes mid-flight and admin retry/cancel survives boots.
 import { persistEntry, hydrateEntries, softDeleteEntry } from "./lib/storePersistenceShim";
+// v25.48 DATA-1 — DB-backed, admin-editable email templates. The canonical
+// source of truth for templates is now the `email_templates` table; the
+// in-memory `templates` array below is the SEED set used to self-seed a fresh
+// or live DB (INSERT OR IGNORE by slug). `templateCache` is a boot-hydrated,
+// DB-first read cache — NOT canonical state.
+import { rawDb } from "./db/connection";
 
 const PERSIST_STORE = "emailStoreOutbox";
 
@@ -78,6 +84,91 @@ const templates: EmailTemplate[] = [
 
 const outbox: OutboxEmail[] = [];
 
+/* v25.48 DATA-1 — DB-first template cache. Populated by hydrateEmailStore()
+ * from the `email_templates` table (which is seeded from the `templates` seed
+ * set on first boot). Kept in sync on every admin PUT. This is a cache only;
+ * the DB row is canonical. */
+const templateCache = new Map<string, EmailTemplate>();
+
+function rowToTemplate(r: any): EmailTemplate {
+  let variables: string[] = [];
+  try { variables = r.variables_json ? JSON.parse(r.variables_json) : []; } catch { variables = []; }
+  return {
+    id: String(r.id ?? `tpl_${r.slug}`),
+    slug: String(r.slug),
+    subject: String(r.subject ?? ""),
+    bodyHtml: String(r.body_html ?? ""),
+    bodyText: String(r.body_text ?? ""),
+    variables,
+    category: (r.category ?? "system") as EmailTemplate["category"],
+  };
+}
+
+/** v25.48 DATA-1 — seed the canonical starter templates into the DB (idempotent,
+ * INSERT OR IGNORE by slug so admin edits are never clobbered) and refresh the
+ * DB-first cache. Safe to call on every boot. */
+function seedAndLoadTemplatesFromDb(): void {
+  const db = rawDb();
+  const now = new Date().toISOString();
+  const ins = db.prepare(
+    `INSERT OR IGNORE INTO email_templates
+       (slug, id, subject, body_html, body_text, variables_json, category, updated_at, updated_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'system:seed')`,
+  );
+  const seedTx = db.transaction(() => {
+    for (const t of templates) {
+      ins.run(t.slug, t.id, t.subject, t.bodyHtml, t.bodyText, JSON.stringify(t.variables), t.category, now);
+    }
+  });
+  seedTx();
+  const rows = db.prepare(`SELECT * FROM email_templates`).all() as any[];
+  templateCache.clear();
+  for (const r of rows) templateCache.set(String(r.slug), rowToTemplate(r));
+}
+
+/** v25.48 DATA-1 — list every template (DB-first cache; falls back to the seed
+ * set only if the cache is empty, e.g. before hydrate). */
+export function listTemplates(): EmailTemplate[] {
+  if (templateCache.size > 0) return Array.from(templateCache.values());
+  return templates.slice();
+}
+
+/** v25.48 DATA-1 — admin upsert of a template. Persists to the DB (canonical)
+ * then refreshes the cache. Returns the persisted template. */
+export function upsertTemplate(
+  slug: string,
+  patch: { subject?: string; bodyHtml?: string; bodyText?: string; variables?: string[]; category?: string },
+  updatedBy?: string,
+): EmailTemplate | null {
+  const existing = findTemplate(slug);
+  if (!existing) return null;
+  const merged: EmailTemplate = {
+    ...existing,
+    subject: patch.subject ?? existing.subject,
+    bodyHtml: patch.bodyHtml ?? existing.bodyHtml,
+    bodyText: patch.bodyText ?? existing.bodyText,
+    variables: Array.isArray(patch.variables) ? patch.variables : existing.variables,
+    category: (patch.category as EmailTemplate["category"]) ?? existing.category,
+  };
+  const db = rawDb();
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO email_templates
+       (slug, id, subject, body_html, body_text, variables_json, category, updated_at, updated_by)
+       VALUES (@slug, @id, @subject, @bodyHtml, @bodyText, @variables, @category, @now, @by)
+     ON CONFLICT(slug) DO UPDATE SET
+       subject=excluded.subject, body_html=excluded.body_html, body_text=excluded.body_text,
+       variables_json=excluded.variables_json, category=excluded.category,
+       updated_at=excluded.updated_at, updated_by=excluded.updated_by`,
+  ).run({
+    slug: merged.slug, id: merged.id, subject: merged.subject, bodyHtml: merged.bodyHtml,
+    bodyText: merged.bodyText, variables: JSON.stringify(merged.variables), category: merged.category,
+    now, by: updatedBy ?? "admin",
+  });
+  templateCache.set(merged.slug, merged);
+  return merged;
+}
+
 /** v25.28 Phase C — persist a single outbox row. Non-fatal: shim returns false
  * on DB failure; we keep the in-memory copy so the queue keeps moving forward,
  * and the next successful write will pick it up. */
@@ -93,6 +184,12 @@ export function renderTemplate(html: string, vars: Record<string, string>): stri
 }
 
 export function findTemplate(slug: string): EmailTemplate | null {
+  // v25.48 DATA-1 — DB-first: prefer the hydrated cache (canonical DB rows).
+  // Fall back to the seed set only before hydrate has run (early boot / tests
+  // that never touch the DB), preserving byte-for-byte legacy behavior there.
+  const cached = templateCache.get(slug);
+  if (cached) return cached;
+  if (templateCache.size > 0) return null;
   return templates.find(t => t.slug === slug) ?? null;
 }
 
@@ -323,6 +420,15 @@ if (DEMO_SEED_ENABLED) {
  * demo seeds + hydrated rows don't collide).
  */
 export function hydrateEmailStore(): void {
+  // v25.48 DATA-1 — seed + load the DB-backed email_templates first so the
+  // template cache is DB-first and restart-safe. Non-fatal on DB error: the
+  // seed set remains the fallback.
+  try {
+    seedAndLoadTemplatesFromDb();
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn("[emailStore.hydrateEmailStore] template seed/load failed:", (err as Error).message);
+  }
   try {
     const entries = hydrateEntries<OutboxEmail>(PERSIST_STORE);
     if (entries.length === 0) return;
@@ -340,12 +446,26 @@ export function hydrateEmailStore(): void {
 
 export function registerEmailRoutes(app: Express): void {
   app.get("/api/admin/email/templates", (_req: Request, res: Response) => {
-    res.json({ count: templates.length, templates });
+    // v25.48 DATA-1 — DB-first list (canonical email_templates rows).
+    const list = listTemplates();
+    res.json({ count: list.length, templates: list });
   });
   app.get("/api/admin/email/templates/:slug", (req: Request, res: Response) => {
     const t = findTemplate(req.params.slug);
     if (!t) return res.status(404).json({ error: "not_found" });
     res.json(t);
+  });
+  // v25.48 DATA-1 — admin edit (persist to DB, canonical). Under the blanket
+  // /api/admin requireAdmin guard (routes.ts). Slug is immutable (PK); only the
+  // editable content fields are updated.
+  app.put("/api/admin/email/templates/:slug", (req: Request, res: Response) => {
+    const slug = String(req.params.slug);
+    const { subject, bodyHtml, bodyText, variables, category } = req.body ?? {};
+    const ctx = (req as unknown as { userContext?: { userId?: string } }).userContext;
+    const updatedBy = ctx?.userId ?? "admin";
+    const updated = upsertTemplate(slug, { subject, bodyHtml, bodyText, variables, category }, updatedBy);
+    if (!updated) return res.status(404).json({ error: "not_found" });
+    res.json(updated);
   });
   app.post("/api/admin/email/preview", (req: Request, res: Response) => {
     const { slug, variables } = req.body ?? {};

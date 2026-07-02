@@ -51,6 +51,20 @@ export function registerCollectiveWaitlistRoutes(app: Express): void {
     (req: Request, res: Response) => {
       const userId = req.userContext?.userId;
       if (!userId) return res.status(401).json({ error: "missing_identity" });
+      // v25.48 NEW-1 (investor JOIN gate) — an investor may join the Collective
+      // as a member ONLY if they hold ≥1 ACTIVE cap-table position in AT LEAST
+      // ONE company on the platform. `isOnCapTable(userId)` (no companyId) is the
+      // canonical ledger-derived "any active position" reader. Fail-closed:
+      // absence of any position → 403. Admins bypass (they may onboard members).
+      const isAdminCaller = req.userContext?.isAdmin === true;
+      if (!isAdminCaller && !isOnCapTable(userId)) {
+        return res.status(403).json({
+          ok: false,
+          error: "no_cap_table_position",
+          message:
+            "You must hold an active cap-table position in at least one company to join the Collective as a member.",
+        });
+      }
       const body = (req.body ?? {}) as { chapterHint?: string; fullApplicationPayload?: unknown };
       // v25.13 NL3 — reject if the user already has a non-declined entry of
       // this kind. Without this, the endpoint accepted unlimited resubmits,

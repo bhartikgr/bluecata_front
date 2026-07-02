@@ -191,10 +191,12 @@ describe("v24.4 Fix 1 — Airwallex webhook activates ONLY on SUCCEEDED", () => 
 
 /* =============================== Fix 1 (health flag) ================= */
 describe("v24.4 Fix 1 — /api/health surfaces featureFlags.airwallexMode", () => {
-  it("the health endpoint reports version 24.4.0 and an airwallexMode flag", async () => {
+  it("the health endpoint reports the package version and an airwallexMode flag", async () => {
     const r = await request(app).get("/api/health");
     expect(r.status).toBe(200);
-    expect(r.body.version).toBe("24.4.0");
+    // v25.48 — assert the intent (health surfaces a valid semver version), not a
+    // hard-pinned old value that rots on every release bump. Currently 25.48.0.
+    expect(String(r.body.version)).toMatch(/^\d+\.\d+\.\d+$/);
     expect(r.body.featureFlags).toBeDefined();
     expect(["stub", "test", "live"]).toContain(r.body.featureFlags.airwallexMode);
   });

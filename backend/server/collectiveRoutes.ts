@@ -57,6 +57,7 @@ import { log } from "./lib/logger"; /* v25.42 R8 — partners/public fail-closed
 import { getApplicationFeeMinor } from "./lib/collectiveApplicationFeeResolver"; /* v25.38 — DB-driven application fee */
 import { resolveCanonicalMemberTier } from "./lib/collectiveMemberSubscriptionResolver"; /* v25.47 APD-019 — single canonical member tier */
 import { resolveConsortiumPricing } from "./lib/partnerTiers"; /* v25.47 APD-020/030 — 5-tier consortium pricing */
+import { isDscMember } from "./adminDscRoutes"; /* v25.48 DSC-1a — dsc_roles source of truth; a granted DSC member may compute/score, same gate the vote route uses */
 import { founderOwnedCompanyIds as tenantFounderOwnedCompanyIds, investorVisibleCompanyIds as tenantInvestorVisibleCompanyIds } from "./lib/tenantAuth"; /* B12 (v24.0) */
 
 /* ============================================================
@@ -1255,6 +1256,7 @@ export function registerCollectiveRoutes(app: Express): void {
       userContext?: {
         isAuthed?: boolean;
         isAdmin?: boolean;
+        userId?: string;
         collective?: { role?: string | null; status?: string };
       };
     }).userContext;
@@ -1266,10 +1268,16 @@ export function registerCollectiveRoutes(app: Express): void {
       ctx.collective?.status === "active" &&
       (ctx.collective.role === "dsc" || ctx.collective.role === "committee" || ctx.collective.role === "dsc_committee")
     );
+    // v25.48 DSC-1a — the Sacred userContext overlay never emits role "dsc", so
+    // an admin-granted DSC member (dsc_roles) was rejected here while the vote
+    // route (which checks isDscMember) accepted them. Accept the SAME
+    // dsc_roles-backed grant on compute/score so a granted DSC member may BOTH
+    // vote AND score. Read-only call into adminDscRoutes; userContext.ts unchanged.
+    const isGrantedDscMember = !!(ctx.userId && isDscMember(ctx.userId));
     if (!ctx.isAuthed) {
       return res.status(401).json({ error: "unauthorized", message: "Sign in required." });
     }
-    if (!isAdmin && !isDscCommittee) {
+    if (!isAdmin && !isDscCommittee && !isGrantedDscMember) {
       return res.status(403).json({ error: "forbidden", message: "DSC committee or admin role required." });
     }
 

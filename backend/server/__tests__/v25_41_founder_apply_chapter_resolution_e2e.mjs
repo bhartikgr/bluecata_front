@@ -23,6 +23,11 @@ import { rawDb } from "../db/connection.ts";
 import { __setRuntimePersona } from "../lib/userContext.ts";
 import { addCompanyForFounder } from "../multiCompanyStore.ts";
 import { DEFAULT_CHAPTER_ID } from "../lib/chapterDefaults.ts";
+// v25.48 NEW-1 — Collective apply now also requires the company to be an ACTIVE
+// PAID Capavate subscriber. Seed one per company below so this chapter-resolution
+// contract test exercises the post-gate success path (the NEW-1 gate itself is
+// covered by v25_48_new1_collective_eligibility_e2e). Production code unchanged.
+import { recordPendingSubscription, activateByPaymentIntent } from "../subscriptionStore.ts";
 
 let app, server, port;
 const STAMP = Date.now();
@@ -148,6 +153,15 @@ beforeAll(async () => {
          VALUES (?, ?, ?, 'priced', 'active', 1000000, 0, datetime('now'), datetime('now'))`
       )
       .run(`rnd_v2541_${cid}_${STAMP}`, cid, `Seed Round ${cid}`);
+
+    // v25.48 NEW-1 — seed an ACTIVE PAID Capavate subscription for each company
+    // so the new active-subscriber gate on the founder apply route passes.
+    const pi = `pi_v2541_${cid}_${STAMP}`;
+    recordPendingSubscription({
+      companyId: cid, tierId: "growth", userId: cid === COMPANY ? FOUNDER : FOUNDER_NO_CH,
+      billingCycle: "monthly", paymentIntentId: pi, amountMinor: 9900, currency: "USD",
+    });
+    activateByPaymentIntent(pi, { expiresAt: new Date(Date.now() + 30 * 864e5).toISOString() });
   }
 }, 60_000);
 

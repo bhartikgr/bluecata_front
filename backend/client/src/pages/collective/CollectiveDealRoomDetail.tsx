@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ArrowLeft, ExternalLink, Globe, Linkedin, BookOpen, BarChart3 } from "lucide-react";
+import { ArrowLeft, ExternalLink, Globe, Linkedin, BookOpen, BarChart3, FileText } from "lucide-react";
 import { safeExternalHref } from "@/lib/safeUrl"; /* v25.17 Lane D NC3 — block javascript: URL XSS */
 
 const TIER_COLORS: Record<string, string> = {
@@ -58,6 +58,19 @@ export default function CollectiveDealRoomDetail() {
     queryFn: () => apiRequest("GET", `/api/collective/companies/${companyId}`).then((r) => r.json()),
     enabled: !!companyId,
   });
+
+  // DSC-1c — pitch deck
+  type PitchDeckOkResponse = { ok: true; pitchDeck: { id: string; originalName: string; mimeType: string }; url: string; expiresAt: string };
+  type PitchDeckErrResponse = { ok?: false; error: string };
+  const pitchDeckQ = useQuery<PitchDeckOkResponse | PitchDeckErrResponse>({
+    queryKey: ["/api/collective/dsc/pitch-deck", companyId],
+    queryFn: () => apiRequest("GET", `/api/collective/dsc/pitch-deck/${companyId}`).then((r) => r.json()),
+    enabled: !!companyId && !isLoading && !error,
+    retry: false,
+  });
+  const pitchDeckOk = pitchDeckQ.data && "ok" in pitchDeckQ.data && pitchDeckQ.data.ok === true;
+  const pitchDeck = pitchDeckOk ? (pitchDeckQ.data as PitchDeckOkResponse).pitchDeck : null;
+  const pitchDeckUrl = pitchDeckOk ? (pitchDeckQ.data as PitchDeckOkResponse).url : null;
 
   if (isLoading) {
     return (
@@ -299,6 +312,31 @@ export default function CollectiveDealRoomDetail() {
               </CardContent>
             </Card>
           )}
+
+          {/* DSC-1c — Pitch Deck */}
+          <Card data-testid="card-pitch-deck">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-semibold" style={{ color: "#1A1A2E" }}>Pitch Deck</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {pitchDeckQ.isLoading && <p className="text-xs text-slate-400">Loading…</p>}
+              {!pitchDeckQ.isLoading && pitchDeckOk && pitchDeck && safeExternalHref(pitchDeckUrl) ? (
+                <a
+                  href={safeExternalHref(pitchDeckUrl)!}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 text-sm text-[#cc0001] hover:underline"
+                  data-testid="dsc-pitch-deck-link"
+                >
+                  <FileText className="h-4 w-4" />
+                  {pitchDeck.originalName}
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </a>
+              ) : (
+                !pitchDeckQ.isLoading && <p className="text-xs text-slate-400" data-testid="dsc-pitch-deck-link">No pitch deck uploaded.</p>
+              )}
+            </CardContent>
+          </Card>
         </TabsContent>
 
         {/* Cap Table Summary Tab */}

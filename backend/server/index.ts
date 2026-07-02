@@ -17,6 +17,7 @@ import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "node:http";
 import { startBridgeWorker } from "./bridgeWorker";
+import { isBridgeEnabled, bridgeDisabledReason } from "./lib/bridgeEnabled"; /* v25.48 HIGH-8 — legacy outbound bridge default-OFF in prod */
 import { startCollectiveRenewalWorker, isRenewalWorkerEnabled } from "./lib/collectiveRenewalWorker";
 import { hydrateBridgeStore } from "./bridgeStore";
 import { hydrateAllStores } from "./lib/hydrateStores";
@@ -312,7 +313,13 @@ app.use((req, res, next) => {
     () => {
       log(`serving on port ${port}`);
 
-      if (process.env.BRIDGE_WORKER_ENABLED !== "false") {
+      /* v25.48 HIGH-8 — the legacy outbound bridge is UNUSED and, in prod with
+       * no webhook, 501s + dead-letters every event. Gate the drain worker
+       * behind BRIDGE_ENABLED (default OFF in production). When disabled we do
+       * NOT start the drain loop at all, so no 501 storm and no DLQ pileup. The
+       * Sacred bridgeRuntime.ts is untouched. BRIDGE_WORKER_ENABLED=false still
+       * disables the worker independently (horizontal-scaling contract). */
+      if (process.env.BRIDGE_WORKER_ENABLED !== "false" && isBridgeEnabled()) {
         /* v25.4 — hydrate queued envelopes from bridge_outbox before the
          * drain worker starts, so queued events survive restart. */
         try {
@@ -335,6 +342,8 @@ app.use((req, res, next) => {
           log(`durable-map hydrate failed (non-fatal): ${(err as Error).message}`, "bridge-worker");
         }
         startBridgeWorker();
+      } else if (!isBridgeEnabled()) {
+        log(`legacy outbound bridge DISABLED (HIGH-8): ${bridgeDisabledReason()} — drain worker not started, no 501/DLQ`, "bridge-worker");
       } else {
         log("bridge worker disabled via BRIDGE_WORKER_ENABLED=false", "bridge-worker");
       }

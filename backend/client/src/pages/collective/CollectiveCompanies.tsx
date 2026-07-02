@@ -7,6 +7,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
+import { isCollectiveMembershipError, CollectiveMembershipNotice } from "@/lib/collectiveGateError";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -118,7 +119,7 @@ export default function CollectiveCompanies() {
       <Card>
         <CardContent className="p-0">
           {error && (
-            <div className="p-6 text-sm text-red-600" data-testid="error-companies">
+            isCollectiveMembershipError(error) ? <CollectiveMembershipNotice /> : <div className="p-6 text-sm text-red-600" data-testid="error-companies">
               Failed to load companies. Please refresh.
             </div>
           )}

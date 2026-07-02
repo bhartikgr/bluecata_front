@@ -350,7 +350,7 @@ export default function ApplyToCollective() {
               </div>
             </div>
             <Button
-              onClick={() => window.open("https://capavate.com/collective/", "_blank")}
+              onClick={() => window.open("https://capavate.com/collective/dashboard", "_blank") /* v25.48 CD-6 */}
               className="bg-emerald-600 hover:bg-emerald-700 text-white h-9 px-4 shrink-0"
               data-testid="button-open-collective-member"
             >
@@ -377,7 +377,7 @@ export default function ApplyToCollective() {
             <div className="flex flex-col sm:flex-row gap-3 mt-6">
               {/* Sprint 20 Wave 2 — real URL, not toast (defect 39) */}
               <Button
-                onClick={() => window.open("https://capavate.com/collective/", "_blank")}
+                onClick={() => window.open("https://capavate.com/collective/dashboard", "_blank")} /* v25.48 CD-6 — bare /collective/ has no route (404); point at the Collective home */
                 className="bg-white text-[hsl(219_45%_20%)] hover:bg-white/90 h-11 px-6"
                 data-testid="button-join-collective"
               >
@@ -549,7 +549,7 @@ export default function ApplyToCollective() {
                 </div>
                 <div className="flex justify-center gap-2 pt-2">
                   <Button
-                    onClick={() => window.open("https://capavate.com/collective/", "_blank")}
+                    onClick={() => window.open("https://capavate.com/collective/dashboard", "_blank")} /* v25.48 CD-6 — bare /collective/ has no route (404); point at the Collective home */
                     className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)]"
                     data-testid="button-go-collective-home"
                   >
@@ -1040,7 +1040,7 @@ function Step7Success({ applicationId, navigate }: { applicationId: string | nul
         <div className="flex justify-center gap-2 pt-2">
           <Button variant="outline" onClick={() => navigate("/investor/dashboard")} data-testid="button-go-dashboard">Back to dashboard</Button>
           <Button
-            onClick={() => window.open("https://capavate.com/collective/", "_blank")}
+            onClick={() => window.open("https://capavate.com/collective/dashboard", "_blank") /* v25.48 CD-6 */}
             className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)]"
             data-testid="button-go-collective"
           >

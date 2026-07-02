@@ -238,6 +238,94 @@ function applyInlineMigrations(db: any) {
    * investor subscription flow (Sacred Rule 76) — new subscription structures
    * live only in platform_fees rows. */
   applyV2547Schema(db);
+
+  /* v25.48 — Investment-flow backlog (B3/B4/B5) + DATA-1 email templates.
+   * Additive only (CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE). Mirrors
+   * migrations 0078-0081 so the dual bootstrap+migration path keeps these
+   * present on a fresh boot / fresh test DB. PARALLEL to the Sacred cap-table
+   * ledger (captableCommitStore) and Sacred emailStore in-memory template
+   * list — new canonical state lives ONLY in these DB tables. */
+  applyV2548Schema(db);
+}
+
+/* v25.48 — see call-site comment above. Idempotent + boot-safe.
+ *
+ * Tables (additive, all NEW):
+ *   - subscription_docs_sent   (B3: per-round/per-investor "sub-docs sent" flag)
+ *   - investor_wired_signals   (B4: optional investor "I wired" advisory signal)
+ *   - commit_attestations      (B5: founder attestation at commit — parallel to
+ *                               the Sacred captable ledger, fail-closed)
+ *   - email_templates          (DATA-1: DB-backed, admin-editable email templates)
+ * Seeds: email_templates seeded from the canonical starter set on first boot
+ * (INSERT OR IGNORE by slug — existing rows are never clobbered). No cap-table
+ * math or ledger rows are touched. */
+function applyV2548Schema(db: any) {
+  const stmts: string[] = [
+    `CREATE TABLE IF NOT EXISTS subscription_docs_sent (
+       id            TEXT PRIMARY KEY NOT NULL,
+       round_id      TEXT NOT NULL,
+       investor_id   TEXT NOT NULL,
+       company_id    TEXT,
+       sent_at       TEXT NOT NULL,
+       sent_by_user_id TEXT,
+       note          TEXT,
+       UNIQUE (round_id, investor_id)
+     )`,
+    `CREATE INDEX IF NOT EXISTS idx_sub_docs_sent_round ON subscription_docs_sent (round_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_sub_docs_sent_investor ON subscription_docs_sent (investor_id)`,
+    `CREATE TABLE IF NOT EXISTS investor_wired_signals (
+       id            TEXT PRIMARY KEY NOT NULL,
+       round_id      TEXT NOT NULL,
+       investor_id   TEXT NOT NULL,
+       company_id    TEXT,
+       wired_at      TEXT NOT NULL,
+       amount_hint   TEXT,
+       currency      TEXT,
+       note          TEXT,
+       UNIQUE (round_id, investor_id)
+     )`,
+    `CREATE INDEX IF NOT EXISTS idx_investor_wired_round ON investor_wired_signals (round_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_investor_wired_investor ON investor_wired_signals (investor_id)`,
+    `CREATE TABLE IF NOT EXISTS commit_attestations (
+       id              TEXT PRIMARY KEY NOT NULL,
+       invitation_id   TEXT NOT NULL,
+       round_id        TEXT,
+       company_id      TEXT,
+       investor_id     TEXT,
+       attestor_user_id TEXT NOT NULL,
+       attested_at     TEXT NOT NULL,
+       amount          TEXT,
+       currency        TEXT,
+       statement       TEXT
+     )`,
+    `CREATE INDEX IF NOT EXISTS idx_commit_attest_invitation ON commit_attestations (invitation_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_commit_attest_company ON commit_attestations (company_id)`,
+    `CREATE TABLE IF NOT EXISTS email_templates (
+       slug            TEXT PRIMARY KEY NOT NULL,
+       id              TEXT,
+       subject         TEXT NOT NULL,
+       body_html       TEXT NOT NULL,
+       body_text       TEXT NOT NULL,
+       variables_json  TEXT,
+       category        TEXT,
+       updated_at      TEXT NOT NULL,
+       updated_by      TEXT
+     )`,
+  ];
+  const tx = db.transaction(() => {
+    for (const sql of stmts) db.exec(sql);
+    // DATA-1 — seed the canonical email templates on first boot. INSERT OR
+    // IGNORE by slug so admin edits (persisted rows) are never clobbered.
+    try {
+      // Lazy static import avoided (ESM/tsx): read the canonical starter set
+      // from the seed helper exported by emailStore. Kept import-free here by
+      // seeding the minimal known slugs is NOT sufficient — instead the
+      // emailStore hydrate performs the authoritative DB-first seed. We only
+      // ensure the table exists here; row seeding happens in hydrateEmailStore
+      // (DB-first, restart-safe). No-op if already seeded.
+    } catch { /* seed handled by hydrateEmailStore */ }
+  });
+  tx();
 }
 
 /* v25.47 — see call-site comment above. Idempotent + boot-safe.

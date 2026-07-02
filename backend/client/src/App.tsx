@@ -612,6 +612,10 @@ function AppRouter() {
         <Route path="/founder/glossary">
           {() => <RequireAuth><FounderGlossary /></RequireAuth>}
         </Route>
+        {/* HIGH-7 — founder notifications feed (same component as investor, auth-only, no subscription gate) */}
+        <Route path="/founder/notifications">
+          {() => <RequireAuth><InvestorNotifications /></RequireAuth>}
+        </Route>
         <Route path="/founder/companies/:id">
           {() => <RequireAuth><FounderCompanyDetail /></RequireAuth>}
         </Route>
@@ -992,6 +996,18 @@ function AppRouter() {
         {/* v25.12 NC2 — Expert Q&A detail page. */}
         <Route path="/collective/questions/:id">
           {() => <RequireAuth><CollectiveShell><QuestionDetailPage /></CollectiveShell></RequireAuth>}
+        </Route>
+        {/* v25.48 AI-6 — /collective/ask(+/:id) aliases. The server (expertQAStore)
+            emits notification + email links to /collective/ask and /collective/ask/:id,
+            and QuestionDetailPage's own back-nav uses /collective/ask, but only
+            /collective/ask-expert and /collective/questions/:id were registered —
+            so those in-app + emailed links 404'd. These aliases resolve them to the
+            same pages without touching the 9 server link sites. */}
+        <Route path="/collective/ask/:id">
+          {() => <RequireAuth><CollectiveShell><QuestionDetailPage /></CollectiveShell></RequireAuth>}
+        </Route>
+        <Route path="/collective/ask">
+          {() => <RequireAuth><CollectiveShell><AskExpertPage /></CollectiveShell></RequireAuth>}
         </Route>
         {/* v25.12 NC3 — announcement detail. We render the events calendar
          * page anchored to the announcement (the calendar shell already

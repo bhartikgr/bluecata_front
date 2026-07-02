@@ -18,7 +18,7 @@
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { AuthShell } from "@/pages/auth/AuthShell";
-import { Handshake, FileText, KeyRound, ArrowRight, CheckCircle2 } from "lucide-react";
+import { Handshake, FileText, ArrowRight, CheckCircle2 } from "lucide-react";
 
 export default function PartnerSignup() {
   return (
@@ -82,8 +82,7 @@ export default function PartnerSignup() {
             <li className="flex items-start gap-2">
               <CheckCircle2 className="h-4 w-4 text-emerald-600 mt-0.5 shrink-0" />
               <span>
-                <span className="font-medium text-foreground">Tiered seat plans</span> — from Catalyst (5 seats)
-                to Builder, Anchor, and Architect tiers.
+                <span className="font-medium text-foreground">Tiered seat plans</span> — Catalyst, Builder, Amplifier, Nexus, and Founding Member.
               </span>
             </li>
             <li className="flex items-start gap-2">
@@ -123,9 +122,8 @@ export default function PartnerSignup() {
            * we instruct the user to open the full link from their email
            * rather than typing it in here. */}
           <span className="font-medium text-foreground">Already received a partner invite token?</span>{" "}
-          <span className="text-[#cc0001] inline-flex items-center gap-1" data-testid="link-redeem-partner-token">
-            <KeyRound className="h-3 w-3" />
-            Open the full activation link from your invitation email
+          <span className="text-muted-foreground" data-testid="link-redeem-partner-token">
+            Open the full activation link from your invitation email.
           </span>
         </div>
       </div>

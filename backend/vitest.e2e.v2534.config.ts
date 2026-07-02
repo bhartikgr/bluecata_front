@@ -54,6 +54,9 @@ merged.test.include = [
   // v25.45.3 — Bug I (Public tab cross-company stale state) + Bug H server
   // fail-closed regression suites.
   "server/__tests__/v25_45_3_*_e2e.mjs",
+  // v25.48 — NEW-1 eligibility, DSC-1a/c, CP-2a/b, DATA-1/2, HIGH-7/8/9, PF-1,
+  // and the investment backlog B1-B5 real-route regression suites.
+  "server/__tests__/v25_48_*_e2e.mjs",
 ];
 
 export default merged;

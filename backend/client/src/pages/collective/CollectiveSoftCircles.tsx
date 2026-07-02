@@ -5,6 +5,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
+import { isCollectiveMembershipError, CollectiveMembershipNotice } from "@/lib/collectiveGateError";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -64,7 +65,7 @@ export default function CollectiveSoftCircles() {
       </div>
 
       {error && (
-        <div className="rounded-md bg-red-50 border border-red-200 p-4 text-sm text-red-700" data-testid="error-soft-circles">
+        isCollectiveMembershipError(error) ? <CollectiveMembershipNotice /> : <div className="rounded-md bg-red-50 border border-red-200 p-4 text-sm text-red-700" data-testid="error-soft-circles">
           Failed to load soft-circle data. Please refresh.
         </div>
       )}

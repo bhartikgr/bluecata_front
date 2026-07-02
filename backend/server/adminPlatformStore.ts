@@ -14,6 +14,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import { companies, rounds, softCircles, dataroomFiles, reports } from "./mockData";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
+// v25.48 DATA-2 (V-1/V-2/V-3) — DB-driven admin KPI reads (replace mockData arrays).
+import { dbTotalCompanies, dbTotalFunded, dbTotalCommittedSoftCircle, dbRegions } from "./lib/adminKpiDbReads";
 import { ALL_OUTBOUND_EVENT_TYPES, getOutbox } from "./bridgeStore";
 import { ALL_NOTIFICATION_KINDS } from "./notificationsStore";
 // Patch v10 (BUG-3 / BUG-6) — real KPI aggregation from canonical stores.
@@ -67,8 +69,10 @@ const sha256 = (s: string) => createHash("sha256").update(s, "utf8").digest("hex
  * (companies, MRR, investors, regions, funnels) all read from real stores.
  */
 function computeKpis() {
-  // Active companies: canonical companies array (multi-company tenant inventory).
-  const totalCompanies = companies.length;
+  // v25.48 DATA-2 (V-1) — Active companies: read the CANONICAL DB company
+  // inventory (getAllCompaniesFromDb), NOT the mockData `companies` array which
+  // is empty on live and made this KPI report 0 while 54 real tenants existed.
+  const totalCompanies = dbTotalCompanies();
 
   // Active investors: distinct userIds with at least one committed cap-table entry.
   const ledger = getLedger();
@@ -78,17 +82,14 @@ function computeKpis() {
   }
   const totalInvestors = investorIds.size;
 
-  // Soft-circle pipeline: sum of softCircle amounts.
-  const totalCommittedSoftCircle = softCircles.reduce(
-    (sum: number, s: { amount?: number }) => sum + (s.amount ?? 0),
-    0,
-  );
+  // v25.48 DATA-2 (V-2) — Soft-circle pipeline: sum from the canonical
+  // softCircleStore (DB), not the mockData `softCircles` array.
+  const totalCommittedSoftCircle = dbTotalCommittedSoftCircle();
 
-  // Funded: sum of round.amountRaised across all rounds.
-  const totalFunded = rounds.reduce(
-    (sum: number, r: { amountRaised?: number }) => sum + (r.amountRaised ?? 0),
-    0,
-  );
+  // v25.48 DATA-2 (V-3) — Funded: sum of Round.raisedAmount from the DB-backed
+  // roundsStore (listRounds), not the mockData `rounds` array (which also used
+  // the wrong field name `amountRaised`).
+  const totalFunded = dbTotalFunded();
 
   // v25.42h — growth/churn/NRR now DB-derived from subscriptions +
   // subscriptions_history. Any metric without a defensible source returns
@@ -123,17 +124,12 @@ function computeKpis() {
   // `raised` / `committed` return null where no canonical aggregate exists.
   const topCompanies = computeTopCompanies(5);
   const topInvestors = computeTopInvestors(3);
-  // Regions: derived from `companies[].region` (when present); falls back to a
-  // global "GLOBAL" bucket so we never return an empty array.
+  // v25.48 DATA-2 (V-3) — Regions: derived from REAL DB companies + their DB
+  // rounds (dbRegions), not the mockData `companies`/`rounds` arrays. Falls back
+  // to a single "GLOBAL" bucket only when a company has no region set.
   const regionAcc = new Map<string, { companies: number; raised: number }>();
-  for (const c of companies) {
-    const code = (c as { region?: string }).region ?? "GLOBAL";
-    const cur = regionAcc.get(code) ?? { companies: 0, raised: 0 };
-    cur.companies += 1;
-    cur.raised += rounds
-      .filter((r: { companyId?: string; amountRaised?: number }) => r.companyId === c.id)
-      .reduce((s: number, r: { amountRaised?: number }) => s + (r.amountRaised ?? 0), 0);
-    regionAcc.set(code, cur);
+  for (const r of dbRegions()) {
+    regionAcc.set(r.code, { companies: r.companies, raised: r.raised });
   }
   const regions = Array.from(regionAcc.entries()).map(([code, v]) => ({ code, ...v }));
 
@@ -887,11 +883,20 @@ export async function hydrateAdminPlatformStore(): Promise<void> {
 
 /* ------------ Reconciliation ------------ */
 interface ReconRun { id: string; ts: string; companyId: string; roundId: string; engineMain: { totalShares: string; ownership: number }; engineRef: { totalShares: string; ownership: number }; diff: { sharesDelta: string; ownershipDelta: number; ok: boolean }; actor: string; }
-const reconRuns: ReconRun[] = [
-  { id: "rec_1", ts: new Date(Date.now()-3600_000).toISOString(), companyId: "co_novapay", roundId: "rnd_novapay_seed", engineMain: { totalShares: "12500000", ownership: 1.0 }, engineRef: { totalShares: "12500000", ownership: 1.0 }, diff: { sharesDelta: "0", ownershipDelta: 0, ok: true }, actor: "system_nightly" },
-  { id: "rec_2", ts: new Date(Date.now()-7200_000).toISOString(), companyId: "co_quanta", roundId: "rnd_q_a", engineMain: { totalShares: "8200000", ownership: 1.0 }, engineRef: { totalShares: "8200000", ownership: 1.0 }, diff: { sharesDelta: "0", ownershipDelta: 0, ok: true }, actor: "system_nightly" },
-  { id: "rec_3", ts: new Date(Date.now()-86400_000).toISOString(), companyId: "co_helia", roundId: "rnd_helia_a", engineMain: { totalShares: "4500000", ownership: 1.0 }, engineRef: { totalShares: "4500900", ownership: 1.0002 }, diff: { sharesDelta: "900", ownershipDelta: 0.0002, ok: false }, actor: "system_nightly" },
-];
+// v25.48 DATA-2 (V-11) — reconRuns is the DB read-mirror for the recon_runs table
+// (hydrated in hydrateAdminPlatformStore). It MUST start empty: previously it was
+// seeded with 3 hardcoded demo rows (co_novapay/co_quanta/co_helia) and hydration
+// only replaced them `if (rows.length > 0)`, so a fresh LIVE deployment with an
+// empty recon_runs table served those 3 fake reconciliation runs to every admin.
+// The demo rows are now gated behind DEMO_SEED_ENABLED (never true in production).
+const reconRuns: ReconRun[] = [];
+if (DEMO_SEED_ENABLED) {
+  reconRuns.push(
+    { id: "rec_1", ts: new Date(Date.now()-3600_000).toISOString(), companyId: "co_novapay", roundId: "rnd_novapay_seed", engineMain: { totalShares: "12500000", ownership: 1.0 }, engineRef: { totalShares: "12500000", ownership: 1.0 }, diff: { sharesDelta: "0", ownershipDelta: 0, ok: true }, actor: "system_nightly" },
+    { id: "rec_2", ts: new Date(Date.now()-7200_000).toISOString(), companyId: "co_quanta", roundId: "rnd_q_a", engineMain: { totalShares: "8200000", ownership: 1.0 }, engineRef: { totalShares: "8200000", ownership: 1.0 }, diff: { sharesDelta: "0", ownershipDelta: 0, ok: true }, actor: "system_nightly" },
+    { id: "rec_3", ts: new Date(Date.now()-86400_000).toISOString(), companyId: "co_helia", roundId: "rnd_helia_a", engineMain: { totalShares: "4500000", ownership: 1.0 }, engineRef: { totalShares: "4500900", ownership: 1.0002 }, diff: { sharesDelta: "900", ownershipDelta: 0.0002, ok: false }, actor: "system_nightly" },
+  );
+}
 
 /* ------------ Pricing tiers (Collective + Founder) ------------
  *

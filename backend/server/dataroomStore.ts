@@ -462,6 +462,37 @@ export async function hydrateDataroomStore(): Promise<void> {
 
 // ─── Routes (unchanged surface) ──────────────────────────────────────────────
 
+// v25.48 DATA-2 (V-4, strict per GPT-5.5) — DB-DIRECT reader so other routes
+// (e.g. the company-detail endpoint and /api/dataroom) list a company's dataroom
+// files straight from SQLite, NOT the mockData `dataroomFiles` array and NOT the
+// mutable in-memory `files` cache. On a hard DB error it throws (fail closed)
+// rather than serving a stale/empty cache.
+export function listFilesForCompany(companyId: string): DRFile[] {
+  if (!companyId) return [];
+  const db = getDb();
+  const rows = db
+    .select()
+    .from(dataroomFilesTable)
+    .where(and(eq(dataroomFilesTable.companyId, companyId), isNull(dataroomFilesTable.deletedAt)))
+    .all() as any[];
+  return rows.map((r) => ({
+    id: r.id,
+    companyId: r.companyId,
+    folderId: r.folderId ?? "",
+    name: r.name,
+    sizeBytes: r.sizeBytes,
+    mime: r.mime,
+    uploadedAt: r.uploadedAt,
+    uploadedBy: r.uploadedBy ?? "",
+    uploadedById: r.uploadedById ?? "",
+    sha256: r.sha256 ?? "",
+    watermark: !!r.watermark,
+    storageKey: r.storageKey ?? null,
+    storageKmsKeyId: r.storageKmsKeyId ?? null,
+    storageBackend: r.storageBackend ?? null,
+  })) as DRFile[];
+}
+
 export function registerDataroomRoutes(app: Express): void {
   app.get("/api/founder/dataroom/folders", requireAuth, (req, res) => {
     // Avi 22-May Issue 5 — default to active company when query param absent.

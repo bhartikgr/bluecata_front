@@ -36,6 +36,37 @@ import multer from "multer"; /* v25.45.4 M-7 — real pitch-deck multipart uploa
 import { putObject } from "./lib/objectStorage"; /* v25.45.4 M-7 */
 import { recordPitchDeck } from "./collectivePitchDeckStore"; /* v25.45.4 M-7 */
 import { appendAdminAudit } from "./adminPlatformStore"; /* v25.45.4 M-7 — Tier 7 audit on upload */
+import { listForCompany as listCapavateSubscriptionsForCompany } from "./subscriptionStore"; /* v25.48 NEW-1 — READ-ONLY canonical subscriber status (Sacred Rule 76; never mutated here) */
+
+/**
+ * v25.48 NEW-1 (company JOIN gate) — a company may apply/join the Collective
+ * ONLY if it is an ACTIVE PAID Capavate subscriber (any active, non-expired
+ * paid plan; NOT free/trial/lapsed). Canonical status is read from the Sacred
+ * `subscriptionStore` (read-only). Fail-closed: any read error or the absence
+ * of an active row → NOT eligible.
+ *
+ * "Active & non-expired": status === 'active' AND (no expiry set, or expiry in
+ * the future). The subscription row is created 'pending' at checkout and flips
+ * to 'active' on the payment webhook success branch, which also sets
+ * expiresAt/currentPeriodEnd (+30d monthly / +365d annual).
+ */
+function isActivePaidCapavateSubscriber(companyId: string): boolean {
+  try {
+    const subs = listCapavateSubscriptionsForCompany(companyId);
+    const now = Date.now();
+    return subs.some((s) => {
+      if (s.status !== "active") return false;
+      const end = s.currentPeriodEnd ?? s.expiresAt;
+      if (!end) return true; // active with no expiry set → treat as active
+      const t = Date.parse(end);
+      return Number.isNaN(t) ? true : t > now;
+    });
+  } catch (err) {
+    // Fail-closed — an unreadable subscription source must NOT grant access.
+    log.error("[founderCollectiveApplyStore.NEW-1] subscriber check failed (fail-closed):", (err as Error).message);
+    return false;
+  }
+}
 
 // v25.45.4 M-7 — in-memory multer for pitch-deck uploads. 50MB cap; the route
 // validates mime/extension (.pdf/.pptx/.ppt). Bytes are handed to objectStorage
@@ -531,6 +562,18 @@ export function registerFounderCollectiveApplyRoutes(app: Express): void {
     const owner = enforceFounderOwnership(req, res, parsed.data);
     if (!owner) return; // response already sent
 
+    // v25.48 NEW-1 (company JOIN gate) — fail-closed: the applying company MUST
+    // be an ACTIVE PAID Capavate subscriber. Canonical status read-only from the
+    // Sacred subscriptionStore. Enforced server-side, DB-driven.
+    if (!isActivePaidCapavateSubscriber(parsed.data.companyId)) {
+      return res.status(403).json({
+        ok: false,
+        error: "not_active_subscriber",
+        message:
+          "Your company must be an active paying Capavate subscriber to apply to the Collective.",
+      });
+    }
+
     // v25.45.4 L-3 (Ozan decision b) — BOTH Path A & Path B require the company to
     // have at least one active/live funding round before it can be submitted to the
     // Collective. The legacy vouch-only path (a nomination with no active round) is
@@ -647,6 +690,17 @@ export function registerFounderCollectiveApplyRoutes(app: Express): void {
     // v16 F-coll-2 — ownership: caller must be the founder named, and own the company.
     const owner = enforceFounderOwnership(req, res, parsed.data);
     if (!owner) return; // response already sent
+    // v25.48 NEW-1 (company JOIN gate) — fail-closed: the applying company MUST
+    // be an ACTIVE PAID Capavate subscriber. Canonical status read-only from the
+    // Sacred subscriptionStore. Enforced server-side, DB-driven.
+    if (!isActivePaidCapavateSubscriber(parsed.data.companyId)) {
+      return res.status(403).json({
+        ok: false,
+        error: "not_active_subscriber",
+        message:
+          "Your company must be an active paying Capavate subscriber to apply to the Collective.",
+      });
+    }
     // v25.45.4 L-3 (Ozan decision b) — Path B also requires an active/live round.
     if (!hasActiveOrLiveRound(parsed.data.companyId)) {
       return res.status(409).json({

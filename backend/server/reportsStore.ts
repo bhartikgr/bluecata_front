@@ -162,6 +162,19 @@ function mapReportRow(row: any): Report {
   };
 }
 
+/**
+ * v25.48 DATA-2 (V-5, strict) — DB-DIRECT list of ALL non-deleted reports.
+ * The /api/reports route previously used getReports() (the in-memory cache).
+ * Per the strict DB-driven rule, serve straight from SQLite. On a hard DB error
+ * throw so the route fails closed rather than returning a stale/empty cache.
+ */
+export function listAllReportsFromDb(): Report[] {
+  const rows = rawDb()
+    .prepare("SELECT * FROM reports WHERE deleted_at IS NULL ORDER BY created_at DESC")
+    .all() as any[];
+  return rows.map(mapReportRow);
+}
+
 /** DB-direct list of reports for a company (v25.34: reads from SQLite). */
 function readReportsForCompany(companyId: string): Report[] {
   try {

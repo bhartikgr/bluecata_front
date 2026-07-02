@@ -93,10 +93,11 @@ export default function CapTable() {
  const activeCompanyQ = useActiveCompany();
  const profileQ = useQuery<CompanyProfile>({ queryKey: ["/api/companies", companyId, "profile"] });
  useEffect(() => {
- const liveRegion = profileQ.data?.legal.region as Region | undefined;
+ // PF-1 null-guard: profileQ.data?.legal may be undefined for draft companies
+ const liveRegion = profileQ.data?.legal?.region as Region | undefined;
  if (liveRegion && liveRegion !== region) setRegion(liveRegion);
  // eslint-disable-next-line react-hooks/exhaustive-deps
- }, [profileQ.data?.legal.region]);
+ }, [profileQ.data?.legal?.region]);
  const [asOf, setAsOf] = useState<string>(new Date().toISOString().slice(0, 10));
  const [groupView, setGroupView] = useState(true);
  const [showAddSecurity, setShowAddSecurity] = useState(false);
@@ -430,6 +431,20 @@ export default function CapTable() {
  </Card>
  </div>
 
+ {/* PF-1 empty state — rendered when data loaded but cap table is empty */}
+ {!securities.isLoading && securities.data !== undefined && rows.length === 0 && (
+ <Card className="mb-6" data-testid="captable-empty-state">
+ <CardContent className="py-16 text-center">
+ <Layers className="h-10 w-10 mx-auto mb-3 text-muted-foreground/40" />
+ <p className="text-sm font-medium text-muted-foreground">No securities recorded yet.</p>
+ <p className="text-xs text-muted-foreground mt-1">Add your first security to start building your cap table.</p>
+ <Button className="mt-4 bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] text-white" onClick={() => setShowAddSecurity(true)}>
+ <Plus className="h-4 w-4 mr-2" /> Add first security
+ </Button>
+ </CardContent>
+ </Card>
+ )}
+
  {/* View toggle + stacked-bar viz */}
  <Card className="mb-6">
  <CardHeader className="pb-3 flex flex-col md:flex-row md:items-center md:justify-between gap-3 space-y-0">
@@ -637,7 +652,7 @@ function BulkMessageDialog({ open, onClose, rows, toast }: { open: boolean; onCl
  </DialogHeader>
  <div className="space-y-3">
  <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto rounded-md border p-2">
- {holders.map(h => <Badge key={h} variant="outline" className="text-[10px]" data-testid={`badge-recipient-${h.replace(/\s/g, '-')}`}>{h}</Badge>)}
+ {holders.map(h => <Badge key={h} variant="outline" className="text-[10px]" data-testid={`badge-recipient-${(h ?? "").replace(/\s/g, '-')}`}>{h}</Badge>)}
  </div>
  <div className="text-xs text-muted-foreground">{holders.length} unique holders selected.</div>
  <div>

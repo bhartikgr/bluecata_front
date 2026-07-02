@@ -34,6 +34,7 @@ import { getRoundById, updateRound, closeRound, UPDATE_ROUND_WHITELIST_KEYS } fr
 /* v25.17 Lane A NH8 — computeCarryForwardLive is already imported from
    roundCarryForwardEngine below and reused for server-side digest recompute. */
 import { companies } from "./mockData";
+import { getCompanyRecordById } from "./multiCompanyStore"; // v25.48 DATA-2 (V-9) — canonical DB company lookup
 import {
   computeCarryForwardLive,
   type RoundType,
@@ -427,12 +428,15 @@ export function registerRoundCarryForwardRoutes(app: Express): void {
       }
 
       // B-301 fix v23.4.13: graceful empty carry-forward
-      // Newly created companies are not in the static seed `companies` array.
-      // Return 200 + empty-but-valid result shape (NOT null) so the client's
-      // `Object.keys(result.fields)` reducer keeps working. v23.4.13 follow-up
-      // (L-012 fix): use the full CarryForwardResult shape instead of null to
-      // avoid "Cannot convert undefined or null to object" on the wizard.
-      const company = companies.find((c) => c.id === companyId);
+      // v25.48 DATA-2 (V-9) — resolve the company from the CANONICAL DB store
+      // (getCompanyRecordById), NOT the mockData `companies` array. On live that
+      // array is empty, so the previous `companies.find(...)` always missed and
+      // EVERY real company fell into the "new company — no prior rounds" empty
+      // branch regardless of how many real rounds it had. The carry-forward
+      // engine itself already reads live rounds; this lookup just needs to know
+      // the company exists. Keep the graceful empty-but-valid result shape.
+      const dbCompany = getCompanyRecordById(String(companyId));
+      const company = dbCompany ? { id: String(companyId) } : undefined;
 
       // Validate roundType (do this BEFORE the new-company shortcut so we keep
       // returning 400 for malformed requests on both paths).

@@ -28,7 +28,7 @@ import { requirePartnerAuth, requirePartnerSubrole } from "./requirePartnerAuth"
 import { rawDb } from "../db/connection";
 import { appendAdminAudit } from "../adminPlatformStore";
 import { sanitizeErrorMessage } from "./sanitize"; /* v25.33 — scrub raw err.message from client responses in prod (backlog item 33 extension). */
-import { resolvePartnerFee } from "./partnerFeeResolver"; /* v25.41 round-2 (per GPT-5.5): static ESM import replaces the prior lazy `require("./partnerFeeResolver")` so the route is safe under both tsx production loader AND vitest ESM .mjs test harness. No behavior change. */
+import { resolveChargeTier } from "./partnerTiers"; /* v25.48 CP-2b — advertised price == charged price: the SAME tier row the pricing page advertises is the ONLY charge source (no legacy fee-schedule fallback). Replaces the prior resolvePartnerFee path for partner subscription charges. */
 
 function newId(prefix: string): string {
   return `${prefix}_${randomBytes(8).toString("hex")}`;
@@ -297,20 +297,26 @@ export function registerPartnerSelfServiceRoutes(app: Express): void {
       const body = (req.body ?? {}) as { cycle?: unknown };
       const cycle = body.cycle === "annual" ? "annual" : "monthly";
       try {
-        // Resolve the partner-subscription fee from the DB catalogue (no hardcode).
-        // resolvePartnerFee is fail-closed; if no schedule exists it throws, which
-        // we translate into a clear "not available" response rather than a 500.
-        // v25.41 round-2 (per GPT-5.5): import is now static at the top of the file.
-        const feeKind = cycle === "annual" ? "subscription_annual" : "subscription_monthly";
         let resolved: { amountMinor: number; currency: string; computedVia: string };
-        try {
-          resolved = resolvePartnerFee(pid, tier, feeKind, {});
-        } catch {
+        // v25.48 CP-2b — SINGLE SOURCE OF TRUTH (strict). The subscription charge
+        // reads the EXACT tier row the /consortium/pricing page advertises
+        // (platform_fees via resolveConsortiumPricing). There is NO legacy
+        // fee-schedule fallback: advertised == charged, always. If the tier is
+        // not live on the advertised pricing surface (unknown or admin
+        // soft-deleted), we FAIL CLOSED with 409 rather than charging a stale
+        // partner_fee_schedules amount — this also preserves CP-2a soft-delete
+        // semantics (a hidden tier cannot be charged). The advertised monthly
+        // price is authoritative; an annual cycle bills 12× that monthly amount
+        // so the per-month rate the partner saw is exactly honored.
+        const advertised = resolveChargeTier(tier);
+        if (!advertised) {
           return res.status(409).json({
             error: "PARTNER_SUBSCRIPTION_NOT_AVAILABLE",
-            message: "No partner subscription fee schedule is configured for this tier.",
+            message: "This partner tier is not available for subscription (not on the advertised pricing surface).",
           });
         }
+        const amountMinor = cycle === "annual" ? advertised.amountMinor * 12 : advertised.amountMinor;
+        resolved = { amountMinor, currency: advertised.currency, computedVia: "consortium_pricing_advertised" };
         res.json({
           ok: true,
           tier,

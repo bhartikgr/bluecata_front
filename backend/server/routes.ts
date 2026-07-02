@@ -66,14 +66,17 @@ import { getRecentEvents, findEventsByType } from "./sprint10Telemetry";
 // Sprint 11 — founder build
 import { registerMultiCompanyRoutes, updateCompanyDetails, getCompanyNameById, getCompanyRecordById, getAllCompanies, getAllCompaniesFromDb, addCompanyForFounder } from "./multiCompanyStore"; // B-509/C-011 v23.6 added getCompanyNameById; v23.7.1 added getCompanyRecordById (BUG 019 follow-up); v23.8 added getAllCompanies (W-8); v24.2 E2E fix added addCompanyForFounder (founder-creates-company auto-registers ownership)
 import { registerMembershipRoutes } from "./membershipStore";
-import { registerDataroomRoutes } from "./dataroomStore";
+import { registerDataroomRoutes, listFilesForCompany as dataroomStoreListForCompany } from "./dataroomStore"; // v25.48 DATA-2 (V-4)
 // v23.4.7 Phase 13 / BUG 030 — dedicated server endpoint for company-logo
 // uploads so the founder Company-profile form no longer carries multi-MB
 // base64 data URLs in form state.
 import { registerCompanyLogoRoutes } from "./lib/companyLogoRoutes";
-import { registerReportsRoutes } from "./reportsStore";
+import { registerReportsRoutes, listAllReportsFromDb as reportsStoreGetAll } from "./reportsStore"; // v25.48 DATA-2 (V-5, strict) — DB-direct all-reports reader (not the in-memory cache)
 import { registerFounderCrmRoutes, listByFounder as crmListByFounder, crmMarkInvitedRegistered } from "./founderCrmStore";
 import { registerCaptableCommitRoutes, getLedger } from "./captableCommitStore";
+import { registerCaptableCommitV2548Routes } from "./lib/captableCommitV2548"; /* v25.48 B2 + B5 — parallel batch commit (per-entry founder amount) + attestation */
+import { registerInvestmentSignalsV2548Routes } from "./lib/investmentSignalsV2548"; /* v25.48 B3 + B4 — docs-sent flag + investor wired advisory */
+import { seedInvestorCrmFromInvitation } from "./lib/investorCrmInvitationSeed"; /* v25.48 B1 — investor-side CRM auto-seed at invitation */
 import { closeRoundCascadeStandalone } from "./lib/roundCloseCascade";
 import { registerTermSheetRoutes } from "./termSheetStore";
 import { registerAdminPricingRoutes } from "./adminPricingStore";
@@ -105,6 +108,7 @@ import {
   listForRound as softCircleListForRound,
   listForInvestor as softCircleListForInvestor,
   listForCompany as softCircleListForCompany, // C6 (v24.0): admin aggregate from real store
+  getSoftCircle as softCircleGetById, // v25.48 BUG-B — child-ownership guard on validate
 } from "./softCircleStore";
 // v24.3 — investor-side wire-fund instructions. Founder publishes bank wire
 // details per round; the investor reads them once their soft-circle is signed.
@@ -165,6 +169,7 @@ import { registerAdminDscRoutes } from "./adminDscRoutes";
 // v17 Phase C — Founder accept/decline offers + DSC vote public endpoint.
 import { registerCollectiveOfferRoutes } from "./collectiveOffersStore";
 import { registerCollectiveDscVoteRoutes } from "./collectiveDscVoteRoutes";
+import { registerDscPitchDeckV2548Routes } from "./lib/dscPitchDeckV2548"; /* v25.48 DSC-1c — signed pitch-deck secure link on the DSC review surface */
 import { registerScreeningEventRoutes } from "./screeningEventsStore";
 import { registerCollectiveBillingRoutes } from "./collectiveBillingStore";
 import { registerCollectiveMembershipDetailRoutes } from "./lib/collectiveMembershipDetailRoutes"; // v25.32 final A2
@@ -616,6 +621,58 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   registerReportsRoutes(app);
   registerFounderCrmRoutes(app);
   registerCaptableCommitRoutes(app);
+  registerCaptableCommitV2548Routes(app); /* v25.48 B2 + B5 — parallel commit wrapper */
+  registerInvestmentSignalsV2548Routes(app); /* v25.48 B3 + B4 — docs-sent + wired advisory */
+
+  /* v25.48 PF-1 — READ-ONLY founder cap-table view. The client (/founder/captable)
+   * called GET /api/founder/captable which returned 404 (only sub-paths like
+   * /ledger existed), then did .replace() on undefined and crashed. Add the
+   * missing base route using captableCommitStore's EXPORTED read helper
+   * (listMembersForCompany) — the Sacred file is NOT modified. Empty cap table
+   * returns a safe empty view (never undefined). companyId comes from the query
+   * param or the founder's first owned company. */
+  app.get("/api/founder/captable", requireAuth, (req: import("express").Request, res: import("express").Response) => {
+    const ctx = (req as import("express").Request & {
+      userContext?: { userId?: string; isAdmin?: boolean; founder?: { companies?: Array<{ companyId: string; companyName?: string }> } };
+    }).userContext;
+    if (!ctx?.userId) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
+    const ownedCompanies = ctx.founder?.companies ?? [];
+    const queryCompanyId = typeof req.query.companyId === "string" ? req.query.companyId : "";
+    const companyId = queryCompanyId || ownedCompanies[0]?.companyId || "";
+    // No company yet — safe empty view (never crash the page).
+    if (!companyId) {
+      return res.json({ ok: true, companyId: null, empty: true, positions: [], holders: [], totalShares: "0" });
+    }
+    // Ownership check (admins bypass), mirroring the /ledger route.
+    if (!ctx.isAdmin && !ownedCompanies.some((c) => c.companyId === companyId)) {
+      return res.status(403).json({ ok: false, error: "FOUNDER_WRONG_COMPANY" });
+    }
+    let positions: Array<{ investorId: string; shares: string; amount: string; currency: string; roundId: string; seq: number }> = [];
+    try {
+      positions = captableMembersForCompany(companyId).map((e) => ({
+        investorId: e.investorId,
+        shares: e.shares ?? "0",
+        amount: e.amount ?? "0",
+        currency: e.currency ?? "USD",
+        roundId: e.roundId ?? "",
+        seq: e.seq,
+      }));
+    } catch {
+      positions = [];
+    }
+    let totalShares = "0";
+    try {
+      totalShares = positions.reduce((acc, p) => acc + BigInt(p.shares || "0"), BigInt(0)).toString();
+    } catch { totalShares = "0"; }
+    return res.json({
+      ok: true,
+      companyId,
+      empty: positions.length === 0,
+      positions,
+      holders: positions, // alias for clients expecting a `holders` array
+      totalShares,
+    });
+  });
   // Sprint 26 — credentialed term-sheet persistence (hash-chained revisions).
   registerTermSheetRoutes(app);
   registerAdminPricingRoutes(app);
@@ -624,6 +681,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   registerBridgeRoutes(app);
   registerBridgeRuntimeRoutes(app);
   registerSyncDashboardRoutes(app);
+  /* v25.48 HIGH-9 — lock the mock-data migration commit out of production at the
+   * ROUTE layer (the Sacred migrationRunner.ts is NOT edited). This guard is
+   * mounted BEFORE registerMigrationRoutes so it intercepts the mock commit in
+   * prod. In production, POST /api/admin/migration/commit is refused with 403
+   * unless MOCK_MIGRATION_ALLOWED=1 is explicitly set. Non-prod is unaffected.
+   * (The blanket /api/admin requireAdmin guard already applies; this adds the
+   * environment lockdown on top.) */
+  app.post("/api/admin/migration/commit", (req: import("express").Request, res: import("express").Response, next: import("express").NextFunction) => {
+    if (process.env.NODE_ENV === "production" && process.env.MOCK_MIGRATION_ALLOWED !== "1") {
+      return res.status(403).json({
+        ok: false,
+        error: "mock_migration_disabled_in_production",
+        message:
+          "The mock-data migration commit is disabled in production. Set MOCK_MIGRATION_ALLOWED=1 to override (mock/test only).",
+      });
+    }
+    return next();
+  });
   registerMigrationRoutes(app);
   registerNotificationsRoutes(app);
   registerEmailRoutes(app);
@@ -775,6 +850,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
    * COLLECTIVE_ENABLED at the route handler level (requireCollectiveEnabled). */
   registerCollectiveOfferRoutes(app);
   registerCollectiveDscVoteRoutes(app);
+  registerDscPitchDeckV2548Routes(app); /* v25.48 DSC-1c — signed pitch-deck link */
   registerScreeningEventRoutes(app);
   /* v18 Phase B — Stripe Collective membership tier (basic/standard/premium).
    * Three annual tiers, sold via Stripe Checkout; webhook is a separate
@@ -1242,11 +1318,28 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   //              rounds' companies)
   app.get("/api/companies", requireAuth, (req, res) => {
     const ctx = req.userContext ?? getUserContext(req);
-    if (ctx?.isAdmin) return res.json(companies);
+    // v25.48 DATA-2 (strict, per GPT-5.5) — the served company set is
+    // UNCONDITIONALLY read from the authoritative DB (getAllCompaniesFromDb),
+    // never from the in-memory / demo-seed `mockData` array. Empty DB → [].
+    // On a DB read error we fail to [] rather than leaking mock/in-memory rows.
+    let source: Array<{ id: string; [k: string]: unknown }> = [];
+    try {
+      const dbRows = getAllCompaniesFromDb();
+      source = dbRows.map((m) => ({
+        id: m.companyId,
+        tenantId: (m as { tenantId?: string }).tenantId ?? null,
+        name: m.companyName ?? m.companyId,
+        legalName: (m as { legalName?: string }).legalName ?? m.companyName ?? null,
+        logoUrl: (m as { logoUrl?: string | null }).logoUrl ?? null,
+      }));
+    } catch {
+      source = [];
+    }
+    if (ctx?.isAdmin) return res.json(source);
     const allowed = new Set<string>();
     tenantFounderOwnedCompanyIds(ctx).forEach((id) => allowed.add(id));
     tenantInvestorVisibleCompanyIds(ctx).forEach((id) => allowed.add(id));
-    res.json(companies.filter((c) => allowed.has((c as { id: string }).id)));
+    res.json(source.filter((c) => allowed.has(c.id)));
   });
 
   /* Sprint 7 — access-aware company-details payload.
@@ -1347,8 +1440,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     // v13 — union legacy in-memory rounds with DB-hydrated rounds.
     const roundsForCompany = mergeLegacyAndDbRounds().filter(r => r.companyId === req.params.id);
-    const dataroomForCompany = dataroomFiles.filter(f => f.companyId === req.params.id);
-    const softCirclesForCompany = softCircles.filter(s => roundsForCompany.find(r => r.id === s.roundId));
+    // v25.48 DATA-2 (V-4/V-6) — read the CANONICAL DB stores, not the mockData
+    // arrays (which are empty on live). Dataroom from dataroomStore; soft-circles
+    // from softCircleStore.listForCompany. Previously these filtered the mock
+    // `dataroomFiles` / `softCircles` arrays and silently returned [] in prod.
+    const dataroomForCompany = dataroomStoreListForCompany(String(req.params.id));
+    const softCirclesForCompany = softCircleListForCompany(String(req.params.id));
 
     res.json({
       ...companyShared,
@@ -1752,7 +1849,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // any authenticated user could read any company's dataroom by passing its id.
     const access = requireCanAccessCompany(req, res, companyId);
     if (!access.ok) return;
-    const files = dataroomFiles.filter(f => f.companyId === companyId);
+    // v25.48 DATA-2 (V-4) — read the canonical DB-hydrated dataroom store, not the
+    // mockData `dataroomFiles` array (empty on live).
+    const files = dataroomStoreListForCompany(companyId);
     res.json(files);
   });
 
@@ -1760,15 +1859,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/reports", requireAuth, (req, res) => {
     const ctx = req.userContext ?? getUserContext(req);
     const companyIdFilter = typeof req.query.companyId === "string" ? req.query.companyId : null;
+    // v25.48 DATA-2 (V-5) — read the canonical DB-hydrated reports store, not the
+    // mockData `reports` array (empty on live).
+    const allReports = reportsStoreGetAll();
     if (companyIdFilter) {
       const ownsCompany = ctx.isAdmin || ctx.founder.companies.some((c) => c.companyId === companyIdFilter);
       if (!ownsCompany) return res.status(403).json({ ok: false, error: "FOUNDER_WRONG_COMPANY" });
-      return res.json(reports.filter((r) => r.companyId === companyIdFilter));
+      return res.json(allReports.filter((r) => r.companyId === companyIdFilter));
     }
-    if (ctx.isAdmin) return res.json(reports);
+    if (ctx.isAdmin) return res.json(allReports);
     // Founder: only their own companies
     const userCompanyIds = new Set(ctx.founder.companies.map((c) => c.companyId));
-    return res.json(reports.filter((r) => userCompanyIds.has(r.companyId)));
+    return res.json(allReports.filter((r) => userCompanyIds.has(r.companyId)));
   });
   // v13 (Avi's Issue 6) — fix activity log read path. Avi reported the
   // Activity page was empty after creating rounds, posting to the network,
@@ -1868,8 +1970,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/investor/invitations", requireAuth, (req, res) => {
     const ctx = req.userContext ?? getUserContext(req);
     const email = ctx.identity?.email ?? "";
-    // In demo/seed mode, serve the seeded mock data directly (already enriched).
-    if (DEMO_SEED_ENABLED || !email) return res.json(incomingInvitations);
+    // v25.48 DATA-2 (V-7) — only DEMO/SEED mode may serve the seeded mock array
+    // (DEMO_SEED_ENABLED is always false in production). An authenticated user
+    // with no resolvable email gets an explicit empty list — NEVER the mock array.
+    if (DEMO_SEED_ENABLED) return res.json(incomingInvitations);
+    if (!email) return res.json([]);
     // Production path: look up real invitations from roundInvitationsStore and
     // enrich each row with human-readable company name + round label.
     const rawInvs = roundInvitationsListForEmail(email);
@@ -2296,6 +2401,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           log.warn("[invitations/redeem] crmMarkInvitedRegistered failed (non-fatal):", (crmErr as Error).message);
         }
       }
+      // v25.48 B1 — bi-directional CRM auto-seed (investor side). Seed the
+      // investor's CRM with the founder/company they were invited to, tagged
+      // "invitation-sourced". Parallel to the Sacred investorCrmStore; non-fatal.
+      try {
+        seedInvestorCrmFromInvitation({
+          investorId: personaId,
+          companyId: entry.companyId ?? null,
+          companyName: null,
+          roundId: entry.roundId ?? null,
+        });
+      } catch (b1Err) {
+        log.warn("[invitations/redeem] B1 investor-CRM seed failed (non-fatal):", (b1Err as Error).message);
+      }
       const ctx = getUserContextForId(personaId);
       return res.json({
         ok: true,
@@ -2338,6 +2456,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       } catch (crmErr) {
         log.warn("[invitations/redeem] crmMarkInvitedRegistered failed (non-fatal):", (crmErr as Error).message);
       }
+    }
+    // v25.48 B1 — bi-directional CRM auto-seed (investor side, modern path).
+    try {
+      seedInvestorCrmFromInvitation({
+        investorId: personaId,
+        companyId: modernEntry.companyId ?? null,
+        companyName: null,
+        founderName: modernEntry.investorName ? null : null,
+        roundId: modernEntry.roundId ?? null,
+      });
+    } catch (b1Err) {
+      log.warn("[invitations/redeem] B1 investor-CRM seed failed (non-fatal):", (b1Err as Error).message);
     }
     const ctx = getUserContextForId(personaId);
     return res.json({
@@ -2563,15 +2693,27 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!ctx?.userId) return res.status(401).json({ ok: false, error: "unauthenticated" });
     const id = paramStr(req.params.id);
     const cid = companyIdForRound(id);
+    // v25.48 BUG-A — fail closed on an unknown/unresolvable round. Previously the
+    // route proceeded with cid=null and created an orphan (companyId:null) soft-circle.
+    // The round must resolve to a real company before any intent can be created.
+    if (!cid) return res.status(404).json({ ok: false, error: "round_not_found" });
     // v25.45 ROUND 2 — archive gate: block soft-circle creation on archived workspaces.
-    if (assertWorkspaceNotArchived(req, res, cid ?? (req.body ?? {}).companyId)) return;
+    if (assertWorkspaceNotArchived(req, res, cid)) return;
     const body = req.body ?? {};
-    // v25.4 — when an authorized caller (founder of this round / admin) supplies
-    // body.investorUserId, honor it so on-behalf-of soft-circles link to the actual
-    // investor, not the caller. Self-service investors leave body.investorUserId
-    // blank and inherit ctx.userId.
-    const isFounder = Array.isArray(ctx.founder?.companies) && ctx.founder.companies.length > 0;
-    const callerIsAuthorized = !!ctx.isAdmin || isFounder;
+    // v25.4 / v25.48 BUG-A — when an authorized caller (the founder who OWNS THIS
+    // ROUND'S company, or an admin) supplies body.investorUserId, honor it so
+    // on-behalf-of soft-circles link to the actual investor. Self-service investors
+    // leave body.investorUserId blank and inherit ctx.userId.
+    //
+    // FIX (BUG-A): the previous check was `founder.companies.length > 0`, i.e. ANY
+    // founder of ANY company could act on-behalf for a round they do not own. The
+    // correct scope is: admin, or a founder whose owned companies include THIS
+    // round's company (cid). A non-owner is NOT hard-rejected here (that would break
+    // legitimate self-service) — instead the supplied investorUserId is ignored and
+    // the intent self-links to the caller, matching the existing anti-spoof behavior.
+    const ownsThisRoundsCompany = Array.isArray(ctx.founder?.companies)
+      && ctx.founder.companies.some((c) => c.companyId === cid);
+    const callerIsAuthorized = !!ctx.isAdmin || ownsThisRoundsCompany;
     const bodyInvestorUserId = typeof body.investorUserId === "string" && body.investorUserId ? body.investorUserId : null;
     const effectiveInvestorUserId = (callerIsAuthorized && bodyInvestorUserId) ? bodyInvestorUserId : ctx.userId;
     try {
@@ -2605,7 +2747,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!check.ok) return;
     // v25.45 ROUND 2 — archive gate.
     if (assertWorkspaceNotArchived(req, res, check.companyId ?? companyIdForRound(paramStr(req.params.id)))) return;
+    const roundId = paramStr(req.params.id);
     const scId = paramStr(req.params.scId);
+    // v25.48 BUG-B — child-ownership guard. requireFounderOwnsRound only proves the
+    // caller owns the PATH round; it does NOT prove the soft-circle :scId belongs to
+    // that round. Without this check, a founder who owns round A could confirm a
+    // soft-circle from round B by putting round A in the URL (cross-round mutation).
+    // Verify the stored soft-circle's roundId matches the authorized path round
+    // (and its companyId matches the authorized company) BEFORE any state change.
+    const existing = softCircleGetById(scId);
+    if (!existing || existing.roundId !== roundId) {
+      return res.status(404).json({ ok: false, error: "soft_circle_not_found" });
+    }
+    if (check.companyId && existing.companyId && existing.companyId !== check.companyId) {
+      return res.status(404).json({ ok: false, error: "soft_circle_not_found" });
+    }
     const sc = softCircleValidate(scId);
     if (!sc) return res.status(404).json({ ok: false, error: "soft_circle_not_found" });
     return res.json({ ok: true, scId, validated: true, softCircle: sc });
@@ -4364,17 +4520,22 @@ function registerAdminCompaniesFullRoute(app: Express) {
         hq: mc.hq,
       });
     }
-    for (const c of canonicalCompanies) {
-      stubById.set(c.id, {
-        id: c.id,
-        name: c.name,
-        legalName: c.legalName,
-        region: (c as { region?: string }).region,
-        sector: c.sector,
-        stage: c.stage,
-        hq: c.hq,
-        maScore: (c as { maScore?: number }).maScore,
-      });
+    // v25.48 DATA-2 (V-8, strict) — the canonicalCompanies overlay is a mockData
+    // array (empty on live via DEMO_SEED_ENABLED). Gate it explicitly to demo mode
+    // so no mock company can ever be merged into the admin company set on live.
+    if (DEMO_SEED_ENABLED) {
+      for (const c of canonicalCompanies) {
+        stubById.set(c.id, {
+          id: c.id,
+          name: c.name,
+          legalName: c.legalName,
+          region: (c as { region?: string }).region,
+          sector: c.sector,
+          stage: c.stage,
+          hq: c.hq,
+          maScore: (c as { maScore?: number }).maScore,
+        });
+      }
     }
 
     const rows: AdminCompanyFullRow[] = Array.from(stubById.values()).map((c) => {
@@ -4398,8 +4559,11 @@ function registerAdminCompaniesFullRoute(app: Express) {
         0,
       );
 
-      const dataroomFiles = canonicalDataroomFiles.filter((f) => f.companyId === c.id).length;
-      const reportsPublished = canonicalReports.filter((r) => r.companyId === c.id).length;
+      // v25.48 DATA-2 (V-8) — counts from the CANONICAL DB stores, not the mockData
+      // arrays (which are empty on live and made these admin metrics always 0).
+      const dataroomFiles = dataroomStoreListForCompany(c.id).length;
+      const companyReports = reportsStoreGetAll().filter((r) => r.companyId === c.id);
+      const reportsPublished = companyReports.length;
 
       const allEvents = getTelemetryEvents(5_000);
       const events30d = allEvents.filter((e) => {
@@ -4415,7 +4579,7 @@ function registerAdminCompaniesFullRoute(app: Express) {
       };
       companyRounds.forEach((r) => updateMax((r as { closeDate?: string; openDate?: string }).closeDate));
       allSoftCircles.forEach((sc) => updateMax(sc.createdAt));
-      canonicalReports.filter((r) => r.companyId === c.id).forEach((r) => updateMax((r as { publishedAt?: string }).publishedAt));
+      companyReports.forEach((r) => updateMax((r as { publishedAt?: string }).publishedAt)); // v25.48 DATA-2 (V-8) — DB reports, not mock
 
       return {
         id: c.id,
