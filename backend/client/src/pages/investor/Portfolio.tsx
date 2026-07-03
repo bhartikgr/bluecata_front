@@ -95,6 +95,10 @@ export default function InvestorPortfolio() {
   // DEF-048: guard to prevent flash of error during redirect when portfolio is empty
   const positions = useQuery<{ companyId: string }[]>({ queryKey: ["/api/investor/portfolio2"], staleTime: 30_000 });
   const hasPositions = (positions.data?.length ?? 1) > 0; // default true until loaded
+  // v25.48.2 Q8 — once positions have loaded and there are none, the switcher
+  // renders the empty-state CTA; suppress the "select a company" hint so we
+  // don't stack two empty messages.
+  const portfolioIsEmpty = !positions.isLoading && (positions.data?.length ?? 0) === 0;
 
   // When the switcher selects a company, update both state and URL param
   function handleCompanyChange(companyId: string) {
@@ -135,7 +139,7 @@ export default function InvestorPortfolio() {
         )}
 
         {/* When no company is selected yet (first load before switcher auto-selects) */}
-        {!selectedCompanyId && (
+        {!selectedCompanyId && !portfolioIsEmpty && (
           <div className="mt-6 text-sm text-muted-foreground text-center py-12">
             Select a portfolio company above to view its details.
           </div>

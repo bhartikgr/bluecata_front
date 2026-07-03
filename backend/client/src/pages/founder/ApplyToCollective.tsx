@@ -153,6 +153,14 @@ export default function FounderApplyToCollective() {
     ),
     [roundsQ.data, ACTIVE_LIVE_ROUND_STATES]
   );
+  // v25.48.2 Q4b — distinguish "no rounds at all" from "rounds exist but none
+  // are active". The empty-state copy + CTA differ: with zero rounds we tell
+  // the founder to create their first round; with dormant rounds we tell them
+  // to OPEN one of the rounds they already have.
+  const hasAnyRounds = useMemo(
+    () => asArray<{ id?: string }>(roundsQ.data).length > 0,
+    [roundsQ.data]
+  );
 
   return (
     <>
@@ -206,19 +214,23 @@ export default function FounderApplyToCollective() {
             <CardContent className="p-8 text-center space-y-4">
               <AlertTriangle className="h-10 w-10 text-[hsl(0_100%_40%)] mx-auto" />
               <div>
-                <h2 className="text-lg font-semibold">You need an active funding round first</h2>
+                <h2 className="text-lg font-semibold">
+                  {hasAnyRounds ? "Open a round to apply" : "You need an active funding round first"}
+                </h2>
                 <p className="text-sm text-muted-foreground mt-1 max-w-md mx-auto">
                   Applying to the Collective — whether investor-vouched (Path A) or direct (Path B) —
                   requires at least one active or live funding round for {company?.companyName ?? "your company"}.
-                  Create your first round, then come back to apply.
+                  {hasAnyRounds
+                    ? " You have a round, but none are currently open — open a round, then come back to apply."
+                    : " Create your first round, then come back to apply."}
                 </p>
               </div>
               <Button
                 className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
-                onClick={() => (window.location.href = "/founder/rounds/new")}
-                data-testid="button-create-first-round"
+                onClick={() => (window.location.href = hasAnyRounds ? "/founder/rounds" : "/founder/rounds/new")}
+                data-testid={hasAnyRounds ? "button-open-a-round" : "button-create-first-round"}
               >
-                Create your first round →
+                {hasAnyRounds ? "Go to your rounds →" : "Create your first round →"}
               </Button>
             </CardContent>
           </Card>

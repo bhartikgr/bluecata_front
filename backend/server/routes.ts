@@ -119,6 +119,7 @@ import { emitBridgeEvent } from "./bridgeStore";
 import { companies as canonicalCompanies, rounds as canonicalRounds, softCircles as canonicalSoftCircles, dataroomFiles as canonicalDataroomFiles, reports as canonicalReports } from "./mockData";
 import { getRecentEvents as getTelemetryEvents } from "./sprint10Telemetry";
 import { registerBridgeRuntimeRoutes } from "./lib/bridgeRuntime";
+import { registerBridgeOutboundGuard } from "./lib/bridgeOutboundGuard"; /* v25.48.2 Q1 — neutralize legacy outbound bridge in prod */
 import { registerSyncDashboardRoutes } from "./lib/syncDashboard";
 import { registerMigrationRoutes } from "./lib/migrationRunner";
 // Sprint 14 — universal hash chain + new stores
@@ -253,7 +254,7 @@ import { securityHeaders, corsForApi } from "./middleware/security";
 import { getDb } from "./db/connection";
 import { users as usersTable } from "../shared/schema"; /* Avi 22-May Issue 6 */
 import { eq as drizzleEq } from "drizzle-orm"; /* Avi 22-May Issue 6 */
-import { SYNC_ENTITY_COUNT } from "./db/syncRepo";
+import { SYNC_ENTITY_COUNT, getSyncDoc } from "./db/syncRepo";
 import { getOutbox } from "./bridgeStore";
 import { loadUserContext, requireEntitlement } from "./lib/requireEntitlement";
 import { registerPersona } from "./lib/userContext";
@@ -678,6 +679,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   registerAdminPricingRoutes(app);
 
   /* ------------ Sprint 12: bridge + admin rebuild ------------ */
+  /* v25.48.2 Q1 — PARALLEL guard mounted BEFORE the real (incl. Sacred) bridge
+   * drain routes so it matches first and short-circuits any outbound send when
+   * the legacy bridge is disabled / has no real receiver (no 501, no DLQ). */
+  registerBridgeOutboundGuard(app);
   registerBridgeRoutes(app);
   registerBridgeRuntimeRoutes(app);
   registerSyncDashboardRoutes(app);
@@ -1131,6 +1136,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       devResetUrlEnabled: process.env.RETURN_DEV_RESET_URL === "1",
       airwallexConfigured,
       airwallexMode,
+      // v25.48.2 Q6 (Ozan) — the admin Migration screen is a MOCK/preview tool
+      // (walks seed data, fires bridge events). It must NOT be reachable in
+      // production. The decision is made SERVER-SIDE from the server's own env
+      // (never client NODE_ENV, which is unreliable/spoofable): off in
+      // production unless an operator explicitly opts in with
+      // ENABLE_MOCK_MIGRATION=1.
+      mockMigrationEnabled:
+        process.env.NODE_ENV !== "production" || process.env.ENABLE_MOCK_MIGRATION === "1",
     };
     res.json({
       status: dbOk && (hydrateState === "ok" || hydrateState === "partial") ? "ok" : "degraded",
@@ -3832,10 +3845,44 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
    * changed, every respond/decline would silently no-op while pretending
    * to succeed. */
 
-  // Founder sync status — requireAuth
+  /* Founder sync status — requireAuth.
+   *
+   * v25.48.2 Q3/Q10 (Ozan) — these were the last non-DB-driven sync endpoints.
+   * The query-param variant used to reply a hard-coded { synced: true } for
+   * ANY entity/id (a lie: it claimed sync for entities that were never synced),
+   * and the per-entity path variants (…/company/:id, …/investor/:id) 404'd
+   * because no route existed. Both are now backed by the sync_* tables via
+   * syncRepo.getSyncDoc: `synced` reflects a live (non-deleted) row, and we
+   * surface the real version + updatedAt so the client shows true sync state.
+   */
+  function syncStatusForEntity(entity: "company" | "investor", id: string) {
+    const doc = id ? getSyncDoc(entity, id) : null;
+    if (!doc || doc.deletedAt != null) {
+      return { ok: true, synced: false, entity, id, version: null, updatedAt: null, tenantId: null };
+    }
+    return {
+      ok: true,
+      synced: true,
+      entity,
+      id: doc.id,
+      version: doc.version,
+      updatedAt: doc.updatedAt,
+      tenantId: doc.tenantId,
+    };
+  }
+
   app.get("/api/founder/sync/status", requireAuth, (req, res) => {
     const { entity, id: entityId } = req.query as { entity?: string; id?: string };
-    res.json({ synced: true, entity, id: entityId });
+    const ent = entity === "investor" ? "investor" : "company";
+    return res.json(syncStatusForEntity(ent, String(entityId ?? "")));
+  });
+
+  app.get("/api/founder/sync/status/company/:id", requireAuth, (req, res) => {
+    return res.json(syncStatusForEntity("company", String(req.params.id)));
+  });
+
+  app.get("/api/founder/sync/status/investor/:id", requireAuth, (req, res) => {
+    return res.json(syncStatusForEntity("investor", String(req.params.id)));
   });
 
   // Entitlements endpoint — requireAuth, scope to user's actual plan

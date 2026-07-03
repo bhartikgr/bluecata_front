@@ -17,10 +17,14 @@ import { PageBody, PageHeader } from "@/components/AppShell";
 
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
-// Investor-relevant categories (subset of CATEGORY_ORDER)
-const INVESTOR_CATEGORIES = [
-  "Cap Table", "Rounds", "Valuation", "Legal", "M&A", "Governance",
-];
+/* v25.48.2 Q11 (Ozan) — the old INVESTOR_CATEGORIES list ("Cap Table",
+ * "Rounds", …) predates the Sprint-18 glossary category redesign; NONE of its
+ * names still exist in ENTRIES (the real categories are "Equity Instruments",
+ * "Round Mechanics", …). As a result `ENTRIES.filter(INVESTOR_CATEGORIES…)` was
+ * ALWAYS empty and the investor glossary showed ZERO terms on an empty query.
+ * The glossary is a shared reference; an empty query must show ALL terms
+ * (founder + investor). We therefore base the view on the full ENTRIES set and
+ * drive the category sidebar from the canonical CATEGORY_ORDER. */
 
 function relatedFor(entry: GlossaryEntry, all: GlossaryEntry[]): string[] {
   const text = (entry.definition + " " + (entry.example || "")).toLowerCase();
@@ -37,11 +41,9 @@ export default function InvestorGlossaryPage() {
   const [letter, setLetter] = useState<string | null>(null);
   const [category, setCategory] = useState<string | null>(null);
 
-  // Filter to investor-relevant categories by default
-  const baseEntries = useMemo(
-    () => ENTRIES.filter((e) => INVESTOR_CATEGORIES.includes(e.category)),
-    []
-  );
+  // v25.48.2 Q11 — the full term set (founder + investor). An empty query shows
+  // everything; the category sidebar narrows from here.
+  const baseEntries = useMemo(() => ENTRIES.slice(), []);
 
   const filtered = useMemo(() => {
     let list = baseEntries.slice().sort((a, b) => a.term.localeCompare(b.term));
@@ -116,9 +118,9 @@ export default function InvestorGlossaryPage() {
                   className={`text-xs w-full text-left px-2 py-1 rounded ${category === null ? "bg-muted font-medium" : "hover:bg-muted/50"}`}
                   data-testid="filter-cat-all"
                 >
-                  All investor terms
+                  All terms
                 </button>
-                {INVESTOR_CATEGORIES.filter(c => CATEGORY_ORDER.includes(c)).map(c => (
+                {CATEGORY_ORDER.map(c => (
                   <button
                     key={c}
                     onClick={() => setCategory(category === c ? null : c)}
@@ -159,7 +161,7 @@ export default function InvestorGlossaryPage() {
             </div>
 
             <div className="text-xs text-muted-foreground">
-              Showing {filtered.length} investor terms
+              Showing {filtered.length} terms
               {category && <> · category <span className="font-medium">{category}</span></>}
               {letter && <> · starting with <span className="font-medium">{letter}</span></>}
             </div>

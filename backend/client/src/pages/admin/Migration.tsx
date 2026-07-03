@@ -26,10 +26,21 @@ interface MappingResp {
   mapping: Array<{ entityKey: string; fields: Array<{ source: string; canonical: string }> }>;
 }
 
+interface HealthResp {
+  featureFlags?: { mockMigrationEnabled?: boolean };
+}
+
 export default function AdminMigration() {
   const qc = useQueryClient();
-  const dry = useQuery<DryRunResp>({ queryKey: ["/api/admin/migration/dry-run"] });
-  const map = useQuery<MappingResp>({ queryKey: ["/api/admin/migration/mapping"] });
+  // v25.48.2 Q6 — the mock migration tool is server-gated. We ask the server
+  // (via /api/health featureFlags) whether it is enabled instead of trusting a
+  // client-side NODE_ENV. In production the server returns
+  // mockMigrationEnabled:false and we render a disabled notice with no
+  // dry-run / commit controls.
+  const health = useQuery<HealthResp>({ queryKey: ["/api/health"] });
+  const migrationEnabled = health.data?.featureFlags?.mockMigrationEnabled !== false;
+  const dry = useQuery<DryRunResp>({ queryKey: ["/api/admin/migration/dry-run"], enabled: migrationEnabled });
+  const map = useQuery<MappingResp>({ queryKey: ["/api/admin/migration/mapping"], enabled: migrationEnabled });
   const [commit, setCommit] = useState<CommitResp | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -47,6 +58,29 @@ export default function AdminMigration() {
     setCommit(null);
     qc.invalidateQueries({ queryKey: ["/api/admin/migration/dry-run"] });
   };
+
+  if (!migrationEnabled) {
+    return (
+      <>
+        <PageHeader
+          title="Migration"
+          description="Mock migration mode — disabled on this environment."
+        />
+        <PageBody>
+          <Card className="p-8 text-center" data-testid="card-migration-disabled">
+            <Database className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
+            <h2 className="text-lg font-semibold mb-1">Migration is disabled in production</h2>
+            <p className="text-sm text-muted-foreground max-w-md mx-auto">
+              This screen is a mock/preview import tool that walks seed data and fires
+              bridge events. It is turned off on production environments. Set
+              <span className="font-mono"> ENABLE_MOCK_MIGRATION=1</span> on a non-production
+              box to use it.
+            </p>
+          </Card>
+        </PageBody>
+      </>
+    );
+  }
 
   return (
     <>

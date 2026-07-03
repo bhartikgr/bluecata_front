@@ -30,7 +30,8 @@ import type { Express, Request, Response } from "express";
 import { createHash, randomBytes } from "node:crypto";
 import { requireAuth } from "./lib/authMiddleware";
 import { getUserContext } from "./lib/userContext";
-import { getRoundById, updateRound, closeRound, UPDATE_ROUND_WHITELIST_KEYS } from "./roundsStore"; /* v25.17 Lane A NH7 — verify round↔company binding; v25.20 Lane 4 — persist accepted fields onto the round */
+import { getRoundById, updateRound, closeRound, UPDATE_ROUND_WHITELIST_KEYS, ACTIVE_LIVE_ROUND_STATES, isOneOpenExemptRound, listActiveLivePricedRounds, OneOpenRoundConflictError } from "./roundsStore"; /* v25.17 Lane A NH7 — verify round↔company binding; v25.20 Lane 4 — persist accepted fields onto the round; v25.48.2 Q4c/MF4 one-open-round guard (atomic in-tx) */
+import { listPendingCommitments, lapsePendingWithinTx, emitLapsedMutations, type PendingCommitment } from "./lib/roundClosePendingLapse"; /* v25.48.2 Q13/MF5/MF6 — warn + atomically lapse un-confirmed soft-circles inside the close tx (parallel module, no cap-table math) */
 /* v25.17 Lane A NH8 — computeCarryForwardLive is already imported from
    roundCarryForwardEngine below and reused for server-side digest recompute. */
 import { companies } from "./mockData";
@@ -754,11 +755,54 @@ export function registerRoundCarryForwardRoutes(app: Express): void {
       if (Object.keys(patch).length === 0) {
         return res.status(400).json({ ok: false, error: "EMPTY_PATCH" });
       }
+
+      /* v25.48.2 Q4c — ONE-OPEN-ROUND hard block (PARALLEL route-layer guard;
+       * the Sacred cap-table/ledger math is untouched). When this PATCH would
+       * transition the round INTO an active/live state, refuse with 409 if the
+       * company already has ANOTHER active/live PRICED round. Warrant + ESOP/
+       * option-pool rounds are EXEMPT (they may coexist with a priced round):
+       *   - activating an exempt round → never blocked here,
+       *   - activating a priced round → blocked only by another priced open round.
+       * DB-driven + fail-closed. */
+      const targetStateRaw = (patch as any).state ?? (patch as any).status;
+      const targetState = typeof targetStateRaw === "string" ? targetStateRaw.toLowerCase() : null;
+      const current = owned.round;
+      const activatingExempt = isOneOpenExemptRound({
+        type: (patch as any).type ?? current?.type,
+        instrument: (patch as any).instrument ?? current?.instrument,
+      });
+      /* v25.48.2 MF4 — the one-open-round conflict re-check now runs INSIDE the
+         update transaction (after the state UPDATE applies) so the check and the
+         activation are ATOMIC: two concurrent activations for the same company
+         can't both pass a pre-write read. listActiveLivePricedRounds excludes
+         this round and THROWS on a DB read error (fail-closed, no in-memory
+         fallback), which rolls back the activation. */
+      const enforceOneOpen = Boolean(targetState && ACTIVE_LIVE_ROUND_STATES.has(targetState) && !activatingExempt);
+
       const result = updateRound(String(id), patch, {
         actor: owned.actor,
         expectedVersion: typeof expectedVersion === "string" ? expectedVersion : undefined,
+        withinUpdateTx: enforceOneOpen
+          ? () => {
+              const conflicts = listActiveLivePricedRounds(String(current?.companyId ?? ""), String(id));
+              if (conflicts.length > 0) {
+                throw new OneOpenRoundConflictError(conflicts.map((c) => c.id));
+              }
+            }
+          : undefined,
       });
       if (!result.ok) {
+        if (result.error === "ONE_OPEN_ROUND_CONFLICT") {
+          return res.status(409).json({
+            ok: false,
+            error: "ANOTHER_ROUND_ALREADY_OPEN",
+            message:
+              "This company already has an open funding round. Close it before opening another. " +
+              "(Warrant and ESOP/option-pool rounds are exempt and may coexist.)",
+            openRoundId: result.conflicts?.[0],
+            openRoundIds: result.conflicts ?? [],
+          });
+        }
         const status =
           result.error === "UNKNOWN_FIELD" ? 400
           : result.error === "VERSION_CONFLICT" ? 409
@@ -776,9 +820,48 @@ export function registerRoundCarryForwardRoutes(app: Express): void {
   );
 
   /**
+   * v25.48.2 Q13 — GET /api/founder/rounds/:id/pending-commitments
+   *
+   * Read-only preview that drives the founder close warning. Returns the count
+   * (and details) of un-confirmed / open soft-circle commitments that a close
+   * would lapse. Confirmed/wired/committed commitments are NOT included.
+   */
+  app.get(
+    "/api/founder/rounds/:id/pending-commitments",
+    requireAuth,
+    (req: Request, res: Response) => {
+      const { id } = req.params;
+      const owned = assertRoundOwnership(req, res, String(id));
+      if (!owned) return;
+      // v25.48.2 MF6 — FAIL-CLOSED: a read error must NOT return a false zero
+      // (which would suppress the founder warning and let a close proceed
+      // blindly). Surface a 503 degraded error that BLOCKS confirmation.
+      try {
+        const pending = listPendingCommitments(String(id));
+        return res.status(200).json({ ok: true, ...pending });
+      } catch (err) {
+        return res.status(503).json({
+          ok: false,
+          error: "PENDING_LOOKUP_FAILED",
+          degraded: true,
+          message: "Unable to determine pending commitments right now. Please retry before closing.",
+        });
+      }
+    },
+  );
+
+  /**
    * POST /api/founder/rounds/:id/close
    * Body: { reason: string, finalAmount?: number, finalCurrency?: string,
-   *         finalState?: "closed" | "closed_funded" | "closed_aborted" }
+   *         finalState?: "closed" | "closed_funded" | "closed_aborted",
+   *         lapsePending?: boolean }
+   *
+   * v25.48.2 Q13 — a founder may initiate the close from ANY non-terminal state
+   * (closeRound itself only refuses already-terminal rounds). When
+   * `lapsePending` is true (the client sends it after the founder confirms the
+   * "N pending commitments will be lapsed" warning), every un-confirmed
+   * soft-circle is marked `lapsed` with audit AFTER the round is durably closed.
+   * Confirmed/wired/committed commitments are preserved.
    */
   app.post(
     "/api/founder/rounds/:id/close",
@@ -792,26 +875,46 @@ export function registerRoundCarryForwardRoutes(app: Express): void {
         finalAmount?: number;
         finalCurrency?: string;
         finalState?: "closed" | "closed_funded" | "closed_aborted";
+        lapsePending?: boolean;
       };
       const reason = typeof body.reason === "string" && body.reason.trim().length > 0
         ? body.reason.trim()
         : "manual_close";
+
+      /* v25.48.2 MF5 — the pending-commitment lapse MUST be ATOMIC with the
+         close. We pass the lapse as an in-transaction hook to closeRound so both
+         the terminal round-state UPDATE and the lapse (+ its audit, MF6) commit
+         or roll back together. If the lapse or its audit fails, the whole close
+         rolls back: the round stays NON-terminal and we return 500. */
+      let lapsedItems: PendingCommitment[] = [];
+      const wantLapse = body.lapsePending === true;
       const result = closeRound(String(id), {
         actor: owned.actor,
         reason,
         finalAmountMinor: typeof body.finalAmount === "number" ? body.finalAmount : undefined,
         finalCurrency: typeof body.finalCurrency === "string" ? body.finalCurrency : undefined,
         finalState: body.finalState,
+        withinCloseTx: wantLapse
+          ? () => {
+              const lapse = lapsePendingWithinTx(String(id), { actorUserId: owned.actor, reason });
+              lapsedItems = lapse.items;
+            }
+          : undefined,
       });
       if (!result.ok) {
         const status = result.error === "ROUND_NOT_FOUND" ? 404 : 500;
         return res.status(status).json({ ok: false, error: result.error });
       }
+
+      /* Post-commit SSE for lapsed rows (only after the close tx committed). */
+      if (lapsedItems.length > 0) emitLapsedMutations(lapsedItems);
+
       return res.status(200).json({
         ok: true,
         round: result.round,
         alreadyClosed: result.alreadyClosed ?? false,
         frozenChainHead: result.frozenChainHead ?? null,
+        lapsedCommitments: lapsedItems.length,
       });
     },
   );

@@ -231,27 +231,14 @@ export default function InvitationDetail() {
   emit({ type: "invitation.viewed", payload: { invitationId: `inv-${inv.data.id}` } }, { companyId: inv.data.company.id ?? "co-x", roundId: inv.data.round.id, actorId: entitlementCtx?.userId ?? "investor-current", actorRole: "investor" });
  }, [inv.data?.id]);
 
- if (!inv.data) return <PageBody>Loading…</PageBody>;
- const i = inv.data;
- const pct = (i.raisedAmount / i.targetAmount) * 100;
- // Defect 7 fix: guard against totalShares <= 0 to avoid garbage percentages
- const rawTotalShares = asArray(sec.data).reduce((s, x) => s + x.shares, 0);
- const totalShares = rawTotalShares > 0 ? rawTotalShares : null;
- const captableRows = totalShares
-  ? asArray(sec.data).map(x => ({ ...x, ownership: (x.shares / totalShares) * 100 }))
-  : [];
-
- // B6: check if investor has soft-circled (from local term-sheet store OR decision record)
- const hasSoftCircled =
-   (mySig && !mySig.withdrawn) ||
-   decisionRecord.data?.record?.state === "soft_circled" ||
-   decisionRecord.data?.record?.state === "confirmed" ||
-   decisionRecord.data?.record?.state === "signed" ||
-   decisionRecord.data?.record?.state === "funded";
-
- // v24.3 — a CONFIRMED (signed) soft-circle means the investor now needs the
- // founder's wire instructions so they know where to send funds. Also treat
- // downstream states (signed/funded) as confirmed for visibility.
+ // v25.48 INV-CRASH fix — Rules of Hooks: these hooks MUST run on every render,
+ // BEFORE the `if (!inv.data) return …` early return below. Previously they lived
+ // after the early return, so the first (loading) render ran fewer hooks than the
+ // data-loaded render → React error #310 ("rendered fewer hooks than expected")
+ // crashed the whole Invitation detail page into the error boundary. Moving them
+ // above the early return keeps the hook count stable across renders.
+ // isConfirmed depends only on decisionRecord (a hook declared earlier), so it is
+ // safe to compute here.
  const isConfirmed =
    decisionRecord.data?.record?.state === "confirmed" ||
    decisionRecord.data?.record?.state === "signed" ||
@@ -286,6 +273,28 @@ export default function InvitationDetail() {
      toast({ title: "Copy failed", description: "Select and copy the account number manually.", variant: "destructive" });
    }
  }, [wireInstr.data, toast]);
+
+ if (!inv.data) return <PageBody>Loading…</PageBody>;
+ const i = inv.data;
+ const pct = (i.raisedAmount / i.targetAmount) * 100;
+ // Defect 7 fix: guard against totalShares <= 0 to avoid garbage percentages
+ const rawTotalShares = asArray(sec.data).reduce((s, x) => s + x.shares, 0);
+ const totalShares = rawTotalShares > 0 ? rawTotalShares : null;
+ const captableRows = totalShares
+  ? asArray(sec.data).map(x => ({ ...x, ownership: (x.shares / totalShares) * 100 }))
+  : [];
+
+ // B6: check if investor has soft-circled (from local term-sheet store OR decision record)
+ const hasSoftCircled =
+   (mySig && !mySig.withdrawn) ||
+   decisionRecord.data?.record?.state === "soft_circled" ||
+   decisionRecord.data?.record?.state === "confirmed" ||
+   decisionRecord.data?.record?.state === "signed" ||
+   decisionRecord.data?.record?.state === "funded";
+
+ // v24.3 — isConfirmed / wireInstr / copyAccountNumber were MOVED above the
+ // `if (!inv.data) return` early return (see the v25.48 INV-CRASH fix comment)
+ // to satisfy the Rules of Hooks. They are intentionally not redeclared here.
 
  // B5: handler for the Soft-Circle button — navigates to Your Decision tab + scrolls
  const handleSoftCircleClick = () => {

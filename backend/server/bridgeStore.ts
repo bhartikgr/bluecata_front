@@ -727,6 +727,55 @@ export function replayDeadLetter(eventId: string): { ok: true; entry: OutboxEntr
   return { ok: true, entry: e };
 }
 
+/**
+ * v25.48.2 Q1 (Ozan) — DLQ / outbox drain-CLEAR primitive.
+ *
+ * Purges the accumulated legacy-bridge outbox rows from BOTH the in-memory
+ * `outbox` and the `bridge_outbox` SQL table. This is additive + reversible in
+ * the sense that it only removes QUEUE rows — it NEVER touches audit history
+ * (`bridge_event_history`, admin audit chains, per-entity hash chains). By
+ * default it clears only `dead_letter` rows (the 501 pileup); pass
+ * `includeQueued` to also drop still-queued/delivering envelopes that will
+ * never deliver while the bridge is disabled.
+ *
+ * Returns the number cleared and how many outbox rows remain.
+ */
+export function clearBridgeOutbox(opts?: { includeQueued?: boolean }): {
+  cleared: number;
+  remaining: number;
+  statusesCleared: DeliveryStatus[];
+} {
+  const includeQueued = opts?.includeQueued === true;
+  const targets: DeliveryStatus[] = includeQueued
+    ? ["dead_letter", "queued", "delivering"]
+    : ["dead_letter"];
+  const targetSet = new Set<string>(targets);
+
+  let cleared = 0;
+  for (let i = outbox.length - 1; i >= 0; i--) {
+    if (targetSet.has(outbox[i].status)) {
+      outbox.splice(i, 1);
+      cleared++;
+    }
+  }
+
+  // Best-effort DB purge. ONLY the bridge_outbox queue table; audit history is
+  // never touched.
+  try {
+    const db: any = rawDb();
+    const placeholders = targets.map(() => "?").join(",");
+    db.prepare(`DELETE FROM bridge_outbox WHERE status IN (${placeholders})`).run(
+      ...targets,
+    );
+  } catch (err) {
+    log.warn(
+      `[bridgeStore.clearBridgeOutbox] DB purge failed: ${(err as Error).message}`,
+    );
+  }
+
+  return { cleared, remaining: outbox.length, statusesCleared: targets };
+}
+
 export function getInbox(): BridgeEnvelope[] {
   return inbox;
 }
@@ -993,6 +1042,18 @@ export function registerBridgeRoutes(app: Express): void {
       }
     });
     res.json(result);
+  });
+
+  // v25.48.2 Q1 — DLQ / outbox drain-CLEAR (admin). Clears ONLY the outbox
+  // queue rows (dead_letter by default; ?includeQueued=1 also drops queued/
+  // delivering). NEVER deletes audit history. Idempotent + reversible-safe.
+  app.post("/api/admin/bridge/dlq/clear", requireAdmin, (req: Request, res: Response) => {
+    const includeQueued =
+      req.query.includeQueued === "1" ||
+      req.query.includeQueued === "true" ||
+      req.body?.includeQueued === true;
+    const out = clearBridgeOutbox({ includeQueued });
+    res.json({ ok: true, ...out });
   });
 
   // Emit a custom envelope (admin-only test action)

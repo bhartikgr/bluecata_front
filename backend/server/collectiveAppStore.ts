@@ -105,7 +105,10 @@ export async function hydrateCollectiveAppStore(): Promise<void> {
  * read directly from the DB. This prevents the admin pipeline from
  * showing zero applications after a transient hydrate failure.
  */
-function listApplicationsFromDb(filter?: { status?: CollectiveAppStatus }): StoredApplication[] {
+function listApplicationsFromDb(
+  filter?: { status?: CollectiveAppStatus },
+  opts?: { strict?: boolean },
+): StoredApplication[] {
   try {
     const db: any = getDb();
     const rows: any[] = db
@@ -132,6 +135,12 @@ function listApplicationsFromDb(filter?: { status?: CollectiveAppStatus }): Stor
     return out;
   } catch (err) {
     log.warn("[collectiveAppStore.listApplicationsFromDb] failed:", (err as Error).message);
+    /* v25.48.2 MF-D — strict callers (the DB-authoritative read endpoints) must
+       FAIL CLOSED on a DB read error: re-throw so the route can surface a 5xx
+       instead of a false empty that would hide an existing application. The
+       legacy best-effort callers (admin list DB-union fallback) keep the
+       swallow-and-return-empty behavior. */
+    if (opts?.strict) throw err;
     return [];
   }
 }
@@ -420,18 +429,20 @@ export function registerCollectiveAppRoutes(app: Express): void {
   app.get("/api/collective/applications/mine", (req: Request, res: Response) => {
     const userId = req.userContext?.userId ?? null;
     if (!userId) return res.status(401).json({ error: "missing_identity" });
-    /* v25.21 Lane A NM-001 fix — fall back to the DB when the in-memory
-     * cache is empty (post-hydrate-failure / fresh process). Previously
-     * a transient hydrate miss returned 404 to a valid investor for an
-     * application that exists in the DB — a UX defect that fails closed,
-     * but is still a stale-cache surface. */
-    let mine = applications
-      .filter(a => a.userId === userId)
-      .sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime());
-    if (mine.length === 0) {
-      mine = listApplicationsFromDb()
+    /* v25.48.2 MF-D — read STRICTLY from the DB (the authoritative store). The
+     * prior implementation read the in-memory `applications` array first and
+     * only fell back to the DB when the mirror was empty, which violates the
+     * 100% DB-driven / no-in-memory-canonical-state rule. We now query the DB
+     * on EVERY request and FAIL CLOSED (500) on a read error — never a false
+     * empty that would hide an existing application. */
+    let mine: StoredApplication[];
+    try {
+      mine = listApplicationsFromDb(undefined, { strict: true })
         .filter((a) => a.userId === userId)
         .sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime());
+    } catch (err) {
+      log.error("[collectiveAppStore] /applications/mine DB read failed — failing closed:", (err as Error).message);
+      return res.status(500).json({ error: "APPLICATIONS_LOOKUP_FAILED", message: "Unable to load your application right now. Please try again." });
     }
     if (mine.length === 0) return res.status(404).json({ error: "no_application_yet" });
     return res.json({ application: mine[0] });

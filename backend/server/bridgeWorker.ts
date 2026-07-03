@@ -11,6 +11,7 @@
  */
 
 import { deliverOnce } from "./lib/bridgeRuntime";
+import { maySendOutboundBridge } from "./lib/bridgeOutboundGuard"; /* v25.48.2 MF1 — worker must obey the same predicate as the route guard */
 import { log } from "./lib/logger";
 
 let workerInterval: ReturnType<typeof setInterval> | null = null;
@@ -33,8 +34,19 @@ export function startBridgeWorker(): void {
     log.info("[bridge-worker] already running, skipping start");
     return;
   }
+  /* v25.48.2 MF1 — the worker calls deliverOnce() directly, bypassing the
+     Express drain guard. Gate startup behind the SAME predicate so a disabled
+     bridge / missing / placeholder receiver can never start the drain loop. */
+  if (!maySendOutboundBridge()) {
+    log.info("[bridge-worker] outbound bridge may not send (disabled or no real receiver) — worker not started");
+    return;
+  }
   log.info(`[bridge-worker] starting — drain interval ${DRAIN_INTERVAL_MS}ms`);
   workerInterval = setInterval(async () => {
+    /* Re-check each tick: env can change and the predicate is the single
+       source of truth. If we may not send, no-op this tick (never reach
+       deliverOnce). */
+    if (!maySendOutboundBridge()) return;
     try {
       const result = await deliverOnce();
       if (result.delivered > 0 || result.deadLettered > 0) {
@@ -63,7 +75,12 @@ export function isBridgeWorkerRunning(): boolean {
   return workerInterval !== null;
 }
 
-/** For tests: trigger a single drain tick synchronously. */
+/**
+ * For tests: trigger a single drain tick synchronously. Mirrors the interval
+ * body — v25.48.2 MF1: no-op (never reach deliverOnce) when the outbound bridge
+ * may not send.
+ */
 export async function tickBridgeWorker(): Promise<{ delivered: number; deadLettered: number }> {
+  if (!maySendOutboundBridge()) return { delivered: 0, deadLettered: 0 };
   return deliverOnce();
 }

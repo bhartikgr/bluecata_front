@@ -81,7 +81,7 @@ const FILTER_LABELS: Record<FilterTab, string> = {
  soft_circle: "Soft-Circle",
 };
 
-export function MessagesPage({ role }: { role: "founder" | "investor" }) {
+export function MessagesPage({ role, hideHeader = false }: { role: "founder" | "investor"; hideHeader?: boolean }) {
   const [location] = useLocation();
   // Sprint 18 Phase 3 B5 — also read `thread` query param. The hash-router
   // strips the query, so look at both window.location.search AND the hash

@@ -324,6 +324,55 @@ export function hasActiveOrLiveRound(companyId: string): boolean {
   }
 }
 
+/**
+ * v25.48.2 Q4c — a round is EXEMPT from the one-open-round hard block when it is
+ * a warrant or an ESOP / option-pool round: those may coexist with a priced
+ * round. Determined from the round's instrument (warrant | option) or a type
+ * that names esop / option-pool. Everything else (priced equity, SAFE, note) is
+ * a "priced/primary" round that must be the only open one.
+ */
+export function isOneOpenExemptRound(r: {
+  type?: string | null;
+  instrument?: string | null;
+}): boolean {
+  const instrument = String(r.instrument ?? "").toLowerCase();
+  const type = String(r.type ?? "").toLowerCase();
+  if (instrument === "warrant" || instrument === "option") return true;
+  if (type.includes("esop") || type.includes("option_pool") || type.includes("option-pool")) return true;
+  return false;
+}
+
+/**
+ * v25.48.2 Q4c — DB-direct list of a company's active/live rounds that are NOT
+ * one-open-exempt (i.e. the priced/primary rounds). Optionally excludes a
+ * round id (the one being activated). Used by the route-layer hard-block guard.
+ */
+export function listActiveLivePricedRounds(
+  companyId: string,
+  excludeRoundId?: string,
+): Array<{ id: string; state: string; type: string; instrument: string | null }> {
+  if (!companyId) return [];
+  // v25.48.2 MF4 (Q4B) — 100% DB-driven, fail-closed. A DB read error must NOT
+  // fall back to the in-memory cache (which can be empty/stale and would let a
+  // second concurrent priced round activate). THROW so the route returns 5xx
+  // and does NOT activate.
+  const rows: any[] = rawDb()
+    .prepare(
+      `SELECT id, state, type, instrument FROM rounds WHERE company_id = ? AND deleted_at IS NULL`,
+    )
+    .all(companyId);
+  return rows
+    .filter((r) => r.id !== excludeRoundId)
+    .filter((r) => ACTIVE_LIVE_ROUND_STATES.has(String(r.state ?? "").toLowerCase()))
+    .filter((r) => !isOneOpenExemptRound(r))
+    .map((r) => ({
+      id: String(r.id),
+      state: String(r.state ?? ""),
+      type: String(r.type ?? ""),
+      instrument: r.instrument ?? null,
+    }));
+}
+
 /** Soft delete (kept for symmetry; not currently used by any route). */
 export function softDeleteRound(id: string, actorUserId: string): boolean {
   const round = ROUNDS_BY_ID.get(id);
@@ -431,18 +480,39 @@ const UPDATE_EXTRAS_WHITELIST: ReadonlySet<string> = new Set([
  * keys vs extras keys without duplicating either list. */
 export const UPDATE_ROUND_EXTRAS_KEYS: string[] = Array.from(UPDATE_EXTRAS_WHITELIST);
 
+/**
+ * v25.48.2 MF4 (Q4B) — thrown from an `updateRound` in-transaction guard to
+ * abort+rollback the UPDATE atomically when a one-open-round conflict is
+ * detected against freshly-committed DB state. Carries the conflicting round ids
+ * so the route can report them in the 409 body.
+ */
+export class OneOpenRoundConflictError extends Error {
+  readonly conflicts: string[];
+  constructor(conflicts: string[]) {
+    super("ANOTHER_ROUND_ALREADY_OPEN");
+    this.name = "OneOpenRoundConflictError";
+    this.conflicts = conflicts;
+  }
+}
+
 export interface UpdateRoundOpts {
   actor: string;
   /** Optimistic-concurrency guard. When supplied, the update only applies if
    *  the round's current updatedAt matches; otherwise VERSION_CONFLICT. */
   expectedVersion?: string;
+  /** v25.48.2 MF4 — optional guard executed INSIDE the same DB transaction as
+   *  the UPDATE (after it applies). Throw to abort+rollback atomically. Used to
+   *  re-check the one-open-round invariant against the freshly-committed state
+   *  so two concurrent activations can't both pass a pre-write read. */
+  withinUpdateTx?: () => void;
 }
 
 export interface UpdateRoundResult {
   ok: boolean;
   round?: Round;
-  error?: "ROUND_NOT_FOUND" | "NO_CHANGES" | "UNKNOWN_FIELD" | "VERSION_CONFLICT" | "DB_WRITE_FAILED";
+  error?: "ROUND_NOT_FOUND" | "NO_CHANGES" | "UNKNOWN_FIELD" | "VERSION_CONFLICT" | "DB_WRITE_FAILED" | "ONE_OPEN_ROUND_CONFLICT";
   rejectedKey?: string;
+  conflicts?: string[];
   changes?: number;
 }
 
@@ -545,8 +615,16 @@ export function updateRound(
         .where(and(eq(roundsTable.id, roundId), isNull(roundsTable.deletedAt)))
         .run();
       changes = Number(r?.changes ?? r?.rowsAffected ?? 0);
+      /* v25.48.2 MF4 — run the caller-supplied in-transaction guard (e.g. the
+         one-open-round re-check) INSIDE this same transaction, AFTER the UPDATE
+         applies. If it throws, the UPDATE rolls back with it so the activation
+         never commits and two concurrent activations can't both pass. */
+      if (opts.withinUpdateTx) opts.withinUpdateTx();
     });
   } catch (err) {
+    if (err instanceof OneOpenRoundConflictError) {
+      return { ok: false, error: "ONE_OPEN_ROUND_CONFLICT", conflicts: err.conflicts };
+    }
     const msg = (err as Error).message;
     if (/no such table/i.test(msg)) {
       tableMissing = true;
@@ -596,6 +674,23 @@ export interface CloseRoundOpts {
    *  documents the terminal state as `closed`; callers funding/aborting may
    *  pass "closed_funded"/"closed_aborted" if their flow distinguishes them. */
   finalState?: "closed" | "closed_funded" | "closed_aborted";
+  /** v25.48.2 MF5 — optional work executed INSIDE the same DB transaction as the
+   *  terminal round-state UPDATE. If it THROWS, the transaction rolls back and
+   *  the round stays NON-terminal (closeRound returns ok:false). Used to lapse
+   *  pending commitments atomically with the close (no sacred math is touched —
+   *  the hook only runs additive parallel-module UPDATEs + audit appends). */
+  withinCloseTx?: () => void;
+}
+
+/** v25.48.2 MF5 — wraps an error thrown by a closeRound in-transaction hook so
+ *  closeRound never mistakes it for the first-boot "rounds table missing" case. */
+export class CloseWithinTxError extends Error {
+  readonly cause: Error;
+  constructor(cause: Error) {
+    super(`close in-tx hook failed: ${cause.message}`);
+    this.name = "CloseWithinTxError";
+    this.cause = cause;
+  }
 }
 
 export interface CloseRoundResult {
@@ -667,8 +762,58 @@ export function closeRound(roundId: string, opts: CloseRoundOpts): CloseRoundRes
         .where(and(eq(roundsTable.id, roundId), isNull(roundsTable.deletedAt)))
         .run();
       changes = Number(r?.changes ?? r?.rowsAffected ?? 0);
+      /* v25.48.2 MF5 — run any caller-supplied in-transaction work (e.g. lapse
+         pending commitments + audit) INSIDE this same transaction. If it throws,
+         the terminal-state UPDATE above rolls back with it, so the round stays
+         non-terminal and the caller receives ok:false. Hook errors are TAGGED so
+         they can never be mistaken for the first-boot "rounds table missing"
+         tolerance below (which must apply ONLY to the rounds-table UPDATE). */
+      if (opts.withinCloseTx) {
+        try {
+          opts.withinCloseTx();
+        } catch (hookErr) {
+          throw new CloseWithinTxError(hookErr as Error);
+        }
+      }
+      /* v25.48.2 MF-B — the `round.closed` audit append is now part of the close
+         transaction's SUCCESS CRITERIA, for BOTH the pending-rows and no-pending
+         close paths. It runs INSIDE this transaction, BEFORE any in-memory cache
+         mutation. appendAdminAudit swallows DB write errors and returns an
+         empty-hash SENTINEL (hash: ""); we treat that sentinel (or an outright
+         throw) as a HARD failure and re-throw a tagged error so the terminal
+         round-state UPDATE above rolls back with it — the round stays
+         non-terminal and the caller receives ok:false (→ 500). Previously this
+         append happened AFTER the tx in best-effort mode, so an audit failure
+         was silently ignored and a close was reported successful with no
+         durable audit row (worst on the no-pending path where the lapse hook
+         appends nothing). */
+      try {
+        const auditEntry = appendAdminAudit(
+          opts.actor,
+          `company:${round.companyId}`,
+          "round.closed",
+          {
+            roundId,
+            reason: opts.reason,
+            finalState,
+            finalAmountMinor: opts.finalAmountMinor ?? null,
+            finalCurrency: opts.finalCurrency ?? round.currency ?? null,
+            frozenChainHead,
+          },
+          tenantId,
+        );
+        if (!auditEntry || !auditEntry.hash) {
+          throw new Error("round.closed audit append failed (empty-hash sentinel) — rolling back close");
+        }
+      } catch (auditErr) {
+        throw new CloseWithinTxError(auditErr as Error);
+      }
     });
   } catch (err) {
+    if (err instanceof CloseWithinTxError) {
+      log.error("[roundsStore.closeRound] in-tx hook FAILED — close rolled back, round stays non-terminal:", err.cause.message);
+      return { ok: false, error: "DB_WRITE_FAILED", round };
+    }
     const msg = (err as Error).message;
     if (/no such table/i.test(msg)) {
       tableMissing = true;
@@ -697,25 +842,9 @@ export function closeRound(roundId: string, opts: CloseRoundOpts): CloseRoundRes
      (v25.18 NH4 + v25.45 Bug C round-2). The append-only chain is NOT mutated;
      `frozenChainHead` is the durably-persisted tip captured prior to close. */
 
-  /* Audit. */
-  try {
-    appendAdminAudit(
-      opts.actor,
-      `company:${round.companyId}`,
-      "round.closed",
-      {
-        roundId,
-        reason: opts.reason,
-        finalState,
-        finalAmountMinor: opts.finalAmountMinor ?? null,
-        finalCurrency: opts.finalCurrency ?? round.currency ?? null,
-        frozenChainHead,
-      },
-      tenantId,
-    );
-  } catch (err) {
-    log.warn("[roundsStore.closeRound] audit append failed:", (err as Error).message);
-  }
+  /* Audit — v25.48.2 MF-B: the `round.closed` audit append now runs INSIDE the
+     close transaction above (fail-closed success criteria), so there is no
+     best-effort post-commit append here anymore. */
 
   /* Bridge outbound event. */
   try {

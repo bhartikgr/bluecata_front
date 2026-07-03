@@ -258,6 +258,12 @@ export default function AdminLogin() {
           <ShieldCheck className="h-4 w-4 mr-2" />
           {submitting ? "Signing in…" : "Sign in to admin"}
         </Button>
+
+        <div className="text-center">
+          <Link href="/auth/forgot" className="text-[#cc0001] hover:underline text-sm" data-testid="link-forgot">
+            Forgot password?
+          </Link>
+        </div>
       </form>
 
       {/* Demo admin quick-fill — only when ?demo=1 */}

@@ -875,7 +875,15 @@ function AppRouter() {
         </Route>
 
         {/* ===== COLLECTIVE ROUTES — RequireAuth ===== */}
+        {/* v25.48.2 Q12 (Ozan) — bare /collective is not a page; send it to the
+            Collective dashboard so the nav entry / deep links resolve instead of
+            hitting the catch-all 404. */}
+        <Route path="/collective">
+          {() => <Redirect to="/collective/dashboard" />}
+        </Route>
         <Route path="/collective/dashboard">
+          {/* v25.48.2 MF7 (Q9) — the member gate now lives inside CollectiveShell
+              and wraps ALL member-only routes, so no per-route wrap here. */}
           {() => <RequireAuth><CollectiveShell><CollectiveDashboard /></CollectiveShell></RequireAuth>}
         </Route>
         <Route path="/collective/dealroom/:companyId">

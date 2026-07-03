@@ -10,6 +10,7 @@
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
+import { Briefcase } from "lucide-react";
 import {
   Select,
   SelectContent,
@@ -17,7 +18,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 
 type Position = {
   id: string;
@@ -68,12 +69,10 @@ export function PortfolioCompanySwitcher({
 
   const data = positions.data ?? [];
 
-  // If zero portfolio companies, redirect to /investor/invitations
-  useEffect(() => {
-    if (!positions.isLoading && data.length === 0) {
-      navigate("/investor/invitations");
-    }
-  }, [positions.isLoading, data.length, navigate]);
+  // v25.48.2 Q8 (Ozan) — do NOT bounce an investor with no holdings off the
+  // Portfolio page. The previous redirect to /investor/invitations made the
+  // Portfolio nav item feel broken (clicking it silently threw you elsewhere).
+  // We now render an in-page empty-state with a CTA (below) and stay on route.
 
   // Sprint 21 hotfix: auto-select the first company on mount so the per-company
   // overview renders immediately instead of showing "Select a portfolio company".
@@ -97,11 +96,37 @@ export function PortfolioCompanySwitcher({
 
   if (data.length === 0) {
     return (
-      <Alert className="border-amber-400 bg-amber-50 dark:bg-amber-950/30">
-        <AlertDescription className="text-amber-800 dark:text-amber-200">
-          You have no portfolio holdings yet. Review pending invitations.
-        </AlertDescription>
-      </Alert>
+      <div
+        className="flex flex-col items-center text-center gap-4 p-10 border-2 border-dashed border-border rounded-lg bg-background"
+        data-testid="portfolio-empty-state"
+      >
+        <div className="h-12 w-12 rounded-full bg-muted flex items-center justify-center">
+          <Briefcase className="h-6 w-6 text-muted-foreground" />
+        </div>
+        <div>
+          <h2 className="text-lg font-semibold">Your portfolio is empty</h2>
+          <p className="text-sm text-muted-foreground mt-1 max-w-md">
+            Once you accept an investment invitation and your holding is recorded, the
+            company will appear here with its updates, marks, and analytics. You have no
+            holdings yet.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          <Button
+            onClick={() => navigate("/investor/invitations")}
+            data-testid="button-portfolio-review-invitations"
+          >
+            Review invitations
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => navigate("/investor/dashboard")}
+            data-testid="button-portfolio-explore"
+          >
+            Back to dashboard
+          </Button>
+        </div>
+      </div>
     );
   }
 

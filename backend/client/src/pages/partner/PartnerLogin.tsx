@@ -329,6 +329,12 @@ export default function PartnerLogin() {
           <Handshake className="h-4 w-4 mr-2" />
           {submitting ? "Signing in…" : "Sign in to partner workspace"}
         </Button>
+
+        <div className="text-center">
+          <Link href="/auth/forgot" className="text-[#cc0001] hover:underline text-sm" data-testid="link-forgot">
+            Forgot password?
+          </Link>
+        </div>
       </form>
 
       {/* Demo partner quick-fill — only when ?demo=1 */}

@@ -18,6 +18,7 @@ import { serveStatic } from "./static";
 import { createServer } from "node:http";
 import { startBridgeWorker } from "./bridgeWorker";
 import { isBridgeEnabled, bridgeDisabledReason } from "./lib/bridgeEnabled"; /* v25.48 HIGH-8 — legacy outbound bridge default-OFF in prod */
+import { maySendOutboundBridge } from "./lib/bridgeOutboundGuard"; /* v25.48.2 MF1 — gate worker-start on the centralized predicate (real receiver, non-placeholder secret) */
 import { startCollectiveRenewalWorker, isRenewalWorkerEnabled } from "./lib/collectiveRenewalWorker";
 import { hydrateBridgeStore } from "./bridgeStore";
 import { hydrateAllStores } from "./lib/hydrateStores";
@@ -319,7 +320,7 @@ app.use((req, res, next) => {
        * NOT start the drain loop at all, so no 501 storm and no DLQ pileup. The
        * Sacred bridgeRuntime.ts is untouched. BRIDGE_WORKER_ENABLED=false still
        * disables the worker independently (horizontal-scaling contract). */
-      if (process.env.BRIDGE_WORKER_ENABLED !== "false" && isBridgeEnabled()) {
+      if (process.env.BRIDGE_WORKER_ENABLED !== "false" && maySendOutboundBridge()) {
         /* v25.4 — hydrate queued envelopes from bridge_outbox before the
          * drain worker starts, so queued events survive restart. */
         try {
@@ -344,6 +345,11 @@ app.use((req, res, next) => {
         startBridgeWorker();
       } else if (!isBridgeEnabled()) {
         log(`legacy outbound bridge DISABLED (HIGH-8): ${bridgeDisabledReason()} — drain worker not started, no 501/DLQ`, "bridge-worker");
+      } else if (!maySendOutboundBridge()) {
+        /* v25.48.2 MF1 — enabled but no complete real receiver (URL missing or
+           secret missing/placeholder). Do NOT start the worker; it would only
+           501/dead-letter into the void. */
+        log("legacy outbound bridge enabled but no real receiver (missing URL or placeholder/blank secret) — drain worker not started", "bridge-worker");
       } else {
         log("bridge worker disabled via BRIDGE_WORKER_ENABLED=false", "bridge-worker");
       }

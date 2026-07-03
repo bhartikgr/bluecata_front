@@ -29,6 +29,7 @@ import { useQuery } from "@tanstack/react-query"; /* v16 Fix 6 — read COLLECTI
 import { apiRequest } from "@/lib/queryClient"; /* v16 Fix 6 */
 import { ChapterSelector } from "@/components/ChapterSelector"; /* v17 Phase A — chapter scope dropdown in topbar */
 import { MarketTicker } from "@/components/feeds/MarketTicker"; /* v25.43 R3-4 — persistent live ticker strip */
+import { CollectiveMemberGate } from "@/components/CollectiveMemberGate"; /* v25.48.2 MF7 (Q9) — member gate on the common shell */
 
 /* ============================================================
  * v25.41 Bug-1 — Consortium Partner vs Collective separation
@@ -393,6 +394,43 @@ function CollectiveTopbar({ onMenuClick }: { onMenuClick: () => void }) {
 }
 
 /* ============================================================
+ * v25.48.2 MF7 (Q9) — member gate on the COMMON shell
+ *
+ * Previously ONLY /collective/dashboard was wrapped in <CollectiveMemberGate>
+ * in App.tsx; every other member-only collective route (dealroom, members,
+ * companies, soft-circles, DSC pages, recaps, calendar, ma-intel, …) mounted
+ * its page and fired its member-only queries for a signed-in NON-member,
+ * spraying 403s. Gating on the shared shell means membership resolves BEFORE
+ * any member-only page mounts, for ALL of them, in one place.
+ *
+ * EXEMPT (intentionally reachable by a signed-in non-member):
+ *   - /collective/partner/*        — the consortium PARTNER workspace. A
+ *                                    partner-only user is NOT a collective
+ *                                    member; gating these would wrongly wall
+ *                                    them off from their own workspace.
+ *   - /collective/membership*      — the apply/checkout + membership summary
+ *                                    surface (how a non-member joins).
+ *   - /syndicate/apply,
+ *     /collective/syndicate/apply  — public apply surface.
+ *
+ * v25.48.2 MF-C — /collective/profile/:userId is NO LONGER exempt. The public
+ * profile page (PublicProfile.tsx) resolves the member from the member-only
+ * directory endpoint GET /api/collective/members (requireCollectiveMember), so
+ * exempting it let a non-member mount the page and fire that member-only call —
+ * the exact Q9 behavior the gate exists to prevent. There is no public,
+ * non-member-safe profile endpoint, so the profile is treated as member-only:
+ * a non-member now gets the marketing/apply gate instead.
+ * ============================================================ */
+function isMemberGateExempt(path: string): boolean {
+  return (
+    path.startsWith("/collective/partner") ||
+    path.startsWith("/collective/membership") ||
+    path === "/syndicate/apply" ||
+    path.startsWith("/collective/syndicate/apply")
+  );
+}
+
+/* ============================================================
  * CollectiveShell — main layout
  * ============================================================ */
 
@@ -441,7 +479,9 @@ export function CollectiveShell({ children }: CollectiveShellProps) {
             app header. */}
         <MarketTicker />
         <main className="flex-1 overflow-auto bg-[#FAFAF8]">
-          {children}
+          {isMemberGateExempt(location)
+            ? children
+            : <CollectiveMemberGate>{children}</CollectiveMemberGate>}
         </main>
       </div>
     </div>

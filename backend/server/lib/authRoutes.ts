@@ -37,6 +37,7 @@ import { setSessionCookie } from "./sessionCookie";
    safe and idiomatic — which is what v25.25 should have used from the
    start. */
 import { JWT_SECRET_MISSING } from "./auth";
+import { evaluateLoginGateForIdentity } from "./accountStatus"; /* v25.48.2 Q5/MF2 + MF-A — refuse suspended/inactive/archived logins by RESOLVED identity; fail-closed on lookup error */
 import { rawDb } from "../db/connection";
 import { sendEmail } from "./emailSender";
 import { log } from "./logger";
@@ -192,6 +193,27 @@ export function registerAuthShellRoutes(app: Express, redemption: {
         });
       }
       if (MOCK_PASSWORDS[canonicalId] === providedPw) {
+        // v25.48.2 Q5/MF2 + MF-A — fail-closed on suspended/inactive/archived
+        // accounts BEFORE issuing a session. Evaluate by the RESOLVED persona id
+        // (authoritative — the identity the session will carry) so a userId-only
+        // login (no email) can't bypass the status check. DB-driven
+        // (auth_users.status). A lookup ERROR also denies — no session issued.
+        const gate = evaluateLoginGateForIdentity({ userId: canonicalId, email: body.email });
+        if (gate.decision === "block") {
+          return res.status(403).json({
+            ok: false,
+            error: "ACCOUNT_NOT_ACTIVE",
+            status: gate.status,
+            message: `This account is ${gate.status}. Contact your administrator to restore access.`,
+          });
+        }
+        if (gate.decision === "error") {
+          return res.status(503).json({
+            ok: false,
+            error: "ACCOUNT_STATUS_UNAVAILABLE",
+            message: "Unable to verify account status right now. Please try again.",
+          });
+        }
         clearRevocation(canonicalId); // Wave C FIX C1
         setSessionCookie(res, canonicalId);
         const ctx = getUserContextForId(canonicalId);
@@ -209,6 +231,26 @@ export function registerAuthShellRoutes(app: Express, redemption: {
     if (body.email && providedPw) {
       const runtimeId = verifyPassword(body.email, providedPw);
       if (runtimeId) {
+        // v25.48.2 Q5/MF2 + MF-A — fail-closed on suspended/inactive/archived
+        // accounts BEFORE issuing a session, keyed by the RESOLVED runtime user
+        // id (authoritative). DB-driven (auth_users.status). A lookup ERROR also
+        // denies — no session issued.
+        const gate = evaluateLoginGateForIdentity({ userId: runtimeId, email: body.email });
+        if (gate.decision === "block") {
+          return res.status(403).json({
+            ok: false,
+            error: "ACCOUNT_NOT_ACTIVE",
+            status: gate.status,
+            message: `This account is ${gate.status}. Contact your administrator to restore access.`,
+          });
+        }
+        if (gate.decision === "error") {
+          return res.status(503).json({
+            ok: false,
+            error: "ACCOUNT_STATUS_UNAVAILABLE",
+            message: "Unable to verify account status right now. Please try again.",
+          });
+        }
         clearRevocation(runtimeId); // Wave C FIX C1
         setSessionCookie(res, runtimeId);
         const ctx = getUserContextForId(runtimeId);

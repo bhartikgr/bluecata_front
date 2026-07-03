@@ -40,6 +40,8 @@
 import type { Express, Request, Response } from "express";
 import multer from "multer";
 import { randomBytes, createHash } from "node:crypto";
+import * as nodeFs from "node:fs"; /* v25.48 STORE-1 — best-effort orphan cleanup on DB-fail */
+import * as nodePath from "node:path"; /* v25.48 STORE-1 */
 import { and, eq, isNull, asc } from "drizzle-orm";
 import { getUserContext } from "./lib/userContext";
 import { requireAuth } from "./lib/authMiddleware"; /* v25.17 Lane A NC1 */
@@ -223,6 +225,47 @@ function persistFile(f: DRFile): void {
   } catch (err) {
     log.warn("[dataroomStore.persistFile] DB write failed:", (err as Error).message);
   }
+}
+
+/**
+ * v25.48 STORE-1 (GPT-5.5/Gemini review) — FAIL-CLOSED DB persistence for NEW
+ * uploads. Unlike persistFile() (which swallows DB errors for legacy/seed paths),
+ * this THROWS if the insert fails AND verifies exactly one new row was written
+ * (no onConflictDoNothing silent-success). The upload route calls this so a DB
+ * failure surfaces as HTTP 500 and no success is claimed. Bytes are already on
+ * durable storage at this point; on DB failure we best-effort delete the orphan.
+ */
+export function persistFileStrict(f: DRFile): void {
+  const db = getDb();
+  db.transaction((tx: any) => {
+    const info = tx
+      .insert(dataroomFilesTable)
+      .values({
+        id: f.id,
+        companyId: f.companyId,
+        tenantId: tenantForCompany(f.companyId),
+        folderId: f.folderId,
+        category: "misc",
+        name: f.name,
+        sizeBytes: f.sizeBytes,
+        mime: f.mime,
+        uploadedAt: f.uploadedAt,
+        uploadedBy: f.uploadedBy,
+        uploadedById: f.uploadedById,
+        sha256: f.sha256,
+        watermark: f.watermark,
+        storageKey: f.storageKey ?? null,
+        storageKmsKeyId: f.storageKmsKeyId ?? null,
+        storageBackend: f.storageBackend ?? null,
+        deletedAt: null,
+      })
+      .run();
+    // better-sqlite3 returns { changes }. Require exactly one inserted row so a
+    // primary-key collision cannot masquerade as success.
+    if (info && typeof info.changes === "number" && info.changes !== 1) {
+      throw new Error(`dataroom insert affected ${info.changes} rows (expected 1)`);
+    }
+  });
 }
 
 /** Upsert a permission row keyed by (investorId, folderId). */
@@ -577,10 +620,13 @@ export function registerDataroomRoutes(app: Express): void {
     }
     const sha = createHash("sha256").update(r.file.buffer).digest("hex").slice(0, 16);
 
-    // v25.45.4 M-5/M-6 — persist the bytes to durable object storage (S3+KMS in
-    // prod, FS fallback in dev) so the download/view route serves the REAL file
-    // and survives restarts. If storage fails we still keep the in-memory _buf
-    // so the current session works, but log it.
+    // v25.48 STORE-1 — FAIL-CLOSED durable persistence (Ozan rule: an upload MUST
+    // land on disk AND be recorded in the DB, or it errors). Previously a storage
+    // write failure was swallowed and the row was persisted with storageKey=null,
+    // which serves a placeholder PDF after restart (silent data loss for files
+    // meant to be stored long-term). Now a storage failure returns 500 and NO DB
+    // row is created, so every dataroom row is guaranteed to have real durable
+    // bytes behind it. Local disk is the default backend (see server/lib/objectStorage.ts).
     let storageKey: string | null = null;
     let storageKmsKeyId: string | null = null;
     let storageBackend: string | null = null;
@@ -595,7 +641,11 @@ export function registerDataroomRoutes(app: Express): void {
       storageKmsKeyId = stored.kmsKeyId;
       storageBackend = stored.backend;
     } catch (err) {
-      log.warn("[dataroomStore.upload] object storage put failed (keeping in-memory buffer):", (err as Error).message);
+      log.error("[dataroomStore.upload] durable storage write failed — refusing to persist a row without bytes:", (err as Error).message);
+      return res.status(500).json({
+        error: "storage_write_failed",
+        message: "The file could not be saved to durable storage. No record was created; please try again.",
+      });
     }
 
     // PATCH v3: uploadedBy comes from session identity, not hardcoded "Maya Chen"
@@ -616,7 +666,28 @@ export function registerDataroomRoutes(app: Express): void {
       storageKmsKeyId,
       storageBackend,
     };
-    persistFile(f);
+    // v25.48 STORE-1 (GPT-5.5/Gemini review) — FAIL-CLOSED on DB write too. The
+    // bytes are already on durable storage; if the DB row cannot be recorded we
+    // must NOT claim success, must NOT push to the in-memory cache, and must NOT
+    // log a successful upload event. Best-effort delete the just-written orphan
+    // (local-fs only) so we don't leak bytes, then return 500.
+    try {
+      persistFileStrict(f);
+    } catch (err) {
+      log.error("[dataroomStore.upload] DB persist failed after storage write — rolling back:", (err as Error).message);
+      if (storageBackend === "fs" && storageKey) {
+        try {
+          const candidates = storageKey.startsWith("uploads/")
+            ? [nodePath.resolve(process.cwd(), storageKey)]
+            : [nodePath.resolve(process.env.DATAROOM_STORAGE_DIR || process.env.UPLOADS_DIR || nodePath.resolve(process.cwd(), "uploads"), storageKey)];
+          for (const p of candidates) { try { nodeFs.unlinkSync(p); break; } catch { /* best-effort */ } }
+        } catch { /* best-effort orphan cleanup */ }
+      }
+      return res.status(500).json({
+        error: "db_write_failed",
+        message: "The file could not be recorded. No record was created; please try again.",
+      });
+    }
     files.push(f);
     logEvent({ companyId, actor: ctx.identity.name, actorId: ctx.userId, action: "upload", targetKind: "file", targetId: f.id, meta: { name: f.name, sizeBytes: f.sizeBytes } });
     res.json({ ok: true, file: { ...f, _buf: undefined } });

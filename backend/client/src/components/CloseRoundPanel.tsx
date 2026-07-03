@@ -8,6 +8,7 @@
  * 4. After close: round is locked, ledger sealed, audit trail visible.
  */
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -52,6 +53,15 @@ export default function CloseRoundPanel({ roundId, companyId = "co-acme", roundN
 
  const state = closeStates[roundId] ?? { roundId, closed: false };
  const [running, setRunning] = useState(false);
+ // v25.48.2 Q13 — pending (un-confirmed) soft-circle commitments that a close
+ // will lapse. Drives the pre-finalize warning + acknowledgement.
+ const [ackLapse, setAckLapse] = useState(false);
+ const pending = useQuery<{ ok: boolean; count: number; totalMinor: number }>({
+   queryKey: [`/api/founder/rounds/${roundId}/pending-commitments`],
+   enabled: !state.closed,
+   staleTime: 10_000,
+ });
+ const pendingCount = pending.data?.count ?? 0;
 
  function runRecon() {
  setRunning(true);
@@ -151,8 +161,12 @@ export default function CloseRoundPanel({ roundId, companyId = "co-acme", roundN
      await apiRequest("POST", `/api/founder/rounds/${roundId}/close`, {
        reason: "manual_close",
        finalCurrency: "USD",
+       // v25.48.2 Q13 — founder acknowledged the warning; lapse un-confirmed
+       // commitments server-side (confirmed/wired/committed are preserved).
+       lapsePending: pendingCount > 0,
      });
      queryClient.invalidateQueries({ queryKey: ["/api/rounds"] });
+     queryClient.invalidateQueries({ queryKey: [`/api/founder/rounds/${roundId}/pending-commitments`] });
      toast({ title: "Round closed", description: "Round state persisted; ledger sealed. Audit trail in /admin/audit-log." });
    } catch (err) {
      toast({
@@ -246,6 +260,37 @@ export default function CloseRoundPanel({ roundId, companyId = "co-acme", roundN
  </Card>
  )}
 
+ {/* v25.48.2 Q13 — pending-commitment warning (shown before finalize when any
+     un-confirmed soft-circle exists). Confirmed/wired/committed are preserved. */}
+ {state.reconciliation?.status === "match" && state.founderSignoff && state.adminSignoff && !state.closed && pendingCount > 0 && (
+ <Card className="border-amber-300 bg-amber-50" data-testid="close-pending-warning">
+ <CardContent className="py-4">
+ <div className="flex items-start gap-3">
+ <AlertTriangle className="h-5 w-5 text-amber-700 flex-shrink-0 mt-0.5" />
+ <div className="flex-1">
+ <div className="font-semibold text-amber-900">
+ {pendingCount} pending commitment{pendingCount === 1 ? "" : "s"} will be closed out and marked lapsed
+ </div>
+ <p className="text-sm text-amber-800 mt-1">
+ These are un-confirmed / open soft-circles. Closing the round will mark them
+ <strong> lapsed</strong> (not funded) with an audit-trail entry. Confirmed, wired, and
+ committed commitments are <strong>not</strong> affected.
+ </p>
+ <label className="flex items-center gap-2 mt-3 text-sm text-amber-900 cursor-pointer">
+ <input
+ type="checkbox"
+ checked={ackLapse}
+ onChange={(e) => setAckLapse(e.target.checked)}
+ data-testid="checkbox-ack-lapse"
+ />
+ I understand these {pendingCount} pending commitment{pendingCount === 1 ? "" : "s"} will be lapsed.
+ </label>
+ </div>
+ </div>
+ </CardContent>
+ </Card>
+ )}
+
  {/* Step 3 — commit close */}
  {state.reconciliation?.status === "match" && state.founderSignoff && state.adminSignoff && !state.closed && (
  <Card className="border-[hsl(0_100%_40%)] bg-[hsl(0_100%_40%)]/5">
@@ -255,7 +300,7 @@ export default function CloseRoundPanel({ roundId, companyId = "co-acme", roundN
  <div className="font-semibold">All sign-offs captured</div>
  <p className="text-sm text-muted-foreground">Click <strong>Close round</strong> to write the immutable close transaction to the ledger and emit final telemetry events.</p>
  </div>
- <Button onClick={commitClose} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-commit-close">
+ <Button onClick={commitClose} disabled={pendingCount > 0 && !ackLapse} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-commit-close">
  Close round <ChevronRight className="h-4 w-4 ml-1" />
  </Button>
  </CardContent>

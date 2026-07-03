@@ -17,12 +17,59 @@
  */
 import type { Request, Response, NextFunction } from "express";
 import { getUserContext } from "./userContext";
+import { getAccountStatusByUserId, isBlockedAccountStatus } from "./accountStatus";
+
+/**
+ * v25.48.2 MF-E — enforce account status for ALREADY-logged-in sessions.
+ *
+ * MF2 blocked NEW logins for suspended accounts, but an EXISTING valid session
+ * for a user suspended MID-SESSION still passed every request. `userContext.ts`
+ * (the session→identity resolver) is SACRED and cannot be edited, so we enforce
+ * status here in the (non-sacred) auth-middleware layer, which every protected
+ * route already funnels through.
+ *
+ * DB-driven (auth_users.status via getAccountStatusByUserId — a lightweight
+ * indexed PK lookup, cheap enough per-request). Fail-CLOSED:
+ *   - suspended / inactive / archived / disabled → 403 ACCOUNT_SUSPENDED
+ *   - status lookup THREW (DB/schema error)      → 503 ACCOUNT_STATUS_UNAVAILABLE
+ *     (deny the request but do NOT crash / do NOT silently log the user out)
+ *   - no auth_users row (demo/runtime personas)  → allow (never suspended)
+ *
+ * Returns TRUE (and has already sent the response) when the request must be
+ * blocked; FALSE when the session may proceed.
+ */
+function sessionBlockedByStatus(userId: string | null | undefined, res: Response): boolean {
+  if (!userId) return false;
+  try {
+    const status = getAccountStatusByUserId(userId);
+    if (isBlockedAccountStatus(status)) {
+      res.status(403).json({
+        ok: false,
+        error: "ACCOUNT_SUSPENDED",
+        status,
+        message: `This account is ${status}. Contact your administrator to restore access.`,
+      });
+      return true;
+    }
+    return false;
+  } catch {
+    // Transient DB/read error — deny with 503 (fail-closed) rather than crash
+    // or fail-open. The session is not destroyed; the caller may retry.
+    res.status(503).json({
+      ok: false,
+      error: "ACCOUNT_STATUS_UNAVAILABLE",
+      message: "Unable to verify account status right now. Please try again.",
+    });
+    return true;
+  }
+}
 
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
   const ctx = getUserContext(req);
   if (!ctx?.isAuthed) {
     return res.status(401).json({ ok: false, error: "UNAUTHORIZED", message: "Sign in to continue." });
   }
+  if (sessionBlockedByStatus(ctx.userId, res)) return;
   (req as Request & { userContext: ReturnType<typeof getUserContext> }).userContext = ctx;
   next();
 }
@@ -32,6 +79,7 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction) {
   if (!ctx?.isAuthed) {
     return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
   }
+  if (sessionBlockedByStatus(ctx.userId, res)) return;
   if (!ctx.isAdmin) {
     return res.status(403).json({ ok: false, error: "ADMIN_REQUIRED", message: "Admin role required." });
   }
@@ -44,6 +92,7 @@ export function requireFounder(req: Request, res: Response, next: NextFunction) 
   if (!ctx?.isAuthed) {
     return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
   }
+  if (sessionBlockedByStatus(ctx.userId, res)) return;
   const companyId = req.params.id ?? req.params.companyId;
   if (companyId) {
     const ownsCompany = ctx.founder.companies.some((c) => c.companyId === companyId);
@@ -77,6 +126,7 @@ export function requireAuthenticated(req: Request, res: Response, next: NextFunc
   if (!ctx?.isAuthed) {
     return res.status(401).json({ error: "AUTH_REQUIRED" });
   }
+  if (sessionBlockedByStatus(ctx.userId, res)) return;
   (req as Request & { userContext: ReturnType<typeof getUserContext> }).userContext = ctx;
   next();
 }
