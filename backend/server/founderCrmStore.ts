@@ -55,7 +55,11 @@ export type FounderCrmContact = {
   email: string;
   region: string;
   // Sprint 14 D3 — 7-stage pipeline.
-  stage: "lead" | "engaged" | "soft_circle" | "committed" | "signing" | "invested" | "longterm";
+  // v25.48.3 Q-K1 — added `invited_unregistered` ("Invited – not registered")
+  // and `prospect` (the renamed "lead"; "lead" is confusing vs. "lead
+  // investor"). Legacy `lead`/`engaged` remain valid so existing DB rows never
+  // break; they render under the "Prospect"/"Engaged" labels client-side.
+  stage: "invited_unregistered" | "prospect" | "lead" | "engaged" | "soft_circle" | "committed" | "signing" | "invested" | "longterm";
   ownership: { sharesUsd: number; pct: number };
   softCircleHistory: Array<{ ts: string; amountUsd: number; type: string }>;
   maSignals: number;
@@ -298,9 +302,9 @@ export function registerFounderCrmRoutes(app: Express): void {
   // B-V11-2 fix: server-side pipeline-stage validator. The CRM list view
   // crashes if a contact carries a stage value outside this enum, so we
   // reject (silently normalise to "lead") any unknown stage at write time.
-  const VALID_STAGES = new Set(["lead", "engaged", "soft_circle", "committed", "signing", "invested", "longterm"]);
+  const VALID_STAGES = new Set(["invited_unregistered", "prospect", "lead", "engaged", "soft_circle", "committed", "signing", "invested", "longterm"]);
   function normalizeStage(s: unknown): string {
-    return typeof s === "string" && VALID_STAGES.has(s) ? s : "lead";
+    return typeof s === "string" && VALID_STAGES.has(s) ? s : "prospect"; /* v25.48.3 Q-K1: default to prospect (was legacy lead) */
   }
 
   function normalizeRegion(r: unknown): string {
@@ -705,7 +709,10 @@ export function upsertCrmContactForInvitation(args: {
     firmName: "—",
     email: args.email,
     region: "US",
-    stage: "lead",
+    /* v25.48.3 Q-K1 — an invited-but-not-yet-registered investor starts at
+     * the distinct "Invited – not registered" stage (was "lead"). It flips to
+     * "prospect" once they register (crmMarkInvitedRegistered). */
+    stage: "invited_unregistered",
     ownership: { sharesUsd: 0, pct: 0 },
     softCircleHistory: [],
     maSignals: 0,
@@ -769,7 +776,10 @@ export function crmMarkInvitedRegistered(args: {
         targetId = dbRow.id;
         const alreadyRegistered = (dbRow.notes ?? "").includes(stamp);
         if (!alreadyRegistered) {
-          const nextStage = dbRow.stage === "lead" ? "engaged" : dbRow.stage;
+          /* v25.48.3 Q-K1 — on registration, an "invited_unregistered" (or
+           * legacy "lead") contact becomes a "prospect". Any stage already past
+           * that is left untouched. */
+          const nextStage = (dbRow.stage === "invited_unregistered" || dbRow.stage === "lead") ? "prospect" : dbRow.stage;
           const nextNotes = `${dbRow.notes ?? ""}${dbRow.notes ? " — " : ""}${stamp} (${now})`;
           driver
             .prepare(
@@ -791,7 +801,8 @@ export function crmMarkInvitedRegistered(args: {
   if (cached) {
     targetId = targetId ?? cached.id;
     if (!cached.notes.includes(stamp)) {
-      if (cached.stage === "lead") cached.stage = "engaged";
+      /* v25.48.3 Q-K1 — mirror the invited_unregistered/lead → prospect flip. */
+      if (cached.stage === "invited_unregistered" || cached.stage === "lead") cached.stage = "prospect";
       cached.notes = `${cached.notes}${cached.notes ? " — " : ""}${stamp} (${now})`;
       cached.notesUpdatedAt = now;
     }

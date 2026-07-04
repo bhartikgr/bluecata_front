@@ -355,7 +355,7 @@ export default function Login() {
       <div
         role="tablist"
         aria-label="Choose portal"
-        className="grid grid-cols-2 gap-1 mb-6 bg-muted/40 rounded-md p-1"
+        className="grid grid-cols-2 gap-1.5 mb-6 bg-muted/60 rounded-lg p-1.5 border border-border/60"
         data-testid="portal-tabs"
       >
         {(Object.keys(PORTAL_META) as Portal[]).map((p) => {
@@ -367,8 +367,14 @@ export default function Login() {
           // distinction is retired; the brand color is the same for both, and
           // the active/inactive distinction is filled-vs-de-emphasised. Both
           // tabs ALWAYS render — the inactive tab is never removed.
+          // v25.48.3 Q-A1 — make the active portal tab MORE highlighted (Ozan):
+          // bolder red fill, stronger ring, subtle lift; inactive tabs become
+          // distinct white pills so the two choices read clearly as tabs. Both
+          // tabs ALWAYS render.
           const activeFill =
-            "bg-[#cc0001] text-white shadow-sm ring-2 ring-[#cc0001]/40 font-semibold";
+            "bg-[#cc0001] text-white shadow-md ring-2 ring-[#cc0001] font-bold scale-[1.02]";
+          const inactiveFill =
+            "bg-white text-foreground border border-border/70 hover:border-[#cc0001]/40 hover:text-[#cc0001]";
           return (
             <button
               key={p}
@@ -379,13 +385,13 @@ export default function Login() {
               onClick={() => switchPortal(p)}
               data-testid={`tab-portal-${p}`}
               className={[
-                "flex items-center justify-center gap-1.5 px-2 py-1.5 rounded text-xs font-medium transition-colors",
+                "flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-md text-sm font-medium transition-all",
                 isActive
                   ? activeFill
-                  : "text-muted-foreground hover:text-foreground",
+                  : inactiveFill,
               ].join(" ")}
             >
-              <Icon className="h-3.5 w-3.5" />
+              <Icon className="h-4 w-4" />
               {PORTAL_META[p].label}
             </button>
           );

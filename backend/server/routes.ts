@@ -76,7 +76,8 @@ import { registerFounderCrmRoutes, listByFounder as crmListByFounder, crmMarkInv
 import { registerCaptableCommitRoutes, getLedger } from "./captableCommitStore";
 import { registerCaptableCommitV2548Routes } from "./lib/captableCommitV2548"; /* v25.48 B2 + B5 — parallel batch commit (per-entry founder amount) + attestation */
 import { registerInvestmentSignalsV2548Routes } from "./lib/investmentSignalsV2548"; /* v25.48 B3 + B4 — docs-sent flag + investor wired advisory */
-import { seedInvestorCrmFromInvitation } from "./lib/investorCrmInvitationSeed"; /* v25.48 B1 — investor-side CRM auto-seed at invitation */
+import { seedInvestorCrmFromInvitation, resolveInviterForInvestorCrm } from "./lib/investorCrmInvitationSeed"; /* v25.48 B1 — investor-side CRM auto-seed; v25.48.3 Q-K2 — enrich founder/company fields */
+import { registerTeamInviteRedeemRoutes } from "./lib/teamInviteRedeem"; /* v25.48.3 Q-J1 — team invites redeem via /auth/redeem + tag as team member */
 import { closeRoundCascadeStandalone } from "./lib/roundCloseCascade";
 import { registerTermSheetRoutes } from "./termSheetStore";
 import { registerAdminPricingRoutes } from "./adminPricingStore";
@@ -137,6 +138,9 @@ import { registerAdminContactsRoutes } from "./adminContactsStore";
 import { registerPartnerRoutes } from "./partnerRoutes";
 // v25.0 Track 3 — Consortium Partner endpoints C1–C5 + subrole enforcement C6
 import { registerPartnerConsortiumRoutes } from "./partnerConsortiumRoutes";
+// v25.49 Phase-3A — separate Partner Clients CRM (durable stages + activity).
+import { registerPartnerClientCrmRoutes } from "./partnerClientCrmRoutes";
+import { registerSpvEngineRoutes } from "./spvEngineRoutes";
 import { seedTestPartnerSandbox } from "./partnerWorkspaceStore";
 // Sprint 28 Wave 6 — Notification Campaigns
 import { registerNotificationCampaignRoutes } from "./notificationCampaignStore";
@@ -774,6 +778,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // paths shadow nothing Avi owns.
   registerCollectiveMemberSelfServiceRoutes(app);
   registerPartnerRoutes(app);
+  // v25.49 Phase-3A — separate Partner Clients CRM engine (durable stages +
+  // client activity timeline). Distinct /api/partner/me/client-crm* paths;
+  // shadows nothing. Registered after legacy partnerRoutes.
+  registerPartnerClientCrmRoutes(app);
+  // v25.49 Phase-4 — canonical SPV Engine (one store, three contexts + admin).
+  // Distinct /api/partner/me/spv*, /api/collective/spvs, /api/capavate/spvs,
+  // /api/admin/consortium-spv* paths; shadows nothing.
+  registerSpvEngineRoutes(app);
   // Patch v6 — seed TEST PARTNER sandbox under demo gate only.
   // Production NEVER seeds (DEMO_SEED_ENABLED already enforces production exclusion).
   if (DEMO_SEED_ENABLED) seedTestPartnerSandbox();
@@ -1164,6 +1176,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const summary = resetDemoState();
     return res.status(summary.ok ? 200 : 207).json(summary);
   });
+
+  /* v25.48.3 Q-J1 — team-invite redeem interceptor. MUST be registered BEFORE
+   * registerAuthShellRoutes so a team token is handled here and every other
+   * token falls through (next()) to the sacred-adjacent investor redeem below,
+   * byte-for-byte unchanged. */
+  registerTeamInviteRedeemRoutes(app);
 
   /* ------------ Sprint 15: Auth shell + entitlement gates ------------ */
   registerAuthShellRoutes(app, {
@@ -2418,10 +2436,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // investor's CRM with the founder/company they were invited to, tagged
       // "invitation-sourced". Parallel to the Sacred investorCrmStore; non-fatal.
       try {
+        /* v25.48.3 Q-K2 — enrich the reciprocal (founder → investor) CRM seed
+         * with the real company name + inviting-founder identity so the
+         * investor's CRM shows a meaningful contact, not a blank "Founder". */
+        const enrich = resolveInviterForInvestorCrm(entry.companyId ?? null, null, entry.companyName ?? null);
         seedInvestorCrmFromInvitation({
           investorId: personaId,
           companyId: entry.companyId ?? null,
-          companyName: null,
+          companyName: enrich.companyName,
+          founderName: enrich.founderName,
+          founderEmail: enrich.founderEmail,
           roundId: entry.roundId ?? null,
         });
       } catch (b1Err) {
@@ -2472,11 +2496,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
     // v25.48 B1 — bi-directional CRM auto-seed (investor side, modern path).
     try {
+      /* v25.48.3 Q-K2 — enrich reciprocal CRM seed (modern path). */
+      const enrich = resolveInviterForInvestorCrm(modernEntry.companyId ?? null, (modernEntry as any).invitedByUserId ?? null, (modernEntry as any).companyName ?? null);
       seedInvestorCrmFromInvitation({
         investorId: personaId,
         companyId: modernEntry.companyId ?? null,
-        companyName: null,
-        founderName: modernEntry.investorName ? null : null,
+        companyName: enrich.companyName,
+        founderName: enrich.founderName,
+        founderEmail: enrich.founderEmail,
         roundId: modernEntry.roundId ?? null,
       });
     } catch (b1Err) {

@@ -156,7 +156,7 @@ export default function PartnerFiles() {
               <div className="flex gap-3 items-center shrink-0">
                 <button
                   type="button"
-                  className="text-blue-600 text-xs hover:underline"
+                  className="text-[#cc0001] text-xs hover:underline"
                   data-testid={`file-view-${f.id}`}
                   onClick={() => viewFile(f.id)}
                 >

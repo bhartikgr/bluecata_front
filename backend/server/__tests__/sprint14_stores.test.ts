@@ -224,24 +224,24 @@ describe("Sync allow-list partition (Conflict 4)", () => {
 });
 
 describe("CRM stage mapping (10→7)", () => {
-  it("FOUNDER_CRM_STAGES has 7 stages", () => {
-    expect(FOUNDER_CRM_STAGES.length).toBe(7);
+  it("FOUNDER_CRM_STAGES has 9 stages (v25.48.3 Q-K1: +invited_unregistered, +prospect; legacy lead retained)", () => {
+    expect(FOUNDER_CRM_STAGES.length).toBe(9);
   });
 
   it("INVESTOR_PCRM_STAGES has 7 stages", () => {
     expect(INVESTOR_PCRM_STAGES.length).toBe(7);
   });
 
-  it("maps 10 collective states to founder stages", () => {
-    expect(mapCollectiveStateToCRMStage("pending")).toBe("lead");
+  it("maps 10 collective states to founder stages (v25.48.3 Q-K1: lead→prospect)", () => {
+    expect(mapCollectiveStateToCRMStage("pending")).toBe("prospect");
     expect(mapCollectiveStateToCRMStage("viewed")).toBe("engaged");
     expect(mapCollectiveStateToCRMStage("soft_circled")).toBe("soft_circle");
     expect(mapCollectiveStateToCRMStage("confirmed")).toBe("committed");
     expect(mapCollectiveStateToCRMStage("signed")).toBe("signing");
     expect(mapCollectiveStateToCRMStage("funded")).toBe("invested");
-    expect(mapCollectiveStateToCRMStage("declined")).toBe("lead");
-    expect(mapCollectiveStateToCRMStage("expired")).toBe("lead");
-    expect(mapCollectiveStateToCRMStage("revoked")).toBe("lead");
+    expect(mapCollectiveStateToCRMStage("declined")).toBe("prospect");
+    expect(mapCollectiveStateToCRMStage("expired")).toBe("prospect");
+    expect(mapCollectiveStateToCRMStage("revoked")).toBe("prospect");
     expect(mapCollectiveStateToCRMStage("accepted")).toBe("engaged");
   });
 

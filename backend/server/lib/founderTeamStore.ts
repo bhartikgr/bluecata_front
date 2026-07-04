@@ -166,7 +166,11 @@ export function registerFounderTeamRoutes(app: Express): void {
       let sentAt: string | null = null;
       try {
         const { sendMail } = require("../emailTransport") as typeof import("../emailTransport");
-        const redeemUrl = `https://capavate.com/team/invite/${token}`;
+        /* v25.48.3 Q-J1 — unify on the working /auth/redeem?token= ingress (was
+         * the dead /team/invite/:token route). The team-aware interceptor in
+         * server/lib/teamInviteRedeem.ts recognises this token and tags the
+         * redeeming user as a team member. */
+        const redeemUrl = `https://capavate.com/auth/redeem?token=${encodeURIComponent(token)}`;
         const sendResult = await sendMail({
           to: email,
           subject: "You've been invited to a Capavate workspace",
@@ -209,7 +213,7 @@ export function registerFounderTeamRoutes(app: Express): void {
           createdAt: now,
           sentAt,
         },
-        redeemUrl: `https://capavate.com/team/invite/${token}`,
+        redeemUrl: `https://capavate.com/auth/redeem?token=${encodeURIComponent(token)}`,
       });
     } catch (err) {
       return res

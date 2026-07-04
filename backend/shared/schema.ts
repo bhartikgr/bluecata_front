@@ -1533,6 +1533,9 @@ export const founderCollectiveApplications = sqliteTable("founder_collective_app
   referencesText: text("references_text").notNull().default(""),
   coverLetter: text("cover_letter").notNull(),
   feeAcknowledged: integer("fee_acknowledged").notNull().default(0),
+  /** v25.48.3 Q-I1 — founder opts in to Collective members helping refine the
+   *  live round; communicated to Collective + persisted (restart-safe). */
+  openToRefinement: integer("open_to_refinement").notNull().default(0),
   /** 'submitted' | 'reviewing' | 'invited' | 'rejected' | 'waitlisted' */
   status: text("status").notNull().default("submitted"),
   submittedAt: text("submitted_at").notNull(),

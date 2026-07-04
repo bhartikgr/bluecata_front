@@ -113,7 +113,7 @@ export function persistEntry(storeName: string, id: string, obj: unknown): boole
  * v25.23 NC-D — Strict (fail-closed) variant of persistEntry.
  *
  * Background: Lane D (NC-2 / NC-3) and Lane A (NEW-10) found that callers wrap
- * `persistEntry` in `catch { /* non-fatal *\/ }` and discard its boolean
+ * `persistEntry` in a swallow-all catch block and discard its boolean
  * return, so a DB-write failure leaves the record in RAM only while the API
  * still reports success — the exact "saved in memory instead of the database"
  * regression Avi reported (12-Jun-2026).

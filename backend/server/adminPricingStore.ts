@@ -23,6 +23,7 @@
  */
 import type { Express, Request, Response } from "express";
 import * as pricingModel from "./pricingModelStore";
+import { requireAuth } from "./lib/authMiddleware"; /* v25.48.3 Q-C3 — founder-scoped read route */
 
 export type PricingTier = {
   id: string;
@@ -108,6 +109,18 @@ export const PRICING_TIERS: PricingTier[] = new Proxy([] as PricingTier[], {
 export function registerAdminPricingRoutes(app: Express): void {
   // GET — list founder-tier pricing (live tiers only).
   app.get("/api/admin/pricing-tiers", (_req: Request, res: Response) => {
+    res.json(listLiveFounderTiers());
+  });
+
+  /* v25.48.3 Q-C3 — FOUNDER-scoped, read-only pricing tiers. The founder
+   * Settings > Billing/Plan tab previously called the admin route
+   * /api/admin/pricing-tiers, which the router-level `requireAdmin` guard
+   * rejects with 403 ADMIN_REQUIRED for founders (noisy; incomplete pricing).
+   * This mirror returns the SAME live founder tiers (public, non-sensitive
+   * catalog) behind requireAuth so founders read their own plan options
+   * without hitting an admin route. No write route is exposed here — edits
+   * stay admin-only. */
+  app.get("/api/founder/pricing-tiers", requireAuth, (_req: Request, res: Response) => {
     res.json(listLiveFounderTiers());
   });
 

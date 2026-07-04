@@ -376,7 +376,7 @@ export default function InvestorCompanyDetail({
  {asArray(dr.data).slice(0, 8).map(f => (
  <tr key={f.id} className="border-b border-border/60" data-testid={`row-doc-${f.id}`}>
  <td className="px-5 py-2.5 flex items-center gap-2"><FileText className="h-4 w-4 text-muted-foreground" /> {f.name}</td>
- <td className="px-3 py-2.5 text-muted-foreground capitalize">{f.category.replace("_", " ")}</td>
+ <td className="px-3 py-2.5 text-muted-foreground capitalize">{(f.category ?? "").replace("_", " ") || "Uncategorized"}</td>
  <td className="px-3 py-2.5 text-muted-foreground">{fmtDate(f.uploadedAt)}</td>
  <td className="px-3 py-2.5 text-right font-mono tabular-nums text-muted-foreground">{fmtBytes(f.sizeBytes)}</td>
  <td className="px-5 py-2.5 text-right">

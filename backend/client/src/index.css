@@ -307,6 +307,11 @@
   --card-foreground: 0 0% 10%;
   --border: 36 13% 85%;
   --ring: 360 100% 40%;
+  /* v25.48.3 Phase-2A — align the destructive/error token to the capavate.com
+     brand red so the on-brand error boundary card (text-destructive title +
+     destructive buttons) matches the workspace palette inside this subtree. */
+  --destructive: 360 100% 40%;
+  --destructive-foreground: 0 0% 100%;
 
   --cap-site-primary: #cc0001;
   --cap-site-primary-hover: #a30001;

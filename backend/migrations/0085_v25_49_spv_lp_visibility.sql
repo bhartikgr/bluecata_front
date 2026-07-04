@@ -1,0 +1,13 @@
+-- 0085_v25_49_spv_lp_visibility.sql
+-- v25.49 Phase-4B (Ozan decision #5) — per-SPV LP co-investor visibility toggle.
+-- Additive + idempotent: SQLite has no "ADD COLUMN IF NOT EXISTS", so a
+-- duplicate-column error on re-run is expected and safe to ignore (the
+-- migration runner / connection.ts bootstrap swallows it). Mirrors the
+-- lp_visibility column in connection.ts buildProductionTableStatements.
+--
+-- Values: 'own_only' (default — each LP sees ONLY their own position) |
+-- 'co_investors' (GP has opted the SPV into a transparent club-deal model
+-- where LPs can see co-investors' names/commitments). The founder/target
+-- NEVER sees the LP roster in either mode (Private Investor contract, enforced
+-- server-side, independent of this column).
+ALTER TABLE spv ADD COLUMN lp_visibility TEXT NOT NULL DEFAULT 'own_only';

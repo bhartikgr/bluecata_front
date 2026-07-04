@@ -74,7 +74,7 @@ export default function PartnerSettings() {
             key={t}
             data-testid={`partner-settings-tab-${t}`}
             onClick={() => setTab(t)}
-            className={`px-3 py-2 text-sm capitalize ${tab === t ? "border-b-2 border-blue-600 font-medium" : "text-slate-600"}`}
+            className={`px-3 py-2 text-sm capitalize ${tab === t ? "border-b-2 border-[#cc0001] text-[#cc0001] font-medium" : "text-slate-600"}`}
           >
             {t} {t === "branding" && TIER_RANK[me.tier] < TIER_RANK.nexus && "🔒"}
           </button>

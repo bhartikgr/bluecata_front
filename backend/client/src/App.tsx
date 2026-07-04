@@ -72,6 +72,7 @@ import PartnerFiles from "@/pages/partner/PartnerFiles";
 import PartnerSettings from "@/pages/partner/PartnerSettings";
 import PartnerSpvs from "@/pages/partner/PartnerSpvs";
 import PartnerSpvDetail from "@/pages/partner/PartnerSpvDetail";
+import PartnerSpvEngine from "@/pages/partner/PartnerSpvEngine";
 import PartnerFunds from "@/pages/partner/PartnerFunds";
 import PartnerBilling from "@/pages/partner/PartnerBilling"; /* v25.32 A3 — consortium partner commission ledger */
 /* v25.33 Consortium Partner Payment Model — partner self-service pages. */
@@ -79,6 +80,9 @@ import PartnerSubscribe from "@/pages/partner/PartnerSubscribe";
 import PartnerAgreementSign from "@/pages/partner/PartnerAgreementSign";
 import PartnerTaxForm from "@/pages/partner/PartnerTaxForm";
 import PartnerFundDetail from "@/pages/partner/PartnerFundDetail";
+// v25.49 Phase-3B — partner NETWORK surfaces (reuse shared comms components).
+import PartnerMessages from "@/pages/partner/PartnerMessages";
+import PartnerPosts from "@/pages/partner/PartnerPosts";
 import RedeemPartnerInvite from "@/pages/auth/RedeemPartnerInvite";
 
 import InvestorDashboard from "@/pages/investor/Dashboard";
@@ -1077,17 +1081,37 @@ function AppRouter() {
         <Route path="/settings/privacy">
           {() => <RequireAuth><PrivacyPage /></RequireAuth>}
         </Route>
+        <Route path="/collective/partner/spv-engine">
+          {() => <RequireAuth><CollectiveShell><PartnerSpvEngine /></CollectiveShell></RequireAuth>}
+        </Route>
+        {/* Ozan decision #4 — ONE canonical SPVs surface. The legacy plural list
+            routes now REDIRECT to the canonical PartnerSpvEngine page so there is
+            a single user-facing engine; the legacy detail routes stay reachable as
+            read-only provenance (Sacred Rule #78 — nothing dropped). */}
         <Route path="/collective/partner/spvs/:id">
           {() => <RequireAuth><CollectiveShell><PartnerSpvDetail /></CollectiveShell></RequireAuth>}
         </Route>
         <Route path="/collective/partner/spvs">
-          {() => <RequireAuth><CollectiveShell><PartnerSpvs /></CollectiveShell></RequireAuth>}
+          {() => <Redirect to="/collective/partner/spv-engine" />}
         </Route>
         <Route path="/collective/partner/funds/:id">
           {() => <RequireAuth><CollectiveShell><PartnerFundDetail /></CollectiveShell></RequireAuth>}
         </Route>
         <Route path="/collective/partner/funds">
-          {() => <RequireAuth><CollectiveShell><PartnerFunds /></CollectiveShell></RequireAuth>}
+          {() => <Redirect to="/collective/partner/spv-engine" />}
+        </Route>
+        {/* v25.49 Phase-3B — NETWORK group: Messages + Posts. Reuse the shared
+            comms surfaces; feed visibility is fail-closed server-side. The
+            posts :id route renders the same feed page (kept in the partner
+            shell) so post-detail deeplinks/shares don't bounce out of context. */}
+        <Route path="/collective/partner/messages">
+          {() => <RequireAuth><CollectiveShell><PartnerMessages /></CollectiveShell></RequireAuth>}
+        </Route>
+        <Route path="/collective/partner/posts/:id">
+          {() => <RequireAuth><CollectiveShell><PartnerPosts /></CollectiveShell></RequireAuth>}
+        </Route>
+        <Route path="/collective/partner/posts">
+          {() => <RequireAuth><CollectiveShell><PartnerPosts /></CollectiveShell></RequireAuth>}
         </Route>
 
         {/* Wave B FIX 8 (I-BUG-006, I-BUG-007) — explicit redirects for legacy/

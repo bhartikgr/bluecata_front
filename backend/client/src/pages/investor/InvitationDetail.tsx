@@ -541,9 +541,9 @@ export default function InvitationDetail() {
          <p className="text-sm text-muted-foreground italic">Founder has not published use-of-proceeds data yet.</p>
         ) : (
          <div className="space-y-3">
-          {i.round.useOfProceeds.map(u => (
-           <div key={u.category}>
-            <div className="flex justify-between text-sm mb-1"><span>{u.category}</span><span className="font-mono tabular-nums">{u.percent}%</span></div>
+          {(i.round.useOfProceeds ?? []).map((u, idx) => (
+           <div key={u.category ?? `uof-${idx}`}>
+            <div className="flex justify-between text-sm mb-1"><span>{u.category ?? "Uncategorized"}</span><span className="font-mono tabular-nums">{u.percent}%</span></div>
             <div className="h-2 bg-secondary rounded-full overflow-hidden"><div className="h-full bg-[hsl(0_100%_40%)]" style={{ width: `${u.percent}%` }} /></div>
            </div>
           ))}
@@ -597,10 +597,10 @@ export default function InvitationDetail() {
           </tr>
          </thead>
          <tbody>
-          {dr.data?.slice(0, 8).map(f => (
+          {(dr.data ?? []).slice(0, 8).map(f => (
            <tr key={f.id} className="border-b border-border/60" data-testid={`row-dr-${f.id}`}>
             <td className="px-5 py-2.5 flex items-center gap-2"><FileText className="h-4 w-4 text-muted-foreground" /> {f.name}</td>
-            <td className="px-3 py-2.5 text-muted-foreground capitalize">{f.category.replace("_", " ")}</td>
+            <td className="px-3 py-2.5 text-muted-foreground capitalize">{f.category ? f.category.replace("_", " ") : "Uncategorized"}</td>
             <td className="px-3 py-2.5 text-muted-foreground">{fmtDate(f.uploadedAt)}</td>
             <td className="px-3 py-2.5 text-right font-mono tabular-nums text-muted-foreground">{fmtBytes(f.sizeBytes)}</td>
             <td className="px-5 py-2.5 text-right">

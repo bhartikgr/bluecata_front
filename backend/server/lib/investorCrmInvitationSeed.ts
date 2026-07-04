@@ -26,6 +26,7 @@ import { randomBytes } from "node:crypto";
 import { rawDb } from "../db/connection";
 import { DEFAULT_CHAPTER_TENANT_ID } from "./chapterDefaults";
 import { log } from "./logger";
+import { getCompanyNameById } from "../multiCompanyStore";
 
 export interface InvestorCrmSeedInput {
   investorId: string;               // the redeeming investor's user id (persona id)
@@ -43,6 +44,67 @@ export interface InvestorCrmSeedInput {
  * as-is (we do not clobber an investor's own edits). Returns the row id when a
  * new row was created, or null when skipped / on error (non-fatal).
  */
+/**
+ * v25.48.3 Q-K2 — resolve the display fields for the reciprocal (founder →
+ * investor) CRM seed so the investor's CRM shows a meaningful contact instead
+ * of a blank "Founder". Company name comes from the multi-company registry;
+ * the inviting founder's name/email come from the DB `users`/`auth_users`
+ * tables by their user id. All lookups are best-effort and never throw — the
+ * redeem path must not fail because of CRM enrichment.
+ */
+export function resolveInviterForInvestorCrm(
+  companyId: string | null,
+  inviterUserId: string | null,
+  companyNameFallback: string | null = null,
+): { companyName: string | null; founderName: string | null; founderEmail: string | null } {
+  let companyName: string | null = companyNameFallback;
+  let founderName: string | null = null;
+  let founderEmail: string | null = null;
+  try {
+    if (companyId) companyName = getCompanyNameById(companyId) ?? companyNameFallback;
+  } catch { /* best-effort */ }
+  // If no explicit inviter id, resolve the company's OWNER as the founder
+  // contact (the legacy invitation entry carries no inviter id).
+  let resolvedInviterId = inviterUserId;
+  try {
+    if (!resolvedInviterId && companyId) {
+      const owner = rawDb()
+        .prepare(
+          `SELECT user_id FROM founder_team_members
+             WHERE company_id = ? AND role = 'owner' AND removed_at IS NULL
+             ORDER BY joined_at ASC LIMIT 1`,
+        )
+        .get(companyId) as { user_id?: string } | undefined;
+      if (owner?.user_id) resolvedInviterId = owner.user_id;
+    }
+  } catch { /* best-effort; owner table may be absent */ }
+  try {
+    if (resolvedInviterId) {
+      const db = rawDb();
+      // Prefer the profile `users` row (display name); fall back to auth_users.
+      const u = db
+        .prepare(`SELECT name, display_name, email FROM users WHERE id = ? AND deleted_at IS NULL LIMIT 1`)
+        .get(resolvedInviterId) as { name?: string; display_name?: string; email?: string } | undefined;
+      if (u) {
+        founderName = (u.display_name && u.display_name.trim()) || (u.name && u.name.trim()) || null;
+        founderEmail = (u.email && u.email.trim()) || null;
+      }
+      if (!founderName || !founderEmail) {
+        const au = db
+          .prepare(`SELECT name, email FROM auth_users WHERE id = ? LIMIT 1`)
+          .get(resolvedInviterId) as { name?: string; email?: string } | undefined;
+        if (au) {
+          founderName = founderName ?? ((au.name && au.name.trim()) || null);
+          founderEmail = founderEmail ?? ((au.email && au.email.trim()) || null);
+        }
+      }
+    }
+  } catch (err) {
+    log.warn("[investorCrmInvitationSeed.resolveInviter] lookup failed (non-fatal):", (err as Error).message);
+  }
+  return { companyName, founderName, founderEmail };
+}
+
 export function seedInvestorCrmFromInvitation(input: InvestorCrmSeedInput): string | null {
   if (!input.investorId || !input.companyId) return null;
   try {

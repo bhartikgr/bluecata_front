@@ -430,6 +430,9 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
   const [references, setReferences] = useState("");
   const [coverLetter, setCoverLetter] = useState("");
   const [feeAcknowledged, setFeeAcknowledged] = useState(false);
+  /* v25.48.3 Q-I1 — founder opt-in: open to having Collective members help
+     refine/solidify the round. Communicated in the application to Collective. */
+  const [openToRefinement, setOpenToRefinement] = useState(false);
 
   // v25.39 Phase 1 — HARD-FAIL loading UX for the DB-driven application fee.
   // The fee is Admin-controlled (GET /api/collective/application-fee). v25.38
@@ -482,6 +485,7 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
         references,
         coverLetter,
         feeAcknowledged,
+        openToRefinement, /* v25.48.3 Q-I1 */
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error ?? `Server error ${res.status}`);
@@ -724,6 +728,16 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
             <label className="flex items-start gap-2 text-xs text-amber-900 cursor-pointer">
               <Checkbox checked={feeAcknowledged} onCheckedChange={(v) => setFeeAcknowledged(v === true)} data-testid="checkbox-fee-ack" />
               I understand this is a non-refundable application fee and that submission does not guarantee an invitation.
+            </label>
+          </div>
+
+          {/* v25.48.3 Q-I1 — open-to-refinement opt-in. Signals to Collective
+              members that the founder welcomes help shaping/solidifying the
+              live round they are applying with. */}
+          <div className="rounded-md border border-blue-200 bg-blue-50 p-3 text-sm">
+            <label className="flex items-start gap-2 text-xs text-blue-900 cursor-pointer">
+              <Checkbox checked={openToRefinement} onCheckedChange={(v) => setOpenToRefinement(v === true)} data-testid="checkbox-open-to-refinement" />
+              <span>I'm open to having Collective members help refine and solidify this round (terms, structure, syndicate). This is shared with the Collective as part of my application.</span>
             </label>
           </div>
 

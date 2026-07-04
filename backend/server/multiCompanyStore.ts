@@ -672,6 +672,196 @@ export function addCompanyForFounder(userId: string, company: FounderCompanyMemb
 }
 
 /**
+ * v25.48.3 Q-J1 — add a user as a team member of an EXISTING company.
+ *
+ * Unlike addCompanyForFounder (which creates a brand-new company + tenant),
+ * this attaches `userId` to a company that already exists, by writing a durable
+ * `company_members` row (the authoritative source hydrateMultiCompanyStore
+ * rebuilds USER_COMPANIES from) and mirroring the membership into the read
+ * cache so getCompaniesForFounder(userId) returns it immediately — which is how
+ * getUserContextForId (SACRED) resolves founder.companies. Without this, a
+ * founder_team_members "tag" is inert (the team member would see an empty
+ * workspace).
+ *
+ * Fail-closed: the DB write is authoritative — on failure it THROWS and does
+ * NOT mirror into the cache (no phantom membership). Idempotent on the
+ * company_members id (cm_<companyId>_<userId>) and on the cache (dedupe).
+ * Returns true when a membership now exists for (userId, companyId).
+ */
+export function addExistingCompanyMembership(
+  userId: string,
+  companyId: string,
+  teamRole: "owner" | "admin" | "member" | "viewer" = "member",
+): boolean {
+  if (!userId || !companyId) return false;
+  // Map the team-invite role vocabulary (owner/admin/member/viewer) onto the
+  // FounderCompanyMembership role enum (founder/co-founder/admin/editor/viewer).
+  const role: FounderCompanyMembership["role"] =
+    teamRole === "owner" ? "co-founder"
+    : teamRole === "admin" ? "admin"
+    : teamRole === "viewer" ? "viewer"
+    : "editor"; // "member" → editor (can act in the workspace, not an owner)
+  // Read the existing company row (must already exist).
+  const coRow = rawDb()
+    .prepare(`SELECT id, tenant_id, name, legal_name FROM companies WHERE id = ? AND deleted_at IS NULL`)
+    .get(companyId) as { id?: string; tenant_id?: string; name?: string; legal_name?: string } | undefined;
+  if (!coRow?.id) throw new Error(`COMPANY_NOT_FOUND: ${companyId}`);
+
+  const tenantId = coRow.tenant_id ?? `tenant_co_${companyId}`;
+  const now = new Date().toISOString();
+  const dbRole = role === "co-founder" ? "co_founder" : role;
+  const isFirstCompany = !USER_ACTIVE_COMPANY.has(userId);
+
+  // Own transaction (this is the standalone entry point). The actual durable
+  // write + verification is delegated to writeCompanyMembershipRowRaw so a
+  // caller that already holds a raw-DB transaction (e.g. teamInviteRedeem, which
+  // must claim the invite + tag + grant access as ONE atomic unit — GPT-5.5 r3)
+  // can reuse the exact same write on its shared connection WITHOUT opening a
+  // nested transaction. getDb() wraps the same underlying better-sqlite3 handle
+  // rawDb() returns, so both see one connection.
+  try {
+    const db: any = rawDb();
+    db.transaction(() => {
+      writeCompanyMembershipRowRaw(db, { userId, companyId, tenantId, dbRole, now, isFirstCompany });
+    })();
+  } catch (err) {
+    log.error({
+      route: "multiCompanyStore.addExistingCompanyMembership",
+      errorType: "membership_persist_failed",
+      companyId,
+      userId,
+      message: (err as Error).message,
+    });
+    throw new Error(`MEMBERSHIP_PERSIST_FAILED: ${(err as Error).message}`);
+  }
+
+  // Mirror into the read cache ONLY after the durable write committed.
+  mirrorExistingCompanyMembershipToCache({
+    userId,
+    companyId,
+    companyName: coRow.name ?? "Company",
+    legalName: coRow.legal_name ?? coRow.name ?? "Company",
+    role,
+    now,
+    isFirstCompany,
+  });
+  return true;
+}
+
+/**
+ * v25.48.3 Q-J1 (GPT-5.5 r3) — perform the authoritative company_members durable
+ * write + post-write verification on a CALLER-PROVIDED raw better-sqlite3 handle,
+ * WITHOUT opening its own transaction and WITHOUT touching the in-memory cache.
+ *
+ * This is the atomic primitive: teamInviteRedeem runs it INSIDE the same
+ * rawDb().transaction() that guards the invite claim + founder_team_members tag,
+ * so if any step fails (guarded UPDATE matches 0 rows, tag insert throws, verify
+ * fails), the whole transaction rolls back and NO durable effect survives — no
+ * orphaned company_members row for an unaccepted invite (fixes the round-2
+ * fix's inverse race).
+ *
+ * UPSERT semantics (GPT-5.5 r2 #2): reactivates + re-roles a stale/soft-deleted
+ * row on the deterministic id cm_<companyId>_<userId>. Post-write SELECT verifies
+ * a LIVE row with the expected dbRole exists; THROWS (rolling back the caller's
+ * tx) if not.
+ */
+export function writeCompanyMembershipRowRaw(
+  db: any,
+  args: {
+    userId: string;
+    companyId: string;
+    tenantId: string;
+    dbRole: string;
+    now: string;
+    isFirstCompany: boolean;
+  },
+): void {
+  const { userId, companyId, tenantId, dbRole, now, isFirstCompany } = args;
+  const memberRowId = `cm_${companyId}_${userId}`;
+  db.prepare(
+    `INSERT INTO company_members
+       (id, company_id, user_id, role, title, tenant_id, consortium_partner_id, is_active, joined_at, last_active_at, deleted_at)
+     VALUES (?, ?, ?, ?, NULL, ?, NULL, 1, ?, ?, NULL)
+     ON CONFLICT(id) DO UPDATE SET
+       company_id = excluded.company_id,
+       role = excluded.role,
+       tenant_id = excluded.tenant_id,
+       is_active = 1,
+       deleted_at = NULL,
+       last_active_at = excluded.last_active_at`,
+  ).run(memberRowId, companyId, userId, dbRole, tenantId, now, now);
+  if (isFirstCompany) {
+    db.prepare(
+      `INSERT INTO user_prefs (user_id, active_tenant_id, updated_at)
+         VALUES (?, ?, ?)
+       ON CONFLICT(user_id) DO UPDATE SET
+         active_tenant_id = excluded.active_tenant_id,
+         updated_at = excluded.updated_at`,
+    ).run(userId, tenantId, now);
+  }
+  // POST-WRITE VERIFICATION inside the same tx — a live row with the expected
+  // role must exist, else THROW to roll the caller's transaction back.
+  const verified = db
+    .prepare(
+      `SELECT role FROM company_members
+         WHERE id = ? AND company_id = ? AND user_id = ?
+           AND is_active = 1 AND deleted_at IS NULL
+         LIMIT 1`,
+    )
+    .get(memberRowId, companyId, userId) as { role?: string } | undefined;
+  if (!verified || verified.role !== dbRole) {
+    log.error({
+      route: "multiCompanyStore.writeCompanyMembershipRowRaw",
+      errorType: "membership_verify_failed",
+      companyId,
+      userId,
+      expectedRole: dbRole,
+      actualRole: verified?.role ?? null,
+    });
+    throw new Error(
+      `MEMBERSHIP_VERIFY_FAILED: no live company_members row with role=${dbRole} for ${userId}@${companyId}`,
+    );
+  }
+}
+
+/**
+ * Mirror an existing-company membership into the in-memory read cache. MUST be
+ * called ONLY after the durable company_members write has committed (so the
+ * cache never advertises access that a restart — which rebuilds strictly from
+ * the DB — would not restore). Idempotent (dedupes on companyId).
+ */
+export function mirrorExistingCompanyMembershipToCache(args: {
+  userId: string;
+  companyId: string;
+  companyName: string;
+  legalName: string;
+  role: FounderCompanyMembership["role"];
+  now: string;
+  isFirstCompany: boolean;
+}): void {
+  const { userId, companyId, companyName, legalName, role, now, isFirstCompany } = args;
+  const companies = USER_COMPANIES.get(userId) ?? [];
+  if (!companies.find((c) => c.companyId === companyId)) {
+    companies.push({
+      companyId,
+      companyName,
+      legalName,
+      logoUrl: null,
+      role,
+      lastActiveAt: now,
+      kpi: { capTableHolders: 0, activeRoundsCount: 0, raisedThisYearUsd: 0, dataroomFiles: 0, pendingSoftCircles: 0, ownershipPct: 0 },
+      collective: { status: "none" },
+      billing: { plan: "Founder Free", monthlyUsd: 0, nextBillingDate: "", cardLast4: null, invoiceCount: 0 },
+      sector: "",
+      stage: "",
+      hq: "",
+    } as FounderCompanyMembership);
+    USER_COMPANIES.set(userId, companies);
+  }
+  if (isFirstCompany) USER_ACTIVE_COMPANY.set(userId, companyId);
+}
+
+/**
  * B-V11-5 fix: persist Settings → Company tab edits into the in-memory
  * USER_COMPANIES map so they round-trip through GET /api/founder/active-company
  * and GET /api/founder/companies.

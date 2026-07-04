@@ -1611,6 +1611,11 @@ export const partnerWorkspaceSettingsStore = {
  * ============================================================ */
 
 export const partnerSpvStore = {
+  /** v25.49 Phase-4 — cross-partner read of ALL SPVs, used ONLY by the
+   *  canonical SPV engine's one-time idempotent migration backfill. */
+  _listAll(): PartnerSpv[] {
+    return spvs.slice();
+  },
   create(partnerId: string, data: Partial<PartnerSpv> & { spvName: string; jurisdiction: string; vintage: number; currency: string; status: PartnerSpv["status"] }, actor: string): PartnerSpv {
     requirePid(partnerId);
     const now = new Date().toISOString();
@@ -1644,11 +1649,7 @@ export const partnerSpvStore = {
      * parallel SPV path was missed and remained the live SPV create path.
      * RAM is updated only after DB persistence succeeds; on failure the
      * route handler surfaces 500 to the client. */
-    {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { persistEntryStrict } = require("./lib/storePersistenceShim");
-      persistEntryStrict("partnerSpvs", spv.id, spv);
-    }
+    persistEntryStrict("partnerSpvs", spv.id, spv);
     spvs.push(spv);
     pushHistory(spvsHistory, "partnerSpvsHistory", { ...spv });
     // CP-028: shadow-persist to the DB-backed spvFundStore so the row survives
@@ -1691,11 +1692,7 @@ export const partnerSpvStore = {
     next.revisionHash = computeRevisionHash(next as unknown as Record<string, unknown>);
     /* v25.24 NC-2 fix — see SPV create above. Strict persist BEFORE the RAM
      * mutation so a failed DB write doesn't leave RAM ahead of disk. */
-    {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { persistEntryStrict } = require("./lib/storePersistenceShim");
-      persistEntryStrict("partnerSpvs", s.id, next);
-    }
+    persistEntryStrict("partnerSpvs", s.id, next);
     Object.assign(s, next);
     pushHistory(spvsHistory, "partnerSpvsHistory", { ...next });
     /* v25.16 NC1 / v25.24 NC-2 — keep the original best-effort persist below
@@ -1765,8 +1762,6 @@ export const partnerSpvStore = {
      * row, and update RAM only on DB success. */
     const nextTotalCommittedMinor = s.totalCommittedMinor + normalizedMinor;
     {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { persistEntryStrict } = require("./lib/storePersistenceShim");
       const spvAfter = { ...s, totalCommittedMinor: nextTotalCommittedMinor, updatedAt: now, updatedBy: actor };
       persistEntryStrict("partnerSpvs", s.id, spvAfter);
       persistEntryStrict("partnerSpvPositions", pos.id, pos);
@@ -1805,6 +1800,12 @@ export const partnerSpvStore = {
  * ============================================================ */
 
 export const partnerFundsStore = {
+  /** v25.49 Phase-4 — cross-partner read of ALL Funds, used ONLY by the
+   *  canonical SPV engine's one-time idempotent migration backfill
+   *  (a Fund migrates in as an SPV with spvType='fund'). */
+  _listAll(): PartnerFund[] {
+    return funds.slice();
+  },
   create(partnerId: string, data: Partial<PartnerFund> & { fundName: string; fundType: PartnerFund["fundType"]; jurisdiction: string; vintage: number; currency: string; status: PartnerFund["status"] }, actor: string): PartnerFund {
     requirePid(partnerId);
     const now = new Date().toISOString();

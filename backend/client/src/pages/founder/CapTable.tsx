@@ -26,6 +26,7 @@ import type { View, Region } from "@capavate/cap-table-engine";
    decimalToShares / Decimal) lives in the sacred cap-table engine and is NOT
    touched; only the unused/misplaced UI simulator + its engine imports are gone. */
 import { GlossaryLink } from "@/components/Glossary";
+import { useLocation } from "wouter"; /* v25.48.3 Q-F1 — redirect "Add security" to Rounds */
 import { HelpTip } from "@/components/HelpTip";
 import { currencySymbol } from "@/lib/currency";
 import type { ApiRound } from "@/lib/types";
@@ -98,8 +99,12 @@ export default function CapTable() {
  if (liveRegion && liveRegion !== region) setRegion(liveRegion);
  // eslint-disable-next-line react-hooks/exhaustive-deps
  }, [profileQ.data?.legal?.region]);
+ const [, setLocation] = useLocation(); /* v25.48.3 Q-F1 — route "Add security" to Rounds */
  const [asOf, setAsOf] = useState<string>(new Date().toISOString().slice(0, 10));
  const [groupView, setGroupView] = useState(true);
+ /* v25.48.3 Q-F1 — cap table is view-only; the inline add-security dialog is no
+    longer reachable (both entry points route to /founder/rounds). State kept as
+    a permanently-false const so the dead dialog code below never mounts. */
  const [showAddSecurity, setShowAddSecurity] = useState(false);
  /* v25.45.4 3c (APD-013) — Anti-Dilution control removed (showAntiDil state +
     canAccessAntiDil entitlement gate deleted). Cap-table page is informative only. */
@@ -289,8 +294,11 @@ export default function CapTable() {
      cap-table page is informative only). Anti-dilution math remains in the sacred engine. */}
  <Button variant="outline" onClick={() => setShowBulkMsg(true)} data-testid="button-bulk-message"><SendIcon className="h-4 w-4 mr-2" /> Bulk message</Button>
  <Button variant="outline" onClick={exportPDFSnapshot} data-testid="button-print" className="hidden md:inline-flex"><Printer className="h-4 w-4 mr-2" /> Print</Button>
- <Button onClick={() => setShowAddSecurity(true)} className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] text-white" data-testid="button-add-security">
- <Plus className="h-4 w-4 mr-2" /> Add security
+ {/* v25.48.3 Q-F1 — the cap table is VIEW-ONLY: equity originates through the
+     round/ledger flow (cleaner audit trail), not ad-hoc on the cap table. This
+     button now routes to Rounds instead of opening an inline add-security dialog. */}
+ <Button onClick={() => setLocation("/founder/rounds")} className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] text-white" data-testid="button-add-security">
+ <Plus className="h-4 w-4 mr-2" /> Add security in Rounds
  </Button>
  </>
  }
@@ -437,9 +445,10 @@ export default function CapTable() {
  <CardContent className="py-16 text-center">
  <Layers className="h-10 w-10 mx-auto mb-3 text-muted-foreground/40" />
  <p className="text-sm font-medium text-muted-foreground">No securities recorded yet.</p>
- <p className="text-xs text-muted-foreground mt-1">Add your first security to start building your cap table.</p>
- <Button className="mt-4 bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] text-white" onClick={() => setShowAddSecurity(true)}>
- <Plus className="h-4 w-4 mr-2" /> Add first security
+ <p className="text-xs text-muted-foreground mt-1">Securities are created through your funding rounds. Start a round to build your cap table.</p>
+ {/* v25.48.3 Q-F1 — view-only cap table; route to Rounds to originate equity. */}
+ <Button className="mt-4 bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] text-white" onClick={() => setLocation("/founder/rounds")}>
+ <Plus className="h-4 w-4 mr-2" /> Go to Rounds
  </Button>
  </CardContent>
  </Card>

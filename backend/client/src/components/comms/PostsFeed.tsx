@@ -63,8 +63,14 @@ export function PostsFeed({
  showLoadMore,
  topicFilter,
  authorFilter,
+ basePath,
 }: {
  role: "founder" | "investor";
+ /** v25.49 Phase-3B — override the `/${role}` URL prefix used for post-detail
+  * navigation + share links so the SAME feed component can be reused inside the
+  * partner shell (e.g. "/collective/partner/posts") and keep the user in-context
+  * instead of bouncing to /investor/posts/:id. Defaults to `/${role}`. */
+ basePath?: string;
  /** Sprint 18 Phase 2 — limit feed to N posts (e.g. dashboard widget). */
  maxPosts?: number;
  /** Sprint 18 Phase 2 — "View all" link target when capped. */
@@ -80,6 +86,8 @@ export function PostsFeed({
 }) {
  const { toast } = useToast();
  const [, navigate] = useLocation();
+ // v25.49 Phase-3B — resolved URL prefix for detail nav + share links.
+ const postsBase = basePath ?? `/${role || "investor"}`;
  const [draft, setDraft] = useState("");
  const [visibility, setVisibility] = useState<"network" | "followers" | "both" | "cap_table">("network");
  const [sort, setSort] = useState<Sort>("newest");
@@ -382,14 +390,15 @@ export function PostsFeed({
  <PostCard
  key={p.id}
  post={p}
+ postsBase={postsBase}
  meId={feedMeId}
  role={role}
  onLike={(on) => like.mutate({ postId: p.id, on })}
  onShare={() => {
-              const safeRole = role || "investor";
               // v25.13 NM4 — App uses History-API router, not hash router.
               // Hash-prefixed URLs land on / with an unmatched fragment.
-              const shareUrl = `${window.location.origin}/${safeRole}/posts/${p.id}`;
+              // v25.49 Phase-3B — use resolved postsBase so partner shares stay in-context.
+              const shareUrl = `${window.location.origin}${postsBase}/posts/${p.id}`;
               navigator.clipboard?.writeText(shareUrl).catch(() => {});
               share.mutate(p.id);
               toast({ title: "Link copied" });
@@ -398,7 +407,7 @@ export function PostsFeed({
  onComment={(body) => comment.mutate({ postId: p.id, body })}
  onEdit={() => { setEditingPostId(p.id); setEditDraft(p.body); }}
  onDelete={() => deletePost.mutate(p.id)}
- onNavigate={(id) => navigate(`/${role}/posts/${id}`)}
+ onNavigate={(id) => navigate(`${postsBase}/posts/${id}`)}
  onMuteAuthor={() => muteAuthor.mutate(p.id)}
  onReport={() => reportPost.mutate(p.id)}
  editingId={editingPostId}
@@ -436,11 +445,12 @@ export function PostsFeed({
 }
 
 function PostCard({
- post, meId, role, onLike, onShare, onFollow, onComment, onEdit, onDelete, onNavigate,
+ post, postsBase, meId, role, onLike, onShare, onFollow, onComment, onEdit, onDelete, onNavigate,
  onMuteAuthor, onReport,
  editingId, editDraft, onEditDraftChange, onEditSave, onEditCancel,
 }: {
  post: PostView;
+ postsBase: string;
  meId: string;
  role: "founder" | "investor";
  onLike: (on: boolean) => void;
@@ -512,9 +522,9 @@ function PostCard({
  <DropdownMenuItem
  onClick={() => {
  if (typeof navigator?.clipboard?.writeText === "function") {
- const safeRole = role || "investor";
                   // v25.13 NM4 — History-API router, drop the hash prefix.
-                  navigator.clipboard.writeText(`${window.location.origin}/${safeRole}/posts/${post.id}`)
+                  // v25.49 Phase-3B fix — use resolved postsBase so partner share links stay in-shell.
+                  navigator.clipboard.writeText(`${window.location.origin}${postsBase}/posts/${post.id}`)
  .then(() => toast({ title: "Link copied" }))
  .catch(() => toast({ title: "Copy failed", variant: "destructive" }));
  } else {

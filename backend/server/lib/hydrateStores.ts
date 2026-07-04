@@ -89,6 +89,9 @@ import { hydrateProfileStore as realHydrateProfileStoreInvestor } from "../profi
 // v24.4.1 — partnerWorkspaceStore RAM→DB (6 new tables: team_members,
 // team_invitations, notes, tasks, files, workspace_settings).
 import { hydratePartnerWorkspaceStoreV241 as realHydratePartnerWorkspaceV241 } from "../partnerWorkspaceStore";
+// v25.49 Phase-3A — separate Partner Clients CRM (durable stages + activity).
+import { hydratePartnerClientCrmStore as realHydratePartnerClientCrm } from "../partnerClientCrmStore";
+import { hydrateSpvEngineStore as realHydrateSpvEngine } from "../spvEngineStore";
 /* v25.9 — new hydrate functions for the 7 previously-stub-only stores.
  * Avi: "Most of the records are being saved in memory instead of the DB." */
 import { hydrateNotificationsStore as realHydrateNotifications } from "../notificationsStore";
@@ -264,6 +267,13 @@ const HYDRATE_ORDER: Array<{ name: string; fn: () => Promise<void> }> = [
   // Runs after partnerWorkspaceV19Store and partnerWorkspaceCollective so
   // the partner identities and workspace context are already warm.
   { name: "partnerWorkspaceStore (v24.4.1)", fn: realHydratePartnerWorkspaceV241 },
+  // v25.49 Phase-3A — partner-clients CRM stages + activity timeline. Runs
+  // right after the partner workspace store so partner context is warm.
+  { name: "partnerClientCrmStore (v25.49)", fn: realHydratePartnerClientCrm },
+  // v25.49 Phase-4 — canonical SPV engine. Runs after partner + workspace stores
+  // (so partnerSpvStore/partnerFundsStore are warm for the one-time idempotent
+  // legacy migration backfill that runs at the tail of hydrateSpvEngineStore).
+  { name: "spvEngineStore (v25.49)", fn: realHydrateSpvEngine },
   /* v25.9 — seven previously-stub-only stores now hydrate from DB.
    * Position them near the end so all prerequisites (companies, rounds,
    * cap table) are already in memory. */

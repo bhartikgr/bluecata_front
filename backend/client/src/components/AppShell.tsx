@@ -126,34 +126,44 @@ function useFounderNav(): NavGroup[] {
 function useInvestorNav(): NavGroup[] {
   const invitationsQ = useQuery<unknown[]>({ queryKey: ["/api/investor/invitations"], retry: false });
   const inviteCount = (invitationsQ.data?.filter((i: any) => i.state === "pending").length ?? 0) || undefined;
+  // v25.49.1 — grouped, categorized reorder. Every existing route + the
+  // Invitations badge preserved (Rule #78). Three shipped-but-unlinked pages
+  // (Settings, Notifications, Glossary) added to ACCOUNT so they're discoverable
+  // in the left nav; their existing top-bar entry points (user menu / bell /
+  // PageHeader HelpCircle) remain intact. Investor Profile moved to ACCOUNT
+  // (identity, not Network); Apply to Collective moved to DEALS (a deal action);
+  // Messages/Posts/CRM clustered as NETWORK.
   return [
     {
-      title: "Workspace",
+      title: "Overview",
       items: [
         { href: "/investor/dashboard", label: "Dashboard", icon: LayoutDashboard },
+      ],
+    },
+    {
+      title: "Deals",
+      items: [
         { href: "/investor/invitations", label: "Invitations", icon: Inbox, badge: inviteCount },
         { href: "/investor/portfolio", label: "Portfolio", icon: Target },
+        // Sprint 21 Wave G — "Capavate Collective" removed; /investor/collective redirects to apply-to-collective.
+        { href: "/investor/apply-to-collective", label: "Apply to Collective", icon: FileSignature },
       ],
     },
     {
       title: "Network",
       items: [
-        { href: "/investor/crm", label: "CRM", icon: Users },
-        { href: "/investor/profile", label: "Investor Profile", icon: UserCircle },
-      ],
-    },
-    {
-      title: "Your Social",
-      items: [
         { href: "/investor/messages", label: "Messages", icon: MessageSquare },
         { href: "/investor/network-posts", label: "Network Posts", icon: Rss },
+        { href: "/investor/crm", label: "CRM", icon: Users },
       ],
     },
     {
       title: "Account",
       items: [
-        // Sprint 21 Wave G — "Capavate Collective" removed; /investor/collective redirects to apply-to-collective.
-        { href: "/investor/apply-to-collective", label: "Apply to Collective", icon: FileSignature },
+        { href: "/investor/profile", label: "Investor Profile", icon: UserCircle },
+        { href: "/investor/settings", label: "Settings", icon: Settings },
+        { href: "/investor/notifications", label: "Notifications", icon: Bell },
+        { href: "/investor/glossary", label: "Glossary", icon: HelpCircle },
       ],
     },
   ];

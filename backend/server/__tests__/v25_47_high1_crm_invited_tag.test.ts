@@ -98,20 +98,25 @@ afterAll(async () => {
 });
 
 describe("APD-033 invited-contact CRM lifecycle", () => {
-  it("auto-creates the CRM contact at stage lead on invitation create", () => {
+  // v25.48.3 Q-K1 — the invited-contact lifecycle changed intentionally:
+  //   create → "invited_unregistered" ("Invited – not registered")
+  //   redeem/register → "prospect" (the renamed "lead")
+  // These assertions are updated to the NEW behavior (production code is the
+  // source of truth; the old lead/engaged expectations are retired).
+  it("auto-creates the CRM contact at stage invited_unregistered on invitation create", () => {
     const row = crmRow();
     expect(row).toBeTruthy();
-    expect(row!.stage).toBe("lead");
+    expect(row!.stage).toBe("invited_unregistered");
     expect(row!.notes ?? "").toContain("Auto-created from round invitation");
   });
 
-  it("flips the contact to engaged + stamps registered on redeem", async () => {
+  it("flips the contact to prospect + stamps registered on redeem", async () => {
     const res = await call("POST", "/api/invitations/redeem", { body: { token: liveToken } });
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
 
     const row = crmRow();
-    expect(row!.stage).toBe("engaged");
+    expect(row!.stage).toBe("prospect");
     expect(row!.notes ?? "").toContain("Registered via invitation redemption");
   });
 
@@ -125,7 +130,7 @@ describe("APD-033 invited-contact CRM lifecycle", () => {
     expect(marked).toBe(true);
 
     const after = crmRow();
-    expect(after!.stage).toBe("engaged");
+    expect(after!.stage).toBe("prospect");
     expect(stampCount(after!.notes ?? "")).toBe(1);
   });
 });

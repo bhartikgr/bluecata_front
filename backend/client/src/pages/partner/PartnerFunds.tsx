@@ -78,7 +78,7 @@ export default function PartnerFunds() {
 
   return (
     <PartnerShell title="Funds" tier={me.tier} subRole={me.subRole} partnerName={me.identity.name}>
-      <div className="mb-4 bg-blue-50 border border-blue-200 p-3 rounded text-sm" data-testid="partner-funds-disclaimer">
+      <div className="mb-4 bg-[rgba(4,30,65,0.05)] border border-[rgba(4,30,65,0.2)] text-[#041e41] p-3 rounded text-sm" data-testid="partner-funds-disclaimer">
         Fund records are for documentation only. No funds are moved by Capavate.
       </div>
 

@@ -45,10 +45,15 @@ import { AutoTierBadge } from "@/components/AutoTierBadge";
 import { computeAutoTier } from "@shared/crmStages";
 
 // Sprint 14 D3 — founder pipeline becomes 7 stages.
-type Stage = "lead" | "engaged" | "soft_circle" | "committed" | "signing" | "invested" | "longterm";
+/* v25.48.3 Q-K1 — added `invited_unregistered` ("Invited – not registered") and
+ * `prospect` (renamed from "lead"; "Lead" is misleading vs. "lead investor").
+ * Legacy `lead` stays in the union so old DB rows still type-check and render
+ * (mapped to the Prospect label via LEGACY_STAGE_ALIAS below). */
+type Stage = "invited_unregistered" | "prospect" | "lead" | "engaged" | "soft_circle" | "committed" | "signing" | "invested" | "longterm";
 
 const STAGES: Array<{ key: Stage; label: string; tone: string }> = [
-  { key: "lead",         label: "Lead",                tone: "bg-zinc-100 text-zinc-700" },
+  { key: "invited_unregistered", label: "Invited – not registered", tone: "bg-slate-100 text-slate-600" },
+  { key: "prospect",     label: "Prospect",            tone: "bg-zinc-100 text-zinc-700" },
   { key: "engaged",      label: "Engaged",             tone: "bg-amber-100 text-amber-700" },
   { key: "soft_circle",  label: "Soft-Circle",         tone: "bg-cyan-100 text-cyan-700" },
   { key: "committed",    label: "Committed",           tone: "bg-violet-100 text-violet-700" },
@@ -56,6 +61,13 @@ const STAGES: Array<{ key: Stage; label: string; tone: string }> = [
   { key: "invested",     label: "Invested",            tone: "bg-emerald-100 text-emerald-700" },
   { key: "longterm",     label: "Long-term Partner",   tone: "bg-[hsl(0_100%_40%)]/10 text-[hsl(0_100%_40%)]" },
 ];
+
+/* v25.48.3 Q-K1 — legacy DB rows may still carry `lead`; treat it as `prospect`
+ * for display/grouping so nothing renders as an unknown stage. */
+const LEGACY_STAGE_ALIAS: Partial<Record<string, Stage>> = { lead: "prospect" };
+function canonStage(s: string): Stage {
+  return (LEGACY_STAGE_ALIAS[s] ?? (s as Stage));
+}
 
 type CrmContact = {
   id: string;
@@ -276,8 +288,10 @@ export default function FounderInvestorCRM() {
   });
 
   const counts = useMemo(() => {
-    const m: Record<Stage, number> = { lead: 0, engaged: 0, soft_circle: 0, committed: 0, signing: 0, invested: 0, longterm: 0 };
-    asArray<CrmContact>(contactsQ.data).forEach(c => { m[c.stage] = (m[c.stage] || 0) + 1; });
+    /* v25.48.3 Q-K1 — count by canonical stage so legacy `lead` rows fold into
+     * `prospect`, and the two new stages get their own tallies. */
+    const m: Record<Stage, number> = { invited_unregistered: 0, prospect: 0, lead: 0, engaged: 0, soft_circle: 0, committed: 0, signing: 0, invested: 0, longterm: 0 };
+    asArray<CrmContact>(contactsQ.data).forEach(c => { const k = canonStage(c.stage); m[k] = (m[k] || 0) + 1; });
     return m;
   }, [contactsQ.data]);
 
@@ -487,9 +501,10 @@ export default function FounderInvestorCRM() {
             // B-V11-2 fix: defensive fallback. If a legacy contact carries
             // an invalid free-text "stage" value (e.g. "Seed-Series A" from
             // a prior bug), STAGES.find returns undefined and `.tone` throws.
-            // Fall back to the "lead" tone so the page renders instead of
+            // Fall back to the Prospect tone so the page renders instead of
             // crashing the whole CRM list.
-            const stageInfo = STAGES.find(s => s.key === c.stage) ?? STAGES[0];
+            // v25.48.3 Q-K1 — canonStage folds legacy `lead` → `prospect`.
+            const stageInfo = STAGES.find(s => s.key === canonStage(c.stage)) ?? STAGES.find(s => s.key === "prospect") ?? STAGES[0];
             const checked = selectedIds.has(c.id);
             return (
               <Card key={c.id} data-testid={`card-crm-${c.id}`} className={checked ? "border-[hsl(0_100%_40%)]" : ""}>

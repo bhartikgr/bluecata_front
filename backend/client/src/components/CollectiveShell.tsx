@@ -18,6 +18,8 @@ import {
   /* v25.33 Consortium Partner Payment Model — icons for the new partner
      self-service nav items (Subscribe / Agreement / Tax Forms). */
   CreditCard, FileSignature, FileCheck,
+  /* v25.49 Phase-3B — icons for the new partner NETWORK group (Messages/Posts). */
+  MessageSquare, Newspaper,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -138,29 +140,66 @@ const NAV_GROUPS: NavGroup[] = [
   },
 ];
 
-// Partner-only nav group, added dynamically in CollectiveSidebar when the
+// Partner-workspace nav, added dynamically in CollectiveSidebar when the
 // session has an active partner membership.
-const PARTNER_WORKSPACE_GROUP: NavGroup = {
-  title: "PARTNER WORKSPACE",
-  items: [
-    { href: "/collective/partner/dashboard", label: "Dashboard", icon: LayoutDashboard, "data-testid": "nav-partner-dashboard" },
-    { href: "/collective/partner/clients", label: "Clients", icon: Users, "data-testid": "nav-partner-clients" },
-    { href: "/collective/partner/pipeline", label: "Pipeline", icon: Briefcase, "data-testid": "nav-partner-pipeline" },
-    { href: "/collective/partner/team", label: "Team", icon: UserPlus, "data-testid": "nav-partner-team" },
-    { href: "/collective/partner/notes", label: "Notes", icon: FileText, "data-testid": "nav-partner-notes" },
-    { href: "/collective/partner/tasks", label: "Tasks", icon: ListTodo, "data-testid": "nav-partner-tasks" },
-    { href: "/collective/partner/files", label: "Files", icon: FolderOpen, "data-testid": "nav-partner-files" },
-    { href: "/collective/partner/spvs", label: "SPVs", icon: Building2, "data-testid": "nav-partner-spvs" },
-    { href: "/collective/partner/funds", label: "Funds", icon: PiggyBank, "data-testid": "nav-partner-funds" },
-    /* v25.32 A3 — consortium partner commission ledger (not subscription billing). */
-    { href: "/collective/partner/billing", label: "Billing", icon: Receipt, "data-testid": "nav-partner-billing" },
-    /* v25.33 Consortium Partner Payment Model — partner self-service surfaces. */
-    { href: "/collective/partner/subscribe", label: "Subscribe", icon: CreditCard, "data-testid": "nav-partner-subscribe" },
-    { href: "/collective/partner/agreement", label: "Agreement", icon: FileSignature, "data-testid": "nav-partner-agreement" },
-    { href: "/collective/partner/tax-form", label: "Tax Forms", icon: FileCheck, "data-testid": "nav-partner-tax-form" },
-    { href: "/collective/partner/settings", label: "Settings", icon: Settings, "data-testid": "nav-partner-settings" },
-  ],
-};
+//
+// v25.48.3 Phase-2B — the previously-flat "PARTNER WORKSPACE" group is now
+// split into labeled sections (OVERVIEW / DEALS & SPVs / WORKSPACE / ACCOUNT)
+// per the approved nav reorder. ALL 14 hrefs/labels/icons/data-testids are
+// preserved byte-for-byte — this is a regrouping only, nothing dropped
+// (Sacred Rule #78). The NETWORK group (Messages/Posts) is intentionally
+// omitted while empty; Phase 3 adds it. Reuses the existing NavGroup pattern.
+const PARTNER_WORKSPACE_GROUPS: NavGroup[] = [
+  {
+    title: "OVERVIEW",
+    items: [
+      { href: "/collective/partner/dashboard", label: "Dashboard", icon: LayoutDashboard, "data-testid": "nav-partner-dashboard" },
+    ],
+  },
+  {
+    title: "DEALS & SPVs",
+    items: [
+      { href: "/collective/partner/pipeline", label: "Pipeline", icon: Briefcase, "data-testid": "nav-partner-pipeline" },
+      /* Ozan decision #4 — ONE canonical, user-facing SPVs engine + ONE nav entry.
+         The duplicate "SPV Engine" and separate "Funds" entries were collapsed
+         into this single "SPVs" link pointing at the canonical PartnerSpvEngine
+         page. The legacy /spvs and /funds routes stay reachable (they redirect to
+         the canonical surface) so no bookmark/link breaks — Sacred Rule #78. */
+      { href: "/collective/partner/spv-engine", label: "SPVs", icon: Building2, "data-testid": "nav-partner-spvs" },
+      { href: "/collective/partner/clients", label: "Clients", icon: Users, "data-testid": "nav-partner-clients" },
+    ],
+  },
+  {
+    // v25.49 Phase-3B — NETWORK group added now that it has items (Phase-2B
+    // left room for it). Reuses the shared comms Messages + Posts surfaces.
+    title: "NETWORK",
+    items: [
+      { href: "/collective/partner/messages", label: "Messages", icon: MessageSquare, "data-testid": "nav-partner-messages" },
+      { href: "/collective/partner/posts", label: "Posts", icon: Newspaper, "data-testid": "nav-partner-posts" },
+    ],
+  },
+  {
+    title: "WORKSPACE",
+    items: [
+      { href: "/collective/partner/team", label: "Team", icon: UserPlus, "data-testid": "nav-partner-team" },
+      { href: "/collective/partner/notes", label: "Notes", icon: FileText, "data-testid": "nav-partner-notes" },
+      { href: "/collective/partner/tasks", label: "Tasks", icon: ListTodo, "data-testid": "nav-partner-tasks" },
+      { href: "/collective/partner/files", label: "Files", icon: FolderOpen, "data-testid": "nav-partner-files" },
+    ],
+  },
+  {
+    title: "ACCOUNT",
+    items: [
+      /* v25.32 A3 — consortium partner commission ledger (not subscription billing). */
+      { href: "/collective/partner/billing", label: "Billing", icon: Receipt, "data-testid": "nav-partner-billing" },
+      /* v25.33 Consortium Partner Payment Model — partner self-service surfaces. */
+      { href: "/collective/partner/subscribe", label: "Subscribe", icon: CreditCard, "data-testid": "nav-partner-subscribe" },
+      { href: "/collective/partner/agreement", label: "Agreement", icon: FileSignature, "data-testid": "nav-partner-agreement" },
+      { href: "/collective/partner/tax-form", label: "Tax Forms", icon: FileCheck, "data-testid": "nav-partner-tax-form" },
+      { href: "/collective/partner/settings", label: "Settings", icon: Settings, "data-testid": "nav-partner-settings" },
+    ],
+  },
+];
 
 /* ============================================================
  * Sidebar nav item
@@ -225,11 +264,18 @@ function CollectiveSidebar({ onClose }: { onClose?: () => void }) {
   // membership) see ONLY the partner workspace nav; the Collective base nav
   // is suppressed for them. Dual-role users (partner + active member) keep
   // the combined view exactly as before. Pure-Collective users are unchanged.
-  const partnerOnly = partner.isPartner && !useCollectiveMembershipActive();
+  // React #310 FIX — useCollectiveMembershipActive() MUST be called
+  // unconditionally. Inlining it after `partner.isPartner &&` short-circuited
+  // the hook whenever isPartner was false, so the hook count changed between
+  // the pending render (isPartner=false, hook skipped) and the resolved render
+  // (isPartner=true, hook run), crashing the whole partner shell with a
+  // hooks-order violation on every page.
+  const collectiveMemberActive = useCollectiveMembershipActive();
+  const partnerOnly = partner.isPartner && !collectiveMemberActive;
   const groups: NavGroup[] = partnerOnly
-    ? [PARTNER_WORKSPACE_GROUP]
+    ? [...PARTNER_WORKSPACE_GROUPS]
     : partner.isPartner
-      ? [...baseGroups, PARTNER_WORKSPACE_GROUP]
+      ? [...baseGroups, ...PARTNER_WORKSPACE_GROUPS]
       : baseGroups;
 
   return (
@@ -285,8 +331,11 @@ function CollectiveSidebar({ onClose }: { onClose?: () => void }) {
             <div key={group.title} className="mb-4">
               <p
                 className="px-3 mb-1 text-[10px] font-semibold tracking-wider uppercase"
-                /* v25.43 R3-2 — group labels re-skinned plum → brand red. */
-                style={{ color: "#cc0001", opacity: 0.7 }}
+                /* v25.43 R3-2 — group labels re-skinned plum → brand red.
+                   v25.48.3 Phase-2B — partner-only sessions use the muted
+                   capavate.com navy (#041e41) for the new grouped section
+                   headers; Collective/combined sessions keep brand red. */
+                style={{ color: partnerOnly ? "#041e41" : "#cc0001", opacity: 0.7 }}
               >
                 {group.title}
               </p>

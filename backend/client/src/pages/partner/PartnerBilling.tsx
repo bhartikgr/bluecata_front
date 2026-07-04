@@ -109,7 +109,7 @@ function ReferralCommissionsTab({ ready }: { ready: boolean }) {
     <>
       {/* Path 1 explainer — partners earn commissions, they are not billed a subscription. */}
       <div
-        className="mb-4 rounded-md border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900"
+        className="mb-4 rounded-md border border-[rgba(4,30,65,0.2)] bg-[rgba(4,30,65,0.05)] p-4 text-sm text-[#041e41]"
         data-testid="partner-billing-explainer"
       >
         <p className="font-medium">Consortium Partners earn commissions on referred founders.</p>

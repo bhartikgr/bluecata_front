@@ -62,8 +62,18 @@ export class ErrorBoundary extends Component<Props, State> {
       const message = this.state.error?.message ?? "An unexpected error occurred.";
       const isMapCrash = message.includes("map") || message.includes("undefined") || message.includes("null");
 
+      // v25.48.3 Phase-2A — when a Consortium Partner route crashes, tag the
+      // fallback with data-product="partner" so the capavate.com scoped theme
+      // (cream canvas, brand-red primary, navy headings) defined in index.css
+      // flows into this recovery card. Non-partner routes are untagged and
+      // render exactly as before, so no other surface is affected.
+      const isPartnerRoute =
+        typeof window !== "undefined" &&
+        window.location.pathname.startsWith("/collective/partner");
+
       return (
         <div
+          {...(isPartnerRoute ? { "data-product": "partner" } : {})}
           className="min-h-screen flex items-center justify-center p-6 bg-background"
           data-testid="error-boundary-fallback"
         >

@@ -11,6 +11,8 @@ import crypto from "crypto";
 import { rawDb } from "../db/connection";
 import { appendAdminAudit } from "../adminPlatformStore";
 import { partnerSpvStore } from "../partnerWorkspaceStore"; /* v25.41 Bug-3 — admin-side SPV creation reuses the existing store (no store changes). */
+import { spvEngineStore } from "../spvEngineStore"; /* Blocker 1 (4D) — admin SPV create/read shim THROUGH the canonical engine so no SPV is ever created outside it. */
+import { isSpvJurisdiction } from "../../shared/spvEngine";
 import { sanitizeErrorMessage } from "./sanitize"; /* v25.33 — scrub raw err.message from the generic 500 path in prod (backlog item 33 extension). The UNIQUE-constraint 409 message is intentionally surfaced as safe admin feedback. */
 
 const FEE_KINDS = new Set([
@@ -240,6 +242,10 @@ export function registerPartnerFeeAdminRoutes(app: Express): void {
    * (no store changes; the partner-side endpoint is untouched). Same request
    * body shape and same status validation as the partner-side route. */
   const VALID_SPV_STATUS = new Set(["planned", "open", "closed", "wound_down"]);
+  // Blocker 1 (4D): legacy admin status strings normalise onto canonical SPV enums.
+  const ADMIN_LEGACY_TO_CANONICAL_SPV_STATUS: Record<string, "draft" | "open" | "closed" | "wound_down"> = {
+    planned: "draft", open: "open", closed: "closed", wound_down: "wound_down",
+  };
 
   app.get("/api/admin/partners/:partnerId/spvs", (req: Request, res: Response) => {
     const partnerId = String(req.params.partnerId);
@@ -248,7 +254,8 @@ export function registerPartnerFeeAdminRoutes(app: Express): void {
       .get(partnerId);
     if (!partner) return res.status(404).json({ ok: false, error: "partner_not_found" });
     try {
-      const spvs = partnerSpvStore.listByPartner(partnerId);
+      // Read THROUGH the canonical engine (the ONE SPV store), not the legacy table.
+      const spvs = spvEngineStore.listByPartner(partnerId);
       res.json({ ok: true, spvs, total: spvs.length });
     } catch (err) {
       res.status(500).json({ ok: false, error: "list_failed", message: sanitizeErrorMessage(err) });
@@ -280,23 +287,33 @@ export function registerPartnerFeeAdminRoutes(app: Express): void {
     }
     try {
       const actor = actorOf(req);
-      const spv = partnerSpvStore.create(
+      // Blocker 1 (4D): create THROUGH the canonical engine (spvType:"spv") so an
+      // admin-created SPV lands in the ONE canonical `spv` table and can never be
+      // a non-canonical row. Free-text jurisdiction normalises to a valid enum;
+      // legacy-only fields are preserved in `terms` provenance (nothing lost).
+      const canonicalJurisdiction = isSpvJurisdiction(b.jurisdiction) ? b.jurisdiction : "delaware";
+      const spv = spvEngineStore.createSpv(
         partnerId,
         {
-          spvName: b.spvName,
-          jurisdiction: b.jurisdiction,
-          vintage: b.vintage,
+          name: b.spvName,
+          jurisdiction: canonicalJurisdiction,
+          carryBasis: "whole_spv",
           currency: b.currency,
-          status: b.status as "planned" | "open" | "closed" | "wound_down",
+          status: ADMIN_LEGACY_TO_CANONICAL_SPV_STATUS[b.status as string] ?? "draft",
           targetCompanyId: b.targetCompanyId ?? null,
-          entityStructure: b.entityStructure ?? null,
-          externalAdminProvider: b.externalAdminProvider ?? null,
-          externalAdminRef: b.externalAdminRef ?? null,
-          notes: b.notes ?? null,
+          terms: {
+            legacyShim: true,
+            vintage: b.vintage,
+            entityStructure: b.entityStructure ?? null,
+            externalAdminProvider: b.externalAdminProvider ?? null,
+            externalAdminRef: b.externalAdminRef ?? null,
+            notes: b.notes ?? null,
+            legacyJurisdiction: b.jurisdiction,
+          },
         },
         actor,
       );
-      appendAdminAudit(actor, `partner_spv:${spv.id}`, "partner_spv.created", { partnerId, spvId: spv.id, spvName: spv.spvName, status: spv.status });
+      appendAdminAudit(actor, `partner_spv:${spv.id}`, "partner_spv.created", { partnerId, spvId: spv.id, spvName: spv.name, status: spv.status });
       res.status(201).json({ ok: true, spv });
     } catch (err) {
       res.status(500).json({ ok: false, error: "create_failed", message: sanitizeErrorMessage(err) });

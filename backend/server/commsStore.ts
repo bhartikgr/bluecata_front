@@ -103,7 +103,7 @@ import { getUserContextForId } from "./lib/userContext";
 function messagesPathForUser(userId: string, threadId: string): string {
   try {
     if (partnerTeamStore.findByUserId(userId)) {
-      return `/partner/messages?thread=${threadId}`;
+      return `/collective/partner/messages?thread=${threadId}`;
     }
   } catch { /* fall through */ }
   try {

@@ -671,6 +671,9 @@ function applyV2533PartnerPaymentSchema(db: any) {
 
   // ---- Additive ALTER TABLE ADD COLUMN (idempotent; swallow duplicate) ----
   const alters: Array<[string, string]> = [
+    // v25.48.3 Q-I1 — founder "open to Collective refinement" opt-in on the
+    // direct-application table (idempotent for existing live DBs).
+    ["founder_collective_applications", "ALTER TABLE founder_collective_applications ADD COLUMN open_to_refinement INTEGER NOT NULL DEFAULT 0"],
     // contacts == the canonical partner entity (kind='consortium_partner').
     // These are the brief's `consortium_partners` columns, retargeted.
     ["contacts", "ALTER TABLE contacts ADD COLUMN fee_override_json TEXT"],
@@ -2138,6 +2141,7 @@ function buildProductionTableStatements(): string[] {
       references_text TEXT NOT NULL DEFAULT '',
       cover_letter TEXT NOT NULL,
       fee_acknowledged INTEGER NOT NULL DEFAULT 0,
+      open_to_refinement INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'submitted',
       submitted_at TEXT NOT NULL,
       reviewed_at TEXT,
@@ -3168,6 +3172,232 @@ function buildCreateTableStatements(): string[] {
       partner_id    TEXT PRIMARY KEY NOT NULL,
       settings_json TEXT NOT NULL,
       updated_at    TEXT NOT NULL
+    );`,
+
+    // v25.49 Phase-3A — separate Partner Clients CRM engine (mirrors
+    // migrations/0083). partner_client_crm holds the durable CRM stage per
+    // (partner_id, company_id); partner_client_activity is an append-only
+    // client-scoped timeline. Both partner-scoped / fail-closed at the store.
+    `CREATE TABLE IF NOT EXISTS partner_client_crm (
+      partner_id  TEXT NOT NULL,
+      company_id  TEXT NOT NULL,
+      stage       TEXT NOT NULL,
+      updated_at  TEXT NOT NULL,
+      updated_by  TEXT,
+      PRIMARY KEY (partner_id, company_id)
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_partner_client_crm_partner ON partner_client_crm(partner_id);`,
+    `CREATE TABLE IF NOT EXISTS partner_client_activity (
+      id             TEXT PRIMARY KEY NOT NULL,
+      partner_id     TEXT NOT NULL,
+      company_id     TEXT NOT NULL,
+      activity_type  TEXT NOT NULL,
+      body           TEXT,
+      actor_user_id  TEXT,
+      occurred_at    TEXT NOT NULL,
+      meta_json      TEXT
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_partner_client_activity_partner ON partner_client_activity(partner_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_partner_client_activity_company ON partner_client_activity(partner_id, company_id);`,
+
+    // v25.49 Phase-4 — CANONICAL SPV Engine (mirrors migrations/0084). SINGULAR
+    // table names so they never collide with the pre-existing PLURAL spvFundStore
+    // tables (spvs / spv_distributions / …). Thin coordination layer; most
+    // columns FK into existing canonical records. Audit anchors prev/curr_hash.
+    `CREATE TABLE IF NOT EXISTS spv (
+      id                  TEXT PRIMARY KEY NOT NULL,
+      sponsor_partner_id  TEXT NOT NULL,
+      gp_user_id          TEXT,
+      name                TEXT NOT NULL,
+      spv_type            TEXT NOT NULL DEFAULT 'spv',
+      jurisdiction        TEXT NOT NULL,
+      status              TEXT NOT NULL DEFAULT 'draft',
+      distribution_scope  TEXT NOT NULL DEFAULT 'private',
+      target_raise_minor  INTEGER,
+      min_check_minor     INTEGER,
+      cap_minor           INTEGER,
+      currency            TEXT NOT NULL DEFAULT 'USD',
+      carry_basis         TEXT NOT NULL,
+      lp_visibility       TEXT NOT NULL DEFAULT 'own_only',   -- own_only | co_investors (Phase-4B)
+      target_company_id   TEXT,
+      close_date          TEXT,
+      terms_json          TEXT,
+      migrated_from       TEXT,
+      created_at          TEXT NOT NULL,
+      created_by          TEXT,
+      updated_at          TEXT NOT NULL,
+      updated_by          TEXT,
+      archived_at         TEXT,
+      prev_hash           TEXT NOT NULL DEFAULT '0000000000000000000000000000000000000000000000000000000000000000',
+      curr_hash           TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_sponsor ON spv(sponsor_partner_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_status ON spv(sponsor_partner_id, status);`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_scope ON spv(distribution_scope);`,
+    `CREATE TABLE IF NOT EXISTS spv_mandate (
+      id            TEXT PRIMARY KEY NOT NULL,
+      spv_id        TEXT NOT NULL,
+      mode          TEXT NOT NULL DEFAULT 'open',
+      rule_tree_json TEXT NOT NULL,
+      geography_json TEXT,
+      sector_json    TEXT,
+      company_ids_json TEXT,
+      stage_json     TEXT,
+      check_min_minor INTEGER,
+      check_max_minor INTEGER,
+      created_at    TEXT NOT NULL,
+      updated_at    TEXT NOT NULL,
+      updated_by    TEXT,
+      prev_hash     TEXT NOT NULL DEFAULT '0000000000000000000000000000000000000000000000000000000000000000',
+      curr_hash     TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_mandate_spv ON spv_mandate(spv_id);`,
+    `CREATE TABLE IF NOT EXISTS spv_fee (
+      id            TEXT PRIMARY KEY NOT NULL,
+      spv_id        TEXT NOT NULL,
+      layer         TEXT NOT NULL,
+      fee_type      TEXT NOT NULL,
+      fixed_amount_minor INTEGER,
+      carry_pct     REAL,
+      currency      TEXT NOT NULL DEFAULT 'USD',
+      effective_date TEXT NOT NULL,
+      set_by        TEXT,
+      created_at    TEXT NOT NULL,
+      prev_hash     TEXT NOT NULL DEFAULT '0000000000000000000000000000000000000000000000000000000000000000',
+      curr_hash     TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_fee_spv ON spv_fee(spv_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_fee_spv_layer ON spv_fee(spv_id, layer, effective_date);`,
+    `CREATE TABLE IF NOT EXISTS spv_subscription (
+      id            TEXT PRIMARY KEY NOT NULL,
+      spv_id        TEXT NOT NULL,
+      investor_id   TEXT NOT NULL,
+      investor_persona TEXT,
+      commitment_minor INTEGER NOT NULL,
+      wired_minor   INTEGER NOT NULL DEFAULT 0,
+      currency      TEXT NOT NULL DEFAULT 'USD',
+      status        TEXT NOT NULL DEFAULT 'review',
+      kyc_ref       TEXT,
+      accreditation_ref TEXT,
+      subscription_doc_ref TEXT,
+      ownership_pct REAL,
+      created_at    TEXT NOT NULL,
+      updated_at    TEXT NOT NULL,
+      updated_by    TEXT,
+      prev_hash     TEXT NOT NULL DEFAULT '0000000000000000000000000000000000000000000000000000000000000000',
+      curr_hash     TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_subscription_spv ON spv_subscription(spv_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_subscription_investor ON spv_subscription(investor_id);`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS uq_spv_subscription_spv_investor ON spv_subscription(spv_id, investor_id);`,
+    `CREATE TABLE IF NOT EXISTS spv_deployment (
+      id            TEXT PRIMARY KEY NOT NULL,
+      spv_id        TEXT NOT NULL,
+      company_id    TEXT NOT NULL,
+      company_round_id TEXT NOT NULL,
+      instrument    TEXT,
+      amount_minor  INTEGER NOT NULL,
+      currency      TEXT NOT NULL DEFAULT 'USD',
+      shares        TEXT,
+      cap_table_ledger_ref TEXT,
+      status        TEXT NOT NULL DEFAULT 'pending',
+      founder_confirmed_at TEXT,
+      wired_at      TEXT,
+      wire_payment_ref TEXT,
+      closing_doc_ref TEXT,
+      deployed_at   TEXT,
+      created_at    TEXT NOT NULL,
+      updated_at    TEXT NOT NULL,
+      prev_hash     TEXT NOT NULL DEFAULT '0000000000000000000000000000000000000000000000000000000000000000',
+      curr_hash     TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_deployment_spv ON spv_deployment(spv_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_deployment_company ON spv_deployment(company_id);`,
+    `CREATE TABLE IF NOT EXISTS spv_distribution (
+      id            TEXT PRIMARY KEY NOT NULL,
+      spv_id        TEXT NOT NULL,
+      event         TEXT NOT NULL,
+      gross_proceeds_minor INTEGER NOT NULL,
+      currency      TEXT NOT NULL DEFAULT 'USD',
+      waterfall_json TEXT NOT NULL,
+      allocations_json TEXT NOT NULL,
+      gp_carry_minor INTEGER NOT NULL DEFAULT 0,
+      platform_carry_minor INTEGER NOT NULL DEFAULT 0,
+      status        TEXT NOT NULL DEFAULT 'recorded',
+      created_at    TEXT NOT NULL,
+      created_by    TEXT,
+      prev_hash     TEXT NOT NULL DEFAULT '0000000000000000000000000000000000000000000000000000000000000000',
+      curr_hash     TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_distribution_spv ON spv_distribution(spv_id);`,
+    `CREATE TABLE IF NOT EXISTS spv_document (
+      id            TEXT PRIMARY KEY NOT NULL,
+      spv_id        TEXT NOT NULL,
+      doc_type      TEXT NOT NULL,
+      title         TEXT,
+      storage_key   TEXT NOT NULL,
+      storage_backend TEXT NOT NULL DEFAULT 'fs',
+      content_type  TEXT,
+      size_bytes    INTEGER,
+      expiry        TEXT,
+      created_at    TEXT NOT NULL,
+      created_by    TEXT,
+      prev_hash     TEXT NOT NULL DEFAULT '0000000000000000000000000000000000000000000000000000000000000000',
+      curr_hash     TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_document_spv ON spv_document(spv_id);`,
+    `CREATE TABLE IF NOT EXISTS spv_transfer (
+      id            TEXT PRIMARY KEY NOT NULL,
+      spv_id        TEXT NOT NULL,
+      from_investor_id TEXT NOT NULL,
+      to_investor_id   TEXT NOT NULL,
+      units_pct     REAL,
+      amount_minor  INTEGER,
+      currency      TEXT NOT NULL DEFAULT 'USD',
+      status        TEXT NOT NULL DEFAULT 'proposed',
+      compliance_recheck_ref TEXT,
+      gp_approval   TEXT,
+      created_at    TEXT NOT NULL,
+      updated_at    TEXT NOT NULL,
+      prev_hash     TEXT NOT NULL DEFAULT '0000000000000000000000000000000000000000000000000000000000000000',
+      curr_hash     TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_transfer_spv ON spv_transfer(spv_id);`,
+    // Phase-4C / Blocker 3 — money-movement-safe fee obligations. FIXED portions
+    // accrued at funding (must be paid/waived before commit/deploy); CARRY
+    // portions accrued at distribution (collected with a recorded payment ref).
+    `CREATE TABLE IF NOT EXISTS spv_fee_obligation (
+      id            TEXT PRIMARY KEY NOT NULL,
+      spv_id        TEXT NOT NULL,
+      layer         TEXT NOT NULL,
+      portion       TEXT NOT NULL,
+      timing        TEXT NOT NULL,
+      amount_minor  INTEGER NOT NULL,
+      currency      TEXT NOT NULL DEFAULT 'USD',
+      state         TEXT NOT NULL DEFAULT 'pending',
+      payment_ref   TEXT,
+      distribution_id TEXT,
+      waived_by     TEXT,
+      waived_reason TEXT,
+      created_at    TEXT NOT NULL,
+      updated_at    TEXT NOT NULL,
+      prev_hash     TEXT NOT NULL DEFAULT '0000000000000000000000000000000000000000000000000000000000000000',
+      curr_hash     TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_fee_obligation_spv ON spv_fee_obligation(spv_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_fee_obligation_spv_timing ON spv_fee_obligation(spv_id, timing, state);`,
+    `CREATE TABLE IF NOT EXISTS investor_compliance_profile (
+      investor_id   TEXT PRIMARY KEY NOT NULL,
+      kyc_status    TEXT NOT NULL DEFAULT 'none',
+      kyc_verified_at TEXT,
+      kyc_expiry    TEXT,
+      accreditation_status TEXT NOT NULL DEFAULT 'none',
+      accreditation_certified_at TEXT,
+      jurisdiction  TEXT,
+      created_at    TEXT NOT NULL,
+      updated_at    TEXT NOT NULL,
+      prev_hash     TEXT NOT NULL DEFAULT '0000000000000000000000000000000000000000000000000000000000000000',
+      curr_hash     TEXT NOT NULL
     );`,
 
     // ============================================================

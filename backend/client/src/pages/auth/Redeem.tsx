@@ -33,7 +33,10 @@ import { useRole } from "@/lib/role";
 type Preview = {
   ok: true;
   invitation: {
-    roundId: string;
+    /* v25.48.3 Q-J1 — team invitations reuse this envelope with kind:"team".
+     * Investor/round invitations omit `kind` (treated as "investor"). */
+    kind?: "team" | "investor";
+    roundId?: string;
     companyId: string;
     companyName: string;
     inviteeEmail: string;
@@ -41,6 +44,7 @@ type Preview = {
     expiresAt: string;
     roundLabel?: string;
     founderName?: string;
+    role?: string;
   };
 };
 
@@ -119,10 +123,12 @@ export default function Redeem() {
     setSubmitting(true);
     try {
       const res = await apiRequest("POST", "/api/auth/redeem", { token, password, agreedToTerms: agreed });
-      const json = await res.json() as { ok: true; redirectTo: string; companyId: string };
+      const json = await res.json() as { ok: true; redirectTo: string; companyId: string; kind?: "team" | "investor" };
       queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
-      setRole("investor");
-      toast({ title: "Welcome to Capavate", description: "Redirecting you to the round…" });
+      /* v25.48.3 Q-J1 — team members join the founder workspace, not a round. */
+      const isTeam = json.kind === "team" || previewQ.data?.invitation.kind === "team";
+      setRole(isTeam ? "founder" : "investor");
+      toast({ title: "Welcome to Capavate", description: isTeam ? "Redirecting you to your workspace…" : "Redirecting you to the round…" });
       navigate(json.redirectTo);
     } catch (err: any) {
       const msg = String(err?.message ?? "");

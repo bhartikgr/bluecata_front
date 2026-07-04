@@ -14,6 +14,11 @@ import path from "node:path";
  * remain untouched.
  */
 export default defineConfig({
+  // JSX in client source (role.tsx, CollectiveShell.tsx, …) is authored for the
+  // React 17+ automatic runtime (no explicit `import React`). Without this,
+  // esbuild defaults to the classic runtime and JSX-rendering client tests fail
+  // with "React is not defined". Pure-TS tests are unaffected.
+  esbuild: { jsx: "automatic", jsxImportSource: "react" },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "client/src"),

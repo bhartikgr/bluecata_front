@@ -57,6 +57,8 @@ import { getCompanyRecordById } from "./multiCompanyStore";
 import { getCompanyProfile } from "./companyProfileStore"; /* v25.15 NM5 — real snapshot data */
 import { linkConsortiumPartner, unlinkConsortiumPartner, getConsortiumPartnerId } from "./consortiumLinkStore";
 import { upsertInvestorContactFromPartner, removeInvestorContactForPartner } from "./founderCrmStore";
+import { spvEngineStore } from "./spvEngineStore"; /* Ozan #4 — legacy SPV routes shim THROUGH the canonical engine so no SPV is ever created outside it */
+import { isSpvJurisdiction } from "../shared/spvEngine";
 
 /* ============================================================
  * Helpers
@@ -1166,9 +1168,22 @@ export function registerPartnerRoutes(app: Express): void {
     },
   );
 
-  // SPVs
+  // SPVs — LEGACY plural surface, now a COMPATIBILITY SHIM over the ONE canonical
+  // engine (Ozan decision #4 / Blocker 1). Reads and writes go THROUGH
+  // spvEngineStore so an SPV can NEVER be created outside the canonical `spv`
+  // table (a legacy-path create is immediately canonical and shows up in the
+  // Collective/Capavate context filters with no reboot). The legacy partnerSpvStore
+  // rows are kept only as migrated read-only provenance (Sacred Rule #78 — nothing
+  // is dropped, every route stays reachable).
+  //
+  // Legacy jurisdictions were free-text; the canonical engine requires a valid
+  // enum. We normalise to a valid jurisdiction and preserve the original in
+  // `terms.legacyJurisdiction` so no information is lost.
+  const LEGACY_TO_CANONICAL_SPV_STATUS: Record<string, "draft" | "open" | "closed" | "wound_down"> = {
+    planned: "draft", open: "open", closed: "closed", wound_down: "wound_down",
+  };
   app.get("/api/partner/me/spvs", requirePartnerAuth, (req: Request, res: Response) => {
-    res.json({ spvs: partnerSpvStore.listByPartner(req.partnerContext!.partnerId) });
+    res.json({ spvs: spvEngineStore.listByPartner(req.partnerContext!.partnerId) });
   });
   app.post(
     "/api/partner/me/spvs",
@@ -1184,15 +1199,35 @@ export function registerPartnerRoutes(app: Express): void {
       if (!validSpvStatus.includes(status as typeof validSpvStatus[number])) {
         return badRequest(res, "status must be one of " + validSpvStatus.join("|"));
       }
-      const spv = partnerSpvStore.create(ctx.partnerId, { spvName, jurisdiction, vintage, currency, status: status as typeof validSpvStatus[number], targetCompanyId, entityStructure, externalAdminProvider, externalAdminRef, notes }, ctx.userId);
-      res.status(201).json({ spv });
+      try {
+        const canonicalJurisdiction = isSpvJurisdiction(jurisdiction) ? jurisdiction : "delaware";
+        const spv = spvEngineStore.createSpv(
+          ctx.partnerId,
+          {
+            name: spvName,
+            jurisdiction: canonicalJurisdiction,
+            // Legacy rows carry no explicit carry basis — assign whole_spv as
+            // provenance (identical to the boot backfill), never a new-GP default.
+            carryBasis: "whole_spv",
+            currency,
+            status: LEGACY_TO_CANONICAL_SPV_STATUS[status] ?? "draft",
+            targetCompanyId: targetCompanyId ?? null,
+            terms: { legacyShim: true, vintage, entityStructure, externalAdminProvider, externalAdminRef, notes, legacyJurisdiction: jurisdiction },
+          },
+          ctx.userId,
+        );
+        res.status(201).json({ spv });
+      } catch (e) {
+        return badRequest(res, (e as Error).message);
+      }
     },
   );
   app.get("/api/partner/me/spvs/:id", requirePartnerAuth, (req: Request, res: Response) => {
     const ctx = req.partnerContext!;
-    const spv = partnerSpvStore.getById(ctx.partnerId, String(req.params.id));
+    const spv = spvEngineStore.getSpv(ctx.partnerId, String(req.params.id));
     if (!spv) return res.status(404).json({ error: "SPV_NOT_FOUND" });
-    res.json({ spv, positions: partnerSpvStore.listPositions(ctx.partnerId, String(req.params.id)) });
+    // Positions map onto the canonical investor register (per-LP commitment + %).
+    res.json({ spv, positions: spvEngineStore.investorRegister(ctx.partnerId, String(req.params.id)) });
   });
   app.patch(
     "/api/partner/me/spvs/:id",
@@ -1200,17 +1235,30 @@ export function registerPartnerRoutes(app: Express): void {
     assertSubRole("managing_partner", "associate"),
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
+      // Blocker 1 (4D): mutate THROUGH the canonical engine so a legacy PATCH can
+      // never diverge the legacy row from the canonical `spv` table. Legacy status
+      // strings are normalised to canonical enums; `spvName` maps to `name`.
+      const b = (req.body ?? {}) as Record<string, unknown>;
+      const patch: Record<string, unknown> = {};
+      if (typeof b.spvName === "string") patch.name = b.spvName;
+      if (typeof b.name === "string") patch.name = b.name;
+      if (typeof b.status === "string") patch.status = LEGACY_TO_CANONICAL_SPV_STATUS[b.status] ?? b.status;
+      if (b.targetRaiseMinor !== undefined) patch.targetRaiseMinor = b.targetRaiseMinor;
+      if (b.minCheckMinor !== undefined) patch.minCheckMinor = b.minCheckMinor;
+      if (b.capMinor !== undefined) patch.capMinor = b.capMinor;
+      if (b.closeDate !== undefined) patch.closeDate = b.closeDate;
       try {
-        const spv = partnerSpvStore.update(ctx.partnerId, String(req.params.id), req.body ?? {}, ctx.userId);
+        const spv = spvEngineStore.updateSpv(ctx.partnerId, String(req.params.id), patch, ctx.userId);
         res.json({ spv });
       } catch (e) { res.status(404).json({ error: (e as Error).message }); }
     },
   );
   app.get("/api/partner/me/spvs/:id/positions", requirePartnerAuth, (req: Request, res: Response) => {
     const ctx = req.partnerContext!;
-    try {
-      res.json({ positions: partnerSpvStore.listPositions(ctx.partnerId, String(req.params.id)) });
-    } catch (e) { res.status(404).json({ error: (e as Error).message }); }
+    const spv = spvEngineStore.getSpv(ctx.partnerId, String(req.params.id));
+    if (!spv) return res.status(404).json({ error: "SPV_NOT_FOUND" });
+    // Positions are the canonical investor register (per-LP commitment + %).
+    res.json({ positions: spvEngineStore.investorRegister(ctx.partnerId, String(req.params.id)) });
   });
   app.post(
     "/api/partner/me/spvs/:id/positions",
@@ -1218,20 +1266,37 @@ export function registerPartnerRoutes(app: Express): void {
     assertSubRole("managing_partner"),
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
-      const { lpContactId, positionAmountMinor, currency, positionStatus, fxRateToSpvBase, notes } = req.body ?? {};
+      const { lpContactId, positionAmountMinor, currency } = req.body ?? {};
       if (!isString(lpContactId) || !isNumber(positionAmountMinor) || !isISOCurrency(currency)) {
         return badRequest(res, "lpContactId, positionAmountMinor (int minor), ISO 4217 currency required");
       }
+      // Blocker 1 (4D): a NEW position is written THROUGH the canonical engine as
+      // a subscription (LP register) — never as a legacy partnerSpvStore position.
       try {
-        const pos = partnerSpvStore.addPosition(ctx.partnerId, String(req.params.id), { lpContactId, positionAmountMinor, currency, positionStatus, fxRateToSpvBase, notes }, ctx.userId);
-        res.status(201).json({ position: pos });
+        const sub = spvEngineStore.subscribe(
+          ctx.partnerId,
+          String(req.params.id),
+          { investorId: lpContactId, commitmentMinor: positionAmountMinor, currency },
+          ctx.userId,
+        );
+        res.status(201).json({ position: sub });
       } catch (e) { res.status(400).json({ error: (e as Error).message }); }
     },
   );
 
-  // FUNDS
+  // FUNDS — Blocker 1 (4D): a fund is just an SPV with spvType="fund". Every
+  // fund create/read/update/commitment surface is a COMPATIBILITY SHIM over the
+  // ONE canonical engine (spvEngineStore) so a fund can NEVER be created outside
+  // the canonical `spv` table (no second system). The legacy partnerFundsStore
+  // rows remain read-only provenance (Sacred Rule #78). Legacy fund statuses are
+  // normalised to canonical SPV enums; fund-specific fields are preserved in
+  // `terms` so no information is lost.
+  const LEGACY_TO_CANONICAL_FUND_STATUS: Record<string, "draft" | "open" | "closed" | "wound_down"> = {
+    planning: "draft", raising: "open", investing: "open", harvesting: "closed", wound_down: "wound_down",
+  };
   app.get("/api/partner/me/funds", requirePartnerAuth, (req: Request, res: Response) => {
-    res.json({ funds: partnerFundsStore.listByPartner(req.partnerContext!.partnerId) });
+    const funds = spvEngineStore.listByPartner(req.partnerContext!.partnerId).filter((s) => s.spvType === "fund");
+    res.json({ funds });
   });
   app.post(
     "/api/partner/me/funds",
@@ -1251,15 +1316,31 @@ export function registerPartnerRoutes(app: Express): void {
       if (!validFundStatus.includes(status as typeof validFundStatus[number])) {
         return badRequest(res, "status must be one of " + validFundStatus.join("|"));
       }
-      const f = partnerFundsStore.create(ctx.partnerId, { fundName, fundType: fundType as typeof validFundType[number], jurisdiction, vintage, currency, status: status as typeof validFundStatus[number], targetSizeMinor, externalAdminProvider, externalAdminRef, notes }, ctx.userId);
-      res.status(201).json({ fund: f });
+      try {
+        const canonicalJurisdiction = isSpvJurisdiction(jurisdiction) ? jurisdiction : "delaware";
+        const fund = spvEngineStore.createSpv(
+          ctx.partnerId,
+          {
+            name: fundName,
+            spvType: "fund",
+            jurisdiction: canonicalJurisdiction,
+            carryBasis: "whole_spv",
+            currency,
+            status: LEGACY_TO_CANONICAL_FUND_STATUS[status] ?? "draft",
+            targetRaiseMinor: isNumber(targetSizeMinor) ? targetSizeMinor : null,
+            terms: { legacyShim: true, fundType, vintage, externalAdminProvider, externalAdminRef, notes, legacyJurisdiction: jurisdiction, legacyFundStatus: status },
+          },
+          ctx.userId,
+        );
+        res.status(201).json({ fund });
+      } catch (e) { return badRequest(res, (e as Error).message); }
     },
   );
   app.get("/api/partner/me/funds/:id", requirePartnerAuth, (req: Request, res: Response) => {
     const ctx = req.partnerContext!;
-    const f = partnerFundsStore.getById(ctx.partnerId, String(req.params.id));
-    if (!f) return res.status(404).json({ error: "FUND_NOT_FOUND" });
-    res.json({ fund: f, commitments: partnerFundsStore.listCommitments(ctx.partnerId, String(req.params.id)) });
+    const fund = spvEngineStore.getSpv(ctx.partnerId, String(req.params.id));
+    if (!fund || fund.spvType !== "fund") return res.status(404).json({ error: "FUND_NOT_FOUND" });
+    res.json({ fund, commitments: spvEngineStore.investorRegister(ctx.partnerId, String(req.params.id)) });
   });
   app.patch(
     "/api/partner/me/funds/:id",
@@ -1267,17 +1348,26 @@ export function registerPartnerRoutes(app: Express): void {
     assertSubRole("managing_partner", "associate"),
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
+      const existing = spvEngineStore.getSpv(ctx.partnerId, String(req.params.id));
+      if (!existing || existing.spvType !== "fund") return res.status(404).json({ error: "FUND_NOT_FOUND" });
+      const b = (req.body ?? {}) as Record<string, unknown>;
+      const patch: Record<string, unknown> = {};
+      if (typeof b.fundName === "string") patch.name = b.fundName;
+      if (typeof b.name === "string") patch.name = b.name;
+      if (typeof b.status === "string") patch.status = LEGACY_TO_CANONICAL_FUND_STATUS[b.status] ?? b.status;
+      if (b.targetSizeMinor !== undefined) patch.targetRaiseMinor = b.targetSizeMinor;
+      if (b.closeDate !== undefined) patch.closeDate = b.closeDate;
       try {
-        const f = partnerFundsStore.update(ctx.partnerId, String(req.params.id), req.body ?? {}, ctx.userId);
-        res.json({ fund: f });
+        const fund = spvEngineStore.updateSpv(ctx.partnerId, String(req.params.id), patch, ctx.userId);
+        res.json({ fund });
       } catch (e) { res.status(404).json({ error: (e as Error).message }); }
     },
   );
   app.get("/api/partner/me/funds/:id/commitments", requirePartnerAuth, (req: Request, res: Response) => {
     const ctx = req.partnerContext!;
-    try {
-      res.json({ commitments: partnerFundsStore.listCommitments(ctx.partnerId, String(req.params.id)) });
-    } catch (e) { res.status(404).json({ error: (e as Error).message }); }
+    const fund = spvEngineStore.getSpv(ctx.partnerId, String(req.params.id));
+    if (!fund || fund.spvType !== "fund") return res.status(404).json({ error: "FUND_NOT_FOUND" });
+    res.json({ commitments: spvEngineStore.investorRegister(ctx.partnerId, String(req.params.id)) });
   });
   app.post(
     "/api/partner/me/funds/:id/commitments",
@@ -1285,13 +1375,22 @@ export function registerPartnerRoutes(app: Express): void {
     assertSubRole("managing_partner"),
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
-      const { lpContactId, commitmentMinor, currency, isRolling, rollingPeriod, fxRateToFundBase, notes } = req.body ?? {};
+      const { lpContactId, commitmentMinor, currency } = req.body ?? {};
       if (!isString(lpContactId) || !isNumber(commitmentMinor) || !isISOCurrency(currency)) {
         return badRequest(res, "lpContactId, commitmentMinor (int minor), ISO 4217 currency required");
       }
+      const fund = spvEngineStore.getSpv(ctx.partnerId, String(req.params.id));
+      if (!fund || fund.spvType !== "fund") return res.status(404).json({ error: "FUND_NOT_FOUND" });
+      // Blocker 1 (4D): a NEW commitment is written THROUGH the canonical engine
+      // as a subscription (LP register) — never as a legacy partnerFundsStore row.
       try {
-        const c = partnerFundsStore.pledge(ctx.partnerId, String(req.params.id), { lpContactId, commitmentMinor, currency, isRolling, rollingPeriod, fxRateToFundBase, notes }, ctx.userId);
-        res.status(201).json({ commitment: c });
+        const sub = spvEngineStore.subscribe(
+          ctx.partnerId,
+          String(req.params.id),
+          { investorId: lpContactId, commitmentMinor, currency },
+          ctx.userId,
+        );
+        res.status(201).json({ commitment: sub });
       } catch (e) { res.status(400).json({ error: (e as Error).message }); }
     },
   );

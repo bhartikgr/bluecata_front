@@ -54,9 +54,10 @@ export default function CRMNew() {
 
   const saveMut = useMutation({
     mutationFn: async () => {
-      // B-V11-2 fix: always send pipeline stage as "lead" (the canonical
-      // initial stage). The free-text descriptor goes in `stageFocus` /
-      // appended to notes so the pipeline-stage enum stays valid.
+      // B-V11-2 fix: always send a valid canonical initial pipeline stage.
+      // v25.48.3 Q-K1: "lead" was renamed to "prospect" — a manually-added
+      // contact starts as a "prospect" (not the legacy "lead"). The free-text
+      // descriptor goes in `stageFocus` / appended to notes.
       const stageFocusLine = form.stageFocus.trim() ? `Stage focus: ${form.stageFocus.trim()}` : "";
       const composedNotes = [form.notes.trim(), stageFocusLine].filter(Boolean).join("\n\n");
       const res = await apiRequest("POST", "/api/founder/investor-crm", {
@@ -64,7 +65,7 @@ export default function CRMNew() {
         firmName: form.name,
         primaryContact: form.contact,
         email: form.email,
-        stage: "lead",
+        stage: "prospect",
         stageFocus: form.stageFocus,
         checkSize: form.checkSize,
         notes: composedNotes,

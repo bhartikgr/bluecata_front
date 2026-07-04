@@ -374,7 +374,16 @@ export default function RoundDetail() {
  <Tabs defaultValue="invitations" className="space-y-4">
  <TabsList className="flex-wrap h-auto">
  <TabsTrigger value="invitations" data-testid="tab-invitations">Investor invitations ({invs.data?.length ?? 0})</TabsTrigger>
- <TabsTrigger value="soft" data-testid="tab-soft">Soft-circle book ({softs.data?.length ?? 0})</TabsTrigger>
+ {/* v25.48.3 Q-F2 — highlight the soft-circle review tab when there are
+     soft circles awaiting founder confirmation, so the confirm/mark-funded
+     actions are easy to find. Amber ring + dot when any row is not committed. */}
+ <TabsTrigger value="soft" data-testid="tab-soft"
+   className={asArray<SoftCircle>(softs.data).some(s => s.status !== "committed") ? "ring-2 ring-amber-400 data-[state=inactive]:bg-amber-50" : ""}>
+   Soft-circle book ({softs.data?.length ?? 0})
+   {asArray<SoftCircle>(softs.data).some(s => s.status !== "committed") && (
+     <span className="ml-1.5 inline-block h-2 w-2 rounded-full bg-amber-500" aria-label="pending confirmations" />
+   )}
+ </TabsTrigger>
  <TabsTrigger value="terms" data-testid="tab-terms">Terms</TabsTrigger>
  <TabsTrigger value="plan" data-testid="tab-plan"><Wallet className="h-3.5 w-3.5 mr-1.5" />Use of proceeds</TabsTrigger>
  <TabsTrigger value="checklist" data-testid="tab-checklist"><ListChecks className="h-3.5 w-3.5 mr-1.5" />Closing checklist</TabsTrigger>
@@ -505,14 +514,19 @@ export default function RoundDetail() {
  <td className="px-3 py-3"><StateBadge state={s.status} /></td>
  <td className="px-6 py-3 text-right">
  <div className="inline-flex gap-1">
+ {/* v25.48.3 Q-F2 — the founder-facing "confirm investor onto cap table"
+     actions live HERE, on the round's soft-circle review row. Both are now
+     HIGHLIGHTED (solid, not subtle outline) so the founder can clearly find
+     "I received this investor's funds; put them on the cap table."
+     Confirm = brand red; Mark funded = emerald (money-in). */}
  {s.status !== "committed" && (
- <Button size="sm" variant="outline" onClick={() => setConfirmSoftId(s.id)} data-testid={`button-confirm-${s.id}`}>
+ <Button size="sm" onClick={() => setConfirmSoftId(s.id)} data-testid={`button-confirm-${s.id}`} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white font-semibold">
  <Check className="h-3.5 w-3.5 mr-1" /> Confirm
  </Button>
  )}
  {s.status === "confirmed" && (
- <Button size="sm" variant="outline" onClick={() => wireFundedMut.mutate(s.id)} disabled={wireFundedMut.isPending} data-testid={`button-wire-funded-${s.id}`}>
- <Wallet className="h-3.5 w-3.5 mr-1" /> Mark wire funded
+ <Button size="sm" onClick={() => wireFundedMut.mutate(s.id)} disabled={wireFundedMut.isPending} data-testid={`button-wire-funded-${s.id}`} className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold">
+ <Wallet className="h-3.5 w-3.5 mr-1" /> Confirm / mark funded
  </Button>
  )}
  <Button size="sm" variant="ghost" data-testid={`button-view-${s.id}`}><Eye className="h-3.5 w-3.5" /></Button>

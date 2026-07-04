@@ -14,6 +14,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectGroup, SelectLabel, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { TIMEZONES_IANA, detectBrowserTimezone } from "@/lib/timezones";
 import { User, Building2, Users, CreditCard, Receipt, Bell, Database, Check, X, Download, Trash2, Lock, Plus, ShieldAlert, ShieldCheck, Globe, MapPin, Settings2, DollarSign, TrendingUp, Gavel, Activity, Send, CheckCircle2, AlertCircle, ArrowRight } from "lucide-react";
+import { CountryPicker } from "@/components/profile/CountryPicker"; /* v25.48.3 Q-C6 — full ISO country dropdown for Region tab */
 import { LEGAL_DOCS } from "@/lib/legalDocs";
 import type { LegalDoc } from "@/lib/legalDocs";
 import { useLegalDrawer } from "@/lib/legalDrawer";
@@ -115,9 +116,11 @@ export default function Settings() {
     window.history.replaceState(null, "", next);
   }, [settingsTab]);
 
+  /* v25.48.3 Q-C3 — read the founder-scoped pricing endpoint instead of the
+   * admin route (which 403s ADMIN_REQUIRED for founders). Same live tiers. */
   const tiersQ = useQuery<PricingTier[]>({
-    queryKey: ["/api/admin/pricing-tiers"],
-    queryFn: async () => (await apiRequest("GET", "/api/admin/pricing-tiers")).json(),
+    queryKey: ["/api/founder/pricing-tiers"],
+    queryFn: async () => (await apiRequest("GET", "/api/founder/pricing-tiers")).json(),
   });
 
   const [activeTier, setActiveTier] = useState("founder_pro");
@@ -1447,6 +1450,11 @@ function SettingsRegionTab({ companyId }: { companyId: string | undefined }) {
     secondaryJurisdiction: legal.secondaryJurisdiction ?? profile.secondaryJurisdiction ?? "",
     taxResidencyJurisdiction: legal.taxResidencyJurisdiction ?? profile.taxResidencyJurisdiction ?? "",
   };
+  /* v25.48.3 Q-C6 — the Region tab now shows the Country of Incorporation as a
+     full ISO-3166 country dropdown, PRE-SELECTED to the profile's stored
+     legalEntity.countryCode. It remains managed in Company Profile (the picker
+     is display-only here, with a link to edit), so the two never diverge. */
+  const profileCountryCode = (legal.countryCode ?? (profile as Record<string, string>).countryCode ?? "") as string;
   return (
     <div className="space-y-6" data-testid="section-region">
       <Card>
@@ -1456,6 +1464,17 @@ function SettingsRegionTab({ companyId }: { companyId: string | undefined }) {
             These values are managed in Company Profile → Legal Entity Information.{" "}
             <Link href="/founder/company"><span className="underline cursor-pointer text-foreground" data-testid="link-region-open-company">Open Company Profile</span></Link>.
           </p>
+          {/* v25.48.3 Q-C6 — full-country dropdown, pre-selected to profile country. */}
+          <div className="space-y-1.5">
+            <Label className="text-xs">Country of Incorporation</Label>
+            <CountryPicker
+              value={profileCountryCode}
+              onChange={() => { /* managed in Company Profile — display-only here */ }}
+              disabled
+              placeholder="Set in Company Profile…"
+              testId="select-region-country"
+            />
+          </div>
           {[
             { key: "incorporationJurisdiction", label: "Incorporation Jurisdiction" },
             { key: "secondaryJurisdiction", label: "Secondary Jurisdiction" },

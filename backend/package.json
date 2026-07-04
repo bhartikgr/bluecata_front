@@ -1,6 +1,6 @@
 {
   "name": "rest-express",
-  "version": "25.48.2",
+  "version": "25.49.2",
   "license": "MIT",
   "type": "module",
   "scripts": {
@@ -111,6 +111,8 @@
     "@electric-sql/pglite": "^0.4.6",
     "@playwright/test": "^1.60.0",
     "@tailwindcss/typography": "^0.5.15",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.2",
     "@tailwindcss/vite": "^4.1.18",
     "@types/better-sqlite3": "^7.6.12",
     "@types/express": "^5.0.0",
@@ -129,6 +131,7 @@
     "drizzle-kit": "^0.31.8",
     "esbuild": "^0.25.0",
     "fast-check": "^3.23.2",
+    "jsdom": "^29.1.1",
     "playwright": "^1.61.1",
     "postcss": "^8.4.47",
     "supertest": "^7.2.2",

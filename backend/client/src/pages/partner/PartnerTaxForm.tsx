@@ -79,7 +79,7 @@ export default function PartnerTaxForm() {
   return (
     <PartnerShell title="Tax Forms" tier={me.tier} subRole={me.subRole} partnerName={me.identity.name}>
       <div
-        className="mb-4 rounded-md border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900"
+        className="mb-4 rounded-md border border-[rgba(4,30,65,0.2)] bg-[rgba(4,30,65,0.05)] p-4 text-sm text-[#041e41]"
         data-testid="partner-taxform-explainer"
       >
         <p className="font-medium">Tax compliance for commission & fee payouts.</p>

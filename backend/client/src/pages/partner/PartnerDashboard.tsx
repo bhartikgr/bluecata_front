@@ -12,6 +12,11 @@ import { formatMinor } from "@/lib/currency"; /* v25.40 FIX-12 currency sweep */
 // v25.46 BLOCKER FIX #4 (Tier 9 #73) — dashboard cards now use the canonical
 // AppCard primitive instead of shadcn Card. Widgets/data-testids unchanged.
 import { AppCard } from "@/components/ui/app-card";
+// v25.49 Phase-3B — surface the shared comms Messages + Posts on the partner
+// dashboard. Reuses the same session-scoped feeds (fail-closed server-side);
+// no parallel backend.
+import { MessagesWidget } from "@/components/comms/MessagesWidget";
+import { PostsFeed } from "@/components/comms/PostsFeed";
 
 interface DashboardSnapshot {
   portfolio: { attributedCompanies: number; totalSpvCommittedMinor: number; totalFundCommittedMinor: number };
@@ -136,6 +141,15 @@ export default function PartnerDashboard() {
               </ul>
             </div>
           </AppCard>
+          {/* v25.49 Phase-3B — compact NETWORK cards: Messages + Posts. Reuse
+             the shared comms widgets; feeds are session-scoped/fail-closed. */}
+          <div className="md:col-span-3 grid grid-cols-1 lg:grid-cols-2 gap-4" data-testid="card-network">
+            <MessagesWidget basePath="/collective/partner/messages" title="Messages" />
+            <AppCard data-testid="card-posts">
+              <div className="cv-card-title text-sm font-semibold mb-3">Network posts</div>
+              <PostsFeed role="investor" basePath="/collective/partner" maxPosts={3} viewAllHref="/collective/partner/posts" />
+            </AppCard>
+          </div>
           {tierAtLeast(role.identity.tier, "nexus") && (
             <AppCard className="md:col-span-3 border-dashed" data-testid="card-cross-portfolio">
               <div className="cv-card-title text-sm font-semibold mb-3">Cross-portfolio investor overlap</div>

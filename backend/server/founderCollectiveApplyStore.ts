@@ -158,6 +158,9 @@ export type CompanyApplication = {
   references: string;
   coverLetter: string;
   feeAcknowledged: boolean;
+  /* v25.48.3 Q-I1 — founder opts in to Collective members helping refine the
+     round; communicated to Collective in the submit sync payload. */
+  openToRefinement?: boolean;
   status: ApplicationStatus;
   submittedAt: string;
   reviewedAt?: string;
@@ -215,6 +218,7 @@ export async function hydrateFounderCollectiveApplyStore(): Promise<void> {
         references: r.references_text ?? r.referencesText ?? "",
         coverLetter: r.cover_letter ?? r.coverLetter,
         feeAcknowledged: Boolean(r.fee_acknowledged ?? r.feeAcknowledged),
+        openToRefinement: Boolean(r.open_to_refinement ?? r.openToRefinement), /* v25.48.3 Q-I1 */
         status: (r.status ?? "submitted") as ApplicationStatus,
         submittedAt: r.submitted_at ?? r.submittedAt,
         reviewedAt: r.reviewed_at ?? r.reviewedAt ?? undefined,
@@ -251,6 +255,7 @@ function mapAppRow(r: any): CompanyApplication {
     references: r.references_text ?? r.referencesText ?? "",
     coverLetter: r.cover_letter ?? r.coverLetter,
     feeAcknowledged: Boolean(r.fee_acknowledged ?? r.feeAcknowledged),
+    openToRefinement: Boolean(r.open_to_refinement ?? r.openToRefinement), /* v25.48.3 Q-I1 — align mapAppRow with hydrate for all DB-first read paths (GPT-5.5 r2 non-blocking) */
     status: (r.status ?? "submitted") as ApplicationStatus,
     submittedAt: r.submitted_at ?? r.submittedAt,
     reviewedAt: r.reviewed_at ?? r.reviewedAt ?? undefined,
@@ -347,6 +352,8 @@ const applicationSchema = z.object({
   references: z.string().max(2000).default(""),
   coverLetter: z.string().min(100).max(8000),
   feeAcknowledged: z.boolean().refine(v => v === true, { message: "Fee acknowledgement required" }),
+  /* v25.48.3 Q-I1 — optional; defaults false. Communicated to Collective. */
+  openToRefinement: z.boolean().optional().default(false),
 });
 
 /**
@@ -780,6 +787,7 @@ export function registerFounderCollectiveApplyRoutes(app: Express): void {
           referencesText: parsed.data.references,
           coverLetter: parsed.data.coverLetter,
           feeAcknowledged: parsed.data.feeAcknowledged ? 1 : 0,
+          openToRefinement: parsed.data.openToRefinement ? 1 : 0, /* v25.48.3 Q-I1 */
           status: "submitted",
           submittedAt,
           createdAt: submittedAt,
@@ -803,6 +811,9 @@ export function registerFounderCollectiveApplyRoutes(app: Express): void {
         companyId: parsed.data.companyId,
         tractionMrr: parsed.data.tractionMrr,
         tractionUsers: parsed.data.tractionUsers,
+        /* v25.48.3 Q-I1 — relay the founder's open-to-refinement opt-in to
+         * Collective so members know they may help shape/solidify the round. */
+        openToRefinement: Boolean(parsed.data.openToRefinement),
       },
       req,
     });

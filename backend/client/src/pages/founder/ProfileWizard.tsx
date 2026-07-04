@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select, SelectContent, SelectItem, SelectLabel, SelectGroup, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
@@ -25,12 +25,16 @@ import { useActiveCompany, useActiveCompanyId } from "@/lib/useActiveCompany";
 import { CountryPicker } from "@/components/profile/CountryPicker"; /* v25.45.4 M-2 — ISO country dropdown */
 import { isPaidFounderPlan } from "@/pages/founder/UpgradeToProInterstitial"; /* v25.45.4 M-1 — gate subscribe CTA for already-paid founders */
 import { TIMEZONES_IANA } from "@/lib/timezones"; /* v25.45.4 M-3 — IANA timezone dropdown */
+import { buildCurrencyOptions } from "@/lib/currencyOptions"; /* v25.48.3 Q-D3 — full ISO 4217 list, preferred pinned */
 
 /* ============================================================
  * Supported field definitions per step
  * ============================================================ */
 
-const PREFERRED_CURRENCIES = ["USD", "EUR", "GBP", "JPY", "CNY", "CAD", "AUD", "CHF", "SEK", "SGD"];
+/* v25.48.3 Q-D3 — currency picker now offers the FULL ISO 4217 list with the
+ * preferred currencies pinned on top (see @/lib/currencyOptions). The old
+ * 10-item PREFERRED_CURRENCIES constant is superseded by buildCurrencyOptions(). */
+const CURRENCY_OPTIONS = buildCurrencyOptions();
 const PREFERRED_LANGUAGES = [
   { value: "en", label: "English" },
   { value: "zh", label: "中文 (Chinese)" },
@@ -219,10 +223,21 @@ function Step3({ data, onChange }: { data: WizardData; onChange: (k: keyof Wizar
             <SelectTrigger data-testid="select-preferred-currency">
               <SelectValue placeholder="Select currency" />
             </SelectTrigger>
-            <SelectContent>
-              {PREFERRED_CURRENCIES.map(c => (
-                <SelectItem key={c} value={c}>{c}</SelectItem>
-              ))}
+            <SelectContent className="max-h-72">
+              {/* v25.48.3 Q-D3 — preferred currencies pinned on top, then the full ISO 4217 list A–Z */}
+              <SelectGroup>
+                <SelectLabel>Preferred</SelectLabel>
+                {CURRENCY_OPTIONS.filter(o => o.preferred).map(o => (
+                  <SelectItem key={o.code} value={o.code}>{o.code} — {o.name}</SelectItem>
+                ))}
+              </SelectGroup>
+              <SelectSeparator />
+              <SelectGroup>
+                <SelectLabel>All currencies (ISO 4217)</SelectLabel>
+                {CURRENCY_OPTIONS.filter(o => !o.preferred).map(o => (
+                  <SelectItem key={o.code} value={o.code}>{o.code} — {o.name}</SelectItem>
+                ))}
+              </SelectGroup>
             </SelectContent>
           </Select>
         </FieldRow>
@@ -394,6 +409,13 @@ export default function FounderProfileWizard() {
     const res = profileQ.data as any;
     if (!res) return;
     const p = res?.profile ?? {};
+    /* v25.48.3 Q-D2 — the jurisdiction fields are canonically stored under the
+     * nested `legalEntity` sub-object (Step 3 source of truth, same place the
+     * Region tab reads). The prior prefill only read the FLAT legacy fields, so
+     * for profiles that saved them under legalEntity the wizard showed blanks.
+     * Read nested first, fall back to flat, so any answer already captured in
+     * Company Profile prefills here. */
+    const le = (p.legalEntity ?? {}) as Record<string, string>;
     setData(prev => ({
       ...prev,
       linkedinUrl: p.linkedinUrl ?? prev.linkedinUrl,
@@ -404,9 +426,9 @@ export default function FounderProfileWizard() {
       publicNewsroomUrl: p.publicNewsroomUrl ?? prev.publicNewsroomUrl,
       tagline: p.tagline ?? prev.tagline,
       shortPitch: p.shortPitch ?? prev.shortPitch,
-      incorporationJurisdiction: p.incorporationJurisdiction ?? prev.incorporationJurisdiction,
-      secondaryJurisdiction: p.secondaryJurisdiction ?? prev.secondaryJurisdiction,
-      taxResidencyJurisdiction: p.taxResidencyJurisdiction ?? prev.taxResidencyJurisdiction,
+      incorporationJurisdiction: le.incorporationJurisdiction ?? p.incorporationJurisdiction ?? prev.incorporationJurisdiction,
+      secondaryJurisdiction: le.secondaryJurisdiction ?? p.secondaryJurisdiction ?? prev.secondaryJurisdiction,
+      taxResidencyJurisdiction: le.taxResidencyJurisdiction ?? p.taxResidencyJurisdiction ?? prev.taxResidencyJurisdiction,
       preferredCurrency: p.preferredCurrency ?? prev.preferredCurrency,
       preferredTimezone: p.preferredTimezone ?? prev.preferredTimezone,
       preferredLanguage: p.preferredLanguage ?? prev.preferredLanguage,

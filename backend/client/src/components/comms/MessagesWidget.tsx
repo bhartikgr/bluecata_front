@@ -36,13 +36,19 @@ type ChannelView = {
 
 type Filter = "all" | "starred" | "newest";
 
-export function MessagesWidget({ basePath }: { basePath: "/founder/messages" | "/investor/messages" }) {
+export function MessagesWidget({ basePath, title }: {
+ // v25.49 Phase-3B — basePath union widened to include the partner surface so
+ // the SAME widget (and the same session-scoped /api/comms/channels feed) can
+ // be reused in the partner module. Optional `title` overrides the derived one.
+ basePath: "/founder/messages" | "/investor/messages" | "/collective/partner/messages";
+ title?: string;
+}) {
  const [filter, setFilter] = useState<Filter>("all");
  const [, navigate] = useLocation();
  const channels = useQuery<ChannelView[]>({ queryKey: ["/api/comms/channels"] });
  // Sprint 20 Wave 2 — role-derived title (defect 51)
  const isInvestor = basePath === "/investor/messages";
- const widgetTitle = isInvestor ? "Messages from founders" : "Messages from cap-table members";
+ const widgetTitle = title ?? (isInvestor ? "Messages from founders" : "Messages from cap-table members");
 
  const visible = useMemo(() => {
  const data = channels.data ?? [];

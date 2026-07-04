@@ -12,8 +12,12 @@
  * `pages/investor/CRM.tsx` to render the right column for the right state.
  */
 
+/* v25.48.3 Q-K1 — `invited_unregistered` ("Invited – not registered") precedes
+ * `prospect` (renamed from "lead"). Legacy `lead` is retained as a trailing
+ * alias so historical rows/tests referencing it still type-check; the UI maps
+ * it to the Prospect label. */
 export const FOUNDER_CRM_STAGES = [
-  "lead", "engaged", "soft_circle", "committed", "signing", "invested", "longterm",
+  "invited_unregistered", "prospect", "engaged", "soft_circle", "committed", "signing", "invested", "longterm", "lead",
 ] as const;
 export type FounderCRMStage = (typeof FOUNDER_CRM_STAGES)[number];
 
@@ -30,16 +34,17 @@ export type CollectiveDecisionState =
 /** Map Collective state → Founder CRM stage. */
 export function mapCollectiveStateToCRMStage(state: CollectiveDecisionState): FounderCRMStage {
   switch (state) {
-    case "pending":      return "lead";
+    /* v25.48.3 Q-K1 — "lead" renamed to "prospect". */
+    case "pending":      return "prospect";
     case "viewed":       return "engaged";
     case "accepted":     return "engaged";
     case "soft_circled": return "soft_circle";
     case "confirmed":    return "committed";
     case "signed":       return "signing";
     case "funded":       return "invested";
-    case "declined":     return "lead";  // back to top of pipeline
-    case "expired":      return "lead";
-    case "revoked":      return "lead";
+    case "declined":     return "prospect";  // back to top of pipeline
+    case "expired":      return "prospect";
+    case "revoked":      return "prospect";
   }
 }
 
@@ -84,3 +89,28 @@ export function applyScoreGating<T extends { rawScore?: number; autoTier?: AutoT
 /** 5-lane Connections graph kanban filter (Pattern 2). */
 export const CONNECTION_LANES = ["cap_table", "round", "dsc", "angel_network", "social"] as const;
 export type ConnectionLane = (typeof CONNECTION_LANES)[number];
+
+/* v25.49 Phase-3A — Consortium Partner Clients CRM stages. This is the SEPARATE
+ * partner-clients engine (kept distinct from the founder/investor CRM per Ozan),
+ * but it reuses the founder-pipeline vocabulary above so the two engines speak
+ * the same stage language. A focused 5-stage subset — no "invited_unregistered"
+ * (partners only ever see already-attributed companies) and no legacy "lead"
+ * alias. `prospect` is the default for a freshly-attributed company. */
+export const PARTNER_CLIENT_STAGES = [
+  "prospect", "engaged", "committed", "invested", "longterm",
+] as const;
+export type PartnerClientStage = (typeof PARTNER_CLIENT_STAGES)[number];
+
+export const PARTNER_CLIENT_STAGE_LABELS: Record<PartnerClientStage, string> = {
+  prospect: "Prospect",
+  engaged: "Engaged",
+  committed: "Committed",
+  invested: "Invested",
+  longterm: "Long-term",
+};
+
+export const PARTNER_CLIENT_DEFAULT_STAGE: PartnerClientStage = "prospect";
+
+export function isPartnerClientStage(v: unknown): v is PartnerClientStage {
+  return typeof v === "string" && (PARTNER_CLIENT_STAGES as readonly string[]).includes(v);
+}
