@@ -21,7 +21,10 @@ export default function CRMNew() {
   // investor's preferred investment stage (e.g. "Seed-Series A") and is
   // distinct from the CRM pipeline stage (lead/engaged/.../longterm). New
   // contacts always start in the "lead" pipeline stage on the server.
-  const [form, setForm] = useState({ name: "", contact: "", email: "", stageFocus: "", checkSize: "", notes: "" });
+  // v25.51 6a — capture first/last/company as discrete fields (per Ozan).
+  // First + last + email are mandatory; company is optional. firmName/name are
+  // still populated on submit (company → firmName) for backward-compat readers.
+  const [form, setForm] = useState({ firstName: "", lastName: "", company: "", email: "", stageFocus: "", checkSize: "", notes: "" });
   // v23.4.7 Phase 14 / BUG 011 — founder can opt-in to sending the investor a
   // unique-email invite with a redemption link. Default OFF so existing add
   // flows don't suddenly start sending email.
@@ -37,7 +40,10 @@ export default function CRMNew() {
    * and a target for the opt-in invite). */
   const missingRequired = (): string[] => {
     const missing: string[] = [];
-    if (!form.name || !form.name.trim()) missing.push("Firm name");
+    // v25.51 6a — First + Last name are now the mandatory identity fields;
+    // Company name is optional (was "Firm name*").
+    if (!form.firstName || !form.firstName.trim()) missing.push("First name");
+    if (!form.lastName || !form.lastName.trim()) missing.push("Last name");
     if (!form.email || !form.email.trim()) missing.push("Email");
     else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) missing.push("a valid email");
     return missing;
@@ -48,7 +54,7 @@ export default function CRMNew() {
   // v23.8 W-4 — Clear button resets the form (matches the v23.7 investor CRM
   // pattern). Also clears the opt-in invite toggle so a fresh entry starts clean.
   const clearForm = () => {
-    setForm({ name: "", contact: "", email: "", stageFocus: "", checkSize: "", notes: "" });
+    setForm({ firstName: "", lastName: "", company: "", email: "", stageFocus: "", checkSize: "", notes: "" });
     setSendInvite(false);
   };
 
@@ -60,10 +66,17 @@ export default function CRMNew() {
       // descriptor goes in `stageFocus` / appended to notes.
       const stageFocusLine = form.stageFocus.trim() ? `Stage focus: ${form.stageFocus.trim()}` : "";
       const composedNotes = [form.notes.trim(), stageFocusLine].filter(Boolean).join("\n\n");
+      // v25.51 6a — send discrete first/last/company. Keep firmName +
+      // primaryContact populated (company → firmName, "First Last" → contact)
+      // so existing readers/exports don't break.
+      const composedContact = `${form.firstName.trim()} ${form.lastName.trim()}`.trim();
       const res = await apiRequest("POST", "/api/founder/investor-crm", {
         companyId,
-        firmName: form.name,
-        primaryContact: form.contact,
+        firstName: form.firstName,
+        lastName: form.lastName,
+        companyName: form.company,
+        firmName: form.company,
+        primaryContact: composedContact,
         email: form.email,
         stage: "prospect",
         stageFocus: form.stageFocus,
@@ -102,8 +115,9 @@ export default function CRMNew() {
           <CardHeader><CardTitle className="text-base">New contact</CardTitle></CardHeader>
           <CardContent className="space-y-4 max-w-2xl">
             <div className="grid md:grid-cols-2 gap-4">
-              <div><Label className="flex items-center gap-1">Firm name <span className="text-rose-500">*</span></Label><Input className="mt-1" value={form.name} onChange={e => update("name", e.target.value)} placeholder="Firm name" data-testid="input-firm" /></div>
-              <div><Label>Primary contact</Label><Input className="mt-1" value={form.contact} onChange={e => update("contact", e.target.value)} placeholder="Contact name" data-testid="input-contact" /></div>
+              <div><Label className="flex items-center gap-1">First name <span className="text-rose-500">*</span></Label><Input className="mt-1" value={form.firstName} onChange={e => update("firstName", e.target.value)} placeholder="First name" data-testid="input-first-name" /></div>
+              <div><Label className="flex items-center gap-1">Last name <span className="text-rose-500">*</span></Label><Input className="mt-1" value={form.lastName} onChange={e => update("lastName", e.target.value)} placeholder="Last name" data-testid="input-last-name" /></div>
+              <div><Label>Company name</Label><Input className="mt-1" value={form.company} onChange={e => update("company", e.target.value)} placeholder="Company name" data-testid="input-company" /></div>
               <div><Label className="flex items-center gap-1">Email <span className="text-rose-500">*</span></Label><Input className="mt-1" type="email" value={form.email} onChange={e => update("email", e.target.value)} placeholder="contact@firm.com" data-testid="input-email" /></div>
               <div><Label>Stage focus</Label><Input className="mt-1" value={form.stageFocus} onChange={e => update("stageFocus", e.target.value)} placeholder="Seed–Series A" data-testid="input-stage" /></div>
               <div className="md:col-span-2"><Label>Typical check size</Label><Input className="mt-1" value={form.checkSize} onChange={e => update("checkSize", e.target.value)} placeholder="$1M–$3M" data-testid="input-check" /></div>

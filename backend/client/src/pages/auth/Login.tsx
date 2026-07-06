@@ -136,6 +136,10 @@ export default function Login() {
     if (me.isAdmin) { navigate("/admin/dashboard"); return; }
     const companyCount = me.founder?.companies?.length ?? 0;
     const isInvestor = me.investor?.state !== undefined && me.investor.state !== "NONE";
+    // FIX 1b — honour an explicit investor portal intent BEFORE any founder
+    // fallthrough. A user who reached this page via ?portal=investor must never
+    // be routed to founder onboarding (/company-profile?onboarding=1).
+    if (rawPortal === "investor") { navigate("/investor/dashboard"); return; }
     // BUG 001 — branch on number of companies BEFORE falling through to the
     // empty-state. Multi-company founders MUST land on /select-company so
     // the active-company context is established before any subscription
@@ -287,9 +291,13 @@ export default function Login() {
     }
 
     // Fallback — account exists but matches neither portal cleanly.
+    // FIX 1a — never dump an authenticated user onto the marketing home (`/`).
+    // Prefer a concrete workspace; if none resolves, honour the chosen portal
+    // by returning to its login rather than the public landing page.
     if (isFounder)       { setRole("founder");  navigate("/select-company"); }
     else if (isInvestor) { setRole("investor"); navigate("/investor/dashboard"); }
-    else                  navigate("/");
+    else if (portal === "investor") { setRole("investor"); navigate("/investor/dashboard"); }
+    else                  navigate(`/login?portal=${portal}`);
   }
 
   function acceptSuggestedPortal() {

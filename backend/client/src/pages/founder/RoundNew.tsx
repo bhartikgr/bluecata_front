@@ -121,6 +121,12 @@ const STEPS = [
 // v23.4.8 Phase 2 / BUG 012 — shape sent to the PATCH endpoint.
 type WizardInitialShareholder = {
  name: string;
+ // v25.51 5a — discrete identity fields captured for manual (non-Capavate)
+ // investors. Optional so CRM-sourced picks (which only supply a display name)
+ // stay valid; `name` remains the backward-compat display composite.
+ firstName?: string;
+ lastName?: string;
+ company?: string;
  email: string;
  checkSize: string;
  source: "crm" | "manual";
@@ -237,6 +243,8 @@ function FormattedNumberInput(props: {
  onChange: (raw: string) => void;
  className?: string;
  placeholder?: string;
+ readOnly?: boolean;
+ "aria-readonly"?: boolean;
  "data-testid"?: string;
 }) {
  const { value, onChange, ...rest } = props;
@@ -259,7 +267,10 @@ export default function RoundNew() {
  const { toast } = useToast();
  const [, navigate] = useLocation();
  const [step, setStep] = useState(1);
- const [termsheetChoice, setTermsheetChoice] = useState<"generate" | "upload" | "skip">("generate");
+ // v25.51 7a — default to "skip". The "generate" option is hidden + inactivated
+ // (dormant/restorable, like the partner Branding tab) so it can never be
+ // pre-selected or submitted. Do NOT delete the block (rule #78).
+ const [termsheetChoice, setTermsheetChoice] = useState<"generate" | "upload" | "skip">("skip");
  // Sprint 11 D4 — Warrants/ESOP attach to a parent round (no own term sheet)
  const [attachToRound, setAttachToRound] = useState<string>("");
  const [form, setForm] = useState<FormShape>(defaultForm);
@@ -271,7 +282,7 @@ export default function RoundNew() {
  // v23.4.8 Phase 2 / BUG 012 — initial-shareholders state (step 4).
  const [selectedShareholders, setSelectedShareholders] = useState<WizardInitialShareholder[]>([]);
  const [manualOpen, setManualOpen] = useState(false);
- const [manualDraft, setManualDraft] = useState<{ name: string; email: string; checkSize: string }>({ name: "", email: "", checkSize: "" });
+ const [manualDraft, setManualDraft] = useState<{ firstName: string; lastName: string; company: string; email: string; checkSize: string }>({ firstName: "", lastName: "", company: "", email: "", checkSize: "" });
 
  // Defect A — use real active companyId (never hardcode co_novapay).
  const companyId = useActiveCompanyId();
@@ -322,8 +333,13 @@ export default function RoundNew() {
  instrument: form.instrument,
  name: form.name || undefined,
  // Decimal-as-string values — preserved end-to-end at 38-digit precision.
- targetAmount: requiredDecimalString(form.targetAmount),
- preMoney: requiredDecimalString(form.preMoney),
+ // v25.51 8a: only send preMoney/targetAmount when the instrument actually
+ // uses them. For a common priced round Step 2 renders no inputs for these, so
+ // coercing empty → "0" injected a phantom "0" that tripped the server's
+ // targetAmount>0 and priced-preMoney guards with no on-screen field to fix.
+ // Omit (null) when unused; server derives targetAmount = PPS × shares for common.
+ targetAmount: usesField("targetAmount") ? requiredDecimalString(form.targetAmount) : null,
+ preMoney: usesField("preMoney") ? requiredDecimalString(form.preMoney) : null,
  pricePerShare: optionalDecimalString(form.pricePerShare),
  valuationCap: optionalDecimalString(form.valuationCap),
  discount: optionalDecimalString(form.discount),
@@ -355,6 +371,11 @@ export default function RoundNew() {
  companyId,
  shareholders: selectedShareholders.map((s) => ({
  name: s.name,
+ // v25.51 5a — persist discrete first/last/company alongside the composed
+ // display name (null for CRM picks that don't supply them).
+ firstName: s.firstName ?? null,
+ lastName: s.lastName ?? null,
+ company: s.company ?? null,
  email: s.email || null,
  checkSize: s.checkSize || null,
  source: s.source,
@@ -496,6 +517,13 @@ export default function RoundNew() {
  const recommended = INSTRUMENTS.filter(i => (i.suggestedFor as readonly string[]).includes(form.type)).map(i => i.value);
 
  const post = Number(form.preMoney) + Number(form.targetAmount) || 0;
+
+ // v25.51 3a — a round must not close before it opens. Block Step 3 → Next and
+ // Create when both dates are present and the open date is after the close date.
+ // The server enforces the same rule (invalid_closeDate) as a backstop.
+ const dateRangeInvalid =
+ !!form.openDate && !!form.closeDate &&
+ new Date(form.openDate).getTime() > new Date(form.closeDate).getTime();
 
  // Engine summary preview line — for review step
  function engineSummary() {
@@ -732,14 +760,15 @@ export default function RoundNew() {
  <LabelWithTip tip="Calculated automatically: pre-money valuation ÷ shares authorized. Edit pre-money or shares-authorized above to change it, or click Override to enter a price manually. (SAFE / Convertible Note rounds hide this field — PPS is set at conversion, not at issue.)">
  <Label className="flex items-center gap-1.5">Price per share (USD) <Badge variant="outline" className="text-[10px]">{pricePerShareOverridden ? "manual" : "auto"}</Badge></Label>
  </LabelWithTip>
- <Input
- type="number"
- step="0.01"
+ {/* v25.51 2a — grouping commas via FormattedNumberInput (decimals preserved
+ by formatWithCommas). Auto/override + derivedPricePerShare wiring kept intact;
+ the stored value stays a clean numeric string (commas stripped on change). */}
+ <FormattedNumberInput
  className={`mt-1 font-mono ${pricePerShareOverridden ? "" : "bg-secondary/50"}`}
  value={pricePerShareOverridden ? form.pricePerShare : derivedPricePerShare}
  readOnly={!pricePerShareOverridden}
  aria-readonly={!pricePerShareOverridden}
- onChange={pricePerShareOverridden ? (e => update("pricePerShare", e.target.value)) : undefined}
+ onChange={(v) => { if (pricePerShareOverridden) update("pricePerShare", v); }}
  placeholder="Enter pre-money and shares authorized"
  data-testid="input-pps"
  />
@@ -766,7 +795,7 @@ export default function RoundNew() {
  </div>
  )}
  {usesField("sharesAuthorized") && (
- <div><LabelWithTip tip="How many new shares this issuance creates. For a Foundation round, this is your founder allocation. For a warrant or option grant, it's the underlying share count."><Label>Shares authorized</Label></LabelWithTip><Input type="number" className="mt-1 font-mono" value={form.sharesAuthorized} onChange={e => update("sharesAuthorized", e.target.value)} data-testid="input-shares" /></div>
+ <div><LabelWithTip tip="How many new shares this issuance creates. For a Foundation round, this is your founder allocation. For a warrant or option grant, it's the underlying share count."><Label>Shares authorized</Label></LabelWithTip><FormattedNumberInput className="mt-1 font-mono" value={form.sharesAuthorized} onChange={v => update("sharesAuthorized", v)} data-testid="input-shares" /></div>
  )}
  {usesField("valuationCap") && (
  <div><LabelWithTip tip="The maximum valuation at which this SAFE/Note converts to shares. Lower cap = more dilution to founders, more upside for the investor. Most early SAFEs use $5M–$15M caps."><Label>Valuation cap (USD)</Label></LabelWithTip><FormattedNumberInput className="mt-1 font-mono" value={form.valuationCap} onChange={v => update("valuationCap", v)} data-testid="input-cap" /></div>
@@ -864,7 +893,10 @@ export default function RoundNew() {
  {step === 3 && (
  <div className="grid md:grid-cols-2 gap-5">
  <div><Label>Open date</Label><Input type="date" className="mt-1" value={form.openDate} onChange={e => update("openDate", e.target.value)} data-testid="input-open" /></div>
- <div><Label>Target close date</Label><Input type="date" className="mt-1" value={form.closeDate} onChange={e => update("closeDate", e.target.value)} data-testid="input-close" /></div>
+ <div><Label>Target close date</Label><Input type="date" className={`mt-1 ${dateRangeInvalid ? "border-rose-500 focus-visible:ring-rose-500" : ""}`} value={form.closeDate} onChange={e => update("closeDate", e.target.value)} data-testid="input-close" /></div>
+ {dateRangeInvalid && (
+ <p className="md:col-span-2 text-xs text-rose-500" data-testid="date-range-error">Target close date must be on or after the open date.</p>
+ )}
  <div className="md:col-span-2"><Label>Round narrative for investors</Label><Textarea rows={4} className="mt-1" value={form.notes} onChange={e => update("notes", e.target.value)} data-testid="input-notes" /></div>
  <div className="md:col-span-2">
  <Label className="flex items-center gap-1.5">Use of proceeds <HelpTip>How the round capital will be deployed. Standard pitch-deck slide; investors review this before committing. Aim for explicit per-bucket % + dollar amounts.</HelpTip></Label>
@@ -891,7 +923,7 @@ export default function RoundNew() {
  <p className="text-xs text-muted-foreground mt-1">Pick investors from your CRM, or add non-Capavate investors manually. You can also skip this step and add them after the round is created.</p>
  </div>
  <div className="flex gap-2 shrink-0">
- <Button variant="outline" size="sm" onClick={() => setManualOpen(true)} data-testid="button-add-manual-shareholder">+ Add manual investor</Button>
+ <Button variant="outline" size="sm" onClick={() => setManualOpen(true)} data-testid="button-add-manual-shareholder">+ Add investor manually</Button>
  <Button variant="ghost" size="sm" onClick={() => { setSelectedShareholders([]); setStep(5); }} data-testid="button-skip-shareholders">Skip</Button>
  </div>
  </div>
@@ -900,7 +932,7 @@ export default function RoundNew() {
  <div className="px-3 py-2 border-b bg-secondary/30 text-xs font-semibold">Available from your CRM ({(crmQ.data ?? []).length})</div>
  <div className="max-h-80 overflow-y-auto divide-y">
  {(crmQ.data ?? []).length === 0 && (
- <div className="p-3 text-xs text-muted-foreground">No CRM contacts yet — use “Add manual investor”.</div>
+ <div className="p-3 text-xs text-muted-foreground">No CRM contacts yet — use “Add investor manually”.</div>
  )}
  {(crmQ.data ?? []).map((c) => {
  const already = selectedShareholders.some((s) => s.source === "crm" && s.crmContactId === c.id);
@@ -926,7 +958,7 @@ export default function RoundNew() {
  <div className="px-3 py-2 border-b bg-secondary/30 text-xs font-semibold">Selected for this round ({selectedShareholders.length})</div>
  <div className="max-h-80 overflow-y-auto divide-y">
  {selectedShareholders.length === 0 && (
- <div className="p-3 text-xs text-muted-foreground">No investors yet — add some from the left or click “+ Add manual investor”.</div>
+ <div className="p-3 text-xs text-muted-foreground">No investors yet — add some from the left or click “+ Add investor manually”.</div>
  )}
  {selectedShareholders.map((s, idx) => (
  <div key={`${s.source}_${s.crmContactId ?? s.email ?? s.name}_${idx}`} className="flex items-center justify-between gap-2 px-3 py-2 text-sm" data-testid={`selected-row-${idx}`}>
@@ -963,17 +995,26 @@ export default function RoundNew() {
  <DialogContent>
  <DialogHeader><DialogTitle>Add a non-Capavate investor</DialogTitle></DialogHeader>
  <div className="space-y-3">
- <div><Label>Name</Label><Input className="mt-1" value={manualDraft.name} onChange={(e) => setManualDraft({ ...manualDraft, name: e.target.value })} data-testid="input-manual-name" /></div>
- <div><Label>Email (optional)</Label><Input className="mt-1" type="email" value={manualDraft.email} onChange={(e) => setManualDraft({ ...manualDraft, email: e.target.value })} data-testid="input-manual-email" /></div>
+ {/* v25.51 5a — capture first/last/company as discrete fields (per Ozan).
+ First + last + email are mandatory; company is optional. `name` is composed
+ as "First Last" for backward-compat display consumers. */}
+ <div className="grid grid-cols-2 gap-3">
+ <div><Label className="flex items-center gap-1">First name <span className="text-rose-500">*</span></Label><Input className="mt-1" value={manualDraft.firstName} onChange={(e) => setManualDraft({ ...manualDraft, firstName: e.target.value })} data-testid="input-manual-first-name" /></div>
+ <div><Label className="flex items-center gap-1">Last name <span className="text-rose-500">*</span></Label><Input className="mt-1" value={manualDraft.lastName} onChange={(e) => setManualDraft({ ...manualDraft, lastName: e.target.value })} data-testid="input-manual-last-name" /></div>
+ </div>
+ <div><Label>Company name (optional)</Label><Input className="mt-1" value={manualDraft.company} onChange={(e) => setManualDraft({ ...manualDraft, company: e.target.value })} data-testid="input-manual-company" /></div>
+ <div><Label className="flex items-center gap-1">Email <span className="text-rose-500">*</span></Label><Input className="mt-1" type="email" value={manualDraft.email} onChange={(e) => setManualDraft({ ...manualDraft, email: e.target.value })} data-testid="input-manual-email" /></div>
  <div><Label>Check size (USD, optional)</Label><Input className="mt-1" type="text" inputMode="decimal" value={manualDraft.checkSize} onChange={(e) => setManualDraft({ ...manualDraft, checkSize: e.target.value })} data-testid="input-manual-check-size" /></div>
  </div>
  <DialogFooter>
  <Button variant="outline" onClick={() => setManualOpen(false)}>Cancel</Button>
  <Button
- disabled={!manualDraft.name.trim()}
+ disabled={!manualDraft.firstName.trim() || !manualDraft.lastName.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(manualDraft.email.trim())}
  onClick={() => {
- setSelectedShareholders((prev) => [...prev, { name: manualDraft.name.trim(), email: manualDraft.email.trim(), checkSize: manualDraft.checkSize.trim(), source: "manual" }]);
- setManualDraft({ name: "", email: "", checkSize: "" });
+ const first = manualDraft.firstName.trim();
+ const last = manualDraft.lastName.trim();
+ setSelectedShareholders((prev) => [...prev, { name: `${first} ${last}`.trim(), firstName: first, lastName: last, company: manualDraft.company.trim(), email: manualDraft.email.trim(), checkSize: manualDraft.checkSize.trim(), source: "manual" }]);
+ setManualDraft({ firstName: "", lastName: "", company: "", email: "", checkSize: "" });
  setManualOpen(false);
  }}
  className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
@@ -1029,10 +1070,14 @@ export default function RoundNew() {
  </div>
  )}
  <div className="space-y-2" style={{ display: (form.instrument === "warrant" || form.instrument === "option_pool") ? "none" : undefined }}>
- <label className="flex items-start gap-3 p-3 rounded-md border border-border hover:bg-secondary/40 cursor-pointer" data-testid="radio-termsheet-generate-row">
+ {/* v25.51 7a — HIDDEN + INACTIVE (dormant, restorable). Not deleted per
+ rule #78. Disabled + display:none so it can never be selected or submitted. */}
+ <label className="flex items-start gap-3 p-3 rounded-md border border-border hover:bg-secondary/40 cursor-pointer" style={{ display: "none" }} aria-hidden="true" data-testid="radio-termsheet-generate-row">
  <input
  type="radio"
  name="ts-choice"
+ disabled
+ tabIndex={-1}
  checked={termsheetChoice === "generate"}
  onChange={() => setTermsheetChoice("generate")}
  data-testid="radio-termsheet-generate"
@@ -1079,9 +1124,9 @@ export default function RoundNew() {
  <div className="flex justify-between pt-3 border-t border-border">
  <Button variant="ghost" onClick={() => setStep(s => Math.max(1, s - 1))} disabled={step === 1} data-testid="button-prev"><ArrowLeft className="h-4 w-4 mr-2" /> Back</Button>
  {step < 5 ? (
- <Button onClick={() => setStep(s => s + 1)} className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] text-white" data-testid="button-next">Continue <ArrowRight className="h-4 w-4 ml-2" /></Button>
+ <Button onClick={() => setStep(s => s + 1)} disabled={step === 3 && dateRangeInvalid} className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] text-white" data-testid="button-next">Continue <ArrowRight className="h-4 w-4 ml-2" /></Button>
  ) : (
- <Button onClick={() => createRoundMut.mutate()} disabled={createRoundMut.isPending} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-create">{createRoundMut.isPending ? "Creating..." : "Create round"}</Button>
+ <Button onClick={() => createRoundMut.mutate()} disabled={createRoundMut.isPending || dateRangeInvalid} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-create">{createRoundMut.isPending ? "Creating..." : "Create round"}</Button>
  )}
  </div>
  </CardContent>

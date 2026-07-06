@@ -33,6 +33,7 @@ import { emitBridgeEvent } from "./bridgeStore";
 import { TIER_RANK, type PartnerTier, type PartnerType, type PartnerSubRole, getById } from "./adminContactsStoreShim";
 import {
   partnerTeamStore,
+  partnerTeamContactStore,
   partnerInvitationStore,
   partnerAttributionStore,
   partnerPipelineStore,
@@ -51,10 +52,20 @@ import {
 } from "./partnerWorkspaceStore";
 import { getAllContacts, listContacts, updateContact, createContact, upsertConsortiumPartner } from "./adminContactsStore";
 import { registerPersona, getUserContextForId } from "./lib/userContext";
+import { hashPassword } from "./lib/auth"; /* v25.49.3 R1 — partner-role auth_users seed hash */
+import { storeCredential, lookupByUserId } from "./userCredentialsStore"; /* v25.49.3 R1 — durable bcrypt credential + hydration probe */
 import { rawDb } from "./db/connection";
 import { setSessionCookie } from "./lib/sessionCookie";
 import { getCompanyRecordById } from "./multiCompanyStore";
 import { getCompanyProfile } from "./companyProfileStore"; /* v25.15 NM5 — real snapshot data */
+import { listFollowedCompanyIdsForMember } from "./collectiveInterestStore"; /* v25.50.0 Phase 2 — Following from Collective */
+import {
+  getPortfolioCompany,
+  listPortfolioCompanies,
+  upsertPortfolioProfile,
+  parsePortfolioPatch,
+  archivePortfolioCompany,
+} from "./partnerPortfolioStore"; /* v25.50.0 Phase 3 — Private Portfolio company profiles */
 import { linkConsortiumPartner, unlinkConsortiumPartner, getConsortiumPartnerId } from "./consortiumLinkStore";
 import { upsertInvestorContactFromPartner, removeInvestorContactForPartner } from "./founderCrmStore";
 import { spvEngineStore } from "./spvEngineStore"; /* Ozan #4 — legacy SPV routes shim THROUGH the canonical engine so no SPV is ever created outside it */
@@ -68,6 +79,79 @@ function badRequest(res: Response, msg: string, details?: unknown): void {
   res.status(400).json({ error: "BAD_REQUEST", message: msg, details });
 }
 function isString(v: unknown): v is string { return typeof v === "string" && v.length > 0; }
+
+/* v25.49.3 R1 — resolve/create a CONSORTIUM_PARTNER runtime identity for an
+ * approved-partner magic-link redemption WITHOUT going through
+ * registerPersona() (which lives in the SACRED userContext.ts and hard-codes
+ * an INVESTOR persona + durable auth_users.role='investor'). The approved
+ * partner's `users` row is provisioned at approval with role='consortium_partner'
+ * (consortiumApplyStore); we reuse that identity. If none exists (or only an
+ * auth_users row exists) we reuse/create it, but NEVER stamp an investor role.
+ * The durable auth_users + users rows both carry role='consortium_partner' so
+ * getDbUserRole / secureAuthRoutes redeem classify the session as a partner,
+ * not an investor — fixing 2a (password-reset routing) end-to-end. Fail-closed:
+ * an existing 'admin' identity is never downgraded. */
+function resolveOrCreateConsortiumPartnerId(email: string, seedPassword: string): string {
+  const db = rawDb();
+  const normEmail = email.trim().toLowerCase();
+
+  // 1. Prefer the approval-created users row already stamped consortium_partner.
+  const partnerRow = db
+    .prepare(`SELECT id FROM users WHERE lower(email) = ? AND role = 'consortium_partner' ORDER BY rowid LIMIT 1`)
+    .get(normEmail) as { id: string } | undefined;
+  let userId = partnerRow?.id;
+
+  // 2. Else reuse any existing auth identity for this (invited, email-gated) address.
+  if (!userId) {
+    const authRow = db
+      .prepare(`SELECT id FROM auth_users WHERE lower(email) = ? ORDER BY rowid LIMIT 1`)
+      .get(normEmail) as { id: string } | undefined;
+    userId = authRow?.id;
+  }
+
+  if (!userId) userId = `u_partner_${Date.now()}_${randomBytes(4).toString("hex")}`;
+  const now = new Date().toISOString();
+
+  // Durable auth_users row — role MUST be consortium_partner, never investor.
+  // On conflict, preserve an existing password_hash (partner may have set one)
+  // and never demote an admin.
+  try {
+    db.prepare(
+      `INSERT INTO auth_users (id, email, password_hash, password_algo, role, status, created_at)
+       VALUES (?, ?, ?, 'scrypt', 'consortium_partner', 'active', ?)
+       ON CONFLICT(id) DO UPDATE SET role = CASE WHEN auth_users.role = 'admin' THEN 'admin' ELSE 'consortium_partner' END`,
+    ).run(userId, normEmail, hashPassword(seedPassword), now);
+  } catch (err) {
+    // Non-fatal (mirrors registerPersona best-effort posture); users-row role
+    // below is the primary source for getDbUserRole.
+  }
+
+  // users row — primary role source for getDbUserRole; guarantee partner role.
+  try {
+    db.prepare(
+      `INSERT INTO users (id, tenant_id, email, name, role, is_demo)
+       VALUES (?, ?, ?, ?, 'consortium_partner', 0)
+       ON CONFLICT(id) DO UPDATE SET role = CASE WHEN users.role = 'admin' THEN 'admin' ELSE 'consortium_partner' END, email = excluded.email`,
+    ).run(userId, "tenant_capavate", normEmail, email);
+  } catch (err) {
+    /* best-effort */
+  }
+
+  // Ensure a durable bcrypt credential exists so getUserContextForId's DB
+  // hydration resolves this session as authed (isAuthed:true) after redeem and
+  // browser login works — this is what registerPersona did for new users. Only
+  // seed a credential when NONE exists; never clobber a password the partner
+  // may already have set via the set-password flow.
+  try {
+    if (!lookupByUserId(userId)) {
+      storeCredential({ userId, email: normEmail, name: email, password: seedPassword });
+    }
+  } catch {
+    /* best-effort — matches registerPersona */
+  }
+
+  return userId;
+}
 function isNumber(v: unknown): v is number { return typeof v === "number" && Number.isFinite(v); }
 function isISOCurrency(v: unknown): v is string {
   return typeof v === "string" && /^[A-Z]{3}$/.test(v);
@@ -464,7 +548,7 @@ export function registerPartnerRoutes(app: Express): void {
               kind: "partner.attribution_granted",
               title: "New company attribution granted",
               body: `Your partner workspace was granted attribution for company ${companyId}.`,
-              link: "/collective/partner/clients",
+              link: "/collective/partner/pipeline",
             });
           } catch { /* per-recipient failures non-fatal */ }
         }
@@ -493,7 +577,7 @@ export function registerPartnerRoutes(app: Express): void {
                 kind: "partner.attribution_revoked",
                 title: "Company attribution revoked",
                 body: `Attribution for company ${companyId} was revoked from your partner workspace.`,
-                link: "/collective/partner/clients",
+                link: "/collective/partner/pipeline",
               });
             } catch { /* per-recipient failures non-fatal */ }
           }
@@ -523,53 +607,109 @@ export function registerPartnerRoutes(app: Express): void {
     res.json(partnerDashboardSnapshot(req.partnerContext!.partnerId));
   });
 
-  app.get("/api/partner/me/clients", requirePartnerAuth, (req: Request, res: Response) => {
-    const pid = req.partnerContext!.partnerId;
-    const attrs = partnerAttributionStore.listByPartner(pid);
-    res.json({ clients: attrs });
-  });
-
-  app.get("/api/partner/me/clients/:id", requirePartnerAuth, (req: Request, res: Response) => {
-    const pid = req.partnerContext!.partnerId;
-    const companyId = String(req.params.id);
-    const attrs = partnerAttributionStore.listByPartner(pid);
-    const a = attrs.find((x) => x.companyId === companyId);
-    if (!a) return res.status(404).json({ error: "CLIENT_NOT_FOUND_OR_NOT_ATTRIBUTED" });
-    // v25.15 NM5 — real read-only company snapshot from profile + membership
-    const clientNotes = partnerNotesStore.listByPartner(pid, { scope: "client", scopeId: companyId });
-    const profile = getCompanyProfile(companyId);
-    const record = getCompanyRecordById(companyId);
-    res.json({
-      attribution: a,
-      companyId,
-      snapshot: {
-        companyId,
-        companyName: record?.companyName ?? null,
-        legalName: record?.legalName ?? null,
-        logoUrl: record?.logoUrl ?? null,
-        stage: profile.stage ?? "unknown",
-        sector: profile.sector ?? "unknown",
-        jurisdiction: profile.jurisdiction ?? null,
-        founderName: profile.founderName ?? null,
-        founderEmail: profile.founderEmail ?? null,
-        employees: profile.employees ?? null,
-        runwayMonths: profile.runwayMonths ?? null,
-        healthScore: profile.healthScore ?? null,
-        complianceScore: profile.complianceScore ?? null,
-        kycStatus: profile.kycStatus ?? null,
-        kybStatus: profile.kybStatus ?? null,
-        lastRaiseDate: profile.lastRaiseDate ?? null,
-        lastRaiseAmount: profile.lastRaiseAmount ?? null,
-        valuationMinor: profile.valuationMinor ?? null,
-      },
-      notes: clientNotes,
-    });
-  });
+  // CLIENTS — v25.50.0 Phase 6 (spec 4a): the CP-facing Clients page is removed,
+  // so its read-only `GET /api/partner/me/clients` + `/clients/:id` route surface
+  // is deleted here. Attribution store + WRITES (admin attributions above, source/
+  // revoke), commission accrual (partnerConsortiumRoutes), CRM guard, dashboard
+  // count and boot hydration are DELIBERATELY PRESERVED and untouched.
 
   // PIPELINE
   app.get("/api/partner/me/pipeline", requirePartnerAuth, (req: Request, res: Response) => {
     res.json({ pipeline: partnerPipelineStore.listByPartner(req.partnerContext!.partnerId), stages: ALL_PIPELINE_STAGES });
   });
+
+  // v25.50.0 Phase 2 (spec 2b) — "Following from Collective": companies this
+  // partner (as a Collective member) has opened interest threads on. Read-only;
+  // the UI links each row to the Collective company page in a new tab.
+  app.get("/api/partner/me/following", requirePartnerAuth, (req: Request, res: Response) => {
+    const userId = req.partnerContext!.userId;
+    const companyIds = listFollowedCompanyIdsForMember(userId);
+    const following = companyIds.map((companyId) => {
+      const rec = getCompanyRecordById(companyId);
+      return {
+        companyId,
+        companyName: rec?.companyName ?? null,
+        logoUrl: rec?.logoUrl ?? null,
+      };
+    });
+    res.json({ following });
+  });
+
+  // ============================================================
+  // v25.50.0 Phase 3 (spec 3) — PRIVATE PORTFOLIO company profiles.
+  // CP-scoped, non-sacred. Reuses the founder CompanyProfile taxonomy
+  // (contact/address/legal/ma) via companyProfilePatchSchema, stored per
+  // (partnerId, companyId) in partner_portfolio_company. Never touches the
+  // sacred founder profile stores.
+  // ============================================================
+
+  // List all private-portfolio company profiles for this partner.
+  app.get("/api/partner/me/portfolio", requirePartnerAuth, (req: Request, res: Response) => {
+    const ctx = req.partnerContext!;
+    const items = listPortfolioCompanies(ctx.partnerId).map((p) => {
+      const rec = getCompanyRecordById(p.companyId);
+      return {
+        companyId: p.companyId,
+        companyName: rec?.companyName ?? null,
+        logoUrl: rec?.logoUrl ?? null,
+        profile: p.profile,
+        updatedAt: p.updatedAt,
+      };
+    });
+    res.json({ portfolio: items });
+  });
+
+  // Read a single private-portfolio profile.
+  app.get("/api/partner/me/portfolio/:companyId", requirePartnerAuth, (req: Request, res: Response) => {
+    const ctx = req.partnerContext!;
+    const companyId = String(req.params.companyId);
+    const p = getPortfolioCompany(ctx.partnerId, companyId);
+    const rec = getCompanyRecordById(companyId);
+    res.json({
+      companyId,
+      companyName: rec?.companyName ?? null,
+      logoUrl: rec?.logoUrl ?? null,
+      profile: p?.profile ?? {},
+      updatedAt: p?.updatedAt ?? null,
+    });
+  });
+
+  // Upsert (create-or-merge) the partner's private profile for a company.
+  app.patch(
+    "/api/partner/me/portfolio/:companyId",
+    requirePartnerAuth,
+    assertSubRole("managing_partner", "associate"),
+    (req: Request, res: Response) => {
+      const ctx = req.partnerContext!;
+      const companyId = String(req.params.companyId);
+      const patch = parsePortfolioPatch(req.body ?? {});
+      if (!patch) return badRequest(res, "invalid company profile patch");
+      try {
+        const saved = upsertPortfolioProfile(ctx.partnerId, companyId, patch, ctx.userId);
+        res.json({ companyId, profile: saved.profile, updatedAt: saved.updatedAt });
+      } catch (e) {
+        res.status(500).json({ error: (e as Error).message });
+      }
+    },
+  );
+
+  // Remove a company from the partner's private portfolio (soft-delete).
+  app.delete(
+    "/api/partner/me/portfolio/:companyId",
+    requirePartnerAuth,
+    assertSubRole("managing_partner"),
+    (req: Request, res: Response) => {
+      const ctx = req.partnerContext!;
+      const companyId = String(req.params.companyId);
+      try {
+        const ok = archivePortfolioCompany(ctx.partnerId, companyId);
+        if (!ok) return res.status(404).json({ error: "PORTFOLIO_NOT_FOUND" });
+        res.json({ ok: true });
+      } catch (e) {
+        res.status(500).json({ error: (e as Error).message });
+      }
+    },
+  );
 
   app.post(
     "/api/partner/me/pipeline",
@@ -583,7 +723,7 @@ export function registerPartnerRoutes(app: Express): void {
         const deal = partnerPipelineStore.create(ctx.partnerId, {
           dealName,
           companyId: companyId ?? null,
-          stage: stage ?? "sourcing",
+          stage: stage ?? "invited",
           estCheckSizeMinor: isNumber(estCheckSizeMinor) ? estCheckSizeMinor : null,
           currency: currency ?? null,
           sector: sector ?? null,
@@ -907,11 +1047,68 @@ export function registerPartnerRoutes(app: Express): void {
       ...inv,
       email: inv.invitedEmail,
     }));
-    res.json({
-      members: partnerTeamStore.listByPartner(pid),
-      invitations,
+    /* v25.50 Phase 7 (7a) — the store returns raw userIds with no identity. JOIN
+       the canonical `users` table so the UI can render real name/email instead
+       of the opaque id. Read-only; the sacred users store is never mutated.
+       (7c) Merge partner-workspace-local contact overrides (mobile, contact
+       email, position note) from the additive partner_team_member_contact
+       table. */
+    const rawMembers = partnerTeamStore.listByPartner(pid);
+    const contactMap = partnerTeamContactStore.listByPartner(pid);
+    const memberIds = rawMembers.map((m) => m.userId);
+    const identityById = new Map<string, { name: string | null; email: string | null }>();
+    if (memberIds.length > 0) {
+      try {
+        const placeholders = memberIds.map(() => "?").join(",");
+        const rows = rawDb().prepare(
+          `SELECT id, name, email FROM users WHERE id IN (${placeholders})`,
+        ).all(...memberIds) as Array<{ id: string; name: string | null; email: string | null }>;
+        for (const r of rows) identityById.set(String(r.id), { name: r.name ?? null, email: r.email ?? null });
+      } catch {
+        /* non-fatal — fall back to raw ids below */
+      }
+    }
+    const members = rawMembers.map((m) => {
+      const idn = identityById.get(m.userId);
+      const contact = contactMap.get(m.userId);
+      return {
+        ...m,
+        name: idn?.name ?? null,
+        email: idn?.email ?? null,
+        mobile: contact?.mobile ?? null,
+        contactEmail: contact?.contactEmail ?? null,
+        positionNote: contact?.positionNote ?? null,
+      };
     });
+    res.json({ members, invitations });
   });
+
+  /* v25.50 Phase 7 (7c) — edit a team member's partner-local contact info.
+     Fail-closed: managing_partner only; the member must belong to THIS partner
+     workspace (checked against the active roster) before any write. */
+  app.patch(
+    "/api/partner/me/team/:userId/contact",
+    requirePartnerAuth,
+    assertSubRole("managing_partner"),
+    (req: Request, res: Response) => {
+      const ctx = req.partnerContext!;
+      const userId = String(req.params.userId);
+      const member = partnerTeamStore
+        .listByPartner(ctx.partnerId)
+        .find((m) => m.userId === userId);
+      if (!member) return res.status(404).json({ error: "TEAM_MEMBER_NOT_FOUND" });
+      const { mobile, contactEmail, positionNote } = req.body ?? {};
+      const norm = (v: unknown): string | null | undefined =>
+        v === undefined ? undefined : v === null ? null : String(v).trim();
+      const contact = partnerTeamContactStore.upsert(
+        ctx.partnerId,
+        userId,
+        { mobile: norm(mobile), contactEmail: norm(contactEmail), positionNote: norm(positionNote) },
+        ctx.userId,
+      );
+      res.json({ contact });
+    },
+  );
 
   app.post(
     "/api/partner/me/team/invitations",
@@ -1042,105 +1239,12 @@ export function registerPartnerRoutes(app: Express): void {
     },
   );
 
-  // TASKS
-  app.get("/api/partner/me/tasks", requirePartnerAuth, (req: Request, res: Response) => {
-    res.json({ tasks: partnerTasksStore.listByPartner(req.partnerContext!.partnerId) });
-  });
-  app.post(
-    "/api/partner/me/tasks",
-    requirePartnerAuth,
-    assertSubRole("managing_partner", "associate", "bd"),
-    (req: Request, res: Response) => {
-      const ctx = req.partnerContext!;
-      // analyst cannot assign to other users
-      const body = { ...(req.body ?? {}) };
-      if (ctx.partnerSubRole === "analyst" && body.assignedToUserId && body.assignedToUserId !== ctx.userId) {
-        return res.status(403).json({ error: "PARTNER_SUB_ROLE_INSUFFICIENT" });
-      }
-      const t = partnerTasksStore.create(ctx.partnerId, body, ctx.userId);
-      res.status(201).json({ task: t });
-    },
-  );
-  app.delete(
-    "/api/partner/me/tasks/:id",
-    requirePartnerAuth,
-    assertSubRole("managing_partner", "associate"),
-    (req: Request, res: Response) => {
-      const ctx = req.partnerContext!;
-      try {
-        const t = partnerTasksStore.update(ctx.partnerId, String(req.params.id), { status: "cancelled" }, ctx.userId);
-        res.json({ ok: true, task: t });
-      } catch (e) {
-        res.status(404).json({ error: (e as Error).message });
-      }
-    },
-  );
-
-  app.patch(
-    "/api/partner/me/tasks/:id",
-    requirePartnerAuth,
-    assertSubRole("managing_partner", "associate", "bd", "analyst"),
-    (req: Request, res: Response) => {
-      const ctx = req.partnerContext!;
-      try {
-        const t = partnerTasksStore.update(ctx.partnerId, String(req.params.id), req.body ?? {}, ctx.userId);
-        res.json({ task: t });
-      } catch (e) {
-        res.status(404).json({ error: (e as Error).message });
-      }
-    },
-  );
-
-  // FILES
-  app.get("/api/partner/me/files", requirePartnerAuth, (req: Request, res: Response) => {
-    res.json({ files: partnerFilesStore.listByPartner(req.partnerContext!.partnerId) });
-  });
-  app.post(
-    "/api/partner/me/files",
-    requirePartnerAuth,
-    assertSubRole("managing_partner", "associate", "bd"),
-    (req: Request, res: Response) => {
-      const ctx = req.partnerContext!;
-      const { fileName, mimeType, sizeBytes, scope, scopeId, dataroomFileId } = req.body ?? {};
-      if (!isString(fileName) || !isString(mimeType) || !isNumber(sizeBytes)) return badRequest(res, "fileName+mimeType+sizeBytes required");
-      const f = partnerFilesStore.add(ctx.partnerId, {
-        dataroomFileId: dataroomFileId ?? null,
-        fileName, mimeType, sizeBytes,
-        scope: scope ?? "private",
-        scopeId: scopeId ?? null,
-        uploadedBy: ctx.userId,
-      }, ctx.userId);
-      res.status(201).json({ file: f });
-    },
-  );
-  app.get("/api/partner/me/files/:id/url", requirePartnerAuth, (req: Request, res: Response) => {
-    const ctx = req.partnerContext!;
-    const f = partnerFilesStore.getById(ctx.partnerId, String(req.params.id));
-    if (!f) return res.status(404).json({ error: "FILE_NOT_FOUND" });
-    // Return a fake pre-signed URL pattern; real dataroom integration would generate a 15-min TTL URL
-    const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-    res.json({ url: `/api/dataroom/files/${f.dataroomFileId ?? f.id}?ttl=900`, expiresAt });
-  });
-
-  // v25.15 NH2 — DELETE /api/partner/me/files/:id (soft delete). Restricted to
-  // managing_partner so analysts/viewers cannot remove files. Idempotent: a
-  // second call on the same id returns the already-tombstoned row.
-  app.delete(
-    "/api/partner/me/files/:id",
-    requirePartnerAuth,
-    assertSubRole("managing_partner"),
-    (req: Request, res: Response) => {
-      const ctx = req.partnerContext!;
-      try {
-        const f = partnerFilesStore.remove(ctx.partnerId, String(req.params.id), ctx.userId);
-        return res.json({ ok: true, file: f });
-      } catch (e) {
-        const msg = (e as Error).message;
-        if (msg === "FILE_NOT_FOUND") return res.status(404).json({ error: msg });
-        return res.status(400).json({ error: msg });
-      }
-    },
-  );
+  // TASKS + FILES — v25.50.0 Phase 6 (spec 5a/6a): the CP-facing Tasks and Files
+  // pages are removed, so their `/api/partner/me/tasks*` and `/api/partner/me/files*`
+  // route surfaces are deleted here. The underlying partnerTasksStore/partnerFilesStore
+  // are retained (dormant) because the admin audit endpoint (/api/admin/partners/:id/audit)
+  // and boot hydration still consume them for admin oversight; admin-side reconciliation
+  // is handled in Phase 8 (see partner_v7_admin_delta.md).
 
   // WORKSPACE SETTINGS
   app.get("/api/partner/me/workspace-settings", requirePartnerAuth, (req: Request, res: Response) => {
@@ -1477,18 +1581,22 @@ export function registerPartnerRoutes(app: Express): void {
             invitedEmail: row.email,
           });
         }
+        /* v25.49.3 R1 — approved consortium-partner redemptions must NOT create
+         * an investor-shaped persona. registerPersona() (SACRED userContext.ts)
+         * hard-codes isInvestor + durable auth_users.role='investor'; that made
+         * the post-redeem SESSION investor-shaped and re-broke partner password-
+         * reset routing (2a). Instead resolve/create the consortium_partner
+         * identity locally (never touching the sacred file). The single-use
+         * token is still the credential; the strong random password is only a
+         * placeholder the partner re-sets via the set-password flow. */
         const approvedUserId = existingCtx.isAuthed
           ? existingCtx.userId
-          : registerPersona({
-              email: row.email,
-              name: row.email,
+          : resolveOrCreateConsortiumPartnerId(
+              row.email,
               // Strong random password (C15) — the partner can re-set via the
               // set-password flow; the single-use token is the real credential.
-              password: createHash("sha256").update(`${token}:${Date.now()}:${Math.random()}`).digest("hex"),
-              invitationId: row.id,
-              roundId: "",
-              companyId: "",
-            });
+              createHash("sha256").update(`${token}:${Date.now()}:${Math.random()}`).digest("hex"),
+            );
         /* v25.24 NH-4 fix — atomic single-use consume on the consortium-approval
          * redeem branch. The v25.23 NH-L atomic redeem covered only the
          * partner-invite store (`partnerInvitationStore.redeem` via

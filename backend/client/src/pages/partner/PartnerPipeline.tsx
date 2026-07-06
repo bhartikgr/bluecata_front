@@ -19,11 +19,22 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogD
 import { useToast } from "@/hooks/use-toast";
 import { Badge } from "@/components/ui/badge";
 import { PartnerEmptyState } from "@/components/partner/PartnerShell";
+import { AppCard } from "@/components/ui/app-card";
+import { PartnerPortfolioProfileDialog } from "@/components/partner/PartnerPortfolioProfileDialog";
+import {
+  PARTNER_PIPELINE_STAGES,
+  PARTNER_PIPELINE_STAGE_LABELS,
+  PARTNER_PIPELINE_STAGE_DESCRIPTIONS,
+  type PartnerPipelineStageKey,
+} from "@shared/crmStages";
 
-const STAGES = ["sourcing", "qualifying", "committee", "committed", "closed_won", "closed_lost"] as const;
-type Stage = typeof STAGES[number];
+/* v25.50.0 Phase 2 (spec 2c, LOCKED) — canonical company deal funnel, verbatim. */
+const STAGES = PARTNER_PIPELINE_STAGES;
+type Stage = PartnerPipelineStageKey;
 
 interface Deal { id: string; dealName: string; stage: Stage; estCheckSizeMinor: number | null; currency: string | null; ownerUserId: string; sector: string | null; companyId?: string | null }
+interface SpvRow { id: string; name?: string | null; spvName?: string | null; status?: string | null; type?: string | null }
+interface FollowRow { companyId: string; companyName: string | null; logoUrl: string | null }
 
 interface Promotion {
   id: string;
@@ -45,15 +56,41 @@ export default function PartnerPipeline() {
     enabled: role.ready,
     queryFn: async () => (await apiRequest("GET", "/api/partner/me/promotions")).json(),
   });
+  // v25.50.0 Phase 2 (2b) — SPVs + Following categories.
+  const spvQ = useQuery<{ spvs?: SpvRow[] } | SpvRow[]>({
+    queryKey: ["/api/partner/me/spv"],
+    enabled: role.ready,
+    queryFn: async () => (await apiRequest("GET", "/api/partner/me/spv")).json(),
+  });
+  const followingQ = useQuery<{ following: FollowRow[] }>({
+    queryKey: ["/api/partner/me/following"],
+    enabled: role.ready,
+    queryFn: async () => (await apiRequest("GET", "/api/partner/me/following")).json(),
+  });
   const [name, setName] = useState("");
   const canWrite = role.identity && ["managing_partner", "associate", "bd"].includes(role.identity.subRole);
   const canPromote = role.identity && ["managing_partner", "associate"].includes(role.identity.subRole);
+  // Stage advancement is gated identically to the PATCH endpoint (managing_partner|associate).
+  const canAdvance = canPromote;
+
+  // v25.50.0 Phase 2 (2c-b) — advance a deal to ANY stage (skipping allowed;
+  // server validates membership-in-set, not adjacency).
+  const stageMut = useMutation({
+    mutationFn: async (vars: { dealId: string; stage: Stage }) => {
+      const res = await apiRequest("PATCH", `/api/partner/me/pipeline/${vars.dealId}`, { stage: vars.stage });
+      return res.json();
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/partner/me/pipeline"] }),
+    onError: (e: Error) => toast({ variant: "destructive", title: "Could not move deal", description: e.message }),
+  });
 
   // Promote/Refer modal state
   const [promoteDeal, setPromoteDeal] = useState<Deal | null>(null);
   const [referDeal, setReferDeal] = useState<Deal | null>(null);
   const [modalNotes, setModalNotes] = useState("");
   const [referEmail, setReferEmail] = useState("");
+  // v25.50.0 Phase 3 — Private Portfolio profile editor target (deal w/ companyId).
+  const [profileDeal, setProfileDeal] = useState<Deal | null>(null);
 
   const createMut = useMutation({
     /* v25.33 — apiRequest() throws ApiError on non-2xx, so the prior `if (!res.ok)`
@@ -111,8 +148,10 @@ export default function PartnerPipeline() {
   });
 
   if (!role.ready || !role.identity) return null;
-  const byStage: Record<Stage, Deal[]> = { sourcing: [], qualifying: [], committee: [], committed: [], closed_won: [], closed_lost: [] };
-  for (const d of q.data?.pipeline ?? []) byStage[d.stage].push(d);
+  const byStage: Record<Stage, Deal[]> = { invited: [], viewed: [], soft_circle: [], signed: [], funded: [], committed: [] };
+  for (const d of q.data?.pipeline ?? []) { if (byStage[d.stage]) byStage[d.stage].push(d); }
+  const spvList: SpvRow[] = Array.isArray(spvQ.data) ? spvQ.data : (spvQ.data?.spvs ?? []);
+  const followList: FollowRow[] = followingQ.data?.following ?? [];
 
   /* v25.23 NM-2 — explicit loading / error / empty states for the pipeline
      query (mirrors PartnerClients). Previously a fetch failure rendered an
@@ -133,105 +172,213 @@ export default function PartnerPipeline() {
 
   return (
     <PartnerShell title="Pipeline" tier={role.identity.tier} subRole={role.identity.subRole} partnerName={role.identity.identity.name}>
-      {canWrite && (
-        <div className="flex gap-2 mb-4" data-testid="add-deal-bar">
-          <Input
-            data-testid="deal-name-input"
-            placeholder="New deal name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            className="max-w-xs"
-          />
-          {/* v25.16 NL2 — disable while pending to prevent double-submit. */}
-          <Button
-            data-testid="add-deal-btn"
-            disabled={!name || createMut.isPending}
-            onClick={() => createMut.mutate(name)}
-          >
-            {createMut.isPending ? "Adding…" : "Add deal"}
-          </Button>
-        </div>
-      )}
-      {showLoading && (
-        <div className="text-sm text-slate-500" data-testid="pipeline-loading">Loading…</div>
-      )}
-      {showError && (
-        <div
-          className="rounded-md border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900"
-          data-testid="pipeline-error"
-        >
-          Could not load your pipeline. Please refresh and try again.
-        </div>
-      )}
-      {/* Non-blocking: the board still renders even if the promotions overlay fails. */}
-      {!showError && promoQ.isError && (
-        <div
-          className="mb-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900"
-          data-testid="pipeline-promotions-error"
-        >
-          Deal promotion badges couldn’t be loaded. Deals are still shown.
-        </div>
-      )}
-      {showEmpty && (
-        <PartnerEmptyState
-          title="No deals yet"
-          description={canWrite ? "Add your first deal above to start tracking your pipeline." : "No deals have been added to this workspace yet."}
-        />
-      )}
-      {!showLoading && !showError && !showEmpty && (
-      <div className="grid grid-cols-2 md:grid-cols-6 gap-3" data-testid="pipeline-kanban">
-        {STAGES.map((s) => (
-          <div key={s} className="bg-white rounded-lg border p-2 min-h-[120px]" data-testid={`column-${s}`}>
-            <div className="text-xs uppercase tracking-wide text-slate-500 mb-2">{s.replace("_", " ")} ({byStage[s].length})</div>
-            <div className="space-y-2">
-              {byStage[s].map((d) => {
-                const promos = promosByDeal.get(d.id) ?? [];
-                const liveCollective = promos.find((p) => p.promotionType === "collective_deal_room" && p.status === "live");
-                const pendingRefer = promos.find((p) => p.promotionType === "capavate_referral" && (p.status === "pending" || p.status === "live"));
-                return (
-                  <div key={d.id} className="border rounded p-2 text-xs bg-slate-50" data-testid={`deal-${d.id}`}>
-                    <div className="font-medium">{d.dealName}</div>
-                    <div className="text-slate-500">{d.sector ?? "—"}</div>
-                    {(liveCollective || pendingRefer) && (
-                      <div className="flex flex-wrap gap-1 mt-1" data-testid={`deal-${d.id}-badges`}>
-                        {liveCollective && (
-                          <Badge variant="secondary" className="text-[10px] py-0" data-testid={`badge-promoted-${d.id}`}>In Deal Room</Badge>
-                        )}
-                        {pendingRefer && (
-                          <Badge variant="outline" className="text-[10px] py-0" data-testid={`badge-referred-${d.id}`}>Referred</Badge>
-                        )}
-                      </div>
-                    )}
-                    {canPromote && (
-                      <div className="flex flex-wrap gap-1 mt-2">
-                        {!liveCollective && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="h-6 text-[10px] px-2"
-                            data-testid={`promote-btn-${d.id}`}
-                            onClick={() => { setPromoteDeal(d); setModalNotes(""); }}
-                          >Promote</Button>
-                        )}
-                        {!pendingRefer && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="h-6 text-[10px] px-2"
-                            data-testid={`refer-btn-${d.id}`}
-                            onClick={() => { setReferDeal(d); setModalNotes(""); setReferEmail(""); }}
-                          >Refer</Button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+      {/* v25.50.0 Phase 2 (2a) — purpose copy. */}
+      <AppCard className="mb-5" data-testid="pipeline-intro">
+        <h2 className="partner-section-title text-lg mb-1">Your deal pipeline</h2>
+        <p className="text-sm text-[var(--cv-color-text-secondary)]">
+          Track every company you work with in one place — your own <strong>Private Portfolio</strong> companies,
+          the <strong>SPVs</strong> you launch to syndicate deals, and the companies you’re <strong>Following</strong> as
+          a Collective member. Each portfolio company advances through Capavate’s standard company funnel, from first
+          Invitation all the way to Committed positions on the cap table.
+        </p>
+      </AppCard>
+
+      {/* ============================================================
+          CATEGORY 1 — Private Portfolio (canonical funnel Kanban)
+          ============================================================ */}
+      <section className="mb-8" data-testid="category-private-portfolio">
+        <div className="flex items-center justify-between mb-2">
+          <div>
+            <h3 className="partner-section-title text-base">Private Portfolio</h3>
+            <p className="text-xs text-[var(--cv-color-text-muted)]">Your own portfolio companies, tracked through Capavate’s company funnel.</p>
           </div>
-        ))}
-      </div>
-      )}
+        </div>
+        {canWrite && (
+          <div className="flex gap-2 mb-4" data-testid="add-deal-bar">
+            <Input
+              data-testid="deal-name-input"
+              placeholder="New portfolio company"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="max-w-xs"
+            />
+            {/* v25.16 NL2 — disable while pending to prevent double-submit. */}
+            <Button
+              data-testid="add-deal-btn"
+              disabled={!name || createMut.isPending}
+              onClick={() => createMut.mutate(name)}
+            >
+              {createMut.isPending ? "Adding…" : "Add company"}
+            </Button>
+          </div>
+        )}
+        {showLoading && (
+          <div className="text-sm text-slate-500" data-testid="pipeline-loading">Loading…</div>
+        )}
+        {showError && (
+          <div
+            className="rounded-md border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900"
+            data-testid="pipeline-error"
+          >
+            Could not load your pipeline. Please refresh and try again.
+          </div>
+        )}
+        {/* Non-blocking: the board still renders even if the promotions overlay fails. */}
+        {!showError && promoQ.isError && (
+          <div
+            className="mb-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900"
+            data-testid="pipeline-promotions-error"
+          >
+            Deal promotion badges couldn’t be loaded. Deals are still shown.
+          </div>
+        )}
+        {showEmpty && (
+          <PartnerEmptyState
+            title="No portfolio companies yet"
+            description={canWrite ? "Add your first company above to start tracking your pipeline." : "No companies have been added to this workspace yet."}
+          />
+        )}
+        {!showLoading && !showError && !showEmpty && (
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-3" data-testid="pipeline-kanban">
+          {STAGES.map((s) => (
+            <div key={s} className="bg-white rounded-lg border p-2 min-h-[120px]" data-testid={`column-${s}`}>
+              <div className="text-xs uppercase tracking-wide text-slate-600 font-semibold">{PARTNER_PIPELINE_STAGE_LABELS[s]} ({byStage[s].length})</div>
+              {/* v25.50.0 Phase 2 (2c-a) — per-stage description. */}
+              <div className="text-[10px] leading-tight text-slate-400 mb-2" data-testid={`column-${s}-desc`}>{PARTNER_PIPELINE_STAGE_DESCRIPTIONS[s]}</div>
+              <div className="space-y-2">
+                {byStage[s].map((d) => {
+                  const promos = promosByDeal.get(d.id) ?? [];
+                  const liveCollective = promos.find((p) => p.promotionType === "collective_deal_room" && p.status === "live");
+                  const pendingRefer = promos.find((p) => p.promotionType === "capavate_referral" && (p.status === "pending" || p.status === "live"));
+                  return (
+                    <div key={d.id} className="border rounded p-2 text-xs bg-slate-50" data-testid={`deal-${d.id}`}>
+                      <div className="font-medium">{d.dealName}</div>
+                      <div className="text-slate-500">{d.sector ?? "—"}</div>
+                      {(liveCollective || pendingRefer) && (
+                        <div className="flex flex-wrap gap-1 mt-1" data-testid={`deal-${d.id}-badges`}>
+                          {liveCollective && (
+                            <Badge variant="secondary" className="text-[10px] py-0" data-testid={`badge-promoted-${d.id}`}>In Deal Room</Badge>
+                          )}
+                          {pendingRefer && (
+                            <Badge variant="outline" className="text-[10px] py-0" data-testid={`badge-referred-${d.id}`}>Referred</Badge>
+                          )}
+                        </div>
+                      )}
+                      {/* v25.50.0 Phase 2 (2c-b) — advance to ANY stage (skipping allowed). */}
+                      {canAdvance && (
+                        <select
+                          data-testid={`stage-select-${d.id}`}
+                          className="mt-2 w-full text-[10px] border rounded px-1 py-0.5 bg-white"
+                          value={d.stage}
+                          disabled={stageMut.isPending}
+                          onChange={(e) => stageMut.mutate({ dealId: d.id, stage: e.target.value as Stage })}
+                        >
+                          {STAGES.map((opt) => (
+                            <option key={opt} value={opt}>{PARTNER_PIPELINE_STAGE_LABELS[opt]}</option>
+                          ))}
+                        </select>
+                      )}
+                      {/* v25.50.0 Phase 3 — open this company's private portfolio profile. */}
+                      {d.companyId && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-6 text-[10px] px-2 mt-2 w-full"
+                          data-testid={`portfolio-profile-btn-${d.id}`}
+                          onClick={() => setProfileDeal(d)}
+                        >Profile</Button>
+                      )}
+                      {canPromote && (
+                        <div className="flex flex-wrap gap-1 mt-2">
+                          {!liveCollective && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-6 text-[10px] px-2"
+                              data-testid={`promote-btn-${d.id}`}
+                              onClick={() => { setPromoteDeal(d); setModalNotes(""); }}
+                            >Promote</Button>
+                          )}
+                          {!pendingRefer && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-6 text-[10px] px-2"
+                              data-testid={`refer-btn-${d.id}`}
+                              onClick={() => { setReferDeal(d); setModalNotes(""); setReferEmail(""); }}
+                            >Refer</Button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+        )}
+      </section>
+
+      {/* ============================================================
+          CATEGORY 2 — SPVs
+          ============================================================ */}
+      <section className="mb-8" data-testid="category-spvs">
+        <div className="mb-2">
+          <h3 className="partner-section-title text-base">SPVs</h3>
+          <p className="text-xs text-[var(--cv-color-text-muted)]">Special-purpose vehicles you’ve created to syndicate deals. Manage each on the SPVs page.</p>
+        </div>
+        {spvQ.isError ? (
+          <div className="rounded-md border border-rose-200 bg-rose-50 p-3 text-xs text-rose-900" data-testid="spv-list-error">Could not load your SPVs.</div>
+        ) : spvList.length === 0 ? (
+          <PartnerEmptyState title="No SPVs yet" description="Launch an SPV from the SPVs page to syndicate a deal." />
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3" data-testid="spv-list">
+            {spvList.map((s) => (
+              <a
+                key={s.id}
+                href={`/collective/partner/spv-engine`}
+                className="block border rounded-lg p-3 bg-white hover:shadow-sm"
+                data-testid={`spv-row-${s.id}`}
+              >
+                <div className="font-medium text-sm">{s.spvName ?? s.name ?? s.id}</div>
+                <div className="text-xs text-slate-500">{s.type ?? "SPV"}{s.status ? ` · ${s.status}` : ""}</div>
+              </a>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* ============================================================
+          CATEGORY 3 — Following from Collective
+          ============================================================ */}
+      <section className="mb-4" data-testid="category-following">
+        <div className="mb-2">
+          <h3 className="partner-section-title text-base">Following from Collective</h3>
+          <p className="text-xs text-[var(--cv-color-text-muted)]">Companies you follow as a Collective member. Opening one launches the Collective view in a new tab.</p>
+        </div>
+        {followingQ.isError ? (
+          <div className="rounded-md border border-rose-200 bg-rose-50 p-3 text-xs text-rose-900" data-testid="following-error">Could not load followed companies.</div>
+        ) : followList.length === 0 ? (
+          <PartnerEmptyState title="Not following anyone yet" description="Express interest in a company in the Collective to start following it here." />
+        ) : (
+          <div className="flex flex-wrap gap-2" data-testid="following-list">
+            {followList.map((c) => (
+              <a
+                key={c.companyId}
+                href={`/collective/companies/${c.companyId}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 border rounded-full px-3 py-1 text-xs bg-white hover:shadow-sm"
+                data-testid={`following-row-${c.companyId}`}
+              >
+                {c.companyName ?? c.companyId}
+                <span aria-hidden className="text-slate-400">↗</span>
+              </a>
+            ))}
+          </div>
+        )}
+      </section>
 
       {/* Promote to Collective Modal */}
       {/* v25.16 NM2 — also clear modal notes on Escape/outside-click dismiss
@@ -303,6 +450,17 @@ export default function PartnerPipeline() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* v25.50.0 Phase 3 — Private Portfolio company profile editor */}
+      {profileDeal?.companyId && (
+        <PartnerPortfolioProfileDialog
+          companyId={profileDeal.companyId}
+          companyName={profileDeal.dealName}
+          canEdit={!!canPromote}
+          open={!!profileDeal}
+          onOpenChange={(o) => { if (!o) setProfileDeal(null); }}
+        />
+      )}
     </PartnerShell>
   );
 }

@@ -66,6 +66,8 @@ export interface SoftCircleRow {
   investorUserId: string | null;
   investorEmail: string | null;
   investorName: string;
+  investorFirstName: string | null;
+  investorLastName: string | null;
   amount: number;
   amountMinor: number;
   currency: string;
@@ -82,6 +84,8 @@ export interface CreateSoftCircleArgs {
   investorUserId?: string | null;
   investorEmail?: string | null;
   investorName: string;
+  investorFirstName?: string | null;
+  investorLastName?: string | null;
   amount: number;
   currency?: string;
   status?: SoftCircleStatus;
@@ -115,6 +119,31 @@ function makeId(roundId: string): string {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+/**
+ * Resolve discrete first/last + composed name. Prefers explicit first/last;
+ * otherwise splits a single legacy `name` (parts[0]=first, remainder=last).
+ * The composed name is always kept populated ("First Last") so existing
+ * readers/collective projections stay byte-stable.
+ */
+function resolveInvestorNameParts(
+  name?: string | null,
+  first?: string | null,
+  last?: string | null,
+): { first: string | null; last: string | null; composed: string | null } {
+  const f = (first ?? "").trim();
+  const l = (last ?? "").trim();
+  if (f || l) {
+    const composed = [f, l].filter(Boolean).join(" ") || null;
+    return { first: f || null, last: l || null, composed };
+  }
+  const whole = (name ?? "").trim();
+  if (!whole) return { first: null, last: null, composed: null };
+  const parts = whole.split(/\s+/);
+  const splitFirst = parts.shift() ?? "";
+  const splitLast = parts.join(" ");
+  return { first: splitFirst || null, last: splitLast || null, composed: whole };
 }
 
 /** Emit canonical `softCircle.changed` event on the SSE bus. */
@@ -156,6 +185,8 @@ export function createSoftCircle(args: CreateSoftCircleArgs): SoftCircleRow {
   const currency = (args.currency ?? "USD").toUpperCase();
   const tenantId = args.tenantId ?? tenantForCompany(args.companyId);
   const createdAt = nowIso();
+  const { first: scFirst, last: scLast, composed: scComposed } =
+    resolveInvestorNameParts(args.investorName, args.investorFirstName, args.investorLastName);
   const row: SoftCircleRow = {
     id: makeId(args.roundId),
     tenantId,
@@ -164,7 +195,9 @@ export function createSoftCircle(args: CreateSoftCircleArgs): SoftCircleRow {
     invitationId: args.invitationId ?? null,
     investorUserId: args.investorUserId ?? null,
     investorEmail: args.investorEmail ?? null,
-    investorName: args.investorName,
+    investorName: scComposed ?? args.investorName,
+    investorFirstName: scFirst,
+    investorLastName: scLast,
     amount: args.amount,
     amountMinor: toAmountMinor(args.amount, currency),
     currency,
@@ -184,6 +217,8 @@ export function createSoftCircle(args: CreateSoftCircleArgs): SoftCircleRow {
           roundId: row.roundId,
           invitationId: row.invitationId,
           investorName: row.investorName,
+          investorFirstName: row.investorFirstName,
+          investorLastName: row.investorLastName,
           amount: row.amount,
           status: row.status,
           createdAt: row.createdAt,
@@ -322,6 +357,8 @@ function mapRow(r: any): SoftCircleRow {
     investorUserId: r.investor_user_id ?? null,
     investorEmail: r.investor_email ?? null,
     investorName: r.investor_name,
+    investorFirstName: r.investor_first_name ?? r.investorFirstName ?? null,
+    investorLastName: r.investor_last_name ?? r.investorLastName ?? null,
     amount: Number(r.amount ?? 0),
     amountMinor: Number(r.amount_minor ?? 0),
     currency: r.currency ?? "USD",
@@ -439,6 +476,8 @@ export async function hydrateSoftCircleStore(): Promise<void> {
         investorUserId: r.investor_user_id ?? r.investorUserId ?? null,
         investorEmail: r.investor_email ?? r.investorEmail ?? null,
         investorName: r.investor_name ?? r.investorName,
+        investorFirstName: r.investor_first_name ?? r.investorFirstName ?? null,
+        investorLastName: r.investor_last_name ?? r.investorLastName ?? null,
         amount: Number(r.amount ?? 0),
         amountMinor: Number(r.amount_minor ?? r.amountMinor ?? 0),
         currency: r.currency ?? "USD",

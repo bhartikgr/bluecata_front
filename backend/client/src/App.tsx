@@ -62,13 +62,9 @@ import PostDetail from "@/pages/PostDetail";
 
 // Patch v6 — Partner workspace pages
 import PartnerDashboard from "@/pages/partner/PartnerDashboard";
-import PartnerClients from "@/pages/partner/PartnerClients";
-import PartnerClientDetail from "@/pages/partner/PartnerClientDetail";
 import PartnerPipeline from "@/pages/partner/PartnerPipeline";
 import PartnerTeam from "@/pages/partner/PartnerTeam";
 import PartnerNotes from "@/pages/partner/PartnerNotes";
-import PartnerTasks from "@/pages/partner/PartnerTasks";
-import PartnerFiles from "@/pages/partner/PartnerFiles";
 import PartnerSettings from "@/pages/partner/PartnerSettings";
 import PartnerSpvs from "@/pages/partner/PartnerSpvs";
 import PartnerSpvDetail from "@/pages/partner/PartnerSpvDetail";
@@ -76,7 +72,6 @@ import PartnerSpvEngine from "@/pages/partner/PartnerSpvEngine";
 import PartnerFunds from "@/pages/partner/PartnerFunds";
 import PartnerBilling from "@/pages/partner/PartnerBilling"; /* v25.32 A3 — consortium partner commission ledger */
 /* v25.33 Consortium Partner Payment Model — partner self-service pages. */
-import PartnerSubscribe from "@/pages/partner/PartnerSubscribe";
 import PartnerAgreementSign from "@/pages/partner/PartnerAgreementSign";
 import PartnerTaxForm from "@/pages/partner/PartnerTaxForm";
 import PartnerFundDetail from "@/pages/partner/PartnerFundDetail";
@@ -311,6 +306,10 @@ function isAuthRoute(path: string) {
     path === "/admin/login" ||
     path === "/partner/login" ||
     path === "/partner/signup" ||
+    // FIX 2c — the public consortium-partner application form must render bare
+    // (no AppShell) exactly like /partner/signup, so a first-attempt visit
+    // resolves immediately instead of bouncing through the cold auth probe.
+    path === "/apply/consortium" ||
     path.startsWith("/investor/signup") ||
     path.startsWith("/collective/preview") ||
     path.startsWith("/collective/") ||
@@ -1035,12 +1034,7 @@ function AppRouter() {
         <Route path="/collective/partner/dashboard">
           {() => <RequireAuth><CollectiveShell><PartnerDashboard /></CollectiveShell></RequireAuth>}
         </Route>
-        <Route path="/collective/partner/clients/:id">
-          {() => <RequireAuth><CollectiveShell><PartnerClientDetail /></CollectiveShell></RequireAuth>}
-        </Route>
-        <Route path="/collective/partner/clients">
-          {() => <RequireAuth><CollectiveShell><PartnerClients /></CollectiveShell></RequireAuth>}
-        </Route>
+        {/* v25.50.0 Phase 6 (spec 4a): Clients page removed. */}
         <Route path="/collective/partner/pipeline">
           {() => <RequireAuth><CollectiveShell><PartnerPipeline /></CollectiveShell></RequireAuth>}
         </Route>
@@ -1050,12 +1044,7 @@ function AppRouter() {
         <Route path="/collective/partner/notes">
           {() => <RequireAuth><CollectiveShell><PartnerNotes /></CollectiveShell></RequireAuth>}
         </Route>
-        <Route path="/collective/partner/tasks">
-          {() => <RequireAuth><CollectiveShell><PartnerTasks /></CollectiveShell></RequireAuth>}
-        </Route>
-        <Route path="/collective/partner/files">
-          {() => <RequireAuth><CollectiveShell><PartnerFiles /></CollectiveShell></RequireAuth>}
-        </Route>
+        {/* v25.50.0 Phase 6 (spec 5a/6a): Tasks and Files pages removed. */}
         <Route path="/collective/partner/settings">
           {() => <RequireAuth><CollectiveShell><PartnerSettings /></CollectiveShell></RequireAuth>}
         </Route>
@@ -1063,10 +1052,8 @@ function AppRouter() {
         <Route path="/collective/partner/billing">
           {() => <RequireAuth><CollectiveShell><PartnerBilling /></CollectiveShell></RequireAuth>}
         </Route>
-        {/* v25.33 Consortium Partner Payment Model — partner self-service pages. */}
-        <Route path="/collective/partner/subscribe">
-          {() => <RequireAuth><CollectiveShell><PartnerSubscribe /></CollectiveShell></RequireAuth>}
-        </Route>
+        {/* v25.50.0 Phase 6 (spec 9a): standalone Subscribe page removed; the
+            subscribe/quote flow is merged into the Billing Subscription tab. */}
         <Route path="/collective/partner/agreement">
           {() => <RequireAuth><CollectiveShell><PartnerAgreementSign /></CollectiveShell></RequireAuth>}
         </Route>

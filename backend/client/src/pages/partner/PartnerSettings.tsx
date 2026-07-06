@@ -15,16 +15,37 @@ import { Label } from "@/components/ui/label";
 /* v25.12 NH11 — toast settings save failures in addition to the inline error
  * shown elsewhere on the page. */
 import { useToast } from "@/hooks/use-toast";
+/* v25.50 Phase 7 (11) — canonical master lists replace the free-text region /
+   currency fields, and back the expanded company-profile subset. */
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
+import { COUNTRIES } from "@/lib/profile/data/countries";
+import { buildCurrencyOptions } from "@/lib/currencyOptions";
 
 const TIER_RANK = { catalyst: 1, builder: 2, amplifier: 3, nexus: 4, founding_member: 5 } as const;
 
+const CURRENCY_OPTIONS = buildCurrencyOptions();
+
 type Settings = {
   displayName?: string;
+  /* v25.50 Phase 7 (11a) — expanded company-profile subset (persists in the
+     workspace-settings JSON blob; the server patch is spread-based). */
+  legalName?: string;
+  website?: string;
+  addressLine1?: string;
+  city?: string;
+  country?: string;
   regionCode?: string;
   preferredPayoutCurrency?: string;
   branding?: { logoUrl?: string; primaryColor?: string };
   notifications?: { weeklyDigest?: boolean; newClientAlert?: boolean };
 };
+
+/* v25.50 Phase 7 (11c) — the Branding tab is HIDDEN entirely. The tab code +
+   its write handlers remain below (dormant) so the white-label surface can be
+   restored without a rebuild, but it is unreachable from the tab strip. */
+const BRANDING_TAB_HIDDEN = true;
 
 export default function PartnerSettings() {
   const role = useRequirePartnerRole();
@@ -69,7 +90,9 @@ export default function PartnerSettings() {
   return (
     <PartnerShell title="Settings" tier={me.tier} subRole={me.subRole} partnerName={me.identity.name}>
       <div className="flex gap-2 mb-4 border-b">
-        {(["profile", "localization", "branding", "notifications"] as const).map((t) => (
+        {(["profile", "localization", "branding", "notifications"] as const)
+          .filter((t) => !(t === "branding" && BRANDING_TAB_HIDDEN))
+          .map((t) => (
           <button
             key={t}
             data-testid={`partner-settings-tab-${t}`}
@@ -94,6 +117,8 @@ export default function PartnerSettings() {
 
       {tab === "profile" && (
         <Card className="p-4 space-y-3" data-testid="partner-settings-profile">
+          {/* v25.50 Phase 7 (11a) — expanded editable profile: display name plus
+             a CompanyProfile-taxonomy subset (legal name, website, address). */}
           <div>
             <Label>Display Name</Label>
             <Input
@@ -103,35 +128,95 @@ export default function PartnerSettings() {
               data-testid="partner-settings-display-name"
             />
           </div>
+          <div>
+            <Label>Legal Company Name</Label>
+            <Input
+              value={settings.legalName ?? ""}
+              onChange={(e) => setForm({ ...form, legalName: e.target.value })}
+              disabled={!canWrite}
+              data-testid="partner-settings-legal-name"
+            />
+          </div>
+          <div>
+            <Label>Website</Label>
+            <Input
+              value={settings.website ?? ""}
+              onChange={(e) => setForm({ ...form, website: e.target.value })}
+              disabled={!canWrite}
+              data-testid="partner-settings-website"
+              placeholder="https://…"
+            />
+          </div>
+          <div>
+            <Label>Address</Label>
+            <Input
+              value={settings.addressLine1 ?? ""}
+              onChange={(e) => setForm({ ...form, addressLine1: e.target.value })}
+              disabled={!canWrite}
+              data-testid="partner-settings-address"
+              placeholder="Street address"
+            />
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <Label>City</Label>
+              <Input
+                value={settings.city ?? ""}
+                onChange={(e) => setForm({ ...form, city: e.target.value })}
+                disabled={!canWrite}
+                data-testid="partner-settings-city"
+              />
+            </div>
+            <div>
+              <Label>Country</Label>
+              <Select
+                value={settings.country ?? ""}
+                onValueChange={(v) => setForm({ ...form, country: v })}
+                disabled={!canWrite}
+              >
+                <SelectTrigger data-testid="partner-settings-country"><SelectValue placeholder="Select country" /></SelectTrigger>
+                <SelectContent className="max-h-72">
+                  {COUNTRIES.map((c) => <SelectItem key={c.code} value={c.code}>{c.name} ({c.code})</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
         </Card>
       )}
 
       {tab === "localization" && (
         <Card className="p-4 space-y-3" data-testid="partner-settings-localization">
+          {/* v25.50 Phase 7 (11b) — free-text region/currency → canonical dropdowns. */}
           <div>
-            <Label>Region Code (ISO 3166-1)</Label>
-            <Input
+            <Label>Region (ISO 3166-1 country)</Label>
+            <Select
               value={settings.regionCode ?? ""}
-              onChange={(e) => setForm({ ...form, regionCode: e.target.value })}
+              onValueChange={(v) => setForm({ ...form, regionCode: v })}
               disabled={!canWrite}
-              data-testid="partner-settings-region"
-              placeholder="CA"
-            />
+            >
+              <SelectTrigger data-testid="partner-settings-region"><SelectValue placeholder="Select region" /></SelectTrigger>
+              <SelectContent className="max-h-72">
+                {COUNTRIES.map((c) => <SelectItem key={c.code} value={c.code}>{c.name} ({c.code})</SelectItem>)}
+              </SelectContent>
+            </Select>
           </div>
           <div>
             <Label>Preferred Payout Currency (ISO 4217)</Label>
-            <Input
+            <Select
               value={settings.preferredPayoutCurrency ?? ""}
-              onChange={(e) => setForm({ ...form, preferredPayoutCurrency: e.target.value })}
+              onValueChange={(v) => setForm({ ...form, preferredPayoutCurrency: v })}
               disabled={!canWrite}
-              data-testid="partner-settings-currency"
-              placeholder="CAD"
-            />
+            >
+              <SelectTrigger data-testid="partner-settings-currency"><SelectValue placeholder="Select currency" /></SelectTrigger>
+              <SelectContent className="max-h-72">
+                {CURRENCY_OPTIONS.map((c) => <SelectItem key={c.code} value={c.code}>{c.code} — {c.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
           </div>
         </Card>
       )}
 
-      {tab === "branding" && (
+      {tab === "branding" && !BRANDING_TAB_HIDDEN && (
         <Card className="p-4 space-y-3" data-testid="partner-settings-branding">
           {!canBrand && (
             <div className="bg-amber-50 border border-amber-200 p-3 rounded text-sm" data-testid="partner-settings-branding-locked">

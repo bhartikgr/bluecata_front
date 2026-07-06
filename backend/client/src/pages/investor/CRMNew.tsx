@@ -26,7 +26,10 @@ export default function InvestorCRMNew() {
   const [, navigate] = useLocation();
 
   const [form, setForm] = useState({
-    name: "",
+    // v25.51 name-split — discrete First/Last capture. The composed `name` is
+    // derived at submit time so the server contract stays "First Last".
+    firstName: "",
+    lastName: "",
     role: "",
     email: "",
     affiliation: "",
@@ -54,7 +57,7 @@ export default function InvestorCRMNew() {
   // reset the form short of reloading. This resets every field to its initial
   // empty state (and the tag/platform-link sub-state).
   function clearForm() {
-    setForm({ name: "", role: "", email: "", affiliation: "", stage: "cold" as InvestorCrmStage, notes: "" });
+    setForm({ firstName: "", lastName: "", role: "", email: "", affiliation: "", stage: "cold" as InvestorCrmStage, notes: "" });
     setTagInput("");
     setTags([]);
     setPlatformUserId("");
@@ -63,8 +66,12 @@ export default function InvestorCRMNew() {
 
   const saveMut = useMutation({
     mutationFn: async () => {
+      const first = form.firstName.trim();
+      const last = form.lastName.trim();
       const res = await apiRequest("POST", "/api/investor/crm", {
-        name: form.name.trim(),
+        firstName: first || undefined,
+        lastName: last || undefined,
+        name: [first, last].filter(Boolean).join(" "),
         role: form.role.trim() || undefined,
         email: form.email.trim() || undefined,
         affiliation: form.affiliation.trim() || undefined,
@@ -76,7 +83,7 @@ export default function InvestorCRMNew() {
       return res.json();
     },
     onSuccess: () => {
-      toast({ title: "Contact saved", description: `${form.name} added to your CRM.` });
+      toast({ title: "Contact saved", description: `${[form.firstName.trim(), form.lastName.trim()].filter(Boolean).join(" ")} added to your CRM.` });
       queryClient.invalidateQueries({ queryKey: ["/api/investor/crm"] });
       navigate("/investor/crm");
     },
@@ -87,7 +94,10 @@ export default function InvestorCRMNew() {
   // mandatory field with format validation; Save is blocked until valid.
   const emailValid = /\S+@\S+\.\S+/.test(form.email.trim());
   const canSave =
-    form.name.trim().length > 0 && form.affiliation.trim().length > 0 && emailValid;
+    form.firstName.trim().length > 0 &&
+    form.lastName.trim().length > 0 &&
+    form.affiliation.trim().length > 0 &&
+    emailValid;
 
   return (
     <>
@@ -110,14 +120,28 @@ export default function InvestorCRMNew() {
             <div className="grid md:grid-cols-2 gap-4">
               <div>
                 <Label>
-                  Name <span className="text-destructive">*</span>
+                  First name <span className="text-destructive">*</span>
                 </Label>
                 <Input
                   className="mt-1"
-                  value={form.name}
-                  onChange={(e) => update("name", e.target.value)}
-                  placeholder="Sarah Chen"
-                  data-testid="input-name"
+                  value={form.firstName}
+                  onChange={(e) => update("firstName", e.target.value)}
+                  placeholder="Sarah"
+                  aria-invalid={form.firstName.trim().length === 0}
+                  data-testid="input-first-name"
+                />
+              </div>
+              <div>
+                <Label>
+                  Last name <span className="text-destructive">*</span>
+                </Label>
+                <Input
+                  className="mt-1"
+                  value={form.lastName}
+                  onChange={(e) => update("lastName", e.target.value)}
+                  placeholder="Chen"
+                  aria-invalid={form.lastName.trim().length === 0}
+                  data-testid="input-last-name"
                 />
               </div>
               <div>

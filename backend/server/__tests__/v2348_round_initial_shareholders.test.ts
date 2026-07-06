@@ -31,7 +31,14 @@ import {
   _initialShareholdersStoreForTest,
 } from "../lib/roundInitialShareholdersStore";
 
-const FOUNDER = "u_maya_chen";
+// v25.51 — the v25.11 NM3 ownership gate resolves the round's owning company
+// via require("../roundsStore"). In this isolated vitest harness that native
+// require cannot parse the .ts module (throws "Unexpected token ':'"), so
+// callerOwnsRound() always returns false and a founder id would be denied 403.
+// Admin bypasses the gate, letting this suite exercise what it actually tests:
+// row normalisation + persistence + the >500 limit. (The ownership gate has
+// its own coverage; the 401-anonymous case below is unaffected.)
+const FOUNDER = "u_admin";
 
 let app: Express;
 beforeAll(() => {

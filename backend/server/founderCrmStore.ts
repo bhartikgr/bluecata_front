@@ -51,6 +51,11 @@ export type FounderCrmContact = {
   companyId: string;
   investorId: string;
   name: string;
+  // v25.51 6a — discrete identity fields (per Ozan). Optional/nullable so
+  // existing rows + callers that only send name/firmName still work.
+  firstName?: string | null;
+  lastName?: string | null;
+  companyName?: string | null;
   firmName: string;
   email: string;
   region: string;
@@ -75,6 +80,27 @@ function tenantForCompany(companyId: string): string {
   return `tenant_co_${companyId}`;
 }
 
+/** v25.51 6a — trimmed string or null. */
+function optCrmStr(v: unknown): string | null {
+  return typeof v === "string" && v.trim() ? v.trim() : null;
+}
+
+/**
+ * v25.51 6a — compose the backward-compat display `name`. Prefer "First Last"
+ * from the new discrete fields; fall back to a caller-supplied `name`, then to
+ * the composed contact, then a safe default.
+ */
+function composeCrmName(body: Record<string, unknown> | undefined): string {
+  const first = optCrmStr(body?.firstName);
+  const last = optCrmStr(body?.lastName);
+  const composed = [first, last].filter(Boolean).join(" ").trim();
+  if (composed) return composed;
+  const name = optCrmStr(body?.name);
+  if (name) return name;
+  const contact = optCrmStr(body?.primaryContact);
+  return contact ?? "New contact";
+}
+
 /** Convert a DB row into the in-memory FounderCrmContact shape. */
 function rowToContact(r: any): FounderCrmContact {
   const parse = <T,>(s: any, fallback: T): T => {
@@ -86,6 +112,9 @@ function rowToContact(r: any): FounderCrmContact {
     companyId: r.companyId,
     investorId: r.investorId ?? "",
     name: r.name,
+    firstName: r.firstName ?? null,
+    lastName: r.lastName ?? null,
+    companyName: r.companyName ?? null,
     firmName: r.firmName ?? "—",
     email: r.email ?? "",
     region: r.region ?? "US",
@@ -110,6 +139,9 @@ function contactToRow(c: FounderCrmContact) {
     companyId: c.companyId,
     investorId: c.investorId,
     name: c.name,
+    firstName: c.firstName ?? null,
+    lastName: c.lastName ?? null,
+    companyName: c.companyName ?? null,
     firmName: c.firmName,
     role: null as string | null,
     email: c.email,
@@ -279,10 +311,18 @@ export function registerFounderCrmRoutes(app: Express): void {
     try {
       const driver = rawDb() as unknown as { prepare?: (sql: string) => { all: (...a: unknown[]) => unknown[] } };
       if (driver && typeof driver.prepare === "function") {
+        // v25.51 name-split — the physical columns are snake_case; alias them
+        // to the camelCase keys rowToContact expects, and PROJECT the new
+        // first_name/last_name/company_name discrete fields so the founder CRM
+        // list surfaces them. `deleted_at IS NULL` mirrors the cache/hydrate
+        // semantics so soft-deleted rows are not resurrected on refresh.
         const rows = driver.prepare(
-          `SELECT id, tenantId, companyId, investorId, name, firmName, email, region, stage,
-                  ownership, softCircleHistory, maSignals, threadIds, notes, notesUpdatedAt, tasks, series
-           FROM founder_crm_contacts WHERE companyId = ?`
+          `SELECT id, tenant_id AS tenantId, company_id AS companyId, investor_id AS investorId,
+                  name, first_name AS firstName, last_name AS lastName, company_name AS companyName,
+                  firm_name AS firmName, email, region, stage,
+                  ownership, soft_circle_history AS softCircleHistory, ma_signals AS maSignals,
+                  thread_ids AS threadIds, notes, notes_updated_at AS notesUpdatedAt, tasks, series
+           FROM founder_crm_contacts WHERE company_id = ? AND deleted_at IS NULL`
         ).all(companyId) as any[];
         // Merge: drop any in-memory cached contacts for this companyId, then
         // re-push the fresh DB rows. Keeps other companies' caches intact.
@@ -349,8 +389,14 @@ export function registerFounderCrmRoutes(app: Express): void {
       // dedupe and leaking rows across tenants.
       companyId,
       investorId: req.body?.investorId ?? `u_${randomBytes(3).toString("hex")}`,
-      name: req.body?.name ?? "New contact",
-      firmName: req.body?.firmName ?? "—",
+      // v25.51 6a — persist discrete first/last/company. Compose the legacy
+      // `name` from "First Last" when supplied, and map company → firmName, so
+      // existing readers/exports (which key off name/firmName) keep working.
+      name: composeCrmName(req.body),
+      firstName: optCrmStr(req.body?.firstName),
+      lastName: optCrmStr(req.body?.lastName),
+      companyName: optCrmStr(req.body?.companyName),
+      firmName: optCrmStr(req.body?.companyName) ?? (typeof req.body?.firmName === "string" && req.body.firmName.trim() ? req.body.firmName.trim() : "—"),
       email: req.body?.email ?? "",
       region: normalizeRegion(req.body?.region ?? "US"),
       stage: normalizeStage(req.body?.stage) as FounderCrmContact["stage"],
@@ -452,6 +498,23 @@ export function registerFounderCrmRoutes(app: Express): void {
     if (!callerOwnsContactCompany(req, res, c.companyId)) return;
     if (typeof req.body?.stage === "string") c.stage = normalizeStage(req.body.stage) as FounderCrmContact["stage"];
     if (typeof req.body?.notes === "string") { c.notes = req.body.notes; c.notesUpdatedAt = new Date().toISOString(); }
+    // v25.51 name-split — accept discrete first/last/company edits. When either
+    // name part changes, recompose the legacy `name` as "First Last" so all
+    // name-keyed readers/exports stay consistent. A caller-supplied `name` still
+    // wins if it is sent explicitly (handled just below).
+    const firstChanged = typeof req.body?.firstName === "string";
+    const lastChanged = typeof req.body?.lastName === "string";
+    if (firstChanged) c.firstName = optCrmStr(req.body.firstName);
+    if (lastChanged) c.lastName = optCrmStr(req.body.lastName);
+    if (typeof req.body?.companyName === "string") {
+      c.companyName = optCrmStr(req.body.companyName);
+      // Mirror company → firmName (matches POST) so firm-keyed readers align.
+      c.firmName = c.companyName ?? c.firmName;
+    }
+    if (firstChanged || lastChanged) {
+      const composed = [c.firstName, c.lastName].filter(Boolean).join(" ").trim();
+      if (composed) c.name = composed;
+    }
     if (typeof req.body?.name === "string" && req.body.name.trim().length > 0) c.name = req.body.name.trim();
     if (typeof req.body?.firmName === "string") c.firmName = req.body.firmName.trim() || "—";
     if (typeof req.body?.email === "string") c.email = req.body.email.trim();
@@ -470,6 +533,9 @@ export function registerFounderCrmRoutes(app: Express): void {
         tx.update(founderCrmContactsTable)
           .set({
             name: c.name,
+            firstName: c.firstName ?? null,
+            lastName: c.lastName ?? null,
+            companyName: c.companyName ?? null,
             firmName: c.firmName,
             email: c.email,
             region: c.region,
@@ -737,6 +803,121 @@ export function upsertCrmContactForInvitation(args: {
   } catch {
     // Non-fatal: in-memory contact is already added above.
   }
+}
+
+/**
+ * v25.51 5a — round → founder CRM unification.
+ *
+ * When a founder adds a manual (non-Capavate) investor to a round's initial
+ * shareholders, that person should also become a first-class founder CRM
+ * contact so the round and the CRM are one dataset (Ozan). This helper
+ * upserts-and-links:
+ *   1. Dedupe by normalized email (company-scoped). When no email is present,
+ *      fall back to LOWER(TRIM(first + last + company)).
+ *   2. If a live contact matches, return its id (link only — no new row).
+ *   3. Otherwise create a new contact (discrete first/last/company + composed
+ *      `name`) and return the new id.
+ *
+ * Idempotent: calling twice with the same identity returns the SAME id and
+ * never creates a duplicate row. The DB write uses the reliable drizzle path
+ * (contactToRow → snake_case mapping) so the row actually persists.
+ *
+ * Cap-table math is NOT touched — this only writes a CRM contact row.
+ */
+export function upsertFromRound(args: {
+  companyId: string;
+  tenantId?: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  companyName?: string | null;
+  email?: string | null;
+  roundId?: string | null;
+}): { id: string; created: boolean } | null {
+  if (!args.companyId) return null;
+  const first = optCrmStr(args.firstName);
+  const last = optCrmStr(args.lastName);
+  const company = optCrmStr(args.companyName);
+  const email = optCrmStr(args.email);
+  const normalizedEmail = email ? email.toLowerCase() : "";
+  const fbFirst = (first ?? "").toLowerCase();
+  const fbLast = (last ?? "").toLowerCase();
+  const fbCompany = (company ?? "").toLowerCase();
+
+  // 1) Authoritative DB dedupe (survives cold caches / cluster workers).
+  try {
+    const driver = rawDb() as unknown as { prepare?: (sql: string) => { get: (...a: unknown[]) => unknown } };
+    if (driver && typeof driver.prepare === "function") {
+      let dbRow: { id: string } | undefined;
+      if (normalizedEmail) {
+        dbRow = driver.prepare(
+          `SELECT id FROM founder_crm_contacts
+             WHERE company_id = ? AND LOWER(TRIM(email)) = ? AND deleted_at IS NULL LIMIT 1`,
+        ).get(args.companyId, normalizedEmail) as { id: string } | undefined;
+      } else if (fbFirst || fbLast || fbCompany) {
+        dbRow = driver.prepare(
+          `SELECT id FROM founder_crm_contacts
+             WHERE company_id = ?
+               AND LOWER(TRIM(COALESCE(first_name,''))) = ?
+               AND LOWER(TRIM(COALESCE(last_name,''))) = ?
+               AND LOWER(TRIM(COALESCE(company_name,''))) = ?
+               AND deleted_at IS NULL LIMIT 1`,
+        ).get(args.companyId, fbFirst, fbLast, fbCompany) as { id: string } | undefined;
+      }
+      if (dbRow?.id) return { id: dbRow.id, created: false };
+    }
+  } catch (err) {
+    log.warn("[upsertFromRound] DB dedupe lookup failed:", (err as Error).message);
+  }
+
+  // 2) In-memory guard (no-DB/test paths + same-process races).
+  const cacheMatch = contacts.find((c) => {
+    if (c.companyId !== args.companyId) return false;
+    if (normalizedEmail) return c.email.trim().toLowerCase() === normalizedEmail;
+    return (
+      (c.firstName ?? "").trim().toLowerCase() === fbFirst &&
+      (c.lastName ?? "").trim().toLowerCase() === fbLast &&
+      (c.companyName ?? "").trim().toLowerCase() === fbCompany &&
+      (fbFirst !== "" || fbLast !== "" || fbCompany !== "")
+    );
+  });
+  if (cacheMatch) return { id: cacheMatch.id, created: false };
+
+  // 3) Create a new contact.
+  const composed = [first, last].filter(Boolean).join(" ").trim();
+  const displayName = composed || company || (email ? email.split("@")[0] : "") || "New contact";
+  const roundSuffix = args.roundId ? ` — round ${args.roundId}` : "";
+  const newContact: FounderCrmContact = {
+    id: `fcrm_rnd_${args.companyId.slice(-4)}_${randomBytes(3).toString("hex")}`,
+    companyId: args.companyId,
+    investorId: `u_rnd_${randomBytes(3).toString("hex")}`,
+    name: displayName,
+    firstName: first,
+    lastName: last,
+    companyName: company,
+    firmName: company ?? "—",
+    email: email ?? "",
+    region: "US",
+    stage: "prospect",
+    ownership: { sharesUsd: 0, pct: 0 },
+    softCircleHistory: [],
+    maSignals: 0,
+    threadIds: [],
+    notes: `Added from round initial shareholders${roundSuffix}`,
+    notesUpdatedAt: new Date().toISOString(),
+    tasks: [],
+    series: "—",
+  };
+  // DB write first (drizzle path — reliable snake_case mapping), then cache.
+  try {
+    const db = getDb();
+    db.transaction((tx: any) => {
+      tx.insert(founderCrmContactsTable).values(contactToRow(newContact)).run();
+    });
+  } catch (err) {
+    log.warn("[upsertFromRound] DB write failed (cache still updated):", (err as Error).message);
+  }
+  contacts.push(newContact);
+  return { id: newContact.id, created: true };
 }
 
 /**

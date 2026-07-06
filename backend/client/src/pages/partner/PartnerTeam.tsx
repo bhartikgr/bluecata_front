@@ -12,11 +12,35 @@ import { Input } from "@/components/ui/input";
 /* v25.12 NH6 — surface invite + remove failures (seat limit, network, etc). */
 import { useToast } from "@/hooks/use-toast";
 
-const SUB_ROLES = ["managing_partner", "associate", "bd", "analyst", "viewer"] as const;
+/* v25.50 Phase 7 (7b) — comprehensive, properly-labeled positions list. The 5
+   canonical values are enforced server-side (invite endpoint); this maps each to
+   a human-readable label + short description so the picker is self-explanatory. */
+const POSITIONS: Array<{ value: string; label: string; hint: string }> = [
+  { value: "managing_partner", label: "Managing Partner", hint: "Full control — invite/remove, billing, deals" },
+  { value: "associate", label: "Associate", hint: "Deal execution — pipeline, notes, SPVs" },
+  { value: "bd", label: "Business Development", hint: "Sourcing & outreach — pipeline, notes" },
+  { value: "analyst", label: "Analyst", hint: "Read + supporting analysis" },
+  { value: "viewer", label: "Viewer", hint: "Read-only access" },
+];
+const POSITION_LABELS: Record<string, string> = Object.fromEntries(POSITIONS.map((p) => [p.value, p.label]));
+const positionLabel = (v: string) => POSITION_LABELS[v] ?? v;
+
+type TeamMember = {
+  id: string;
+  userId: string;
+  subRole: string;
+  status: string;
+  joinedAt: string;
+  name: string | null;
+  email: string | null;
+  mobile: string | null;
+  contactEmail: string | null;
+  positionNote: string | null;
+};
 
 export default function PartnerTeam() {
   const role = useRequirePartnerRole();
-  const q = useQuery<{ members: Array<{ id: string; userId: string; subRole: string; status: string; joinedAt: string }>; invitations: Array<{ id: string; invitedEmail: string; subRole: string; expiresAt: string; redeemedAt: string | null }> }>({
+  const q = useQuery<{ members: TeamMember[]; invitations: Array<{ id: string; invitedEmail: string; subRole: string; expiresAt: string; redeemedAt: string | null }> }>({
     queryKey: ["/api/partner/me/team"],
     enabled: role.ready,
     queryFn: async () => (await apiRequest("GET", "/api/partner/me/team")).json(),
@@ -77,6 +101,35 @@ export default function PartnerTeam() {
     onError: onErr("Remove member"),
   });
 
+  /* v25.50 Phase 7 (7c) — edit a member's partner-local contact info. */
+  const [editing, setEditing] = useState<TeamMember | null>(null);
+  const [editMobile, setEditMobile] = useState("");
+  const [editContactEmail, setEditContactEmail] = useState("");
+  const [editPositionNote, setEditPositionNote] = useState("");
+  const openEdit = (m: TeamMember) => {
+    setEditing(m);
+    setEditMobile(m.mobile ?? "");
+    setEditContactEmail(m.contactEmail ?? "");
+    setEditPositionNote(m.positionNote ?? "");
+  };
+  const contactMut = useMutation({
+    mutationFn: async () => {
+      if (!editing) throw new Error("No member selected");
+      const res = await apiRequest("PATCH", `/api/partner/me/team/${editing.userId}/contact`, {
+        mobile: editMobile,
+        contactEmail: editContactEmail,
+        positionNote: editPositionNote,
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      setEditing(null);
+      queryClient.invalidateQueries({ queryKey: ["/api/partner/me/team"] });
+      toast({ title: "Contact updated" });
+    },
+    onError: onErr("Update contact"),
+  });
+
   const copyToken = async () => {
     if (!issuedToken) return;
     const redeemUrl = `${window.location.origin}/auth/redeem-partner-invite/${issuedToken.plainToken}`;
@@ -122,8 +175,8 @@ export default function PartnerTeam() {
       {canInvite && (
         <div className="flex gap-2 mb-6 bg-white p-3 rounded border" data-testid="invite-form">
           <Input data-testid="invite-email" placeholder="member@example.com" value={email} onChange={(e) => setEmail(e.target.value)} className="max-w-xs" />
-          <select data-testid="invite-role" value={subRole} onChange={(e) => setSubRole(e.target.value)} className="border rounded px-2 text-sm">
-            {SUB_ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
+          <select data-testid="invite-role" value={subRole} onChange={(e) => setSubRole(e.target.value)} className="border rounded px-2 text-sm" title={POSITIONS.find((p) => p.value === subRole)?.hint}>
+            {POSITIONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
           </select>
           <Button data-testid="invite-btn" disabled={!email || inviteMut.isPending} onClick={() => inviteMut.mutate()}>
             {inviteMut.isPending ? "Inviting…" : "Invite"}
@@ -163,14 +216,35 @@ export default function PartnerTeam() {
       <div className="bg-white rounded-lg border overflow-hidden mb-6">
         <div className="px-3 py-2 text-xs uppercase text-slate-500 bg-slate-50">Members</div>
         <table className="w-full text-sm" data-testid="members-table">
-          <thead className="bg-slate-50"><tr><th className="p-2 text-left">User</th><th className="p-2 text-left">Role</th><th className="p-2 text-left">Status</th><th className="p-2"></th></tr></thead>
+          <thead className="bg-slate-50"><tr><th className="p-2 text-left">Member</th><th className="p-2 text-left">Contact</th><th className="p-2 text-left">Position</th><th className="p-2 text-left">Status</th><th className="p-2"></th></tr></thead>
           <tbody>
             {(q.data?.members ?? []).map((m) => (
               <tr key={m.id} className="border-t" data-testid={`member-${m.userId}`}>
-                <td className="p-2">{m.userId}</td>
-                <td className="p-2 text-slate-500">{m.subRole}</td>
+                <td className="p-2">
+                  {/* v25.50 Phase 7 (7a) — real name/email from users JOIN; fall
+                     back to the raw id only if the identity lookup missed. */}
+                  <div className="font-medium text-slate-800">{m.name || m.userId}</div>
+                  {m.email && <div className="text-xs text-slate-500">{m.email}</div>}
+                </td>
+                <td className="p-2 text-xs text-slate-500">
+                  {m.mobile && <div>{m.mobile}</div>}
+                  {m.contactEmail && <div>{m.contactEmail}</div>}
+                  {m.positionNote && <div className="italic">{m.positionNote}</div>}
+                  {!m.mobile && !m.contactEmail && !m.positionNote && <span>—</span>}
+                </td>
+                <td className="p-2 text-slate-500">{positionLabel(m.subRole)}</td>
                 <td className="p-2 text-slate-500">{m.status}</td>
-                <td className="p-2 text-right">
+                <td className="p-2 text-right whitespace-nowrap">
+                  {/* v25.50 Phase 7 (7c) — managing_partner may edit contact info. */}
+                  {canInvite && m.status === "active" && (
+                    <button
+                      data-testid={`edit-contact-${m.userId}`}
+                      className="text-slate-600 text-xs mr-3 hover:text-slate-900"
+                      onClick={() => openEdit(m)}
+                    >
+                      Edit
+                    </button>
+                  )}
                   {/* v25.16 NL4 — hide Remove on self to prevent workspace lock-out.
                      v25.16 NL3 — disable while a delete is in flight.
                      v25.23 NL-U — disable Remove on the SOLE active managing_partner
@@ -205,7 +279,7 @@ export default function PartnerTeam() {
             {(q.data?.invitations ?? []).filter((i) => !i.redeemedAt).map((i) => (
               <tr key={i.id} className="border-t" data-testid={`invite-${i.id}`}>
                 <td className="p-2">{i.invitedEmail}</td>
-                <td className="p-2 text-slate-500">{i.subRole}</td>
+                <td className="p-2 text-slate-500">{positionLabel(i.subRole)}</td>
                 {/* v25.16 NM7 — guard against null expiresAt. */}
                 <td className="p-2 text-slate-500">{i.expiresAt ? new Date(i.expiresAt).toLocaleDateString() : "—"}</td>
               </tr>
@@ -213,6 +287,27 @@ export default function PartnerTeam() {
           </tbody>
         </table>
       </div>
+      {/* v25.50 Phase 7 (7c) — contact edit dialog (managing_partner only). */}
+      {editing && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" data-testid="edit-contact-dialog">
+          <div className="bg-white rounded-lg border shadow-lg w-full max-w-md p-5">
+            <div className="text-base font-semibold text-slate-800 mb-1">Edit contact</div>
+            <div className="text-xs text-slate-500 mb-4">{editing.name || editing.userId}</div>
+            <label className="block text-xs text-slate-600 mb-1">Mobile</label>
+            <Input data-testid="edit-mobile" value={editMobile} onChange={(e) => setEditMobile(e.target.value)} placeholder="+1 555 000 0000" className="mb-3" />
+            <label className="block text-xs text-slate-600 mb-1">Contact email</label>
+            <Input data-testid="edit-contact-email" value={editContactEmail} onChange={(e) => setEditContactEmail(e.target.value)} placeholder="name@example.com" className="mb-3" />
+            <label className="block text-xs text-slate-600 mb-1">Position note</label>
+            <Input data-testid="edit-position-note" value={editPositionNote} onChange={(e) => setEditPositionNote(e.target.value)} placeholder="e.g. Head of Deal Flow" className="mb-4" />
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" size="sm" data-testid="edit-contact-cancel" onClick={() => setEditing(null)}>Cancel</Button>
+              <Button size="sm" data-testid="edit-contact-save" disabled={contactMut.isPending} onClick={() => contactMut.mutate()}>
+                {contactMut.isPending ? "Saving…" : "Save"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </PartnerShell>
   );
 }

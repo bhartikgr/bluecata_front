@@ -39,11 +39,22 @@ import type { Express, Request, Response } from "express";
 import { getUserContext } from "./userContext";
 import { appendAdminAudit } from "../adminPlatformStore";
 import { log } from "./logger";
+/* v25.51 5a — static ESM import (no cycle: founderCrmStore's dep closure never
+   reaches this file). Replaces the broken runtime require("../founderCrmStore")
+   so the manual-investor → founder-CRM upsert-and-link actually runs. */
+import { upsertFromRound } from "../founderCrmStore";
 
 export type InitialShareholderSource = "crm" | "manual";
 
 export type InitialShareholder = {
   name: string;
+  // v25.51 5a — discrete identity fields (per Ozan). Persisted first-class
+  // alongside the composed `name` display string. Nullable + optional so
+  // existing kv-shim rows written before this wave (which lack them) still
+  // hydrate cleanly and downstream readers tolerate null first/last/company.
+  firstName?: string | null;
+  lastName?: string | null;
+  company?: string | null;
   email?: string | null;
   checkSize?: string | null; // decimal-as-string (Sprint 25 precision rule)
   source: InitialShareholderSource;
@@ -113,6 +124,22 @@ function tenantForCompany(companyId: string): string {
   return `tenant_co_${companyId}`;
 }
 
+/**
+ * v25.51 5a — resolve the round's owning companyId via the SACRED roundsStore
+ * (read-only). Lazy require keeps us off the sacred import graph at module top
+ * (mirrors callerOwnsRound). Returns null when the round is unknown.
+ */
+function companyForRound(roundId: string): string | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const rs = require("../roundsStore");
+    const round = typeof rs.getRoundById === "function" ? rs.getRoundById(roundId) : null;
+    return typeof round?.companyId === "string" ? round.companyId : null;
+  } catch {
+    return null;
+  }
+}
+
 function normaliseDecimalString(v: unknown): string | null {
   if (typeof v !== "string") return null;
   const trimmed = v.trim();
@@ -146,14 +173,49 @@ export function registerRoundInitialShareholdersRoutes(app: Express): void {
     for (const raw of incoming) {
       if (!raw || typeof raw.name !== "string" || !raw.name.trim()) continue;
       const source: InitialShareholderSource = raw.source === "crm" ? "crm" : "manual";
+      const optStr = (v: unknown): string | null =>
+        typeof v === "string" && v.trim() ? v.trim() : null;
       normalised.push({
         name: String(raw.name).trim(),
-        email: typeof raw.email === "string" && raw.email.trim() ? raw.email.trim() : null,
+        // v25.51 5a — persist discrete first/last/company when supplied.
+        firstName: optStr(raw.firstName),
+        lastName: optStr(raw.lastName),
+        company: optStr(raw.company),
+        email: optStr(raw.email),
         checkSize: normaliseDecimalString(raw.checkSize),
         source,
         crmContactId: typeof raw.crmContactId === "string" ? raw.crmContactId : null,
         addedAt: now,
       });
+    }
+
+    /* v25.51 5a — round → founder CRM unification. For each MANUAL shareholder
+     * that is not yet linked to a CRM contact, upsert-and-link a founder CRM
+     * contact (dedupe by email, fallback first+last+company) and write the id
+     * back onto the row so a re-PATCH links instead of creating a duplicate.
+     * `source:"crm"` rows are assumed already linked (they carry crmContactId)
+     * — we never create a new CRM row for them here. Cap-table is untouched.
+     * Best-effort: a CRM write failure must not fail the shareholder save. */
+    const companyId = companyForRound(roundId) ?? (typeof body.companyId === "string" ? body.companyId : null);
+    if (companyId) {
+      try {
+        for (const row of normalised) {
+          if (row.source !== "manual") continue;
+          if (row.crmContactId) continue; // already linked → idempotent no-op
+          const res = upsertFromRound({
+            companyId,
+            tenantId: tenantForCompany(companyId),
+            firstName: row.firstName,
+            lastName: row.lastName,
+            companyName: row.company,
+            email: row.email,
+            roundId,
+          }) as { id: string; created: boolean } | null;
+          if (res?.id) row.crmContactId = res.id;
+        }
+      } catch (err) {
+        log.warn("[roundInitialShareholdersStore] CRM upsert-link failed:", (err as Error).message);
+      }
     }
 
     store.set(roundId, normalised);

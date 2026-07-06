@@ -114,3 +114,40 @@ export const PARTNER_CLIENT_DEFAULT_STAGE: PartnerClientStage = "prospect";
 export function isPartnerClientStage(v: unknown): v is PartnerClientStage {
   return typeof v === "string" && (PARTNER_CLIENT_STAGES as readonly string[]).includes(v);
 }
+
+/* v25.50.0 Phase 2 (spec 2c, LOCKED) — Consortium Partner PIPELINE board stages.
+ * Replicates Capavate's canonical company deal funnel VERBATIM (the per-investor
+ * decision funnel a company runs each investor through inside a round; see
+ * client/src/pages/founder/RoundDetail.tsx:1388-1395). Stage ADVANCEMENT allows
+ * SKIPPING — validation is membership-in-set, never adjacency. This is the
+ * partner's own pipeline board (`partner_deal_pipeline`); it NEVER mutates the
+ * sacred cap-table ledger. */
+export const PARTNER_PIPELINE_STAGES = [
+  "invited", "viewed", "soft_circle", "signed", "funded", "committed",
+] as const;
+export type PartnerPipelineStageKey = (typeof PARTNER_PIPELINE_STAGES)[number];
+
+export const PARTNER_PIPELINE_STAGE_LABELS: Record<PartnerPipelineStageKey, string> = {
+  invited: "Invited",
+  viewed: "Viewed",
+  soft_circle: "Soft-circle",
+  signed: "Signed",
+  funded: "Funded",
+  committed: "Committed",
+};
+
+/** One-line description of what each pipeline stage represents (spec 2c-a). */
+export const PARTNER_PIPELINE_STAGE_DESCRIPTIONS: Record<PartnerPipelineStageKey, string> = {
+  invited: "Company has been invited into your deal flow but has not yet engaged.",
+  viewed: "Company has reviewed the opportunity and expressed initial interest.",
+  soft_circle: "Investors have soft-circled — non-binding commitments are being gathered.",
+  signed: "Definitive terms are signed; the raise is closing.",
+  funded: "Capital has been wired and the round is funded.",
+  committed: "Positions are committed to the cap table — the relationship is live.",
+};
+
+export const PARTNER_PIPELINE_DEFAULT_STAGE: PartnerPipelineStageKey = "invited";
+
+export function isPartnerPipelineStage(v: unknown): v is PartnerPipelineStageKey {
+  return typeof v === "string" && (PARTNER_PIPELINE_STAGES as readonly string[]).includes(v);
+}

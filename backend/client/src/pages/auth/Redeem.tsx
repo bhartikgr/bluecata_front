@@ -233,7 +233,15 @@ export default function Redeem() {
           <Input id="confirm" type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} required minLength={8} data-testid="input-confirm" />
         </div>
         <label className="flex items-start gap-2 text-sm cursor-pointer">
-          <Checkbox checked={agreed} onCheckedChange={(v) => setAgreed(v === true)} data-testid="checkbox-tos" />
+          {/* v25.51 1b (Shadie) — match the shared LegalConsentCheckbox's
+              distinct high-contrast emerald so the mandatory consent tick is
+              consistent and unmistakable across every consent surface. */}
+          <Checkbox
+            checked={agreed}
+            onCheckedChange={(v) => setAgreed(v === true)}
+            className="mt-0.5 h-5 w-5 border-2 border-[hsl(158_64%_32%)] bg-white shadow-sm ring-1 ring-[hsl(158_64%_32%)]/25 data-[state=checked]:bg-[hsl(158_64%_32%)] data-[state=checked]:border-[hsl(158_64%_32%)] data-[state=checked]:text-white"
+            data-testid="checkbox-tos"
+          />
           <span className="text-muted-foreground">I agree to the Capavate Terms of Service and Privacy Policy.</span>
         </label>
         {submitErr && (

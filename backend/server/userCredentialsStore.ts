@@ -39,6 +39,9 @@ export interface StoredCredential {
   userId: string;
   email: string;
   name?: string;
+  // v25.51 name-split (additive): discrete first/last; `name` kept composed.
+  firstName?: string | null;
+  lastName?: string | null;
   passwordHash: string;
   createdAt: string;
   updatedAt: string;
@@ -183,15 +186,33 @@ export function storeCredential(args: {
   userId: string;
   email: string;
   name?: string;
+  firstName?: string | null;
+  lastName?: string | null;
   password: string;
 }): void {
   const email = args.email.trim().toLowerCase();
   const now = new Date().toISOString();
   const existing = _memStore.get(email);
+  // v25.51 name-split: prefer explicit first/last; keep `name` composed. If only
+  // a composed name arrives, split it (parts[0]=first, remainder=last).
+  const f = (args.firstName ?? "").trim();
+  const l = (args.lastName ?? "").trim();
+  let credFirst: string | null = f || null;
+  let credLast: string | null = l || null;
+  let credName = args.name;
+  if (f || l) {
+    credName = [f, l].filter(Boolean).join(" ") || args.name;
+  } else if (args.name && args.name.trim()) {
+    const parts = args.name.trim().split(/\s+/);
+    credFirst = parts.shift() ?? null;
+    credLast = parts.length ? parts.join(" ") : null;
+  }
   const cred: StoredCredential = {
     userId: args.userId,
     email,
-    name: args.name,
+    name: credName,
+    firstName: credFirst,
+    lastName: credLast,
     passwordHash: hashPassword(args.password),
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
@@ -209,6 +230,8 @@ export function storeCredential(args: {
         userId: cred.userId,
         email: cred.email,
         name: cred.name ?? null,
+        firstName: cred.firstName ?? null,
+        lastName: cred.lastName ?? null,
         passwordHash: cred.passwordHash,
         createdAt: cred.createdAt,
         updatedAt: cred.updatedAt,
@@ -219,6 +242,8 @@ export function storeCredential(args: {
         set: {
           email: cred.email,
           name: cred.name ?? null,
+        firstName: cred.firstName ?? null,
+        lastName: cred.lastName ?? null,
           passwordHash: cred.passwordHash,
           updatedAt: cred.updatedAt,
           deletedAt: null,
@@ -236,6 +261,8 @@ export function storeCredential(args: {
             userId: cred.userId,
             email: cred.email,
             name: cred.name ?? null,
+        firstName: cred.firstName ?? null,
+        lastName: cred.lastName ?? null,
             passwordHash: cred.passwordHash,
             createdAt: cred.createdAt,
             updatedAt: cred.updatedAt,
@@ -246,6 +273,8 @@ export function storeCredential(args: {
             set: {
               email: cred.email,
               name: cred.name ?? null,
+        firstName: cred.firstName ?? null,
+        lastName: cred.lastName ?? null,
               passwordHash: cred.passwordHash,
               updatedAt: cred.updatedAt,
               deletedAt: null,
@@ -266,6 +295,8 @@ export function storeCredential(args: {
             userId: cred.userId,
             email: cred.email,
             name: cred.name ?? null,
+        firstName: cred.firstName ?? null,
+        lastName: cred.lastName ?? null,
             passwordHash: cred.passwordHash,
             createdAt: cred.createdAt,
             updatedAt: cred.updatedAt,
@@ -276,6 +307,8 @@ export function storeCredential(args: {
             set: {
               email: cred.email,
               name: cred.name ?? null,
+        firstName: cred.firstName ?? null,
+        lastName: cred.lastName ?? null,
               passwordHash: cred.passwordHash,
               updatedAt: cred.updatedAt,
               deletedAt: null,

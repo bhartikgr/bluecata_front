@@ -24,11 +24,20 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import type { Express, Request, Response } from "express";
+import multer from "multer"; /* v25.50 Phase 7 (10) — real tax-form document upload. */
 import { requirePartnerAuth, requirePartnerSubrole } from "./requirePartnerAuth";
 import { rawDb } from "../db/connection";
 import { appendAdminAudit } from "../adminPlatformStore";
 import { sanitizeErrorMessage } from "./sanitize"; /* v25.33 — scrub raw err.message from client responses in prod (backlog item 33 extension). */
 import { resolveChargeTier } from "./partnerTiers"; /* v25.48 CP-2b — advertised price == charged price: the SAME tier row the pricing page advertises is the ONLY charge source (no legacy fee-schedule fallback). Replaces the prior resolvePartnerFee path for partner subscription charges. */
+import { putObject, getObject } from "./objectStorage"; /* v25.50 Phase 7 (10) — store/serve tax-form docs via the sanctioned object-storage layer. */
+
+/* v25.50 Phase 7 (10) — tax-form document upload constraints. PDF + common
+ * image types only; 15MB cap (parity with post attachments). memoryStorage so
+ * multer caps the body before it fully buffers. */
+const TAX_DOC_MAX_BYTES = 15 * 1024 * 1024;
+const TAX_DOC_ALLOWED_MIME = new Set(["application/pdf", "image/png", "image/jpeg", "image/webp"]);
+const taxDocUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: TAX_DOC_MAX_BYTES } });
 
 function newId(prefix: string): string {
   return `${prefix}_${randomBytes(8).toString("hex")}`;
@@ -274,6 +283,81 @@ export function registerPartnerSelfServiceRoutes(app: Express): void {
         res.json({ ok: true, id, formType, collectedAt });
       } catch (err) {
         res.status(500).json({ error: "PARTNER_TAX_FORM_WRITE_FAILED", message: sanitizeErrorMessage(err) });
+      }
+    },
+  );
+
+  /* ==========================================================
+   * v25.50 Phase 7 (10) — POST /api/partner/me/tax-form/upload.
+   * Multipart `file` upload of a tax-form document. Stores the bytes via the
+   * sanctioned object-storage layer and returns a documentUrl that points at
+   * the authenticated serve route below. The client then submits the normal
+   * POST /api/partner/me/tax-form with this documentUrl. Auth: managing_partner.
+   * ========================================================== */
+  app.post(
+    "/api/partner/me/tax-form/upload",
+    requirePartnerAuth,
+    requirePartnerSubrole(["managing_partner"]),
+    (req: Request, res: Response) => {
+      taxDocUpload.single("file")(req, res, async (uploadErr: unknown) => {
+        if (uploadErr) {
+          const code = (uploadErr as { code?: string })?.code === "LIMIT_FILE_SIZE" ? "too_large" : "upload_failed";
+          return res.status(400).json({ ok: false, error: code, message: sanitizeErrorMessage(uploadErr) });
+        }
+        const file = (req as Request & { file?: Express.Multer.File }).file;
+        if (!file) return res.status(400).json({ ok: false, error: "no_file", message: "Use multipart/form-data with field 'file'." });
+        if (!TAX_DOC_ALLOWED_MIME.has(file.mimetype)) {
+          return res.status(400).json({ ok: false, error: "unsupported_mime", message: `mime ${file.mimetype} is not allowed` });
+        }
+        if (!Buffer.isBuffer(file.buffer) || file.buffer.length === 0) {
+          return res.status(400).json({ ok: false, error: "empty_file", message: "file is empty" });
+        }
+        try {
+          const stored = await putObject({
+            prefix: "partner_tax_forms",
+            buffer: file.buffer,
+            mimeType: file.mimetype,
+            originalName: file.originalname || "tax-form",
+          });
+          const documentUrl = `/api/partner/me/tax-form/document?key=${encodeURIComponent(stored.storageKey)}`;
+          res.status(201).json({ ok: true, storageKey: stored.storageKey, documentUrl });
+        } catch (err) {
+          res.status(500).json({ ok: false, error: "TAX_FORM_UPLOAD_FAILED", message: sanitizeErrorMessage(err) });
+        }
+      });
+    },
+  );
+
+  /* ==========================================================
+   * v25.50 Phase 7 (10) — GET /api/partner/me/tax-form/document?key=...
+   * Serve a previously-uploaded tax-form document. FAIL-CLOSED against both
+   * path traversal AND cross-tenant access: the requested key is served ONLY if
+   * a partner_tax_forms row FOR THIS PARTNER references it (document_url stores
+   * the exact serve URL). A key the partner never uploaded — including any
+   * `../` traversal attempt — has no matching row and returns 404.
+   * Auth: managing_partner.
+   * ========================================================== */
+  app.get(
+    "/api/partner/me/tax-form/document",
+    requirePartnerAuth,
+    requirePartnerSubrole(["managing_partner"]),
+    async (req: Request, res: Response) => {
+      const pid = req.partnerContext!.partnerId;
+      const key = typeof req.query.key === "string" ? req.query.key : "";
+      if (!key) return res.status(400).json({ error: "KEY_REQUIRED" });
+      try {
+        const expectedUrl = `/api/partner/me/tax-form/document?key=${encodeURIComponent(key)}`;
+        const owned = rawDb()
+          .prepare(`SELECT id FROM partner_tax_forms WHERE partner_id = ? AND document_url = ? LIMIT 1`)
+          .get(pid, expectedUrl) as { id: string } | undefined;
+        if (!owned) return res.status(404).json({ error: "DOCUMENT_NOT_FOUND" });
+        const buf = await getObject(key);
+        if (!buf) return res.status(404).json({ error: "DOCUMENT_NOT_FOUND" });
+        res.setHeader("Content-Type", "application/octet-stream");
+        res.setHeader("Content-Disposition", "inline");
+        res.send(buf);
+      } catch (err) {
+        res.status(500).json({ error: "TAX_FORM_DOCUMENT_READ_FAILED", message: sanitizeErrorMessage(err) });
       }
     },
   );

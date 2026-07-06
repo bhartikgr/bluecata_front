@@ -85,6 +85,14 @@ export type LedgerEntry = {
   hash: string;
   reconcile: { primary: string; ref: string; match: boolean };
   complianceHold: boolean;
+  /**
+   * v25.51 name-split — OPTIONAL holder identity metadata. NOT part of the
+   * hash-chain (see buildCommitBody, which is deliberately unchanged) and NOT
+   * used in any amount/share math. Present only so a holder's discrete
+   * first/last can travel with the immutable ledger row for display/export.
+   */
+  holderFirstName?: string | null;
+  holderLastName?: string | null;
 };
 
 export const TRANSITIONS: Record<CommitState, CommitState[]> = {
@@ -170,6 +178,9 @@ function rowToLedgerEntry(r: any): LedgerEntry {
       match: !!r.reconcileMatch,
     },
     complianceHold: !!r.complianceHold,
+    // v25.51 name-split — additive holder metadata (never hashed).
+    holderFirstName: r.holderFirstName ?? null,
+    holderLastName: r.holderLastName ?? null,
   };
 }
 
@@ -558,6 +569,11 @@ export function commitFunded(args: {
   currency?: string;
   shares: string;
   fromState?: CommitState;
+  // v25.51 name-split — OPTIONAL holder identity metadata. NEVER enters
+  // buildCommitBody / the hash / any share-amount math; persisted alongside
+  // the row purely for display/export.
+  holderFirstName?: string | null;
+  holderLastName?: string | null;
 }): CommitResult {
   const from = args.fromState ?? "funded";
   if (!isValidTransition(from, "committed")) return { ok: false, error: `bad_transition:${from}->committed` };
@@ -573,6 +589,10 @@ export function commitFunded(args: {
   /* v25.19 Lane 2 NC3 — pass roundId for real independent reconciliation. */
   const rec = reconcile({ invitationId: args.invitationId, amount: args.amount, currency, shares: args.shares, roundId: args.roundId });
   if (!rec.match) return { ok: false, error: "reconcile_mismatch" };
+
+  // v25.51 name-split — normalise optional holder metadata (never hashed).
+  const holderFirstName = typeof args.holderFirstName === "string" && args.holderFirstName.trim() ? args.holderFirstName.trim() : null;
+  const holderLastName = typeof args.holderLastName === "string" && args.holderLastName.trim() ? args.holderLastName.trim() : null;
 
   let entry: LedgerEntry | null = null;
 
@@ -629,6 +649,9 @@ export function commitFunded(args: {
           reconcileRef: rec.ref,
           reconcileMatch: rec.match,
           complianceHold: false,
+          // v25.51 name-split — additive metadata, NOT part of `hash` above.
+          holderFirstName,
+          holderLastName,
           deletedAt: null,
         })
         .run();
@@ -650,6 +673,8 @@ export function commitFunded(args: {
         hash,
         reconcile: rec,
         complianceHold: false,
+        holderFirstName,
+        holderLastName,
       };
     });
   } catch (err) {

@@ -23,7 +23,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select"; /* v25.41 Bug-3 */
 import { useToast } from "@/hooks/use-toast"; /* v25.41 Bug-3 */
-import { ArrowLeft, Building2, Users, FileText, CheckSquare, FolderOpen, Layers, Plus } from "lucide-react";
+import { ArrowLeft, Building2, Users, FileText, CheckSquare, FolderOpen, Layers, Plus, Archive } from "lucide-react";
 import { Link } from "wouter";
 
 // ── Types ─────────────────────────────────────────────────────────────────
@@ -429,11 +429,35 @@ export default function AdminPartnerDetail() {
               )}
             </Card>
 
+            {/* v25.51 Item 9 (Ozan directive) — the partner-facing Tasks + Files
+                pages were retired in v25.50.0, but admin keeps these panels for
+                historical oversight. Group them under a clearly-labeled
+                Legacy / Archived section (read-only historical records) so it's
+                obvious they are NOT active CP features. No data/store change. */}
+            <div
+              className="rounded-lg border border-amber-300/70 bg-amber-50/50 p-4 space-y-4"
+              data-testid="admin-legacy-archived-section"
+            >
+              <div className="flex items-start gap-2">
+                <Archive className="h-4 w-4 text-amber-700 mt-0.5" />
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="font-semibold text-sm text-amber-900">Legacy / Archived (partner-facing surface removed)</h3>
+                    <Badge variant="outline" className="text-[10px] border-amber-400 text-amber-800">Archived</Badge>
+                  </div>
+                  <p className="text-xs text-amber-800/80 mt-0.5">
+                    Read-only historical records. The partner-facing Tasks and Files pages
+                    were retired in v25.50.0 — these panels remain for admin oversight only.
+                  </p>
+                </div>
+              </div>
+
             {/* Tasks */}
             <Card className="p-5">
               <div className="flex items-center gap-2 mb-4">
                 <CheckSquare className="h-4 w-4 text-muted-foreground" />
                 <h3 className="font-semibold text-sm">Tasks ({audit.tasks.length})</h3>
+                <Badge variant="outline" className="text-[10px] border-amber-400 text-amber-800 ml-auto">Legacy</Badge>
               </div>
               {audit.tasks.length === 0 ? (
                 <p className="text-sm text-muted-foreground">No tasks.</p>
@@ -470,6 +494,7 @@ export default function AdminPartnerDetail() {
               <div className="flex items-center gap-2 mb-4">
                 <FolderOpen className="h-4 w-4 text-muted-foreground" />
                 <h3 className="font-semibold text-sm">Files ({audit.files.length})</h3>
+                <Badge variant="outline" className="text-[10px] border-amber-400 text-amber-800 ml-auto">Legacy</Badge>
               </div>
               {audit.files.length === 0 ? (
                 <p className="text-sm text-muted-foreground">No files.</p>
@@ -500,6 +525,8 @@ export default function AdminPartnerDetail() {
                 </div>
               )}
             </Card>
+            </div>
+            {/* /v25.51 Item 9 Legacy / Archived section */}
 
             {/* Audit Meta */}
             <p className="text-xs text-muted-foreground text-right">

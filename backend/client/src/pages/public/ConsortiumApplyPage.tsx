@@ -43,6 +43,56 @@ type AumRange =
   | ">1B"
   | "undisclosed";
 
+/* v25.49.3 form polish — self-contained country reference (no new deps).
+ * Each entry is [country display name, E.164 dial code]. Used to drive BOTH
+ * the contact-phone country-code dropdown (2d) and the jurisdiction country
+ * dropdown (2e). Sorted by name; dial codes are not unique (e.g. +1) which is
+ * fine for a per-country selection. */
+const COUNTRIES: Array<[string, string]> = [
+  ["Afghanistan", "+93"], ["Albania", "+355"], ["Algeria", "+213"], ["Andorra", "+376"],
+  ["Angola", "+244"], ["Argentina", "+54"], ["Armenia", "+374"], ["Australia", "+61"],
+  ["Austria", "+43"], ["Azerbaijan", "+994"], ["Bahamas", "+1"], ["Bahrain", "+973"],
+  ["Bangladesh", "+880"], ["Barbados", "+1"], ["Belarus", "+375"], ["Belgium", "+32"],
+  ["Belize", "+501"], ["Benin", "+229"], ["Bhutan", "+975"], ["Bolivia", "+591"],
+  ["Bosnia and Herzegovina", "+387"], ["Botswana", "+267"], ["Brazil", "+55"], ["Brunei", "+673"],
+  ["Bulgaria", "+359"], ["Burkina Faso", "+226"], ["Burundi", "+257"], ["Cambodia", "+855"],
+  ["Cameroon", "+237"], ["Canada", "+1"], ["Cape Verde", "+238"], ["Chad", "+235"],
+  ["Chile", "+56"], ["China", "+86"], ["Colombia", "+57"], ["Comoros", "+269"],
+  ["Congo (DRC)", "+243"], ["Congo (Republic)", "+242"], ["Costa Rica", "+506"], ["Croatia", "+385"],
+  ["Cuba", "+53"], ["Cyprus", "+357"], ["Czech Republic", "+420"], ["Denmark", "+45"],
+  ["Djibouti", "+253"], ["Dominican Republic", "+1"], ["Ecuador", "+593"], ["Egypt", "+20"],
+  ["El Salvador", "+503"], ["Estonia", "+372"], ["Eswatini", "+268"], ["Ethiopia", "+251"],
+  ["Fiji", "+679"], ["Finland", "+358"], ["France", "+33"], ["Gabon", "+241"],
+  ["Gambia", "+220"], ["Georgia", "+995"], ["Germany", "+49"], ["Ghana", "+233"],
+  ["Greece", "+30"], ["Guatemala", "+502"], ["Guinea", "+224"], ["Guyana", "+592"],
+  ["Haiti", "+509"], ["Honduras", "+504"], ["Hong Kong", "+852"], ["Hungary", "+36"],
+  ["Iceland", "+354"], ["India", "+91"], ["Indonesia", "+62"], ["Iran", "+98"],
+  ["Iraq", "+964"], ["Ireland", "+353"], ["Israel", "+972"], ["Italy", "+39"],
+  ["Jamaica", "+1"], ["Japan", "+81"], ["Jordan", "+962"], ["Kazakhstan", "+7"],
+  ["Kenya", "+254"], ["Kuwait", "+965"], ["Kyrgyzstan", "+996"], ["Laos", "+856"],
+  ["Latvia", "+371"], ["Lebanon", "+961"], ["Lesotho", "+266"], ["Liberia", "+231"],
+  ["Libya", "+218"], ["Liechtenstein", "+423"], ["Lithuania", "+370"], ["Luxembourg", "+352"],
+  ["Macau", "+853"], ["Madagascar", "+261"], ["Malawi", "+265"], ["Malaysia", "+60"],
+  ["Maldives", "+960"], ["Mali", "+223"], ["Malta", "+356"], ["Mauritania", "+222"],
+  ["Mauritius", "+230"], ["Mexico", "+52"], ["Moldova", "+373"], ["Monaco", "+377"],
+  ["Mongolia", "+976"], ["Montenegro", "+382"], ["Morocco", "+212"], ["Mozambique", "+258"],
+  ["Myanmar", "+95"], ["Namibia", "+264"], ["Nepal", "+977"], ["Netherlands", "+31"],
+  ["New Zealand", "+64"], ["Nicaragua", "+505"], ["Niger", "+227"], ["Nigeria", "+234"],
+  ["North Macedonia", "+389"], ["Norway", "+47"], ["Oman", "+968"], ["Pakistan", "+92"],
+  ["Panama", "+507"], ["Papua New Guinea", "+675"], ["Paraguay", "+595"], ["Peru", "+51"],
+  ["Philippines", "+63"], ["Poland", "+48"], ["Portugal", "+351"], ["Qatar", "+974"],
+  ["Romania", "+40"], ["Russia", "+7"], ["Rwanda", "+250"], ["Saudi Arabia", "+966"],
+  ["Senegal", "+221"], ["Serbia", "+381"], ["Sierra Leone", "+232"], ["Singapore", "+65"],
+  ["Slovakia", "+421"], ["Slovenia", "+386"], ["Somalia", "+252"], ["South Africa", "+27"],
+  ["South Korea", "+82"], ["Spain", "+34"], ["Sri Lanka", "+94"], ["Sudan", "+249"],
+  ["Sweden", "+46"], ["Switzerland", "+41"], ["Syria", "+963"], ["Taiwan", "+886"],
+  ["Tajikistan", "+992"], ["Tanzania", "+255"], ["Thailand", "+66"], ["Togo", "+228"],
+  ["Trinidad and Tobago", "+1"], ["Tunisia", "+216"], ["Turkey", "+90"], ["Turkmenistan", "+993"],
+  ["Uganda", "+256"], ["Ukraine", "+380"], ["United Arab Emirates", "+971"], ["United Kingdom", "+44"],
+  ["United States", "+1"], ["Uruguay", "+598"], ["Uzbekistan", "+998"], ["Venezuela", "+58"],
+  ["Vietnam", "+84"], ["Yemen", "+967"], ["Zambia", "+260"], ["Zimbabwe", "+263"],
+];
+
 interface SubmitResponse {
   applicationId?: string;
   status?: string;
@@ -59,19 +109,23 @@ interface SubmitResponse {
 
 export default function ConsortiumApplyPage() {
   const [organizationName, setOrganizationName] = useState("");
-  const [contactName, setContactName] = useState("");
+  const [contactFirstName, setContactFirstName] = useState("");
+  const [contactLastName, setContactLastName] = useState("");
   const [contactEmail, setContactEmail] = useState("");
+  /* 2d — phone is a country-code dropdown (+dial) plus a free-form number. The
+     two combine into the submitted `contactPhone` string (e.g. "+1 4165551234"). */
+  const [phoneCountryCode, setPhoneCountryCode] = useState("+1");
   const [contactPhone, setContactPhone] = useState("");
   const [website, setWebsite] = useState("");
   const [jurisdiction, setJurisdiction] = useState("");
   const [partnerType, setPartnerType] = useState<PartnerType>("vc");
   const [aumRange, setAumRange] = useState<AumRange>("undisclosed");
   const [portfolioCompanyCount, setPortfolioCompanyCount] = useState<number>(0);
-  /* v25.16 NM8 — was hardcoded to chap_keiretsu_canada, mis-attributing every
-     non-Keiretsu applicant. Now empty by default; user must explicitly type
-     the chapter ID, and the field is `required` so empty submissions are
-     blocked at form level. */
-  const [expectedChapter, setExpectedChapter] = useState("");
+  /* 2g (v25.49.3) — the "Expected chapter" field was removed from the form (it
+     is ambiguous for first-time applicants; admin assigns the real chapter on
+     approval). The server schema still requires a non-empty expectedChapter
+     (z.string().min(1)), so we submit a safe default silently. */
+  const expectedChapter = "chap_keiretsu_canada";
   const [introMessage, setIntroMessage] = useState("");
   const [referredBy, setReferredBy] = useState("");
 
@@ -88,9 +142,15 @@ export default function ConsortiumApplyPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           organizationName,
-          contactName,
+          contactName: [contactFirstName.trim(), contactLastName.trim()]
+            .filter(Boolean)
+            .join(" "),
+          contactFirstName: contactFirstName.trim() || null,
+          contactLastName: contactLastName.trim() || null,
           contactEmail,
-          contactPhone: contactPhone || null,
+          contactPhone: contactPhone.trim()
+            ? `${phoneCountryCode} ${contactPhone.trim()}`
+            : null,
           website: website || null,
           jurisdiction,
           partnerType,
@@ -188,10 +248,17 @@ export default function ConsortiumApplyPage() {
             required
           />
         </Field>
-        <Field label="Contact name" required>
+        <Field label="First name" required>
           <input
-            value={contactName}
-            onChange={(e) => setContactName(e.target.value)}
+            value={contactFirstName}
+            onChange={(e) => setContactFirstName(e.target.value)}
+            required
+          />
+        </Field>
+        <Field label="Last name" required>
+          <input
+            value={contactLastName}
+            onChange={(e) => setContactLastName(e.target.value)}
             required
           />
         </Field>
@@ -204,10 +271,29 @@ export default function ConsortiumApplyPage() {
           />
         </Field>
         <Field label="Contact phone">
-          <input
-            value={contactPhone}
-            onChange={(e) => setContactPhone(e.target.value)}
-          />
+          <div className="flex flex-row gap-2">
+            <select
+              aria-label="Country calling code"
+              value={phoneCountryCode}
+              onChange={(e) => setPhoneCountryCode(e.target.value)}
+              style={{ maxWidth: 220 }}
+              data-testid="select-consortium-phone-code"
+            >
+              {COUNTRIES.map(([name, dial]) => (
+                <option key={`${name}-${dial}`} value={dial}>
+                  {name} ({dial})
+                </option>
+              ))}
+            </select>
+            <input
+              type="tel"
+              inputMode="tel"
+              placeholder="Phone number"
+              value={contactPhone}
+              onChange={(e) => setContactPhone(e.target.value)}
+              data-testid="input-consortium-phone-number"
+            />
+          </div>
         </Field>
         <Field label="Website">
           <input
@@ -218,11 +304,21 @@ export default function ConsortiumApplyPage() {
           />
         </Field>
         <Field label="Jurisdiction" required>
-          <input
+          <select
             value={jurisdiction}
             onChange={(e) => setJurisdiction(e.target.value)}
             required
-          />
+            data-testid="select-consortium-jurisdiction"
+          >
+            <option value="" disabled>
+              Select a country…
+            </option>
+            {COUNTRIES.map(([name]) => (
+              <option key={name} value={name}>
+                {name}
+              </option>
+            ))}
+          </select>
         </Field>
         <Field label="Partner type" required>
           <select
@@ -241,12 +337,12 @@ export default function ConsortiumApplyPage() {
             value={aumRange}
             onChange={(e) => setAumRange(e.target.value as AumRange)}
           >
-            <option value="undisclosed">Undisclosed</option>
-            <option value="<10M">{"<10M"}</option>
-            <option value="10-50M">10-50M</option>
-            <option value="50-250M">50-250M</option>
-            <option value="250M-1B">250M-1B</option>
-            <option value=">1B">{">1B"}</option>
+            <option value="undisclosed">Prefer not to say</option>
+            <option value="<10M">Under $10M</option>
+            <option value="10-50M">$10M – $50M</option>
+            <option value="50-250M">$50M – $250M</option>
+            <option value="250M-1B">$250M – $1B</option>
+            <option value=">1B">Over $1B</option>
           </select>
         </Field>
         <Field label="Portfolio company count">
@@ -257,13 +353,6 @@ export default function ConsortiumApplyPage() {
             onChange={(e) =>
               setPortfolioCompanyCount(parseInt(e.target.value, 10) || 0)
             }
-          />
-        </Field>
-        <Field label="Expected chapter" required>
-          <input
-            value={expectedChapter}
-            onChange={(e) => setExpectedChapter(e.target.value)}
-            required
           />
         </Field>
         <Field label="Intro message">

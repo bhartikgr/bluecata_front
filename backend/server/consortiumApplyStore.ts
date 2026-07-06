@@ -108,6 +108,10 @@ export interface ConsortiumApplicationRow {
   tenantId: string | null;
   expectedChapterId: string | null;
   contactName: string;
+  // v25.51 name-split — additive discrete identity; NOT part of chainPayload
+  // (which hashes contactEmail, not contactName), so the hash-chain is stable.
+  contactFirstName: string | null;
+  contactLastName: string | null;
   contactEmail: string;
   contactPhone: string | null;
   organizationName: string;
@@ -150,6 +154,25 @@ function newId(prefix: string): string {
   return `${prefix}_${randomBytes(8).toString("hex")}`;
 }
 
+/**
+ * v25.51 name-split — resolve discrete first/last from explicit inputs, falling
+ * back to a best-effort split of the composed contactName (first token = first
+ * name, remainder = last name). Never throws; returns nulls when nothing usable.
+ */
+function resolveContactNameParts(
+  contactName: string,
+  first?: string | null,
+  last?: string | null,
+): { first: string | null; last: string | null } {
+  const f = typeof first === "string" && first.trim() ? first.trim() : null;
+  const l = typeof last === "string" && last.trim() ? last.trim() : null;
+  if (f || l) return { first: f, last: l };
+  const parts = (contactName ?? "").trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return { first: null, last: null };
+  if (parts.length === 1) return { first: parts[0], last: null };
+  return { first: parts[0], last: parts.slice(1).join(" ") };
+}
+
 function computeHash(
   prevHash: string | null,
   payload: Record<string, unknown>,
@@ -167,6 +190,8 @@ function rowToApp(r: any): ConsortiumApplicationRow {
     tenantId: r.tenant_id ?? r.tenantId ?? null,
     expectedChapterId: r.expected_chapter_id ?? r.expectedChapterId ?? null,
     contactName: r.contact_name ?? r.contactName,
+    contactFirstName: r.contact_first_name ?? r.contactFirstName ?? null,
+    contactLastName: r.contact_last_name ?? r.contactLastName ?? null,
     contactEmail: r.contact_email ?? r.contactEmail,
     contactPhone: r.contact_phone ?? r.contactPhone ?? null,
     organizationName: r.organization_name ?? r.organizationName,
@@ -421,7 +446,11 @@ const aumRangeEnum = z.enum([
 
 const publicApplySchema = z.object({
   organizationName: z.string().min(1).max(200),
+  // v25.51 name-split — first/last are the new discrete inputs; contactName is
+  // still accepted (composed "First Last") for the hash-chain + all readers.
   contactName: z.string().min(1).max(120),
+  contactFirstName: z.string().max(80).optional().nullable(),
+  contactLastName: z.string().max(80).optional().nullable(),
   contactEmail: z.string().email().max(200),
   contactPhone: z.string().max(40).optional().nullable(),
   website: z.string().url().or(z.literal("")).optional().nullable(),
@@ -492,6 +521,8 @@ export async function hydrateConsortiumApplyStore(): Promise<void> {
 export interface SubmitInput {
   organizationName: string;
   contactName: string;
+  contactFirstName?: string | null;
+  contactLastName?: string | null;
   contactEmail: string;
   contactPhone?: string | null;
   website?: string | null;
@@ -566,11 +597,14 @@ export function submitApplication(input: SubmitInput): ConsortiumApplicationRow 
   const id = newId("cpapp");
   const now = nowIso();
   const expectedChapter = input.expectedChapter;
+  const nameParts = resolveContactNameParts(input.contactName, input.contactFirstName, input.contactLastName);
   const draft: ConsortiumApplicationRow = {
     id,
     tenantId: null,
     expectedChapterId: expectedChapter,
     contactName: input.contactName,
+    contactFirstName: nameParts.first,
+    contactLastName: nameParts.last,
     contactEmail: input.contactEmail.toLowerCase().trim(),
     contactPhone: input.contactPhone ?? null,
     organizationName: input.organizationName,
@@ -604,6 +638,8 @@ export function submitApplication(input: SubmitInput): ConsortiumApplicationRow 
         tenantId: null,
         expectedChapterId: draft.expectedChapterId,
         contactName: draft.contactName,
+        contactFirstName: draft.contactFirstName,
+        contactLastName: draft.contactLastName,
         contactEmail: draft.contactEmail,
         contactPhone: draft.contactPhone,
         organizationName: draft.organizationName,
@@ -996,7 +1032,7 @@ function _approveApplicationLocked(
           tenantId: newTenantId,
           email: updated.contactEmail,
           name: updated.contactName,
-          role: "investor",
+          role: "consortium_partner",
           avatarUrl: null,
           isDemo: 0,
           deletedAt: null,
@@ -1388,6 +1424,8 @@ export function registerConsortiumApplyRoutes(app: Express): void {
       row = submitApplication({
         organizationName: body.organizationName,
         contactName: body.contactName,
+        contactFirstName: body.contactFirstName ?? null,
+        contactLastName: body.contactLastName ?? null,
         contactEmail: body.contactEmail,
         contactPhone: body.contactPhone ?? null,
         website: body.website ?? null,

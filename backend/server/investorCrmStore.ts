@@ -89,6 +89,11 @@ export type InvestorCrmContact = {
   platformUserId?: string;
   // Sprint 21 Wave D: new rich fields
   name: string;
+  // v25.51 name-split — discrete identity (additive). Composed `name` stays
+  // authoritative for every reader/export; these are optional so legacy rows
+  // (and legacy callers that only pass `name`) hydrate cleanly.
+  firstName?: string;
+  lastName?: string;
   role: string;
   email: string;
   affiliation: string;
@@ -119,6 +124,34 @@ function uid() {
   return "icrm_" + randomBytes(5).toString("hex");
 }
 
+/**
+ * v25.51 name-split — derive discrete first/last + composed name.
+ * Rule (shared platform-wide): prefer explicit first/last and compose
+ * "First Last"; otherwise split a single composed name (first token → first,
+ * remainder → last). The composed `name` is ALWAYS returned non-empty when any
+ * input is present, because every existing reader relies on it.
+ */
+function resolveName(input: { name?: string; firstName?: string; lastName?: string }): {
+  name: string;
+  firstName?: string;
+  lastName?: string;
+} {
+  const f = typeof input.firstName === "string" ? input.firstName.trim() : "";
+  const l = typeof input.lastName === "string" ? input.lastName.trim() : "";
+  const composedIn = typeof input.name === "string" ? input.name.trim() : "";
+  if (f || l) {
+    const composed = [f, l].filter(Boolean).join(" ");
+    return { name: composed || composedIn, firstName: f || undefined, lastName: l || undefined };
+  }
+  if (composedIn) {
+    const parts = composedIn.split(/\s+/);
+    const first = parts[0] ?? "";
+    const last = parts.slice(1).join(" ");
+    return { name: composedIn, firstName: first || undefined, lastName: last || undefined };
+  }
+  return { name: composedIn };
+}
+
 function now() {
   return new Date().toISOString();
 }
@@ -138,6 +171,8 @@ function rowToContact(r: any): InvestorCrmContact {
     investorId: r.investorId,
     platformUserId: r.platformUserId ?? undefined,
     name: r.name,
+    firstName: r.firstName ?? undefined,
+    lastName: r.lastName ?? undefined,
     role: r.role ?? "",
     email: r.email ?? "",
     affiliation: r.affiliation ?? "",
@@ -167,6 +202,8 @@ function contactToRow(c: InvestorCrmContact) {
     investorId: c.investorId,
     platformUserId: c.platformUserId ?? null,
     name: c.name,
+    firstName: c.firstName ?? null,
+    lastName: c.lastName ?? null,
     role: c.role,
     email: c.email,
     affiliation: c.affiliation,
@@ -488,19 +525,26 @@ export function registerInvestorCrmRoutes(app: Express): void {
       notes = "",
       // Sprint 21 rich fields
       name,
+      firstName: bodyFirst = "",
+      lastName: bodyLast = "",
       role = "",
       email,
       affiliation = "",
       tags = [],
     } = req.body ?? {};
 
-    const contactName = name || founderName || companyName || "Unknown";
+    const seedName = name || founderName || companyName || "Unknown";
+    // v25.51 name-split — derive discrete first/last + keep composed name.
+    const resolved = resolveName({ name: seedName, firstName: bodyFirst, lastName: bodyLast });
+    const contactName = resolved.name || seedName;
     const contactEmail = email || founderEmail || "";
 
     const contact: InvestorCrmContact = {
       id: uid(),
       investorId,
       name: contactName,
+      firstName: resolved.firstName,
+      lastName: resolved.lastName,
       role,
       email: contactEmail,
       affiliation: affiliation || companyName || "",
@@ -652,6 +696,8 @@ export function registerInvestorCrmRoutes(app: Express): void {
     if (!investorId) return res.status(401).json({ error: "Authentication required" });
     const {
       name = "",
+      firstName: bodyFirst = "",
+      lastName: bodyLast = "",
       role = "",
       email = "",
       affiliation = "",
@@ -662,7 +708,11 @@ export function registerInvestorCrmRoutes(app: Express): void {
       platformUserId = undefined,
     } = req.body ?? {};
 
-    if (!name.trim()) {
+    // v25.51 name-split — accept discrete first/last OR a composed name; the
+    // composed `name` stays the required, authoritative field.
+    const resolved = resolveName({ name, firstName: bodyFirst, lastName: bodyLast });
+
+    if (!resolved.name.trim()) {
       return res.status(400).json({ error: "name is required" });
     }
     // BUG 007/008 fix v23.7 — email is now mandatory and format-checked so the
@@ -679,7 +729,9 @@ export function registerInvestorCrmRoutes(app: Express): void {
       id: uid(),
       investorId,
       platformUserId: typeof platformUserId === "string" && platformUserId.trim() ? platformUserId.trim() : undefined,
-      name: name.trim(),
+      name: resolved.name.trim(),
+      firstName: resolved.firstName,
+      lastName: resolved.lastName,
       role,
       email: emailTrimmed,
       affiliation,
@@ -693,7 +745,7 @@ export function registerInvestorCrmRoutes(app: Express): void {
       updatedAt: now(),
       // Legacy compat
       companyName: affiliation,
-      founderName: name,
+      founderName: resolved.name.trim(),
       founderEmail: emailTrimmed,
       notesUpdatedAt: now(),
     };
@@ -814,6 +866,8 @@ function buildContactUpdates(body: any, existing: InvestorCrmContact): Partial<I
   const updates: Partial<InvestorCrmContact> = { updatedAt: now() };
   const allowed = [
     "name", "role", "email", "affiliation", "stage", "tags", "notes", "starred",
+    // v25.51 name-split — discrete identity fields.
+    "firstName", "lastName",
     // Sprint 22 Wave 1: platformUserId for DM linking (DEF-001 fix)
     "platformUserId",
     // legacy Sprint 20 fields
@@ -824,6 +878,15 @@ function buildContactUpdates(body: any, existing: InvestorCrmContact): Partial<I
     if (body?.[field] !== undefined) {
       (updates as any)[field] = body[field];
     }
+  }
+  // v25.51 name-split — keep the composed `name` in lockstep with discrete
+  // first/last when either part changes but no explicit `name` was supplied,
+  // so the authoritative composed field never drifts from the parts.
+  if (body?.name === undefined && (body?.firstName !== undefined || body?.lastName !== undefined)) {
+    const f = (body?.firstName ?? existing.firstName ?? "").toString().trim();
+    const l = (body?.lastName ?? existing.lastName ?? "").toString().trim();
+    const composed = [f, l].filter(Boolean).join(" ");
+    if (composed) updates.name = composed;
   }
   // Handle pipelineStage alias → stage
   if (body?.pipelineStage !== undefined) {

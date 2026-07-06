@@ -64,6 +64,8 @@ export interface RoundInvitationRow {
   companyId: string | null;
   investorEmail: string;
   investorName: string | null;
+  investorFirstName: string | null;
+  investorLastName: string | null;
   state: InvitationState;
   classification: InvitationClassification | null;
   /** sha256(token) — never the raw token. */
@@ -84,6 +86,8 @@ export interface CreateInvitationArgs {
   companyId: string;
   investorEmail: string;
   investorName?: string | null;
+  investorFirstName?: string | null;
+  investorLastName?: string | null;
   note?: string | null;
   expiryDays?: number;
   invitedByUserId: string;
@@ -140,6 +144,31 @@ function normalizeEmail(email: string): string {
   return (email ?? "").trim().toLowerCase();
 }
 
+/**
+ * Resolve discrete first/last + composed name for an invitation. Prefers
+ * explicit first/last; otherwise splits a single legacy `name` (parts[0]=first,
+ * remainder=last). The composed name is always kept populated ("First Last")
+ * so all existing readers/exports stay byte-stable.
+ */
+function resolveInvestorNameParts(
+  name?: string | null,
+  first?: string | null,
+  last?: string | null,
+): { first: string | null; last: string | null; composed: string | null } {
+  const f = (first ?? "").trim();
+  const l = (last ?? "").trim();
+  if (f || l) {
+    const composed = [f, l].filter(Boolean).join(" ") || null;
+    return { first: f || null, last: l || null, composed };
+  }
+  const whole = (name ?? "").trim();
+  if (!whole) return { first: null, last: null, composed: null };
+  const parts = whole.split(/\s+/);
+  const splitFirst = parts.shift() ?? "";
+  const splitLast = parts.join(" ");
+  return { first: splitFirst || null, last: splitLast || null, composed: whole };
+}
+
 /** Classify by checking the founder's CRM for an email match. */
 function classifyEmail(companyId: string, email: string): InvitationClassification {
   const normalized = normalizeEmail(email);
@@ -174,6 +203,8 @@ function mapDbRow(r: any): RoundInvitationRow {
     companyId: r.company_id ?? null,
     investorEmail: r.investor_email,
     investorName: r.investor_name ?? null,
+    investorFirstName: r.investor_first_name ?? r.investorFirstName ?? null,
+    investorLastName: r.investor_last_name ?? r.investorLastName ?? null,
     state: (r.state ?? "sent") as InvitationState,
     classification: (r.classification ?? null) as InvitationClassification | null,
     tokenHash: r.token_hash ?? null,
@@ -268,13 +299,18 @@ export async function createInvitation(args: CreateInvitationArgs): Promise<Crea
   const expiresAt = plusDaysIso(args.expiryDays ?? 14);
   const createdAt = nowIso();
 
+  const { first: invFirst, last: invLast, composed: invComposed } =
+    resolveInvestorNameParts(args.investorName, args.investorFirstName, args.investorLastName);
+
   const row: RoundInvitationRow = {
     id,
     tenantId,
     roundId: args.roundId,
     companyId: args.companyId,
     investorEmail,
-    investorName: args.investorName ?? null,
+    investorName: invComposed,
+    investorFirstName: invFirst,
+    investorLastName: invLast,
     state: "sent",
     classification,
     tokenHash,
@@ -306,15 +342,17 @@ export async function createInvitation(args: CreateInvitationArgs): Promise<Crea
     const db = rawDb();
     db.prepare(
       `INSERT INTO round_invitations (
-         id, round_id, investor_email, investor_name, state, expires_at, sent_at, viewed_at,
+         id, round_id, investor_email, investor_name, investor_first_name, investor_last_name, state, expires_at, sent_at, viewed_at,
          tenant_id, company_id, classification, token_hash, invited_by_user_id, note,
          redeemed_at, redeemed_by_user_id, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       row.id,
       row.roundId,
       row.investorEmail,
       row.investorName ?? null,
+      row.investorFirstName ?? null,
+      row.investorLastName ?? null,
       row.state,
       row.expiresAt,
       row.sentAt,
@@ -817,6 +855,8 @@ export async function hydrateRoundInvitationsStore(): Promise<void> {
         companyId: r.company_id ?? r.companyId ?? null,
         investorEmail: r.investor_email ?? r.investorEmail,
         investorName: r.investor_name ?? r.investorName ?? null,
+        investorFirstName: r.investor_first_name ?? r.investorFirstName ?? null,
+        investorLastName: r.investor_last_name ?? r.investorLastName ?? null,
         state: (r.state ?? "sent") as InvitationState,
         classification: (r.classification ?? null) as InvitationClassification | null,
         tokenHash: r.token_hash ?? r.tokenHash ?? null,

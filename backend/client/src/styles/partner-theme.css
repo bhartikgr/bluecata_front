@@ -1,0 +1,86 @@
+/*
+ * v25.50.0 Phase 1 — Consortium Partner workspace re-skin.
+ *
+ * Brings the LIVE www.capavate.com marketing look into the entire partner
+ * workspace WITHOUT editing any sacred marketing component (home3compo/*).
+ * Every rule here is scoped under the existing `[data-product="partner"]`
+ * attribute set on the CollectiveShell root (CollectiveShell.tsx). It consumes
+ * the canonical `--cv-*` tokens from capavate-tokens.css — no new hexes.
+ *
+ * Target look: Instrument Serif headings, Montserrat body, warm off-white
+ * page (#fafaf8), white cards, navy panels (#041e41), Capavate-red pill CTAs
+ * (#cc0001, radius 999px), warm borders (#ddd9d3). WCAG-AA contrast preserved
+ * (red #cc0001 on white ≈ 5.9:1; white on red ≈ 5.9:1; navy on white high).
+ */
+
+/* ── Body typography + page surface ─────────────────────────────────────── */
+[data-product="partner"] {
+  font-family: var(--cv-font-body);
+  color: var(--cv-color-text);
+}
+
+[data-product="partner"] main {
+  background: var(--cv-color-bg) !important;
+}
+
+/* ── Display headings → Instrument Serif ────────────────────────────────── */
+[data-product="partner"] .cv-page-header__title,
+[data-product="partner"] h1,
+[data-product="partner"] h2,
+[data-product="partner"] [data-testid="page-title"] {
+  font-family: var(--cv-font-display);
+  letter-spacing: 0.005em;
+  color: var(--cv-color-text);
+}
+
+/* Section card titles pick up the serif display face for marketing parity. */
+[data-product="partner"] .partner-section-title,
+[data-product="partner"] h3.cv-section-title {
+  font-family: var(--cv-font-display);
+  color: var(--cv-color-navy);
+}
+
+/* ── Cards / surfaces ───────────────────────────────────────────────────── */
+[data-product="partner"] .cv-app-card {
+  background: var(--cv-color-surface);
+  border-color: var(--cv-color-border);
+  box-shadow: var(--cv-shadow-sm);
+}
+
+/* ── Primary action buttons → red full pill ─────────────────────────────── *
+ * shadcn primary buttons already map to the red HSL --primary; here we adopt
+ * the marketing full-pill radius + brand hover across the partner workspace.
+ * Scoped to the default/primary variant so destructive/ghost keep their look. */
+[data-product="partner"] button.bg-primary,
+[data-product="partner"] a.bg-primary,
+[data-product="partner"] .cv-btn--primary,
+[data-product="partner"] button[data-variant="default"] {
+  border-radius: var(--cv-radius-full);
+  background-color: var(--cv-color-primary);
+  color: var(--cv-color-text-inverse);
+  font-family: var(--cv-font-body);
+  font-weight: 600;
+}
+
+[data-product="partner"] button.bg-primary:hover,
+[data-product="partner"] a.bg-primary:hover,
+[data-product="partner"] .cv-btn--primary:hover,
+[data-product="partner"] button[data-variant="default"]:hover {
+  background-color: var(--cv-color-primary-hover);
+}
+
+/* ── Filter chips / pills adopt warm-surface parity ─────────────────────── */
+[data-product="partner"] .cv-filter-chip--active {
+  background: var(--cv-color-primary);
+  border-color: var(--cv-color-primary);
+  color: var(--cv-color-text-inverse);
+}
+
+/* ── Focus rings use the brand red for consistency ──────────────────────── */
+[data-product="partner"] input:focus,
+[data-product="partner"] select:focus,
+[data-product="partner"] textarea:focus {
+  outline: none;
+  border-color: var(--cv-color-primary);
+  box-shadow: 0 0 0 3px var(--cv-color-primary-light);
+}

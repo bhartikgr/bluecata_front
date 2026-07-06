@@ -10,6 +10,7 @@ const require = createRequire(import.meta.url);
 import type { Express, Request, Response } from "express";
 import type { Server } from "node:http";
 import multer from "multer";
+import Decimal from "decimal.js"; // v25.51 8a — exact PPS×shares target derivation for common rounds
 import { createHash, randomBytes } from "node:crypto";
 import path from "node:path";
 import { readFileSync } from "node:fs";
@@ -2624,6 +2625,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const body = req.body ?? {};
     const investorEmail = body.investorEmail ?? body.inviteeEmail;
     const investorName = body.investorName ?? body.inviteeName;
+    const investorFirstName = body.investorFirstName ?? body.inviteeFirstName;
+    const investorLastName = body.investorLastName ?? body.inviteeLastName;
     const note = body.note;
     const expiryDays = body.expiryDays ?? body.expiresInDays;
     if (!investorEmail || typeof investorEmail !== "string") {
@@ -2635,6 +2638,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         companyId: check.companyId,
         investorEmail,
         investorName: typeof investorName === "string" ? investorName : null,
+        investorFirstName: typeof investorFirstName === "string" ? investorFirstName : null,
+        investorLastName: typeof investorLastName === "string" ? investorLastName : null,
         note: typeof note === "string" ? note : null,
         expiryDays: typeof expiryDays === "number" ? expiryDays : undefined,
         invitedByUserId: check.userId,
@@ -3062,6 +3067,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // response for collision — not in scope for C2.
     const canonicalPatch: {
       name?: string;
+      // v25.51 name-split (additive) — discrete first/last persisted alongside
+      // the composed `name`. `name` stays the canonical composed field every
+      // existing reader relies on; first/last are extra columns.
+      firstName?: string | null;
+      lastName?: string | null;
       avatarUrl?: string | null;
       email?: string;
       title?: string | null;
@@ -3069,6 +3079,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } = {};
     if (typeof body.name === "string" && body.name.length > 0) {
       canonicalPatch.name = body.name;
+    }
+    if (typeof body.firstName === "string" || body.firstName === null) {
+      canonicalPatch.firstName = body.firstName as string | null;
+    }
+    if (typeof body.lastName === "string" || body.lastName === null) {
+      canonicalPatch.lastName = body.lastName as string | null;
+    }
+    // Keep composed `name` in lockstep when first/last arrive but no explicit
+    // composed name was supplied — every downstream reader expects a non-empty
+    // "First Last".
+    if (
+      canonicalPatch.name === undefined &&
+      (canonicalPatch.firstName !== undefined || canonicalPatch.lastName !== undefined)
+    ) {
+      const f = (typeof body.firstName === "string" ? body.firstName : "").trim();
+      const l = (typeof body.lastName === "string" ? body.lastName : "").trim();
+      const composed = [f, l].filter(Boolean).join(" ");
+      if (composed.length > 0) canonicalPatch.name = composed;
     }
     if (typeof body.avatarUrl === "string" || body.avatarUrl === null) {
       canonicalPatch.avatarUrl = body.avatarUrl as string | null;
@@ -3146,6 +3174,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // (timezone, notificationPrefs).
     let canonical: {
       name?: string;
+      // v25.51 name-split (additive) — surface discrete first/last so the
+      // founder Settings tab can prefill them; composed `name` unchanged.
+      firstName?: string | null;
+      lastName?: string | null;
       email?: string;
       title?: string | null;
       displayName?: string | null;
@@ -3159,6 +3191,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         .where(drizzleEq(usersTable.id, userId))
         .all() as Array<{
           name: string;
+          firstName: string | null;
+          lastName: string | null;
           email: string;
           title: string | null;
           displayName: string | null;
@@ -3168,6 +3202,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const r = rows[0];
         canonical = {
           name: r.name,
+          firstName: r.firstName ?? null,
+          lastName: r.lastName ?? null,
           email: r.email,
           title: r.title,
           displayName: r.displayName,
@@ -3189,6 +3225,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const mergedIdentity = {
       ...baseIdentity,
       ...(canonical.name !== undefined ? { name: canonical.name } : {}),
+      ...(canonical.firstName !== undefined && canonical.firstName !== null
+        ? { firstName: canonical.firstName } : {}),
+      ...(canonical.lastName !== undefined && canonical.lastName !== null
+        ? { lastName: canonical.lastName } : {}),
       ...(canonical.email !== undefined ? { email: canonical.email } : {}),
       ...(canonical.displayName !== undefined && canonical.displayName !== null
         ? { displayName: canonical.displayName } : {}),
@@ -3198,6 +3238,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // PATCH just landed but DB read may be ephemeral / not yet committed
       // in some test contexts.
       ...(typeof stored.name === "string" ? { name: stored.name } : {}),
+      ...(typeof stored.firstName === "string" || stored.firstName === null
+        ? { firstName: stored.firstName as string | null } : {}),
+      ...(typeof stored.lastName === "string" || stored.lastName === null
+        ? { lastName: stored.lastName as string | null } : {}),
       ...(typeof stored.email === "string" ? { email: stored.email } : {}),
       ...(typeof stored.displayName === "string" || stored.displayName === null
         ? { displayName: stored.displayName as string | null } : {}),
@@ -3236,6 +3280,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       ...ctx,
       // canonical overlays at the top level (client also reads `m.name` etc.)
       ...(canonical.name !== undefined ? { name: canonical.name } : {}),
+      ...(canonical.firstName !== undefined ? { firstName: canonical.firstName } : {}),
+      ...(canonical.lastName !== undefined ? { lastName: canonical.lastName } : {}),
       ...(canonical.email !== undefined ? { email: canonical.email } : {}),
       ...(canonical.displayName !== undefined ? { displayName: canonical.displayName } : {}),
       ...(canonical.title !== undefined ? { title: canonical.title } : {}),
@@ -4012,10 +4058,33 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!body.name || String(body.name).trim().length === 0) {
         fieldErrors.name = "Round name is required.";
       }
-      // targetAmount > 0
-      const targetAmount = num("targetAmount");
-      if (targetAmount == null || targetAmount <= 0) {
-        fieldErrors.targetAmount = "Target amount must be greater than 0.";
+      // targetAmount > 0 — except a COMMON priced round, which collects only
+      // PPS + sharesAuthorized (no user-entered target raise). v25.51 8a:
+      // derive targetAmount = pricePerShare × sharesAuthorized with exact
+      // decimal math (no float drift) and persist it as round metadata. This
+      // does NOT feed the cap-table engine — the engine still commits PPS +
+      // shares directly, byte-for-byte unchanged.
+      const bodyInstrument = typeof body.instrument === "string" ? body.instrument : "";
+      if (bodyInstrument === "common") {
+        const ppsNum = num("pricePerShare");
+        const sharesNum = num("sharesAuthorized");
+        if (ppsNum == null || ppsNum <= 0) {
+          fieldErrors.pricePerShare = "Price per share must be greater than 0 for a priced round.";
+        }
+        if (sharesNum == null || sharesNum <= 0) {
+          fieldErrors.sharesAuthorized = "Shares outstanding/authorized must be greater than 0 for a priced round.";
+        }
+        if (ppsNum != null && ppsNum > 0 && sharesNum != null && sharesNum > 0) {
+          const ppsRaw = (body as Record<string, unknown>).pricePerShare;
+          const sharesRaw = (body as Record<string, unknown>).sharesAuthorized;
+          const derivedTarget = new Decimal(String(ppsRaw)).times(new Decimal(String(sharesRaw))).toString();
+          (body as Record<string, unknown>).targetAmount = derivedTarget;
+        }
+      } else {
+        const targetAmount = num("targetAmount");
+        if (targetAmount == null || targetAmount <= 0) {
+          fieldErrors.targetAmount = "Target amount must be greater than 0.";
+        }
       }
       // instrument is one of the supported wizard values. NOTE (v24.1 deviations,
       // see V24_1_REPORT.md):

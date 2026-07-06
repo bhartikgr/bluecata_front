@@ -88,7 +88,9 @@ export default function Signup() {
     navigate("/founder/dashboard");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meProbe.data]);
-  const [name, setName] = useState("");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const name = [firstName.trim(), lastName.trim()].filter(Boolean).join(" ");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -116,18 +118,20 @@ export default function Signup() {
   // bad input so per-field affordances stay accurate for assistive tech.
   const missingFields = useMemo(() => {
     const missing: string[] = [];
-    if (name.trim().length < 2) missing.push("your name");
+    if (firstName.trim().length < 1) missing.push("your first name");
+    if (lastName.trim().length < 1) missing.push("your last name");
     if (!looksLikeEmail(email)) missing.push("a valid work email");
     if (password.length < 8) missing.push("a password with at least 8 characters");
     else if (strength.score < 2)
       missing.push("a stronger password (mix upper/lower/digits/symbols)");
     if (!legalChecked) missing.push("the Terms and Privacy consent checkbox");
     return missing;
-  }, [name, email, password, strength.score, legalChecked]);
+  }, [firstName, lastName, email, password, strength.score, legalChecked]);
   const [aggregateError, setAggregateError] = useState<string | null>(null);
   // Per-field validity flags exposed so individual <Input>s render their
   // own red border + aria-invalid when the user has tried to submit.
-  const nameInvalid = name.trim().length > 0 && name.trim().length < 2;
+  const firstNameInvalid = firstName.trim().length === 0;
+  const lastNameInvalid = lastName.trim().length === 0;
   const passwordInvalid = password.length > 0 && password.length < 8;
   const showFieldErrors = aggregateError !== null;
 
@@ -135,7 +139,8 @@ export default function Signup() {
   // signupCheckboxVisible regression test still pins legalChecked as the
   // final clause. (Semantically equivalent to missingFields.length === 0.)
   const canSubmit =
-    name.trim().length >= 2 &&
+    firstName.trim().length >= 1 &&
+    lastName.trim().length >= 1 &&
     looksLikeEmail(email) &&
     password.length >= 8 &&
     strength.score >= 2 &&
@@ -165,6 +170,8 @@ export default function Signup() {
       const res = await apiRequest("POST", "/api/auth/signup", {
         email: email.trim(),
         name: name.trim(),
+        firstName: firstName.trim(),
+        lastName: lastName.trim(),
         password,
         portal: "founder",
       });
@@ -312,29 +319,56 @@ export default function Signup() {
     >
       <form onSubmit={handleSubmit} className="space-y-4" data-testid="form-signup" autoComplete="on">
         <div>
-          <Label htmlFor="name" className="flex items-center gap-1.5">
-            <UserRound className="h-3.5 w-3.5" /> Your name
+          <Label htmlFor="firstName" className="flex items-center gap-1.5">
+            <UserRound className="h-3.5 w-3.5" /> First name
           </Label>
           <Input
-            id="name"
-            value={name}
+            id="firstName"
+            value={firstName}
             onChange={(e) => {
-              setName(e.target.value);
+              setFirstName(e.target.value);
               if (aggregateError) setAggregateError(null);
             }}
             required
-            autoComplete="name"
+            autoComplete="given-name"
             autoFocus
-            placeholder="Full name"
-            data-testid="input-name"
-            aria-invalid={nameInvalid || (showFieldErrors && name.trim().length < 2)}
+            placeholder="First name"
+            data-testid="input-first-name"
+            aria-invalid={showFieldErrors && firstNameInvalid}
           />
-          {(nameInvalid || (showFieldErrors && name.trim().length < 2)) && (
+          {showFieldErrors && firstNameInvalid && (
             <p
               className="mt-1 text-xs text-red-700 flex items-center gap-1"
-              data-testid="text-name-invalid"
+              data-testid="text-first-name-invalid"
             >
-              <AlertCircle className="h-3 w-3" /> Enter your name (at least 2 characters).
+              <AlertCircle className="h-3 w-3" /> Enter your first name.
+            </p>
+          )}
+        </div>
+
+        <div>
+          <Label htmlFor="lastName" className="flex items-center gap-1.5">
+            <UserRound className="h-3.5 w-3.5" /> Last name
+          </Label>
+          <Input
+            id="lastName"
+            value={lastName}
+            onChange={(e) => {
+              setLastName(e.target.value);
+              if (aggregateError) setAggregateError(null);
+            }}
+            required
+            autoComplete="family-name"
+            placeholder="Last name"
+            data-testid="input-last-name"
+            aria-invalid={showFieldErrors && lastNameInvalid}
+          />
+          {showFieldErrors && lastNameInvalid && (
+            <p
+              className="mt-1 text-xs text-red-700 flex items-center gap-1"
+              data-testid="text-last-name-invalid"
+            >
+              <AlertCircle className="h-3 w-3" /> Enter your last name.
             </p>
           )}
         </div>

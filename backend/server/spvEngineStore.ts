@@ -40,10 +40,12 @@ import {
   isSpvType,
   isSpvDistributionScope,
   isSpvLpVisibility,
+  isSpvMandateMode,
   isSpvFeeLayer,
   isSpvFeeType,
   SPV_DEFAULT_LP_VISIBILITY,
   type SpvLpVisibility,
+  type SpvMandateMode,
   type SpvDTO,
   type SpvMandateDTO,
   type SpvFeeDTO,
@@ -226,6 +228,20 @@ function nodeMatches(node: MandateRuleTree | MandateLeaf, facts: CompanyEligibil
   return leafMatches(node as MandateLeaf, facts);
 }
 
+/* v25.50 REVISE R3 — shared mandate-description guard. The "Description of Mandate"
+   (spec 3e) is mandatory in the wizard. When a create/update payload carries the
+   terms.mandateDescription KEY it MUST be a non-empty trimmed string ≤1200 chars;
+   reject fail-closed otherwise. When the key is ABSENT the field is untouched
+   (partial patches and legacy/shim creates that never send it must still work).
+   Called from BOTH createSpv and updateSpv so the rule cannot drift. */
+function assertValidMandateDescription(terms: unknown): void {
+  if (!terms || typeof terms !== "object") return;
+  if (!("mandateDescription" in (terms as Record<string, unknown>))) return;
+  const md = (terms as Record<string, unknown>).mandateDescription;
+  if (typeof md !== "string" || md.trim().length === 0) throw new Error("MANDATE_DESCRIPTION_REQUIRED");
+  if (md.trim().length > 1200) throw new Error("MANDATE_DESCRIPTION_TOO_LONG");
+}
+
 /* ── the store ──────────────────────────────────────────────────────────── */
 export const spvEngineStore = {
   /* ---- SPV core ---- */
@@ -251,6 +267,7 @@ export const spvEngineStore = {
     if (!isSpvDistributionScope(scope)) throw new Error("INVALID_DISTRIBUTION_SCOPE");
     const lpVisibility = data.lpVisibility ?? SPV_DEFAULT_LP_VISIBILITY;
     if (!isSpvLpVisibility(lpVisibility)) throw new Error("INVALID_LP_VISIBILITY");
+    assertValidMandateDescription(data.terms);
     const now = nowIso();
     const s: SpvDTO = {
       id: newId("spv"),
@@ -319,6 +336,9 @@ export const spvEngineStore = {
     if (!s) throw new Error("SPV_NOT_FOUND");
     if (patch.distributionScope && !isSpvDistributionScope(patch.distributionScope)) throw new Error("INVALID_DISTRIBUTION_SCOPE");
     if (patch.lpVisibility !== undefined && !isSpvLpVisibility(patch.lpVisibility)) throw new Error("INVALID_LP_VISIBILITY");
+    /* v25.50 REVISE R3 — same fail-closed guard as createSpv: a patch may not
+       replace a valid mandate description with whitespace/empty or >1200 chars. */
+    if (patch.terms !== undefined) assertValidMandateDescription(patch.terms);
     if (patch.status) s.status = patch.status;
     const scopeChanged = patch.distributionScope && patch.distributionScope !== s.distributionScope;
     const prevScope = s.distributionScope;
@@ -366,7 +386,18 @@ export const spvEngineStore = {
     const s = this.getSpv(partnerId, spvId);
     if (!s) throw new Error("SPV_NOT_FOUND");
     if (!data.ruleTree || typeof data.ruleTree !== "object") throw new Error("RULE_TREE_REQUIRED");
-    const mode = data.mode === "deal_specific" ? "deal_specific" : "open";
+    /* v25.50 REVISE R2 Blocker 1 — the prior coercion (`deal_specific` else `open`)
+       silently dropped the two NEW spec modes (thesis_lp_approval, sector_restricted).
+       Fail-closed: reject any provided-but-unrecognized mode; default to `open`
+       ONLY when the caller omits mode entirely. Persist the exact valid mode. */
+    let mode: SpvMandateMode;
+    if (data.mode === undefined || data.mode === null || data.mode === "") {
+      mode = "open";
+    } else if (isSpvMandateMode(data.mode)) {
+      mode = data.mode;
+    } else {
+      throw new Error("INVALID_MANDATE_MODE");
+    }
     const now = nowIso();
     const m: SpvMandateDTO = {
       id: newId("spvmnd"),

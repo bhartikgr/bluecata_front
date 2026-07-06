@@ -147,20 +147,24 @@ export interface PartnerAttribution {
   isSeed: boolean;
 }
 
+/* v25.50.0 Phase 2 (spec 2c, LOCKED) — canonical company deal funnel, replicated
+ * VERBATIM for the partner pipeline board. Advancement allows SKIPPING (membership
+ * validation, not adjacency). Legacy keys (sourcing/qualifying/committee/closed_*)
+ * are remapped by migration 0088. Labels/descriptions live in shared/crmStages.ts. */
 export type PipelineStage =
-  | "sourcing"
-  | "qualifying"
-  | "committee"
-  | "committed"
-  | "closed_won"
-  | "closed_lost";
+  | "invited"
+  | "viewed"
+  | "soft_circle"
+  | "signed"
+  | "funded"
+  | "committed";
 export const ALL_PIPELINE_STAGES: PipelineStage[] = [
-  "sourcing",
-  "qualifying",
-  "committee",
+  "invited",
+  "viewed",
+  "soft_circle",
+  "signed",
+  "funded",
   "committed",
-  "closed_won",
-  "closed_lost",
 ];
 
 export interface PartnerPipelineDeal {
@@ -907,6 +911,111 @@ export const partnerTeamStore = {
 };
 
 /* ============================================================
+ * v25.50 Phase 7 (7c) — Team member contact overrides
+ * ------------------------------------------------------------
+ * Partner-workspace-local, editable contact info (mobile, contact email,
+ * position note) keyed by (partner_id, user_id). Backed by the additive,
+ * non-sacred `partner_team_member_contact` table (migration 0090). This NEVER
+ * touches the sacred `users` / profile stores — the canonical name/email JOIN
+ * still reads `users`; this store only holds overrides a managing_partner may
+ * edit. Direct-DB (low frequency, no RAM cache needed).
+ * ============================================================ */
+export interface PartnerTeamMemberContact {
+  partnerId: string;
+  userId: string;
+  mobile: string | null;
+  contactEmail: string | null;
+  positionNote: string | null;
+  updatedAt: string | null;
+  updatedBy: string | null;
+}
+
+export const partnerTeamContactStore = {
+  get(partnerId: string, userId: string): PartnerTeamMemberContact | null {
+    requirePid(partnerId);
+    if (!userId) throw new Error("USER_ID_REQUIRED");
+    try {
+      const row = rawDb().prepare(
+        `SELECT partner_id, user_id, mobile, contact_email, position_note, updated_at, updated_by
+           FROM partner_team_member_contact
+          WHERE partner_id = ? AND user_id = ?
+          LIMIT 1`,
+      ).get(partnerId, userId) as Record<string, unknown> | undefined;
+      if (!row) return null;
+      return {
+        partnerId: String(row.partner_id),
+        userId: String(row.user_id),
+        mobile: row.mobile != null ? String(row.mobile) : null,
+        contactEmail: row.contact_email != null ? String(row.contact_email) : null,
+        positionNote: row.position_note != null ? String(row.position_note) : null,
+        updatedAt: row.updated_at != null ? String(row.updated_at) : null,
+        updatedBy: row.updated_by != null ? String(row.updated_by) : null,
+      };
+    } catch (err) {
+      log.warn("[partnerTeamContactStore.get] failed:", (err as Error).message);
+      return null;
+    }
+  },
+
+  listByPartner(partnerId: string): Map<string, PartnerTeamMemberContact> {
+    requirePid(partnerId);
+    const out = new Map<string, PartnerTeamMemberContact>();
+    try {
+      const rows = rawDb().prepare(
+        `SELECT partner_id, user_id, mobile, contact_email, position_note, updated_at, updated_by
+           FROM partner_team_member_contact
+          WHERE partner_id = ?`,
+      ).all(partnerId) as Record<string, unknown>[];
+      for (const row of rows) {
+        out.set(String(row.user_id), {
+          partnerId: String(row.partner_id),
+          userId: String(row.user_id),
+          mobile: row.mobile != null ? String(row.mobile) : null,
+          contactEmail: row.contact_email != null ? String(row.contact_email) : null,
+          positionNote: row.position_note != null ? String(row.position_note) : null,
+          updatedAt: row.updated_at != null ? String(row.updated_at) : null,
+          updatedBy: row.updated_by != null ? String(row.updated_by) : null,
+        });
+      }
+    } catch (err) {
+      log.warn("[partnerTeamContactStore.listByPartner] failed:", (err as Error).message);
+    }
+    return out;
+  },
+
+  upsert(
+    partnerId: string,
+    userId: string,
+    fields: { mobile?: string | null; contactEmail?: string | null; positionNote?: string | null },
+    updatedBy: string,
+  ): PartnerTeamMemberContact {
+    requirePid(partnerId);
+    if (!userId) throw new Error("USER_ID_REQUIRED");
+    const now = new Date().toISOString();
+    const existing = this.get(partnerId, userId);
+    const mobile = fields.mobile !== undefined ? (fields.mobile || null) : (existing?.mobile ?? null);
+    const contactEmail = fields.contactEmail !== undefined ? (fields.contactEmail || null) : (existing?.contactEmail ?? null);
+    const positionNote = fields.positionNote !== undefined ? (fields.positionNote || null) : (existing?.positionNote ?? null);
+    const db = rawDb();
+    if (existing) {
+      db.prepare(
+        `UPDATE partner_team_member_contact
+            SET mobile = ?, contact_email = ?, position_note = ?, updated_at = ?, updated_by = ?
+          WHERE partner_id = ? AND user_id = ?`,
+      ).run(mobile, contactEmail, positionNote, now, updatedBy, partnerId, userId);
+    } else {
+      db.prepare(
+        `INSERT INTO partner_team_member_contact
+           (id, partner_id, user_id, mobile, contact_email, position_note, created_at, updated_at, updated_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(newId("ptmc"), partnerId, userId, mobile, contactEmail, positionNote, now, now, updatedBy);
+    }
+    audit(updatedBy, `partner:${partnerId}`, "partner.team_member.contact_updated", { userId });
+    return { partnerId, userId, mobile, contactEmail, positionNote, updatedAt: now, updatedBy };
+  },
+};
+
+/* ============================================================
  * Team invitations (magic-link with hashed tokens)
  * ============================================================ */
 
@@ -1248,7 +1357,7 @@ export const partnerPipelineStore = {
       partnerId,
       dealName: data.dealName,
       companyId: data.companyId ?? null,
-      stage: data.stage ?? "sourcing",
+      stage: data.stage ?? "invited",
       estCheckSizeMinor: data.estCheckSizeMinor ?? null,
       currency: data.currency ?? null,
       sector: data.sector ?? null,
@@ -1995,12 +2104,12 @@ export function partnerDashboardSnapshot(partnerId: string): {
   const tier: PartnerTier = (partner?.tier as PartnerTier) ?? "catalyst";
 
   const byStage: Record<PipelineStage, number> = {
-    sourcing: 0, qualifying: 0, committee: 0, committed: 0, closed_won: 0, closed_lost: 0,
+    invited: 0, viewed: 0, soft_circle: 0, signed: 0, funded: 0, committed: 0,
   };
-  for (const d of pl) byStage[d.stage] += 1;
+  for (const d of pl) { if (byStage[d.stage] !== undefined) byStage[d.stage] += 1; }
 
   const topDeals = [...pl]
-    .filter((d) => d.stage !== "closed_lost" && d.stage !== "closed_won")
+    .filter((d) => d.stage !== "committed")
     .sort((a, b) => (b.estCheckSizeMinor ?? 0) - (a.estCheckSizeMinor ?? 0))
     .slice(0, 5);
 

@@ -19,6 +19,9 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
+/* v25.50 Phase 7 (10) — canonical ISO-3166 country master list replaces the
+   free-text jurisdiction field. */
+import { COUNTRIES } from "@/lib/profile/data/countries";
 
 type TaxForm = {
   id: string;
@@ -50,6 +53,27 @@ export default function PartnerTaxForm() {
     retry: false,
     queryFn: async () => (await apiRequest("GET", "/api/partner/me/tax-forms")).json(),
   });
+
+  /* v25.50 Phase 7 (10) — real document upload; on success the returned
+     documentUrl (an authenticated serve URL) is written into the form so the
+     subsequent tax-form submit persists it. */
+  const [uploading, setUploading] = useState(false);
+  const uploadFile = async (file: File) => {
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const r = await fetch("/api/partner/me/tax-form/upload", { method: "POST", body: fd, credentials: "include" });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.ok) throw new Error(j.message || j.error || `upload ${r.status}`);
+      setForm((f) => ({ ...f, documentUrl: j.documentUrl }));
+      toast({ title: "Document uploaded" });
+    } catch (e: any) {
+      toast({ title: "Upload failed", description: e?.message, variant: "destructive" });
+    } finally {
+      setUploading(false);
+    }
+  };
 
   const submitMut = useMutation({
     mutationFn: async () => {
@@ -100,6 +124,17 @@ export default function PartnerTaxForm() {
           <Card className="mb-4 p-4" data-testid="partner-taxform-form">
             <h2 className="text-sm font-semibold text-slate-900 mb-3">Submit a tax form</h2>
             <div className="grid gap-4 sm:grid-cols-2">
+              {/* v25.50 Phase 7 (10) — Jurisdiction (canonical country) FIRST,
+                 before the dependent Form type / Tax ID fields. */}
+              <div className="space-y-1.5">
+                <Label className="text-xs">Jurisdiction (country)</Label>
+                <Select value={form.jurisdiction} onValueChange={(v) => setForm((f) => ({ ...f, jurisdiction: v }))}>
+                  <SelectTrigger data-testid="select-taxform-jurisdiction"><SelectValue placeholder="Select country" /></SelectTrigger>
+                  <SelectContent className="max-h-72">
+                    {COUNTRIES.map((c) => <SelectItem key={c.code} value={c.code}>{c.name} ({c.code})</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
               <div className="space-y-1.5">
                 <Label className="text-xs">Form type</Label>
                 <Select value={form.formType} onValueChange={(v) => setForm((f) => ({ ...f, formType: v }))}>
@@ -108,20 +143,28 @@ export default function PartnerTaxForm() {
                 </Select>
               </div>
               <div className="space-y-1.5">
-                <Label className="text-xs">Jurisdiction</Label>
-                <Input value={form.jurisdiction} onChange={(e) => setForm((f) => ({ ...f, jurisdiction: e.target.value }))} placeholder="US / CA / …" data-testid="input-taxform-jurisdiction" />
-              </div>
-              <div className="space-y-1.5">
                 <Label className="text-xs">Tax ID (hashed on submit)</Label>
                 <Input value={form.taxId} onChange={(e) => setForm((f) => ({ ...f, taxId: e.target.value }))} placeholder="SSN / EIN / SIN" data-testid="input-taxform-taxid" />
               </div>
               <div className="space-y-1.5">
-                <Label className="text-xs">Document URL (optional)</Label>
-                <Input value={form.documentUrl} onChange={(e) => setForm((f) => ({ ...f, documentUrl: e.target.value }))} placeholder="https://…" data-testid="input-taxform-docurl" />
-              </div>
-              <div className="space-y-1.5">
                 <Label className="text-xs">Expires at (optional, ISO date)</Label>
                 <Input value={form.expiresAt} onChange={(e) => setForm((f) => ({ ...f, expiresAt: e.target.value }))} placeholder="2029-12-31" data-testid="input-taxform-expires" />
+              </div>
+              {/* v25.50 Phase 7 (10) — real file upload OR a document URL. */}
+              <div className="space-y-1.5">
+                <Label className="text-xs">Upload document (PDF/image, ≤15MB)</Label>
+                <Input
+                  type="file"
+                  accept="application/pdf,image/png,image/jpeg,image/webp"
+                  data-testid="input-taxform-file"
+                  disabled={uploading}
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadFile(f); }}
+                />
+                {uploading && <div className="text-xs text-slate-500">Uploading…</div>}
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs">Document URL (optional)</Label>
+                <Input value={form.documentUrl} onChange={(e) => setForm((f) => ({ ...f, documentUrl: e.target.value }))} placeholder="https://… or uploaded above" data-testid="input-taxform-docurl" />
               </div>
             </div>
             <div className="mt-4">

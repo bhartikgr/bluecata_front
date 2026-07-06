@@ -22,8 +22,9 @@
 import { useState } from "react";
 import { Link } from "wouter";
 import { formatMinor as formatMinorLib } from "@/lib/currency"; /* v25.38 currency sweep */
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, ApiError } from "@/lib/queryClient";
+import { Button } from "@/components/ui/button";
 import { useRequirePartnerRole } from "@/lib/partner/useRequirePartnerRole";
 import { PartnerShell, PartnerEmptyState } from "@/components/partner/PartnerShell";
 // v25.46 BLOCKER FIX #4 (Tier 9 #73) — billing surfaces consume the canonical
@@ -240,6 +241,10 @@ type Subscription = {
   currency: string; billingCycle: string; currentPeriodEnd: string | null;
 } | null;
 
+/* v25.50 Phase 7 (9a) — the standalone /subscribe page was deleted; its
+   tier-quote + checkout flow is merged here into the Subscription tab. */
+type SubscribeQuote = { tier: string; cycle: string; amountMinor: number; currency: string; checkoutPath: string };
+
 function SubscriptionTab({ ready }: { ready: boolean }) {
   const { data, isLoading, isError, error } = useQuery<{ subscription: Subscription }>({
     queryKey: ["/api/partner/me/subscription"],
@@ -249,6 +254,16 @@ function SubscriptionTab({ ready }: { ready: boolean }) {
   });
   const isForbidden = isError && error instanceof ApiError && error.status === 403;
   const sub = data?.subscription ?? null;
+
+  /* Merged quote flow (was PartnerSubscribe). POST resolves the DB-driven price
+     for the partner's tier + chosen cycle; no price is ever hardcoded. */
+  const [cycle, setCycle] = useState<"monthly" | "annual">("monthly");
+  const [quote, setQuote] = useState<SubscribeQuote | null>(null);
+  const quoteMut = useMutation({
+    mutationFn: async (): Promise<SubscribeQuote> =>
+      (await apiRequest("POST", "/api/partner/me/subscribe", { cycle })).json(),
+    onSuccess: (q) => setQuote(q),
+  });
 
   if (isForbidden) {
     return (
@@ -260,29 +275,63 @@ function SubscriptionTab({ ready }: { ready: boolean }) {
   if (isLoading) return <div className="text-sm text-slate-500" data-testid="partner-subscription-loading">Loading…</div>;
   if (isError) return <div className="rounded-md border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900">Could not load subscription.</div>;
 
-  if (!sub) {
-    return (
-      <PartnerEmptyState
-        title="No active subscription"
-        description="Consortium partners are not billed a subscription by default. Visit Subscribe to view tier-resolved pricing."
-        cta={<Link href="/collective/partner/subscribe" className="text-[#cc0001] hover:underline text-sm">Go to Subscribe →</Link>}
-      />
-    );
-  }
-
   return (
-    <AppCard className="p-6 max-w-xl" data-testid="partner-subscription-card">
-      <div className="text-xs uppercase tracking-wide text-slate-500">Active subscription</div>
-      <div className="mt-1 text-lg font-semibold text-[#041e41]">{sub.tierId}</div>
-      <dl className="mt-3 grid grid-cols-2 gap-2 text-sm">
-        <dt className="text-slate-500">Amount</dt>
-        <dd className="font-mono">{formatMinor(sub.amountMinor, sub.currency)} / {sub.billingCycle}</dd>
-        <dt className="text-slate-500">Status</dt>
-        <dd>{sub.status}</dd>
-        <dt className="text-slate-500">Renews</dt>
-        <dd>{formatDate(sub.currentPeriodEnd)}</dd>
-      </dl>
-    </AppCard>
+    <div className="space-y-4">
+      {sub ? (
+        <AppCard className="p-6 max-w-xl" data-testid="partner-subscription-card">
+          <div className="text-xs uppercase tracking-wide text-slate-500">Active subscription</div>
+          <div className="mt-1 text-lg font-semibold text-[#041e41]">{sub.tierId}</div>
+          <dl className="mt-3 grid grid-cols-2 gap-2 text-sm">
+            <dt className="text-slate-500">Amount</dt>
+            <dd className="font-mono">{formatMinor(sub.amountMinor, sub.currency)} / {sub.billingCycle}</dd>
+            <dt className="text-slate-500">Status</dt>
+            <dd>{sub.status}</dd>
+            <dt className="text-slate-500">Renews</dt>
+            <dd>{formatDate(sub.currentPeriodEnd)}</dd>
+          </dl>
+        </AppCard>
+      ) : (
+        <PartnerEmptyState
+          title="No active subscription"
+          description="Consortium partners are not billed a subscription by default. Use the tier quote below to see your resolved price and start checkout."
+        />
+      )}
+
+      {/* Merged tier-quote + checkout flow (9a). */}
+      <AppCard className="p-6 max-w-xl" data-testid="partner-subscribe-quote">
+        <div className="text-xs uppercase tracking-wide text-slate-500">Subscription tier quote</div>
+        <div className="mt-3 flex items-center gap-2">
+          <select
+            data-testid="subscribe-cycle"
+            value={cycle}
+            onChange={(e) => { setCycle(e.target.value as "monthly" | "annual"); setQuote(null); }}
+            className="border rounded px-2 py-1 text-sm"
+          >
+            <option value="monthly">Monthly</option>
+            <option value="annual">Annual</option>
+          </select>
+          <Button size="sm" data-testid="subscribe-quote-btn" disabled={quoteMut.isPending} onClick={() => quoteMut.mutate()}>
+            {quoteMut.isPending ? "Resolving…" : "Get quote"}
+          </Button>
+        </div>
+        {quoteMut.isError && (
+          <div className="mt-3 rounded-md border border-rose-200 bg-rose-50 p-3 text-xs text-rose-900" data-testid="subscribe-quote-error">
+            {quoteMut.error instanceof Error ? quoteMut.error.message : "Could not resolve a price for this tier."}
+          </div>
+        )}
+        {quote && (
+          <div className="mt-3 text-sm" data-testid="subscribe-quote-result">
+            <div className="font-mono text-lg text-[#041e41]">
+              {formatMinor(quote.amountMinor, quote.currency)} / {quote.cycle}
+            </div>
+            <div className="mt-1 text-xs text-slate-500">Tier: {quote.tier}</div>
+            <a href={quote.checkoutPath} data-testid="subscribe-checkout-link">
+              <Button size="sm" className="mt-3">Proceed to checkout</Button>
+            </a>
+          </div>
+        )}
+      </AppCard>
+    </div>
   );
 }
 
@@ -398,6 +447,9 @@ function SpvFeesTab({ ready }: { ready: boolean }) {
 /* ============================================================
  * Tax Forms tab (v25.33) — GET /api/partner/me/tax-forms (read-only summary).
  * Full submission flow lives on the dedicated /collective/partner/tax-form page.
+ * v25.50 REVISE R2 (item 4) — this tab is an INTENTIONAL quick-view mirror of the
+ * dedicated /tax-form page (per QA deck slide 8, which shows Billing WITH a Tax
+ * Forms tab). It is NOT a duplicate to remove — keep both surfaces (Rule #78).
  * ============================================================ */
 type TaxForm = {
   id: string; formType: string; jurisdiction: string;
@@ -466,7 +518,120 @@ function TaxFormsTab({ ready }: { ready: boolean }) {
   );
 }
 
-type BillingTab = "subscription" | "referral" | "spv-fees" | "tax-forms";
+/* ============================================================
+ * Invoices tab (v25.50 Phase 7, spec 8) — a consolidated, downloadable invoice
+ * view DERIVED from the partner's existing DB-backed ledgers (referral
+ * commissions + SPV fees). No new table/migration: this is a read-only rollup
+ * of rows the server already returns. CSV export is client-side (Blob), so no
+ * new endpoint is introduced. Auth mirrors the source endpoints (managing_partner).
+ * ============================================================ */
+type InvoiceLine = { id: string; date: string; kind: string; reference: string; amountMinor: number; currency: string; status: string };
+
+function InvoicesTab({ ready }: { ready: boolean }) {
+  const billing = useQuery<BillingResponse>({
+    queryKey: ["/api/partner/me/billing"],
+    enabled: ready, retry: false,
+    queryFn: async () => (await apiRequest("GET", "/api/partner/me/billing")).json(),
+  });
+  const spvFees = useQuery<SpvFeesResponse>({
+    queryKey: ["/api/partner/me/spv-fees"],
+    enabled: ready, retry: false,
+    queryFn: async () => (await apiRequest("GET", "/api/partner/me/spv-fees")).json(),
+  });
+
+  const isForbidden =
+    (billing.isError && billing.error instanceof ApiError && billing.error.status === 403) ||
+    (spvFees.isError && spvFees.error instanceof ApiError && spvFees.error.status === 403);
+
+  const lines: InvoiceLine[] = [
+    ...(billing.data?.entries ?? []).map((e) => ({
+      id: e.id, date: e.date, kind: "Referral commission", reference: e.dealId,
+      amountMinor: e.commissionMinor, currency: e.currency, status: e.status,
+    })),
+    ...(spvFees.data?.entries ?? []).map((e) => ({
+      id: e.id, date: e.createdAt, kind: SPV_KIND_LABELS[e.entryKind] || e.entryKind,
+      reference: e.spvName || e.spvFundId || e.dealRef || "—", amountMinor: e.feeMinor,
+      currency: e.currency, status: e.status,
+    })),
+  ].sort((a, b) => (a.date < b.date ? 1 : -1));
+
+  const downloadCsv = () => {
+    const header = ["Date", "Kind", "Reference", "Amount", "Currency", "Status"];
+    const rows = lines.map((l) => [
+      formatDate(l.date), l.kind, l.reference,
+      (l.amountMinor / 100).toFixed(2), l.currency, l.status,
+    ]);
+    const esc = (v: string) => `"${String(v).replace(/"/g, '""')}"`;
+    const csv = [header, ...rows].map((r) => r.map(esc).join(",")).join("\r\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `partner-invoices-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  if (isForbidden) {
+    return (
+      <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900" data-testid="partner-invoices-forbidden">
+        Invoice details are visible to managing partners only.
+      </div>
+    );
+  }
+
+  const isLoading = billing.isLoading || spvFees.isLoading;
+
+  return (
+    <>
+      <div className="mb-4 flex items-center justify-between">
+        <div className="text-sm text-slate-600">
+          A consolidated view of your commission and SPV-fee line items.
+        </div>
+        <Button size="sm" variant="outline" data-testid="invoices-download-csv" disabled={lines.length === 0} onClick={downloadCsv}>
+          Download CSV
+        </Button>
+      </div>
+      {isLoading && <div className="text-sm text-slate-500" data-testid="partner-invoices-loading">Loading…</div>}
+      {!isLoading && lines.length === 0 && (
+        <PartnerEmptyState
+          title="No invoice line items yet"
+          description="Commission and SPV-fee entries appear here as deals are funded and SPVs deployed."
+        />
+      )}
+      {!isLoading && lines.length > 0 && (
+        <AppCard className="overflow-hidden" data-testid="partner-invoices-table">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="border-b bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="px-4 py-2">Date</th>
+                  <th className="px-4 py-2">Kind</th>
+                  <th className="px-4 py-2">Reference</th>
+                  <th className="px-4 py-2 text-right">Amount</th>
+                  <th className="px-4 py-2">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {lines.map((l) => (
+                  <tr key={l.id} className="border-b last:border-0" data-testid={`partner-invoices-row-${l.id}`}>
+                    <td className="px-4 py-2">{formatDate(l.date)}</td>
+                    <td className="px-4 py-2">{l.kind}</td>
+                    <td className="px-4 py-2 font-mono text-xs">{l.reference}</td>
+                    <td className="px-4 py-2 text-right font-mono">{formatMinor(l.amountMinor, l.currency)}</td>
+                    <td className="px-4 py-2">{l.status}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </AppCard>
+      )}
+    </>
+  );
+}
+
+type BillingTab = "subscription" | "referral" | "spv-fees" | "invoices" | "tax-forms";
 
 export default function PartnerBilling() {
   const role = useRequirePartnerRole();
@@ -486,6 +651,7 @@ export default function PartnerBilling() {
         <FilterChip active={tab === "subscription"} onClick={() => setTab("subscription")} data-testid="tab-subscription">Subscription</FilterChip>
         <FilterChip active={tab === "referral"} onClick={() => setTab("referral")} data-testid="tab-referral">Referral Commissions</FilterChip>
         <FilterChip active={tab === "spv-fees"} onClick={() => setTab("spv-fees")} data-testid="tab-spv-fees">SPV Fees</FilterChip>
+        <FilterChip active={tab === "invoices"} onClick={() => setTab("invoices")} data-testid="tab-invoices">Invoices</FilterChip>
         <FilterChip active={tab === "tax-forms"} onClick={() => setTab("tax-forms")} data-testid="tab-tax-forms">Tax Forms</FilterChip>
       </div>
 
@@ -494,6 +660,7 @@ export default function PartnerBilling() {
         {tab === "subscription" && <SubscriptionTab ready={ready} />}
         {tab === "referral" && <ReferralCommissionsTab ready={ready} />}
         {tab === "spv-fees" && <SpvFeesTab ready={ready} />}
+        {tab === "invoices" && <InvoicesTab ready={ready} />}
         {tab === "tax-forms" && <TaxFormsTab ready={ready} />}
       </div>
     </PartnerShell>

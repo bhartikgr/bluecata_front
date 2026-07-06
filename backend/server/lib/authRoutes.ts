@@ -272,7 +272,7 @@ export function registerAuthShellRoutes(app: Express, redemption: {
   // Wave C FIX C4 (Ozan, 24-May-2026) — per-IP signup rate limiter
   // (5/hour/IP) to slow bulk account creation from a single network.
   app.post("/api/auth/signup", authSignupRateLimit, async (req: Request, res: Response) => {
-    const body = (req.body ?? {}) as { email?: string; name?: string; password?: string; portal?: string; role?: string };
+    const body = (req.body ?? {}) as { email?: string; name?: string; firstName?: string; lastName?: string; password?: string; portal?: string; role?: string };
     // v24.4 Bug C hardening: reject any investor-flavoured signup attempt.
     // Investors join Capavate ONLY by redeeming invitations (registerPersona),
     // never via the public /api/auth/signup endpoint. Block both `portal`
@@ -286,7 +286,21 @@ export function registerAuthShellRoutes(app: Express, redemption: {
       });
     }
     const email = (body.email ?? "").trim().toLowerCase();
-    const name = (body.name ?? "").trim();
+    // v25.51 name-split: accept discrete First/Last; compose the mandatory,
+    // byte-stable `name` the SACRED readers rely on. Fall back to a single
+    // `name` (split parts[0]=first, remainder=last) for legacy callers.
+    const bodyFirst = (body.firstName ?? "").trim();
+    const bodyLast = (body.lastName ?? "").trim();
+    let firstName = bodyFirst;
+    let lastName = bodyLast;
+    let name = (body.name ?? "").trim();
+    if (bodyFirst || bodyLast) {
+      name = [bodyFirst, bodyLast].filter(Boolean).join(" ");
+    } else if (name) {
+      const parts = name.split(/\s+/);
+      firstName = parts.shift() ?? "";
+      lastName = parts.join(" ");
+    }
     const password = body.password ?? "";
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return res.status(400).json({ ok: false, error: "INVALID_EMAIL", message: "Enter a valid email address." });
@@ -315,6 +329,18 @@ export function registerAuthShellRoutes(app: Express, redemption: {
     }
     clearRevocation(userId); // Wave C FIX C1
     setSessionCookie(res, userId);
+
+    /* v25.51 name-split — persist discrete first/last on the users row via an
+       EDITABLE path (registerFounderUser is SACRED and only writes the composed
+       `name`, which stays the invariant). Best-effort + additive; a failure here
+       must never block signup. */
+    try {
+      if (firstName || lastName) {
+        rawDb()
+          .prepare("UPDATE users SET first_name = ?, last_name = ? WHERE id = ?")
+          .run(firstName || null, lastName || null, userId);
+      }
+    } catch { /* non-fatal — do NOT block signup */ }
 
     /* v25.19 Lane 4 NC1 (hard close) — promote any provisional partner
        attribution for this email to a real partnerAttribution row. v25.16

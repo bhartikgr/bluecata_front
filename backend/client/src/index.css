@@ -10,6 +10,8 @@
    Additive `--cv-*` namespace consumed only by the new v25.46 primitives.
    Must precede @tailwind per CSS @import ordering rules. */
 @import "./styles/capavate-tokens.css";
+/* v25.50.0 Phase 1 — partner-workspace re-skin, scoped under [data-product="partner"]. */
+@import "./styles/partner-theme.css";
 
 @tailwind base;
 @tailwind components;

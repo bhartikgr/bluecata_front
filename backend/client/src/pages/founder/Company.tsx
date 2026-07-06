@@ -1094,22 +1094,36 @@ function Step3LegalEntity({
  </div>
  </div>
  <div className="space-y-1.5">
- <Label className="text-xs">Directors snapshot <span className="text-muted-foreground font-normal">(optional JSON: [{"{"}&quot;name&quot;,&quot;role&quot;{"}"}])</span></Label>
+ <Label className="text-xs">Directors snapshot <span className="text-muted-foreground font-normal">(optional JSON: [{"{"}&quot;firstName&quot;,&quot;lastName&quot;,&quot;role&quot;{"}"}])</span></Label>
  <Textarea
  rows={3}
  className="font-mono text-xs"
  defaultValue={value.boardComposition?.directorsSnapshot?.length ? JSON.stringify(value.boardComposition.directorsSnapshot) : ""}
- placeholder='[{"name": "Alice Chen", "role": "CEO"}, {"name": "Bob Smith", "role": "Independent"}]'
+ placeholder='[{"firstName": "Alice", "lastName": "Chen", "role": "CEO"}, {"firstName": "Bob", "lastName": "Smith", "role": "Independent"}]'
  onBlur={(e) => {
  const raw = e.target.value.trim();
- let snapshot: Array<{ name: string; role?: string }> = [];
+ let snapshot: Array<{ name: string; firstName?: string; lastName?: string; role?: string }> = [];
  if (raw) {
  try {
  const parsed = JSON.parse(raw);
  if (Array.isArray(parsed)) {
- snapshot = parsed
- .filter((d) => d && typeof d.name === "string")
- .map((d) => ({ name: String(d.name), role: d.role ? String(d.role) : "" }));
+ // v25.51 name-split — accept discrete first/last OR a composed name.
+ // Compose "First Last" when parts given; split a single name otherwise.
+ // The composed `name` is always populated (authoritative for readers).
+ snapshot = (parsed as unknown[])
+ .map((d): { name: string; firstName?: string; lastName?: string; role?: string } | null => {
+ if (!d || typeof d !== "object") return null;
+ const rec = d as { name?: unknown; firstName?: unknown; lastName?: unknown; role?: unknown };
+ const f = typeof rec.firstName === "string" ? rec.firstName.trim() : "";
+ const l = typeof rec.lastName === "string" ? rec.lastName.trim() : "";
+ const nm = typeof rec.name === "string" ? rec.name.trim() : "";
+ let name = nm, firstName = f, lastName = l;
+ if (f || l) name = [f, l].filter(Boolean).join(" ") || nm;
+ else if (nm) { const p = nm.split(/\s+/); firstName = p[0] ?? ""; lastName = p.slice(1).join(" "); }
+ if (!name) return null;
+ return { name, firstName: firstName || undefined, lastName: lastName || undefined, role: rec.role ? String(rec.role) : "" };
+ })
+ .filter((d): d is { name: string; firstName?: string; lastName?: string; role?: string } => d !== null);
  }
  } catch { /* keep prior on parse error */ snapshot = value.boardComposition?.directorsSnapshot ?? []; }
  }

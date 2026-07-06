@@ -108,6 +108,8 @@ export default function RoundDetail() {
  const [inviteOpen, setInviteOpen] = useState(false);
  const [bulkOpen, setBulkOpen] = useState(false);
  const [inviteName, setInviteName] = useState("");
+ const [inviteFirstName, setInviteFirstName] = useState("");
+ const [inviteLastName, setInviteLastName] = useState("");
  const [inviteEmail, setInviteEmail] = useState("");
  const [inviteNote, setInviteNote] = useState("");
  // v24.4 BUG 044 — invite source: pick from CRM, or add a brand-new investor.
@@ -129,8 +131,18 @@ export default function RoundDetail() {
    mutationFn: async () => {
      // select-invite-expiry fix v23.4.13: pass expiryDays from dropdown
      const expiryDaysVal = inviteExpiry === "never" ? null : parseInt(inviteExpiry, 10);
+     const composedInviteName =
+       inviteSource === "new"
+         ? [inviteFirstName.trim(), inviteLastName.trim()].filter(Boolean).join(" ")
+         : inviteName;
      const res = await apiRequest("POST", `/api/rounds/${id}/invitations`, {
-       investorName: inviteName, investorEmail: inviteEmail, note: inviteNote,
+       investorName: composedInviteName, investorEmail: inviteEmail, note: inviteNote,
+       ...(inviteSource === "new"
+         ? {
+             investorFirstName: inviteFirstName.trim() || null,
+             investorLastName: inviteLastName.trim() || null,
+           }
+         : {}),
        ...(expiryDaysVal !== null ? { expiryDays: expiryDaysVal } : {}),
      });
      return res.json();
@@ -701,6 +713,8 @@ export default function RoundDetail() {
  setInviteSource("new");
  setInviteCrmId("");
  setInviteName("");
+ setInviteFirstName("");
+ setInviteLastName("");
  setInviteEmail("");
  } else {
  setInviteSource("crm");
@@ -719,7 +733,8 @@ export default function RoundDetail() {
  </div>
  {inviteSource === "new" && (
  <>
- <div><Label>Investor name</Label><Input className="mt-1" value={inviteName} onChange={e => setInviteName(e.target.value)} placeholder="Investor name" data-testid="input-invite-name" /></div>
+ <div><Label>First name</Label><Input className="mt-1" value={inviteFirstName} onChange={e => setInviteFirstName(e.target.value)} placeholder="First name" data-testid="input-invite-first-name" /></div>
+ <div><Label>Last name</Label><Input className="mt-1" value={inviteLastName} onChange={e => setInviteLastName(e.target.value)} placeholder="Last name" data-testid="input-invite-last-name" /></div>
  <div><Label>Email</Label><Input className="mt-1" type="email" value={inviteEmail} onChange={e => setInviteEmail(e.target.value)} placeholder="investor@firm.com" data-testid="input-invite-email" /></div>
  </>
  )}

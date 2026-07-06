@@ -47,6 +47,10 @@ export const users = sqliteTable("users", {
   tenantId: text("tenant_id").notNull(),
   email: text("email").notNull().unique(),
   name: text("name").notNull(),
+  // v25.51 name-split (additive): discrete first/last; `name` kept composed
+  // (invariant that keeps SACRED userContext.ts / userPrivacyResolver.ts readers working).
+  firstName: text("first_name"),
+  lastName: text("last_name"),
   role: text("role").notNull(), // "founder" | "investor" | "admin"
   avatarUrl: text("avatar_url"),
   // v12 additions (additive, non-breaking):
@@ -241,6 +245,9 @@ export const roundInvitations = sqliteTable("round_invitations", {
   roundId: text("round_id").notNull(),
   investorEmail: text("investor_email").notNull(),
   investorName: text("investor_name"),
+  // v25.51 name-split (additive): discrete first/last; investor_name kept composed.
+  investorFirstName: text("investor_first_name"),
+  investorLastName: text("investor_last_name"),
   state: text("state").notNull(), // pending | viewed | accepted | declined | expired | revoked
   expiresAt: text("expires_at"),
   sentAt: text("sent_at"),
@@ -252,6 +259,9 @@ export const softCircles = sqliteTable("soft_circles", {
   roundId: text("round_id").notNull(),
   invitationId: text("invitation_id"),
   investorName: text("investor_name").notNull(),
+  // v25.51 name-split (additive): discrete first/last; investor_name kept composed.
+  investorFirstName: text("investor_first_name"),
+  investorLastName: text("investor_last_name"),
   amount: real("amount").notNull(),
   status: text("status").notNull(), // intent | confirmed | committed | declined
   createdAt: text("created_at").notNull(),
@@ -978,6 +988,9 @@ export const userCredentials = sqliteTable("user_credentials", {
   userId: text("user_id").primaryKey(),
   email: text("email").notNull(),
   name: text("name"),
+  // v25.51 name-split (additive): discrete first/last; `name` kept composed.
+  firstName: text("first_name"),
+  lastName: text("last_name"),
   passwordHash: text("password_hash").notNull(),
   createdAt: text("created_at"),
   updatedAt: text("updated_at"),
@@ -1133,6 +1146,12 @@ export const captableCommits = sqliteTable("captable_commits", {
   reconcileRef: text("reconcile_ref"),
   reconcileMatch: integer("reconcile_match", { mode: "boolean" }).notNull().default(true),
   complianceHold: integer("compliance_hold", { mode: "boolean" }).notNull().default(false),
+  // v25.51 name-split — OPTIONAL holder identity METADATA only. These are NEVER
+  // part of the commit hash-chain (buildCommitBody) nor any amount/share math;
+  // they exist so a holder's discrete first/last can travel with the ledger row
+  // for display/export. Nullable; legacy rows and callers omit them.
+  holderFirstName: text("holder_first_name"),
+  holderLastName: text("holder_last_name"),
   deletedAt: text("deleted_at"),
 });
 
@@ -1195,6 +1214,12 @@ export const founderCrmContacts = sqliteTable("founder_crm_contacts", {
   companyId: text("company_id").notNull(),
   investorId: text("investor_id"),
   name: text("name").notNull(),
+  // v25.51 6a — discrete identity fields (per Ozan). Nullable + additive
+  // (migration 0092) so existing rows keep working; `name`/`firm_name` are
+  // still populated for backward-compat readers/exports.
+  firstName: text("first_name"),
+  lastName: text("last_name"),
+  companyName: text("company_name"),
   firmName: text("firm_name"),
   role: text("role"),
   email: text("email"),
@@ -1223,6 +1248,11 @@ export const investorCrmContacts = sqliteTable("investor_crm_contacts", {
   investorId: text("investor_id").notNull(),
   platformUserId: text("platform_user_id"),
   name: text("name").notNull(),
+  // v25.51 name-split — discrete identity columns (additive). Composed `name`
+  // stays authoritative for every existing reader; these are nullable so rows
+  // written before this wave hydrate cleanly.
+  firstName: text("first_name"),
+  lastName: text("last_name"),
   role: text("role"),
   email: text("email"),
   affiliation: text("affiliation"),
@@ -2157,6 +2187,9 @@ export const partnerCrmContacts = sqliteTable("partner_crm_contacts", {
   contactUserId: text("contact_user_id"),
   email: text("email").notNull().default(""),
   name: text("name").notNull(),
+  // v25.51 name-split (additive): discrete first/last; name kept composed & hashed.
+  firstName: text("first_name"),
+  lastName: text("last_name"),
   role: text("role").notNull().default(""),
   org: text("org").notNull().default(""),
   lastContactAt: text("last_contact_at"),
@@ -2348,6 +2381,9 @@ export const consortiumApplications = sqliteTable("consortium_applications", {
   tenantId: text("tenant_id"),
   expectedChapterId: text("expected_chapter_id"),
   contactName: text("contact_name").notNull(),
+  // v25.51 name-split (additive): discrete first/last; contact_name kept composed.
+  contactFirstName: text("contact_first_name"),
+  contactLastName: text("contact_last_name"),
   contactEmail: text("contact_email").notNull(),
   contactPhone: text("contact_phone"),
   organizationName: text("organization_name").notNull(),

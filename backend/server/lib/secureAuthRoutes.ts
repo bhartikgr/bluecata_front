@@ -175,6 +175,21 @@ export function registerSecureAuthRoutes(app: Express): void {
       role = row.intent === "partner_invite" ? "partner" : "investor";
     }
 
+    /* v25.49.3 R2 — partner password-reset/redeem must route to /partner/login,
+     * never to the investor/founder login. The approved-partner magic-link path
+     * (partnerRoutes R1) now stamps a durable consortium_partner role, but guard
+     * here too: if this token is a partner_invite, OR the matching `users` row is
+     * a consortium_partner, return the partner role. This prevents a stale
+     * 'investor' role (from a pre-fix persona) leaking through and dumping the
+     * partner on /auth/login (bug 2a). SetPasswordPage maps consortium_partner ->
+     * /partner/login. */
+    const partnerUsersRow = db
+      .prepare(`SELECT role FROM users WHERE lower(email) = ? AND role = 'consortium_partner' ORDER BY rowid LIMIT 1`)
+      .get(row.email.trim().toLowerCase()) as { role: string } | undefined;
+    if (row.intent === "partner_invite" || partnerUsersRow) {
+      role = "consortium_partner";
+    }
+
     // v24.4 Bug B hardening — transaction-safe ordering.
     // Previously the token was consumed (UPDATE auth_redeem_tokens.consumed_at)
     // BEFORE the credential write. If the credential write then failed, the
@@ -223,7 +238,7 @@ export function registerSecureAuthRoutes(app: Express): void {
     const alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
     let secret = "";
     const buf = crypto.randomBytes(20);
-    for (const b of buf) secret += alphabet[b % alphabet.length];
+    for (let i = 0; i < buf.length; i++) secret += alphabet[buf[i] % alphabet.length];
     rawDb().prepare(`UPDATE auth_users SET totp_secret = ? WHERE id = ?`).run(secret, claims.sub);
     const issuer = "Capavate";
     const otpauth = `otpauth://totp/${encodeURIComponent(issuer)}:${encodeURIComponent(claims.sub)}?secret=${secret}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=30`;

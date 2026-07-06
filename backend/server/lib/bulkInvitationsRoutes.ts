@@ -92,9 +92,10 @@ export function registerBulkInvitationsRoutes(app: Express): void {
       const insert = db.prepare(
         `INSERT OR IGNORE INTO round_invitations (
            id, tenant_id, round_id, company_id, investor_email, investor_name,
+           investor_first_name, investor_last_name,
            state, classification, invited_by_user_id, note,
            sent_at, expires_at, token_hash, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, 'sent', 'new_registration', ?, ?, ?, ?, ?, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'sent', 'new_registration', ?, ?, ?, ?, ?, ?, ?)`,
       );
       const existsStmt = db.prepare(
         `SELECT id FROM round_invitations
@@ -118,13 +119,35 @@ export function registerBulkInvitationsRoutes(app: Express): void {
         tokenHash: string;
         email: string;
         name: string | null;
+        firstName: string | null;
+        lastName: string | null;
       };
       const pending: Pending[] = [];
       const seenInBatch = new Set<string>();
 
       for (const entry of list) {
         const email = String(entry?.email ?? "").trim().toLowerCase();
-        const name = entry?.name ? String(entry.name).trim() : null;
+        // v25.51 name-split: accept discrete firstName/lastName CSV columns;
+        // fall back to splitting a single `name` (parts[0]=first, rest=last).
+        // The composed `name` is always kept populated for byte-stable readers.
+        const rawFirst = entry?.firstName ? String(entry.firstName).trim() : "";
+        const rawLast = entry?.lastName ? String(entry.lastName).trim() : "";
+        let firstName: string | null = null;
+        let lastName: string | null = null;
+        let name: string | null = null;
+        if (rawFirst || rawLast) {
+          firstName = rawFirst || null;
+          lastName = rawLast || null;
+          name = [rawFirst, rawLast].filter(Boolean).join(" ") || null;
+        } else {
+          const whole = entry?.name ? String(entry.name).trim() : "";
+          name = whole || null;
+          if (whole) {
+            const parts = whole.split(/\s+/);
+            firstName = parts.shift() ?? null;
+            lastName = parts.length ? parts.join(" ") : null;
+          }
+        }
         if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
           skipped.push({ email: entry?.email ?? "<missing>", reason: "invalid_email" });
           continue;
@@ -143,7 +166,7 @@ export function registerBulkInvitationsRoutes(app: Express): void {
         const invId = `inv_${roundId}_${randomBytes(8).toString("hex")}`;
         const token = randomBytes(32).toString("hex");
         const tokenHash = createHash("sha256").update(token).digest("hex");
-        pending.push({ invId, token, tokenHash, email, name });
+        pending.push({ invId, token, tokenHash, email, name, firstName, lastName });
       }
 
       // Atomic insert phase.
@@ -157,6 +180,8 @@ export function registerBulkInvitationsRoutes(app: Express): void {
             owner.companyId,
             r.email,
             r.name,
+            r.firstName,
+            r.lastName,
             ctx.userId,
             noteText,
             now,

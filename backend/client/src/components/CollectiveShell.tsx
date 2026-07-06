@@ -11,13 +11,13 @@ import { Link, useLocation } from "wouter";
 import {
   LayoutDashboard, Briefcase, Users, Building2, Circle, BarChart3,
   TrendingUp, ClipboardList, UserCircle, Activity, Settings, Menu, X,
-  ArrowLeftRight, LogOut, Scale, UserPlus, FileText, ListTodo, FolderOpen,
+  ArrowLeftRight, LogOut, Scale, UserPlus, FileText,
   PiggyBank, CalendarDays, Trophy, Receipt,
   /* v25.42 (Bucket B) — icons for the 7 new Collective nav entries. */
   Network, Handshake, ClipboardCheck, Inbox,
   /* v25.33 Consortium Partner Payment Model — icons for the new partner
      self-service nav items (Subscribe / Agreement / Tax Forms). */
-  CreditCard, FileSignature, FileCheck,
+  FileSignature, FileCheck,
   /* v25.49 Phase-3B — icons for the new partner NETWORK group (Messages/Posts). */
   MessageSquare, Newspaper,
 } from "lucide-react";
@@ -166,7 +166,7 @@ const PARTNER_WORKSPACE_GROUPS: NavGroup[] = [
          page. The legacy /spvs and /funds routes stay reachable (they redirect to
          the canonical surface) so no bookmark/link breaks — Sacred Rule #78. */
       { href: "/collective/partner/spv-engine", label: "SPVs", icon: Building2, "data-testid": "nav-partner-spvs" },
-      { href: "/collective/partner/clients", label: "Clients", icon: Users, "data-testid": "nav-partner-clients" },
+      /* v25.50.0 Phase 6 (spec 4a) — "Clients" nav item removed (page deleted). */
     ],
   },
   {
@@ -183,8 +183,7 @@ const PARTNER_WORKSPACE_GROUPS: NavGroup[] = [
     items: [
       { href: "/collective/partner/team", label: "Team", icon: UserPlus, "data-testid": "nav-partner-team" },
       { href: "/collective/partner/notes", label: "Notes", icon: FileText, "data-testid": "nav-partner-notes" },
-      { href: "/collective/partner/tasks", label: "Tasks", icon: ListTodo, "data-testid": "nav-partner-tasks" },
-      { href: "/collective/partner/files", label: "Files", icon: FolderOpen, "data-testid": "nav-partner-files" },
+      /* v25.50.0 Phase 6 (spec 5a/6a) — "Tasks" and "Files" nav items removed (pages deleted). */
     ],
   },
   {
@@ -192,8 +191,8 @@ const PARTNER_WORKSPACE_GROUPS: NavGroup[] = [
     items: [
       /* v25.32 A3 — consortium partner commission ledger (not subscription billing). */
       { href: "/collective/partner/billing", label: "Billing", icon: Receipt, "data-testid": "nav-partner-billing" },
-      /* v25.33 Consortium Partner Payment Model — partner self-service surfaces. */
-      { href: "/collective/partner/subscribe", label: "Subscribe", icon: CreditCard, "data-testid": "nav-partner-subscribe" },
+      /* v25.50.0 Phase 6 (spec 9a) — "Subscribe" nav item removed; the subscribe
+         flow is merged into the Billing → Subscription tab (Phase 7). */
       { href: "/collective/partner/agreement", label: "Agreement", icon: FileSignature, "data-testid": "nav-partner-agreement" },
       { href: "/collective/partner/tax-form", label: "Tax Forms", icon: FileCheck, "data-testid": "nav-partner-tax-form" },
       { href: "/collective/partner/settings", label: "Settings", icon: Settings, "data-testid": "nav-partner-settings" },

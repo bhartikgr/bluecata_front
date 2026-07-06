@@ -47,7 +47,9 @@ describe("v23.4.6 Phase 5 (L-006) - Signup aggregate validation guard", () => {
 
   it("each required input declares aria-invalid based on its specific validity", () => {
     const inputBlocks = SIGNUP.match(/<Input[\s\S]*?\/>/g) ?? [];
-    const namedIds = ["input-name", "input-email", "input-password"];
+    // v25.51 name-split: the single `input-name` was split into discrete
+    // `input-first-name` / `input-last-name`; both are required and carry aria-invalid.
+    const namedIds = ["input-first-name", "input-last-name", "input-email", "input-password"];
     for (const tid of namedIds) {
       const block = inputBlocks.find((b) => b.includes(`data-testid="${tid}"`));
       expect(block, `expected to find Input with data-testid="${tid}"`).toBeTruthy();

@@ -121,6 +121,11 @@ export interface CrmContactRow {
   contactUserId: string | null;
   email: string;
   name: string;
+  // v25.51 name-split — discrete identity (additive). `name` stays composed
+  // "First Last" and remains the ONLY name field in the CP-008 hash payload,
+  // so the partner CRM hash-chain is unaffected.
+  firstName: string | null;
+  lastName: string | null;
   role: string;
   org: string;
   lastContactAt: string | null;
@@ -218,6 +223,8 @@ function rowToCrm(r: any): CrmContactRow {
     contactUserId: r.contact_user_id ?? r.contactUserId ?? null,
     email: r.email ?? "",
     name: r.name,
+    firstName: r.first_name ?? r.firstName ?? null,
+    lastName: r.last_name ?? r.lastName ?? null,
     role: r.role ?? "",
     org: r.org ?? "",
     lastContactAt: r.last_contact_at ?? r.lastContactAt ?? null,
@@ -315,17 +322,38 @@ const portfolioCreateSchema = z.object({
 });
 const portfolioUpdateSchema = portfolioCreateSchema.partial();
 
-const crmCreateSchema = z.object({
+// v25.51 name-split — first_name/last_name are the new discrete inputs. `name`
+// stays accepted (and required-on-create via refine) as the composed
+// "First Last" for the CP-008 hash-chain + all existing readers.
+const crmBaseSchema = z.object({
   contact_user_id: z.string().min(1).optional(),
   email: z.string().email().optional(),
-  name: z.string().min(1).max(200),
+  name: z.string().min(1).max(200).optional(),
+  first_name: z.string().min(1).max(100).optional(),
+  last_name: z.string().min(1).max(100).optional(),
   role: z.string().max(120).optional(),
   org: z.string().max(200).optional(),
   last_contact_at: z.string().optional(),
   notes: z.string().max(4000).optional(),
   tags: z.array(z.string().max(40)).max(20).optional(),
 });
-const crmUpdateSchema = crmCreateSchema.partial();
+const crmCreateSchema = crmBaseSchema.refine(
+  (d) => (typeof d.name === "string" && d.name.trim().length > 0) || (!!d.first_name && !!d.last_name),
+  { message: "name (or both first_name and last_name) is required" },
+);
+const crmUpdateSchema = crmBaseSchema.partial();
+
+/** v25.51 — compose "First Last", preferring an explicit name. */
+function composeCrmContactName(
+  name: string | undefined,
+  first: string | undefined | null,
+  last: string | undefined | null,
+  fallback: string,
+): string {
+  if (typeof name === "string" && name.trim()) return name.trim();
+  const composed = [first, last].filter((s) => typeof s === "string" && s.trim()).map((s) => (s as string).trim()).join(" ");
+  return composed || fallback;
+}
 
 const dealCreateSchema = z.object({
   company_id: z.string().min(1),
@@ -830,11 +858,12 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
     const tenantId = `tenant_partner_${ctx.partnerId}`;
     // CP-008: compute hash chain (prev = current tip, curr = sha256 of canonical payload).
     const prevHash = findCrmChainTip(ctx.partnerId);
+    const composedName = composeCrmContactName(parsed.data.name, parsed.data.first_name, parsed.data.last_name, "New contact");
     const seed: Pick<CrmContactRow, "partnerId" | "contactUserId" | "email" | "name" | "createdAt"> = {
       partnerId: ctx.partnerId,
       contactUserId: parsed.data.contact_user_id ?? null,
       email: parsed.data.email ?? "",
-      name: parsed.data.name,
+      name: composedName,
       createdAt: now,
     };
     const currHash = computeHash(prevHash, crmHashPayload(seed, prevHash));
@@ -844,7 +873,9 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
       partnerId: ctx.partnerId,
       contactUserId: parsed.data.contact_user_id ?? null,
       email: parsed.data.email ?? "",
-      name: parsed.data.name,
+      name: composedName,
+      firstName: parsed.data.first_name ?? null,
+      lastName: parsed.data.last_name ?? null,
       role: parsed.data.role ?? "",
       org: parsed.data.org ?? "",
       lastContactAt: parsed.data.last_contact_at ?? null,
@@ -865,6 +896,8 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
         contactUserId: row.contactUserId,
         email: row.email,
         name: row.name,
+        firstName: row.firstName,
+        lastName: row.lastName,
         role: row.role,
         org: row.org,
         lastContactAt: row.lastContactAt,
@@ -947,11 +980,18 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
     // partner's chain tip at the time of the write (which may be this row's
     // own currHash if it was the most recent mutation).
     const nextPrev = findCrmChainTip(ctx.partnerId);
+    const nextFirst = parsed.data.first_name ?? row.firstName;
+    const nextLast = parsed.data.last_name ?? row.lastName;
+    // Recompose `name` when a name part changed and no explicit name was sent.
+    const nameChangedParts = parsed.data.first_name !== undefined || parsed.data.last_name !== undefined;
+    const nextName = typeof parsed.data.name === "string" && parsed.data.name.trim()
+      ? parsed.data.name.trim()
+      : (nameChangedParts ? composeCrmContactName(undefined, nextFirst, nextLast, row.name) : row.name);
     const nextSeed: Pick<CrmContactRow, "partnerId" | "contactUserId" | "email" | "name" | "createdAt"> = {
       partnerId: row.partnerId,
       contactUserId: parsed.data.contact_user_id ?? row.contactUserId,
       email: parsed.data.email ?? row.email,
-      name: parsed.data.name ?? row.name,
+      name: nextName,
       createdAt: now,
     };
     const nextHash = computeHash(nextPrev, crmHashPayload(nextSeed, nextPrev));
@@ -959,7 +999,9 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
       ...row,
       contactUserId: parsed.data.contact_user_id ?? row.contactUserId,
       email: parsed.data.email ?? row.email,
-      name: parsed.data.name ?? row.name,
+      name: nextName,
+      firstName: nextFirst,
+      lastName: nextLast,
       role: parsed.data.role ?? row.role,
       org: parsed.data.org ?? row.org,
       lastContactAt: parsed.data.last_contact_at ?? row.lastContactAt,
@@ -976,6 +1018,8 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
           contactUserId: next.contactUserId,
           email: next.email,
           name: next.name,
+          firstName: next.firstName,
+          lastName: next.lastName,
           role: next.role,
           org: next.org,
           lastContactAt: next.lastContactAt,

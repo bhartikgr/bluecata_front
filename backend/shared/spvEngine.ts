@@ -14,8 +14,27 @@
 
 /* ── enums ─────────────────────────────────────────────────────────────── */
 
-export const SPV_TYPES = ["spv", "fund", "syndicate"] as const;
+/* v25.50.0 Phase 4 (spec 3c) — extended ADDITIVELY. The wizard surfaces five
+ * GP-facing choices; the first three enum values pre-date this wave and are
+ * left untouched so existing rows/tests keep validating. */
+export const SPV_TYPES = ["spv", "fund", "syndicate", "multi_asset", "rolling_fund"] as const;
 export type SpvType = (typeof SPV_TYPES)[number];
+
+/** GP-facing labels + one-line help for the SPV Type dropdown (spec 3c). */
+export const SPV_TYPE_LABELS: Record<SpvType, string> = {
+  spv: "SPV: Single Deal",
+  multi_asset: "SPV: Multi-Asset / Deal-by-Deal",
+  syndicate: "Syndicate",
+  fund: "Fund",
+  rolling_fund: "Rolling Fund",
+};
+export const SPV_TYPE_HELP: Record<SpvType, string> = {
+  spv: "One vehicle, one company. The classic single-asset SPV.",
+  multi_asset: "One vehicle that invests in several companies, deal-by-deal, as opportunities arise.",
+  syndicate: "A lead + backers co-investing per deal, typically with carry to the lead.",
+  fund: "A committed-capital fund deploying across a portfolio under a single mandate.",
+  rolling_fund: "A subscription-style fund that raises and deploys in recurring quarterly cycles.",
+};
 
 export const SPV_JURISDICTIONS = ["delaware", "cayman", "bvi", "canadian_lp"] as const;
 export type SpvJurisdiction = (typeof SPV_JURISDICTIONS)[number];
@@ -49,8 +68,51 @@ export const SPV_LP_VISIBILITIES = ["own_only", "co_investors"] as const;
 export type SpvLpVisibility = (typeof SPV_LP_VISIBILITIES)[number];
 export const SPV_DEFAULT_LP_VISIBILITY: SpvLpVisibility = "own_only";
 
-export const SPV_MANDATE_MODES = ["open", "deal_specific"] as const;
+/* v25.50.0 Phase 4 (spec 3d) — extended ADDITIVELY (open/deal_specific pre-date
+ * this wave). */
+export const SPV_MANDATE_MODES = ["deal_specific", "open", "thesis_lp_approval", "sector_restricted"] as const;
 export type SpvMandateMode = (typeof SPV_MANDATE_MODES)[number];
+
+/** GP-facing labels + help for the Mandate mode dropdown (spec 3d). */
+export const SPV_MANDATE_MODE_LABELS: Record<SpvMandateMode, string> = {
+  deal_specific: "Deal-Specific (Single Asset)",
+  open: "Open / Thesis-Driven (Blind Pool)",
+  thesis_lp_approval: "Thesis with LP Approval",
+  sector_restricted: "Sector / Stage-Restricted",
+};
+export const SPV_MANDATE_MODE_HELP: Record<SpvMandateMode, string> = {
+  deal_specific: "The vehicle targets one specific, pre-identified company. LPs know exactly what they're funding.",
+  open: "A blind pool: LPs back your thesis and you deploy at your discretion within the stated scope.",
+  thesis_lp_approval: "You source under a thesis, but each deployment is put to LPs for approval before it closes.",
+  sector_restricted: "A blind pool constrained to specific sectors and/or stages defined in the mandate rules.",
+};
+
+/** Spec 3b — curated TOP 10 global SPV jurisdictions (proper names, no
+ * abbreviations). A country jurisdiction, DISTINCT from the legal-entity
+ * `SPV_JURISDICTIONS` enum the engine still uses. Free-text "Other" is handled
+ * separately by the wizard. */
+export const SPV_TOP_JURISDICTION_COUNTRIES: readonly string[] = [
+  "United States",
+  "Cayman Islands",
+  "British Virgin Islands",
+  "United Kingdom",
+  "Singapore",
+  "Luxembourg",
+  "Ireland",
+  "Canada",
+  "Hong Kong",
+  "United Arab Emirates",
+] as const;
+
+/** Spec 3j — GP-facing distribution-scope labels (relabelled EXACTLY as the
+ * spec requires) mapped to the existing SPV_DISTRIBUTION_SCOPES values. These
+ * three are the only choices the wizard offers; enforcement is server-side
+ * (Phase 5). */
+export const SPV_DISTRIBUTION_SCOPE_WIZARD_OPTIONS: ReadonlyArray<{ value: SpvDistributionScope; label: string; help: string }> = [
+  { value: "network", label: "Network (Collective)", help: "Discoverable across the Capavate Collective network of members." },
+  { value: "invite_only", label: "Network (Invite Only)", help: "Visible only to investors you explicitly invite." },
+  { value: "private", label: "Private", help: "Not discoverable anywhere — you manage the LP list entirely off-platform." },
+];
 
 export const SPV_FEE_LAYERS = ["management", "platform"] as const;
 export type SpvFeeLayer = (typeof SPV_FEE_LAYERS)[number];

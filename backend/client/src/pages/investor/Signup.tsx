@@ -85,7 +85,11 @@ export default function InvestorSignup() {
  });
 
  const [step, setStep] = useState(1);
- const [fullName, setFullName] = useState("");
+ const [firstName, setFirstName] = useState("");
+ const [lastName, setLastName] = useState("");
+ // Legal full name kept composed ("First Last") for the redeem payload + all
+ // downstream readers; discrete first/last are captured as mandatory inputs.
+ const fullName = [firstName.trim(), lastName.trim()].filter(Boolean).join(" ");
  const [phone, setPhone] = useState("");
  const [country, setCountry] = useState("United States");
  const [investorType, setInvestorType] = useState("angel");
@@ -104,7 +108,11 @@ export default function InvestorSignup() {
  if (prefilledRef.current) return;
  if (!check.data?.valid) return;
  prefilledRef.current = true;
- if (check.data.inviteeName) setFullName(check.data.inviteeName);
+ if (check.data.inviteeName) {
+ const parts = String(check.data.inviteeName).trim().split(/\s+/);
+ setFirstName(parts.shift() ?? "");
+ setLastName(parts.join(" "));
+ }
  if (check.data.prefilledScreenName) setScreenName(check.data.prefilledScreenName);
  // eslint-disable-next-line react-hooks/exhaustive-deps
  }, [check.data]);
@@ -119,6 +127,8 @@ export default function InvestorSignup() {
  token: token ?? "",
  profile: {
  fullName,
+ firstName: firstName.trim(),
+ lastName: lastName.trim(),
  phone,
  country,
  investorType,
@@ -170,7 +180,8 @@ export default function InvestorSignup() {
 
  const screenValidation = screenName ? validateScreenName(screenName) : { ok: true as const };
  const canSubmit =
- fullName.trim().length > 1 &&
+ firstName.trim().length >= 1 &&
+ lastName.trim().length >= 1 &&
  phone.trim().length > 4 &&
  !!country &&
  (screenName.length === 0 || screenValidation.ok);
@@ -244,8 +255,12 @@ export default function InvestorSignup() {
  {step === 1 && (
  <div className="space-y-4">
  <div className="space-y-1.5">
- <Label className="flex items-center gap-1.5"><UserRound className="h-3.5 w-3.5" /> Legal full name</Label>
- <Input value={fullName} onChange={e => setFullName(e.target.value)} placeholder="As it appears on your ID" data-testid="input-full-name" />
+ <Label className="flex items-center gap-1.5"><UserRound className="h-3.5 w-3.5" /> Legal first name</Label>
+ <Input value={firstName} onChange={e => setFirstName(e.target.value)} placeholder="As it appears on your ID" data-testid="input-first-name" />
+ </div>
+ <div className="space-y-1.5">
+ <Label className="flex items-center gap-1.5"><UserRound className="h-3.5 w-3.5" /> Legal last name</Label>
+ <Input value={lastName} onChange={e => setLastName(e.target.value)} placeholder="As it appears on your ID" data-testid="input-last-name" />
  </div>
  <div className="space-y-1.5">
  <Label className="flex items-center gap-1.5"><Phone className="h-3.5 w-3.5" /> Phone</Label>

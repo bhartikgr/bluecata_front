@@ -443,6 +443,11 @@ function applyV2547Schema(db: any) {
     `ALTER TABLE founder_crm_contacts ADD COLUMN invite_status TEXT`,
     `ALTER TABLE founder_crm_contacts ADD COLUMN invited_round_id TEXT`,
     `ALTER TABLE founder_crm_contacts ADD COLUMN invited_at TEXT`,
+    // v25.51 6a — discrete identity fields (mirrors migration 0092). Additive,
+    // nullable; legacy name/firm_name still populated for backward-compat.
+    `ALTER TABLE founder_crm_contacts ADD COLUMN first_name TEXT`,
+    `ALTER TABLE founder_crm_contacts ADD COLUMN last_name TEXT`,
+    `ALTER TABLE founder_crm_contacts ADD COLUMN company_name TEXT`,
   ];
   for (const sql of addColumns) {
     try { db.exec(sql); } catch (err: any) {
@@ -1156,6 +1161,30 @@ function applyV12AdditiveAlters(db: any) {
     // it's derived from `totp_secret IS NOT NULL` in adminUsersRoutes.listAll().
     ["auth_users", "ALTER TABLE auth_users ADD COLUMN name TEXT"],
     ["auth_users", "ALTER TABLE auth_users ADD COLUMN tenant TEXT"],
+    // ---- v25.51 name-split Phase 1 — discrete first/last (additive; composed
+    // name columns kept populated for byte-stable readers/exports/hash-chains).
+    // Mirrors migration 0093_v25_51_name_split_phase1.sql.
+    ["partner_crm_contacts", "ALTER TABLE partner_crm_contacts ADD COLUMN first_name TEXT"],
+    ["partner_crm_contacts", "ALTER TABLE partner_crm_contacts ADD COLUMN last_name TEXT"],
+    ["consortium_applications", "ALTER TABLE consortium_applications ADD COLUMN contact_first_name TEXT"],
+    ["consortium_applications", "ALTER TABLE consortium_applications ADD COLUMN contact_last_name TEXT"],
+    ["round_invitations", "ALTER TABLE round_invitations ADD COLUMN investor_first_name TEXT"],
+    ["round_invitations", "ALTER TABLE round_invitations ADD COLUMN investor_last_name TEXT"],
+    ["soft_circles", "ALTER TABLE soft_circles ADD COLUMN investor_first_name TEXT"],
+    ["soft_circles", "ALTER TABLE soft_circles ADD COLUMN investor_last_name TEXT"],
+    // ---- v25.51 name-split Phase 2 — core identity (users.name kept composed). ----
+    ["users", "ALTER TABLE users ADD COLUMN first_name TEXT"],
+    ["users", "ALTER TABLE users ADD COLUMN last_name TEXT"],
+    ["user_credentials", "ALTER TABLE user_credentials ADD COLUMN first_name TEXT"],
+    ["user_credentials", "ALTER TABLE user_credentials ADD COLUMN last_name TEXT"],
+    // ---- v25.51 name-split Phase 4 — investor CRM + cap-table holder identity.
+    // Additive; composed name / holder_name kept authoritative (cap-table
+    // holder first/last is metadata ONLY, never part of the commit hash-chain
+    // or any amount/share math). Mirrors migration 0095.
+    ["investor_crm_contacts", "ALTER TABLE investor_crm_contacts ADD COLUMN first_name TEXT"],
+    ["investor_crm_contacts", "ALTER TABLE investor_crm_contacts ADD COLUMN last_name TEXT"],
+    ["captable_commits", "ALTER TABLE captable_commits ADD COLUMN holder_first_name TEXT"],
+    ["captable_commits", "ALTER TABLE captable_commits ADD COLUMN holder_last_name TEXT"],
   ];
   for (const [table, sql] of alters) {
     try {
@@ -1442,6 +1471,8 @@ function buildProductionTableStatements(): string[] {
       tenant_id TEXT NOT NULL,
       email TEXT NOT NULL UNIQUE,
       name TEXT NOT NULL,
+      first_name TEXT,               -- v25.51 name-split (additive)
+      last_name TEXT,                -- v25.51 name-split (additive)
       role TEXT NOT NULL,
       avatar_url TEXT,
       is_demo INTEGER NOT NULL DEFAULT 0,
@@ -1485,6 +1516,8 @@ function buildProductionTableStatements(): string[] {
       user_id TEXT PRIMARY KEY NOT NULL,
       email TEXT NOT NULL,
       name TEXT,
+      first_name TEXT,               -- v25.51 name-split (additive)
+      last_name TEXT,                -- v25.51 name-split (additive)
       password_hash TEXT NOT NULL,
       created_at TEXT,
       updated_at TEXT,
@@ -1716,6 +1749,8 @@ function buildProductionTableStatements(): string[] {
       reconcile_ref TEXT,
       reconcile_match INTEGER NOT NULL DEFAULT 1,
       compliance_hold INTEGER NOT NULL DEFAULT 0,
+      holder_first_name TEXT,        -- v25.51 name-split metadata (NEVER hashed)
+      holder_last_name TEXT,         -- v25.51 name-split metadata (NEVER hashed)
       deleted_at TEXT
     );`,
     `CREATE TABLE IF NOT EXISTS funded_queue (
@@ -1785,6 +1820,9 @@ function buildProductionTableStatements(): string[] {
       company_id TEXT NOT NULL,
       investor_id TEXT,
       name TEXT NOT NULL,
+      first_name TEXT,
+      last_name TEXT,
+      company_name TEXT,
       firm_name TEXT,
       role TEXT,
       email TEXT,
@@ -1808,6 +1846,8 @@ function buildProductionTableStatements(): string[] {
       investor_id TEXT NOT NULL,
       platform_user_id TEXT,
       name TEXT NOT NULL,
+      first_name TEXT,               -- v25.51 name-split (additive)
+      last_name TEXT,                -- v25.51 name-split (additive)
       role TEXT,
       email TEXT,
       affiliation TEXT,
@@ -1952,6 +1992,8 @@ function buildProductionTableStatements(): string[] {
       company_id TEXT,
       investor_email TEXT NOT NULL,
       investor_name TEXT,
+      investor_first_name TEXT,      -- v25.51 name-split (additive)
+      investor_last_name TEXT,       -- v25.51 name-split (additive)
       state TEXT NOT NULL,
       classification TEXT,           -- 'in_crm' | 'new_registration'
       token_hash TEXT,               -- sha256(token), never the raw token
@@ -1976,6 +2018,8 @@ function buildProductionTableStatements(): string[] {
       investor_user_id TEXT,
       investor_email TEXT,
       investor_name TEXT NOT NULL,
+      investor_first_name TEXT,      -- v25.51 name-split (additive)
+      investor_last_name TEXT,       -- v25.51 name-split (additive)
       amount REAL NOT NULL,
       amount_minor INTEGER NOT NULL DEFAULT 0,
       currency TEXT NOT NULL DEFAULT 'USD',
@@ -2602,6 +2646,38 @@ function buildProductionTableStatements(): string[] {
     `CREATE INDEX IF NOT EXISTS idx_partner_portfolio_visibility ON partner_portfolio_companies(visibility);`,
     `CREATE INDEX IF NOT EXISTS idx_partner_portfolio_stage      ON partner_portfolio_companies(stage);`,
     `CREATE INDEX IF NOT EXISTS idx_partner_portfolio_created    ON partner_portfolio_companies(created_at);`,
+    /* ── v25.50 Phase 3 (migration 0089) — NEW singular Private-Portfolio profile
+       table (distinct from the legacy plural table above). Mirrored here so
+       :memory: test runs (which skip the migration runner) have it ready. ── */
+    `CREATE TABLE IF NOT EXISTS partner_portfolio_company (
+      id             TEXT PRIMARY KEY,
+      tenant_id      TEXT,
+      partner_id     TEXT NOT NULL,
+      company_id     TEXT NOT NULL,
+      profile_json   TEXT NOT NULL DEFAULT '{}',
+      prev_hash      TEXT,
+      curr_hash      TEXT,
+      created_at     TEXT NOT NULL,
+      updated_at     TEXT NOT NULL,
+      updated_by     TEXT,
+      deleted_at     TEXT
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_partner_portfolio_company_partner ON partner_portfolio_company (partner_id, company_id);`,
+    /* ── v25.50 Phase 7 (migration 0090) — partner-local team-member contact
+       overrides (mobile / contact email / position note). Mirrored here for
+       :memory: test runs. ── */
+    `CREATE TABLE IF NOT EXISTS partner_team_member_contact (
+      id             TEXT PRIMARY KEY,
+      partner_id     TEXT NOT NULL,
+      user_id        TEXT NOT NULL,
+      mobile         TEXT,
+      contact_email  TEXT,
+      position_note  TEXT,
+      created_at     TEXT NOT NULL,
+      updated_at     TEXT NOT NULL,
+      updated_by     TEXT
+    );`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_partner_team_member_contact_key ON partner_team_member_contact (partner_id, user_id);`,
     `CREATE TABLE IF NOT EXISTS partner_crm_contacts (
       id TEXT PRIMARY KEY NOT NULL,
       tenant_id TEXT NOT NULL,
@@ -2609,6 +2685,8 @@ function buildProductionTableStatements(): string[] {
       contact_user_id TEXT,
       email TEXT NOT NULL DEFAULT '',
       name TEXT NOT NULL,
+      first_name TEXT,               -- v25.51 name-split (additive)
+      last_name TEXT,                -- v25.51 name-split (additive)
       role TEXT NOT NULL DEFAULT '',
       org TEXT NOT NULL DEFAULT '',
       last_contact_at TEXT,
@@ -2782,6 +2860,8 @@ function buildProductionTableStatements(): string[] {
       tenant_id TEXT,
       expected_chapter_id TEXT,
       contact_name TEXT NOT NULL,
+      contact_first_name TEXT,       -- v25.51 name-split (additive)
+      contact_last_name TEXT,        -- v25.51 name-split (additive)
       contact_email TEXT NOT NULL,
       contact_phone TEXT,
       organization_name TEXT NOT NULL,

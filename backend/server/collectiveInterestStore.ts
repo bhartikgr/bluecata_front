@@ -161,6 +161,28 @@ function founderUserIdForCompanySafe(companyId: string): string | null {
   return null;
 }
 
+/* v25.50.0 Phase 2 (spec 2b) — "Following from Collective".
+ * A Consortium Partner is also a Collective member; the companies it "follows"
+ * are the ones it has opened an interest thread on. Returns distinct, most-
+ * recently-touched company ids for a member. DB-direct, fail-closed to []. */
+export function listFollowedCompanyIdsForMember(memberUserId: string): string[] {
+  try {
+    const db: any = rawDb();
+    const rows = db
+      .prepare(
+        `SELECT company_id, MAX(last_message_at) AS recent
+           FROM collective_interest_threads
+          WHERE collective_member_user_id = ?
+          GROUP BY company_id
+          ORDER BY recent DESC`,
+      )
+      .all(memberUserId) as { company_id: string }[];
+    return rows.map((r) => r.company_id);
+  } catch {
+    return [];
+  }
+}
+
 /* ============================================================
  * B3 — collective_directory_listings helpers
  * ============================================================ */

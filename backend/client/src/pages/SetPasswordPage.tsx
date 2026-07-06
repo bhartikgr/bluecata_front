@@ -178,7 +178,7 @@ export default function SetPasswordPage() {
       const redirectTo =
         role === "admin"
           ? "/admin/login"
-          : role === "partner"
+          : role === "partner" || role === "consortium_partner"
             ? "/partner/login"
             : /* founder | investor | anything else */ "/auth/login";
 

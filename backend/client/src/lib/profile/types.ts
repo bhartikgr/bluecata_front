@@ -136,7 +136,9 @@ export interface CompanyLegalEntity {
   /** v25.45 F18c — Board Composition (migrated from Settings → Governance). */
   boardComposition?: {
     directorsCount: number;
-    directorsSnapshot: Array<{ name: string; role?: string }>;
+    // v25.51 name-split — discrete first/last per director (additive/optional).
+    // Composed `name` stays authoritative for all readers/exports.
+    directorsSnapshot: Array<{ name: string; firstName?: string; lastName?: string; role?: string }>;
   };
 }
 
@@ -419,6 +421,9 @@ export const companyLegalSchema = z.object({
     directorsCount: z.number().int().nonnegative().default(0),
     directorsSnapshot: z.array(z.object({
       name: z.string().max(120),
+      // v25.51 name-split — additive discrete identity; composed `name` kept.
+      firstName: z.string().max(80).optional().default(""),
+      lastName: z.string().max(80).optional().default(""),
       role: z.string().max(80).optional().default(""),
     })).default([]),
   }).optional(),

@@ -233,8 +233,10 @@ export default function Settings() {
   type MeShape = {
     isAuthed?: boolean;
     userId?: string;
-    identity?: { name?: string; email?: string; title?: string };
+    identity?: { name?: string; email?: string; title?: string; firstName?: string; lastName?: string };
     name?: string;
+    firstName?: string;
+    lastName?: string;
     email?: string;
     title?: string;
   };
@@ -242,16 +244,29 @@ export default function Settings() {
     queryKey: ["/api/auth/me"],
     queryFn: async () => (await apiRequest("GET", "/api/auth/me")).json(),
   });
-  const [profileName,  setProfileName]  = useState("");
+  const [profileFirstName, setProfileFirstName] = useState("");
+  const [profileLastName,  setProfileLastName]  = useState("");
+  // Display name kept composed ("First Last") for the PATCH payload + all
+  // downstream readers; discrete first/last are the captured inputs.
+  const profileName = [profileFirstName.trim(), profileLastName.trim()].filter(Boolean).join(" ");
   const [profileEmail, setProfileEmail] = useState("");
   const [profileTitle, setProfileTitle] = useState("");
   useEffect(() => {
     const m = meQ.data;
     if (!m) return;
     const n = m.identity?.name  ?? m.name  ?? "";
+    const first = m.identity?.firstName ?? m.firstName ?? "";
+    const last  = m.identity?.lastName  ?? m.lastName  ?? "";
     const e = m.identity?.email ?? m.email ?? "";
     const t = m.identity?.title ?? m.title ?? "";
-    if (n) setProfileName(n);
+    if (first || last) {
+      setProfileFirstName(first);
+      setProfileLastName(last);
+    } else if (n) {
+      const parts = n.trim().split(/\s+/);
+      setProfileFirstName(parts.shift() ?? "");
+      setProfileLastName(parts.join(" "));
+    }
     if (e) setProfileEmail(e);
     if (t) setProfileTitle(t);
   }, [meQ.data]);
@@ -396,7 +411,7 @@ export default function Settings() {
   }, [billingTabActive, companyId, subPending, hasPendingRequest, subscriptionQ.dataUpdatedAt]);
 
   const saveProfileMut = useMutation({
-    mutationFn: async () => (await apiRequest("PATCH", "/api/auth/me", { timezone, name: profileName, email: profileEmail, title: profileTitle })).json(),
+    mutationFn: async () => (await apiRequest("PATCH", "/api/auth/me", { timezone, name: profileName, firstName: profileFirstName.trim(), lastName: profileLastName.trim(), email: profileEmail, title: profileTitle })).json(),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] }); toast({ title: "Profile saved" }); },
     onError: () => toast({ title: "Save failed", variant: "destructive" }),
   });
@@ -581,7 +596,8 @@ export default function Settings() {
               <Card>
                 <CardHeader><CardTitle className="text-base">Personal details</CardTitle></CardHeader>
                 <CardContent className="space-y-3">
-                  <div><Label>Display name</Label><Input className="mt-1" value={profileName} onChange={(e) => setProfileName(e.target.value)} placeholder="Your full name" data-testid="input-display-name" /></div>
+                  <div><Label>First name</Label><Input className="mt-1" value={profileFirstName} onChange={(e) => setProfileFirstName(e.target.value)} placeholder="First name" data-testid="input-first-name" /></div>
+                  <div><Label>Last name</Label><Input className="mt-1" value={profileLastName} onChange={(e) => setProfileLastName(e.target.value)} placeholder="Last name" data-testid="input-last-name" /></div>
                   <div><Label>Email</Label><Input className="mt-1" type="email" value={profileEmail} onChange={(e) => setProfileEmail(e.target.value)} placeholder="you@company.com" data-testid="input-email" /></div>
                   <div><Label>Title</Label><Input className="mt-1" value={profileTitle} onChange={(e) => setProfileTitle(e.target.value)} placeholder="e.g. CEO & Co-founder" data-testid="input-title" /></div>
                   <div>

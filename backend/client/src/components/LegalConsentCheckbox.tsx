@@ -88,20 +88,27 @@ export const LegalConsentCheckbox = forwardRef<LegalConsentCheckboxRef, LegalCon
           /* 23-May Fix 5 (Issue 7 P0 blocker) — guarantees the box is
            * visible in unchecked state on white card backgrounds AND that
            * the checkmark icon is visible in checked state.
+           * v25.51 1a/1b (Shadie) — the box previously used the indigo primary
+           * colour (hsl 219 45% 35%), which blends with the app's primary
+           * buttons and made the required consent tick easy to miss. Switched
+           * to a DISTINCT high-contrast emerald (hsl 158 64% 32%) on BOTH the
+           * unchecked outline and the checked fill so the mandatory consent
+           * control is unmistakable and stands apart from surrounding UI.
            *   - h-5 w-5: larger hit target (was 4×4)
-           *   - border-2 border-[hsl(219_45%_35%)]: 2px saturated indigo
-           *     border so the unchecked box reads as a tappable control
+           *   - border-2 border-[hsl(158_64%_32%)]: 2px saturated emerald
+           *     outline so the unchecked box reads as a distinct, tappable
+           *     control (not another primary-indigo affordance)
            *   - bg-white shadow-sm: explicit white fill + subtle shadow
-           *   - data-[state=checked]:bg + border: filled indigo when checked
+           *   - ring-1 ring-[hsl(158_64%_32%)]/25: faint emerald halo for extra
+           *     separation from the card background
+           *   - data-[state=checked]:bg + border: filled emerald when checked
            *   - data-[state=checked]:text-white: makes the Check lucide
            *     icon (which inherits currentColor in the Indicator) render
-           *     in white against the indigo fill — the previous
-           *     text-primary-foreground was occasionally indistinguishable
-           *     from the fill in some shadcn theme overrides.
+           *     in white against the emerald fill
            *   - focus-visible ring kept (inherited from base Checkbox) so
            *     keyboard users still get the outline.
            */
-          className="mt-0.5 h-5 w-5 border-2 border-[hsl(219_45%_35%)] bg-white shadow-sm data-[state=checked]:bg-[hsl(219_45%_35%)] data-[state=checked]:border-[hsl(219_45%_35%)] data-[state=checked]:text-white"
+          className="mt-0.5 h-5 w-5 border-2 border-[hsl(158_64%_32%)] bg-white shadow-sm ring-1 ring-[hsl(158_64%_32%)]/25 data-[state=checked]:bg-[hsl(158_64%_32%)] data-[state=checked]:border-[hsl(158_64%_32%)] data-[state=checked]:text-white"
           data-testid="checkbox-legal-consent"
           aria-label="Agree to legal documents"
         />
