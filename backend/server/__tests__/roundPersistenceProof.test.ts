@@ -121,6 +121,7 @@ describe("Avi 22-May Issue 3 — round persistence end-to-end proof", () => {
         targetAmount: 5_000_000,
         preMoney: 25_000_000,
         pricePerShare: 2.50,
+        sharesAuthorized: 2_000_000,
         minTicket: 250_000,
         currency: "USD",
         region: "US",

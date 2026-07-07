@@ -53,7 +53,7 @@ import { z } from "zod";
 import { requireAuth } from "./lib/authMiddleware";
 import { requirePartnerAuth, assertSubRole } from "./lib/requirePartnerAuth"; /* v25.14 NL5 */
 import { partnerTeamStore } from "./partnerWorkspaceStore";
-import { getDb } from "./db/connection";
+import { getDb, rawDb } from "./db/connection";
 import {
   partnerPortfolioCompanies as portfolioTable,
   partnerCrmContacts as crmTable,
@@ -853,6 +853,53 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
       res.status(400).json({ error: "INVALID_BODY", details: parsed.error.flatten() });
       return;
     }
+    // v25.52 Track 3.5.2 (GPT-5.5 R2 blocker) — PRE-INSERT dedup guard for the
+    // partner CRM create path. 0097 exempts ALL existing partner duplicate
+    // (partner_id, normalized email) groups from the 0098 partial UNIQUE index
+    // (to keep the audit hash chain byte-identical — never soft-deletes a chain
+    // row). Consequently the index alone CANNOT reject a NEW insert into an
+    // exempt group (it sees only one non-exempt row), so without this guard a
+    // user could reopen "many <name>s" for a shared-inbox email. We therefore
+    // reject a duplicate BEFORE computing/writing the chain row by checking ANY
+    // live row (exempt OR not) with the same (partner_id, lower(trim(email))).
+    // FAIL CLOSED: if the guard cannot execute we return 503 rather than fall
+    // through to an unprotected insert. Read-only; the hash chain is untouched.
+    // Empty email skips this block (email-less contacts are unaffected).
+    const incomingPartnerEmail = typeof parsed.data.email === "string" ? parsed.data.email.trim() : "";
+    if (incomingPartnerEmail) {
+      try {
+        const pdb = rawDb() as unknown as { prepare?: (sql: string) => { get: (...a: unknown[]) => unknown } };
+        if (!pdb || typeof pdb.prepare !== "function") {
+          throw new Error("rawDb().prepare unavailable — cannot run partner pre-insert dedup guard");
+        }
+        const dup = pdb
+          .prepare(
+            `SELECT id FROM partner_crm_contacts
+             WHERE partner_id = ? AND lower(trim(email)) = lower(trim(?))
+               AND deleted_at IS NULL
+             LIMIT 1`,
+          )
+          .get(ctx.partnerId, incomingPartnerEmail) as { id?: string } | undefined;
+        if (dup) {
+          res.status(409).json({
+            ok: false,
+            error: "crm_contact_duplicate_email",
+            message: "A contact with this email already exists for this partner.",
+            existingId: dup.id ?? null,
+          });
+          return;
+        }
+      } catch (dupErr) {
+        log.error("[partner CRM POST] pre-insert dedup check failed — failing closed:", (dupErr as Error).message);
+        res.status(503).json({
+          ok: false,
+          error: "crm_dedup_check_unavailable",
+          message: "Could not verify contact uniqueness right now. Please retry.",
+        });
+        return;
+      }
+    }
+
     const id = newId("pcc");
     const now = nowIso();
     const tenantId = `tenant_partner_${ctx.partnerId}`;
@@ -974,6 +1021,54 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
     if (!parsed.success) {
       res.status(400).json({ error: "INVALID_BODY", details: parsed.error.flatten() });
       return;
+    }
+    // v25.52 Track 3.5.2 (GPT-5.5 R3 blocker) — PRE-UPDATE email dedup guard,
+    // symmetric to the create-path guard. crmUpdateSchema allows changing email;
+    // 0098's partial UNIQUE index EXCLUDES dedup_exempt=1 rows, so PATCHing this
+    // row's email to one that only exists on an exempt shared-inbox group would
+    // NOT be rejected by the index — and since PATCH is a CHAIN-EXTENDING write,
+    // the fail-open would be committed into the partner CRM audit chain. We reject
+    // the update BEFORE reading the chain tip / computing the hash / writing, if
+    // the NEW email matches ANY OTHER live row (exempt or not) for this partner.
+    // FAIL CLOSED (503) if the guard cannot execute. Only runs when email is
+    // actually being changed to a non-empty value; a rejected PATCH writes NO
+    // chain row, so the hash chain is untouched.
+    if (typeof parsed.data.email === "string") {
+      const nextEmail = parsed.data.email.trim();
+      const emailChanged = nextEmail.toLowerCase() !== String(row.email ?? "").trim().toLowerCase();
+      if (nextEmail && emailChanged) {
+        try {
+          const pdb = rawDb() as unknown as { prepare?: (sql: string) => { get: (...a: unknown[]) => unknown } };
+          if (!pdb || typeof pdb.prepare !== "function") {
+            throw new Error("rawDb().prepare unavailable — cannot run partner pre-update dedup guard");
+          }
+          const dup = pdb
+            .prepare(
+              `SELECT id FROM partner_crm_contacts
+               WHERE partner_id = ? AND lower(trim(email)) = lower(trim(?))
+                 AND id <> ? AND deleted_at IS NULL
+               LIMIT 1`,
+            )
+            .get(ctx.partnerId, nextEmail, row.id) as { id?: string } | undefined;
+          if (dup) {
+            res.status(409).json({
+              ok: false,
+              error: "crm_contact_duplicate_email",
+              message: "Another contact with this email already exists for this partner.",
+              existingId: dup.id ?? null,
+            });
+            return;
+          }
+        } catch (dupErr) {
+          log.error("[partner CRM PATCH] pre-update dedup check failed — failing closed:", (dupErr as Error).message);
+          res.status(503).json({
+            ok: false,
+            error: "crm_dedup_check_unavailable",
+            message: "Could not verify contact uniqueness right now. Please retry.",
+          });
+          return;
+        }
+      }
     }
     const now = nowIso();
     // CP-008: extend the partner's CRM chain. prevHash for an UPDATE is the

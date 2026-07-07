@@ -112,6 +112,10 @@ export default function RoundDetail() {
  const [inviteLastName, setInviteLastName] = useState("");
  const [inviteEmail, setInviteEmail] = useState("");
  const [inviteNote, setInviteNote] = useState("");
+ // v25.53 8a — optional invite fields mirroring the CRM menu.
+ const [inviteCompany, setInviteCompany] = useState("");
+ const [inviteStageFocus, setInviteStageFocus] = useState("");
+ const [inviteMarketSize, setInviteMarketSize] = useState("");
  // v24.4 BUG 044 — invite source: pick from CRM, or add a brand-new investor.
  const [inviteSource, setInviteSource] = useState<"crm" | "new">("crm");
  const [inviteCrmId, setInviteCrmId] = useState("");
@@ -143,15 +147,33 @@ export default function RoundDetail() {
              investorLastName: inviteLastName.trim() || null,
            }
          : {}),
+       // v25.53 8a — optional CRM-aligned fields (persisted onto the CRM contact).
+       investorCompany: inviteCompany.trim() || null,
+       stageFocus: inviteStageFocus.trim() || null,
+       typicalMarketSize: inviteMarketSize.trim() || null,
        ...(expiryDaysVal !== null ? { expiryDays: expiryDaysVal } : {}),
      });
      return res.json();
    },
-   onSuccess: () => {
-     toast({ title: "Invitation sent", description: "The investor will receive an email." });
+   onSuccess: (data: any) => {
+     // v25.52 Avi-BUG-1 — be honest about delivery. When SMTP is not configured
+     // (emailDelivered !== true) the invite was recorded but NOT actually emailed;
+     // surface the copyable redeem link so the founder can share it manually and
+     // isn't misled into thinking the investor received an email.
+     if (data?.emailDelivered) {
+       toast({ title: "Invitation sent", description: "The investor will receive an email." });
+     } else {
+       toast({
+         title: "Invitation created (email NOT sent)",
+         description:
+           "Email delivery is not configured on the server, so no email was sent. " +
+           "Copy the invite link from the invitations list to share it directly, or ask your admin to configure SMTP.",
+         variant: "destructive",
+       });
+     }
      queryClient.invalidateQueries({ queryKey: [`/api/rounds/${id}/invitations`] });
      emitMutationLocal("invitation", `inv-${Date.now()}`, "create");
-     setInviteOpen(false); setInviteName(""); setInviteEmail(""); setInviteNote(""); setInviteExpiry("30");
+     setInviteOpen(false); setInviteName(""); setInviteFirstName(""); setInviteLastName(""); setInviteEmail(""); setInviteNote(""); setInviteCompany(""); setInviteStageFocus(""); setInviteMarketSize(""); setInviteExpiry("30");
    },
    onError: (e: Error) => toast({ title: "Failed to send", description: e.message, variant: "destructive" }),
  });
@@ -733,9 +755,13 @@ export default function RoundDetail() {
  </div>
  {inviteSource === "new" && (
  <>
- <div><Label>First name</Label><Input className="mt-1" value={inviteFirstName} onChange={e => setInviteFirstName(e.target.value)} placeholder="First name" data-testid="input-invite-first-name" /></div>
- <div><Label>Last name</Label><Input className="mt-1" value={inviteLastName} onChange={e => setInviteLastName(e.target.value)} placeholder="Last name" data-testid="input-invite-last-name" /></div>
- <div><Label>Email</Label><Input className="mt-1" type="email" value={inviteEmail} onChange={e => setInviteEmail(e.target.value)} placeholder="investor@firm.com" data-testid="input-invite-email" /></div>
+ <div><Label>First name <span className="text-rose-500">*</span></Label><Input className="mt-1" value={inviteFirstName} onChange={e => setInviteFirstName(e.target.value)} placeholder="First name" data-testid="input-invite-first-name" /></div>
+ <div><Label>Last name <span className="text-rose-500">*</span></Label><Input className="mt-1" value={inviteLastName} onChange={e => setInviteLastName(e.target.value)} placeholder="Last name" data-testid="input-invite-last-name" /></div>
+ <div><Label>Email <span className="text-rose-500">*</span></Label><Input className="mt-1" type="email" value={inviteEmail} onChange={e => setInviteEmail(e.target.value)} placeholder="investor@firm.com" data-testid="input-invite-email" /></div>
+ {/* v25.53 8a — optional fields matching the CRM menu. */}
+ <div><Label>Company name (optional)</Label><Input className="mt-1" value={inviteCompany} onChange={e => setInviteCompany(e.target.value)} placeholder="Firm / fund name" data-testid="input-invite-company" /></div>
+ <div><Label>Stage focus (optional)</Label><Input className="mt-1" value={inviteStageFocus} onChange={e => setInviteStageFocus(e.target.value)} placeholder="e.g. Seed–Series A" data-testid="input-invite-stage-focus" /></div>
+ <div><Label>Typical market size (optional)</Label><Input className="mt-1" value={inviteMarketSize} onChange={e => setInviteMarketSize(e.target.value)} placeholder="e.g. $50M–$100M" data-testid="input-invite-market-size" /></div>
  </>
  )}
  {inviteSource === "crm" && inviteCrmId && (
@@ -755,7 +781,9 @@ export default function RoundDetail() {
  {/* B-303 fix v23.4.12: wire Send invitation to sendInviteMut -- button-send-invite-mutation-v23412 */}
         <Button
           onClick={() => sendInviteMut.mutate()}
-          disabled={sendInviteMut.isPending}
+          disabled={sendInviteMut.isPending || (inviteSource === "new"
+            ? !(inviteFirstName.trim() && inviteLastName.trim() && /.+@.+\..+/.test(inviteEmail.trim()))
+            : !inviteEmail.trim())}
           data-testid="button-send-invite"
         >Send invitation</Button>
  </DialogFooter>

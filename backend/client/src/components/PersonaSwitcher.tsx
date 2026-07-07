@@ -162,6 +162,20 @@ export function entitledPersonas(ctx: UserContext | null | undefined): Set<Perso
     !!ctx.investor && typeof ctx.investor.state === "string" && ctx.investor.state !== "NONE";
   if (hasInvestorState) out.add("collective");
   if (shouldShowToggleFromCtx(ctx).visible) out.add("collective");
+  // v25.52 Track 0.2 — CONSISTENCY with the Login Track 0.3 chooser. The chooser
+  // qualifies the Collective workspace on `collective.status === "active"` ALONE
+  // (an active membership IS a workspace, matching RequireActiveCollective /
+  // entitlement.tsx:139 which gates access purely on status==="active"). The two
+  // predicates above additionally require investor-state or a company/cap-table
+  // position, so a PURE active Collective member (no company, not on any cap
+  // table — e.g. an approved investor-member) would be offered Collective at
+  // login but then NOT see it in the top-bar switcher — exactly the mis-redirect
+  // class Track 0 exists to kill. This addition is purely ADDITIVE (only ever
+  // ADDS "collective"; never removes an option) and uses the same authoritative
+  // `active` signal, so it introduces no new exposure beyond what the chooser +
+  // access gate already permit. Non-active states (none/applied/pending/
+  // suspended/lapsed) are intentionally still excluded.
+  if (ctx.collective && ctx.collective.status === "active") out.add("collective");
   // Partner — v25.23 NH-Q2: admin OR a real partner-team membership. The
   // `partner` field is DB-backed (GET /api/partner/me) and merged onto the
   // context by PersonaSwitcher; non-admin partners now see the option, and

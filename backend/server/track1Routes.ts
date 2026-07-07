@@ -442,6 +442,12 @@ function handleCrmImport(req: Request, res: Response): void {
 
   let imported = 0;
   let skipped = 0;
+  // v25.52 (GPT-5.5 R6 blocker) — track founder-CRM persistence separately from
+  // roster import so a null from insertContactForImport (duplicate skip, dedup
+  // guard unavailable, or DB write failure) is not silently reported as an
+  // imported founder CRM row.
+  let crmPersisted = 0;
+  let crmSkipped = 0;
   const errors: Array<{ row: number; reason: string }> = [];
 
   for (let i = 0; i < rows.length; i++) {
@@ -467,9 +473,13 @@ function handleCrmImport(req: Request, res: Response): void {
         firm: row["organization"] ?? row["firmname"] ?? row["firm"] ?? "",
         pipelineStage: "lead" as const,
       }, ctx.userId);
-      // v25.0 B-J5-3 fix: ALSO write to founderCrmStore so GET /api/founder/crm/contacts returns these rows
+      // v25.0 B-J5-3 fix: ALSO write to founderCrmStore so GET /api/founder/crm/contacts returns these rows.
+      // v25.52 (GPT-5.5 R6): insertContactForImport now returns null on duplicate
+      // / dedup-guard-unavailable / DB write failure. Count CRM persistence
+      // separately and record a per-row note so the caller can see the founder
+      // CRM row was NOT created even though the roster contact was added.
       if (companyId) {
-        insertContactForImport({
+        const crmRow = insertContactForImport({
           companyId,
           email,
           name: row["name"] ?? email,
@@ -477,6 +487,8 @@ function handleCrmImport(req: Request, res: Response): void {
           stage: row["stage"] ?? "lead",
           series: row["series"] ?? "—",
         });
+        if (crmRow) crmPersisted++;
+        else { crmSkipped++; errors.push({ row: i + 2, reason: `crm_contact_skipped_or_persist_failed: ${email}` }); }
       }
       imported++;
     } catch (err) {
@@ -485,9 +497,11 @@ function handleCrmImport(req: Request, res: Response): void {
     }
   }
 
-  emitBridge("crm.import.completed", ctx.userId, "platform", { imported, skipped, errorCount: errors.length, userId: ctx.userId });
+  emitBridge("crm.import.completed", ctx.userId, "platform", { imported, skipped, crmPersisted, crmSkipped, errorCount: errors.length, userId: ctx.userId });
 
-  res.status(201).json({ ok: true, imported, skipped, errors });
+  // `imported` = roster contacts added; `crmPersisted`/`crmSkipped` = founder CRM
+  // rows actually written vs skipped (duplicate/guard-unavailable/DB-fail).
+  res.status(201).json({ ok: true, imported, skipped, crmPersisted, crmSkipped, errors });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

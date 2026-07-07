@@ -26,7 +26,7 @@
  *
  * SANDBOX-SAFE: no Web Storage APIs. Session lives in httpOnly cookie.
  */
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { Link, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
@@ -110,6 +110,22 @@ export default function Login() {
   //   companies.length === 1 → /founder/dashboard
   //   no companies, hasPaidPlan → /onboarding (post-pay, pre-company)
   //   no companies, no paid plan → /company-profile?onboarding=1 (company first; then subscribe)
+  // v25.52 Track 0.3 — declared BEFORE the meProbe redirect effect so the effect
+  // can stand down while the explicit workspace CHOOSER is active. Without this,
+  // the legacy "already-authenticated → skip login" redirect effect below fires
+  // on the post-login /api/auth/me refetch and navigates to /founder/dashboard,
+  // silently defeating the chooser for multi-workspace accounts.
+  type WorkspaceKey = "founder" | "investor" | "partner" | "collective";
+  // Store the known-good login ctx alongside the options so the chooser click
+  // handler navigates from the authoritative login response rather than the
+  // separately-cached meProbe query (removes cache-timing reliance + an unsafe
+  // cast) — GPT-5.5 lower-priority observation.
+  const [roleChoice, setRoleChoice] = useState<{ options: WorkspaceKey[]; ctx: UserContext } | null>(null);
+  // Set true for the duration of an EXPLICIT credential login (handleSubmit).
+  // The redirect effect defers to handleSubmit's own routing (chooser or
+  // single-workspace navigate) so the two never race. Reset only when we
+  // deliberately fall through to legacy routing.
+  const manualLoginRef = useRef(false);
   const meProbe = useQuery<{ isAuthed: boolean; isAdmin?: boolean; founder?: { companies: unknown[] }; investor?: { state?: string }; hasPaidPlan?: boolean }>({
     queryKey: ["/api/auth/me", "login-redirect-probe"],
     queryFn: async () => {
@@ -127,6 +143,13 @@ export default function Login() {
   useEffect(() => {
     const me = meProbe.data;
     if (!me?.isAuthed) return;
+    // v25.52 Track 0.3 — the explicit-login handler (handleSubmit) owns routing
+    // when the user just signed in through the form: it either shows the
+    // multi-workspace CHOOSER or navigates into the single qualifying workspace.
+    // This legacy effect only handles the "visited /login while ALREADY authed"
+    // case. Stand down if the chooser is open OR a manual login is in flight,
+    // so we never override the chooser with a silent /founder/dashboard redirect.
+    if (roleChoice || manualLoginRef.current) return;
     const returnTo = query.get("returnTo");
     if (returnTo && returnTo.startsWith("/") && !returnTo.startsWith("//")) {
       navigate(returnTo);
@@ -154,7 +177,7 @@ export default function Login() {
     if (me.hasPaidPlan) { navigate("/onboarding"); return; }
     navigate("/company-profile?onboarding=1");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [meProbe.data]);
+  }, [meProbe.data, roleChoice]);
   const initialPortal: Portal = rawPortal === "investor" ? "investor" : "founder";
   const demoMode = query.get("demo") === "1";
 
@@ -166,7 +189,11 @@ export default function Login() {
   // After a successful auth that landed on the wrong portal, we offer to switch
   // rather than silently bouncing. This holds the suggested portal.
   const [wrongPortalSuggest, setWrongPortalSuggest] = useState<{ to: Portal; ctx: UserContext } | null>(null);
-
+  // v25.52 Track 0.3 (Ozan decision: Option 1) — when a single account qualifies
+  // for 2+ workspaces (Founder / Investor / Consortium Partner / Collective),
+  // show an explicit CHOOSER instead of the old silent partner-first precedence
+  // (the mechanism behind Bug 2b / login mis-redirects). Single-role users skip
+  // this and route straight in.
   const meta = PORTAL_META[portal];
   const PortalIcon = meta.icon;
   const brandCopy = PORTAL_BRAND_COPY[portal];
@@ -187,6 +214,11 @@ export default function Login() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (submitting) return;
+    // v25.52 Track 0.3 — claim routing ownership for this explicit login so the
+    // legacy meProbe redirect effect stands down (see effect guard above). This
+    // prevents the post-login /api/auth/me refetch from silently navigating to
+    // /founder/dashboard and defeating the multi-workspace chooser.
+    manualLoginRef.current = true;
     setSubmitting(true);
     setErrorMsg(null);
     setWrongPortalSuggest(null);
@@ -197,19 +229,99 @@ export default function Login() {
       const json = (await res.json()) as { ok: true; ctx: UserContext };
       // Refresh entitlement context BEFORE routing so consumers see fresh data.
       await queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
-      // Final Partner CRM — if this account also has an active partner
-      // membership, the partner workspace takes precedence as the landing page.
-      let partnerLanding = false;
-      try {
-        const probe = await apiRequest("GET", "/api/partner/me");
-        if (probe.status === 200) partnerLanding = true;
-      } catch { /* non-partner account — fall through to existing routing */ }
-      if (partnerLanding) {
-        navigate("/collective/partner/dashboard");
+
+      /* v25.52 Track 0.3 (Ozan decision: Option 1) — compute the FULL qualifying
+       * workspace SET for this account, then:
+       *   • 2+ workspaces qualify → show the explicit chooser (no silent
+       *     precedence; this replaces the old partner-first probe that forced
+       *     every partner-linked account into the partner dashboard and was the
+       *     mechanism behind Bug 2b / login mis-redirects).
+       *   • exactly 1 qualifies → route straight into it (via route(ctx) for
+       *     founder/investor so the wrong-portal suggestion + BUG-001 company
+       *     routing are preserved; direct navigate only for partner/collective
+       *     which route() does not cover).
+       *   • 0 qualify → fall through to the existing `route()` onboarding logic.
+       * Admins never reach here (route() handles the admin guard). */
+      const ctx = json.ctx;
+
+      /* v25.52 Track 0.3 (GPT-5.5 blocker #1) — a user sent here via RequireAuth
+       * (`/login?returnTo=/protected/path`) must return to that exact
+       * destination after an EXPLICIT credential login, exactly as the
+       * already-authenticated redirect effect does. Because manualLoginRef is
+       * now claimed for the whole handler, that effect stands down, so we MUST
+       * honour returnTo here or the deep-link is silently dropped (rule #78).
+       * Same-origin guard mirrors the effect: absolute path, not protocol-
+       * relative. Admins are excluded (they never deep-link into the public
+       * app; route() surfaces the admin-portal error below). */
+      const rt = query.get("returnTo");
+      if (!ctx.isAdmin && rt && rt.startsWith("/") && !rt.startsWith("//")) {
+        navigate(rt);
         return;
       }
-      route(json.ctx);
+
+      if (ctx.isAdmin) {
+        // Public login is not an admin entry point. route() surfaces a clear
+        // error and stays on the form; manualLoginRef intentionally REMAINS
+        // true so the meProbe effect keeps standing down and cannot bounce an
+        // authenticated admin off this page (admin-separation is preserved).
+        route(ctx);
+        return;
+      }
+      const qualifies: WorkspaceKey[] = [];
+      if (ctx.founder.companies.length > 0) qualifies.push("founder");
+      const investorQual =
+        ctx.investor.state !== "NONE" ||
+        ctx.investor.invitedRounds.length > 0 ||
+        ctx.investor.capTablePositions.length > 0;
+      if (investorQual) qualifies.push("investor");
+      // Partner membership is not in ctx; probe the partner endpoint (200 = member).
+      try {
+        const probe = await apiRequest("GET", "/api/partner/me");
+        if (probe.status === 200) qualifies.push("partner");
+      } catch { /* non-partner account — not a qualifying workspace */ }
+      // Collective membership overlay (active/renewing counts as a workspace).
+      if (ctx.collective && ctx.collective.status && ctx.collective.status !== "none") {
+        qualifies.push("collective");
+      }
+
+      if (qualifies.length >= 2) {
+        // Chooser owns routing from here; keep manualLoginRef claimed so the
+        // meProbe effect never overrides the chooser while it is open. Persist
+        // the authoritative login ctx so the click handler does not depend on
+        // the meProbe cache being populated at click time.
+        setRoleChoice({ options: qualifies, ctx });
+        return;
+      }
+      if (qualifies.length === 1) {
+        const only = qualifies[0];
+        /* v25.52 Track 0.3 (GPT-5.5 blocker #2) — for a single FOUNDER- or
+         * INVESTOR-only account, defer to route(ctx). route() honours the
+         * selected portal tab, preserves the BUG-001 single-vs-multi-company
+         * landing, AND (critically) still shows the existing wrong-portal
+         * suggestion panel when a founder-only account signed in from the
+         * Investor tab (or vice-versa) — behaviour the old code had and that a
+         * blind navigate() would silently drop (rule #78). manualLoginRef stays
+         * TRUE: route() either navigates away (ref moot) or shows the
+         * wrong-portal panel and STAYS on /login, where the meProbe effect must
+         * remain suppressed so it cannot redirect over the panel. Partner and
+         * Collective are not modelled by route(), so they navigate directly. */
+        if (only === "founder" || only === "investor") {
+          route(ctx);
+        } else {
+          navigateToWorkspace(only, ctx);
+        }
+        return;
+      }
+      // 0 qualifying workspaces — hand routing back to the legacy onboarding
+      // path. route() performs its own navigate() (or, for a wrong-portal /
+      // admin case, stays on the form); manualLoginRef stays TRUE so the
+      // meProbe effect cannot race route()'s decision. (route() never depends
+      // on the effect firing.)
+      route(ctx);
     } catch (err: unknown) {
+      // Login failed — release the routing claim so a later already-authed
+      // visit (or a successful retry) is handled normally.
+      manualLoginRef.current = false;
       const msg = err instanceof Error ? err.message : String(err);
       // Format from apiRequest: "<status>: <body-text>"
       const statusMatch = /^(\d{3}):\s*(.*)$/.exec(msg);
@@ -231,6 +343,33 @@ export default function Login() {
       }
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  /* v25.52 Track 0.3 — route into a specific chosen workspace, setting the
+   * client role so downstream gating + the PersonaSwitcher reflect the choice.
+   * Mirrors the existing per-workspace landing targets used elsewhere in route(). */
+  function navigateToWorkspace(ws: WorkspaceKey, ctx: UserContext) {
+    switch (ws) {
+      case "founder": {
+        setRole("founder");
+        const n = ctx.founder.companies.length;
+        navigate(n === 1 ? "/founder/dashboard" : "/select-company");
+        return;
+      }
+      case "investor":
+        setRole("investor");
+        navigate("/investor/dashboard");
+        return;
+      case "partner":
+        // Partner workspace uses the investor client role for gating parity with
+        // the prior partner-landing behavior; the partner dashboard is the target.
+        navigate("/collective/partner/dashboard");
+        return;
+      case "collective":
+        setRole("investor");
+        navigate("/collective");
+        return;
     }
   }
 
@@ -359,6 +498,51 @@ export default function Login() {
         </div>
       }
     >
+      {/* v25.52 Track 0.3 (Option 1) — multi-role WORKSPACE CHOOSER. Shown after a
+          successful login when the account qualifies for 2+ workspaces, instead
+          of silently forcing a single one. Single-role accounts never see this. */}
+      {roleChoice ? (
+        <div className="space-y-4" data-testid="workspace-chooser">
+          <div className="text-center space-y-1">
+            <h2 className="text-lg font-semibold">Choose your workspace</h2>
+            <p className="text-sm text-muted-foreground">
+              Your account has access to more than one workspace. Pick where you'd
+              like to go — you can switch anytime from the top bar.
+            </p>
+          </div>
+          <div className="space-y-2">
+            {roleChoice.options.map((ws) => {
+              const LABELS: Record<WorkspaceKey, { label: string; desc: string }> = {
+                founder: { label: "Founder", desc: "Cap tables, rounds, and investor CRM" },
+                investor: { label: "Investor", desc: "Your positions, deal flow, and decisions" },
+                partner: { label: "Consortium Partner", desc: "SPVs, syndicates, and your partner network" },
+                collective: { label: "Collective", desc: "Chapter directory, deal room, and members" },
+              };
+              const info = LABELS[ws];
+              return (
+                <button
+                  key={ws}
+                  type="button"
+                  data-testid={`workspace-option-${ws}`}
+                  onClick={() => {
+                    // Use the authoritative ctx captured at login time (stored in
+                    // roleChoice) — no cache-timing dependency, no unsafe cast.
+                    navigateToWorkspace(ws, roleChoice.ctx);
+                  }}
+                  className="w-full flex items-center justify-between px-4 py-3 rounded-lg border border-border/70 bg-white hover:border-[#cc0001]/50 hover:bg-[#cc0001]/[0.03] transition-all text-left"
+                >
+                  <span>
+                    <span className="block font-semibold text-foreground">{info.label}</span>
+                    <span className="block text-xs text-muted-foreground">{info.desc}</span>
+                  </span>
+                  <ArrowRight className="h-4 w-4 text-[#cc0001]" />
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : (
+      <>
       {/* Portal tabs — visible, accessible, click to switch */}
       <div
         role="tablist"
@@ -517,6 +701,8 @@ export default function Login() {
             )}
           </div>
         </div>
+      )}
+      </>
       )}
     </AuthShell>
   );

@@ -465,6 +465,34 @@ export function registerCollectiveInterestRoutes(app: Express): void {
   );
 
   /* -----------------------------------------------------------------
+   * v25.52 Track 3.1 / BUG C-8 — GET /api/collective/companies/:companyId/interest
+   * Companion read for the B1 POST above: the POST had NO matching GET, so a
+   * member (or the UI) could not check whether they had already expressed
+   * interest in a company without POSTing again. This additive, member-gated,
+   * fail-closed read returns the caller's OWN open interest thread for the
+   * company (mirroring the POST's idempotency lookup), or { interested: false }.
+   * It never exposes other members' threads (privacy-safe) and adds no table.
+   * ----------------------------------------------------------------- */
+  app.get(
+    "/api/collective/companies/:companyId/interest",
+    requireCollectiveMember,
+    (req: Request, res: Response) => {
+      const ctx = (req as any).userContext as
+        | { userId?: string; isAuthed?: boolean }
+        | undefined;
+      if (!ctx?.isAuthed || !ctx?.userId) {
+        return res.status(401).json({ error: "unauthorized" });
+      }
+      const companyId = String(req.params.companyId);
+      const thread = findExistingThread(companyId, ctx.userId);
+      if (!thread) {
+        return res.json({ ok: true, interested: false, thread: null });
+      }
+      return res.json({ ok: true, interested: true, threadId: thread.id, thread });
+    },
+  );
+
+  /* -----------------------------------------------------------------
    * B2 — GET /api/collective/portfolio
    * Admin-only aggregate of all collective-channel soft-circles.
    * Pure live query — no new table.

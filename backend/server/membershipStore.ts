@@ -18,7 +18,7 @@
 import type { Express, Request, Response } from "express";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 import { getLedger } from "./captableCommitStore";
-import { persistEntry, hydrateEntries } from "./lib/storePersistenceShim";
+import { persistEntry, persistEntryStrict, hydrateEntries } from "./lib/storePersistenceShim";
 
 const PERSIST_STORE = "membershipStore";
 
@@ -161,7 +161,7 @@ function mergedMembership(userId: string): MembershipStatus | null {
  */
 export function upsertActiveMembership(
   userId: string,
-  opts?: { memberSince?: string; expiresAt?: string },
+  opts?: { memberSince?: string; expiresAt?: string; strict?: boolean },
 ): MembershipStatus {
   const now = new Date().toISOString();
   const existing = MOCK_MEMBERSHIP[userId];
@@ -185,10 +185,25 @@ export function upsertActiveMembership(
         capTablePositions: [],
         canApplyToCollective: true,
       };
-  MOCK_MEMBERSHIP[userId] = next;
   /* v25.9 — persist so admin approval survives restart.
-   * Avi: "Most of the records are being saved in memory instead of the DB." */
-  persistEntry(PERSIST_STORE, userId, next);
+   * Avi: "Most of the records are being saved in memory instead of the DB."
+   *
+   * v25.52 Track 3.0 (GPT-5.5 review, MAJOR): the collective overlay read by
+   * /api/auth/me (buildCollectiveOverlay → getMembership → MOCK_MEMBERSHIP) and
+   * requireEntitlement('collective.active') depends on THIS overlay. The default
+   * best-effort persistEntry swallows DB-write failure, so the overlay could be
+   * RAM-only and vanish on restart even though the authoritative
+   * collectiveMembershipStore row persisted. When strict=true we persist FIRST
+   * via persistEntryStrict (throws on failure) and only mutate the RAM overlay
+   * AFTER a durable write, so RAM never diverges from the DB and the caller can
+   * fail-closed (500). Non-strict callers keep the prior best-effort behavior. */
+  if (opts?.strict) {
+    persistEntryStrict(PERSIST_STORE, userId, next); // throws on failure BEFORE RAM mutation
+    MOCK_MEMBERSHIP[userId] = next;
+  } else {
+    MOCK_MEMBERSHIP[userId] = next;
+    persistEntry(PERSIST_STORE, userId, next);
+  }
   return next;
 }
 

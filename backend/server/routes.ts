@@ -487,12 +487,32 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
    * is a separate piece of work. Until that ships, the layered defenses
    * above are the documented interim posture. */
   // app.use("/api/collective/applications", csrfForMethod("POST"));
-  app.use("/api/rounds", (req, res, next) => {
-    if (req.method.toUpperCase() === "PATCH" && req.path.includes("/decision")) {
-      return csrfMiddleware(req, res, next);
-    }
-    next();
-  });
+  /* v25.52 Avi-BUG-2 (soft-circle "Action failed") — DISABLED.
+   * This mount required csrfMiddleware on PATCH /api/rounds/:id/invitations/:invId/decision.
+   * csrfMiddleware looks up a server-side session via the `cap_sid` cookie, but the
+   * standard SPA login/redeem flow sets `__Host-cap_uid` (JWT identity), NEVER `cap_sid`
+   * (only the dead-code secureAuthRoutes path issues cap_sid). The client `apiRequest`
+   * (client/src/lib/queryClient.ts) sends only `credentials: include` (cap_uid) and never
+   * an X-CSRF-Token. Result: EVERY authenticated investor's `view` and `soft_circle`
+   * decision PATCH returned 403 `csrf_no_session` → the UI toast "Action failed. Please
+   * try again." (reproduced on the isolated live-copy preview, and matching Avi's screenshot).
+   *
+   * This is the SAME defect and the SAME fix already applied to
+   * `/api/collective/applications` at v25.26 (see the disabled mount above). The decision
+   * route was simply missed in that pass. The threat model is covered by the identical
+   * layered defenses documented there: v25.24 NH-5 Origin allowlist (rejects cross-site
+   * writes), requireAuth/ctx.isAuthed gate on the decision handler, per-IP rate limit, and
+   * SameSite=Lax on cap_uid (modern browsers refuse to send the identity cookie on
+   * cross-site POSTs). A real CSRF wire-up (issue cap_sid + csrf cookie on login, client
+   * reads + sends X-CSRF-Token) is deferred to the same coordinated client+server work item
+   * as the Collective mount.
+   */
+  // app.use("/api/rounds", (req, res, next) => {
+  //   if (req.method.toUpperCase() === "PATCH" && req.path.includes("/decision")) {
+  //     return csrfMiddleware(req, res, next);
+  //   }
+  //   next();
+  // });
 
   /* v25.24 NH-5 — Origin allowlist mount moved EARLIER (see line ~316 above).
    * Kept this stub comment for traceability; do not re-mount here. */
@@ -1234,7 +1254,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         },
       };
     },
-    redeem: (rawToken: string): RedemptionResult => {
+    redeem: (rawToken: string, redeemedByUserId?: string | null): RedemptionResult => {
       const hash = sha256Hex(rawToken);
       const entry = invitationStore.find(e => e.tokenHash === hash);
       if (entry) {
@@ -1273,8 +1293,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (modernEntry.redeemedAt) return { ok: false, reason: "already_redeemed" };
       if (modernEntry.expiresAt && Date.now() > new Date(modernEntry.expiresAt).getTime()) return { ok: false, reason: "expired" };
 
-      const ok = markInvitationRedeemed(modernEntry.id);
-      if (!ok) return { ok: false, reason: "not_found" };
+      // v25.53 REVISE B2 — pass the resolved user id so the accepted invitation
+      // is associated with the existing account (redeemed_by_user_id). A false
+      // return here means the conditional UPDATE flipped zero rows: another
+      // caller already redeemed it (lost race) — surface `already_redeemed`
+      // (409), NOT `not_found` (404), since we saw a live, redeemable row above.
+      const ok = markInvitationRedeemed(modernEntry.id, redeemedByUserId ?? null);
+      if (!ok) return { ok: false, reason: "already_redeemed" };
       return { ok: true, invitationId: modernEntry.id, roundId: modernEntry.roundId, companyId: modernEntry.companyId ?? "" };
     },
   });
@@ -2627,10 +2652,56 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const investorName = body.investorName ?? body.inviteeName;
     const investorFirstName = body.investorFirstName ?? body.inviteeFirstName;
     const investorLastName = body.investorLastName ?? body.inviteeLastName;
+    // v25.53 8a — optional CRM-aligned fields.
+    const investorCompany = body.investorCompany ?? body.company;
+    const stageFocus = body.stageFocus;
+    const typicalMarketSize = body.typicalMarketSize;
     const note = body.note;
     const expiryDays = body.expiryDays ?? body.expiresInDays;
     if (!investorEmail || typeof investorEmail !== "string") {
       return res.status(400).json({ ok: false, error: "missing_email" });
+    }
+    // v25.53 REVISE B5 (7a) — First + Last are mandatory EVERYWHERE, including
+    // the API boundary (the UI already gates them, but a direct API caller could
+    // bypass). Normalize the split fields; if they are absent, derive them from a
+    // legacy `investorName` ONLY when it carries >=2 non-empty tokens (first
+    // token -> first, remainder -> last). Fail-closed with typed 400s before any
+    // invitation is created. Legacy `investorName` remains display/back-compat.
+    let effFirst = typeof investorFirstName === "string" ? investorFirstName.trim() : "";
+    let effLast = typeof investorLastName === "string" ? investorLastName.trim() : "";
+    if ((!effFirst || !effLast) && typeof investorName === "string") {
+      const tokens = investorName.trim().split(/\s+/).filter(Boolean);
+      if (tokens.length >= 2) {
+        if (!effFirst) effFirst = tokens[0];
+        if (!effLast) effLast = tokens.slice(1).join(" ");
+      }
+    }
+    if (!effFirst) {
+      return res.status(400).json({ ok: false, error: "missing_first_name" });
+    }
+    if (!effLast) {
+      return res.status(400).json({ ok: false, error: "missing_last_name" });
+    }
+    // v25.53 3a — CRM-invite gate. Shadie: a round whose Open AND Target-close
+    // dates are BOTH in the past is effectively over and must not accept new
+    // investor invitations. Fail-closed with a typed 409 so the founder sees a
+    // clear reason rather than a silently-created dead invite.
+    {
+      const roundRow = roundsStoreGetById(id);
+      const inPast = (v: unknown): boolean => {
+        if (typeof v !== "string" || !v) return false;
+        const t = new Date(v.length <= 10 ? v + "T00:00:00" : v).getTime();
+        if (!Number.isFinite(t)) return false;
+        const today = new Date(); today.setHours(0, 0, 0, 0);
+        return t < today.getTime();
+      };
+      if (roundRow && inPast(roundRow.openDate) && inPast(roundRow.closeDate)) {
+        return res.status(409).json({
+          ok: false,
+          error: "round_dates_past",
+          message: "This round's open and close dates are both in the past — reopen or reschedule the round before inviting investors.",
+        });
+      }
     }
     try {
       const result = await roundInvitationsCreate({
@@ -2638,8 +2709,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         companyId: check.companyId,
         investorEmail,
         investorName: typeof investorName === "string" ? investorName : null,
-        investorFirstName: typeof investorFirstName === "string" ? investorFirstName : null,
-        investorLastName: typeof investorLastName === "string" ? investorLastName : null,
+        investorFirstName: effFirst,
+        investorLastName: effLast,
+        investorCompany: typeof investorCompany === "string" ? investorCompany : null,
+        stageFocus: typeof stageFocus === "string" ? stageFocus : null,
+        typicalMarketSize: typeof typicalMarketSize === "string" ? typicalMarketSize : null,
         note: typeof note === "string" ? note : null,
         expiryDays: typeof expiryDays === "number" ? expiryDays : undefined,
         invitedByUserId: check.userId,
@@ -2652,6 +2726,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         invitation: result.invitation,
         classification: result.classification,
         emailSent: result.emailSent,
+        // v25.52 Avi-BUG-1 — honest delivery signals so the founder UI can warn
+        // when SMTP is off (invite logged but NOT actually delivered). Typed on
+        // CreateInvitationResult, so no cast is needed (Gemini review 20260706).
+        emailMode: result.emailMode,
+        emailDelivered: result.emailDelivered,
         redeemUrl: result.redeemUrl,
       });
     } catch (err) {
@@ -2660,6 +2739,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // 400; a persistence failure must surface as 500 so the founder never
       // believes an invite was sent for a RAM-only (lost-on-restart) row.
       const msg = (err as Error).message ?? "";
+      // v25.53 6a — a duplicate active invite is a client conflict, not a
+      // server failure: return 409 with a clear message so the founder learns
+      // the investor already has a live invitation for this round.
+      if (msg === "duplicate_invitation") {
+        return res.status(409).json({
+          ok: false,
+          error: "duplicate_invitation",
+          message: "This investor already has an active invitation to this round.",
+        });
+      }
       const isValidation =
         msg === "invalid_email" || msg === "missing_round_id" || msg === "missing_company_id";
       if (isValidation) {
@@ -4015,6 +4104,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       body[key] = n;
       return false;
     };
+    // v25.53 REVISE B4 — capture the RAW sanitized STRING inputs BEFORE the
+    // numeric coercion below turns them into JS Numbers. A warrant's (and a
+    // priced common round's) derived target MUST be computed with exact Decimal
+    // arithmetic; if Decimal is fed an already-Number-coerced value it is built
+    // from a rounded float, leaking precision. We keep the original strings
+    // (thousands separators / currency symbols stripped) so the Decimal
+    // computation and persistence below never touch JS Number.
+    const rawStr = (key: string): string | null => {
+      const v = (body as Record<string, unknown>)[key];
+      if (v == null || v === "") return null;
+      return String(v).replace(/[,\s$]/g, "");
+    };
+    const rawStrikeStr = rawStr("strikePrice");
+    const rawSharesStr = rawStr("sharesAuthorized");
+    const rawPpsStr = rawStr("pricePerShare");
     for (const key of [
       "targetAmount", "preMoney", "postMoney", "pricePerShare", "valuationCap",
       "discount", "interestRate", "maturityMonths", "strikePrice", "expiryYears",
@@ -4022,13 +4126,58 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     ]) {
       if (coerceNumeric(key)) return;
     }
-    // v23.9 B3/BUG-039 — a round must not close before it opens.
+    // v23.9 B3/BUG-039 — a round must not close before it opens. (Checked
+    // BEFORE the past-date guard below so a close-before-open pair keeps
+    // returning invalid_closeDate, preserving existing contract tests.)
     if (typeof body.openDate === "string" && body.openDate && typeof body.closeDate === "string" && body.closeDate) {
       const open = new Date(body.openDate).getTime();
       const close = new Date(body.closeDate).getTime();
       if (Number.isFinite(open) && Number.isFinite(close) && close < open) {
         return res.status(400).json({ error: "invalid_closeDate", message: "Close date must be on or after the open date." });
       }
+    }
+    // v25.53 3a / N4 — fail-closed date guards (server backstop for the wizard).
+    //  3a: block Open / Target-close dates in the past (< today, calendar day).
+    //  N4: reject a malformed year (a native date picker yields yyyy-mm-dd; a
+    //      concatenated "07062026" would surface as a non-4-digit year such as
+    //      70620). Both return a typed 400 so the client can highlight the field.
+    {
+      const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+      const checkDate = (key: "openDate" | "closeDate", label: string): { error: string; message: string } | null => {
+        const v = (body as Record<string, unknown>)[key];
+        if (typeof v !== "string" || !v) return null;
+        const m = /^(\d+)-(\d{2})-(\d{2})$/.exec(v.trim());
+        if (!m || m[1].length !== 4) {
+          return { error: `invalid_${key}`, message: `${label} must be a valid date with a 4-digit year.` };
+        }
+        // v25.53 REVISE nit — reject impossible calendar dates (e.g. 2026-02-31)
+        // instead of relying on JS Date normalization (which would silently roll
+        // 2026-02-31 forward to 2026-03-03). Round-trip: build a UTC date from
+        // the parsed components and confirm its year/month/day equal the inputs.
+        const yy = Number(m[1]);
+        const mm = Number(m[2]);
+        const dd = Number(m[3]);
+        const probe = new Date(Date.UTC(yy, mm - 1, dd));
+        if (
+          probe.getUTCFullYear() !== yy ||
+          probe.getUTCMonth() !== mm - 1 ||
+          probe.getUTCDate() !== dd
+        ) {
+          return { error: `invalid_${key}`, message: `${label} is not a real calendar date.` };
+        }
+        const t = new Date(v.trim() + "T00:00:00").getTime();
+        if (!Number.isFinite(t)) {
+          return { error: `invalid_${key}`, message: `${label} must be a valid date.` };
+        }
+        if (t < todayStart.getTime()) {
+          return { error: `invalid_${key}`, message: `${label} cannot be in the past.` };
+        }
+        return null;
+      };
+      const openErr = checkDate("openDate", "Open date");
+      if (openErr) return res.status(400).json(openErr);
+      const closeErr = checkDate("closeDate", "Target close date");
+      if (closeErr) return res.status(400).json(closeErr);
     }
 
     // v24.1 Bug B (Avi #2) — required-field validation. Previously the only
@@ -4065,20 +4214,67 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // does NOT feed the cap-table engine — the engine still commits PPS +
       // shares directly, byte-for-byte unchanged.
       const bodyInstrument = typeof body.instrument === "string" ? body.instrument : "";
+      // v25.53 REVISE B4 — validate the priced-round inputs with EXACT Decimal
+      // on the RAW strings (captured pre-coercion) so a finite/>0 check and the
+      // derived target never pass through JS Number. Returns true when the raw
+      // string is a finite Decimal strictly greater than zero.
+      const rawDecGt0 = (raw: string | null): boolean => {
+        if (raw == null) return false;
+        try {
+          const d = new Decimal(raw);
+          return d.isFinite() && d.gt(0);
+        } catch {
+          return false;
+        }
+      };
       if (bodyInstrument === "common") {
-        const ppsNum = num("pricePerShare");
-        const sharesNum = num("sharesAuthorized");
-        if (ppsNum == null || ppsNum <= 0) {
+        if (!rawDecGt0(rawPpsStr)) {
           fieldErrors.pricePerShare = "Price per share must be greater than 0 for a priced round.";
         }
-        if (sharesNum == null || sharesNum <= 0) {
+        if (!rawDecGt0(rawSharesStr)) {
           fieldErrors.sharesAuthorized = "Shares outstanding/authorized must be greater than 0 for a priced round.";
         }
-        if (ppsNum != null && ppsNum > 0 && sharesNum != null && sharesNum > 0) {
-          const ppsRaw = (body as Record<string, unknown>).pricePerShare;
-          const sharesRaw = (body as Record<string, unknown>).sharesAuthorized;
-          const derivedTarget = new Decimal(String(ppsRaw)).times(new Decimal(String(sharesRaw))).toString();
-          (body as Record<string, unknown>).targetAmount = derivedTarget;
+        if (rawDecGt0(rawPpsStr) && rawDecGt0(rawSharesStr)) {
+          // Exact Decimal: target = pricePerShare × sharesAuthorized from RAW
+          // strings (no float). The numeric targetAmount column below is a lossy
+          // display projection; the authoritative exact value is stashed in
+          // extras_json.targetAmountExact (precision boundary documented there).
+          const exact = new Decimal(rawPpsStr!).times(new Decimal(rawSharesStr!)).toString();
+          (body as Record<string, unknown>).targetAmount = exact;
+          (body as Record<string, unknown>).targetAmountExact = exact;
+        }
+      } else if (bodyInstrument === "warrant") {
+        // v25.53 N1 — Warrants had NO Target-amount field on their Terms step,
+        // so the generic targetAmount>0 requirement below made them impossible
+        // to create. A warrant's notional raise IS strike × shares, so derive
+        // it here (exact decimal, no float drift) and require the two inputs
+        // that produce it. This value is round metadata only — the cap-table
+        // engine still commits strike + shares directly, unchanged.
+        // v25.53 REVISE B4 — validate + derive with EXACT Decimal on the RAW
+        // strike/shares strings (captured before numeric coercion). No JS Number
+        // touches the target computation, before OR after.
+        if (!rawDecGt0(rawStrikeStr)) {
+          fieldErrors.strikePrice = "Strike price must be greater than 0.";
+        }
+        if (!rawDecGt0(rawSharesStr)) {
+          fieldErrors.sharesAuthorized = "Warrant share count must be greater than 0.";
+        }
+        if (rawDecGt0(rawStrikeStr) && rawDecGt0(rawSharesStr)) {
+          // targetAmount = strikePrice × sharesAuthorized, exact Decimal.
+          const exact = new Decimal(rawStrikeStr!).times(new Decimal(rawSharesStr!)).toString();
+          (body as Record<string, unknown>).targetAmount = exact;
+          // Authoritative exact value → extras_json.targetAmountExact. The
+          // numeric targetAmount column is a lossy display projection only.
+          (body as Record<string, unknown>).targetAmountExact = exact;
+        }
+      } else if (bodyInstrument === "option_pool") {
+        // v25.53 N1 — an Option Pool Top-Up (ESOP) has no cash "target raise";
+        // it is sized as a percentage of fully-diluted shares. Requiring
+        // targetAmount>0 (with no field to satisfy it) made the vehicle
+        // uncreatable. Require poolSize>0 instead; targetAmount stays absent.
+        const poolNum = num("poolSize");
+        if (poolNum == null || poolNum <= 0) {
+          fieldErrors.poolSize = "Option pool size must be greater than 0.";
         }
       } else {
         const targetAmount = num("targetAmount");
@@ -4114,10 +4310,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       } else if (instrumentProvided) {
         // Per-instrument term requirements — only reject SUPPLIED-but-invalid
         // values (a supplied field that is <= 0 / not in the future).
-        if (instrument === "preferred" || instrument === "common") {
+        if (instrument === "preferred") {
+          // v25.53 REVISE NB-b — a priced `preferred` round is cap-table/money
+          // code: it MUST be fail-closed at the API, matching the Step-2 client
+          // validation. REQUIRE pricePerShare > 0 AND sharesAuthorized > 0
+          // (target already required via the generic branch above), not merely
+          // "reject if supplied". A direct API caller can no longer omit the
+          // priced-round terms.
+          if (!rawDecGt0(rawPpsStr)) fieldErrors.pricePerShare = "Price per share must be greater than 0 for a priced round.";
+          if (!rawDecGt0(rawSharesStr)) fieldErrors.sharesAuthorized = "Shares outstanding/authorized must be greater than 0 for a priced round.";
           if (has("preMoney") && (num("preMoney") ?? 0) <= 0) fieldErrors.preMoney = "Pre-money valuation must be greater than 0 for a priced round.";
-          if (has("pricePerShare") && (num("pricePerShare") ?? 0) <= 0) fieldErrors.pricePerShare = "Price per share must be greater than 0 for a priced round.";
-          if (has("sharesAuthorized") && (num("sharesAuthorized") ?? 0) <= 0) fieldErrors.sharesAuthorized = "Shares outstanding/authorized must be greater than 0 for a priced round.";
+        } else if (instrument === "common") {
+          // common already enforces pps>0 AND shares>0 in the per-vehicle block
+          // above (it derives targetAmount from them); only guard preMoney here.
+          if (has("preMoney") && (num("preMoney") ?? 0) <= 0) fieldErrors.preMoney = "Pre-money valuation must be greater than 0 for a priced round.";
         } else if (instrument === "safe_post" || instrument === "safe_pre" || instrument === "convertible_note") {
           // SAFE / note: if either cap or discount is supplied, at least one must be > 0.
           if (has("valuationCap") || has("discount")) {

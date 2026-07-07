@@ -32,6 +32,48 @@ function instrumentFamily(instrument?: string | null): "priced" | "safe" | "note
   return "priced";
 }
 
+// v25.53 5a — Edit-terms money fields previously rendered as raw <input
+// type="number"> (e.g. "18000000"), which is hard to read for large figures.
+// MoneyInput displays a thousands-separated value while keeping the bound state
+// a plain number so the PATCH payload and numeric precision are unchanged.
+// Decimals are preserved (formatting only groups the integer part).
+function formatMoney(raw: string): string {
+  if (raw == null || raw === "") return "";
+  const cleaned = raw.replace(/[^\d.]/g, "");
+  if (cleaned === "") return "";
+  const [intPart, ...rest] = cleaned.split(".");
+  const grouped = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const decimal = rest.length > 0 ? "." + rest.join("") : (cleaned.endsWith(".") ? "." : "");
+  return grouped + decimal;
+}
+function MoneyInput(props: {
+  value: number;
+  onChange: (n: number) => void;
+  className?: string;
+  "data-testid"?: string;
+}) {
+  const { value, onChange, ...rest } = props;
+  const [draft, setDraft] = useState<string | null>(null);
+  // While focused/editing we track a raw string draft so a trailing "." or an
+  // in-progress number never gets clobbered by the numeric round-trip.
+  const display = draft != null ? formatMoney(draft) : (Number.isFinite(value) ? formatMoney(String(value)) : "");
+  return (
+    <Input
+      type="text"
+      inputMode="decimal"
+      value={display}
+      onChange={(e) => {
+        const raw = e.target.value.replace(/[,\s$]/g, "");
+        setDraft(raw);
+        const n = Number(raw);
+        onChange(raw === "" ? 0 : (Number.isFinite(n) ? n : value));
+      }}
+      onBlur={() => setDraft(null)}
+      {...rest}
+    />
+  );
+}
+
 const CLOSED_STATES = new Set(["closed", "funded"]);
 
 const TYPE_LABEL: Record<string, string> = {
@@ -233,26 +275,26 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
           </div>
           <div>
             <Label>Target amount (USD)</Label>
-            <Input type="number" min={0} value={targetAmount} onChange={e => setTargetAmount(Number(e.target.value))} className="mt-1" data-testid="input-target" />
+            <MoneyInput value={targetAmount} onChange={setTargetAmount} className="mt-1" data-testid="input-target" />
           </div>
           <div>
             <Label>Min ticket (USD)</Label>
-            <Input type="number" min={0} value={minTicket} onChange={e => setMinTicket(Number(e.target.value))} className="mt-1" data-testid="input-min-ticket" />
+            <MoneyInput value={minTicket} onChange={setMinTicket} className="mt-1" data-testid="input-min-ticket" />
           </div>
 
           {family === "priced" && (
             <>
               <div>
                 <Label>Pre-money valuation</Label>
-                <Input type="number" min={0} value={preMoney} onChange={e => setPreMoney(Number(e.target.value))} className="mt-1" data-testid="input-pre-money" />
+                <MoneyInput value={preMoney} onChange={setPreMoney} className="mt-1" data-testid="input-pre-money" />
               </div>
               <div>
                 <Label>Post-money valuation</Label>
-                <Input type="number" min={0} value={postMoney} onChange={e => setPostMoney(Number(e.target.value))} className="mt-1" data-testid="input-post-money" />
+                <MoneyInput value={postMoney} onChange={setPostMoney} className="mt-1" data-testid="input-post-money" />
               </div>
               <div>
                 <Label>Price per share (USD)</Label>
-                <Input type="number" step="0.0001" min={0} value={pricePerShare} onChange={e => setPricePerShare(Number(e.target.value))} className="mt-1" data-testid="input-pps" />
+                <MoneyInput value={pricePerShare} onChange={setPricePerShare} className="mt-1" data-testid="input-pps" />
               </div>
             </>
           )}
@@ -261,7 +303,7 @@ function EditTermsDialog({ round, onClose }: { round: Round; onClose: () => void
             <>
               <div>
                 <Label>Valuation cap (USD)</Label>
-                <Input type="number" min={0} value={valuationCap} onChange={e => setValuationCap(Number(e.target.value))} className="mt-1" data-testid="input-valuation-cap" />
+                <MoneyInput value={valuationCap} onChange={setValuationCap} className="mt-1" data-testid="input-valuation-cap" />
               </div>
               <div>
                 <Label>Discount (%)</Label>

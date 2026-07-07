@@ -37,7 +37,7 @@ import { and, eq, isNull, inArray } from "drizzle-orm";
 import { escapeHtml as e } from "./lib/htmlEscape"; /* v25.17 Lane A NH4 */
 import { getDb, rawDb } from "./db/connection";
 import { roundInvitations as invitationsTable } from "../shared/schema";
-import { sendMail } from "./emailTransport";
+import { sendMail, getConfig as getEmailConfig } from "./emailTransport";
 import { emitMutation } from "./lib/eventBus";
 import { listContactsForCompany, upsertCrmContactForInvitation } from "./founderCrmStore";
 import { getCompanyNameById } from "./multiCompanyStore";
@@ -88,6 +88,10 @@ export interface CreateInvitationArgs {
   investorName?: string | null;
   investorFirstName?: string | null;
   investorLastName?: string | null;
+  /** v25.53 8a — optional CRM-aligned fields, persisted onto the CRM contact. */
+  investorCompany?: string | null;
+  stageFocus?: string | null;
+  typicalMarketSize?: string | null;
   note?: string | null;
   expiryDays?: number;
   invitedByUserId: string;
@@ -101,6 +105,10 @@ export interface CreateInvitationResult {
   invitation: Omit<RoundInvitationRow, "tokenHash"> & { tokenHash?: never };
   /** True if the email transport accepted the message. */
   emailSent: boolean;
+  /** v25.52 Avi-BUG-1 — the ACTUAL transport mode used ("smtp" | "console" | "dry_run"). */
+  emailMode?: string;
+  /** v25.52 Avi-BUG-1 — true ONLY when a real SMTP send succeeded (not console/dry_run). */
+  emailDelivered?: boolean;
   /** Email transport messageId (for audit/debug); never contains the token. */
   emailMessageId?: string;
   /** Classification of the recipient. */
@@ -285,11 +293,56 @@ function mergeForRead(dbRows: RoundInvitationRow[], cacheRows: RoundInvitationRo
 
 /* ---------- Create ---------- */
 
+/** v25.53 6a — active invitation states that block a duplicate re-invite. */
+const ACTIVE_INVITE_STATES: InvitationState[] = ["pending", "sent", "viewed", "accepted"];
+
+/**
+ * v25.53 6a — true if an ACTIVE invitation already exists for this
+ * (roundId, normalized email). DB is authoritative; the in-memory mirror is a
+ * fallback for no-DB/test paths. Email is normalized (lower/trim) on both sides.
+ */
+function hasActiveInvitation(roundId: string, normalizedEmail: string): boolean {
+  const email = normalizeEmail(normalizedEmail);
+  if (!roundId || !email) return false;
+  try {
+    const db = rawDb();
+    const placeholders = ACTIVE_INVITE_STATES.map(() => "?").join(", ");
+    const hit = db
+      .prepare(
+        `SELECT 1 FROM round_invitations
+           WHERE round_id = ?
+             AND lower(trim(investor_email)) = ?
+             AND state IN (${placeholders})
+           LIMIT 1`,
+      )
+      .get(roundId, email, ...ACTIVE_INVITE_STATES);
+    if (hit) return true;
+  } catch {
+    // DB unavailable — fall through to the in-memory mirror.
+  }
+  return memInvitations.some(
+    (r) =>
+      r.roundId === roundId &&
+      normalizeEmail(r.investorEmail) === email &&
+      ACTIVE_INVITE_STATES.includes(r.state),
+  );
+}
+
 export async function createInvitation(args: CreateInvitationArgs): Promise<CreateInvitationResult> {
   const investorEmail = normalizeEmail(args.investorEmail);
   if (!investorEmail) throw new Error("invalid_email");
   if (!args.roundId) throw new Error("missing_round_id");
   if (!args.companyId) throw new Error("missing_company_id");
+
+  // v25.53 6a — block a duplicate ACTIVE invitation for the same
+  // (roundId, normalized email). "Active" = an invite that is still live:
+  // pending | sent | viewed | accepted. A prior invite that was revoked,
+  // expired, or declined is legitimately re-invitable, so those states do NOT
+  // block. Fail-closed: if an active row exists we throw `duplicate_invitation`
+  // (mapped to HTTP 409 by the route) BEFORE minting a token or sending mail.
+  if (hasActiveInvitation(args.roundId, investorEmail)) {
+    throw new Error("duplicate_invitation");
+  }
 
   const tenantId = args.tenantId ?? tenantForCompany(args.companyId);
   const classification = classifyEmail(args.companyId, investorEmail);
@@ -369,11 +422,23 @@ export async function createInvitation(args: CreateInvitationArgs): Promise<Crea
       row.updatedAt,
     );
   } catch (err) {
+    const emsg = (err as Error).message ?? "";
+    // v25.53 REVISE B3 (6a) — DB-authoritative race guard. The partial UNIQUE
+    // index uq_round_invite_active_email (migration 0099 / connection.ts inline)
+    // rejects a second ACTIVE invite for the same (round_id, normalized email)
+    // even when two concurrent requests both passed the preflight SELECT. Map
+    // that UNIQUE violation to the same typed `duplicate_invitation` the
+    // preflight throws (route → 409), NOT a 500 — the loser of the race is a
+    // client conflict, not a server failure. No token/email/CRM/memory side
+    // effect has happened yet, so failing here is clean.
+    if (/UNIQUE constraint failed/i.test(emsg)) {
+      throw new Error("duplicate_invitation");
+    }
     // v25.35 — fail-closed: do NOT push to memory, do NOT send the email, do
     // NOT return a token. Surface to the route so it returns 500.
     log.error(
       "[roundInvitationsStore.createInvitation] DB write failed:",
-      (err as Error).message,
+      emsg,
     );
     throw err;
   }
@@ -389,6 +454,10 @@ export async function createInvitation(args: CreateInvitationArgs): Promise<Crea
       email: investorEmail,
       classification: classification,
       roundId: args.roundId,
+      // v25.53 8a — optional CRM-aligned fields (best-effort persistence).
+      company: args.investorCompany ?? null,
+      stageFocus: args.stageFocus ?? null,
+      typicalMarketSize: args.typicalMarketSize ?? null,
     });
   } catch (crmErr) {
     log.warn("[roundInvitationsStore] CRM upsert failed (non-fatal):", (crmErr as Error).message);
@@ -465,6 +534,18 @@ export async function createInvitation(args: CreateInvitationArgs): Promise<Crea
     tenantId: tenantId ?? undefined,
   });
 
+  /* v25.52 Avi-BUG-1 — expose the ACTUAL delivery mode so callers (and the
+     founder UI) can distinguish a real SMTP send from a console/dry_run log.
+     `emailSent:true` from console mode means "logged", not "delivered"; the UI
+     should not tell the founder the investor was emailed when SMTP is off. */
+  const emailMode = (() => {
+    try { return getEmailConfig().mode; } catch { return "console"; }
+  })();
+  // emailDelivered is true ONLY for a REAL smtp send: not console, not dry_run.
+  // (GPT-5.5 review 20260706 — exclude the internal dryRun path which sets
+  // emailSent=true without transmitting anything.)
+  const emailDelivered = emailSent && emailMode === "smtp" && !args.dryRun;
+
   // L-006 fix v23.4.13: return redeemUrl on create (raw token never stored in list view)
   const appUrl = process.env.APP_URL ?? process.env.INVITATION_BASE_URL ?? "https://capavate.com";
   // v24.1 Bug I+K (BUG 042): the create-response redeemUrl was ALREADY a working
@@ -479,6 +560,9 @@ export async function createInvitation(args: CreateInvitationArgs): Promise<Crea
   return {
     invitation: publicView(row) as any,
     emailSent,
+    // v25.52 Avi-BUG-1 — honest delivery signals.
+    emailMode,            // "smtp" | "console" | "dry_run"
+    emailDelivered,       // true ONLY when a real SMTP send succeeded
     emailMessageId,
     classification,
     redeemUrl,

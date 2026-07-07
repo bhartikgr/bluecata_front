@@ -156,6 +156,7 @@ describe("v23.9 Group A — P0", () => {
         instrument: "preferred",
         targetAmount: "1,000,000",
         preMoney: "5,000,000",
+        pricePerShare: "5",
         sharesAuthorized: "1,000,000",
       },
     });

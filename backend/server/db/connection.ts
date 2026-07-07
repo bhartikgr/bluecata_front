@@ -246,6 +246,34 @@ function applyInlineMigrations(db: any) {
    * ledger (captableCommitStore) and Sacred emailStore in-memory template
    * list — new canonical state lives ONLY in these DB tables. */
   applyV2548Schema(db);
+
+  /* v25.53 REVISE B3 (6a) — race-safe duplicate-invite guard. Mirrors migration
+   * 0099 idempotently so the DB-authoritative partial+expression UNIQUE index on
+   * ACTIVE round invitations is present on a fresh boot / fresh test DB, not only
+   * after the migrate runner has run. Additive only (CREATE UNIQUE INDEX IF NOT
+   * EXISTS). Best-effort: on a legacy DB that already holds an active duplicate,
+   * index creation fails and is logged (the app-level preflight still blocks new
+   * dupes); the migrate runner's 0099 fail-hard probe surfaces that loudly. */
+  applyV2553RoundInviteUniqueIndex(db);
+}
+
+/* v25.53 REVISE B3 — see call-site comment above. Boot-safe + idempotent. */
+function applyV2553RoundInviteUniqueIndex(db: any) {
+  const sql =
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_round_invite_active_email " +
+    "ON round_invitations (round_id, lower(trim(investor_email))) " +
+    "WHERE state IN ('pending','sent','viewed','accepted') " +
+    "AND deleted_at IS NULL " +
+    "AND investor_email IS NOT NULL " +
+    "AND trim(investor_email) <> ''";
+  try {
+    db.exec(sql);
+  } catch (err) {
+    const msg = (err as Error).message || "";
+    if (!/already exists/i.test(msg)) {
+      log.warn("[db] v25.53 round-invite unique index not created (continuing):", msg);
+    }
+  }
 }
 
 /* v25.48 — see call-site comment above. Idempotent + boot-safe.

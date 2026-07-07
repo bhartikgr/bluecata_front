@@ -40,9 +40,10 @@ import type { Express, Request, Response } from "express";
 import { randomBytes } from "node:crypto";
 import { eq, isNull } from "drizzle-orm";
 import { emitMutation } from "./lib/eventBus";
-import { getDb } from "./db/connection";
+import { getDb, rawDb } from "./db/connection";
 import { investorCrmContacts as investorCrmContactsTable } from "../shared/schema";
 import { log } from "./lib/logger";
+import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
@@ -227,8 +228,47 @@ function contactToRow(c: InvestorCrmContact) {
   };
 }
 
-/** Persist a contact (insert-or-update). Errors are logged, not thrown. */
-function persistContact(c: InvestorCrmContact): void {
+/**
+ * v25.52 Track 3.5.2 (GPT-5.5 R4 blocker, authorized sacred edit) — fail-closed
+ * dedup guard for investor CRM. Symmetric to the founder/partner guards: 0097
+ * exempts investor shared-inbox conflict groups (dedup_exempt=1) and 0098's
+ * partial UNIQUE index EXCLUDES them, so the index alone cannot reject a NEW
+ * create/PATCH into an exempt (investor_id, normalized email) group. This helper
+ * checks ANY OTHER live row (exempt or not) in the same investor scope with the
+ * same lower(trim(email)); callers reject with 409 on a hit and FAIL CLOSED
+ * (503) if the check cannot run. Read-only; uses rawDb() (getDb() has no
+ * .prepare). Empty email => no duplicate (caller skips the guard).
+ */
+function findLiveInvestorEmailDuplicate(
+  investorId: string,
+  email: string,
+  excludeId?: string,
+): { ok: true; dupId: string | null } {
+  const trimmed = (email ?? "").trim();
+  if (!trimmed) return { ok: true, dupId: null };
+  const rdb = rawDb() as unknown as { prepare?: (sql: string) => { get: (...a: unknown[]) => unknown } };
+  if (!rdb || typeof rdb.prepare !== "function") {
+    // Throw so callers fail CLOSED rather than fall through to an unprotected write.
+    throw new Error("rawDb().prepare unavailable — cannot run investor CRM dedup guard");
+  }
+  const row = rdb
+    .prepare(
+      `SELECT id FROM investor_crm_contacts
+       WHERE investor_id = ? AND lower(trim(email)) = lower(trim(?))
+         AND (? IS NULL OR id <> ?) AND deleted_at IS NULL
+       LIMIT 1`,
+    )
+    .get(investorId, trimmed, excludeId ?? null, excludeId ?? null) as { id?: string } | undefined;
+  return { ok: true, dupId: row?.id ?? null };
+}
+
+/**
+ * Persist a contact (insert-or-update). Returns true on a confirmed DB write,
+ * false on failure (still logged). v25.52: previously returned void and callers
+ * assumed success even when the write threw, causing cache/DB divergence and
+ * false 2xx responses. Callers now check the return and roll back on false.
+ */
+function persistContact(c: InvestorCrmContact): boolean {
   try {
     const db = getDb();
     // Patch v12 Day 3: write-through. No trailing `()` — Drizzle invokes
@@ -252,13 +292,19 @@ function persistContact(c: InvestorCrmContact): void {
           .run();
       }
     });
+    return true;
   } catch (err) {
     log.error("[investorCrmStore] DB write failed:", (err as Error).message);
+    return false;
   }
 }
 
-/** Soft-delete a contact. */
-function softDeleteContact(id: string): void {
+/**
+ * Soft-delete a contact. v25.52 (GPT-5.5 R6 blocker) — returns true on a
+ * confirmed DB write, false on failure (still logged). Callers must NOT report a
+ * successful delete (or evict the cache) when this returns false.
+ */
+function softDeleteContact(id: string): boolean {
   try {
     const db = getDb();
     db.transaction((tx: any) => {
@@ -267,8 +313,10 @@ function softDeleteContact(id: string): void {
         .where(eq(investorCrmContactsTable.id, id))
         .run();
     });
+    return true;
   } catch (err) {
     log.error("[investorCrmStore softDelete] failed:", (err as Error).message);
+    return false;
   }
 }
 
@@ -406,8 +454,21 @@ function ownContactOr403(req: Request, res: Response, contact: InvestorCrmContac
 /* Hydration                                                           */
 /* ------------------------------------------------------------------ */
 
-/** Write seed contacts to DB on first boot. Idempotent (INSERT-or-skip). */
+/**
+ * Write seed contacts to DB on first boot. Idempotent (INSERT-or-skip).
+ *
+ * v25.52 Track 3.5.2 (GPT-5.5 R5 blocker) — two hardenings:
+ *  1) GATE the whole write-through behind DEMO_SEED_ENABLED (never true in
+ *     production), matching the founder/admin demo-seed invariant. This keeps
+ *     built-in demo contacts out of any live/production investor CRM entirely.
+ *  2) Defense-in-depth even when demo seeding IS enabled: before inserting each
+ *     seed row, run the authoritative (investor_id, lower(trim(email))) guard so
+ *     a seed cannot reopen a duplicate against a pre-existing exempt shared-inbox
+ *     group (which 0098's partial index excludes). Skip the row on a match; the
+ *     id-based check remains as the primary idempotency guard.
+ */
 function seedDemoContactsIntoDb(): void {
+  if (!DEMO_SEED_ENABLED) return; // production-disabled demo seed
   try {
     const db = getDb();
     db.transaction((tx: any) => {
@@ -418,9 +479,17 @@ function seedDemoContactsIntoDb(): void {
           .where(eq(investorCrmContactsTable.id, c.id))
           .limit(1)
           .all() as any[];
-        if (existing.length === 0) {
-          tx.insert(investorCrmContactsTable).values(contactToRow(c)).run();
+        if (existing.length > 0) continue;
+        // Authoritative email dedup (any live row incl. exempt) before insert.
+        try {
+          const dup = findLiveInvestorEmailDuplicate(c.investorId, c.email ?? "");
+          if (dup.dupId) continue; // do not reopen a duplicate via demo seed
+        } catch {
+          // Guard could not run — fail closed: skip this seed row rather than
+          // risk reopening a duplicate. Non-fatal for boot.
+          continue;
         }
+        tx.insert(investorCrmContactsTable).values(contactToRow(c)).run();
       }
     });
   } catch (err) {
@@ -539,6 +608,17 @@ export function registerInvestorCrmRoutes(app: Express): void {
     const contactName = resolved.name || seedName;
     const contactEmail = email || founderEmail || "";
 
+    // v25.52 dedup guard (fail-closed) — see findLiveInvestorEmailDuplicate.
+    try {
+      const dup = findLiveInvestorEmailDuplicate(investorId, contactEmail);
+      if (dup.dupId) {
+        return res.status(409).json({ ok: false, error: "crm_contact_duplicate_email", message: "A contact with this email already exists for this investor.", existingId: dup.dupId });
+      }
+    } catch (dupErr) {
+      log.error("[investorCrmStore POST /contacts] dedup check failed — failing closed:", (dupErr as Error).message);
+      return res.status(503).json({ ok: false, error: "crm_dedup_check_unavailable", message: "Could not verify contact uniqueness right now. Please retry." });
+    }
+
     const contact: InvestorCrmContact = {
       id: uid(),
       investorId,
@@ -568,7 +648,12 @@ export function registerInvestorCrmRoutes(app: Express): void {
     };
 
     contacts.set(contact.id, contact);
-    persistContact(contact);
+    // v25.52: fail-closed on DB write — do not return success (or leave a cache
+    // ghost) if the authoritative write failed.
+    if (!persistContact(contact)) {
+      contacts.delete(contact.id);
+      return res.status(500).json({ ok: false, error: "crm_contact_create_failed" });
+    }
     emitMutation({ aggregate: "investor_crm", id: contact.id, change: "create" });
     return res.status(201).json({ ok: true, contact });
   });
@@ -580,8 +665,23 @@ export function registerInvestorCrmRoutes(app: Express): void {
     const _owner = ownContactOr403(req, res, existing); if (!_owner) return; /* v14 ownership */
     const updates = buildContactUpdates(req.body, existing);
     const updated = { ...existing, ...updates };
+    // v25.52 dedup guard (fail-closed) — only when email is actually changing.
+    if (typeof updated.email === "string" && (updated.email ?? "").trim().toLowerCase() !== (existing.email ?? "").trim().toLowerCase()) {
+      try {
+        const dup = findLiveInvestorEmailDuplicate(existing.investorId, updated.email, String(id));
+        if (dup.dupId) {
+          return res.status(409).json({ ok: false, error: "crm_contact_duplicate_email", message: "Another contact with this email already exists for this investor.", existingId: dup.dupId });
+        }
+      } catch (dupErr) {
+        log.error("[investorCrmStore PATCH /contacts] dedup check failed — failing closed:", (dupErr as Error).message);
+        return res.status(503).json({ ok: false, error: "crm_dedup_check_unavailable", message: "Could not verify contact uniqueness right now. Please retry." });
+      }
+    }
     contacts.set(id, updated);
-    persistContact(updated);
+    if (!persistContact(updated)) {
+      contacts.set(String(id), existing); // roll back cache to pre-update state
+      return res.status(500).json({ ok: false, error: "crm_contact_update_failed" });
+    }
     emitMutation({ aggregate: "investor_crm", id, change: "update" });
     return res.json({ ok: true, contact: updated });
   });
@@ -591,8 +691,12 @@ export function registerInvestorCrmRoutes(app: Express): void {
     const _existing = contacts.get(id);
     if (!_existing) return res.status(404).json({ error: "Contact not found" });
     const _owner = ownContactOr403(req, res, _existing); if (!_owner) return; /* v14 ownership */
-        contacts.delete(id);
-    softDeleteContact(id);
+    // v25.52 (GPT-5.5 R6) — DB-first soft-delete; only evict cache + report
+    // success after a confirmed DB write (no false 2xx / cache-DB divergence).
+    if (!softDeleteContact(String(id))) {
+      return res.status(500).json({ ok: false, error: "crm_contact_delete_failed" });
+    }
+    contacts.delete(id);
     emitMutation({ aggregate: "investor_crm", id, change: "delete" });
     return res.json({ ok: true, deleted: id });
   });
@@ -618,7 +722,12 @@ export function registerInvestorCrmRoutes(app: Express): void {
       updatedAt: now(),
     };
     contacts.set(id, updated);
-    persistContact(updated);
+    // v25.52 blocker (GPT-5.5 R5) — persistContact returns boolean; roll back the
+    // cache and return a real error on a failed DB write (no false 2xx).
+    if (!persistContact(updated)) {
+      contacts.set(String(id), existing);
+      return res.status(500).json({ ok: false, error: "crm_note_add_failed" });
+    }
     emitMutation({ aggregate: "investor_crm", id, change: "update" });
     return res.json({ ok: true, note });
   });
@@ -644,7 +753,10 @@ export function registerInvestorCrmRoutes(app: Express): void {
       updatedAt: now(),
     };
     contacts.set(id, updated);
-    persistContact(updated);
+    if (!persistContact(updated)) {
+      contacts.set(String(id), existing);
+      return res.status(500).json({ ok: false, error: "crm_task_add_failed" });
+    }
     emitMutation({ aggregate: "investor_crm", id, change: "update" });
     return res.json({ ok: true, task });
   });
@@ -670,7 +782,10 @@ export function registerInvestorCrmRoutes(app: Express): void {
     });
     const updated = { ...existing, tasks, updatedAt: now() };
     contacts.set(id, updated);
-    persistContact(updated);
+    if (!persistContact(updated)) {
+      contacts.set(String(id), existing);
+      return res.status(500).json({ ok: false, error: "crm_task_update_failed" });
+    }
     emitMutation({ aggregate: "investor_crm", id, change: "update" });
     return res.json({ ok: true, task: tasks[taskIdx] });
   });
@@ -725,6 +840,17 @@ export function registerInvestorCrmRoutes(app: Express): void {
       return res.status(400).json({ error: "email is invalid" });
     }
 
+    // v25.52 dedup guard (fail-closed) — see findLiveInvestorEmailDuplicate.
+    try {
+      const dup = findLiveInvestorEmailDuplicate(investorId, emailTrimmed);
+      if (dup.dupId) {
+        return res.status(409).json({ ok: false, error: "crm_contact_duplicate_email", message: "A contact with this email already exists for this investor.", existingId: dup.dupId });
+      }
+    } catch (dupErr) {
+      log.error("[investorCrmStore POST /crm] dedup check failed — failing closed:", (dupErr as Error).message);
+      return res.status(503).json({ ok: false, error: "crm_dedup_check_unavailable", message: "Could not verify contact uniqueness right now. Please retry." });
+    }
+
     const contact: InvestorCrmContact = {
       id: uid(),
       investorId,
@@ -751,7 +877,10 @@ export function registerInvestorCrmRoutes(app: Express): void {
     };
 
     contacts.set(contact.id, contact);
-    persistContact(contact);
+    if (!persistContact(contact)) {
+      contacts.delete(contact.id);
+      return res.status(500).json({ ok: false, error: "crm_contact_create_failed" });
+    }
     emitMutation({ aggregate: "investor_crm", id: contact.id, change: "create" });
     return res.status(201).json(contact);
   });
@@ -764,8 +893,23 @@ export function registerInvestorCrmRoutes(app: Express): void {
     const _owner = ownContactOr403(req, res, existing); if (!_owner) return; /* v14 ownership */
     const updates = buildContactUpdates(req.body, existing);
     const updated = { ...existing, ...updates };
+    // v25.52 dedup guard (fail-closed) — only when email is actually changing.
+    if (typeof updated.email === "string" && (updated.email ?? "").trim().toLowerCase() !== (existing.email ?? "").trim().toLowerCase()) {
+      try {
+        const dup = findLiveInvestorEmailDuplicate(existing.investorId, updated.email, String(id));
+        if (dup.dupId) {
+          return res.status(409).json({ ok: false, error: "crm_contact_duplicate_email", message: "Another contact with this email already exists for this investor.", existingId: dup.dupId });
+        }
+      } catch (dupErr) {
+        log.error("[investorCrmStore PATCH /crm] dedup check failed — failing closed:", (dupErr as Error).message);
+        return res.status(503).json({ ok: false, error: "crm_dedup_check_unavailable", message: "Could not verify contact uniqueness right now. Please retry." });
+      }
+    }
     contacts.set(id, updated);
-    persistContact(updated);
+    if (!persistContact(updated)) {
+      contacts.set(String(id), existing); // roll back cache to pre-update state
+      return res.status(500).json({ ok: false, error: "crm_contact_update_failed" });
+    }
     emitMutation({ aggregate: "investor_crm", id, change: "update" });
     return res.json(updated);
   });
@@ -776,8 +920,12 @@ export function registerInvestorCrmRoutes(app: Express): void {
     const _existing = contacts.get(id);
     if (!_existing) return res.status(404).json({ error: "Contact not found" });
     const _owner = ownContactOr403(req, res, _existing); if (!_owner) return; /* v14 ownership */
-        contacts.delete(id);
-    softDeleteContact(id);
+    // v25.52 (GPT-5.5 R6) — DB-first soft-delete; only evict cache + report
+    // success after a confirmed DB write.
+    if (!softDeleteContact(String(id))) {
+      return res.status(500).json({ ok: false, error: "crm_contact_delete_failed" });
+    }
+    contacts.delete(id);
     emitMutation({ aggregate: "investor_crm", id, change: "delete" });
     return res.json({ ok: true, deleted: id });
   });
@@ -801,7 +949,10 @@ export function registerInvestorCrmRoutes(app: Express): void {
       updatedAt: now(),
     };
     contacts.set(id, updated);
-    persistContact(updated);
+    if (!persistContact(updated)) {
+      contacts.set(String(id), existing);
+      return res.status(500).json({ ok: false, error: "crm_note_add_failed" });
+    }
     emitMutation({ aggregate: "investor_crm", id, change: "update" });
     return res.json({ ok: true, note });
   });
@@ -827,7 +978,10 @@ export function registerInvestorCrmRoutes(app: Express): void {
       updatedAt: now(),
     };
     contacts.set(id, updated);
-    persistContact(updated);
+    if (!persistContact(updated)) {
+      contacts.set(String(id), existing);
+      return res.status(500).json({ ok: false, error: "crm_task_add_failed" });
+    }
     emitMutation({ aggregate: "investor_crm", id, change: "update" });
     return res.json({ ok: true, task });
   });
@@ -852,7 +1006,10 @@ export function registerInvestorCrmRoutes(app: Express): void {
     });
     const updated = { ...existing, tasks, updatedAt: now() };
     contacts.set(id, updated);
-    persistContact(updated);
+    if (!persistContact(updated)) {
+      contacts.set(String(id), existing);
+      return res.status(500).json({ ok: false, error: "crm_task_update_failed" });
+    }
     emitMutation({ aggregate: "investor_crm", id, change: "update" });
     return res.json({ ok: true, task: tasks[taskIdx] });
   });

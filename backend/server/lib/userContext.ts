@@ -917,9 +917,24 @@ export function getUserContextForId(userId: string): UserContext {
     };
   }
 
-  // PATCH v3: pass userId so each founder gets their OWN companies
-  const founderCompanies = persona.isFounder ? buildFounderCompanies(persona.userId) : [];
-  const activeCompanyId = persona.isFounder
+  // PATCH v3: pass userId so each founder gets their OWN companies.
+  //
+  // v25.52 Track 0.1 (MULTI-ROLE, Ozan-approved SACRED change) — derive the
+  // founder persona from the company_members JOIN TABLE, not the mutually-
+  // exclusive scalar `persona.isFounder` (which was `!isAdmin && !isInvestor`).
+  // Root cause of the login mis-redirect / persona-collision bug class and
+  // Bug 2b: a user whose scalar role is `investor` (or `admin`) but who ALSO
+  // founded a company got isFounder=false, so buildFounderCompanies() was
+  // never called and their founder workspace silently vanished. One email =
+  // Founder AND Investor AND Partner (any combination) — Ozan is himself
+  // multi-role. We now ALWAYS read the durable join table; a user is a founder
+  // iff they have >=1 company membership, OR the scalar hint still says founder
+  // (covers a brand-new founder who has signed up but not yet created a company
+  // row). `users.role` remains populated and is still honored as a default hint
+  // for isInvestor/isAdmin, so every existing sacred reader keeps its contract.
+  const founderCompanies = buildFounderCompanies(persona.userId);
+  const isFounderEffective = founderCompanies.length > 0 || persona.isFounder;
+  const activeCompanyId = isFounderEffective
     ? (founderCompanies.find((c) => c.companyId === getActiveCompanyId(persona.userId))?.companyId ?? founderCompanies[0]?.companyId ?? null)
     : null;
 

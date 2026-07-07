@@ -1403,6 +1403,70 @@ export function seedContacts(): void {
  * Express route registration
  * ============================================================ */
 
+/**
+ * v25.52 Avi-BUG-3 ("Contact not found" on admin Investor detail) helper.
+ *
+ * The admin Contacts list (GET /api/admin/contacts) augments the managed CRM
+ * rows with READ-ONLY "derived" investor rows synthesized on-the-fly from
+ * redeemed round invitations, keyed with the synthetic id `derived_inv_<invId>`.
+ * Those synthetic ids never exist in the contacts table, so opening one in the
+ * UI (GET /api/admin/contacts/derived_inv_<invId>) fell through to 404 →
+ * "Contact not found." (reproduced on the isolated live-copy preview; matches
+ * Avi's screenshot).
+ *
+ * This helper reconstructs the SAME read-only derived contact for a given
+ * `derived_inv_*` id, so the detail route can resolve it exactly like the list.
+ * It is deliberately identical in shape to the list's derived-row builder
+ * (single source of truth would be ideal; kept inline-parallel here to avoid a
+ * larger refactor of the list route). Returns null if the id is not a derived
+ * id or the underlying redeemed invitation no longer exists.
+ */
+export function buildDerivedContactById(id: string): AdminContact | null {
+  if (!id.startsWith("derived_inv_")) return null;
+  const invId = id.slice("derived_inv_".length);
+  const now = new Date().toISOString();
+  for (const inv of getRedeemedRecords()) {
+    if (inv.id !== invId) continue;
+    const email = (inv.investorEmail ?? "").trim();
+    if (!email) return null;
+    return {
+      id: `derived_inv_${inv.id}`,
+      kind: "investor",
+      legalName: inv.investorName || inv.investorEmail,
+      displayName: inv.investorName || inv.investorEmail,
+      email: inv.investorEmail,
+      type: "angel",
+      status: "active",
+      verification: "unverified",
+      hqCity: "",
+      hqCountry: "US",
+      region: "US",
+      aumMinor: null,
+      aumCurrency: "USD",
+      checkSizeMinMinor: null,
+      checkSizeMaxMinor: null,
+      industries: [],
+      stages: [],
+      companyIds: inv.companyId ? [inv.companyId] : [],
+      partnerWeight: null,
+      partnerSince: null,
+      phone: null,
+      website: null,
+      linkedinUrl: null,
+      tags: ["round-invitation"],
+      notes: "Derived from a redeemed round invitation (read-only).",
+      createdAt: inv.redeemedAt ?? inv.createdAt ?? now,
+      updatedAt: inv.redeemedAt ?? inv.updatedAt ?? now,
+      createdBy: "system",
+      updatedBy: "system",
+      version: 0,
+      prevRevisionHash: "",
+      revisionHash: "",
+    } as AdminContact;
+  }
+  return null;
+}
+
 export function registerAdminContactsRoutes(app: Express): void {
   if (DEMO_SEED_ENABLED) seedContacts();
 
@@ -1558,6 +1622,13 @@ export function registerAdminContactsRoutes(app: Express): void {
       log.warn("[GET contacts/:id] DB read failed, using cache:", (err as Error).message);
       contact = contacts.get(contactId) ?? null;
     }
+    // v25.52 Avi-BUG-3 — synthetic read-only rows (derived_inv_*) surfaced by the
+    // list route are not in the contacts table. Reconstruct them here so opening
+    // an invited-then-redeemed investor no longer 404s ("Contact not found").
+    if (!contact) {
+      const derived = buildDerivedContactById(contactId);
+      if (derived) return res.json({ ok: true, contact: derived, readOnly: true });
+    }
     if (!contact) return res.status(404).json({ ok: false, error: "not_found" });
     res.json({ ok: true, contact });
   });
@@ -1575,6 +1646,21 @@ export function registerAdminContactsRoutes(app: Express): void {
       log.warn("[GET contacts/:id/history] DB read failed, using cache:", (err as Error).message);
       contact = contacts.get(contactId) ?? null;
       history = revisions.get(contactId) ?? [];
+    }
+    // v25.52 Avi-BUG-3 — derived read-only rows have no revision history; return
+    // an empty (but valid) history instead of 404 so the detail page's History
+    // tab renders cleanly for invited-then-redeemed investors.
+    if (!contact) {
+      const derived = buildDerivedContactById(contactId);
+      if (derived) {
+        return res.json({
+          ok: true,
+          contactId,
+          history: [],
+          chain: { ok: true, totalRevisions: 0 },
+          readOnly: true,
+        });
+      }
     }
     if (!contact) return res.status(404).json({ ok: false, error: "not_found" });
     const chain = verifyChain(contactId);

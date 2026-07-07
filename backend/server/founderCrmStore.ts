@@ -361,6 +361,68 @@ export function registerFounderCrmRoutes(app: Express): void {
     const incomingEmail = typeof req.body?.email === "string" ? req.body.email.trim() : "";
     const sendInvite = !!req.body?.sendInvite;
 
+    // v25.52 Track 3.5.2 (GPT-5.5 blocker #1) — PRE-INSERT dedup guard.
+    // The partial UNIQUE index (0098) EXCLUDES dedup_exempt=1 rows, so for a
+    // shared-inbox email that already has 2+ exempt conflict rows the index
+    // holds ZERO entries and a NEW non-exempt insert would NOT collide — silently
+    // reopening "many Johns" for exactly that edge case. We therefore reject a
+    // duplicate BEFORE inserting by checking ANY live row (exempt OR not) with
+    // the same (company_id, normalized email). This makes the guard correct
+    // independent of the index's exempt-exclusion, and covers the window before
+    // the index even exists. Read-only; sacred/money paths untouched.
+    if (incomingEmail) {
+      try {
+        // Use rawDb() (the raw better-sqlite3 handle) — getDb() returns the
+        // Drizzle wrapper which has NO .prepare, so a getDb().prepare guard
+        // would silently no-op. rawDb() is the pattern used elsewhere in this
+        // file (e.g. the GET refresh + auth lookups) and shares the same
+        // underlying connection, so it sees committed rows including the
+        // dedup_exempt shared-inbox conflict rows that the partial index skips.
+        const gdb = rawDb() as unknown as { prepare?: (sql: string) => { get: (...a: unknown[]) => unknown } };
+        // No usable prepare() => we cannot run the guard. Throw so the catch
+        // below fails CLOSED rather than silently falling through to an insert
+        // the partial index cannot protect for exempt rows.
+        if (!gdb || typeof gdb.prepare !== "function") {
+          throw new Error("rawDb().prepare unavailable — cannot run pre-insert dedup guard");
+        }
+        const dup = gdb
+          .prepare(
+            `SELECT * FROM founder_crm_contacts
+             WHERE company_id = ? AND lower(trim(email)) = lower(trim(?))
+               AND deleted_at IS NULL
+             LIMIT 1`,
+          )
+          .get(companyId, incomingEmail) as Record<string, unknown> | undefined;
+        if (dup) {
+          let existing: FounderCrmContact | undefined;
+          try { existing = rowToContact(dup); } catch { /* shape drift — ignore */ }
+          return res.status(409).json({
+            ok: false,
+            error: "crm_contact_duplicate_email",
+            message: "A contact with this email already exists for this company.",
+            existing: existing ?? null,
+          });
+        }
+      } catch (dupErr) {
+        // FAIL CLOSED (GPT-5.5 blocker #1, v25.52 re-review). The partial UNIQUE
+        // index (0098) EXCLUDES dedup_exempt=1 rows, so for an exempt shared-inbox
+        // group the index holds ZERO entries and CANNOT reject a new duplicate.
+        // The pre-insert guard is the ONLY protection for that case, so if it
+        // cannot execute we must NOT fall through to an unprotected insert (that
+        // would silently reopen "many Johns"). Reject with 503 so the caller can
+        // retry; no row is written. Non-money/non-cap-table path, but we still
+        // apply the fail-closed rule because a silent duplicate defeats the whole
+        // dedup guarantee. (A missing/empty email skips this block entirely, so
+        // legitimate email-less contacts are unaffected.)
+        log.error("[founderCrmStore POST] pre-insert dedup check failed — failing closed:", (dupErr as Error).message);
+        return res.status(503).json({
+          ok: false,
+          error: "crm_dedup_check_unavailable",
+          message: "Could not verify contact uniqueness right now. Please retry.",
+        });
+      }
+    }
+
     // Check for an existing user up-front so the response can surface it even
     // if the contact persists successfully.
     let existingUserId: string | null = null;
@@ -418,7 +480,42 @@ export function registerFounderCrmRoutes(app: Express): void {
         tx.insert(founderCrmContactsTable).values(contactToRow(c)).run();
       });
     } catch (err) {
-      log.error("[founderCrmStore POST] DB write failed:", (err as Error).message);
+      const msg = (err as Error).message ?? String(err);
+      // v25.52 Track 3.5.2 — the new partial UNIQUE index
+      // uq_founder_crm_email_scope (migration 0098) rejects a second live
+      // contact with the same (company_id, lower(trim(email))). Surface a
+      // graceful 409 that points the caller at the EXISTING contact instead of
+      // a generic 500 — this is the dedup guard on the create path (no new
+      // "many Johns"). We look the existing row up read-only; the sacred/money
+      // paths are untouched.
+      if (/UNIQUE constraint failed/i.test(msg) && /email/i.test(msg) && incomingEmail) {
+        let existing: FounderCrmContact | undefined;
+        try {
+          // rawDb() — see note on the pre-insert guard above; getDb() has no
+          // .prepare so this must use the raw better-sqlite3 handle.
+          const db = rawDb() as unknown as { prepare?: (sql: string) => { get: (...a: unknown[]) => unknown } };
+          if (db && typeof db.prepare === "function") {
+            const row = db
+              .prepare(
+                `SELECT * FROM founder_crm_contacts
+                 WHERE company_id = ? AND lower(trim(email)) = lower(trim(?))
+                   AND deleted_at IS NULL
+                 LIMIT 1`,
+              )
+              .get(companyId, incomingEmail) as Record<string, unknown> | undefined;
+            if (row) { try { existing = rowToContact(row); } catch { /* shape drift — ignore */ } }
+          }
+        } catch (lookupErr) {
+          log.warn("[founderCrmStore POST] dup-existing lookup failed:", (lookupErr as Error).message);
+        }
+        return res.status(409).json({
+          ok: false,
+          error: "crm_contact_duplicate_email",
+          message: "A contact with this email already exists for this company.",
+          existing: existing ?? null,
+        });
+      }
+      log.error("[founderCrmStore POST] DB write failed:", msg);
       return res.status(500).json({ ok: false, error: "crm_contact_persist_failed" });
     }
     contacts.push(c);
@@ -496,6 +593,58 @@ export function registerFounderCrmRoutes(app: Express): void {
     // B10 (v24.0) — verify the contact's company belongs to the caller before
     // any mutation, closing the cross-tenant CRM mutate hole.
     if (!callerOwnsContactCompany(req, res, c.companyId)) return;
+
+    // v25.52 Track 3.5.2 (GPT-5.5 R3 blocker) — PRE-UPDATE email dedup guard.
+    // Symmetric to the create-path guard: the 0098 partial UNIQUE index EXCLUDES
+    // dedup_exempt=1 rows, so changing this contact's email to one that only
+    // exists on an exempt shared-inbox group would NOT be rejected by the index
+    // and would reopen "many Johns" via PATCH. We therefore reject the update
+    // BEFORE any mutation if the NEW email matches ANY OTHER live row (exempt or
+    // not) in the same company. FAIL CLOSED (503) if the guard cannot execute.
+    // Only runs when email is actually being changed to a non-empty value.
+    if (typeof req.body?.email === "string") {
+      const nextEmail = req.body.email.trim();
+      const emailChanged = nextEmail.toLowerCase() !== (c.email ?? "").trim().toLowerCase();
+      if (nextEmail && emailChanged) {
+        try {
+          const gdb = rawDb() as unknown as { prepare?: (sql: string) => { get: (...a: unknown[]) => unknown } };
+          if (!gdb || typeof gdb.prepare !== "function") {
+            throw new Error("rawDb().prepare unavailable — cannot run pre-update dedup guard");
+          }
+          const dup = gdb
+            .prepare(
+              `SELECT id FROM founder_crm_contacts
+               WHERE company_id = ? AND lower(trim(email)) = lower(trim(?))
+                 AND id <> ? AND deleted_at IS NULL
+               LIMIT 1`,
+            )
+            .get(c.companyId, nextEmail, c.id) as { id?: string } | undefined;
+          if (dup) {
+            return res.status(409).json({
+              ok: false,
+              error: "crm_contact_duplicate_email",
+              message: "Another contact with this email already exists for this company.",
+              existingId: dup.id ?? null,
+            });
+          }
+        } catch (dupErr) {
+          log.error("[founderCrmStore PATCH] pre-update dedup check failed — failing closed:", (dupErr as Error).message);
+          return res.status(503).json({
+            ok: false,
+            error: "crm_dedup_check_unavailable",
+            message: "Could not verify contact uniqueness right now. Please retry.",
+          });
+        }
+      }
+    }
+
+    // v25.52 Track 3.5.2 (GPT-5.5 R3 blocker) — snapshot BEFORE mutating the
+    // in-memory cache object so we can ROLL BACK if the DB write fails. Prior
+    // behaviour mutated `c` in place, and on a DB error logged it but still
+    // returned res.json(c) (HTTP 200) — leaving the caller with a false success
+    // and cache/DB divergence. We now restore the snapshot and return an error.
+    const prevSnapshot: FounderCrmContact = JSON.parse(JSON.stringify(c));
+
     if (typeof req.body?.stage === "string") c.stage = normalizeStage(req.body.stage) as FounderCrmContact["stage"];
     if (typeof req.body?.notes === "string") { c.notes = req.body.notes; c.notesUpdatedAt = new Date().toISOString(); }
     // v25.51 name-split — accept discrete first/last/company edits. When either
@@ -550,7 +699,22 @@ export function registerFounderCrmRoutes(app: Express): void {
           .run();
       });
     } catch (err) {
-      log.error("[founderCrmStore PATCH] DB write failed:", (err as Error).message);
+      const msg = (err as Error).message ?? String(err);
+      // v25.52 Track 3.5.2 (GPT-5.5 R3 blocker) — DO NOT swallow the DB failure
+      // and return success. Roll the in-memory cache object back to its
+      // pre-mutation snapshot, then surface the real error. A UNIQUE-index
+      // collision on email (0098) becomes a graceful 409; anything else is a 500.
+      Object.assign(c, prevSnapshot);
+      if (/UNIQUE constraint failed/i.test(msg) && /email/i.test(msg)) {
+        log.warn("[founderCrmStore PATCH] duplicate-email update rejected by index:", msg);
+        return res.status(409).json({
+          ok: false,
+          error: "crm_contact_duplicate_email",
+          message: "Another contact with this email already exists for this company.",
+        });
+      }
+      log.error("[founderCrmStore PATCH] DB write failed:", msg);
+      return res.status(500).json({ ok: false, error: "crm_contact_update_failed" });
     }
     // Audit the update so the activity timeline reflects stage moves too.
     appendAdminAudit(
@@ -573,9 +737,12 @@ export function registerFounderCrmRoutes(app: Express): void {
     // B10 (v24.0) — verify the contact's company belongs to the caller before
     // soft-deleting, closing the cross-tenant CRM mutate hole.
     if (!callerOwnsContactCompany(req, res, c.companyId)) return;
-    // Remove from in-memory cache.
-    contacts.splice(idx, 1);
-    // Write-through soft-delete to DB (tenant-scoped).
+    // v25.52 Track 3.5.2 (GPT-5.5 R6 blocker) — DB-FIRST soft-delete. Previously
+    // the cache row was spliced out BEFORE the DB write and a failed write was
+    // swallowed while still returning { ok: true } — a false success that left
+    // the authoritative row live but the contact gone from the UI cache. Now we
+    // write the DB soft-delete first; only on success do we evict the cache and
+    // return ok. On failure the cache is untouched and we return 500.
     try {
       const db = getDb();
       const tenantId = tenantForCompany(c.companyId);
@@ -586,8 +753,11 @@ export function registerFounderCrmRoutes(app: Express): void {
           .run();
       });
     } catch (err) {
-      log.error("[founderCrmStore DELETE] DB write failed:", (err as Error).message);
+      log.error("[founderCrmStore DELETE] DB write failed — cache preserved:", (err as Error).message);
+      return res.status(500).json({ ok: false, error: "crm_contact_delete_failed" });
     }
+    // DB soft-delete confirmed — now evict from the in-memory cache.
+    contacts.splice(idx, 1);
     appendAdminAudit(
       (req as Request & { userContext?: { userId?: string } }).userContext?.userId ?? "u_unknown",
       `company:${c.companyId}`,
@@ -628,6 +798,52 @@ export function listContactsForCompany(companyId: string): FounderCrmContact[] {
 }
 
 /**
+ * v25.52 Track 3.5.2 (GPT-5.5 R4 blocker G) — shared, AUTHORITATIVE dedup check
+ * for every founder CRM create/upsert/import path. 0097 exempts founder
+ * shared-inbox conflict groups (dedup_exempt=1) and 0098's partial UNIQUE index
+ * EXCLUDES them, so the index alone cannot stop a NEW write into an exempt
+ * group. The aux helpers previously deduped against the IN-MEMORY cache only
+ * (misses rows when the cache is cold/stale) and swallowed DB failures while
+ * still returning success. This helper queries the authoritative
+ * founder_crm_contacts table (any live row, exempt or not) via rawDb().
+ *
+ * Returns one of:
+ *   { verdict: "ok" }         — no live duplicate; safe to write.
+ *   { verdict: "duplicate" }  — a live row already exists; caller MUST NOT write.
+ *   { verdict: "unavailable" }— the check could not run; caller MUST FAIL CLOSED
+ *                               (skip the write / return a typed failure) rather
+ *                               than fall through to an unprotected insert.
+ * Empty email => { verdict: "ok" } (email-less contacts are unaffected).
+ */
+function checkLiveFounderEmailDuplicate(
+  companyId: string,
+  email: string,
+  excludeId?: string,
+): { verdict: "ok" | "duplicate" | "unavailable"; dupId?: string } {
+  const trimmed = (email ?? "").trim();
+  if (!companyId || !trimmed) return { verdict: "ok" };
+  try {
+    const rdb = rawDb() as unknown as { prepare?: (sql: string) => { get: (...a: unknown[]) => unknown } };
+    if (!rdb || typeof rdb.prepare !== "function") return { verdict: "unavailable" };
+    const row = rdb
+      .prepare(
+        // Physical columns are snake_case (company_id, deleted_at) — verified
+        // against the live schema; matches migrations 0097/0098 and the POST/PATCH
+        // guards above.
+        `SELECT id FROM founder_crm_contacts
+         WHERE company_id = ? AND lower(trim(email)) = lower(trim(?))
+           AND (? IS NULL OR id <> ?) AND deleted_at IS NULL
+         LIMIT 1`,
+      )
+      .get(companyId, trimmed, excludeId ?? null, excludeId ?? null) as { id?: string } | undefined;
+    return row?.id ? { verdict: "duplicate", dupId: row.id } : { verdict: "ok" };
+  } catch (err) {
+    log.warn("[checkLiveFounderEmailDuplicate] guard query failed — failing closed:", (err as Error).message);
+    return { verdict: "unavailable" };
+  }
+}
+
+/**
  * v25.0 B-J5-3 fix — Insert a contact directly into founderCrmStore (both DB and
  * in-memory cache). Used by the CRM CSV import handler (track1Routes) so that
  * imported contacts are visible via GET /api/founder/crm/contacts which reads
@@ -646,11 +862,22 @@ export function insertContactForImport(args: {
 }): FounderCrmContact | null {
   if (!args.companyId || !args.email) return null;
   const normalizedEmail = args.email.trim().toLowerCase();
-  // Dedupe check
-  const existing = contacts.find(
+  // Fast in-memory skip (cache hit is authoritative-enough to short-circuit).
+  const cacheHit = contacts.find(
     (c) => c.companyId === args.companyId && c.email.trim().toLowerCase() === normalizedEmail
   );
-  if (existing) return null;
+  if (cacheHit) return null;
+  // v25.52 blocker G — AUTHORITATIVE DB dedup (catches exempt shared-inbox rows
+  // and rows missing from a cold cache). FAIL CLOSED: on "duplicate" or
+  // "unavailable" we do NOT write and return null (import row is skipped rather
+  // than silently reopening a duplicate).
+  const guard = checkLiveFounderEmailDuplicate(args.companyId, args.email);
+  if (guard.verdict !== "ok") {
+    if (guard.verdict === "unavailable") {
+      log.warn("[insertContactForImport] dedup guard unavailable — skipping import row (fail-closed)");
+    }
+    return null;
+  }
   const newContact: FounderCrmContact = {
     id: `fcrm_imp_${randomBytes(4).toString("hex")}`,
     companyId: args.companyId,
@@ -669,19 +896,19 @@ export function insertContactForImport(args: {
     tasks: [],
     series: args.series ?? "—",
   };
-  // DB write first (same pattern as POST handler)
+  // v25.52 blocker G — write via Drizzle (maps camelCase→snake_case correctly;
+  // the prior raw getDb().prepare(...) used camelCase columns against a
+  // snake_case table AND getDb() has no .prepare, so the DB write silently
+  // failed and only the cache was updated). Only push to cache after a CONFIRMED
+  // DB write.
   try {
     const db = getDb();
-    const row = contactToRow(newContact);
-    (db as any).prepare(
-      `INSERT OR IGNORE INTO founder_crm_contacts (id, tenantId, companyId, investorId, name, firmName, email, region, stage, ownership, softCircleHistory, maSignals, threadIds, notes, notesUpdatedAt, tasks, series) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-    ).run(
-      row.id, row.tenantId, row.companyId, row.investorId, row.name, row.firmName, row.email,
-      row.region, row.stage, row.ownership, row.softCircleHistory, row.maSignals, row.threadIds,
-      row.notes, row.notesUpdatedAt, row.tasks, row.series
-    );
+    db.transaction((tx: any) => {
+      tx.insert(founderCrmContactsTable).values(contactToRow(newContact)).run();
+    });
   } catch (err) {
-    log.warn("[insertContactForImport] DB write failed:", (err as Error).message);
+    log.warn("[insertContactForImport] DB write failed — not caching:", (err as Error).message);
+    return null;
   }
   contacts.push(newContact);
   return newContact;
@@ -723,56 +950,58 @@ export function upsertCrmContactForInvitation(args: {
   email: string;
   classification?: string;
   roundId?: string | null;
+  // v25.53 8a — optional CRM-aligned fields captured on the invite form.
+  company?: string | null;
+  stageFocus?: string | null;
+  typicalMarketSize?: string | null;
 }): void {
   if (!args.companyId || !args.email) return;
   const normalizedEmail = args.email.trim().toLowerCase();
-  // v24.1 Bug J (BUG 043) — dedupe was in-memory only. The CRM read cache is
-  // not always hydrated when an invitation fires (e.g. right after a restart,
-  // before hydrateFounderCrmStore runs, or in a worker that never loaded the
-  // founder's contacts), so the in-memory `contacts.find` missed an existing
-  // row and we inserted a SECOND contact for the same email. Because the table
-  // PK is `id` (random per call) and there is NO unique index on email, the
-  // prior `INSERT OR IGNORE` never collapsed the duplicate. Fix: check the
-  // authoritative DB keyed by (company_id, LOWER(TRIM(email))) first, then the
-  // cache. Query-then-insert is fine here — invitations are not high-contention
-  // and SQLite serializes writes.
-  try {
-    // Use rawDb() (the better-sqlite3 driver) — getDb() returns the drizzle
-    // wrapper which has NO .prepare(), so the previous getDb()-based guard was
-    // always false and the authoritative DB dedupe silently no-op'd. rawDb()
-    // exposes prepare/get/run synchronously.
-    const driver = rawDb() as unknown as { prepare?: (sql: string) => { get: (...a: unknown[]) => unknown } };
-    if (driver && typeof driver.prepare === "function") {
-      const dbRow = driver.prepare(
-        `SELECT id FROM founder_crm_contacts WHERE company_id = ? AND LOWER(TRIM(email)) = ? LIMIT 1`,
-      ).get(args.companyId, normalizedEmail) as { id: string } | undefined;
-      if (dbRow?.id) {
-        // Already present in the authoritative store — do NOT insert a duplicate.
-        // The read cache will pick this row up on the next hydrateFounderCrmStore
-        // pass; we deliberately avoid hand-building a cache entry from a raw
-        // SELECT * (snake_case columns) which would not match rowToContact's
-        // camelCase expectations.
-        return;
-      }
-    }
-  } catch (err) {
-    log.warn("[upsertCrmContactForInvitation] DB dedupe lookup failed:", (err as Error).message);
-  }
-  // Secondary in-memory guard (covers no-DB/test paths and same-process races).
+  // v25.53 REVISE NB-a (8a) — an ALREADY-KNOWN contact must be UPDATED in place,
+  // not dropped. Resolve the cached row FIRST: when it exists we take the update
+  // path (no new INSERT), so the insert-only dedup guard below must not short-
+  // circuit us. Fill/refresh supplied optional fields; NEVER clobber a non-empty
+  // value with a blank. Best-effort / non-fatal so invite creation is never
+  // blocked by a CRM write failure.
   const existing = contacts.find(
     (c) => c.companyId === args.companyId && c.email.trim().toLowerCase() === normalizedEmail
   );
-  if (existing) return;
+  if (existing) {
+    updateExistingCrmContactOptionalFields(existing, args);
+    return;
+  }
+  // v25.52 blocker G — AUTHORITATIVE DB dedup via the shared guard (checks any
+  // live row incl. exempt shared-inbox groups). FAIL CLOSED: on "duplicate" OR
+  // "unavailable" we do NOT insert. Previously a failed dedup lookup logged and
+  // continued to insert (fail-open), which could reopen a duplicate; and the
+  // dedup lookup omitted `deleted_at IS NULL`. The shared guard fixes both.
+  // (Reached only when no cached row exists — the update path above already
+  // handled a known contact.)
+  const guard = checkLiveFounderEmailDuplicate(args.companyId, args.email);
+  if (guard.verdict !== "ok") {
+    if (guard.verdict === "unavailable") {
+      log.warn("[upsertCrmContactForInvitation] dedup guard unavailable — skipping insert (fail-closed)");
+    }
+    return;
+  }
   // v23.9 B9: record the originating round in the note so the founder CRM shows
   // why the contact appeared. The schema has no tags/affiliation columns, so the
   // round linkage lives in the human-readable note.
   const roundSuffix = args.roundId ? ` — round ${args.roundId}` : "";
+  // v25.53 8a — the CRM schema has firmName (company) but no dedicated
+  // stage-focus / market-size columns, so those two are appended to the
+  // human-readable note rather than adding non-additive columns.
+  const company = (args.company ?? "").trim();
+  const extraNoteParts: string[] = [];
+  if ((args.stageFocus ?? "").trim()) extraNoteParts.push(`Stage focus: ${(args.stageFocus ?? "").trim()}`);
+  if ((args.typicalMarketSize ?? "").trim()) extraNoteParts.push(`Typical market size: ${(args.typicalMarketSize ?? "").trim()}`);
+  const extraNote = extraNoteParts.length > 0 ? ` — ${extraNoteParts.join("; ")}` : "";
   const newContact: FounderCrmContact = {
     id: `fcrm_inv_${args.companyId.slice(-4)}_${randomBytes(3).toString("hex")}`,
     companyId: args.companyId,
     investorId: `u_inv_${randomBytes(3).toString("hex")}`,
     name: args.name ?? args.email.split("@")[0],
-    firmName: "—",
+    firmName: company || "—",
     email: args.email,
     region: "US",
     /* v25.48.3 Q-K1 — an invited-but-not-yet-registered investor starts at
@@ -783,25 +1012,93 @@ export function upsertCrmContactForInvitation(args: {
     softCircleHistory: [],
     maSignals: 0,
     threadIds: [],
-    notes: `Auto-created from round invitation (${args.classification ?? "invited"})${roundSuffix}`,
+    notes: `Auto-created from round invitation (${args.classification ?? "invited"})${roundSuffix}${extraNote}`,
     notesUpdatedAt: new Date().toISOString(),
     tasks: [],
     series: "—",
   };
-  contacts.push(newContact);
-  // Best-effort DB write — non-fatal
+  // v25.52 blocker G — write via Drizzle (maps camelCase→snake_case; the prior
+  // raw getDb().prepare(...) used camelCase columns against a snake_case table
+  // AND getDb() has no .prepare, so the DB write silently failed). Only push to
+  // cache after a CONFIRMED write so we never leave a cache ghost with no row.
   try {
     const db = getDb();
-    const row = contactToRow(newContact);
-    (db as any).prepare(
-      `INSERT OR IGNORE INTO founder_crm_contacts (id, tenantId, companyId, investorId, name, firmName, email, region, stage, ownership, softCircleHistory, maSignals, threadIds, notes, notesUpdatedAt, tasks, series) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-    ).run(
-      row.id, row.tenantId, row.companyId, row.investorId, row.name, row.firmName, row.email,
-      row.region, row.stage, row.ownership, row.softCircleHistory, row.maSignals, row.threadIds,
-      row.notes, row.notesUpdatedAt, row.tasks, row.series
-    );
+    db.transaction((tx: any) => {
+      tx.insert(founderCrmContactsTable).values(contactToRow(newContact)).run();
+    });
+    contacts.push(newContact);
   } catch {
-    // Non-fatal: in-memory contact is already added above.
+    // DB write failed — do NOT cache a ghost. Invitation creation is not blocked.
+  }
+}
+
+/**
+ * v25.53 REVISE NB-a (8a) — update an EXISTING founder CRM contact in place with
+ * invite-supplied optional fields (Company → firmName, Stage focus / Market size
+ * → note), so re-inviting an already-known contact no longer drops that data.
+ *
+ * Rules:
+ *   - Only write a supplied value that is non-blank (never clobber an existing
+ *     non-empty value with a blank).
+ *   - firmName: refresh when a non-blank company is supplied (also fills the "—"
+ *     placeholder used for company-less contacts).
+ *   - Stage focus / Market size: appended to the human-readable note (the CRM
+ *     schema has no dedicated columns), skipping a value already present.
+ *   - No-op (no DB write) when nothing changes.
+ * Best-effort / non-fatal: a DB failure is swallowed so invite creation proceeds.
+ */
+function updateExistingCrmContactOptionalFields(
+  existing: FounderCrmContact,
+  args: {
+    company?: string | null;
+    stageFocus?: string | null;
+    typicalMarketSize?: string | null;
+  },
+): void {
+  const company = (args.company ?? "").trim();
+  const stageFocus = (args.stageFocus ?? "").trim();
+  const market = (args.typicalMarketSize ?? "").trim();
+  let changed = false;
+
+  if (company && existing.firmName !== company) {
+    existing.firmName = company;
+    changed = true;
+  }
+
+  const noteParts: string[] = [];
+  const currentNotes = existing.notes ?? "";
+  if (stageFocus && !currentNotes.includes(`Stage focus: ${stageFocus}`)) {
+    noteParts.push(`Stage focus: ${stageFocus}`);
+  }
+  if (market && !currentNotes.includes(`Typical market size: ${market}`)) {
+    noteParts.push(`Typical market size: ${market}`);
+  }
+  if (noteParts.length > 0) {
+    existing.notes = currentNotes
+      ? `${currentNotes} — ${noteParts.join("; ")}`
+      : noteParts.join("; ");
+    existing.notesUpdatedAt = new Date().toISOString();
+    changed = true;
+  }
+
+  if (!changed) return;
+
+  try {
+    const db = getDb();
+    const tenantId = tenantForCompany(existing.companyId);
+    db.transaction((tx: any) => {
+      tx.update(founderCrmContactsTable)
+        .set({
+          firmName: existing.firmName,
+          notes: existing.notes,
+          notesUpdatedAt: existing.notesUpdatedAt,
+          updatedAt: new Date().toISOString(),
+        })
+        .where(withTenant(eq(founderCrmContactsTable.id, existing.id), { tenantId, table: founderCrmContactsTable }))
+        .run();
+    });
+  } catch (err) {
+    log.warn("[updateExistingCrmContactOptionalFields] DB update failed (non-fatal):", (err as Error).message);
   }
 }
 
@@ -844,29 +1141,38 @@ export function upsertFromRound(args: {
   const fbCompany = (company ?? "").toLowerCase();
 
   // 1) Authoritative DB dedupe (survives cold caches / cluster workers).
+  // v25.52 blocker G — FAIL CLOSED on any dedupe failure. Previously a failed
+  // lookup logged and continued to create (fail-open), which could reopen an
+  // exempt shared-inbox duplicate. For the email case we use the shared guard
+  // (checks any live row incl. exempt); for the no-email name-fallback we keep
+  // the explicit rawDb lookup but treat an unavailable driver as fail-closed.
   try {
-    const driver = rawDb() as unknown as { prepare?: (sql: string) => { get: (...a: unknown[]) => unknown } };
-    if (driver && typeof driver.prepare === "function") {
-      let dbRow: { id: string } | undefined;
-      if (normalizedEmail) {
-        dbRow = driver.prepare(
-          `SELECT id FROM founder_crm_contacts
-             WHERE company_id = ? AND LOWER(TRIM(email)) = ? AND deleted_at IS NULL LIMIT 1`,
-        ).get(args.companyId, normalizedEmail) as { id: string } | undefined;
-      } else if (fbFirst || fbLast || fbCompany) {
-        dbRow = driver.prepare(
-          `SELECT id FROM founder_crm_contacts
-             WHERE company_id = ?
-               AND LOWER(TRIM(COALESCE(first_name,''))) = ?
-               AND LOWER(TRIM(COALESCE(last_name,''))) = ?
-               AND LOWER(TRIM(COALESCE(company_name,''))) = ?
-               AND deleted_at IS NULL LIMIT 1`,
-        ).get(args.companyId, fbFirst, fbLast, fbCompany) as { id: string } | undefined;
+    if (normalizedEmail) {
+      const guard = checkLiveFounderEmailDuplicate(args.companyId, email as string);
+      if (guard.verdict === "duplicate" && guard.dupId) return { id: guard.dupId, created: false };
+      if (guard.verdict === "unavailable") {
+        log.warn("[upsertFromRound] dedup guard unavailable — skipping create (fail-closed)");
+        return null;
       }
+    } else if (fbFirst || fbLast || fbCompany) {
+      const driver = rawDb() as unknown as { prepare?: (sql: string) => { get: (...a: unknown[]) => unknown } };
+      if (!driver || typeof driver.prepare !== "function") {
+        log.warn("[upsertFromRound] rawDb unavailable for name-fallback dedupe — skipping create (fail-closed)");
+        return null;
+      }
+      const dbRow = driver.prepare(
+        `SELECT id FROM founder_crm_contacts
+           WHERE company_id = ?
+             AND LOWER(TRIM(COALESCE(first_name,''))) = ?
+             AND LOWER(TRIM(COALESCE(last_name,''))) = ?
+             AND LOWER(TRIM(COALESCE(company_name,''))) = ?
+             AND deleted_at IS NULL LIMIT 1`,
+      ).get(args.companyId, fbFirst, fbLast, fbCompany) as { id: string } | undefined;
       if (dbRow?.id) return { id: dbRow.id, created: false };
     }
   } catch (err) {
-    log.warn("[upsertFromRound] DB dedupe lookup failed:", (err as Error).message);
+    log.warn("[upsertFromRound] DB dedupe lookup failed — skipping create (fail-closed):", (err as Error).message);
+    return null;
   }
 
   // 2) In-memory guard (no-DB/test paths + same-process races).
@@ -908,13 +1214,16 @@ export function upsertFromRound(args: {
     series: "—",
   };
   // DB write first (drizzle path — reliable snake_case mapping), then cache.
+  // v25.52 blocker G — only push to cache + return created on a CONFIRMED write;
+  // on failure return null (do not leave a cache ghost or claim created:true).
   try {
     const db = getDb();
     db.transaction((tx: any) => {
       tx.insert(founderCrmContactsTable).values(contactToRow(newContact)).run();
     });
   } catch (err) {
-    log.warn("[upsertFromRound] DB write failed (cache still updated):", (err as Error).message);
+    log.warn("[upsertFromRound] DB write failed — not caching:", (err as Error).message);
+    return null;
   }
   contacts.push(newContact);
   return { id: newContact.id, created: true };
@@ -1003,11 +1312,22 @@ export function upsertInvestorContactFromPartner(
 ): void {
   if (!companyId) return;
   const email = partner.email ?? "";
-  const existing = contacts.find(
+  // Cache short-circuit (partnerId link OR email).
+  const cacheHit = contacts.find(
     (c) => c.companyId === companyId &&
       (c.investorId === partner.partnerId || (email && c.email.toLowerCase() === email.toLowerCase())),
   );
-  if (existing) return;
+  if (cacheHit) return;
+  // v25.52 blocker G — AUTHORITATIVE email dedup (catches exempt shared-inbox
+  // rows + cold-cache misses). FAIL CLOSED on duplicate/unavailable. (When email
+  // is empty the guard returns ok; the partnerId cache check above still applies.)
+  const guard = checkLiveFounderEmailDuplicate(companyId, email);
+  if (guard.verdict !== "ok") {
+    if (guard.verdict === "unavailable") {
+      log.warn("[upsertInvestorContactFromPartner] dedup guard unavailable — skipping insert (fail-closed)");
+    }
+    return;
+  }
   const newContact: FounderCrmContact = {
     id: `fcrm_cp_${companyId.slice(-4)}_${randomBytes(3).toString("hex")}`,
     companyId,
@@ -1026,18 +1346,15 @@ export function upsertInvestorContactFromPartner(
     tasks: [],
     series: "—",
   };
-  contacts.push(newContact);
+  // v25.52 blocker G — Drizzle write (correct snake_case mapping); cache only
+  // after a CONFIRMED write.
   try {
     const db = getDb();
-    const row = contactToRow(newContact);
-    (db as any).prepare(
-      `INSERT OR IGNORE INTO founder_crm_contacts (id, tenantId, companyId, investorId, name, firmName, email, region, stage, ownership, softCircleHistory, maSignals, threadIds, notes, notesUpdatedAt, tasks, series) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    ).run(
-      row.id, row.tenantId, row.companyId, row.investorId, row.name, row.firmName, row.email,
-      row.region, row.stage, row.ownership, row.softCircleHistory, row.maSignals, row.threadIds,
-      row.notes, row.notesUpdatedAt, row.tasks, row.series,
-    );
-  } catch { /* non-fatal */ }
+    db.transaction((tx: any) => {
+      tx.insert(founderCrmContactsTable).values(contactToRow(newContact)).run();
+    });
+    contacts.push(newContact);
+  } catch { /* non-fatal: do NOT cache a ghost on DB failure */ }
 }
 
 /**
@@ -1094,7 +1411,12 @@ export function removeInvestorContactForPartner(companyId: string, partnerId: st
   );
   if (idx < 0) return { removed: false };
   const target = contacts[idx];
-  contacts.splice(idx, 1);
+  // v25.52 (GPT-5.5 R6 blocker) — DB-FIRST soft-delete. Previously the cache row
+  // was spliced out BEFORE the DB write and a failed write was swallowed while
+  // still returning { removed: true }, so an admin unlink could report a
+  // successful CRM removal while the authoritative founder_crm_contacts row
+  // stayed live. Now: write the DB soft-delete first; only evict the cache and
+  // report removed:true on success; return removed:false on failure.
   try {
     const db = getDb();
     (db as any)
@@ -1103,7 +1425,9 @@ export function removeInvestorContactForPartner(companyId: string, partnerId: st
       .where(eq(founderCrmContactsTable.id, target.id))
       .run();
   } catch (err) {
-    log.warn("[founderCrm] removeInvestorContactForPartner DB write failed:", (err as Error).message);
+    log.warn("[founderCrm] removeInvestorContactForPartner DB write failed — cache preserved:", (err as Error).message);
+    return { removed: false };
   }
+  contacts.splice(idx, 1);
   return { removed: true };
 }

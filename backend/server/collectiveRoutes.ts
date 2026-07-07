@@ -461,10 +461,31 @@ export function registerCollectiveRoutes(app: Express): void {
       : allProfilesRaw.filter((p) => listedIds.has(p.companyId));
 
     // Companies in Deal Room: transactionPrepStatus in (exploring, active, closing)
+    // v25.52 Track 3.1 / BUG C-9 — de-duplicated UNION of (a) companies with a
+    // deal-room transactionPrepStatus AND (b) chapter-scoped LIVE partner
+    // promotions. The Deal Room LIST below already merges live collective
+    // promotions into the visible deals (V5/Patch v8), but this KPI previously
+    // counted only transactionPrepStatus, so a partner-promoted company without
+    // its own transactionPrepStatus was VISIBLE in the deal room yet MISSING
+    // from the count (undercount). We now count both, using the EXACT same
+    // chapter-scope gate the list applies (admin OR listedIds.has(companyId)),
+    // de-duplicated by companyId so a company that qualifies both ways counts
+    // once. Additive; no company is ever double-counted or newly exposed.
     const dealRoomStatuses = new Set(["exploring", "active", "closing"]);
-    const companiesInDealRoom = allProfiles.filter(
-      (p) => p.transactionPrepStatus && dealRoomStatuses.has(p.transactionPrepStatus)
-    ).length;
+    const dealRoomCompanyIds = new Set<string>();
+    for (const p of allProfiles) {
+      if (p.transactionPrepStatus && dealRoomStatuses.has(p.transactionPrepStatus)) {
+        dealRoomCompanyIds.add(p.companyId);
+      }
+    }
+    try {
+      for (const promo of partnerDealPromotionsStore.listLiveCollectivePromotions()) {
+        if (!promo.companyId) continue;
+        if (!isAdmin && !listedIds.has(promo.companyId)) continue; // same gate as the list merge
+        dealRoomCompanyIds.add(promo.companyId);
+      }
+    } catch { /* promotions store unavailable — fall back to transactionPrepStatus-only count */ }
+    const companiesInDealRoom = dealRoomCompanyIds.size;
 
     // DSC pipeline depth — chapter-scoped to visible companies (admins: all).
     const dscPipelineDepth = isAdmin

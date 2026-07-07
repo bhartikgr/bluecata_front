@@ -344,6 +344,12 @@ export default function RoundNew() {
  valuationCap: optionalDecimalString(form.valuationCap),
  discount: optionalDecimalString(form.discount),
  interestRate: optionalDecimalString(form.interestRate),
+ // v25.53 N1 — warrants derive their target raise server-side from
+ // strikePrice × sharesAuthorized, so both must reach the server. They were
+ // captured in the wizard but never sent, which (with no Target-amount field
+ // on the Warrant Terms step) made warrants uncreatable.
+ strikePrice: usesField("strikePrice") ? optionalDecimalString(form.strikePrice) : null,
+ expiryYears: usesField("expiryYears") ? optionalIntegerString(form.expiryYears) : null,
  // Integer-as-string — share counts use BigInt internally, never float.
  maturityMonths: optionalIntegerString(form.maturityMonths),
  sharesAuthorized: optionalIntegerString(form.sharesAuthorized),
@@ -524,6 +530,90 @@ export default function RoundNew() {
  const dateRangeInvalid =
  !!form.openDate && !!form.closeDate &&
  new Date(form.openDate).getTime() > new Date(form.closeDate).getTime();
+
+ // v25.53 3a — block Open / Target-close dates that fall in the past. The
+ // server enforces the same (invalid_openDate / invalid_closeDate past-date
+ // guard) as a backstop. Compare on calendar day (local midnight) so "today"
+ // is always allowed. N4 also relies on this: a malformed year (e.g. 70620
+ // from a concatenated "07062026") lands far in the future OR fails Date
+ // parsing, and the 4-digit-year check below rejects it explicitly.
+ const todayMidnight = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); })();
+ const dayInPast = (iso: string): boolean => {
+ if (!iso) return false;
+ const t = new Date(iso + "T00:00:00").getTime();
+ if (!isFinite(t)) return false;
+ return t < todayMidnight;
+ };
+ // N4 — a native <input type="date"> yields ISO yyyy-mm-dd; a valid year is
+ // exactly 4 digits. Reject anything else (guards the "07062026" → 70620 bug
+ // if the value ever arrives from a non-native picker / paste).
+ const badYear = (iso: string): boolean => {
+ if (!iso) return false;
+ const m = /^(\d+)-\d{2}-\d{2}$/.exec(iso);
+ if (!m) return true;
+ return m[1].length !== 4;
+ };
+ const openDatePast = dayInPast(form.openDate);
+ const closeDatePast = dayInPast(form.closeDate);
+ const openDateMalformed = badYear(form.openDate);
+ const closeDateMalformed = badYear(form.closeDate);
+ const scheduleInvalid =
+ dateRangeInvalid || openDatePast || closeDatePast || openDateMalformed || closeDateMalformed;
+
+ // v25.53 1a / N2 / N3 — per-vehicle required-field validation for Step 2
+ // (Terms). Previously Continue advanced with empty price/shares and the step
+ // showed a false green "complete" check. We now compute field-level errors per
+ // instrument and gate Continue (and Create) until they resolve. The server
+ // re-validates every field (fail-closed) as the backstop.
+ const numOf = (s: string): number => {
+ const n = Number((s ?? "").toString().replace(/[,\s$]/g, ""));
+ return isFinite(n) ? n : NaN;
+ };
+ // Effective price per share: the derived value for priced rounds unless the
+ // founder overrode it. For common there is no pre-money field so the derived
+ // value is empty and the founder must Override to enter an explicit price
+ // (N3) — either way this must resolve to > 0.
+ const effectivePps = isPricedInstrument
+ ? (pricePerShareOverridden ? form.pricePerShare : derivedPricePerShare)
+ : form.pricePerShare;
+ const step2Errors: Record<string, string> = (() => {
+ const e: Record<string, string> = {};
+ const reqPos = (field: keyof FormShape, label: string) => {
+ if (!usesField(field as string)) return;
+ if (!(numOf(form[field] as string) > 0)) e[field as string] = `${label} is required and must be greater than 0.`;
+ };
+ switch (form.instrument) {
+ case "common":
+ reqPos("sharesAuthorized", "Shares authorized");
+ if (!(numOf(effectivePps) > 0)) e.pricePerShare = "Price per share is required and must be greater than 0.";
+ break;
+ case "preferred":
+ reqPos("preMoney", "Pre-money valuation");
+ reqPos("targetAmount", "Target raise");
+ if (!(numOf(effectivePps) > 0)) e.pricePerShare = "Price per share is required and must be greater than 0.";
+ break;
+ case "safe_post":
+ case "safe_pre":
+ reqPos("targetAmount", "Target raise");
+ if (!(numOf(form.valuationCap) > 0) && !(numOf(form.discount) > 0)) e.valuationCap = "Enter a valuation cap or a discount.";
+ break;
+ case "convertible_note":
+ reqPos("targetAmount", "Target raise");
+ if (!(numOf(form.valuationCap) > 0) && !(numOf(form.discount) > 0)) e.valuationCap = "Enter a valuation cap or a discount.";
+ reqPos("maturityMonths", "Maturity (months)");
+ break;
+ case "warrant":
+ reqPos("sharesAuthorized", "Shares authorized");
+ reqPos("strikePrice", "Strike price");
+ reqPos("expiryYears", "Expiry (years)");
+ break;
+ case "option_pool":
+ reqPos("poolSize", "Pool size");
+ break;
+ }
+ return e;
+ })();
+ const step2Valid = Object.keys(step2Errors).length === 0;
 
  // Engine summary preview line — for review step
  function engineSummary() {
@@ -744,11 +834,11 @@ export default function RoundNew() {
  {step === 2 && (
  <div className="grid md:grid-cols-2 gap-5">
  {usesField("targetAmount") && (
- <div><LabelWithTip tip="How much new money you want this round to bring in. Investors look at progress vs. this number to decide whether to commit."><Label>Target raise (USD)</Label></LabelWithTip><FormattedNumberInput className="mt-1 font-mono" value={form.targetAmount} onChange={v => update("targetAmount", v)} data-testid="input-target" /></div>
+ <div><LabelWithTip tip="How much new money you want this round to bring in. Investors look at progress vs. this number to decide whether to commit."><Label>Target raise (USD)</Label></LabelWithTip><FormattedNumberInput className="mt-1 font-mono" value={form.targetAmount} onChange={v => update("targetAmount", v)} data-testid="input-target" />{step2Errors.targetAmount && <p className="text-xs text-rose-500 mt-1" data-testid="err-targetAmount">{step2Errors.targetAmount}</p>}</div>
  )}
  {usesField("preMoney") && (
  <>
- <div><LabelWithTip tip="The agreed value of your company BEFORE the new money lands. Pre-money + new money = post-money."><Label>Pre-money valuation (USD)</Label></LabelWithTip><FormattedNumberInput className="mt-1 font-mono" value={form.preMoney} onChange={v => update("preMoney", v)} data-testid="input-pre" /></div>
+ <div><LabelWithTip tip="The agreed value of your company BEFORE the new money lands. Pre-money + new money = post-money."><Label>Pre-money valuation (USD)</Label></LabelWithTip><FormattedNumberInput className="mt-1 font-mono" value={form.preMoney} onChange={v => update("preMoney", v)} data-testid="input-pre" />{step2Errors.preMoney && <p className="text-xs text-rose-500 mt-1" data-testid="err-preMoney">{step2Errors.preMoney}</p>}</div>
  <div><LabelWithTip tip="Calculated automatically: pre-money + target raise. This is the company's valuation immediately after the round closes."><Label>Implied post-money</Label></LabelWithTip><Input className="mt-1 font-mono bg-secondary/50" value={`$${post.toLocaleString()}`} readOnly data-testid="input-post" /></div>
  </>
  )}
@@ -792,13 +882,14 @@ export default function RoundNew() {
  {pricePerShareOverridden ? "Use auto" : "Override"}
  </button>
  </div>
+ {step2Errors.pricePerShare && <p className="text-xs text-rose-500 mt-1" data-testid="err-pricePerShare">{step2Errors.pricePerShare}</p>}
  </div>
  )}
  {usesField("sharesAuthorized") && (
- <div><LabelWithTip tip="How many new shares this issuance creates. For a Foundation round, this is your founder allocation. For a warrant or option grant, it's the underlying share count."><Label>Shares authorized</Label></LabelWithTip><FormattedNumberInput className="mt-1 font-mono" value={form.sharesAuthorized} onChange={v => update("sharesAuthorized", v)} data-testid="input-shares" /></div>
+ <div><LabelWithTip tip="How many new shares this issuance creates. For a Foundation round, this is your founder allocation. For a warrant or option grant, it's the underlying share count."><Label>Shares authorized</Label></LabelWithTip><FormattedNumberInput className="mt-1 font-mono" value={form.sharesAuthorized} onChange={v => update("sharesAuthorized", v)} data-testid="input-shares" />{step2Errors.sharesAuthorized && <p className="text-xs text-rose-500 mt-1" data-testid="err-sharesAuthorized">{step2Errors.sharesAuthorized}</p>}</div>
  )}
  {usesField("valuationCap") && (
- <div><LabelWithTip tip="The maximum valuation at which this SAFE/Note converts to shares. Lower cap = more dilution to founders, more upside for the investor. Most early SAFEs use $5M–$15M caps."><Label>Valuation cap (USD)</Label></LabelWithTip><FormattedNumberInput className="mt-1 font-mono" value={form.valuationCap} onChange={v => update("valuationCap", v)} data-testid="input-cap" /></div>
+ <div><LabelWithTip tip="The maximum valuation at which this SAFE/Note converts to shares. Lower cap = more dilution to founders, more upside for the investor. Most early SAFEs use $5M–$15M caps."><Label>Valuation cap (USD)</Label></LabelWithTip><FormattedNumberInput className="mt-1 font-mono" value={form.valuationCap} onChange={v => update("valuationCap", v)} data-testid="input-cap" />{step2Errors.valuationCap && <p className="text-xs text-rose-500 mt-1" data-testid="err-valuationCap">{step2Errors.valuationCap}</p>}</div>
  )}
  {usesField("discount") && (
  <div><LabelWithTip tip="Percentage off the priced-round share price the SAFE/Note investor gets. 20% means they pay $0.80 for what new investors pay $1.00. Standard range is 10–25%."><Label>Discount (%)</Label></LabelWithTip><Input type="number" className="mt-1 font-mono" value={form.discount} onChange={e => update("discount", e.target.value)} data-testid="input-disc" /></div>
@@ -807,7 +898,7 @@ export default function RoundNew() {
  <div><LabelWithTip tip="Annual interest rate on the convertible note. Accrues until conversion. Standard range is 4–8% APR."><Label>Interest rate (% APR)</Label></LabelWithTip><Input type="number" step="0.1" className="mt-1 font-mono" value={form.interestRate} onChange={e => update("interestRate", e.target.value)} data-testid="input-int" /></div>
  )}
  {usesField("maturityMonths") && (
- <div><LabelWithTip tip="Months until the note legally matures. If you haven't priced a round by then, the holder can demand repayment OR force conversion. Standard is 18–24 months."><Label>Maturity (months)</Label></LabelWithTip><Input type="number" className="mt-1 font-mono" value={form.maturityMonths} onChange={e => update("maturityMonths", e.target.value)} data-testid="input-maturity" /></div>
+ <div><LabelWithTip tip="Months until the note legally matures. If you haven't priced a round by then, the holder can demand repayment OR force conversion. Standard is 18–24 months."><Label>Maturity (months)</Label></LabelWithTip><Input type="number" className="mt-1 font-mono" value={form.maturityMonths} onChange={e => update("maturityMonths", e.target.value)} data-testid="input-maturity" />{step2Errors.maturityMonths && <p className="text-xs text-rose-500 mt-1" data-testid="err-maturityMonths">{step2Errors.maturityMonths}</p>}</div>
  )}
  {usesField("mfn") && (
  <div className="flex items-center gap-3 p-3 rounded-md border border-border md:col-span-2">
@@ -841,10 +932,10 @@ export default function RoundNew() {
  </div>
  )}
  {usesField("strikePrice") && (
- <div><LabelWithTip tip="What the warrant holder pays per share to exercise. Typically set at the fair market value at issuance."><Label>Strike price (USD)</Label></LabelWithTip><Input type="number" step="0.01" className="mt-1 font-mono" value={form.strikePrice} onChange={e => update("strikePrice", e.target.value)} data-testid="input-strike" /></div>
+ <div><LabelWithTip tip="What the warrant holder pays per share to exercise. Typically set at the fair market value at issuance."><Label>Strike price (USD)</Label></LabelWithTip><Input type="number" step="0.01" className="mt-1 font-mono" value={form.strikePrice} onChange={e => update("strikePrice", e.target.value)} data-testid="input-strike" />{step2Errors.strikePrice && <p className="text-xs text-rose-500 mt-1" data-testid="err-strikePrice">{step2Errors.strikePrice}</p>}</div>
  )}
  {usesField("expiryYears") && (
- <div><LabelWithTip tip="How long the warrant remains exercisable. Standard is 7–10 years for venture warrants."><Label>Expiry (years)</Label></LabelWithTip><Input type="number" className="mt-1 font-mono" value={form.expiryYears} onChange={e => update("expiryYears", e.target.value)} data-testid="input-expiry" /></div>
+ <div><LabelWithTip tip="How long the warrant remains exercisable. Standard is 7–10 years for venture warrants."><Label>Expiry (years)</Label></LabelWithTip><Input type="number" className="mt-1 font-mono" value={form.expiryYears} onChange={e => update("expiryYears", e.target.value)} data-testid="input-expiry" />{step2Errors.expiryYears && <p className="text-xs text-rose-500 mt-1" data-testid="err-expiryYears">{step2Errors.expiryYears}</p>}</div>
  )}
  {usesField("cashlessAllowed") && (
  <div className="flex items-center gap-3 p-3 rounded-md border border-border md:col-span-2">
@@ -853,7 +944,7 @@ export default function RoundNew() {
  </div>
  )}
  {usesField("poolSize") && (
- <div><LabelWithTip tip="How big the new pool is, as a percentage of fully-diluted shares. VCs typically require 10–15% post-money pool at Series A."><Label>Pool size (% of fully-diluted)</Label></LabelWithTip><Input type="number" step="0.5" className="mt-1 font-mono" value={form.poolSize} onChange={e => update("poolSize", e.target.value)} data-testid="input-pool" /></div>
+ <div><LabelWithTip tip="How big the new pool is, as a percentage of fully-diluted shares. VCs typically require 10–15% post-money pool at Series A."><Label>Pool size (% of fully-diluted)</Label></LabelWithTip><Input type="number" step="0.5" className="mt-1 font-mono" value={form.poolSize} onChange={e => update("poolSize", e.target.value)} data-testid="input-pool" />{step2Errors.poolSize && <p className="text-xs text-rose-500 mt-1" data-testid="err-poolSize">{step2Errors.poolSize}</p>}</div>
  )}
  {usesField("poolTiming") && (
  <div className="md:col-span-2"><LabelWithTip tip="Pre-money pool is created BEFORE the round and dilutes founders only. Post-money is created AFTER the round and dilutes everyone proportionally. VCs almost always require pre-money."><Label>Pool timing</Label></LabelWithTip>
@@ -892,8 +983,8 @@ export default function RoundNew() {
 
  {step === 3 && (
  <div className="grid md:grid-cols-2 gap-5">
- <div><Label>Open date</Label><Input type="date" className="mt-1" value={form.openDate} onChange={e => update("openDate", e.target.value)} data-testid="input-open" /></div>
- <div><Label>Target close date</Label><Input type="date" className={`mt-1 ${dateRangeInvalid ? "border-rose-500 focus-visible:ring-rose-500" : ""}`} value={form.closeDate} onChange={e => update("closeDate", e.target.value)} data-testid="input-close" /></div>
+ <div><Label>Open date</Label><Input type="date" min={new Date(todayMidnight).toISOString().slice(0, 10)} className={`mt-1 ${(openDatePast || openDateMalformed) ? "border-rose-500 focus-visible:ring-rose-500" : ""}`} value={form.openDate} onChange={e => update("openDate", e.target.value)} data-testid="input-open" />{openDateMalformed && <p className="text-xs text-rose-500 mt-1" data-testid="open-date-malformed">Enter a valid date with a 4-digit year.</p>}{!openDateMalformed && openDatePast && <p className="text-xs text-rose-500 mt-1" data-testid="open-date-past">Open date cannot be in the past.</p>}</div>
+ <div><Label>Target close date</Label><Input type="date" min={new Date(todayMidnight).toISOString().slice(0, 10)} className={`mt-1 ${(dateRangeInvalid || closeDatePast || closeDateMalformed) ? "border-rose-500 focus-visible:ring-rose-500" : ""}`} value={form.closeDate} onChange={e => update("closeDate", e.target.value)} data-testid="input-close" />{closeDateMalformed && <p className="text-xs text-rose-500 mt-1" data-testid="close-date-malformed">Enter a valid date with a 4-digit year.</p>}{!closeDateMalformed && closeDatePast && <p className="text-xs text-rose-500 mt-1" data-testid="close-date-past">Target close date cannot be in the past.</p>}</div>
  {dateRangeInvalid && (
  <p className="md:col-span-2 text-xs text-rose-500" data-testid="date-range-error">Target close date must be on or after the open date.</p>
  )}
@@ -1124,9 +1215,9 @@ export default function RoundNew() {
  <div className="flex justify-between pt-3 border-t border-border">
  <Button variant="ghost" onClick={() => setStep(s => Math.max(1, s - 1))} disabled={step === 1} data-testid="button-prev"><ArrowLeft className="h-4 w-4 mr-2" /> Back</Button>
  {step < 5 ? (
- <Button onClick={() => setStep(s => s + 1)} disabled={step === 3 && dateRangeInvalid} className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] text-white" data-testid="button-next">Continue <ArrowRight className="h-4 w-4 ml-2" /></Button>
+ <Button onClick={() => setStep(s => s + 1)} disabled={(step === 2 && !step2Valid) || (step === 3 && scheduleInvalid)} className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] text-white" data-testid="button-next">Continue <ArrowRight className="h-4 w-4 ml-2" /></Button>
  ) : (
- <Button onClick={() => createRoundMut.mutate()} disabled={createRoundMut.isPending || dateRangeInvalid} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-create">{createRoundMut.isPending ? "Creating..." : "Create round"}</Button>
+ <Button onClick={() => createRoundMut.mutate()} disabled={createRoundMut.isPending || scheduleInvalid || !step2Valid} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-create">{createRoundMut.isPending ? "Creating..." : "Create round"}</Button>
  )}
  </div>
  </CardContent>

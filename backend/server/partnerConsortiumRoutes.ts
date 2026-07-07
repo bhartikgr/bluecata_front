@@ -449,13 +449,33 @@ export function registerPartnerConsortiumRoutes(app: Express): void {
   );
 
   /* ==========================================================
-   * C4 — GET /api/partner/me/portfolio
+   * C4 — GET /api/partner/me/sourced-founders
+   *   (v25.52 Track 2.6 / BUG P-1 fix — path moved off
+   *    /api/partner/me/portfolio)
    *
    * Lists companies sourced by this partner via partner_sourced_founders.
-   * Auth: any partner subrole except viewer.
+   * Auth: any partner subrole except viewer. Returns { founders: [...] }.
+   *
+   * PRIOR BUG (P-1): this handler was registered at
+   * "/api/partner/me/portfolio" and, because registerPartnerConsortiumRoutes()
+   * runs BEFORE registerPartnerRoutes() in server/routes.ts (793 vs 801), it
+   * SHADOWED the Private Portfolio LIST handler in server/partnerRoutes.ts
+   * (which returns { portfolio: [...] } from partner_portfolio_company). On
+   * live, a partner's Private Portfolio list therefore rendered BLANK even
+   * though data was saved (the detail endpoint /portfolio/:companyId, owned by
+   * partnerRoutes, still worked — hence the confusing symptom). The two
+   * features are DISTINCT (sourced-founders vs private-portfolio profiles) and
+   * only ever collided on the shared path. Moving this C4 list to its own
+   * "/api/partner/me/sourced-founders" path un-shadows the Private Portfolio
+   * list WITHOUT dropping either feature (Rule #78). No client consumed this
+   * C4 list route (grep: only PartnerPortfolioProfileDialog.tsx uses
+   * /portfolio + /portfolio/:companyId, which are the Private Portfolio
+   * endpoints); the POST /api/partner/me/portfolio/source helper is unchanged
+   * and still lives under partnerRoutes' /portfolio/:companyId sibling space
+   * without colliding (it is a POST, not the GET list).
    * ========================================================== */
   app.get(
-    "/api/partner/me/portfolio",
+    "/api/partner/me/sourced-founders",
     requirePartnerAuth,
     requirePartnerSubrole(["managing_partner", "associate", "bd", "analyst"]),
     (req: Request, res: Response) => {

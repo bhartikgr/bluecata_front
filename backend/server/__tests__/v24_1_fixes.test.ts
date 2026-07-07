@@ -204,6 +204,7 @@ describe("v24.1 — Bug C: round postMoney derivation", () => {
         targetAmount,
         preMoney,
         pricePerShare: 2.0,
+        sharesAuthorized: 1_000_000,
         currency: "USD",
         region: "US",
         // postMoney intentionally omitted

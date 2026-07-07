@@ -27,7 +27,7 @@ const require = createRequire(import.meta.url);
 import type { Express, Request, Response } from "express";
 import * as crypto from "node:crypto";
 import { getUserContextForId, listPersonas, registerPersona, registerFounderUser, verifyPassword } from "./userContext";
-import { setSessionCookie } from "./sessionCookie";
+import { setSessionCookie, extractUserIdFromCookie } from "./sessionCookie";
 /* v25.25.1 emergency fix — static import of JWT_SECRET_MISSING. The v25.25
    shipped version used `await import("./auth")` inside the login handler;
    esbuild emits that as a require(...) call in the CJS bundle, which fails
@@ -58,7 +58,7 @@ import { DEMO_SEED_ENABLED } from "./demoGate";
 // in-memory RUNTIME_PASSWORDS map via registerPersona, so a redeemed password
 // stopped working after a server restart. /api/auth/login falls back to the
 // durable user_credentials store; persist there too for durability.
-import { setPassword as setUserCredential } from "../userCredentialsStore";
+import { setPassword as setUserCredential, lookupByEmail as lookupCredentialByEmail } from "../userCredentialsStore";
 
 /* ---------- email -> persona resolution ---------- */
 // Patch v4: demo-persona email maps only when demo seed is enabled.
@@ -90,9 +90,54 @@ function personaIdFromLogin(body: { email?: string; userId?: string } | null): s
   return null;
 }
 
+/**
+ * BUG N6 — re-invite of an ALREADY-REGISTERED user must NOT force a second
+ * registration/password-set. Resolve whether an invitee email already maps to
+ * a real account so the redeem flow can associate the invitation with the
+ * existing user (login + view-round) instead of minting a new credential.
+ *
+ * Fail-closed: any lookup ERROR is treated as "existing account" so a transient
+ * DB fault can NEVER downgrade a real user into the password-set path (which
+ * would overwrite their credential). Checks, in order:
+ *   1. demo persona map (EMAIL_TO_PERSONA)
+ *   2. auth_users (secure identity table)
+ *   3. user_credentials (durable login store — signups + prior redemptions)
+ * Returns { userId } when a durable id is known, or { userId: null } when the
+ * account exists but no stable id could be resolved (still treated as existing).
+ */
+function resolveExistingAccount(email: string): { exists: boolean; userId: string | null; failClosed?: boolean } {
+  const normalized = (email ?? "").trim().toLowerCase();
+  if (!normalized) return { exists: false, userId: null };
+  // 1. Demo persona map.
+  if (EMAIL_TO_PERSONA[normalized]) return { exists: true, userId: EMAIL_TO_PERSONA[normalized] };
+  // 2. auth_users (secure) — case-insensitive.
+  try {
+    const authRow = rawDb()
+      .prepare("SELECT id FROM auth_users WHERE lower(email) = ?")
+      .get(normalized) as { id: string } | undefined;
+    if (authRow?.id) return { exists: true, userId: authRow.id };
+  } catch (err) {
+    log.warn("[auth/redeem] auth_users existence check failed — failing closed", { error: (err as Error).message });
+    return { exists: true, userId: null, failClosed: true };
+  }
+  // 3. Durable credential store (founder signups + previously-redeemed investors).
+  try {
+    const cred = lookupCredentialByEmail(normalized);
+    if (cred?.userId) return { exists: true, userId: cred.userId };
+  } catch (err) {
+    log.warn("[auth/redeem] user_credentials existence check failed — failing closed", { error: (err as Error).message });
+    return { exists: true, userId: null, failClosed: true };
+  }
+  return { exists: false, userId: null };
+}
+
 export function registerAuthShellRoutes(app: Express, redemption: {
   preview: (token: string) => RedemptionPreview;
-  redeem: (token: string) => RedemptionResult;
+  // v25.53 REVISE B2 — redeem now accepts the resolved user id so the modern
+  // path can associate the accepted invitation with that user
+  // (round_invitations.redeemed_by_user_id). Optional to preserve the legacy
+  // new-account call site, which passes no id (a fresh persona is created there).
+  redeem: (token: string, redeemedByUserId?: string | null) => RedemptionResult;
 }): void {
   // ---------- /api/auth/me ----------
   // Avi 22-May Issue 6 — REMOVED. The richer handler in server/routes.ts
@@ -458,24 +503,103 @@ export function registerAuthShellRoutes(app: Express, redemption: {
       const httpCode = r.reason === "expired" ? 410 : r.reason === "already_redeemed" ? 409 : 404;
       return res.status(httpCode).json({ ok: false, error: r.reason ?? "INVALID_TOKEN" });
     }
-    return res.json({ ok: true, invitation: r.invitation });
+    // BUG N6 — surface whether the invitee already has an account so the client
+    // can offer "sign in to view this round" instead of a password-set form.
+    const existing = resolveExistingAccount(r.invitation.inviteeEmail);
+    return res.json({ ok: true, invitation: r.invitation, existingAccount: existing.exists });
   });
 
   // ---------- /api/auth/redeem ----------
   app.post("/api/auth/redeem", (req: Request, res: Response) => {
     const body = (req.body ?? {}) as { token?: string; password?: string; agreedToTerms?: boolean; inviteeEmail?: string };
     if (!body.token) return res.status(400).json({ ok: false, error: "MISSING_TOKEN" });
-    if (!body.password || body.password.length < 8)
-      return res.status(400).json({ ok: false, error: "WEAK_PASSWORD", message: "Choose a password of at least 8 characters." });
-    if (!body.agreedToTerms)
-      return res.status(400).json({ ok: false, error: "TERMS_NOT_ACCEPTED" });
 
-    // Preview the token first to get inviteeEmail before consuming
+    // BUG N6 — preview the token FIRST (before any password/terms requirement)
+    // so we can tell whether the invitee already has a registered account. A
+    // re-invited existing user must NOT be forced through registration again.
     const preview = redemption.preview(body.token);
     if (!preview.ok) {
       const httpCode = preview.reason === "expired" ? 410 : preview.reason === "already_redeemed" ? 409 : 404;
       return res.status(httpCode).json({ ok: false, error: preview.reason ?? "INVALID_TOKEN" });
     }
+
+    const inviteeEmail = preview.invitation.inviteeEmail;
+    const inviteeName = preview.invitation.inviteeName;
+    const existing = resolveExistingAccount(inviteeEmail);
+
+    // ----- BUG N6 / REVISE B1+B2: existing-account branch -----
+    // An existing investor must NOT be forced to re-register, AND the single-use
+    // token must be consumed exactly once AND associated with the resolved user
+    // (redeemed_by_user_id), then routed to an invitation-authorized surface.
+    if (existing.exists) {
+      // REVISE B1/B2 — REQUIRE AUTHENTICATION BEFORE CONSUMING. If the caller is
+      // not yet authenticated, do NOT consume the token (that path left
+      // redeemed_by_user_id null). Instead tell the client to log in first and
+      // return here with continue=1 to finish redemption as the authenticated
+      // user. We use `returnTo` (the param Login actually honors), NOT `next`.
+      const authedUserId = extractUserIdFromCookie(req);
+      if (!authedUserId) {
+        const returnTo = `/auth/redeem?token=${encodeURIComponent(body.token)}&continue=1`;
+        return res.json({
+          ok: true,
+          existingAccount: true,
+          requiresLogin: true,
+          // Login authenticates with the user's existing password, then bounces
+          // back to /auth/redeem?...&continue=1 which re-POSTs (now authenticated).
+          redirectTo: `/login?portal=investor&returnTo=${encodeURIComponent(returnTo)}`,
+        });
+      }
+      // Authenticated. Associate with the durable account for the invited email
+      // when known; otherwise fall back to the authenticated session user. We
+      // NEVER consume with a null association: if neither id is available (a
+      // fail-closed lookup with no session id — unreachable here since
+      // authedUserId is set), fail closed with 503.
+      const assocUserId = existing.userId ?? authedUserId;
+      if (!assocUserId) {
+        return res.status(503).json({
+          ok: false,
+          error: "ACCOUNT_RESOLUTION_UNAVAILABLE",
+          message: "Could not resolve your account to associate this invitation. Please try again shortly.",
+        });
+      }
+      // Consume the single-use token AND associate it with the resolved user.
+      const r = redemption.redeem(body.token, assocUserId);
+      if (!r.ok) {
+        // REVISE B2 — a lost race surfaces already_redeemed (409), not not_found.
+        const httpCode = r.reason === "persist_failed" ? 500
+          : r.reason === "expired" ? 410
+          : r.reason === "already_redeemed" ? 409
+          : 404;
+        return res.status(httpCode).json({ ok: false, error: r.reason ?? "INVALID_TOKEN" });
+      }
+      // Deliberately DO NOT set/overwrite any credential and DO NOT mint a new
+      // session — the user is already authenticated with their existing account.
+      // REVISE B2 — route to an INVITATION-authorized surface, NOT the
+      // cap-table-entitlement-gated /investor/companies/:id (an invited-only
+      // existing investor has no cap-table position yet).
+      const invitePath = `/investor/invitations/${r.invitationId}`;
+      log.info("[auth/redeem] existing account re-invite accepted + associated", {
+        email: inviteeEmail.replace(/.+@/, "***@"),
+        invitationId: r.invitationId,
+        roundId: r.roundId,
+        associatedUserId: assocUserId,
+        failClosed: existing.failClosed === true,
+      });
+      return res.json({
+        ok: true,
+        existingAccount: true,
+        invitationId: r.invitationId,
+        roundId: r.roundId,
+        companyId: r.companyId,
+        redirectTo: invitePath,
+      });
+    }
+
+    // ----- New-account branch (registration + password set, unchanged) -----
+    if (!body.password || body.password.length < 8)
+      return res.status(400).json({ ok: false, error: "WEAK_PASSWORD", message: "Choose a password of at least 8 characters." });
+    if (!body.agreedToTerms)
+      return res.status(400).json({ ok: false, error: "TERMS_NOT_ACCEPTED" });
 
     const r = redemption.redeem(body.token);
     if (!r.ok) {
@@ -491,8 +615,7 @@ export function registerAuthShellRoutes(app: Express, redemption: {
 
     // Defect 12 + 15 + 83: create or look up real persona seeded from inviteeEmail.
     // This ensures the redeemed investor gets their own identity, not u_no_position.
-    const inviteeEmail = preview.invitation.inviteeEmail;
-    const inviteeName = preview.invitation.inviteeName;
+    // (inviteeEmail / inviteeName resolved above from the preview.)
     const personaId = registerPersona({
       email: inviteeEmail,
       name: inviteeName,

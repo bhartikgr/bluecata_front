@@ -31,6 +31,7 @@ import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 import { seedDemoData } from "./lib/seedDemoData";
 import { getDb } from "./db/connection";
 import { log as structuredLog } from "./lib/logger";
+import { getAirwallexMode } from "./lib/paymentGatewayResolver"; // v25.52 Track 4.4 — Airwallex fail-closed boot guard (static ESM import; no runtime require shim)
 
 const app = express();
 const httpServer = createServer(app);
@@ -269,6 +270,47 @@ app.use((req, res, next) => {
     }
   }
 
+  // v25.52 Avi-BUG-1 — SMTP configuration boot guard.
+  // Root cause of "investor gets no invite email": emailTransport defaults to
+  // `console` mode when SMTP_MODE is unset (or SMTP_HOST is missing while
+  // SMTP_MODE=smtp), so on a production server with no SMTP env the invite is
+  // only logged to stdout and never delivered — yet the invitation response
+  // reports emailSent:true. We surface this loudly at boot:
+  //   • If SMTP_MODE=smtp but host/user/pass are incomplete → HARD FAIL in
+  //     production (the operator clearly intended real email; booting the
+  //     silent console fallback would keep dropping every invite).
+  //   • If SMTP is not configured at all in production → loud WARNING so the
+  //     operator knows invites will NOT be delivered until SMTP env is set.
+  if (process.env.NODE_ENV === "production") {
+    const smtpMode = (process.env.SMTP_MODE ?? "").toLowerCase();
+    const host = process.env.SMTP_HOST ?? "";
+    const user = process.env.SMTP_USER ?? "";
+    const pass = process.env.SMTP_PASS ?? "";
+    if (smtpMode === "smtp") {
+      const missing: string[] = [];
+      if (!host) missing.push("SMTP_HOST");
+      if (!user) missing.push("SMTP_USER");
+      if (!pass) missing.push("SMTP_PASS");
+      if (missing.length > 0) {
+        structuredLog.error(
+          "[boot] SMTP_MODE=smtp but missing: " + missing.join(", ") +
+            ". Real email delivery is impossible with this config; the transport would " +
+            "silently fall back to console mode and every invitation email would be " +
+            "dropped while reporting success. Set the missing SMTP_* vars in .env, then " +
+            "restart. Aborting boot.",
+        );
+        process.exit(1);
+      }
+    } else {
+      structuredLog.warn(
+        "[boot] WARNING: SMTP is NOT configured for real delivery (SMTP_MODE=" +
+          (smtpMode || "unset") + "). Investor invitation emails will NOT be delivered " +
+          "(they are only logged). To send real invites, set SMTP_MODE=smtp plus " +
+          "SMTP_HOST / SMTP_USER / SMTP_PASS in .env, then restart.",
+      );
+    }
+  }
+
   // v25.32 Item 9 — fail fast on missing PUBLIC_BASE_URL in production.
   // Partner-promotion invite URLs default to `https://capavate.com` when
   // PUBLIC_BASE_URL is unset (server/partnerRoutes.ts). In production that
@@ -285,6 +327,53 @@ app.use((req, res, next) => {
       );
       process.exit(1);
     }
+  }
+
+  // v25.52 Track 4.4 (Ozan-approved) — Airwallex FAIL-CLOSED money boot guard.
+  // Root cause of the fail-OPEN money risk: getAirwallexMode() (server/lib/
+  // paymentGatewayResolver.ts) silently resolves to "stub" when (a) AIRWALLEX_MODE
+  // is unset/unrecognised, or (b) AIRWALLEX_MODE=live is requested but no
+  // AIRWALLEX_API_KEY is present. In stub mode every payment call returns a
+  // DETERMINISTIC FAKE SUCCESS (int_stub_* / ref_stub_*) without touching
+  // Airwallex — so a MISCONFIGURED PRODUCTION server would accept real money
+  // flows and report success while charging nothing. Per Ozan ("fail-closed on
+  // money") and the Airwallex-committed decision, production MUST run against a
+  // real Airwallex network (test|live) with credentials. We refuse to boot the
+  // fake-success path in production:
+  //   • AIRWALLEX_MODE=live requested but AIRWALLEX_API_KEY missing → HARD FAIL
+  //     (the operator intended live; degrading to stub silently would fake it).
+  //   • resolved mode === "stub" in production (mode unset/unrecognised, or
+  //     otherwise not opted into a real network) → HARD FAIL.
+  // No NEW env var is introduced — AIRWALLEX_MODE / AIRWALLEX_API_KEY already
+  // exist. Dev/sandbox is unaffected (guard is production-only); stub remains the
+  // safe hermetic default OUTSIDE production.
+  if (process.env.NODE_ENV === "production") {
+    const requestedMode = (process.env.AIRWALLEX_MODE ?? "").trim().toLowerCase();
+    const hasKey = Boolean((process.env.AIRWALLEX_API_KEY ?? "").trim());
+    const resolvedMode = getAirwallexMode();
+    if (requestedMode === "live" && !hasKey) {
+      structuredLog.error(
+        "[boot] AIRWALLEX_MODE=live but AIRWALLEX_API_KEY is missing. The gateway " +
+          "would SILENTLY fall back to stub mode and return FAKE payment successes " +
+          "for real money flows. Set AIRWALLEX_API_KEY (and AIRWALLEX_CLIENT_ID / " +
+          "AIRWALLEX_WEBHOOK_SECRET) in .env, then restart. Aborting boot (fail-closed on money).",
+      );
+      process.exit(1);
+    }
+    if (resolvedMode === "stub") {
+      structuredLog.error(
+        "[boot] Airwallex resolves to STUB mode in production (AIRWALLEX_MODE=" +
+          (requestedMode || "unset") + "). Stub mode returns DETERMINISTIC FAKE " +
+          "payment successes without contacting Airwallex — shipping it to production " +
+          "is a fail-open money risk. Set AIRWALLEX_MODE=live (with AIRWALLEX_API_KEY) " +
+          "for production, or AIRWALLEX_MODE=test for the Airwallex demo network, then " +
+          "restart. Aborting boot (fail-closed on money).",
+      );
+      process.exit(1);
+    }
+    structuredLog.info(
+      "[boot] Airwallex boot guard passed — production payment mode = " + resolvedMode + " (real network).",
+    );
   }
 
   // importantly only setup vite in development and after

@@ -46,7 +46,65 @@ import { getUserContextForId } from "./lib/userContext";
 import { appendAdminAudit } from "./adminPlatformStore"; /* v25.19 Lane 4 NC2 — immutable cross-product approval audit */
 import { lookupByUserId, lookupByEmail } from "./userCredentialsStore"; // v23.8 W-14 member enrichment; v24.4 bootstrap
 import { upsertDirectoryListing, removeDirectoryListing } from "./collectiveInterestStore"; /* v25.0 Track 2 B3 */
+import { joinChapter } from "./chaptersStore"; /* v25.52 Track 3.0 C-1 — place approved member into a chapter */
+import { DEFAULT_CHAPTER_ID } from "./lib/chapterDefaults"; /* v25.52 Track 3.0 C-1/C-2 */
+import { listChaptersForUser } from "./chaptersStore"; /* v25.52 Track 3.0 — reuse existing membership if any */
 import { log } from "./lib/logger"; // v25.35 — fail-closed error logging
+
+/**
+ * v25.52 Track 3.0 C-1 + C-2 helper (extracted for retry-idempotency).
+ *
+ * GPT-5.5 review BLOCKER: the approve handler sets application status="accepted"
+ * BEFORE placing the member in a chapter, and re-approve short-circuits on
+ * status==="accepted". So if chapter placement failed on the FIRST approve, a
+ * retry would return success without ever re-running joinChapter, leaving the
+ * member permanently chapter-less. Fix: run this idempotent placement on BOTH
+ * the normal approve path AND the idempotent-replay path, so a retry always
+ * (re-)ensures chapter membership + a chapter-stamped directory listing.
+ *
+ * Both joinChapter (unique (chapter_id,user_id) index) and upsertDirectoryListing
+ * (upsert by company_id) are idempotent, so calling this repeatedly is safe.
+ * Returns null on success, or an error string when the fail-closed chapter join
+ * did not persist (caller surfaces a 500 so the member is never silently left
+ * out of a chapter).
+ */
+async function ensureChapterPlacementAndListing(
+  userId: string,
+  companyId: string | null | undefined,
+  applicationId: string,
+): Promise<string | null> {
+  let resolvedChapterId = DEFAULT_CHAPTER_ID;
+  try {
+    const existing = listChaptersForUser(userId).filter(
+      (m: any) => m.membershipStatus === "active",
+    );
+    const pick = existing.find((m: any) => m.id === DEFAULT_CHAPTER_ID) ?? existing[0];
+    if (pick?.id) resolvedChapterId = pick.id;
+  } catch (err) {
+    log.warn("[adminCollectiveRoutes.ensureChapterPlacement] chapter resolve failed, using default:", (err as Error).message);
+  }
+  // C-1: fail-closed — the member MUST be placed in a chapter, or the whole
+  // member experience stays blocked. joinChapter is idempotent (no-op if the
+  // active membership already exists), so retries are safe.
+  try {
+    await joinChapter({ userId, chapterId: resolvedChapterId, role: "member" });
+  } catch (err) {
+    log.error("[adminCollectiveRoutes.ensureChapterPlacement] joinChapter failed:", (err as Error).message);
+    return "CHAPTER_JOIN_FAILED";
+  }
+  // C-2: stamp the resolved chapter on the directory listing so members in that
+  // chapter can see the company. Only applies when the application carries a
+  // company (founder Path B); investor-side legacy apps have no company and
+  // therefore no directory listing. Idempotent upsert; non-fatal on failure.
+  if (companyId) {
+    try {
+      upsertDirectoryListing(companyId, applicationId, {
+        stage: undefined, sector: undefined, chapter: resolvedChapterId,
+      });
+    } catch { /* non-fatal */ }
+  }
+  return null;
+}
 
 export function registerAdminCollectiveRoutes(app: Express): void {
   /**
@@ -282,7 +340,7 @@ export function registerAdminCollectiveRoutes(app: Express): void {
     return res.json({ ok: true, membership });
   });
 
-  app.post("/api/admin/collective/applications/:id/approve", requireAdmin, (req: AugReq, res: Response) => {
+  app.post("/api/admin/collective/applications/:id/approve", requireAdmin, async (req: AugReq, res: Response) => {
     const id = String(req.params.id);
     const adminUserId = req.userContext?.userId ?? "";
     if (!adminUserId) return res.status(401).json({ error: "missing_identity" });
@@ -293,7 +351,33 @@ export function registerAdminCollectiveRoutes(app: Express): void {
       // v25.47 APD-034 (HIGH-2) — terminal-state idempotency. Re-approving an
       // already-accepted application is a no-op success: do NOT re-activate the
       // membership or re-emit the approval notification/audit.
+      // v25.52 Track 3.0 (GPT-5.5 review fix) — the legacy investor-side approval
+      // path ALSO never called joinChapter (C-1), so legacy-approved members were
+      // left chapter-less. Re-ensure chapter placement here (idempotent) on the
+      // replay path too, so both fresh and retried legacy approvals place the
+      // member in a chapter. Legacy apps have no company → no directory listing.
       if (legacyApp.status === "accepted") {
+        // v25.52 Track 3.0 (GPT-5.5 review fix, MAJOR) — re-ensure membership
+        // activation on replay too (a prior approve may have set status but
+        // failed to activate). activate is idempotent. Fail-closed.
+        try {
+          collectiveMembershipStore.activate(legacyApp.userId, adminUserId);
+          // v25.52 (GPT-5.5 review): strict persist — the /api/auth/me collective
+          // overlay depends on this; a swallowed persist failure would leave it
+          // RAM-only. Let a strict-persist failure bubble to the 500 below.
+          upsertActiveMembership(legacyApp.userId, { strict: true });
+        } catch (err) {
+          log.error("[adminCollectiveRoutes.approve.legacy.replay] membership re-activate failed:", (err as Error).message);
+          return res.status(500).json({ ok: false, error: "MEMBERSHIP_PERSIST_FAILED", message: "Membership did not persist; please retry." });
+        }
+        const placeErr = await ensureChapterPlacementAndListing(legacyApp.userId, null, id);
+        if (placeErr) {
+          return res.status(500).json({
+            ok: false,
+            error: placeErr,
+            message: "Membership accepted but chapter placement failed; please retry.",
+          });
+        }
         return res.json({ ok: true, application: legacyApp, idempotent: true });
       }
       // Legacy path: investor-side application — userId is legacyApp.userId
@@ -320,7 +404,26 @@ export function registerAdminCollectiveRoutes(app: Express): void {
         log.error("[adminCollectiveRoutes.approve.legacy] membership activate failed:", (err as Error).message);
         return res.status(500).json({ ok: false, error: "MEMBERSHIP_PERSIST_FAILED", message: "Application accepted but membership did not persist; please retry." });
       }
-      try { upsertActiveMembership(legacyApp.userId); } catch { /* non-fatal */ }
+      // v25.52 (GPT-5.5 review): strict persist so the /api/auth/me collective
+      // overlay is durable, not RAM-only. Fail-closed with 500.
+      try { upsertActiveMembership(legacyApp.userId, { strict: true }); }
+      catch (err) {
+        log.error("[adminCollectiveRoutes.approve.legacy] overlay persist failed:", (err as Error).message);
+        return res.status(500).json({ ok: false, error: "MEMBERSHIP_PERSIST_FAILED", message: "Membership overlay did not persist; please retry." });
+      }
+      // v25.52 Track 3.0 C-1 (GPT-5.5 review fix) — place the legacy-approved
+      // member into a chapter (fail-closed), same as the modern path. No
+      // company on legacy investor apps, so no directory listing.
+      {
+        const placeErr = await ensureChapterPlacementAndListing(legacyApp.userId, null, id);
+        if (placeErr) {
+          return res.status(500).json({
+            ok: false,
+            error: placeErr,
+            message: "Membership activated but chapter placement failed; please retry.",
+          });
+        }
+      }
       try {
         emitBridgeEvent({
           eventType: "collective.member.updated",
@@ -359,7 +462,35 @@ export function registerAdminCollectiveRoutes(app: Express): void {
       return res.status(404).json({ ok: false, error: "APPLICATION_NOT_FOUND" });
     }
     // v25.47 APD-034 (HIGH-2) — terminal-state idempotency (modern path mirror).
+    // v25.52 Track 3.0 (GPT-5.5 review fix) — before returning the idempotent
+    // response, RE-ENSURE chapter placement + directory stamp. A prior approve
+    // may have set status="accepted" but then FAILED at chapter placement (or
+    // predates the C-1/C-2 fix entirely); without this, the short-circuit would
+    // return success while the member stays chapter-less. Both operations are
+    // idempotent, so this is a safe no-op when placement already succeeded.
     if (modernApp.status === "accepted") {
+      // v25.52 Track 3.0 (GPT-5.5 review fix, MAJOR) — a prior approve may have
+      // persisted status="accepted" but then FAILED at membership.activate(),
+      // leaving the member with no active collective membership. Re-ensure it
+      // here before returning success (activate is idempotent). Fail-closed.
+      try {
+        collectiveMembershipStore.activate(modernApp.founderId, adminUserId);
+        // v25.52 (GPT-5.5 review): strict persist — see legacy replay note above.
+        upsertActiveMembership(modernApp.founderId, { strict: true });
+      } catch (err) {
+        log.error("[adminCollectiveRoutes.approve.modern.replay] membership re-activate failed:", (err as Error).message);
+        return res.status(500).json({ ok: false, error: "MEMBERSHIP_PERSIST_FAILED", message: "Membership did not persist; please retry." });
+      }
+      const placeErr = await ensureChapterPlacementAndListing(
+        modernApp.founderId, modernApp.companyId, id,
+      );
+      if (placeErr) {
+        return res.status(500).json({
+          ok: false,
+          error: placeErr,
+          message: "Membership accepted but chapter placement failed; please retry.",
+        });
+      }
       return res.json({ ok: true, application: modernApp, idempotent: true });
     }
     // v23.8 W-21: use "accepted" (not "invited") so the status matches the
@@ -387,13 +518,30 @@ export function registerAdminCollectiveRoutes(app: Express): void {
       log.error("[adminCollectiveRoutes.approve.modern] membership activate failed:", (err as Error).message);
       return res.status(500).json({ ok: false, error: "MEMBERSHIP_PERSIST_FAILED", message: "Application accepted but membership did not persist; please retry." });
     }
-    try { upsertActiveMembership(userId); } catch { /* non-fatal */ }
-    // v25.0 Track 2 B3 — Auto-enroll the founder's company into the directory.
-    try {
-      upsertDirectoryListing(modernApp.companyId, id, {
-        stage: undefined, sector: undefined, chapter: undefined,
+    // v25.52 (GPT-5.5 review): strict persist so the /api/auth/me collective
+    // overlay is durable, not RAM-only. Fail-closed with 500.
+    try { upsertActiveMembership(userId, { strict: true }); }
+    catch (err) {
+      log.error("[adminCollectiveRoutes.approve.modern] overlay persist failed:", (err as Error).message);
+      return res.status(500).json({ ok: false, error: "MEMBERSHIP_PERSIST_FAILED", message: "Membership overlay did not persist; please retry." });
+    }
+
+    /* v25.52 Track 3.0 C-1 + C-2 (Collective member-access HOTFIX).
+     * Place the approved member into a chapter (C-1) and stamp the directory
+     * listing with that chapter (C-2). Extracted into a shared idempotent helper
+     * so the idempotent-replay path above re-ensures placement on retry (GPT-5.5
+     * review fix). Fail-closed: a chapter-join failure surfaces a 500 (the
+     * member must never be left chapter-less, which blocks the entire Collective
+     * experience). membership.activate already persisted, so the retry is safe.
+     */
+    const placeErr = await ensureChapterPlacementAndListing(userId, modernApp.companyId, id);
+    if (placeErr) {
+      return res.status(500).json({
+        ok: false,
+        error: placeErr,
+        message: "Membership activated but chapter placement failed; please retry.",
       });
-    } catch { /* non-fatal */ }
+    }
     try {
       emitBridgeEvent({
         eventType: "collective.member.updated",

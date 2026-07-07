@@ -159,23 +159,27 @@ export function registerPromotionModerationRoutes(app: Express): void {
   const chapterAdminGate = requireChapterAdminFromRequest(getChapterIdFromRequest);
 
   /* ---------- Queue ---------- */
-  app.get(
-    "/api/admin/partner/promotions/queue",
-    requireAuth,
-    chapterAdminGate,
-    (req: Request, res: Response): void => {
-      const statusFilter = (req.query.status as string | undefined) ?? "pending";
-      let rows = partnerDealPromotionsStore.listPendingModeration();
-      if (statusFilter && statusFilter !== "all") {
-        rows = rows.filter((r) => r.moderationStatus === statusFilter);
-      }
-      // Sort newest-first by promotedAt for queue display.
-      rows = rows
-        .slice()
-        .sort((a, b) => (a.promotedAt < b.promotedAt ? 1 : -1));
-      res.json({ rows, total: rows.length });
-    },
-  );
+  // v25.52 Track 3.1 / BUG C-7 — the canonical list route is `/queue` (the
+  // client already calls it correctly). The bare `/api/admin/partner/promotions`
+  // path previously 404'd, which looked like "admin can approve promotions it
+  // can't list" when probed. We register a shared handler on BOTH the canonical
+  // `/queue` path AND the bare path (additive alias) so the bare path returns
+  // the same queue instead of a confusing 404. No behavior change for the
+  // existing `/queue` consumer; approve/reject/get-single are unchanged.
+  const promotionsQueueHandler = (req: Request, res: Response): void => {
+    const statusFilter = (req.query.status as string | undefined) ?? "pending";
+    let rows = partnerDealPromotionsStore.listPendingModeration();
+    if (statusFilter && statusFilter !== "all") {
+      rows = rows.filter((r) => r.moderationStatus === statusFilter);
+    }
+    // Sort newest-first by promotedAt for queue display.
+    rows = rows
+      .slice()
+      .sort((a, b) => (a.promotedAt < b.promotedAt ? 1 : -1));
+    res.json({ rows, total: rows.length });
+  };
+  app.get("/api/admin/partner/promotions/queue", requireAuth, chapterAdminGate, promotionsQueueHandler);
+  app.get("/api/admin/partner/promotions", requireAuth, chapterAdminGate, promotionsQueueHandler);
 
   /* ---------- Get single ---------- */
   app.get(

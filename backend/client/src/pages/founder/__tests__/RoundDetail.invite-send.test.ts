@@ -38,8 +38,11 @@ describe("v23.4.12 B-303 — button-send-invite mutation wiring", () => {
   });
 
   it("button-send-invite is disabled while mutation is pending", () => {
-    // The button must reflect inflight state to prevent double-submit
-    expect(SRC).toMatch(/disabled=\{sendInviteMut\.isPending\}/);
+    // The button must reflect inflight state to prevent double-submit.
+    // v25.53 7a — the disabled expression now ALSO gates on the mandatory
+    // First/Last/Email fields, so match the isPending prefix rather than an
+    // exact closing brace.
+    expect(SRC).toMatch(/disabled=\{sendInviteMut\.isPending/);
   });
 
   it("button-send-invite does NOT fire a local emit-only handler without mutate", () => {
@@ -54,8 +57,10 @@ describe("v23.4.12 B-303 — button-send-invite mutation wiring", () => {
     const testidIdx = SRC.indexOf('data-testid="button-send-invite"');
     expect(testidIdx).toBeGreaterThan(-1);
 
-    // 200 chars before the testid — must contain mutate(), not an inline emit({
-    const beforeTestid = SRC.slice(Math.max(0, testidIdx - 200), testidIdx);
+    // Window before the testid — must contain mutate(), not an inline emit({.
+    // v25.53 7a widened the disabled expression (required-field gate), so the
+    // onClick→testid span is longer; use a 500-char window.
+    const beforeTestid = SRC.slice(Math.max(0, testidIdx - 500), testidIdx);
     expect(beforeTestid).toContain("sendInviteMut.mutate()");
     expect(beforeTestid).not.toMatch(/emit\(\{[^}]*invitation\.created/);
   });
@@ -75,8 +80,10 @@ describe("v23.4.12 B-303 — button-send-invite mutation wiring", () => {
   });
 
   it("mutation payload includes investorName, investorEmail, and note", () => {
-    // Ensure all form fields are forwarded to the API
-    expect(SRC).toContain("investorName: inviteName");
+    // Ensure all form fields are forwarded to the API. v25.53 7a composes the
+    // display name from the mandatory First/Last inputs (investorName:
+    // composedInviteName) while still forwarding email + note.
+    expect(SRC).toMatch(/investorName: (?:inviteName|composedInviteName)/);
     expect(SRC).toContain("investorEmail: inviteEmail");
     expect(SRC).toContain("note: inviteNote");
   });

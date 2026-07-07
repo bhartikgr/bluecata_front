@@ -119,6 +119,27 @@ export function seedInvestorCrmFromInvitation(input: InvestorCrmSeedInput): stri
       .get(input.investorId, input.companyId) as { id?: string } | undefined;
     if (existing?.id) return null;
 
+    // v25.52 Track 3.5.2 (GPT-5.5 R5 blocker) — AUTHORITATIVE email dedup. 0097
+    // leaves investor shared-inbox conflict groups live + dedup_exempt=1, and
+    // 0098's partial UNIQUE index EXCLUDES exempt rows, so a new invitation seed
+    // whose founderEmail matches an exempt group (even under a different
+    // company_id) would slip past both the (investor_id, company_id) check above
+    // and the index. Reject on ANY live row (exempt or not) with the same
+    // (investor_id, lower(trim(email))). Non-fatal + FAIL CLOSED: on a match OR
+    // if the check cannot run we return null (skip the seed) rather than reopen a
+    // duplicate — a redeem must never create a second same-email contact.
+    const seedEmail = (input.founderEmail ?? "").trim();
+    if (seedEmail) {
+      const emailDup = db
+        .prepare(
+          `SELECT id FROM investor_crm_contacts
+             WHERE investor_id = ? AND lower(trim(email)) = lower(trim(?))
+               AND deleted_at IS NULL LIMIT 1`,
+        )
+        .get(input.investorId, seedEmail) as { id?: string } | undefined;
+      if (emailDup?.id) return null;
+    }
+
     const id = `icrm_${randomBytes(8).toString("hex")}`;
     const now = new Date().toISOString();
     const tenantId = input.tenantId ?? DEFAULT_CHAPTER_TENANT_ID;

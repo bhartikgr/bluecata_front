@@ -131,7 +131,7 @@ describe("v15 P0-4..P0-8: invitation flow", () => {
   it("CRM classification — known CRM email is tagged in_crm", async () => {
     // Maya's CRM has 'aisha@forge.vc' (founderCrmStore demo seed).
     const r = await call("POST", `/api/rounds/${ROUND_ID}/invitations`, {
-      body: { investorEmail: "aisha@forge.vc", investorName: "Aisha" },
+      body: { investorEmail: "aisha@forge.vc", investorName: "Aisha Patel" },
       userId: "u_maya_chen",
     });
     expect(r.status).toBe(200);

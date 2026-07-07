@@ -170,7 +170,14 @@ export async function joinChapter(opts: {
   }
 
   // NOTE: Drizzle invokes the transaction callback itself. NO trailing `()`.
-  return await db.transaction(async (tx: any) => {
+  // v25.52 Track 3.0 C-1 fix — better-sqlite3's db.transaction() callback MUST
+  // be SYNCHRONOUS: it throws "Transaction function cannot return a promise" if
+  // the callback is async. This function was never called by any route before
+  // v25.52 (that was C-1 itself), so the latent async-callback bug was never
+  // exercised. The body below is already fully synchronous (all .all()/.run()),
+  // so we simply drop the `async` on the callback (and the outer `await`). The
+  // enclosing joinChapter() stays async so its Promise signature is unchanged.
+  return db.transaction((tx: any) => {
     // CROSS-TENANT (admin) — justified because chapter_memberships keys
     // on user_id across all chapter tenants; we're upserting per
     // (chapter_id, user_id), not per tenant.

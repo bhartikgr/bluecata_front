@@ -18,7 +18,7 @@
  *
  * SANDBOX-SAFE: no Web Storage APIs.
  */
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { Link, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
@@ -32,6 +32,10 @@ import { useRole } from "@/lib/role";
 
 type Preview = {
   ok: true;
+  // BUG N6 — true when the invitee email already maps to a registered account.
+  // Existing users must NOT be forced through registration/password-set again;
+  // they sign in and land on the round instead.
+  existingAccount?: boolean;
   invitation: {
     /* v25.48.3 Q-J1 — team invitations reuse this envelope with kind:"team".
      * Investor/round invitations omit `kind` (treated as "investor"). */
@@ -71,6 +75,15 @@ export default function Redeem() {
   const [manualToken, setManualToken] = useState("");
   const [manualTokenSubmitted, setManualTokenSubmitted] = useState(false);
   const token = manualTokenSubmitted && manualToken.trim() ? manualToken.trim() : urlToken;
+  // v25.53 REVISE B1 — `continue=1` marks the return trip AFTER the existing
+  // investor has authenticated via login (returnTo brought them back here). On
+  // that trip we auto-POST the require-auth redeem so the single-use token is
+  // consumed and associated with the now-authenticated user.
+  const continueFlag = useMemo(() => {
+    if (typeof window === "undefined") return false;
+    return new URLSearchParams(window.location.search).get("continue") === "1";
+  }, []);
+  const [autoFired, setAutoFired] = useState(false);
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [agreed, setAgreed] = useState(false);
@@ -140,6 +153,53 @@ export default function Redeem() {
     }
   }
 
+  // v25.53 REVISE B1 — existing-account token-consumption flow. This is the
+  // authenticated, end-to-end path: POST the require-auth redeem endpoint. When
+  // the caller is not yet authenticated the server responds { requiresLogin,
+  // redirectTo:/login?...&returnTo=/auth/redeem?...&continue=1 } and we bounce to
+  // login (which honors `returnTo`, NOT `next`); after authentication login
+  // returns here with continue=1 and we auto-fire this again — now authenticated,
+  // so the server consumes the single-use token, associates it with the user, and
+  // returns the invitation-authorized surface (/investor/invitations/:id).
+  async function redeemExisting() {
+    setSubmitErr(null);
+    setSubmitting(true);
+    try {
+      const res = await apiRequest("POST", "/api/auth/redeem", { token, continue: true });
+      const json = await res.json() as { ok: true; requiresLogin?: boolean; redirectTo: string };
+      if (json.requiresLogin) {
+        // Not authenticated yet — go authenticate, then return to finish (continue=1).
+        navigate(json.redirectTo);
+        return;
+      }
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
+      setRole("investor");
+      toast({ title: "Invitation accepted", description: "Taking you to the invitation…" });
+      navigate(json.redirectTo);
+    } catch (err: any) {
+      const msg = String(err?.message ?? "");
+      if (msg.includes("409")) setSubmitErr("This invitation has already been redeemed.");
+      else if (msg.includes("410")) setSubmitErr("This invitation has expired.");
+      else if (msg.includes("503")) setSubmitErr("We couldn't confirm your account just now. Please try again.");
+      else setSubmitErr("We couldn't complete this invitation.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  // v25.53 REVISE B1 — on the post-login return trip (continue=1) auto-consume
+  // the token for the existing, now-authenticated investor. Fires exactly once.
+  useEffect(() => {
+    if (autoFired) return;
+    const d = previewQ.data;
+    if (d?.existingAccount && d.invitation.kind !== "team" && continueFlag) {
+      setAutoFired(true);
+      void redeemExisting();
+    }
+    // redeemExisting is stable (hoisted); intentionally excluded from deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewQ.data, continueFlag, autoFired]);
+
   if (errorState) {
     return (
       <AuthShell title={errorState.title} subtitle="Investor invitation">
@@ -200,6 +260,55 @@ export default function Redeem() {
   }
 
   const inv = previewQ.data!.invitation;
+  const existingAccount = previewQ.data!.existingAccount === true;
+
+  // BUG N6 — the invitee already has a Capavate account. Do NOT show the
+  // password-set form (which would force a second registration). Route them to
+  // sign in; after login they land straight on the round.
+  if (existingAccount && inv.kind !== "team") {
+    return (
+      <AuthShell
+        title="You've been invited to view a round on Capavate"
+        subtitle="You already have an account — sign in to accept this invitation."
+      >
+        <div className="rounded-md border border-black/10 bg-muted/30 p-4 text-sm" data-testid="redeem-context">
+          <Row label="Company" value={inv.companyName} testId="row-company" />
+          <Row label="Round" value={inv.roundLabel ?? "Open round"} testId="row-round" />
+          <Row label="Invited by" value={inv.founderName ?? "Founder"} testId="row-founder" />
+          <Row label="Expires" value={`in ${daysUntil(inv.expiresAt)} days`} testId="row-expires" />
+        </div>
+        <div className="mt-4">
+          <Label htmlFor="email">Email</Label>
+          <Input id="email" value={inv.inviteeEmail} disabled data-testid="input-email-locked" />
+          <p className="mt-1 text-xs text-muted-foreground">This email is already registered — sign in with your existing password.</p>
+        </div>
+        {submitErr && (
+          <div className="mt-4 text-sm text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2" data-testid="text-redeem-submit-error">
+            {submitErr}
+          </div>
+        )}
+        {continueFlag ? (
+          // Post-login return trip — the token is being consumed automatically.
+          <p className="mt-6 text-sm text-muted-foreground" data-testid="text-redeem-finishing">
+            Finishing your sign-in and accepting the invitation…
+          </p>
+        ) : (
+          // First visit — POST the require-auth redeem. Because we are not yet
+          // authenticated the server responds requiresLogin and we bounce to
+          // login (returnTo), then return here with continue=1 to finish.
+          <Button
+            type="button"
+            onClick={() => redeemExisting()}
+            disabled={submitting}
+            className="mt-6 w-full rounded-full font-semibold"
+            data-testid="button-redeem-existing-signin"
+          >
+            {submitting ? "Redirecting…" : "Sign in to view this round"}
+          </Button>
+        )}
+      </AuthShell>
+    );
+  }
 
   return (
     <AuthShell
