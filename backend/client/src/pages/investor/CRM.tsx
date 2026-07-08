@@ -91,7 +91,7 @@ export const INVESTOR_STAGES: Array<{ key: InvestorCrmStage; label: string; tone
   { key: "following",   label: "Following",    tone: "bg-violet-100 text-violet-700" },
   { key: "backed",      label: "Backed",       tone: "bg-emerald-100 text-emerald-700" },
   { key: "co_invested", label: "Co-invested",  tone: "bg-cyan-100 text-cyan-700" },
-  { key: "closed_no",   label: "Closed-no",    tone: "bg-zinc-200 text-zinc-600" },
+  { key: "closed_no",   label: "Closed – Not pursuing", tone: "bg-zinc-200 text-zinc-600" },
 ];
 
 const STAGE_MAP = Object.fromEntries(INVESTOR_STAGES.map((s) => [s.key, s])) as Record<InvestorCrmStage, typeof INVESTOR_STAGES[0]>;

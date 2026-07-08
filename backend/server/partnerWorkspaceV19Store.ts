@@ -52,6 +52,7 @@ import { z } from "zod";
 
 import { requireAuth } from "./lib/authMiddleware";
 import { requirePartnerAuth, assertSubRole } from "./lib/requirePartnerAuth"; /* v25.14 NL5 */
+import { requireSignedAgreement } from "./lib/requireSignedAgreement"; /* W2-I override — fail-closed sign gate on partner writes */
 import { partnerTeamStore } from "./partnerWorkspaceStore";
 import { getDb, rawDb } from "./db/connection";
 import {
@@ -588,7 +589,7 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
   // v25.14 NL5 — was missing the assertSubRole gate. Restrict portfolio
   // creation to roles allowed to record investments (managing_partner /
   // associate / bd). Viewers and analysts are now correctly 403'd.
-  app.post("/api/partner/portfolio", requirePartnerAuth, assertSubRole("managing_partner", "associate", "bd"), (req, res) => {
+  app.post("/api/partner/portfolio", requirePartnerAuth, assertSubRole("managing_partner", "associate", "bd"), requireSignedAgreement, (req, res) => {
     const ctx = req.partnerContext!;
     const parsed = portfolioCreateSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -730,7 +731,7 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
   });
 
   /* v25.16 NH3 — was missing assertSubRole gate; viewers/analysts could PATCH. */
-  app.patch("/api/partner/portfolio/:id", requirePartnerAuth, assertSubRole("managing_partner", "associate", "bd"), (req, res) => {
+  app.patch("/api/partner/portfolio/:id", requirePartnerAuth, assertSubRole("managing_partner", "associate", "bd"), requireSignedAgreement, (req, res) => {
     const ctx = req.partnerContext!;
     const row = findPortfolioByIdAnyTenant(String(req.params.id));
     if (!row || row.deletedAt) {
@@ -803,7 +804,7 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
   /* v25.23 NH-H fix — was missing assertSubRole gate on DELETE; viewers/analysts
    * could soft-delete portfolio entries they could not create or edit (PARTIAL
    * FIX of v25.16 NH3 which gated POST/PATCH but missed DELETE). */
-  app.delete("/api/partner/portfolio/:id", requirePartnerAuth, assertSubRole("managing_partner", "associate", "bd"), (req, res) => {
+  app.delete("/api/partner/portfolio/:id", requirePartnerAuth, assertSubRole("managing_partner", "associate", "bd"), requireSignedAgreement, (req, res) => {
     const ctx = req.partnerContext!;
     const row = findPortfolioByIdAnyTenant(String(req.params.id));
     if (!row || row.deletedAt) {
@@ -846,7 +847,7 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
   /* ===================== CRM contacts ===================== */
 
   // v25.14 NL5 — see portfolio comment above.
-  app.post("/api/partner/crm/contacts", requirePartnerAuth, assertSubRole("managing_partner", "associate", "bd"), (req, res) => {
+  app.post("/api/partner/crm/contacts", requirePartnerAuth, assertSubRole("managing_partner", "associate", "bd"), requireSignedAgreement, (req, res) => {
     const ctx = req.partnerContext!;
     const parsed = crmCreateSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -1006,7 +1007,7 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
   });
 
   /* v25.16 NH3 — was missing assertSubRole gate; viewers/analysts could PATCH. */
-  app.patch("/api/partner/crm/contacts/:id", requirePartnerAuth, assertSubRole("managing_partner", "associate", "bd"), (req, res) => {
+  app.patch("/api/partner/crm/contacts/:id", requirePartnerAuth, assertSubRole("managing_partner", "associate", "bd"), requireSignedAgreement, (req, res) => {
     const ctx = req.partnerContext!;
     const row = findCrmByIdAnyTenant(String(req.params.id));
     if (!row || row.deletedAt) {
@@ -1143,7 +1144,7 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
 
   /* v25.23 NH-H fix — was missing assertSubRole gate on DELETE; viewers/analysts
    * could soft-delete CRM contacts they could not create or edit. */
-  app.delete("/api/partner/crm/contacts/:id", requirePartnerAuth, assertSubRole("managing_partner", "associate", "bd"), (req, res) => {
+  app.delete("/api/partner/crm/contacts/:id", requirePartnerAuth, assertSubRole("managing_partner", "associate", "bd"), requireSignedAgreement, (req, res) => {
     const ctx = req.partnerContext!;
     const row = findCrmByIdAnyTenant(String(req.params.id));
     if (!row || row.deletedAt) {
@@ -1201,7 +1202,7 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
   /* ===================== Deal pipeline ===================== */
 
   // v25.14 NL5 — see portfolio comment above.
-  app.post("/api/partner/deals", requirePartnerAuth, assertSubRole("managing_partner", "associate", "bd"), (req, res) => {
+  app.post("/api/partner/deals", requirePartnerAuth, assertSubRole("managing_partner", "associate", "bd"), requireSignedAgreement, (req, res) => {
     const ctx = req.partnerContext!;
     const parsed = dealCreateSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -1298,7 +1299,7 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
   });
 
   /* v25.16 NH3 — was missing assertSubRole gate; viewers/analysts could PATCH. */
-  app.patch("/api/partner/deals/:id", requirePartnerAuth, assertSubRole("managing_partner", "associate", "bd"), (req, res) => {
+  app.patch("/api/partner/deals/:id", requirePartnerAuth, assertSubRole("managing_partner", "associate", "bd"), requireSignedAgreement, (req, res) => {
     const ctx = req.partnerContext!;
     const row = findDealByIdAnyTenant(String(req.params.id));
     if (!row || row.deletedAt) {

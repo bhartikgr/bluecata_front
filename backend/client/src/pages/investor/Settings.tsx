@@ -33,6 +33,7 @@ import { useRealtimeSync } from "@/lib/realtimeSync";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
+import { AccreditationDeclaration } from "@/components/investor/AccreditationDeclaration"; /* W3-B C-5 */
 
 /* ------------------------------------------------------------------ */
 /* Common IANA timezones list                                           */
@@ -119,7 +120,6 @@ export default function InvestorSettings() {
 
   /* -------- Dialog open state -------- */
   const [billingDialogOpen, setBillingDialogOpen] = useState(false);
-  const [accredDialogOpen, setAccredDialogOpen] = useState(false);
 
   /* -------- Save mutation -------- */
   const saveMut = useMutation({
@@ -378,25 +378,8 @@ export default function InvestorSettings() {
           </Card>
 
           {/* ---- Accreditation ---- */}
-          {/* DEF-017: replace disabled button with informational dialog */}
-          <Dialog open={accredDialogOpen} onOpenChange={setAccredDialogOpen}>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Accreditation</DialogTitle>
-                <DialogDescription>
-                  Accreditation status is currently managed through your Collective membership
-                  profile. Visit your Collective profile or contact compliance@capavate.com
-                  for updates.
-                </DialogDescription>
-              </DialogHeader>
-              <DialogFooter>
-                <a href="mailto:compliance@capavate.com">
-                  <Button variant="outline">Email compliance@capavate.com</Button>
-                </a>
-                <Button onClick={() => setAccredDialogOpen(false)}>Close</Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
+          {/* W3-B C-5 — live accredited-investor self-certification capture,
+              replacing the prior DEF-017 informational placeholder. */}
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-sm flex items-center gap-2">
@@ -404,17 +387,9 @@ export default function InvestorSettings() {
                 Accreditation
               </CardTitle>
             </CardHeader>
-            <CardContent className="text-sm text-muted-foreground flex items-center justify-between gap-4">
-              <p>View and update your jurisdiction, KYC documents, and accreditation declaration.</p>
-              <Button
-                variant="outline"
-                size="sm"
-                className="shrink-0"
-                onClick={() => setAccredDialogOpen(true)}
-                data-testid="button-edit-accreditation"
-              >
-                Edit
-              </Button>
+            <CardContent className="text-sm text-muted-foreground space-y-3">
+              <p>Complete or re-certify your accredited-investor self-certification below.</p>
+              <AccreditationDeclaration />
             </CardContent>
           </Card>
 

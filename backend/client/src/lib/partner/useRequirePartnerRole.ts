@@ -31,8 +31,14 @@ export interface PartnerRoleState {
   error: string | null;
 }
 
+/* W2-I — the sign page itself mounts this hook; never bounce a partner who is
+ * already on the agreement route or we create a redirect loop. */
+const AGREEMENT_SIGN_PATH = "/collective/partner/agreement";
+
+type AgreementState = { signedCurrent: boolean; canSign: boolean };
+
 export function useRequirePartnerRole(): PartnerRoleState {
-  const [, navigate] = useLocation();
+  const [location, navigate] = useLocation();
   const q = useQuery<PartnerIdentity>({
     queryKey: ["/api/partner/me"],
     queryFn: async () => {
@@ -68,6 +74,31 @@ export function useRequirePartnerRole(): PartnerRoleState {
       navigate("/partner/login?error=no_access");
     }
   }, [q.error, navigate]);
+
+  /* W2-I — login-time agreement redirect (Ozan decision). Once a partner
+   * identity resolves, read the DURABLE signed state; if the managing partner
+   * has not signed the CURRENT version, route them to the sign page BEFORE they
+   * land on any workspace surface. Only a partner who can sign is bounced (a
+   * viewer would be stranded on a page they cannot act on) — the server
+   * requireSignedAgreement write-gate remains the fail-closed backstop for
+   * everyone. Reads stay open; signing once at login lets them proceed. */
+  const ag = useQuery<AgreementState>({
+    queryKey: ["/api/partner/me/agreement"],
+    enabled: q.isSuccess,
+    retry: false,
+    queryFn: async () => {
+      const r = await apiRequest("GET", "/api/partner/me/agreement");
+      return (await r.json()) as AgreementState;
+    },
+  });
+
+  useEffect(() => {
+    if (!ag.isSuccess || !ag.data) return;
+    if (location === AGREEMENT_SIGN_PATH) return;
+    if (ag.data.canSign && !ag.data.signedCurrent) {
+      navigate(AGREEMENT_SIGN_PATH);
+    }
+  }, [ag.isSuccess, ag.data, location, navigate]);
 
   return {
     ready: q.isSuccess,

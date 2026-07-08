@@ -226,6 +226,47 @@ export function deactivateMembership(userId: string): MembershipStatus | null {
   return next;
 }
 
+/**
+ * W3-C test seam — seed a MOCK_MEMBERSHIP cap-table position for a user so the
+ * C-5 individual-membership gate's cap-table sub-check (isOnCapTable) admits
+ * them. Follows the existing `*ForTests` convention; DEMO_SEED_ENABLED-gated so
+ * it is inert in production. Additive: does NOT flip isCollectiveMember (that is
+ * upsertActiveMembership's job) — only puts a position on the cap table, exactly
+ * as a real captable_commit / ledger entry would for entitlement purposes.
+ */
+export function upsertCapTablePositionForTests(
+  userId: string,
+  companyId = "co_test",
+  opts?: { companyName?: string; ownershipPct?: number },
+): MembershipStatus {
+  const existing = MOCK_MEMBERSHIP[userId];
+  const pos = {
+    companyId,
+    companyName: opts?.companyName ?? companyId,
+    ownershipPct: opts?.ownershipPct ?? 0.01,
+  };
+  const next: MembershipStatus = existing
+    ? {
+        ...existing,
+        capTablePositions: existing.capTablePositions.some((p) => p.companyId === companyId)
+          ? existing.capTablePositions
+          : [...existing.capTablePositions, pos],
+        canApplyToCollective: true,
+      }
+    : {
+        userId,
+        isCollectiveMember: false,
+        memberSince: null,
+        expiresAt: null,
+        lapsed: false,
+        reason: "Seeded cap-table position (test seam).",
+        capTablePositions: [pos],
+        canApplyToCollective: true,
+      };
+  MOCK_MEMBERSHIP[userId] = next;
+  return next;
+}
+
 export function isCollectiveMember(userId: string, asOf: Date = new Date()): boolean {
   const m = MOCK_MEMBERSHIP[userId];
   if (!m) return false;

@@ -33,7 +33,12 @@
  */
 import type { Request, Response, NextFunction } from "express";
 import * as collectiveMembershipStore from "../collectiveMembershipStore";
-import { getMembership } from "../membershipStore";
+import { getMembership, isOnCapTable } from "../membershipStore";
+// W3-C — accreditation self-declaration read (append-only 0103 table, with a
+// denormalized compliance-profile grace fallback). Source of truth for the
+// individual-membership accreditation sub-check.
+import { hasAccreditedDeclaration } from "../investorComplianceRoutes";
+import { log } from "./logger";
 // v25.32 P0'' — detect partner-only sessions so the 403 can tell the client
 // to switch to the partner workspace instead of silently rendering a
 // zeroed-out Collective dashboard ("Failed to load dashboard data").
@@ -101,16 +106,72 @@ export function requireCollectiveMember(req: Request, res: Response, next: NextF
   } catch { /* getMembership may not be available in some test contexts */ }
   const fromCtxOverlay = ctx?.collective?.status === "active";
 
-  if (fromAdminStore || fromSeedStore || fromCtxOverlay) {
-    next();
-    return;
-  }
+  // v25.35 (BLOCKER #11) — cold-cache defense in depth: DB fallback so an active
+  // member is never 403'd on a fresh process before the in-memory mirror hydrates.
+  const isActiveMember =
+    fromAdminStore || fromSeedStore || fromCtxOverlay || isDbActiveMember(userId);
 
-  // v25.35 (BLOCKER #11) — cold-cache defense in depth: before denying, query
-  // the DB directly for an active membership row. Closes the post-restart
-  // lockout where an active member was 403'd on every /api/collective/me/*
-  // route because the in-memory mirror had not yet hydrated.
-  if (isDbActiveMember(userId)) {
+  if (isActiveMember) {
+    // W3-C — C-5 INDIVIDUAL Collective MEMBERSHIP now requires BOTH:
+    //   (a) on a cap table (HARD gate, fail-closed), AND
+    //   (b) a valid accreditation self-declaration (SOFT, flag-gated).
+    // Admins already returned above; this only narrows genuine members.
+
+    // (a) Cap-table sub-check — fail-closed: a read error denies.
+    let onCapTable = false;
+    try {
+      onCapTable = isOnCapTable(userId);
+    } catch {
+      onCapTable = false; /* fail-closed on read error */
+    }
+    if (!onCapTable) {
+      res.status(403).json({
+        ok: false,
+        error: "not_on_cap_table",
+        message:
+          "Collective membership requires an active cap-table position. Once you hold equity in a Collective company you'll gain access.",
+      });
+      return;
+    }
+
+    // (b) Accreditation sub-check — behind COLLECTIVE_C5_ACCRED_ENFORCE.
+    // DEFAULT = SOFT (env unset / anything but "strict"): log-only, never block,
+    // and a read error must NOT break admission. STRICT: fail-closed 403.
+    const strict = process.env.COLLECTIVE_C5_ACCRED_ENFORCE === "strict";
+    let accredited = false;
+    let accredReadError = false;
+    try {
+      accredited = hasAccreditedDeclaration(userId);
+    } catch (err) {
+      accredReadError = true;
+      log.warn(
+        "[requireCollectiveMember] accreditation read failed for",
+        userId,
+        "-",
+        (err as Error).message,
+      );
+    }
+
+    if (strict) {
+      // Fail-closed: a missing declaration OR a read error denies.
+      if (!accredited) {
+        res.status(403).json({
+          ok: false,
+          error: "ACCREDITATION_NOT_DECLARED",
+          message:
+            "Collective membership requires a current accredited-investor self-certification. Please complete your accreditation declaration to continue.",
+        });
+        return;
+      }
+    } else if (!accredited && !accredReadError) {
+      // SOFT default — log the gap for rollout visibility, but admit.
+      log.info(
+        "[requireCollectiveMember] SOFT accreditation gate: admitting member",
+        userId,
+        "without a self-declaration (COLLECTIVE_C5_ACCRED_ENFORCE unset).",
+      );
+    }
+
     next();
     return;
   }

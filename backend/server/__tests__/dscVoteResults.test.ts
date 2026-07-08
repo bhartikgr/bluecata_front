@@ -36,6 +36,7 @@ import {
   chapterMemberships as chapterMembershipsTable,
 } from "../../shared/schema";
 import * as collectiveMembershipStore from "../collectiveMembershipStore";
+import { upsertCapTablePositionForTests } from "../membershipStore";
 import { _addDscMemberForTests, _resetForTests as resetAdminDsc } from "../adminDscRoutes";
 import { _testAccessDscVotes } from "../dscVoteStore";
 
@@ -158,6 +159,7 @@ beforeAll(async () => {
   // passes for every voter.
   for (const uid of [VOTER_A, VOTER_B, VOTER_C, VOTER_D, NON_DSC_CHAPTER_MEMBER]) {
     collectiveMembershipStore.activate(uid, "u_admin_test");
+    upsertCapTablePositionForTests(uid); // W3-C: cap-table hard gate needs a position
   }
 
   // Seat DSC role for VOTER_A..D (NOT for NON_DSC_CHAPTER_MEMBER).

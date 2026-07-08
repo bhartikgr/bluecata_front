@@ -28,6 +28,22 @@ import { createHash } from "node:crypto";
 import { companies as seedCompanies, rounds as seedRounds, securities } from "./mockData";
 import { listRounds } from "./roundsStore";
 import { getCompanyProfile } from "./companyProfileStore";
+/* v25.54 AVI-2 / G0-3 — the seed `companies` array (from mockData) is EMPTY in
+   production (DEMO_SEED_ENABLED=false), so carry-forward returned "Company not
+   found" for every real, founder-created company. Resolve companies from the
+   live multiCompanyStore first, falling back to the demo seed so existing
+   seed-based engine tests stay green. PURE READ. */
+import { getCompanyRecordById } from "./multiCompanyStore";
+
+function resolveCompanyForCarryForward(
+  companyId: string,
+): { id: string; legalName?: string } | undefined {
+  const live = getCompanyRecordById(companyId);
+  if (live) return { id: live.companyId, legalName: live.legalName };
+  const seed = seedCompanies.find((c) => c.id === companyId);
+  if (seed) return { id: seed.id, legalName: (seed as { legalName?: string }).legalName };
+  return undefined;
+}
 
 /* Lazy view: union of seed rounds (rich, demo) and DB-backed rounds from
    roundsStore. Seed rows are kept so engine tests remain green; DB rows win
@@ -51,7 +67,6 @@ const rounds: typeof seedRounds = new Proxy(seedRounds, {
     return Reflect.get(target, prop, receiver);
   },
 });
-const companies = seedCompanies;
 import {
   convertSafeToPreferred,
   convertNoteToPreferred,
@@ -582,7 +597,7 @@ function buildCompanyProfileFields(
     // companyLegalName
     const legalName =
       (profile as { legalName?: string }).legalName ??
-      companies.find((c) => c.id === companyId)?.legalName;
+      resolveCompanyForCarryForward(companyId)?.legalName;
     if (legalName) {
       fields.companyLegalName = {
         fieldName: "companyLegalName",
@@ -822,8 +837,8 @@ export function computeCarryForward(input: CarryForwardEngineInput): CarryForwar
 
   const warnings: string[] = [];
 
-  // Verify company exists
-  const company = companies.find((c) => c.id === companyId);
+  // Verify company exists (v25.54 AVI-2 — live store first, seed fallback).
+  const company = resolveCompanyForCarryForward(companyId);
   if (!company) {
     const result: Omit<CarryForwardResult, "auditDigest"> = {
       companyId,

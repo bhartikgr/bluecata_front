@@ -18,6 +18,11 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { AppCard } from "@/components/ui/app-card";
 import { PageHeader } from "@/components/ui/page-header";
+import {
+  CONSORTIUM_AGREEMENT_TEXT,
+  CONSORTIUM_AGREEMENT_VERSION,
+  CONSORTIUM_AGREEMENT_ACK,
+} from "@shared/consortiumAgreement"; /* W2-I — viewable agreement + typed sign-off at application */
 
 /* v25.46 Track 6 — LookFeel-Parity. Per the 2026-06-28 parity audit, this
  * public Consortium application page diverged from canonical Capavate chrome:
@@ -128,6 +133,12 @@ export default function ConsortiumApplyPage() {
   const expectedChapter = "chap_keiretsu_canada";
   const [introMessage, setIntroMessage] = useState("");
   const [referredBy, setReferredBy] = useState("");
+  /* W2-I — the applicant must read the Consortium Partner Agreement and type
+     their full legal name to sign it AT APPLICATION. The server persists the
+     signature name, version, timestamp and integrity hash on the hash-chained
+     application row and carries them to the partner contact at approval. */
+  const [agreementSignedName, setAgreementSignedName] = useState("");
+  const [agreementAccepted, setAgreementAccepted] = useState(false);
 
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<SubmitResponse | null>(null);
@@ -159,6 +170,8 @@ export default function ConsortiumApplyPage() {
           expectedChapter,
           introMessage,
           referredBy: referredBy || null,
+          agreementSignedName: agreementSignedName.trim(),
+          agreementVersion: CONSORTIUM_AGREEMENT_VERSION,
         }),
       });
       const body = (await r.json()) as SubmitResponse;
@@ -370,6 +383,53 @@ export default function ConsortiumApplyPage() {
           />
         </Field>
 
+        {/* W2-I — Consortium Partner Agreement: read-only viewable text +
+            typed-name electronic signature. Required before submit. */}
+        <div className="cv-field" style={{ display: "block" }}>
+          <div className="cv-field__label" style={{ marginBottom: 4 }}>
+            Consortium Partner Agreement ({CONSORTIUM_AGREEMENT_VERSION})
+            <span style={{ color: "var(--cv-color-primary)" }}> *</span>
+          </div>
+          <div
+            data-testid="consortium-agreement-text"
+            style={{
+              maxHeight: 260,
+              overflowY: "auto",
+              whiteSpace: "pre-wrap",
+              fontSize: 13,
+              lineHeight: 1.5,
+              background: "#f6f7f9",
+              border: "1px solid #ddd9d3",
+              borderRadius: 8,
+              padding: 12,
+            }}
+          >
+            {CONSORTIUM_AGREEMENT_TEXT}
+          </div>
+        </div>
+        <label
+          className="flex flex-row gap-2"
+          style={{ alignItems: "flex-start", fontSize: 13 }}
+        >
+          <input
+            type="checkbox"
+            checked={agreementAccepted}
+            onChange={(e) => setAgreementAccepted(e.target.checked)}
+            data-testid="checkbox-consortium-agreement-accept"
+            style={{ marginTop: 3 }}
+          />
+          <span>{CONSORTIUM_AGREEMENT_ACK}</span>
+        </label>
+        <Field label="Type your full legal name to sign" required>
+          <input
+            value={agreementSignedName}
+            onChange={(e) => setAgreementSignedName(e.target.value)}
+            placeholder="Full legal name"
+            data-testid="input-consortium-agreement-signature"
+            required
+          />
+        </Field>
+
         {result?.error && (
           <div
             style={{
@@ -411,7 +471,7 @@ export default function ConsortiumApplyPage() {
             #cc0001 pill. Behavior (disabled while submitting) is unchanged. */}
         <Button
           type="submit"
-          disabled={submitting}
+          disabled={submitting || !agreementAccepted || !agreementSignedName.trim()}
           title={submitting ? "Submitting your application—please wait" : undefined}
           aria-label={submitting ? "Submitting application" : "Submit application"}
           className="mt-2"

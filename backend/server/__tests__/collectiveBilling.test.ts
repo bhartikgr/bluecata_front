@@ -28,6 +28,7 @@ import { getDb } from "../db/connection";
 import { seedDemoData } from "../lib/seedDemoData";
 import { hydrateMultiCompanyStore } from "../multiCompanyStore";
 import * as collectiveMembershipStore from "../collectiveMembershipStore";
+import { upsertCapTablePositionForTests } from "../membershipStore";
 import {
   __setStripeClientForTesting,
   __resetStripeClient,
@@ -176,6 +177,7 @@ beforeAll(async () => {
 
   for (const uid of [MAYA, AISHA, DANIEL]) {
     collectiveMembershipStore.activate(uid, "u_admin_test");
+    upsertCapTablePositionForTests(uid); // W3-C: cap-table hard gate needs a position
   }
 
   // Inject the mock so no code path ever hits the real Stripe API.

@@ -17,6 +17,7 @@ import { registerRoutes } from "../routes";
 import { getDb } from "../db/connection";
 import { seedDemoData } from "../lib/seedDemoData";
 import * as collectiveMembershipStore from "../collectiveMembershipStore";
+import { upsertCapTablePositionForTests } from "../membershipStore";
 import { hydrateMultiCompanyStore } from "../multiCompanyStore";
 import { __setRuntimePersona } from "../lib/userContext";
 import {
@@ -73,6 +74,7 @@ beforeAll(async () => {
     } as any).run();
   } catch {/* may already exist */}
   collectiveMembershipStore.activate(USER_ID, "u_admin_empty_state");
+  upsertCapTablePositionForTests(USER_ID); // W3-C: cap-table hard gate needs a position
   __setRuntimePersona({
     userId: USER_ID,
     email: `${USER_ID}@empty.example`,

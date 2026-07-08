@@ -14,6 +14,7 @@
  */
 import type { Express, Request, Response } from "express";
 import { requirePartnerAuth, assertSubRole } from "./lib/requirePartnerAuth";
+import { requireSignedAgreement } from "./lib/requireSignedAgreement";
 import { partnerAttributionStore } from "./partnerWorkspaceStore";
 import { partnerClientCrmStore } from "./partnerClientCrmStore";
 import { PARTNER_CLIENT_STAGES, isPartnerClientStage } from "../shared/crmStages";
@@ -55,6 +56,7 @@ export function registerPartnerClientCrmRoutes(app: Express): void {
     "/api/partner/me/client-crm/:companyId",
     requirePartnerAuth,
     assertSubRole("managing_partner", "associate", "bd"),
+    requireSignedAgreement,
     (req: Request, res: Response) => {
       const pid = req.partnerContext!.partnerId;
       const actor = req.partnerContext!.userId;
@@ -80,6 +82,7 @@ export function registerPartnerClientCrmRoutes(app: Express): void {
     "/api/partner/me/client-crm/:companyId/activity",
     requirePartnerAuth,
     assertSubRole("managing_partner", "associate", "bd"),
+    requireSignedAgreement,
     (req: Request, res: Response) => {
       const pid = req.partnerContext!.partnerId;
       const actor = req.partnerContext!.userId;

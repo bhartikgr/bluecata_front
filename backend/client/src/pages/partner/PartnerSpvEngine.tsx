@@ -286,6 +286,12 @@ export default function PartnerSpvEngine() {
                   placeholder="Describe what this vehicle will invest in, the thesis, and any restrictions…"
                 />
                 <div className="text-[10px] text-slate-400 text-right">{w.mandateDescription.length}/{MANDATE_DESCRIPTION_MAX}</div>
+                {/* W2-E — inline error so the user knows WHY Next is disabled */}
+                {!w.mandateDescription.trim() && (
+                  <div className="text-xs text-rose-600 mt-1" data-testid="spv-w-mandate-desc-error">
+                    A description of the mandate is required before you can continue.
+                  </div>
+                )}
               </div>
               {/* 3f — sectors multi-select from COLLECTIVE_SECTORS_45 + sub-sector */}
               <div>
@@ -382,6 +388,12 @@ export default function PartnerSpvEngine() {
                     </label>
                   ))}
                 </div>
+                {/* W2-E — inline error so the user knows WHY Next/Launch is disabled */}
+                {!w.carryBasis && (
+                  <div className="text-xs text-rose-600 mt-1" data-testid="spv-w-carrybasis-error">
+                    Choose a carry basis to continue.
+                  </div>
+                )}
               </div>
               {/* 3m — optional terms document link/ref */}
               <div><Label>Terms document link (optional)</Label><Input data-testid="spv-w-terms-doc" value={w.termsDocRef} onChange={(e) => setW({ ...w, termsDocRef: e.target.value })} placeholder="https://… or a stored document reference" /></div>

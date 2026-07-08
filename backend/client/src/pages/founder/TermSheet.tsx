@@ -260,10 +260,12 @@ export default function TermSheet() {
  }
  }, [baseData]);
 
- // If route arrived with ?action=upload and no termsheet stored, auto-open file dialog after mount
+ // If route arrived with ?action=upload and no termsheet stored, focus the upload
+ // input so the founder lands directly on the upload UI (Shadie V6 7a).
  useEffect(() => {
  if (initialAction === "upload" && !stored && fileRef.current) {
- // Don't auto-click — would surprise users. Just scroll to upload section visible by default.
+ fileRef.current.scrollIntoView({ block: "center" });
+ fileRef.current.focus();
  }
  }, [initialAction, stored]);
 
@@ -553,7 +555,7 @@ export default function TermSheet() {
  <>
  <PageHeader
  title={`Term Sheet — ${r.name}`}
- description={stored ? (stored.status === "signed" ? `Signed by ${stored.signature?.signerName} on ${fmtDate(stored.signedAt ?? "")}` : "Draft — review carefully before signing.") : "Generate, upload, or skip."}
+ description={stored ? (stored.status === "signed" ? `Signed by ${stored.signature?.signerName} on ${fmtDate(stored.signedAt ?? "")}` : "Draft — review carefully before signing.") : "Upload your own term sheet, or skip."}
  breadcrumbs={[
  { href: "/founder/dashboard", label: "Workspace" },
  { href: "/founder/rounds", label: "Rounds" },
@@ -573,53 +575,9 @@ export default function TermSheet() {
  }
  />
  <PageBody>
- {/* No draft yet → Generate / Upload */}
+ {/* No draft yet → Upload (Generate removed entirely per Ozan — Shadie V6 7a) */}
  {!stored && (
- <div className="grid md:grid-cols-2 gap-5">
- <Card data-testid="card-generate">
- <CardHeader className="pb-3">
- <CardTitle className="text-base flex items-center gap-2">
- <Sparkles className="h-4 w-4 text-[hsl(0_100%_40%)]" /> Generate term sheet
- <HelpTip>Pick a region + instrument; we render a citation-backed template (NVCA, BVCA, J-KISS, CCPS, etc.) populated with your round terms.</HelpTip>
- </CardTitle>
- </CardHeader>
- <CardContent className="space-y-4">
- <div>
- <Label>Region</Label>
- <select
- className="mt-1 w-full h-9 px-3 rounded-md border border-input bg-background text-sm"
- value={region}
- onChange={(e) => setRegion(e.target.value as Region)}
- data-testid="select-region"
- >
- {REGIONS.map((rg) => <option key={rg} value={rg}>{rg}</option>)}
- </select>
- </div>
- <div>
- <Label>Instrument template</Label>
- <select
- className="mt-1 w-full h-9 px-3 rounded-md border border-input bg-background text-sm"
- value={instrument}
- onChange={(e) => setInstrument(e.target.value as InstrumentValue)}
- data-testid="select-template"
- >
- {INSTRUMENT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
- </select>
- </div>
- <div className="text-xs text-muted-foreground">
- Template: <span className="font-medium text-foreground">{getTemplate(region, instrument, data).templateName}</span>
- <div className="mt-2">
- Citations: {getTemplate(region, instrument, data).sourceCitations.slice(0, 2).map((c) => (
- <Badge key={c} variant="outline" className="text-[10px] mr-1">{c}</Badge>
- ))}
- </div>
- </div>
- <Button onClick={handleGenerate} className="w-full bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-generate-termsheet">
- <ScrollText className="h-4 w-4 mr-2" /> Generate term sheet
- </Button>
- </CardContent>
- </Card>
-
+ <div className="max-w-xl">
  <Card data-testid="card-upload">
  <CardHeader className="pb-3">
  <CardTitle className="text-base flex items-center gap-2">

@@ -2574,6 +2574,31 @@ export function seedTestPartnerSandbox(opts: { force?: boolean } = {}): void {
   partnerTeamStore.add(TEST_PARTNER_ID, TEST_PARTNER_USERS.managing.userId, "managing_partner", "u_system_seed", { isSeed: true });
   partnerTeamStore.add(TEST_PARTNER_ID, TEST_PARTNER_USERS.viewer.userId, "viewer", "u_system_seed", { isSeed: true });
 
+  // W2-I — requirePartnerAuth resolves the sandbox partner from the in-memory
+  // contacts shim, but requireSignedAgreement reads the DURABLE contacts column
+  // via rawDb(). Mirror production's application→approval carry by stamping a
+  // signed durable row for the sandbox partner so partner write routes are not
+  // blocked by the agreement gate in seeded/test contexts.
+  try {
+    const now = new Date().toISOString();
+    rawDb()
+      .prepare(
+        `INSERT INTO contacts
+           (id, kind, legal_name, status, verification, created_at, updated_at,
+            created_by, updated_by, version, prev_revision_hash, revision_hash,
+            partner_agreement_version, partner_agreement_signed_at)
+         VALUES (?, 'consortium_partner', ?, 'active', 'verified', ?, ?, 'u_system_seed', 'u_system_seed',
+                 1, ?, ?, 'CPA-v0.1-DRAFT', ?)
+         ON CONFLICT(id) DO UPDATE SET
+           partner_agreement_version = excluded.partner_agreement_version,
+           partner_agreement_signed_at = excluded.partner_agreement_signed_at`,
+      )
+      .run(TEST_PARTNER_ID, TEST_PARTNER_LEGAL_NAME, now, now, "0".repeat(64), "0".repeat(64), now);
+  } catch {
+    // Durable contacts table/columns may not exist in every seed context;
+    // the in-memory shim remains authoritative for auth resolution.
+  }
+
   // Emit partner.onboarded once
   emit("partner.onboarded", TEST_PARTNER_ID, {
     partnerId: TEST_PARTNER_ID,

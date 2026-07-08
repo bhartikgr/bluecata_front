@@ -25,6 +25,7 @@ import { Badge } from "@/components/ui/badge";
 import { CapCollectiveToggle } from "./CapCollectiveToggle";
 import { NotificationBell } from "./NotificationBell";
 import { useEntitlement } from "@/lib/entitlement";
+import { safeInitials } from "@/lib/investorLabels";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { ArchivedWorkspaceBanner } from "./ArchivedWorkspaceBanner";
 import { AuditChainP0Banner } from "./AuditChainP0Banner";
@@ -51,11 +52,11 @@ function GlossaryLink() {
 function AvatarInitials() {
   const { role } = useRole();
   const { data: entCtx } = useEntitlement();
-  const name = entCtx?.identity?.name ?? (role === "admin" ? "Admin" : "—");
-  const parts = name.trim().split(/\s+/);
-  const initials = parts.length >= 2
-    ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
-    : (parts[0]?.[0] ?? "?").toUpperCase();
+  const name = entCtx?.identity?.name ?? (role === "admin" ? "Admin" : "");
+  // BUG-02: never derive initials from an email local-part or a placeholder
+  // name. When no safe initials exist, fall back to a neutral avatar glyph.
+  const initials = safeInitials(name);
+  if (!initials) return <UserCircle className="h-4 w-4" />;
   return <>{initials}</>;
 }
 

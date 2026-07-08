@@ -36,6 +36,7 @@ const require = createRequire(import.meta.url);
 import { randomBytes } from "node:crypto";
 import type { Express, Request, Response } from "express";
 import { requirePartnerAuth, requirePartnerSubrole } from "./lib/requirePartnerAuth";
+import { requireSignedAgreement } from "./lib/requireSignedAgreement";
 import { rawDb } from "./db/connection";
 import { partnerFundsStore } from "./partnerWorkspaceStore";
 import type { PartnerTier } from "./adminContactsStoreShim";
@@ -427,6 +428,7 @@ export function registerPartnerConsortiumRoutes(app: Express): void {
     "/api/partner/me/sourced-investors",
     requirePartnerAuth,
     requirePartnerSubrole(["managing_partner"]),
+    requireSignedAgreement,
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       const pid  = ctx.partnerId;
@@ -535,6 +537,7 @@ export function registerPartnerConsortiumRoutes(app: Express): void {
     "/api/partner/me/portfolio/source",
     requirePartnerAuth,
     requirePartnerSubrole(["managing_partner"]),
+    requireSignedAgreement,
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       const pid  = ctx.partnerId;
@@ -567,6 +570,7 @@ export function registerPartnerConsortiumRoutes(app: Express): void {
     "/api/partner/me/funds/:fundId/activate",
     requirePartnerAuth,
     requirePartnerSubrole(["managing_partner"]),
+    requireSignedAgreement,
     (req: Request, res: Response) => {
       const ctx    = req.partnerContext!;
       const pid    = ctx.partnerId;
@@ -634,6 +638,7 @@ export function registerPartnerConsortiumRoutes(app: Express): void {
     "/api/partner/me/soft-circles/source",
     requirePartnerAuth,
     requirePartnerSubrole(["managing_partner"]),
+    requireSignedAgreement,
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       const pid  = ctx.partnerId;

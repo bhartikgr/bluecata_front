@@ -63,6 +63,11 @@ import PostDetail from "@/pages/PostDetail";
 // Patch v6 — Partner workspace pages
 import PartnerDashboard from "@/pages/partner/PartnerDashboard";
 import PartnerPipeline from "@/pages/partner/PartnerPipeline";
+/* W2-A — restored Clients CRM pages (components were never deleted; only their
+   routes were trimmed in v25.50.0). W2-D — new Private Portfolio page. */
+import PartnerClients from "@/pages/partner/PartnerClients";
+import PartnerClientDetail from "@/pages/partner/PartnerClientDetail";
+import PartnerPortfolio from "@/pages/partner/PartnerPortfolio";
 import PartnerTeam from "@/pages/partner/PartnerTeam";
 import PartnerNotes from "@/pages/partner/PartnerNotes";
 import PartnerSettings from "@/pages/partner/PartnerSettings";
@@ -1034,7 +1039,19 @@ function AppRouter() {
         <Route path="/collective/partner/dashboard">
           {() => <RequireAuth><CollectiveShell><PartnerDashboard /></CollectiveShell></RequireAuth>}
         </Route>
-        {/* v25.50.0 Phase 6 (spec 4a): Clients page removed. */}
+        {/* W2-A — Clients CRM restored (routes re-added; server read endpoints
+            rebuilt from the preserved attribution store). Detail route is
+            registered BEFORE the list so the `:id` param path resolves. */}
+        <Route path="/collective/partner/clients/:id">
+          {() => <RequireAuth><CollectiveShell><PartnerClientDetail /></CollectiveShell></RequireAuth>}
+        </Route>
+        <Route path="/collective/partner/clients">
+          {() => <RequireAuth><CollectiveShell><PartnerClients /></CollectiveShell></RequireAuth>}
+        </Route>
+        {/* W2-D — Private Portfolio (API existed but was unrouted client-side). */}
+        <Route path="/collective/partner/portfolio">
+          {() => <RequireAuth><CollectiveShell><PartnerPortfolio /></CollectiveShell></RequireAuth>}
+        </Route>
         <Route path="/collective/partner/pipeline">
           {() => <RequireAuth><CollectiveShell><PartnerPipeline /></CollectiveShell></RequireAuth>}
         </Route>

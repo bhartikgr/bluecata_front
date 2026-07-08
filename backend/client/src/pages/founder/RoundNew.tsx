@@ -393,11 +393,12 @@ export default function RoundNew() {
  }
  }
  toast({ title: "Round created", description: `Round ${data.id} is now active.` });
- // Admin-separation fix: respect the user's term-sheet choice from Step 3. If they
- // picked Generate or Upload, route them straight to the term-sheet page
- // instead of dropping them on an empty round-detail screen with no UI hint.
- if (termsheetChoice === "generate" || termsheetChoice === "upload") {
- navigate(`/founder/rounds/${data.id}/termsheet`);
+ // Shadie V6 7a — respect the Step-5 term-sheet choice. "upload" routes
+ // straight to the term-sheet page WITH ?action=upload so it lands directly on
+ // the Upload panel (Generate was removed entirely per Ozan). "skip" goes to
+ // the round detail.
+ if (termsheetChoice === "upload") {
+ navigate(`/founder/rounds/${data.id}/termsheet?action=upload`);
  } else {
  navigate(`/founder/rounds/${data.id}`);
  }
@@ -531,19 +532,12 @@ export default function RoundNew() {
  !!form.openDate && !!form.closeDate &&
  new Date(form.openDate).getTime() > new Date(form.closeDate).getTime();
 
- // v25.53 3a — block Open / Target-close dates that fall in the past. The
- // server enforces the same (invalid_openDate / invalid_closeDate past-date
- // guard) as a backstop. Compare on calendar day (local midnight) so "today"
- // is always allowed. N4 also relies on this: a malformed year (e.g. 70620
- // from a concatenated "07062026") lands far in the future OR fails Date
- // parsing, and the 4-digit-year check below rejects it explicitly.
- const todayMidnight = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); })();
- const dayInPast = (iso: string): boolean => {
- if (!iso) return false;
- const t = new Date(iso + "T00:00:00").getTime();
- if (!isFinite(t)) return false;
- return t < todayMidnight;
- };
+ // Shadie V6 1a (Ozan spec) — past Open / Target-close dates are now ALLOWED
+ // (a founder may record a historical/closed round). We enforce ONLY that the
+ // Target close date is on or after the Open date (dateRangeInvalid, above),
+ // plus the 4-digit-year / valid-calendar checks below. The server mirrors
+ // this: it keeps the invalid_closeDate (close<open) guard but no longer
+ // rejects past dates.
  // N4 — a native <input type="date"> yields ISO yyyy-mm-dd; a valid year is
  // exactly 4 digits. Reject anything else (guards the "07062026" → 70620 bug
  // if the value ever arrives from a non-native picker / paste).
@@ -553,12 +547,10 @@ export default function RoundNew() {
  if (!m) return true;
  return m[1].length !== 4;
  };
- const openDatePast = dayInPast(form.openDate);
- const closeDatePast = dayInPast(form.closeDate);
  const openDateMalformed = badYear(form.openDate);
  const closeDateMalformed = badYear(form.closeDate);
  const scheduleInvalid =
- dateRangeInvalid || openDatePast || closeDatePast || openDateMalformed || closeDateMalformed;
+ dateRangeInvalid || openDateMalformed || closeDateMalformed;
 
  // v25.53 1a / N2 / N3 — per-vehicle required-field validation for Step 2
  // (Terms). Previously Continue advanced with empty price/shares and the step
@@ -983,8 +975,8 @@ export default function RoundNew() {
 
  {step === 3 && (
  <div className="grid md:grid-cols-2 gap-5">
- <div><Label>Open date</Label><Input type="date" min={new Date(todayMidnight).toISOString().slice(0, 10)} className={`mt-1 ${(openDatePast || openDateMalformed) ? "border-rose-500 focus-visible:ring-rose-500" : ""}`} value={form.openDate} onChange={e => update("openDate", e.target.value)} data-testid="input-open" />{openDateMalformed && <p className="text-xs text-rose-500 mt-1" data-testid="open-date-malformed">Enter a valid date with a 4-digit year.</p>}{!openDateMalformed && openDatePast && <p className="text-xs text-rose-500 mt-1" data-testid="open-date-past">Open date cannot be in the past.</p>}</div>
- <div><Label>Target close date</Label><Input type="date" min={new Date(todayMidnight).toISOString().slice(0, 10)} className={`mt-1 ${(dateRangeInvalid || closeDatePast || closeDateMalformed) ? "border-rose-500 focus-visible:ring-rose-500" : ""}`} value={form.closeDate} onChange={e => update("closeDate", e.target.value)} data-testid="input-close" />{closeDateMalformed && <p className="text-xs text-rose-500 mt-1" data-testid="close-date-malformed">Enter a valid date with a 4-digit year.</p>}{!closeDateMalformed && closeDatePast && <p className="text-xs text-rose-500 mt-1" data-testid="close-date-past">Target close date cannot be in the past.</p>}</div>
+ <div><Label>Open date</Label><Input type="date" className={`mt-1 ${openDateMalformed ? "border-rose-500 focus-visible:ring-rose-500" : ""}`} value={form.openDate} onChange={e => update("openDate", e.target.value)} data-testid="input-open" />{openDateMalformed && <p className="text-xs text-rose-500 mt-1" data-testid="open-date-malformed">Enter a valid date with a 4-digit year.</p>}</div>
+ <div><Label>Target close date</Label><Input type="date" className={`mt-1 ${(dateRangeInvalid || closeDateMalformed) ? "border-rose-500 focus-visible:ring-rose-500" : ""}`} value={form.closeDate} onChange={e => update("closeDate", e.target.value)} data-testid="input-close" />{closeDateMalformed && <p className="text-xs text-rose-500 mt-1" data-testid="close-date-malformed">Enter a valid date with a 4-digit year.</p>}</div>
  {dateRangeInvalid && (
  <p className="md:col-span-2 text-xs text-rose-500" data-testid="date-range-error">Target close date must be on or after the open date.</p>
  )}
@@ -1056,15 +1048,13 @@ export default function RoundNew() {
  <div className="min-w-0 flex-1">
  <div className="font-medium truncate">{s.name} <span className="text-[10px] uppercase tracking-wide text-muted-foreground">({s.source})</span></div>
  <div className="text-xs text-muted-foreground truncate">{s.email || "no email"}</div>
- <Input
- type="text"
- inputMode="decimal"
+ <FormattedNumberInput
  className="mt-1 h-8 text-xs font-mono"
  placeholder="Check size (USD)"
  value={s.checkSize}
- onChange={(e) => setSelectedShareholders((prev) => {
+ onChange={(raw) => setSelectedShareholders((prev) => {
  const next = prev.slice();
- next[idx] = { ...s, checkSize: e.target.value };
+ next[idx] = { ...s, checkSize: raw };
  return next;
  })}
  data-testid={`input-check-size-${idx}`}
@@ -1095,7 +1085,7 @@ export default function RoundNew() {
  </div>
  <div><Label>Company name (optional)</Label><Input className="mt-1" value={manualDraft.company} onChange={(e) => setManualDraft({ ...manualDraft, company: e.target.value })} data-testid="input-manual-company" /></div>
  <div><Label className="flex items-center gap-1">Email <span className="text-rose-500">*</span></Label><Input className="mt-1" type="email" value={manualDraft.email} onChange={(e) => setManualDraft({ ...manualDraft, email: e.target.value })} data-testid="input-manual-email" /></div>
- <div><Label>Check size (USD, optional)</Label><Input className="mt-1" type="text" inputMode="decimal" value={manualDraft.checkSize} onChange={(e) => setManualDraft({ ...manualDraft, checkSize: e.target.value })} data-testid="input-manual-check-size" /></div>
+ <div><Label>Check size (USD, optional)</Label><FormattedNumberInput className="mt-1" value={manualDraft.checkSize} onChange={(raw) => setManualDraft({ ...manualDraft, checkSize: raw })} data-testid="input-manual-check-size" /></div>
  </div>
  <DialogFooter>
  <Button variant="outline" onClick={() => setManualOpen(false)}>Cancel</Button>

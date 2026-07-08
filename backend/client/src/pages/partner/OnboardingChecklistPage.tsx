@@ -55,7 +55,8 @@ const CHECKLIST: ChecklistItem[] = [
   {
     key: "signed_partner_agreement",
     label: "Sign the consortium partner agreement",
-    description: "Counter-signed PDF returned to the chapter admin.",
+    description:
+      "Signed electronically at application (or once, on your first workspace change). Reflects the durable signature on record — not a manual checkbox.",
     group: "Identity & Compliance",
   },
   {
@@ -106,6 +107,14 @@ const CHECKLIST: ChecklistItem[] = [
 
 type State = Record<string, boolean>;
 
+/* W2-I — the agreement checklist item is NOT a self-toggle. It reflects the
+   DURABLE signed state read from GET /api/partner/me/agreement (which reads the
+   canonical contacts column, never the mutable onboarding_state blob). When
+   unsigned the item is read-only and links the managing partner to the sign
+   page; it flips to done only once a signature of the CURRENT version exists. */
+const AGREEMENT_KEY = "signed_partner_agreement";
+const AGREEMENT_SIGN_PATH = "/collective/partner/agreement";
+
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, {
     credentials: "include",
@@ -131,6 +140,8 @@ export default function PartnerOnboardingChecklistPage() {
   /* v25.15 NM12 — gate the page on a resolved partner identity. */
   const role = useRequirePartnerRole();
   const [state, setState] = useState<State>({});
+  /* W2-I — durable agreement signed state (current-version). null = unknown. */
+  const [agreementSigned, setAgreementSigned] = useState<boolean | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [saving, setSaving] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -149,6 +160,16 @@ export default function PartnerOnboardingChecklistPage() {
         coerced[item.key] = Boolean(raw[item.key]);
       }
       setState(coerced);
+      /* W2-I — overlay the DURABLE agreement signed state so the checklist
+         reflects the canonical contacts column, not the mutable JSON blob. */
+      try {
+        const ag = await fetchJson<{ signed?: boolean; signedCurrent?: boolean }>(
+          "/api/partner/me/agreement",
+        );
+        setAgreementSigned(Boolean(ag.signedCurrent ?? ag.signed));
+      } catch {
+        setAgreementSigned(null);
+      }
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -196,11 +217,18 @@ export default function PartnerOnboardingChecklistPage() {
     return Array.from(m.entries());
   }, []);
 
+  /* W2-I — the agreement item's completion comes from the durable signed
+     state, every other item from the persisted JSON toggle. */
+  const isItemDone = useCallback(
+    (key: string): boolean => (key === AGREEMENT_KEY ? !!agreementSigned : !!state[key]),
+    [state, agreementSigned],
+  );
+
   const progress = useMemo(() => {
-    const done = CHECKLIST.filter((i) => state[i.key]).length;
+    const done = CHECKLIST.filter((i) => isItemDone(i.key)).length;
     const total = CHECKLIST.length;
     return { done, total, pct: total === 0 ? 0 : Math.round((done / total) * 100) };
-  }, [state]);
+  }, [isItemDone]);
 
   /* v25.15 NM12 — wait for partner role gate before rendering the checklist. */
   if (!role.ready || !role.identity) return null;
@@ -278,32 +306,54 @@ export default function PartnerOnboardingChecklistPage() {
               <div className="text-sm font-medium mb-3">{group}</div>
               <ul className="space-y-3">
                 {items.map((it) => {
-                  const done = !!state[it.key];
+                  const done = isItemDone(it.key);
+                  const isAgreement = it.key === AGREEMENT_KEY;
                   return (
                     <li
                       key={it.key}
                       className="flex items-start gap-3"
                       data-testid={`item-${it.key}`}
                     >
-                      <button
-                        type="button"
-                        onClick={() => void toggle(it.key)}
-                        disabled={loading || saving}
-                        className="mt-0.5 shrink-0"
-                        aria-pressed={done}
-                        data-testid={`toggle-${it.key}`}
-                      >
-                        {done ? (
-                          <CheckCircle2 className="h-5 w-5 text-emerald-700" />
-                        ) : (
-                          <Circle className="h-5 w-5 text-muted-foreground" />
-                        )}
-                      </button>
+                      {isAgreement ? (
+                        /* W2-I — read-only: reflects the durable signed state,
+                           never a self-toggle. Icon is not a toggle button. */
+                        <span className="mt-0.5 shrink-0" aria-hidden data-testid={`status-${it.key}`}>
+                          {done ? (
+                            <CheckCircle2 className="h-5 w-5 text-emerald-700" />
+                          ) : (
+                            <Circle className="h-5 w-5 text-muted-foreground" />
+                          )}
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => void toggle(it.key)}
+                          disabled={loading || saving}
+                          className="mt-0.5 shrink-0"
+                          aria-pressed={done}
+                          data-testid={`toggle-${it.key}`}
+                        >
+                          {done ? (
+                            <CheckCircle2 className="h-5 w-5 text-emerald-700" />
+                          ) : (
+                            <Circle className="h-5 w-5 text-muted-foreground" />
+                          )}
+                        </button>
+                      )}
                       <div className="flex-1">
                         <div className={`text-sm ${done ? "line-through text-muted-foreground" : ""}`}>
                           {it.label}
                         </div>
                         <div className="text-xs text-muted-foreground">{it.description}</div>
+                        {isAgreement && !done && (
+                          <a
+                            href={AGREEMENT_SIGN_PATH}
+                            className="text-xs text-[#cc0001] underline"
+                            data-testid="link-sign-agreement"
+                          >
+                            Sign the Consortium Partner Agreement →
+                          </a>
+                        )}
                       </div>
                     </li>
                   );

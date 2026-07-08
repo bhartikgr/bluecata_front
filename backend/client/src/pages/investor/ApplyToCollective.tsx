@@ -40,6 +40,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 
 import { PageBody, PageHeader } from "@/components/AppShell";
+import { AccreditationDeclaration } from "@/components/investor/AccreditationDeclaration"; /* W3-B C-5 */
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { fmtUSD } from "@/lib/format";
 import { useEntitlement } from "@/lib/entitlement";
@@ -909,6 +910,12 @@ function Step4Accreditation({ form, setForm }: { form: CollectiveApplication; se
             I confirm the above declaration is true and I will provide supporting evidence on request. False
             declarations may result in account termination and reporting to the relevant regulator.
           </Label>
+        </div>
+        {/* W3-B C-5 — structured, append-only accredited-investor self-certification.
+            Signed here via the dedicated compliance route so the durable
+            declaration is captured at apply time (mirrors W2's sign-at-application). */}
+        <div className="pt-2 border-t">
+          <AccreditationDeclaration />
         </div>
       </CardContent>
     </Card>

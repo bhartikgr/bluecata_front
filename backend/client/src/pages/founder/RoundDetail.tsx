@@ -51,7 +51,7 @@ type Round = {
  scenarios?: ScenarioRow[] | null;
  termSheetUrl?: string | null;
 };
-type Invitation = { id: string; investorEmail: string; investorName: string; state: string; sentAt: string; viewedAt: string | null; expiresAt: string };
+type Invitation = { id: string; investorEmail: string; investorName: string; state: string; sentAt: string; viewedAt: string | null; expiresAt: string; resentAt?: string | null };
 type SoftCircle = { id: string; investorName: string; amount: number; status: string; createdAt: string };
 // v24.3 — wire-transfer instructions published by the founder per round.
 type WireInstructions = {
@@ -123,6 +123,13 @@ export default function RoundDetail() {
  const [inviteExpiry, setInviteExpiry] = useState("30");
  const [revokeId, setRevokeId] = useState<string | null>(null);
  const [confirmSoftId, setConfirmSoftId] = useState<string | null>(null);
+ // v25.55 Q3 — "Record existing investors" backfill form.
+ const [backfillOpen, setBackfillOpen] = useState(false);
+ const [backfillFirstName, setBackfillFirstName] = useState("");
+ const [backfillLastName, setBackfillLastName] = useState("");
+ const [backfillEmail, setBackfillEmail] = useState("");
+ const [backfillAmount, setBackfillAmount] = useState("");
+ const [backfillShares, setBackfillShares] = useState("");
  // v24.3 — wire-transfer instructions (founder publishes; investor reads).
  const [wireDlgOpen, setWireDlgOpen] = useState(false);
  const [wireForm, setWireForm] = useState({
@@ -175,15 +182,34 @@ export default function RoundDetail() {
      emitMutationLocal("invitation", `inv-${Date.now()}`, "create");
      setInviteOpen(false); setInviteName(""); setInviteFirstName(""); setInviteLastName(""); setInviteEmail(""); setInviteNote(""); setInviteCompany(""); setInviteStageFocus(""); setInviteMarketSize(""); setInviteExpiry("30");
    },
-   onError: (e: Error) => toast({ title: "Failed to send", description: e.message, variant: "destructive" }),
+   // v25.55 8a — a duplicate active invite is a friendly conflict, not a
+   // failure. Give it a clear title instead of the generic "Failed to send".
+   onError: (e: Error) => {
+     const dup = (e as ApiError).code === "duplicate_invitation";
+     toast({
+       title: dup ? "The investor has already been invited to the round." : "Failed to send",
+       description: e.message,
+       variant: "destructive",
+     });
+   },
  });
 
  const resendMut = useMutation({
    mutationFn: async (invId: string) => (await apiRequest("POST", `/api/rounds/${id}/invitations/${invId}/resend`, {})).json(),
    onSuccess: (_d, invId) => {
-     toast({ title: "Resent", description: "Reminder delivered." });
+     toast({ title: "Reminder sent", description: "A fresh invitation email with a new link was sent." });
      emitMutationLocal("invitation", invId, "update");
      queryClient.invalidateQueries({ queryKey: [`/api/rounds/${id}/invitations`] });
+   },
+   // v25.55 3a — an already-accepted invite cannot be reminded; surface the
+   // server's typed message rather than a generic error.
+   onError: (e: Error) => {
+     const accepted = (e as ApiError).code === "already_accepted";
+     toast({
+       title: accepted ? "Already accepted" : "Resend failed",
+       description: accepted ? "This investor has already accepted the invitation." : e.message,
+       variant: "destructive",
+     });
    },
  });
 
@@ -204,6 +230,34 @@ export default function RoundDetail() {
      queryClient.invalidateQueries({ queryKey: [`/api/rounds/${id}/invitations`] });
      setRevokeId(null);
    },
+ });
+
+ // v25.55 Q3 — record an existing (off-platform) investor: seat them on the
+ // cap table as already-committed AND send a platform-registration invite.
+ const backfillMut = useMutation({
+   mutationFn: async () => (await apiRequest("POST", `/api/founder/captable/backfill-investor`, {
+     companyId: activeCompanyId,
+     roundId: id,
+     holderFirstName: backfillFirstName.trim(),
+     holderLastName: backfillLastName.trim(),
+     investorEmail: backfillEmail.trim(),
+     amount: backfillAmount.replace(/,/g, "").trim(),
+     shares: backfillShares.replace(/,/g, "").trim(),
+   })).json(),
+   onSuccess: (d) => {
+     toast({
+       title: d?.idempotent ? "Investor already recorded" : "Investor recorded",
+       description: d?.inviteEmailSent
+         ? "Seated on the cap table; a registration invite was emailed."
+         : "Seated on the cap table. A registration invite was created (email delivery may be off).",
+     });
+     emitMutationLocal("round", id, "update");
+     queryClient.invalidateQueries({ queryKey: [`/api/rounds/${id}/invitations`] });
+     queryClient.invalidateQueries({ queryKey: [`/api/rounds/${id}`] });
+     setBackfillOpen(false);
+     setBackfillFirstName(""); setBackfillLastName(""); setBackfillEmail(""); setBackfillAmount(""); setBackfillShares("");
+   },
+   onError: (e: Error) => toast({ title: "Could not record investor", description: e.message, variant: "destructive" }),
  });
 
  const addSoftCircleMut = useMutation({
@@ -332,6 +386,7 @@ export default function RoundDetail() {
  <GlossaryLink />
  <Link href="/founder/rounds"><Button variant="ghost" data-testid="button-back"><ArrowLeft className="h-4 w-4 mr-2" /> All rounds</Button></Link>
  <Button variant="outline" onClick={() => setBulkOpen(true)} data-testid="button-bulk-invite"><Upload className="h-4 w-4 mr-2" /> Bulk CSV</Button>
+ <Button variant="outline" onClick={() => setBackfillOpen(true)} data-testid="button-backfill-investor"><Users className="h-4 w-4 mr-2" /> Record existing investors</Button>
  <Button onClick={() => setInviteOpen(true)} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-invite"><Send className="h-4 w-4 mr-2" /> Invite investor</Button>
  <CollectiveDeepLink entity="round" id={r.id} label="View in Collective Deal Room" />
  </>
@@ -462,13 +517,15 @@ export default function RoundDetail() {
  <div className="font-medium">{i.investorName}</div>
  <div className="text-xs text-muted-foreground">{i.investorEmail}</div>
  </td>
- <td className="px-3 py-3"><StateBadge state={i.state} /></td>
+ {/* v25.55 5b — a resent (still "sent") invite shows a teal "resent" chip. */}
+ <td className="px-3 py-3"><StateBadge state={i.state === "sent" && i.resentAt ? "resent" : i.state} /></td>
  <td className="px-3 py-3 text-muted-foreground">{timeAgo(i.sentAt)}</td>
  <td className="px-3 py-3 text-muted-foreground">{i.viewedAt ? timeAgo(i.viewedAt) : "—"}</td>
  <td className="px-3 py-3 text-muted-foreground">{fmtDate(i.expiresAt)}</td>
  <td className="px-6 py-3 text-right">
  <div className="inline-flex gap-1">
- <Button size="sm" variant="ghost" onClick={() => resendMut.mutate(i.id)} disabled={resendMut.isPending} data-testid={`button-resend-${i.id}`}><Repeat className="h-3.5 w-3.5" /></Button>
+ {/* v25.55 3a — cannot remind an investor who already accepted. */}
+ <Button size="sm" variant="ghost" onClick={() => resendMut.mutate(i.id)} disabled={resendMut.isPending || i.state === "accepted"} data-testid={`button-resend-${i.id}`}><Repeat className="h-3.5 w-3.5" /></Button>
  <Button size="sm" variant="ghost" onClick={() => extendExpiryMut.mutate(i.id)} disabled={extendExpiryMut.isPending} data-testid={`button-expiry-${i.id}`}><Calendar className="h-3.5 w-3.5" /></Button>
  <Button size="sm" variant="ghost" onClick={() => setRevokeId(i.id)} className="text-destructive hover:text-destructive" data-testid={`button-revoke-${i.id}`}><Ban className="h-3.5 w-3.5" /></Button>
  </div>
@@ -714,6 +771,40 @@ export default function RoundDetail() {
  signerEmail={me.data?.identity?.email ?? ""}
  onClose={() => setConfirmSoftId(null)}
  />
+
+ {/* v25.55 Q3 — Record existing investors (backfill) dialog */}
+ <Dialog open={backfillOpen} onOpenChange={setBackfillOpen}>
+ <DialogContent className="max-w-lg">
+ <DialogHeader>
+ <DialogTitle>Record an existing investor</DialogTitle>
+ </DialogHeader>
+ <div className="space-y-3">
+ <p className="text-sm text-muted-foreground">
+ Seat an investor who already committed off-platform directly onto this round's cap table as already-committed. They'll also receive an email inviting them to register so they can log in and communicate.
+ </p>
+ <div className="grid grid-cols-2 gap-3">
+ <div><Label>First name <span className="text-rose-500">*</span></Label><Input className="mt-1" value={backfillFirstName} onChange={e => setBackfillFirstName(e.target.value)} placeholder="First name" data-testid="input-backfill-first-name" /></div>
+ <div><Label>Last name <span className="text-rose-500">*</span></Label><Input className="mt-1" value={backfillLastName} onChange={e => setBackfillLastName(e.target.value)} placeholder="Last name" data-testid="input-backfill-last-name" /></div>
+ </div>
+ <div><Label>Email <span className="text-rose-500">*</span></Label><Input className="mt-1" type="email" value={backfillEmail} onChange={e => setBackfillEmail(e.target.value)} placeholder="investor@firm.com" data-testid="input-backfill-email" /></div>
+ <div className="grid grid-cols-2 gap-3">
+ <div><Label>Amount <span className="text-rose-500">*</span></Label><Input className="mt-1" value={backfillAmount} onChange={e => setBackfillAmount(e.target.value)} placeholder="e.g. 50000" data-testid="input-backfill-amount" /></div>
+ <div><Label>Shares <span className="text-rose-500">*</span></Label><Input className="mt-1" value={backfillShares} onChange={e => setBackfillShares(e.target.value)} placeholder="e.g. 5000" data-testid="input-backfill-shares" /></div>
+ </div>
+ </div>
+ <DialogFooter>
+ <Button variant="ghost" onClick={() => setBackfillOpen(false)}>Cancel</Button>
+ <Button
+ onClick={() => backfillMut.mutate()}
+ disabled={backfillMut.isPending || !backfillFirstName.trim() || !backfillLastName.trim() || !backfillEmail.trim() || !backfillAmount.trim() || !backfillShares.trim()}
+ className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
+ data-testid="button-backfill-submit"
+ >
+ <Users className="h-4 w-4 mr-2" /> Record investor
+ </Button>
+ </DialogFooter>
+ </DialogContent>
+ </Dialog>
 
  {/* Invite dialog */}
  <Dialog open={inviteOpen} onOpenChange={setInviteOpen}>

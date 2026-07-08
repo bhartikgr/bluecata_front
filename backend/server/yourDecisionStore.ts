@@ -69,6 +69,87 @@ async function resolveCtx(req: Request): Promise<UserContext> {
   return getUserContext(req);
 }
 
+/**
+ * v25.54 AVI-1 Fix A — authorize by durable invitation ownership, faithfully
+ * mirroring the working landing path at routes.ts:2067-2122.
+ *
+ * The prior guard read ONLY ctx.investor.invitedRounds, which is empty after a
+ * pm2 restart with RUNTIME_INVITATIONS cleared and (pre-Fix-B) excluded accepted
+ * invites — so a legitimately-invited investor (even one whose invitation is
+ * "accepted") got a spurious 403 NOT_ON_CAP_TABLE.
+ *
+ * Resolution order matches the landing path:
+ *   1. admin bypass (preserved).
+ *   2. MODERN (redeemed/durable) invitation from roundInvitationsStore →
+ *      authorize by email-match. Fail-closed: missing caller email, revoked
+ *      invitation, email mismatch, or round mismatch → deny (403). This is the
+ *      durable path that survives a restart and covers "accepted".
+ *   3. LEGACY mock invitation (incomingInvitations seed) → preserve the existing
+ *      invitedRounds membership check so demo/seed flows and their tests are
+ *      unchanged.
+ *   4. Neither store knows the invitation → 404 (do not reveal existence).
+ */
+type OwnershipResult =
+  | { ok: true }
+  | { ok: false; status: number; body: { error: string; message?: string } };
+
+function authorizeInvitationOwnership(
+  ctx: UserContext,
+  invId: string,
+  roundId: string,
+): OwnershipResult {
+  if (ctx.isAdmin) return { ok: true };
+
+  const modern = getModernInvitation(invId);
+  if (modern) {
+    // Fail-closed on a revoked invitation regardless of any other binding.
+    if (modern.state === "revoked") {
+      return {
+        ok: false,
+        status: 403,
+        body: { error: "NOT_ON_CAP_TABLE", message: "You are not invited to this round." },
+      };
+    }
+    const callerEmail = (ctx.identity?.email ?? "").toLowerCase();
+    const inviteEmail = (modern.investorEmail ?? "").toLowerCase();
+    const roundMatches = !roundId || modern.roundId === roundId;
+    // Primary (AVI-1): durable email-match ownership — survives a pm2 restart
+    // that clears RUNTIME_INVITATIONS and covers the "accepted" state.
+    const emailMatch = !!callerEmail && callerEmail === inviteEmail && roundMatches;
+    // Superset (v24.1 Bug D): a persona bound to this invitation via the redeem
+    // path (invitedRounds) stays authorized even when its persona email differs
+    // from the invitation email. This is a strict OR over email-match, so it can
+    // never regress Bug D while still restoring the restart-durable path.
+    const boundByInvitation = ctx.investor.invitedRounds.some(
+      (r) => r.invitationId === invId || r.roundId === modern.roundId,
+    );
+    if (!emailMatch && !boundByInvitation) {
+      return {
+        ok: false,
+        status: 403,
+        body: { error: "NOT_ON_CAP_TABLE", message: "You are not invited to this round." },
+      };
+    }
+    return { ok: true };
+  }
+
+  // Legacy mock invitation (demo seed) — keep the original membership contract.
+  const legacy = incomingInvitations.find((i) => i.id === invId);
+  if (legacy) {
+    const hasInv = ctx.investor.invitedRounds.some((r) => r.invitationId === invId || r.roundId === roundId);
+    if (!hasInv) {
+      return {
+        ok: false,
+        status: 403,
+        body: { error: "NOT_ON_CAP_TABLE", message: "You are not invited to this round." },
+      };
+    }
+    return { ok: true };
+  }
+
+  return { ok: false, status: 404, body: { error: "invitation_not_found" } };
+}
+
 export type DecisionRecord = {
   invitationId: string;
   roundId: string;
@@ -329,13 +410,11 @@ export function registerYourDecisionRoutes(app: Express): void {
     if (!ctx.isAuthed) {
       return res.status(401).json({ error: "NOT_AUTHED", message: "Sign in to continue." });
     }
-    // Ownership check: investor must have this invId in their invitedRounds
-    // (unless they are admin).
-    if (!ctx.isAdmin) {
-      const hasInv = ctx.investor.invitedRounds.some(r => r.invitationId === invId || r.roundId === roundId);
-      if (!hasInv) {
-        return res.status(403).json({ error: "NOT_ON_CAP_TABLE", message: "You are not invited to this round." });
-      }
+    // Ownership check (v25.54 AVI-1 Fix A): authorize by durable invitation
+    // ownership (email-match) rather than the restart-fragile invitedRounds set.
+    const auth = authorizeInvitationOwnership(ctx, invId, roundId);
+    if (!auth.ok) {
+      return res.status(auth.status).json(auth.body);
     }
     const rec = ensureRecord(invId);
     if (!rec) return res.status(404).json({ error: "invitation_not_found" });
@@ -351,11 +430,10 @@ export function registerYourDecisionRoutes(app: Express): void {
     if (!ctx.isAuthed) {
       return res.status(401).json({ error: "NOT_AUTHED", message: "Sign in to continue." });
     }
-    if (!ctx.isAdmin) {
-      const hasInv = ctx.investor.invitedRounds.some(r => r.invitationId === invId || r.roundId === roundId);
-      if (!hasInv) {
-        return res.status(403).json({ error: "NOT_ON_CAP_TABLE", message: "You are not invited to this round." });
-      }
+    // Ownership check (v25.54 AVI-1 Fix A): durable email-match ownership.
+    const auth = authorizeInvitationOwnership(ctx, invId, roundId);
+    if (!auth.ok) {
+      return res.status(auth.status).json(auth.body);
     }
     const parsed = yourDecisionPatchSchema.safeParse(req.body);
     if (!parsed.success) {

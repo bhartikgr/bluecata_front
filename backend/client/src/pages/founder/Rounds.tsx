@@ -12,13 +12,13 @@ import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { StateBadge, EmptyState } from "@/components/common";
-import { Plus, Briefcase, Calendar, Users, ArrowRight, Lock } from "lucide-react";
+import { Plus, Briefcase, Calendar, Users, ArrowRight, Lock, Archive, ArchiveRestore } from "lucide-react";
 import { fmtUSD, fmtPct, fmtDate } from "@/lib/format";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useActiveCompanyId } from "@/lib/useActiveCompany";
 
-type Round = { id: string; company: string; name: string; type: string; state: string; targetAmount: number; raisedAmount: number; preMoney: number | null; postMoney: number | null; pricePerShare: number | null; minTicket: number | null; closeDate: string; termsSummary?: string; instrument?: string | null; valuationCap?: number | null; discount?: number | null; interestRate?: number | null; maturityMonths?: number | null; strikePrice?: number | null; expiryYears?: number | null; mfn?: boolean | null };
+type Round = { id: string; company: string; name: string; type: string; state: string; targetAmount: number; raisedAmount: number; preMoney: number | null; postMoney: number | null; pricePerShare: number | null; minTicket: number | null; closeDate: string; termsSummary?: string; instrument?: string | null; valuationCap?: number | null; discount?: number | null; interestRate?: number | null; maturityMonths?: number | null; strikePrice?: number | null; expiryYears?: number | null; mfn?: boolean | null; archivedAt?: string | null };
 
 // BUG 034 — group instruments so the Edit-Terms dialog can show the right
 // field set. Priced rounds use pre/post-money + PPS; SAFEs and notes use a
@@ -102,6 +102,33 @@ export default function Rounds() {
   });
   const [editingRound, setEditingRound] = useState<Round | null>(null);
   const [, setLocation] = useLocation();
+  const { toast } = useToast();
+
+  // v25.54 G0-2 — archive / unarchive. Archived rounds stay VISIBLE-BUT-INERT.
+  // The server refuses (409 ROUND_HAS_CAPTABLE_ENTRIES) if the round has any
+  // committed or in-flight cap-table entries; surface that message verbatim.
+  const archiveMut = useMutation({
+    mutationFn: async (vars: { id: string; archived: boolean }) => {
+      const path = vars.archived
+        ? `/api/founder/rounds/${vars.id}/unarchive`
+        : `/api/founder/rounds/${vars.id}/archive`;
+      const res = await apiRequest("POST", path);
+      return res.json();
+    },
+    onSuccess: (data, vars) => {
+      if (data?.ok) {
+        toast({ title: vars.archived ? "Round unarchived" : "Round archived" });
+        queryClient.invalidateQueries({ queryKey: ["/api/rounds"] });
+      } else {
+        toast({
+          title: vars.archived ? "Unarchive failed" : "Archive failed",
+          description: data?.message ?? data?.error ?? "Please try again.",
+          variant: "destructive",
+        });
+      }
+    },
+    onError: () => toast({ title: "Request failed", variant: "destructive" }),
+  });
 
   return (
     <>
@@ -127,8 +154,9 @@ export default function Rounds() {
           <div className="grid gap-4">
             {rounds.data?.map(r => {
               const pct = r.targetAmount > 0 ? (r.raisedAmount / r.targetAmount) * 100 : 0;
+              const isArchived = Boolean(r.archivedAt);
               return (
-                <Card key={r.id} data-testid={`card-round-${r.id}`}>
+                <Card key={r.id} data-testid={`card-round-${r.id}`} style={isArchived ? { opacity: 0.6, borderColor: "var(--cv-color-border)" } : undefined}>
                   <CardContent className="p-5">
                     <div className="flex flex-col md:flex-row md:items-start gap-5">
                       <div className="flex-1 min-w-0">
@@ -136,6 +164,14 @@ export default function Rounds() {
                           <h3 className="text-lg font-semibold">{r.name}</h3>
                           <StateBadge state={r.state} />
                           <Badge variant="outline" className="text-[10px] uppercase tracking-wide">{TYPE_LABEL[r.type] ?? r.type}</Badge>
+                          {isArchived && (
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] uppercase tracking-wide"
+                              style={{ color: "var(--cv-color-text-muted)", borderColor: "var(--cv-color-border)" }}
+                              data-testid={`badge-archived-${r.id}`}
+                            >Archived</Badge>
+                          )}
                         </div>
                         <div className="flex flex-wrap gap-x-5 gap-y-1 text-sm text-muted-foreground">
                           <span className="flex items-center gap-1.5"><Briefcase className="h-3.5 w-3.5" /> {r.company}</span>
@@ -167,21 +203,41 @@ export default function Rounds() {
                         <Link href={`/founder/rounds/${r.id}`}>
                           <Button className="w-full" variant="outline" data-testid={`button-open-${r.id}`}>Open <ArrowRight className="h-4 w-4 ml-2" /></Button>
                         </Link>
-                        {CLOSED_STATES.has(r.state) ? (
-                          <TooltipProvider>
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <span className="w-full inline-block">
-                                  <Button variant="ghost" className="w-full text-muted-foreground" disabled aria-disabled="true" data-testid={`button-edit-${r.id}`}>
-                                    <Lock className="h-3.5 w-3.5 mr-2" /> Edit terms
-                                  </Button>
-                                </span>
-                              </TooltipTrigger>
-                              <TooltipContent>Closed rounds are read-only</TooltipContent>
-                            </Tooltip>
-                          </TooltipProvider>
+                        {isArchived ? (
+                          // Archived rounds are inert: no edit; only un-archive.
+                          <Button
+                            variant="ghost"
+                            className="w-full text-muted-foreground"
+                            onClick={() => archiveMut.mutate({ id: r.id, archived: true })}
+                            disabled={archiveMut.isPending}
+                            data-testid={`button-unarchive-${r.id}`}
+                          ><ArchiveRestore className="h-3.5 w-3.5 mr-2" /> Unarchive</Button>
                         ) : (
-                          <Button variant="ghost" className="w-full text-muted-foreground" onClick={() => setEditingRound(r)} data-testid={`button-edit-${r.id}`}>Edit terms</Button>
+                          <>
+                            {CLOSED_STATES.has(r.state) ? (
+                              <TooltipProvider>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <span className="w-full inline-block">
+                                      <Button variant="ghost" className="w-full text-muted-foreground" disabled aria-disabled="true" data-testid={`button-edit-${r.id}`}>
+                                        <Lock className="h-3.5 w-3.5 mr-2" /> Edit terms
+                                      </Button>
+                                    </span>
+                                  </TooltipTrigger>
+                                  <TooltipContent>Closed rounds are read-only</TooltipContent>
+                                </Tooltip>
+                              </TooltipProvider>
+                            ) : (
+                              <Button variant="ghost" className="w-full text-muted-foreground" onClick={() => setEditingRound(r)} data-testid={`button-edit-${r.id}`}>Edit terms</Button>
+                            )}
+                            <Button
+                              variant="ghost"
+                              className="w-full text-muted-foreground"
+                              onClick={() => archiveMut.mutate({ id: r.id, archived: false })}
+                              disabled={archiveMut.isPending}
+                              data-testid={`button-archive-${r.id}`}
+                            ><Archive className="h-3.5 w-3.5 mr-2" /> Archive</Button>
+                          </>
                         )}
                       </div>
                     </div>

@@ -50,6 +50,7 @@ import { registerMaIntelligenceRoutes } from "./maIntelligenceStore";
 import { registerCrmRoutes } from "./crmStore";
 import { registerCollectiveAppRoutes } from "./collectiveAppStore";
 import { registerFounderCollectiveApplyRoutes } from "./founderCollectiveApplyStore";
+import { registerInvestorAccreditationRoutes } from "./investorComplianceRoutes"; /* W3-B C-5 — accreditation self-declaration capture */
 import { registerFounderSearchRoutes } from "./founderSearchStore"; /* v25.45.4 H-2 — global search */
 import { registerProfileWizardStateRoutes } from "./profileWizardStateStore"; /* v25.45.4 M-4 — wizard persistence */
 import { registerCollectiveWaitlistRoutes } from "./collectiveWaitlistRoutes"; /* v16 Fix 6 */
@@ -75,6 +76,7 @@ import { registerCompanyLogoRoutes } from "./lib/companyLogoRoutes";
 import { registerReportsRoutes, listAllReportsFromDb as reportsStoreGetAll } from "./reportsStore"; // v25.48 DATA-2 (V-5, strict) — DB-direct all-reports reader (not the in-memory cache)
 import { registerFounderCrmRoutes, listByFounder as crmListByFounder, crmMarkInvitedRegistered } from "./founderCrmStore";
 import { registerCaptableCommitRoutes, getLedger } from "./captableCommitStore";
+import { registerFounderOpsRoutes } from "./founderOpsRoutes";
 import { registerCaptableCommitV2548Routes } from "./lib/captableCommitV2548"; /* v25.48 B2 + B5 — parallel batch commit (per-entry founder amount) + attestation */
 import { registerInvestmentSignalsV2548Routes } from "./lib/investmentSignalsV2548"; /* v25.48 B3 + B4 — docs-sent flag + investor wired advisory */
 import { seedInvestorCrmFromInvitation, resolveInviterForInvestorCrm } from "./lib/investorCrmInvitationSeed"; /* v25.48 B1 — investor-side CRM auto-seed; v25.48.3 Q-K2 — enrich founder/company fields */
@@ -98,6 +100,8 @@ import {
   listForRound as roundInvitationsListForRound,
   revokeInvitation as roundInvitationsRevoke,
   extendInvitation as roundInvitationsExtend,
+  resendInvitation as roundInvitationsResend,
+  notifyInvitationRevoked as roundInvitationsNotifyRevoked,
   getInvitation as roundInvitationsGet,
   listForInvestorEmail as roundInvitationsListForEmail, // B-509 fix v23.6
   // L-009 fix v23.4.13: bridge legacy invitationStore → roundInvitationsStore
@@ -376,6 +380,21 @@ function mergeLegacyAndDbRounds(): any[] {
   return [...legacy, ...extras];
 }
 
+/**
+ * v25.54 G0-2 read-path helper. The legacy in-memory `rounds` seed predates the
+ * `archived_at` column, so a round present in BOTH the legacy seed and the
+ * DB-hydrated `roundsStore` surfaces (via `mergeLegacyAndDbRounds`, which
+ * prefers the legacy copy) with its archived state stripped. Rather than mutate
+ * the shared merge result — several PATCH handlers persist by mutating the live
+ * object it returns, so the helper must keep returning references — this
+ * resolves the DB-authoritative `archivedAt` for a single round id at RESPONSE
+ * time only, falling back to whatever the merged copy already carried.
+ */
+function resolveArchivedAt(roundId: string, fallback: unknown): string | null {
+  const dbRound = roundsStoreGetById(roundId) as { archivedAt?: string | null } | undefined;
+  return dbRound?.archivedAt ?? (fallback as string | null | undefined) ?? null;
+}
+
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   /* ------------ v19 Phase C: correlation id MUST be the very first middleware
    * so every downstream log line, audit_log row, and SSE heartbeat can carry
@@ -535,6 +554,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   registerCrmRoutes(app);
   registerCollectiveAppRoutes(app);
   registerFounderCollectiveApplyRoutes(app);
+  registerInvestorAccreditationRoutes(app); /* W3-B C-5 — accreditation self-declaration capture */
   registerFounderSearchRoutes(app); /* v25.45.4 H-2 — founder global search */
   registerProfileWizardStateRoutes(app); /* v25.45.4 M-4 — profile wizard persistence */
   /* v16 Fix 6 — Collective Waitlist (honest invite-only beta entry point).
@@ -647,6 +667,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   registerReportsRoutes(app);
   registerFounderCrmRoutes(app);
   registerCaptableCommitRoutes(app);
+  registerFounderOpsRoutes(app); /* v25.54 G0-1 seed-founder-shares + G0-2 round archive */
   registerCaptableCommitV2548Routes(app); /* v25.48 B2 + B5 — parallel commit wrapper */
   registerInvestmentSignalsV2548Routes(app); /* v25.48 B3 + B4 — docs-sent + wired advisory */
 
@@ -1565,6 +1586,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // PATCH v3 Bug 4a: coerce pricePerShare to number (never string) to prevent .toFixed crash
       pricePerShare: r.pricePerShare != null ? Number(r.pricePerShare) : null,
       company: companies.find(c => c.id === r.companyId)?.name ?? "Unknown",
+      // v25.54 G0-2 read-path: surface DB-authoritative archived state so the
+      // client can render archived rounds as greyed/inert.
+      archivedAt: resolveArchivedAt(r.id, r.archivedAt),
     }));
     res.json(enriched);
   });
@@ -1607,7 +1631,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       ];
     } catch { /* pipeline is best-effort; never block the round read */ }
     // PATCH v3 Bug 4a: coerce pricePerShare to number
-    res.json({ ...r, pricePerShare: r.pricePerShare != null ? Number(r.pricePerShare) : null, company: companies.find(c => c.id === r.companyId)?.name, pipeline });
+    res.json({ ...r, pricePerShare: r.pricePerShare != null ? Number(r.pricePerShare) : null, company: companies.find(c => c.id === r.companyId)?.name, archivedAt: resolveArchivedAt(r.id, r.archivedAt), pipeline });
   });
 
   /* Sprint 18 T5.1 — Edit Terms (active rounds only) — requireAuth */
@@ -2758,9 +2782,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  // Founder — resend the invitation (re-issues an email). Reuses existing
-  // token hash to keep the link stable; we DO NOT generate a new raw token,
-  // we simply re-send a notification.
+  // Founder — resend the invitation. v25.55 5a/5b (Ozan Caveat A): this now
+  // ROTATES the token (mints a new raw token, updates token_hash) and emails a
+  // working redeem link; the old link stops working. It also stamps resent_at
+  // (durable) so the UI can show a "resent" chip. v25.55 3a: an already-accepted
+  // invitation cannot be reminded — return a typed conflict without sending.
   app.post("/api/rounds/:id/invitations/:invId/resend", requireAuth, async (req, res) => {
     const check = requireFounderOwnsRound(req, res);
     if (!check.ok) return;
@@ -2775,8 +2801,32 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (inv.roundId !== paramStr(req.params.id) || (check.companyId && inv.companyId !== check.companyId)) {
       return res.status(404).json({ ok: false, error: "invitation_not_found" });
     }
-    emitMutation({ aggregate: "invitation", id: invId, change: "update", tenantId: inv.tenantId ?? undefined });
-    return res.json({ ok: true, invitation: inv });
+    // v25.55 3a — do NOT remind an investor who already accepted. Return a
+    // typed conflict and send nothing (no email, no "delivered" mutation).
+    if (inv.state === "accepted") {
+      return res.status(409).json({
+        ok: false,
+        error: "already_accepted",
+        message: "This investor has already accepted the invitation.",
+      });
+    }
+    try {
+      const result = await roundInvitationsResend(invId, check.userId ?? "founder");
+      const updated = roundInvitationsGet(invId);
+      return res.json({
+        ok: true,
+        invitation: updated ?? inv,
+        emailSent: result.emailSent,
+        emailMode: result.emailMode,
+        resentAt: result.resentAt,
+      });
+    } catch (err) {
+      const msg = (err as Error).message ?? "";
+      if (msg === "invitation_not_found") {
+        return res.status(404).json({ ok: false, error: "invitation_not_found" });
+      }
+      return res.status(500).json({ ok: false, error: "INVITATION_RESEND_FAILED" });
+    }
   });
 
   // Founder — extend expiry.
@@ -2799,8 +2849,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     return res.json({ ok: true, invitation: inv, extendedDays: extendDays });
   });
 
-  // Founder — revoke.
-  app.delete("/api/rounds/:id/invitations/:invId", requireAuth, (req, res) => {
+  // Founder — revoke. v25.55 4a (Ozan Scenario 2): an accepted invite can now
+  // be revoked (access is cut because buildInvitedRounds filters out `revoked`);
+  // after a successful revoke we email the investor that the round is no longer
+  // available. The CRM row is independent and is intentionally left intact.
+  app.delete("/api/rounds/:id/invitations/:invId", requireAuth, async (req, res) => {
     const check = requireFounderOwnsRound(req, res);
     if (!check.ok || !check.userId) return;
     const invId = paramStr(req.params.invId);
@@ -2812,6 +2865,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(404).json({ ok: false, error: "invitation_not_found" });
     }
     roundInvitationsRevoke(invId, check.userId);
+    // v25.55 4a — best-effort "round no longer available" notification. A send
+    // failure must not fail the revoke (the state change already persisted).
+    try {
+      await roundInvitationsNotifyRevoked(invId);
+    } catch { /* non-fatal */ }
     return res.json({ ok: true, invId });
   });
 
@@ -4136,13 +4194,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(400).json({ error: "invalid_closeDate", message: "Close date must be on or after the open date." });
       }
     }
-    // v25.53 3a / N4 — fail-closed date guards (server backstop for the wizard).
-    //  3a: block Open / Target-close dates in the past (< today, calendar day).
+    // Shadie V6 1a (Ozan spec) / N4 — fail-closed date guards (server backstop
+    // for the wizard). Past Open / Target-close dates are now ALLOWED (founders
+    // may record a historical/closed round); we KEEP the close<open guard above
+    // and the N4 validity checks below.
     //  N4: reject a malformed year (a native date picker yields yyyy-mm-dd; a
     //      concatenated "07062026" would surface as a non-4-digit year such as
-    //      70620). Both return a typed 400 so the client can highlight the field.
+    //      70620), and reject impossible calendar dates. Both return a typed 400
+    //      so the client can highlight the field.
     {
-      const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
       const checkDate = (key: "openDate" | "closeDate", label: string): { error: string; message: string } | null => {
         const v = (body as Record<string, unknown>)[key];
         if (typeof v !== "string" || !v) return null;
@@ -4168,9 +4228,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const t = new Date(v.trim() + "T00:00:00").getTime();
         if (!Number.isFinite(t)) {
           return { error: `invalid_${key}`, message: `${label} must be a valid date.` };
-        }
-        if (t < todayStart.getTime()) {
-          return { error: `invalid_${key}`, message: `${label} cannot be in the past.` };
         }
         return null;
       };
@@ -4545,9 +4602,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         // eslint-disable-next-line @typescript-eslint/no-var-requires
         const inv = require("./roundInvitationsStore").getInvitation(invId);
         if (!inv) return res.status(404).json({ ok: false, error: "invitation_not_found" });
+        // v25.54 AVI-1 Fix A — authorize by durable invitation ownership
+        // (email-match), mirroring the landing path (routes.ts ~2077). The prior
+        // invitedRounds-only check misfired for legitimately-invited (even
+        // accepted) investors after a restart. We authorize via email-match on
+        // the durable invitation OR the legacy invitedRounds membership (superset:
+        // only ADDS the restart-safe path, never removes an existing one).
+        // Fail-closed on a revoked invitation: deny regardless of which branch
+        // (emailMatch OR legacyMatch) would otherwise authorize, mirroring the
+        // revoked-first denial in yourDecisionStore.authorizeInvitationOwnership.
         if (!ctx.isAdmin) {
-          const hasInv = ctx.investor?.invitedRounds?.some((r: any) => r.invitationId === invId || r.roundId === inv.roundId);
-          if (!hasInv) return res.status(403).json({ ok: false, error: "NOT_ON_CAP_TABLE" });
+          if (inv.state === "revoked") {
+            return res.status(403).json({ ok: false, error: "NOT_ON_CAP_TABLE" });
+          }
+          const callerEmail = (ctx.identity?.email ?? "").toLowerCase();
+          const inviteEmail = (inv.investorEmail ?? "").toLowerCase();
+          const emailMatch = Boolean(callerEmail) && callerEmail === inviteEmail;
+          const legacyMatch = ctx.investor?.invitedRounds?.some((r: any) => r.invitationId === invId || r.roundId === inv.roundId) ?? false;
+          if (!emailMatch && !legacyMatch) {
+            return res.status(403).json({ ok: false, error: "NOT_ON_CAP_TABLE" });
+          }
         }
         // eslint-disable-next-line @typescript-eslint/no-var-requires
         const yds = require("./yourDecisionStore");

@@ -694,6 +694,44 @@ function applyV2533PartnerPaymentSchema(db: any) {
       updated_at   TEXT,
       deleted_at   TEXT
     );`,
+
+    /* W2-H — Consortium Partner SPV LP invites. Additive/idempotent; mirrors
+     * migration 0101. last_name is NOT NULL (rule #13 mandatory name capture).
+     * Hash-chained per (partner, spv) via prev_hash/curr_hash. */
+    `CREATE TABLE IF NOT EXISTS spv_lp_invite (
+      id          TEXT PRIMARY KEY NOT NULL,
+      tenant_id   TEXT,
+      partner_id  TEXT NOT NULL,
+      spv_id      TEXT NOT NULL,
+      email       TEXT NOT NULL,
+      first_name  TEXT,
+      last_name   TEXT NOT NULL,
+      note        TEXT,
+      status      TEXT NOT NULL DEFAULT 'invited',
+      prev_hash   TEXT,
+      curr_hash   TEXT,
+      created_at  TEXT NOT NULL,
+      created_by  TEXT,
+      deleted_at  TEXT
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_lp_invite_lookup ON spv_lp_invite(partner_id, spv_id, deleted_at);`,
+
+    /* W3-B / C-5 — Investor accredited-investor self-declaration capture.
+     * Append-only, hash-chained per investor. signature_name NOT NULL (rule #13).
+     * Additive/idempotent; mirrors migration 0103 (both dirs). */
+    `CREATE TABLE IF NOT EXISTS investor_accreditation_declaration (
+      id              TEXT PRIMARY KEY NOT NULL,
+      investor_id     TEXT NOT NULL,
+      clause_version  TEXT NOT NULL,
+      criteria_json   TEXT NOT NULL,
+      signature_name  TEXT NOT NULL,
+      signed_at       TEXT NOT NULL,
+      jurisdiction    TEXT,
+      created_at      TEXT NOT NULL,
+      prev_hash       TEXT,
+      curr_hash       TEXT
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_iad_investor ON investor_accreditation_declaration (investor_id, signed_at);`,
   ];
   try {
     const tx = db.transaction(() => { for (const sql of tables) db.exec(sql); });
@@ -754,6 +792,19 @@ function applyV2533PartnerPaymentSchema(db: any) {
     ["companies", "ALTER TABLE companies ADD COLUMN archive_retention_until TEXT"],
     ["companies", "ALTER TABLE companies ADD COLUMN archive_status TEXT DEFAULT 'active'"],
     ["companies", "ALTER TABLE companies ADD COLUMN last_active_plan TEXT"],
+
+    // v25.54 G0-2 — founder round-archive. Additive NULLABLE column; archived
+    // rounds stay VISIBLE (unlike deleted_at) but are rendered inert. Mirrors
+    // migration 0100. Idempotent (duplicate-column swallowed below).
+    ["rounds", "ALTER TABLE rounds ADD COLUMN archived_at TEXT"],
+
+    // W2-I — Consortium Partner Agreement sign-off captured AT APPLICATION.
+    // Additive NULLABLE columns on the application table; mirrors migration
+    // 0102. Carried to contacts.partner_agreement_* on approval.
+    ["consortium_applications", "ALTER TABLE consortium_applications ADD COLUMN agreement_version TEXT"],
+    ["consortium_applications", "ALTER TABLE consortium_applications ADD COLUMN agreement_signed_name TEXT"],
+    ["consortium_applications", "ALTER TABLE consortium_applications ADD COLUMN agreement_signed_at TEXT"],
+    ["consortium_applications", "ALTER TABLE consortium_applications ADD COLUMN agreement_signature_hash TEXT"],
   ];
   for (const [table, sql] of alters) {
     try {
@@ -1198,6 +1249,8 @@ function applyV12AdditiveAlters(db: any) {
     ["consortium_applications", "ALTER TABLE consortium_applications ADD COLUMN contact_last_name TEXT"],
     ["round_invitations", "ALTER TABLE round_invitations ADD COLUMN investor_first_name TEXT"],
     ["round_invitations", "ALTER TABLE round_invitations ADD COLUMN investor_last_name TEXT"],
+    // Shadie V6 5b (migration 0104) — durable "resent" marker.
+    ["round_invitations", "ALTER TABLE round_invitations ADD COLUMN resent_at TEXT"],
     ["soft_circles", "ALTER TABLE soft_circles ADD COLUMN investor_first_name TEXT"],
     ["soft_circles", "ALTER TABLE soft_circles ADD COLUMN investor_last_name TEXT"],
     // ---- v25.51 name-split Phase 2 — core identity (users.name kept composed). ----

@@ -26,11 +26,13 @@ import { createHash, randomBytes } from "node:crypto";
 import type { Express, Request, Response } from "express";
 import multer from "multer"; /* v25.50 Phase 7 (10) — real tax-form document upload. */
 import { requirePartnerAuth, requirePartnerSubrole } from "./requirePartnerAuth";
+import { requireSignedAgreement } from "./requireSignedAgreement";
 import { rawDb } from "../db/connection";
 import { appendAdminAudit } from "../adminPlatformStore";
 import { sanitizeErrorMessage } from "./sanitize"; /* v25.33 — scrub raw err.message from client responses in prod (backlog item 33 extension). */
 import { resolveChargeTier } from "./partnerTiers"; /* v25.48 CP-2b — advertised price == charged price: the SAME tier row the pricing page advertises is the ONLY charge source (no legacy fee-schedule fallback). Replaces the prior resolvePartnerFee path for partner subscription charges. */
 import { putObject, getObject } from "./objectStorage"; /* v25.50 Phase 7 (10) — store/serve tax-form docs via the sanctioned object-storage layer. */
+import { CONSORTIUM_AGREEMENT_VERSION, CONSORTIUM_AGREEMENT_TEXT } from "@shared/consortiumAgreement"; /* W2-I — viewable+configurable agreement text/version. */
 
 /* v25.50 Phase 7 (10) — tax-form document upload constraints. PDF + common
  * image types only; 15MB cap (parity with post attachments). memoryStorage so
@@ -53,11 +55,33 @@ function isNonEmptyString(v: unknown): v is string {
  * Sourced from env with documented defaults (mirrors adminEmailRoutes.ts env use).
  * If a future admin surface manages these in the DB, swap these reads for a DB
  * lookup — callers below already treat them as opaque config. */
-function currentAgreement(): { version: string; url: string | null } {
+function currentAgreement(): { version: string; url: string | null; text: string } {
   return {
-    version: process.env.PARTNER_AGREEMENT_VERSION ?? "v1",
+    // W2-I — version + viewable text come from the shared config module so
+    // counsel's final copy can replace them with NO code surgery. Env can still
+    // override the version tag (e.g. to force a re-signature ahead of a code
+    // deploy) and supply a hosted document URL.
+    version: process.env.PARTNER_AGREEMENT_VERSION ?? CONSORTIUM_AGREEMENT_VERSION,
     url: process.env.PARTNER_AGREEMENT_URL ?? null,
+    text: CONSORTIUM_AGREEMENT_TEXT,
   };
+}
+
+/** W2-I — read the DURABLE signed state for a partner from contacts (never the
+ *  mutable onboarding_state JSON). Returns null when no row/kind mismatch. */
+function readAgreementSignedState(pid: string): { signed: boolean; signedAt: string | null; version: string | null } {
+  try {
+    const row = rawDb()
+      .prepare(
+        `SELECT partner_agreement_signed_at AS signedAt, partner_agreement_version AS version
+           FROM contacts WHERE id = ? AND kind = 'consortium_partner'`,
+      )
+      .get(pid) as { signedAt: string | null; version: string | null } | undefined;
+    const signedAt = row?.signedAt ?? null;
+    return { signed: !!signedAt, signedAt, version: row?.version ?? null };
+  } catch {
+    return { signed: false, signedAt: null, version: null };
+  }
 }
 
 const ALLOWED_FORM_TYPES = new Set(["W-9", "W-8BEN", "W-8BEN-E", "T4A"]);
@@ -185,6 +209,34 @@ export function registerPartnerSelfServiceRoutes(app: Express): void {
    * / _signed_at / _signature_hash (a hash of name+version+timestamp, never the
    * raw signature) and writes an audit_log entry. Auth: managing_partner.
    * ========================================================== */
+  /* ==========================================================
+   * W2-I — GET /api/partner/me/agreement — viewable terms + DURABLE signed
+   * state (read off contacts.partner_agreement_signed_at, never onboarding
+   * JSON). Open to any authenticated partner role so the sign page + the
+   * gate-redirect flow can render the current state. Signing itself remains
+   * managing_partner-only (the POST below).
+   * ========================================================== */
+  app.get(
+    "/api/partner/me/agreement",
+    requirePartnerAuth,
+    (req: Request, res: Response) => {
+      const pid = req.partnerContext!.partnerId;
+      const agreement = currentAgreement();
+      const state = readAgreementSignedState(pid);
+      // "signed" for THIS version: a stale signature against an older version
+      // does not satisfy the current version (clause 14 re-signature).
+      const signedCurrent = state.signed && state.version === agreement.version;
+      res.json({
+        agreement,
+        signed: state.signed,
+        signedCurrent,
+        signedAt: state.signedAt,
+        signedVersion: state.version,
+        canSign: req.partnerContext!.partnerSubRole === "managing_partner",
+      });
+    },
+  );
+
   app.post(
     "/api/partner/me/agreement",
     requirePartnerAuth,
@@ -240,6 +292,7 @@ export function registerPartnerSelfServiceRoutes(app: Express): void {
     "/api/partner/me/tax-form",
     requirePartnerAuth,
     requirePartnerSubrole(["managing_partner"]),
+    requireSignedAgreement,
     (req: Request, res: Response) => {
       const pid = req.partnerContext!.partnerId;
       const body = (req.body ?? {}) as {
@@ -298,6 +351,7 @@ export function registerPartnerSelfServiceRoutes(app: Express): void {
     "/api/partner/me/tax-form/upload",
     requirePartnerAuth,
     requirePartnerSubrole(["managing_partner"]),
+    requireSignedAgreement,
     (req: Request, res: Response) => {
       taxDocUpload.single("file")(req, res, async (uploadErr: unknown) => {
         if (uploadErr) {
@@ -375,6 +429,7 @@ export function registerPartnerSelfServiceRoutes(app: Express): void {
     "/api/partner/me/subscribe",
     requirePartnerAuth,
     requirePartnerSubrole(["managing_partner"]),
+    requireSignedAgreement,
     (req: Request, res: Response) => {
       const pid = req.partnerContext!.partnerId;
       const tier = req.partnerContext!.tier;

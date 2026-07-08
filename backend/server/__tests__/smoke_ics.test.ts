@@ -14,6 +14,7 @@ import { registerRoutes } from "../routes";
 import { getDb } from "../db/connection";
 import { seedDemoData } from "../lib/seedDemoData";
 import * as collectiveMembershipStore from "../collectiveMembershipStore";
+import { upsertCapTablePositionForTests } from "../membershipStore";
 import { hydrateMultiCompanyStore } from "../multiCompanyStore";
 
 const CHAPTER_ID = "chap_keiretsu_canada";
@@ -31,6 +32,7 @@ beforeAll(async () => {
   await hydrateMultiCompanyStore();
   for (const uid of [MAYA, AISHA]) {
     collectiveMembershipStore.activate(uid, "u_admin_test");
+    upsertCapTablePositionForTests(uid); // W3-C: cap-table hard gate needs a position
   }
   app = express();
   app.use(express.json());

@@ -23,7 +23,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { registerRoutes } from "../routes";
-import { getDb } from "../db/connection";
+import { getDb, rawDb } from "../db/connection";
 import { seedDemoData } from "../lib/seedDemoData";
 import { seedTestPartnerSandbox, partnerTeamStore, TEST_PARTNER_USERS } from "../partnerWorkspaceStore";
 import { _registerSeedPartner } from "../adminContactsStoreShim";
@@ -83,6 +83,31 @@ beforeAll(async () => {
     partnerType: "accelerator",
   });
   partnerTeamStore.add(PARTNER_B, MANAGING_B, "managing_partner", "u_system_seed", { isSeed: true });
+
+  // W2-I override — the fail-closed requireSignedAgreement gate now fronts every
+  // partner WRITE route (incl. these portfolio/CRM/deal writes). These are
+  // cross-partner ISOLATION tests: to exercise the ownership/isolation logic
+  // (NOT_OWNER / 404) rather than being short-circuited by the sign gate, stamp
+  // a signed durable contacts row for Partner B, exactly as seedTestPartnerSandbox
+  // already does for Partner A.
+  try {
+    const now = new Date().toISOString();
+    rawDb()
+      .prepare(
+        `INSERT INTO contacts
+           (id, kind, legal_name, status, verification, created_at, updated_at,
+            created_by, updated_by, version, prev_revision_hash, revision_hash,
+            partner_agreement_version, partner_agreement_signed_at)
+         VALUES (?, 'consortium_partner', ?, 'active', 'verified', ?, ?, 'u_system_seed', 'u_system_seed',
+                 1, ?, ?, 'CPA-v0.1-DRAFT', ?)
+         ON CONFLICT(id) DO UPDATE SET
+           partner_agreement_version = excluded.partner_agreement_version,
+           partner_agreement_signed_at = excluded.partner_agreement_signed_at`,
+      )
+      .run(PARTNER_B, "V19B ISOLATION PARTNER", now, now, "0".repeat(64), "0".repeat(64), now);
+  } catch {
+    /* durable contacts table may be absent in some seed contexts */
+  }
 
   await hydratePartnerWorkspaceV19Store();
 

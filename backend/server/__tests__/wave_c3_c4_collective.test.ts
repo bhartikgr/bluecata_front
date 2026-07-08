@@ -38,6 +38,7 @@ import { __clearDscFeedback, ingestDscScores } from "../dscFeedbackStore";
 import { __clearTransactionPrep, createChannel } from "../transactionPrepStore";
 import { emitMutation } from "../lib/eventBus";
 import * as collectiveMembershipStore from "../collectiveMembershipStore"; /* v14 Tier-1 Fix 3 */
+import { upsertCapTablePositionForTests } from "../membershipStore"; /* W3-C — C-5 cap-table sub-check seam */
 
 /* ============================================================
  * Test app factory
@@ -56,6 +57,11 @@ function makeApp() {
     if (!collectiveMembershipStore.isActive(headerId)) {
       collectiveMembershipStore.activate(headerId, "u_admin_test");
     }
+    // W3-C — the C-5 individual-membership gate now also requires an active
+    // cap-table position (hard sub-check). Seed one for the resolved user so
+    // these member-gated route tests continue to admit. (Accreditation stays a
+    // SOFT default — no COLLECTIVE_C5_ACCRED_ENFORCE here — so it never blocks.)
+    upsertCapTablePositionForTests(headerId);
     const role = String(req.headers["x-role"] ?? "");
     (req as express.Request & { userContext?: unknown }).userContext = {
       userId: headerId,

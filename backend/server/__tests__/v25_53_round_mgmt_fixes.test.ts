@@ -251,23 +251,33 @@ describe("v25.53 N1 — all seven investment vehicles are creatable", () => {
 });
 
 describe("v25.53 3a / N4 — date guards on creation", () => {
-  it("rejects a past open date", async () => {
+  it("allows a past open date when close >= open (v25.55 1a)", async () => {
+    // v25.55 1a (per Ozan): past open dates are allowed; only close < open is rejected.
     const res = await call("POST", "/api/rounds", {
       userId,
       body: { companyId, name: "Past Open", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000, openDate: pastDate(10), closeDate: futureDate(30) },
     });
-    expect(res.status).toBe(400);
-    expect(res.body?.error).toBe("invalid_openDate");
+    expect(res.status).toBe(200);
+    expect(res.body?.ok).toBe(true);
   });
 
-  it("rejects a past target-close date", async () => {
+  it("allows a past close date when close >= open (v25.55 1a)", async () => {
+    // A round may close before today, just not before its own open date.
     const res = await call("POST", "/api/rounds", {
       userId,
-      body: { companyId, name: "Past Close", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000, openDate: futureDate(1), closeDate: pastDate(1) },
+      body: { companyId, name: "Both Past", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000, openDate: pastDate(30), closeDate: pastDate(5) },
+    });
+    expect(res.status).toBe(200);
+    expect(res.body?.ok).toBe(true);
+  });
+
+  it("rejects close-date before open-date", async () => {
+    const res = await call("POST", "/api/rounds", {
+      userId,
+      body: { companyId, name: "Close Before Open", type: "seed", instrument: "safe_post", targetAmount: 500_000, valuationCap: 5_000_000, openDate: futureDate(1), closeDate: pastDate(1) },
     });
     expect(res.status).toBe(400);
-    // close < open is checked first; here open is future and close is past, so
-    // close<open triggers → invalid_closeDate. Either typed 400 is acceptable.
+    // close < open triggers the typed 400; either typed error is acceptable.
     expect(["invalid_closeDate", "invalid_openDate"]).toContain(res.body?.error);
   });
 

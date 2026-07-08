@@ -40,6 +40,13 @@ import { getDb } from "./db/connection"; /* v17 Phase B */
 import { pAll } from "./db/portable"; /* Wave H Track A — Postgres compatibility */
 import { DEFAULT_CHAPTER_ID, DEFAULT_CHAPTER_TENANT_ID } from "./lib/chapterDefaults";
 import { log } from "./lib/logger";
+// W3-B C-5 — capture the accreditation self-declaration at individual apply time
+// (mirrors W2's sign-at-application). Best-effort + non-fatal: the dedicated
+// POST /api/investor/compliance/accreditation-declaration route is the primary
+// surface; this just avoids a second round-trip when the wizard already collected
+// a signature. Sign fields are read from req.body directly because the zod
+// collectiveApplicationSchema strips unknown keys from parsed.data.
+import { recordAccreditationDeclaration } from "./investorComplianceRoutes";
 
 type StoredApplication = CollectiveApplication & {
   id: string;
@@ -402,6 +409,28 @@ export function registerCollectiveAppRoutes(app: Express): void {
     }
     // v25.35 — cache mutated only after the durable commit.
     applications.push(stored);
+
+    // W3-B C-5 — best-effort accreditation capture at apply time. Reads the sign
+    // fields from req.body directly (zod strips them from parsed.data). NON-FATAL:
+    // a missing/invalid signature here never blocks the application — the investor
+    // completes accreditation via the dedicated route/settings surface instead.
+    try {
+      const b = (req.body ?? {}) as { accreditationSignatureName?: unknown; accreditationCriteria?: unknown; jurisdiction?: unknown };
+      const sig = typeof b.accreditationSignatureName === "string" ? b.accreditationSignatureName : "";
+      if (sig.trim().length >= 2 && Array.isArray(b.accreditationCriteria) && b.accreditationCriteria.length > 0) {
+        const r = recordAccreditationDeclaration(userId, {
+          signatureName: sig,
+          criteria: b.accreditationCriteria,
+          jurisdiction: b.jurisdiction,
+        });
+        if (!r.ok) {
+          log.warn("[collectiveAppStore.submit] apply-time accreditation capture skipped:", r.error);
+        }
+      }
+    } catch (err) {
+      log.warn("[collectiveAppStore.submit] apply-time accreditation capture failed (non-fatal):", (err as Error).message);
+    }
+
     const env = emitSync({
       eventType: "collective_application_submitted",
       aggregateId: id,

@@ -59,6 +59,7 @@ import { z } from "zod";
 
 import { requireAuth, requireAdmin } from "./lib/authMiddleware";
 import { requirePartnerAuth } from "./lib/requirePartnerAuth"; /* v25.14 NC3 */
+import { requireSignedAgreement } from "./lib/requireSignedAgreement"; /* W2-I override — fail-closed sign gate on partner writes */
 import { getDb, rawDb } from "./db/connection";
 import {
   consortiumApplications as appsTable,
@@ -71,6 +72,7 @@ import { publish as ssePublish } from "./lib/sseHub";
 import { appendAdminAudit } from "./adminPlatformStore";
 import { log } from "./lib/logger";
 import { sendEmail } from "./lib/emailSender";
+import { CONSORTIUM_AGREEMENT_VERSION } from "@shared/consortiumAgreement";
 // A8 (v24.0) — approval must also provision the partner-workspace authz records
 // (admin consortium_partner contact + owner team membership) so the approved
 // partner can actually reach /api/partner/me. requirePartnerAuth reads these.
@@ -136,6 +138,12 @@ export interface ConsortiumApplicationRow {
   createdAt: string;
   reviewedAt: string | null;
   updatedAt: string;
+  // W2-I — agreement sign-off captured AT APPLICATION. Additive; NOT part of
+  // chainPayload (hash-chain stays stable). Carried to contacts.* on approval.
+  agreementVersion: string | null;
+  agreementSignedName: string | null;
+  agreementSignedAt: string | null;
+  agreementSignatureHash: string | null;
 }
 
 /* ============================================================
@@ -219,6 +227,10 @@ function rowToApp(r: any): ConsortiumApplicationRow {
     createdAt: r.created_at ?? r.createdAt,
     reviewedAt: r.reviewed_at ?? r.reviewedAt ?? null,
     updatedAt: r.updated_at ?? r.updatedAt,
+    agreementVersion: r.agreement_version ?? r.agreementVersion ?? null,
+    agreementSignedName: r.agreement_signed_name ?? r.agreementSignedName ?? null,
+    agreementSignedAt: r.agreement_signed_at ?? r.agreementSignedAt ?? null,
+    agreementSignatureHash: r.agreement_signature_hash ?? r.agreementSignatureHash ?? null,
   };
 }
 
@@ -464,6 +476,16 @@ const publicApplySchema = z.object({
   introMessage: z.string().max(4000).optional().default(""),
   referredBy: z.string().max(200).optional().nullable(),
   captchaToken: z.string().max(2000).optional(),
+  // W2-I — agreement sign-off. The public apply UI REQUIRES the applicant to
+  // type their full legal name (client-side gate); the schema accepts it as
+  // optional so a signature is captured+persisted when present WITHOUT breaking
+  // internal/API callers. The true fail-closed control is NOT this schema but
+  // the requireSignedAgreement WRITE gate: an unsigned partner keeps full READ
+  // access and is refused only on the first write, where they sign once. The
+  // version is echoed by the client (defaulted server-side if absent) so a
+  // future version bump is captured on the record.
+  agreementSignedName: z.string().max(160).optional().nullable(),
+  agreementVersion: z.string().max(64).optional().nullable(),
 });
 
 const adminReviewSchema = z.object({
@@ -535,6 +557,9 @@ export interface SubmitInput {
   referredBy?: string | null;
   sourceIp?: string | null;
   sourceUserAgent?: string | null;
+  // W2-I — agreement sign-off captured at application.
+  agreementSignedName?: string | null;
+  agreementVersion?: string | null;
 }
 
 /* ============================================================
@@ -598,6 +623,21 @@ export function submitApplication(input: SubmitInput): ConsortiumApplicationRow 
   const now = nowIso();
   const expectedChapter = input.expectedChapter;
   const nameParts = resolveContactNameParts(input.contactName, input.contactFirstName, input.contactLastName);
+  // W2-I — capture the typed-signature sign-off. Version defaults to the
+  // current configured tag when the client omits it. The integrity hash binds
+  // the application id, version, signed name, and timestamp so tampering with
+  // any one is detectable independently of the row's own chain.
+  const agreementSignedName =
+    typeof input.agreementSignedName === "string" ? input.agreementSignedName.trim() : "";
+  const agreementVersion =
+    (typeof input.agreementVersion === "string" && input.agreementVersion.trim()) ||
+    CONSORTIUM_AGREEMENT_VERSION;
+  const agreementSignedAt = agreementSignedName ? now : null;
+  const agreementSignatureHash = agreementSignedName
+    ? createHash("sha256")
+        .update(`${id}|${agreementVersion}|${agreementSignedName}|${agreementSignedAt}`)
+        .digest("hex")
+    : null;
   const draft: ConsortiumApplicationRow = {
     id,
     tenantId: null,
@@ -627,6 +667,10 @@ export function submitApplication(input: SubmitInput): ConsortiumApplicationRow 
     createdAt: now,
     reviewedAt: null,
     updatedAt: now,
+    agreementVersion: agreementSignedName ? agreementVersion : null,
+    agreementSignedName: agreementSignedName || null,
+    agreementSignedAt,
+    agreementSignatureHash,
   };
   draft.currHash = computeHash(null, chainPayload(draft));
 
@@ -662,6 +706,10 @@ export function submitApplication(input: SubmitInput): ConsortiumApplicationRow 
         createdAt: draft.createdAt,
         reviewedAt: null,
         updatedAt: draft.updatedAt,
+        agreementVersion: draft.agreementVersion,
+        agreementSignedName: draft.agreementSignedName,
+        agreementSignedAt: draft.agreementSignedAt,
+        agreementSignatureHash: draft.agreementSignatureHash,
       })
       .run();
   });
@@ -1120,6 +1168,36 @@ function _approveApplicationLocked(
       actorUserId,
     );
     partnerTeamStore.upsertOwner(userId, partnerContact.id, "managing_partner");
+
+    // W2-I — carry the application's agreement sign-off onto the DURABLE
+    // partner contact record so an approved partner is already "signed" and the
+    // requireSignedAgreement gate (which reads contacts.partner_agreement_signed_at)
+    // lets them write immediately. Enforced off this column, NEVER the mutable
+    // onboarding_state JSON. Non-fatal: a failure here must not roll back the
+    // approval; the partner falls into the grace/sign-once path instead.
+    if (updated.agreementSignedAt) {
+      try {
+        rawDb()
+          .prepare(
+            `UPDATE contacts
+                SET partner_agreement_version = ?,
+                    partner_agreement_signed_at = ?,
+                    partner_agreement_signature_hash = ?
+              WHERE id = ?`,
+          )
+          .run(
+            updated.agreementVersion,
+            updated.agreementSignedAt,
+            updated.agreementSignatureHash,
+            partnerContact.id,
+          );
+      } catch (agrErr) {
+        log.warn(
+          "[consortium.apply] agreement carry-to-partner failed",
+          JSON.stringify({ applicationId: updated.id, error: (agrErr as Error).message }),
+        );
+      }
+    }
   } catch (provErr) {
     log.warn(
       "[consortium.apply] partner-workspace authz provisioning failed",
@@ -1439,6 +1517,8 @@ export function registerConsortiumApplyRoutes(app: Express): void {
         referredBy: body.referredBy ?? null,
         sourceIp: clientIp(req),
         sourceUserAgent: (req.headers["user-agent"] as string) ?? null,
+        agreementSignedName: body.agreementSignedName,
+        agreementVersion: body.agreementVersion ?? null,
       });
     } catch (err) {
       log.error("[consortium.apply] submit failed:", err);
@@ -1839,6 +1919,11 @@ export function registerPartnerOnboardingRoutes(app: Express): void {
     "/api/partner/onboarding/state",
     // v25.14 NC3 — same fix as GET above.
     requirePartnerAuth,
+    // W2-I override — onboarding state is a partner WRITE; gate it behind the
+    // signed agreement. The GET above stays open (read). Signing itself lives on
+    // POST /api/partner/me/agreement, which is NOT gated, so a partner can always
+    // reach the signature before this write is unblocked.
+    requireSignedAgreement,
     (req: Request, res: Response): void => {
       const partnerId = (req as any).partnerContext?.partnerId;
       if (!partnerId) {

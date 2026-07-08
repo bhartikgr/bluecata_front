@@ -28,6 +28,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { PageBody, PageHeader } from "@/components/AppShell";
 import type { InvitedRound, UserContext } from "@/lib/entitlement";
+import { greetingName } from "@/lib/investorLabels";
 
 export interface InvestorState1NudgeProps {
   ctx: UserContext;
@@ -43,7 +44,9 @@ const UNLOCKS = [
 export function InvestorState1Nudge({ ctx }: InvestorState1NudgeProps) {
   const [, navigate] = useLocation();
   const invitations = ctx.investor.invitedRounds;
-  const screenName = ctx.identity.screenName ?? ctx.identity.name?.split(" ")[0] ?? "investor";
+  // BUG-01: never surface a raw email or a placeholder like "New" as the
+  // greeting token; fall back to a neutral "there".
+  const screenName = greetingName(ctx.identity.screenName, ctx.identity.name, "there");
 
   return (
     <div data-testid="investor-state1-nudge" data-investor-state={ctx.investor.state}>

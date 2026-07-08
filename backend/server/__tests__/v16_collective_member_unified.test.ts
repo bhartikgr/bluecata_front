@@ -22,6 +22,7 @@ import * as collectiveMembershipStore from "../collectiveMembershipStore";
 import {
   upsertActiveMembership,
   deactivateMembership,
+  upsertCapTablePositionForTests,
 } from "../membershipStore";
 
 let app: Express;
@@ -84,6 +85,9 @@ describe("v16 F-coll-X3 — unified collective member check", () => {
     try { deactivateMembership(uid); } catch {}
     // Activate ONLY in the admin store.
     collectiveMembershipStore.activate(uid, "u_admin");
+    // W3-C — C-5 gate now also requires an active cap-table position; seed one
+    // so this admin-store-source admission still passes (accreditation is SOFT).
+    upsertCapTablePositionForTests(uid);
     const r = await call("GET", "/api/collective/dashboard", { userId: uid });
     expect(r.status).toBe(200);
     // Clean up.

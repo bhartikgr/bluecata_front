@@ -193,6 +193,8 @@ export const rounds = sqliteTable("rounds", {
   updatedAt: text("updated_at"),
   createdBy: text("created_by"),
   deletedAt: text("deleted_at"),
+  // v25.54 G0-2 — archived rounds stay VISIBLE (unlike deleted_at) but inert.
+  archivedAt: text("archived_at"),
 });
 
 /* ----- reports (Avi's Issue 4) -----
@@ -2409,6 +2411,15 @@ export const consortiumApplications = sqliteTable("consortium_applications", {
   createdAt: text("created_at").notNull(),
   reviewedAt: text("reviewed_at"),
   updatedAt: text("updated_at").notNull(),
+  // W2-I — Consortium Partner Agreement sign-off captured AT APPLICATION.
+  // Typed-signature (full legal name) + timestamp + version tag + integrity
+  // hash. Additive/nullable; NOT part of chainPayload so the hash-chain stays
+  // stable (mirrors the contact_name exclusion). Carried to contacts.* on
+  // approval (partner record becomes "signed").
+  agreementVersion: text("agreement_version"),
+  agreementSignedName: text("agreement_signed_name"),
+  agreementSignedAt: text("agreement_signed_at"),
+  agreementSignatureHash: text("agreement_signature_hash"),
 });
 
 /** CP Phase B — partner organizations (CP-002). */

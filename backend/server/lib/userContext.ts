@@ -342,7 +342,7 @@ function buildInvitedRounds(persona: PersonaSeed): InvitedRound[] {
     try {
       const rows = listInvitationsByEmail(persona.email);
       const usable = rows
-        .filter((r) => !!r.companyId && (r.state === "pending" || r.state === "sent" || r.state === "viewed"))
+        .filter((r) => !!r.companyId && (r.state === "pending" || r.state === "sent" || r.state === "viewed" || r.state === "accepted"))
         .map((r) => ({
           invitationId: r.id,
           roundId: r.roundId,
@@ -861,7 +861,7 @@ export function getUserContextForId(userId: string): UserContext {
           if (existingInvs.length === 0 && isInvestor) {
             const rows = listInvitationsByEmail(cred.email);
             const usable = rows
-              .filter((r) => !!r.companyId && (r.state === "pending" || r.state === "sent" || r.state === "viewed"))
+              .filter((r) => !!r.companyId && (r.state === "pending" || r.state === "sent" || r.state === "viewed" || r.state === "accepted"))
               .map((r) => ({
                 invitationId: r.id,
                 roundId: r.roundId,

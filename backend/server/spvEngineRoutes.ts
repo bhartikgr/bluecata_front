@@ -23,9 +23,12 @@
  */
 import type { Express, Request, Response } from "express";
 import { requirePartnerAuth, assertSubRole } from "./lib/requirePartnerAuth";
+import { requireSignedAgreement } from "./lib/requireSignedAgreement";
 import { getUserContext } from "./lib/userContext";
 import { commitFunded } from "./captableCommitStore";
 import { spvEngineStore } from "./spvEngineStore";
+import { resolveDisplayNames } from "./lib/displayNameResolver";
+import { listLpInvites, createLpInvite } from "./spvLpInviteStore";
 import {
   SPV_JURISDICTIONS,
   SPV_CARRY_BASES,
@@ -50,7 +53,7 @@ function err(res: Response, e: unknown): Response {
     SPV_NOT_FOUND: 404, DEPLOYMENT_NOT_FOUND: 404, SUBSCRIPTION_NOT_FOUND: 404, NO_MANDATE: 404,
     CARRY_BASIS_REQUIRED: 400, INVALID_JURISDICTION: 400, INVALID_SPV_TYPE: 400, SPV_NAME_REQUIRED: 400,
     INVALID_DISTRIBUTION_SCOPE: 400, INVALID_FEE_LAYER: 400, INVALID_FEE_TYPE: 400, FIXED_AMOUNT_REQUIRED: 400,
-    CARRY_PCT_REQUIRED: 400, RULE_TREE_REQUIRED: 400, INVALID_COMMITMENT: 400, INVALID_AMOUNT: 400,
+    CARRY_PCT_REQUIRED: 400, FEES_EXCEED_RAISE: 400, RULE_TREE_REQUIRED: 400, INVALID_COMMITMENT: 400, INVALID_AMOUNT: 400,
     INVALID_GROSS: 400, EVENT_REQUIRED: 400, BELOW_MIN_CHECK: 400, EXCEEDS_CAP: 400, ALREADY_SUBSCRIBED: 409,
     INVESTOR_ID_REQUIRED: 400, COMPANY_AND_ROUND_REQUIRED: 400, STORAGE_KEY_REQUIRED: 400,
     TRANSFER_PARTIES_REQUIRED: 400, PLATFORM_FEE_ADMIN_ONLY: 403,
@@ -61,6 +64,7 @@ function err(res: Response, e: unknown): Response {
     FOUNDER_NOT_CONFIRMED: 409, WIRE_PAYMENT_REF_REQUIRED: 409,
     NO_ACTIVE_ROUND: 409, COMPANY_NOT_ELIGIBLE: 409, INSUFFICIENT_COMMITTED_CAPITAL: 409,
     INSTRUMENT_NOT_IN_ROUND: 409, DISTRIBUTION_BASIS_REQUIRED: 400, NO_COMMITTED_LPS: 409,
+    LP_INVITE_EMAIL_REQUIRED: 400, LP_INVITE_LAST_NAME_REQUIRED: 400, LP_INVITE_PERSIST_FAILED: 500,
   };
   return res.status(map[msg] ?? 500).json({ error: msg });
 }
@@ -90,7 +94,7 @@ export function registerSpvEngineRoutes(app: Express): void {
     res.json({ spvs: spvEngineStore.listByPartner(req.partnerContext!.partnerId) });
   });
 
-  app.post("/api/partner/me/spv", requirePartnerAuth, assertSubRole(...WRITE_ROLES), (req: Request, res: Response) => {
+  app.post("/api/partner/me/spv", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
     try {
       const spv = spvEngineStore.createSpv(req.partnerContext!.partnerId, req.body ?? {}, req.partnerContext!.userId);
       res.status(201).json({ spv });
@@ -113,21 +117,21 @@ export function registerSpvEngineRoutes(app: Express): void {
     });
   });
 
-  app.patch("/api/partner/me/spv/:spvId", requirePartnerAuth, assertSubRole(...WRITE_ROLES), (req: Request, res: Response) => {
+  app.patch("/api/partner/me/spv/:spvId", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
     try {
       const spv = spvEngineStore.updateSpv(req.partnerContext!.partnerId, String(req.params.spvId), req.body ?? {}, req.partnerContext!.userId);
       res.json({ spv });
     } catch (e) { err(res, e); }
   });
 
-  app.post("/api/partner/me/spv/:spvId/wind-down", requirePartnerAuth, assertSubRole("managing_partner"), (req: Request, res: Response) => {
+  app.post("/api/partner/me/spv/:spvId/wind-down", requirePartnerAuth, assertSubRole("managing_partner"), requireSignedAgreement, (req: Request, res: Response) => {
     try {
       res.json({ spv: spvEngineStore.archiveSpv(req.partnerContext!.partnerId, String(req.params.spvId), req.partnerContext!.userId) });
     } catch (e) { err(res, e); }
   });
 
   /* ── mandate + eligibility ─────────────────────────────────────────────── */
-  app.put("/api/partner/me/spv/:spvId/mandate", requirePartnerAuth, assertSubRole(...WRITE_ROLES), (req: Request, res: Response) => {
+  app.put("/api/partner/me/spv/:spvId/mandate", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
     try {
       res.json({ mandate: spvEngineStore.setMandate(req.partnerContext!.partnerId, String(req.params.spvId), req.body ?? {}, req.partnerContext!.userId) });
     } catch (e) { err(res, e); }
@@ -147,7 +151,7 @@ export function registerSpvEngineRoutes(app: Express): void {
   });
 
   /* ── fees (management = GP; platform = admin-only) ─────────────────────── */
-  app.post("/api/partner/me/spv/:spvId/fees", requirePartnerAuth, assertSubRole(...WRITE_ROLES), (req: Request, res: Response) => {
+  app.post("/api/partner/me/spv/:spvId/fees", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
     try {
       const body = req.body ?? {};
       if (body.layer === "platform") return res.status(403).json({ error: "PLATFORM_FEE_ADMIN_ONLY" });
@@ -171,7 +175,7 @@ export function registerSpvEngineRoutes(app: Express): void {
   });
 
   // Collect a fixed fee obligation THROUGH the existing payment ledger.
-  app.post("/api/partner/me/spv/:spvId/fee-obligations/:obId/charge", requirePartnerAuth, assertSubRole(...WRITE_ROLES), (req: Request, res: Response) => {
+  app.post("/api/partner/me/spv/:spvId/fee-obligations/:obId/charge", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
     try {
       const pid = req.partnerContext!.partnerId;
       const outcome = (req.body ?? {}).outcome === "failed" ? "failed" : "succeeded";
@@ -193,13 +197,13 @@ export function registerSpvEngineRoutes(app: Express): void {
   });
 
   /* ── subscriptions (unified flow + 3 gates) ────────────────────────────── */
-  app.post("/api/partner/me/spv/:spvId/subscriptions", requirePartnerAuth, assertSubRole(...WRITE_ROLES), (req: Request, res: Response) => {
+  app.post("/api/partner/me/spv/:spvId/subscriptions", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
     try {
       res.status(201).json({ subscription: spvEngineStore.subscribe(req.partnerContext!.partnerId, String(req.params.spvId), req.body ?? {}, req.partnerContext!.userId) });
     } catch (e) { err(res, e); }
   });
 
-  app.patch("/api/partner/me/spv/:spvId/subscriptions/:subId", requirePartnerAuth, assertSubRole(...WRITE_ROLES), (req: Request, res: Response) => {
+  app.patch("/api/partner/me/spv/:spvId/subscriptions/:subId", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
     try {
       const body = req.body ?? {};
       res.json({ subscription: spvEngineStore.advanceSubscription(req.partnerContext!.partnerId, String(req.params.spvId), String(req.params.subId), body.to, body) });
@@ -216,20 +220,20 @@ export function registerSpvEngineRoutes(app: Express): void {
     } catch (e) { err(res, e); }
   });
 
-  app.put("/api/partner/me/compliance/:investorId", requirePartnerAuth, assertSubRole(...WRITE_ROLES), (req: Request, res: Response) => {
+  app.put("/api/partner/me/compliance/:investorId", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
     try {
       res.json({ profile: spvEngineStore.upsertComplianceProfile(String(req.params.investorId), req.body ?? {}) });
     } catch (e) { err(res, e); }
   });
 
   /* ── deployment (single cap-table ledger line) ─────────────────────────── */
-  app.post("/api/partner/me/spv/:spvId/deployments", requirePartnerAuth, assertSubRole(...WRITE_ROLES), (req: Request, res: Response) => {
+  app.post("/api/partner/me/spv/:spvId/deployments", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
     try {
       res.status(201).json({ deployment: spvEngineStore.createDeployment(req.partnerContext!.partnerId, String(req.params.spvId), req.body ?? {}) });
     } catch (e) { err(res, e); }
   });
 
-  app.patch("/api/partner/me/spv/:spvId/deployments/:depId", requirePartnerAuth, assertSubRole(...WRITE_ROLES), (req: Request, res: Response) => {
+  app.patch("/api/partner/me/spv/:spvId/deployments/:depId", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
     try {
       const b = (req.body ?? {}) as { to?: string; wirePaymentRef?: string | null; closingDocRef?: string | null };
       const to = b.to;
@@ -244,7 +248,7 @@ export function registerSpvEngineRoutes(app: Express): void {
   });
 
   /* Final deployment: write the ONE cap-table ledger line via the sacred path. */
-  app.post("/api/partner/me/spv/:spvId/deployments/:depId/commit", requirePartnerAuth, assertSubRole(...WRITE_ROLES), (req: Request, res: Response) => {
+  app.post("/api/partner/me/spv/:spvId/deployments/:depId/commit", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
     const pid = req.partnerContext!.partnerId;
     const spvId = String(req.params.spvId);
     const depId = String(req.params.depId);
@@ -288,21 +292,21 @@ export function registerSpvEngineRoutes(app: Express): void {
   });
 
   /* ── distributions / waterfall ─────────────────────────────────────────── */
-  app.post("/api/partner/me/spv/:spvId/distributions", requirePartnerAuth, assertSubRole(...WRITE_ROLES), (req: Request, res: Response) => {
+  app.post("/api/partner/me/spv/:spvId/distributions", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
     try {
       res.status(201).json({ distribution: spvEngineStore.recordDistribution(req.partnerContext!.partnerId, String(req.params.spvId), req.body ?? {}, req.partnerContext!.userId) });
     } catch (e) { err(res, e); }
   });
 
   /* ── documents ─────────────────────────────────────────────────────────── */
-  app.post("/api/partner/me/spv/:spvId/documents", requirePartnerAuth, assertSubRole(...WRITE_ROLES), (req: Request, res: Response) => {
+  app.post("/api/partner/me/spv/:spvId/documents", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
     try {
       res.status(201).json({ document: spvEngineStore.addDocument(req.partnerContext!.partnerId, String(req.params.spvId), req.body ?? {}, req.partnerContext!.userId) });
     } catch (e) { err(res, e); }
   });
 
   /* ── secondary transfers (MODEL now) ───────────────────────────────────── */
-  app.post("/api/partner/me/spv/:spvId/transfers", requirePartnerAuth, assertSubRole(...WRITE_ROLES), (req: Request, res: Response) => {
+  app.post("/api/partner/me/spv/:spvId/transfers", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
     try {
       res.status(201).json({ transfer: spvEngineStore.createTransfer(req.partnerContext!.partnerId, String(req.params.spvId), req.body ?? {}, req.partnerContext!.userId) });
     } catch (e) { err(res, e); }
@@ -321,6 +325,77 @@ export function registerSpvEngineRoutes(app: Express): void {
       res.json(spvEngineStore.lpRosterForViewer(String(req.params.spvId), ctx.userId));
     } catch (e) { err(res, e); }
   });
+
+  /* ── W2-H — GP (partner) LP roster (FAIL-CLOSED, requirePartnerAuth) ────────
+     Distinct from the investor-context /api/spv/:spvId/lp-roster above (which
+     is gated on subscriber membership for an LP viewer and left intact). This
+     partner route is scoped to req.partnerContext.partnerId (session, never
+     URL); getSpv returns null cross-partner → 404, so no existence leak. The
+     GP sees EVERY LP of their own SPV — both live subscribers (with resolved
+     display names, never a raw "u_..." id) and pending email invites. */
+  app.get(
+    "/api/partner/me/spv/:spvId/lp-roster",
+    requirePartnerAuth,
+    (req: Request, res: Response) => {
+      const ctx = req.partnerContext!;
+      const spvId = String(req.params.spvId);
+      const spv = spvEngineStore.getSpv(ctx.partnerId, spvId);
+      if (!spv) return res.status(404).json({ error: "SPV_NOT_FOUND" });
+      const subs = spvEngineStore.listSubscriptions(ctx.partnerId, spvId);
+      const names = resolveDisplayNames(subs.map((s) => s.investorId));
+      const total = subs
+        .filter((s) => s.status !== "withdrawn")
+        .reduce((a, s) => a + s.commitmentMinor, 0);
+      const subscribers = subs.map((s) => {
+        const idn = names.get(String(s.investorId).trim());
+        return {
+          investorId: s.investorId,
+          name: idn?.name ?? null,
+          email: idn?.email ?? null,
+          commitmentMinor: s.commitmentMinor,
+          status: s.status,
+          ownershipPct: total > 0 && s.status !== "withdrawn" ? s.commitmentMinor / total : 0,
+        };
+      });
+      const invites = listLpInvites(ctx.partnerId, spvId).map((i) => ({
+        id: i.id,
+        email: i.email,
+        firstName: i.firstName,
+        lastName: i.lastName,
+        note: i.note,
+        status: i.status,
+        createdAt: i.createdAt,
+      }));
+      res.json({ spvId, lpVisibility: spv.lpVisibility, subscribers, invites });
+    },
+  );
+
+  /* ── W2-H — GP (partner) LP invite (WRITE, sub-role gated). Rule #13: last
+     name is MANDATORY. Fail-closed: store throws LP_INVITE_* which err() maps
+     to 400. */
+  app.post(
+    "/api/partner/me/spv/:spvId/lp-invites",
+    requirePartnerAuth,
+    assertSubRole(...WRITE_ROLES),
+    requireSignedAgreement,
+    (req: Request, res: Response) => {
+      const ctx = req.partnerContext!;
+      const spvId = String(req.params.spvId);
+      if (!spvEngineStore.getSpv(ctx.partnerId, spvId)) {
+        return res.status(404).json({ error: "SPV_NOT_FOUND" });
+      }
+      const body = req.body ?? {};
+      try {
+        const invite = createLpInvite(
+          ctx.partnerId,
+          spvId,
+          { email: body.email, firstName: body.firstName, lastName: body.lastName, note: body.note },
+          ctx.userId,
+        );
+        res.status(201).json({ invite });
+      } catch (e) { err(res, e); }
+    },
+  );
 
   /* ── Collective visibility context (read-only) ─────────────────────────── */
   app.get("/api/collective/spvs", (req: Request, res: Response) => {

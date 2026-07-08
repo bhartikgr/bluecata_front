@@ -55,8 +55,44 @@ export default function PartnerSpvDetail() {
    * are managing_partner-only on the server, so we also disable the forms
    * unless the user holds that subRole. */
   const isManagingPartner = role.identity?.subRole === "managing_partner";
+  const canWriteLp =
+    role.identity?.subRole === "managing_partner" ||
+    role.identity?.subRole === "associate" ||
+    role.identity?.subRole === "bd";
   const [callAmount, setCallAmount] = useState("");
   const [distAmount, setDistAmount] = useState("");
+  const [lpEmail, setLpEmail] = useState("");
+  const [lpFirstName, setLpFirstName] = useState("");
+  const [lpLastName, setLpLastName] = useState("");
+
+  /* W2-H — GP LP roster (subscribers + pending invites). */
+  const roster = useQuery<{
+    spvId: string;
+    lpVisibility: string;
+    subscribers: Array<{ investorId: string; name: string | null; email: string | null; commitmentMinor: number; status: string; ownershipPct: number }>;
+    invites: Array<{ id: string; email: string; firstName: string | null; lastName: string; note: string | null; status: string; createdAt: string }>;
+  }>({
+    queryKey: ["/api/partner/me/spv", spvId, "lp-roster"],
+    enabled: role.ready && !!role.identity && !!spvId,
+    queryFn: async () => (await apiRequest("GET", `/api/partner/me/spv/${spvId}/lp-roster`)).json(),
+  });
+
+  const inviteMut = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/partner/me/spv/${spvId}/lp-invites`, {
+        email: lpEmail.trim(),
+        firstName: lpFirstName.trim() || undefined,
+        lastName: lpLastName.trim(),
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      setLpEmail(""); setLpFirstName(""); setLpLastName("");
+      qc.invalidateQueries({ queryKey: ["/api/partner/me/spv", spvId, "lp-roster"] });
+      toast({ title: "LP invited" });
+    },
+    onError: (e: Error) => toast({ variant: "destructive", title: "Invite failed", description: e.message }),
+  });
 
   const callMut = useMutation({
     mutationFn: async (amountMinor: number) => {
@@ -195,6 +231,94 @@ export default function PartnerSpvDetail() {
           </div>
         </Card>
       ) : null}
+
+      {/* W2-H — LP roster (subscribers + pending invites) + partner-gated invite. */}
+      <Card className="p-4 mb-4 space-y-3" data-testid="partner-spv-lp-roster">
+        <div className="font-medium">LP Roster</div>
+        {roster.isLoading && <div className="text-sm text-slate-500" data-testid="partner-spv-lp-roster-loading">Loading…</div>}
+        {roster.isError && (
+          <div className="text-sm text-rose-600" data-testid="partner-spv-lp-roster-error">
+            Could not load the LP roster. Please refresh and try again.
+          </div>
+        )}
+        {roster.data && (
+          <>
+            {roster.data.subscribers.length === 0 && roster.data.invites.length === 0 ? (
+              <div className="text-sm text-slate-500" data-testid="partner-spv-lp-roster-empty">
+                No LPs yet. Invite one below to get started.
+              </div>
+            ) : (
+              <table className="w-full text-sm" data-testid="partner-spv-lp-roster-table">
+                <thead className="bg-slate-50">
+                  <tr>
+                    <th className="text-left p-2">LP</th>
+                    <th className="text-left p-2">Email</th>
+                    <th className="text-left p-2">Commitment</th>
+                    <th className="text-left p-2">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {roster.data.subscribers.map((sub) => (
+                    <tr key={sub.investorId} className="border-t" data-testid={`partner-spv-lp-sub-${sub.investorId}`}>
+                      <td className="p-2">{sub.name ?? "—"}</td>
+                      <td className="p-2 text-slate-500">{sub.email ?? "—"}</td>
+                      <td className="p-2 font-mono">{formatMinor(sub.commitmentMinor, s.currency)}</td>
+                      <td className="p-2">{sub.status}</td>
+                    </tr>
+                  ))}
+                  {roster.data.invites.map((inv) => (
+                    <tr key={inv.id} className="border-t text-slate-500" data-testid={`partner-spv-lp-invite-${inv.id}`}>
+                      <td className="p-2">{[inv.firstName, inv.lastName].filter(Boolean).join(" ") || inv.lastName}</td>
+                      <td className="p-2">{inv.email}</td>
+                      <td className="p-2">—</td>
+                      <td className="p-2">invited</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </>
+        )}
+
+        {canWriteLp && (
+          <div className="pt-2 border-t space-y-2" data-testid="partner-spv-lp-invite-form">
+            <div className="text-sm font-medium">Invite an LP</div>
+            <div className="grid grid-cols-3 gap-2">
+              <Input
+                placeholder="First name (optional)"
+                value={lpFirstName}
+                onChange={(e) => setLpFirstName(e.target.value)}
+                data-testid="partner-spv-lp-invite-firstname"
+              />
+              <Input
+                placeholder="Last name *"
+                value={lpLastName}
+                onChange={(e) => setLpLastName(e.target.value)}
+                data-testid="partner-spv-lp-invite-lastname"
+              />
+              <Input
+                type="email"
+                placeholder="Email *"
+                value={lpEmail}
+                onChange={(e) => setLpEmail(e.target.value)}
+                data-testid="partner-spv-lp-invite-email"
+              />
+            </div>
+            {!lpLastName.trim() && (
+              <div className="text-xs text-rose-600" data-testid="partner-spv-lp-invite-lastname-error">
+                Last name is required to invite an LP.
+              </div>
+            )}
+            <Button
+              disabled={!lpEmail.trim() || !lpLastName.trim() || inviteMut.isPending}
+              onClick={() => inviteMut.mutate()}
+              data-testid="partner-spv-lp-invite-submit"
+            >
+              {inviteMut.isPending ? "Inviting…" : "Send invite"}
+            </Button>
+          </div>
+        )}
+      </Card>
 
       <Card className="p-4 space-y-2" data-testid="partner-spv-hash-chain">
         <div className="font-medium mb-2">Audit Receipt</div>

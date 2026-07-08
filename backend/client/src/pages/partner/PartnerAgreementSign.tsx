@@ -16,10 +16,20 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
+import { CONSORTIUM_AGREEMENT_TEXT } from "@shared/consortiumAgreement"; /* W2-I — viewable text fallback */
 
-type SubscriptionResponse = {
-  subscription: unknown;
-  agreement: { version: string; url: string | null };
+/* W2-I — the page now reads the canonical GET /api/partner/me/agreement, which
+   returns the viewable agreement text, the current version/url AND the DURABLE
+   signed state (off the contacts column). A partner who signed at application
+   sees it already-signed; an unsigned managing partner signs once here (the
+   destination the requireSignedAgreement write gate redirects to). */
+type AgreementResponse = {
+  agreement: { version: string; url: string | null; text?: string | null };
+  signed: boolean;
+  signedCurrent: boolean;
+  signedAt: string | null;
+  signedVersion: string | null;
+  canSign: boolean;
 };
 
 function formatDate(value: string | null) {
@@ -36,12 +46,12 @@ export default function PartnerAgreementSign() {
   const [signatureName, setSignatureName] = useState("");
   const [signedAt, setSignedAt] = useState<string | null>(null);
 
-  // The /subscription endpoint also returns the current agreement config block.
-  const { data, isLoading, isError, error } = useQuery<SubscriptionResponse>({
-    queryKey: ["/api/partner/me/subscription"],
+  // Canonical agreement endpoint: viewable text + durable signed state.
+  const { data, isLoading, isError, error } = useQuery<AgreementResponse>({
+    queryKey: ["/api/partner/me/agreement"],
     enabled: role.ready && !!role.identity,
     retry: false,
-    queryFn: async () => (await apiRequest("GET", "/api/partner/me/subscription")).json(),
+    queryFn: async () => (await apiRequest("GET", "/api/partner/me/agreement")).json(),
   });
 
   const signMut = useMutation({
@@ -53,7 +63,7 @@ export default function PartnerAgreementSign() {
     },
     onSuccess: (j) => {
       setSignedAt(j.signedAt);
-      queryClient.invalidateQueries({ queryKey: ["/api/partner/me/subscription"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/partner/me/agreement"] });
       toast({ title: "Agreement signed" });
     },
     onError: (e: any) => toast({ title: "Could not record signature", description: e?.message, variant: "destructive" }),
@@ -64,6 +74,11 @@ export default function PartnerAgreementSign() {
   const isForbidden = isError && error instanceof ApiError && error.status === 403;
   const version = data?.agreement?.version ?? "—";
   const url = data?.agreement?.url ?? null;
+  const agreementText = data?.agreement?.text ?? CONSORTIUM_AGREEMENT_TEXT;
+  // Already signed (current version) on the durable record, or just now.
+  const alreadySigned = !!data?.signedCurrent;
+  const effectiveSignedAt = signedAt ?? (alreadySigned ? data?.signedAt ?? null : null);
+  const canSign = data?.canSign !== false;
 
   return (
     <PartnerShell title="Partner Agreement" tier={me.tier} subRole={me.subRole} partnerName={me.identity.name}>
@@ -86,13 +101,25 @@ export default function PartnerAgreementSign() {
             <>
               <p className="text-sm text-slate-700 mb-3">
                 By signing below you accept the Capavate Consortium Partner Agreement
-                {url ? <> (full text <a href={url} target="_blank" rel="noreferrer" className="text-[#cc0001] hover:underline">available here</a>)</> : null},
+                {url ? <> (full text also <a href={url} target="_blank" rel="noreferrer" className="text-[#cc0001] hover:underline">available here</a>)</> : null},
                 which governs commission economics, SPV fees, payout terms, and tax compliance.
               </p>
 
-              {signedAt ? (
+              {/* W2-I — full viewable agreement body (read-only). */}
+              <div
+                data-testid="partner-agreement-text"
+                className="mb-4 max-h-72 overflow-y-auto whitespace-pre-wrap rounded-md border border-slate-200 bg-slate-50 p-3 text-[13px] leading-relaxed text-slate-800"
+              >
+                {agreementText}
+              </div>
+
+              {effectiveSignedAt ? (
                 <div className="rounded-md border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900" data-testid="partner-agreement-signed">
-                  Agreement <span className="font-medium">{version}</span> signed on {formatDate(signedAt)}.
+                  Agreement <span className="font-medium">{data?.signedVersion ?? version}</span> signed on {formatDate(effectiveSignedAt)}.
+                </div>
+              ) : !canSign ? (
+                <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900" data-testid="partner-agreement-cannot-sign">
+                  Only your managing partner can sign the Consortium Partner Agreement.
                 </div>
               ) : (
                 <div className="space-y-4">

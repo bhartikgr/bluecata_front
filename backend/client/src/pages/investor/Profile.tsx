@@ -34,6 +34,8 @@ import {
   AlertTriangle, ArrowLeft, ArrowRight, Briefcase, Building2, Check, CheckCircle2,
   Eye, FileText, Save, Shield, ShieldCheck, Target, Upload, User,
 } from "lucide-react";
+import { kycVariantLabel } from "@/lib/investorLabels";
+import { fmtDateTime } from "@/lib/format";
 import { CountryPicker, PhoneCountryPicker } from "@/components/profile/CountryPicker";
 import { CountryStateCityPicker } from "@/components/profile/CountryStateCityPicker";
 import { resolveDialCode } from "@/components/profile/CountryStateCityPicker";
@@ -214,7 +216,7 @@ function InvestorWizard({
         breadcrumbs={[{ href: "/investor/dashboard", label: "Workspace" }, { label: "Profile" }]}
         actions={
           <div className="flex items-center gap-2">
-            <Badge variant="outline" data-testid="badge-kyc-variant">KYC: {coreProfile.kycVariant}</Badge>
+            <Badge variant="outline" data-testid="badge-kyc-variant">KYC: {kycVariantLabel(coreProfile.kycVariant)}</Badge>
             {coreProfile.accreditationVerified ? (
               <Badge className="bg-emerald-500/15 text-emerald-700 border-emerald-300/40" data-testid="badge-accred-verified">
                 <ShieldCheck className="h-3 w-3 mr-1" /> Verified
@@ -235,7 +237,7 @@ function InvestorWizard({
                 Step {step} of 3 · {STEPS[step - 1].title}
               </div>
               <div className="text-xs text-muted-foreground" data-testid="text-saved-at">
-                {patchMutation.isPending ? "Saving…" : savedAt ? `Saved · ${savedAt.toLocaleTimeString()}` : "Not yet saved"}
+                {patchMutation.isPending ? "Saving…" : savedAt ? `Saved · ${fmtDateTime(savedAt.toISOString())}` : "Not yet saved"}
               </div>
             </div>
             <Progress value={(step / 3) * 100} className="h-1.5 mb-3" />
@@ -689,7 +691,7 @@ function Step2Profile({
             <div className="space-y-1.5">
               <Label>Country of Tax Residency</Label>
               <CountryPicker value={value.countryOfTaxResidencyCode} onChange={(c) => set("countryOfTaxResidencyCode", c)} testId="picker-tax-residency" />
-              <div className="text-[11px] text-muted-foreground">KYC variant: <span className="font-medium" data-testid="text-kyc-variant">{value.kycVariant}</span></div>
+              <div className="text-[11px] text-muted-foreground">KYC variant: <span className="font-medium" data-testid="text-kyc-variant">{kycVariantLabel(value.kycVariant)}</span></div>
             </div>
             <div className="space-y-1.5">
               <Label>Tax ID / National ID</Label>
@@ -750,7 +752,7 @@ function Step2Profile({
             {value.accreditationVerified ? <CheckCircle2 className="h-4 w-4 text-emerald-600 mt-0.5" /> : <Shield className="h-4 w-4 text-muted-foreground mt-0.5" />}
             <div className="text-xs">
               {value.accreditationVerified ? (
-                <>Accreditation verified · last confirmed {value.accreditationVerifiedAt?.slice(0, 10)} · Variant: {value.kycVariant}</>
+                <>Accreditation verified · last confirmed {value.accreditationVerifiedAt?.slice(0, 10)} · Variant: {kycVariantLabel(value.kycVariant)}</>
               ) : (
                 <>Accreditation re-verification pending. Admin will re-confirm after the change.</>
               )}

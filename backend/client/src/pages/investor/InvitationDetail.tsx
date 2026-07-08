@@ -20,9 +20,10 @@ import {
 import { StateBadge } from "@/components/common";
 import { GlossaryLink } from "@/components/Glossary";
 import { HelpTip } from "@/components/HelpTip";
-import { ArrowLeft, FileText, Eye, Download, ShieldCheck, Check, X, Layers, PieChart as PieIcon, Building2, Info, Hash, Undo2, Wallet, Copy } from "lucide-react";
+import { ArrowLeft, FileText, Eye, Download, ShieldCheck, Check, X, Layers, PieChart as PieIcon, Building2, Info, Hash, Undo2, Wallet, Copy, Minus } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { fmtUSD, fmtPct, fmtDate, fmtNum, fmtBytes, safeToFixed } from "@/lib/format";
+import { roundPhrase, nonEmpty, fullLegalName } from "@/lib/investorLabels";
 import { useToast } from "@/hooks/use-toast";
 import { emit } from "@/lib/sprint3";
 import { useEffect } from "react";
@@ -202,6 +203,17 @@ export default function InvitationDetail() {
   }
  }, [entitlementCtx?.identity?.email]);
 
+ // BUG-21: prefill the typed legal signature from the session's full legal
+ // name (first + last, rule #13). Only prefill when a genuine full name is
+ // available — never a lone first name or an email; leave editable + blank
+ // otherwise so the investor types their own.
+ useEffect(() => {
+  const legal = fullLegalName(entitlementCtx?.identity?.name);
+  if (legal && !signerName) {
+   setSignerName(legal);
+  }
+ }, [entitlementCtx?.identity?.name]);
+
  // Decision mutation helper
  const decisionMutation = useMutation({
   mutationFn: async (patch: Record<string, unknown>) => {
@@ -309,7 +321,7 @@ export default function InvitationDetail() {
   <>
    <PageHeader
     title={i.company.name}
-    description={`${i.round.name} · ${i.company.sector}`}
+    description={[i.round.name, i.company.sector].filter(Boolean).join(" · ")}
     breadcrumbs={[{ href: "/investor/dashboard", label: "Workspace" }, { href: "/investor/invitations", label: "Invitations" }, { label: i.company.name }]}
     actions={
      <>
@@ -400,7 +412,7 @@ export default function InvitationDetail() {
         {/* Defect 18 fix: render company description from API data */}
         <p>
          {(i.company as { description?: string }).description ||
-          `${i.company.name} is participating in a ${i.round.name.toLowerCase()} round on Capavate. No description available.`}
+          `${nonEmpty(i.company.name, "This company")} is participating in a ${roundPhrase(i.round.name).toLowerCase()} on Capavate. No description available.`}
         </p>
         <div className="grid md:grid-cols-3 gap-3 pt-3 border-t border-border">
          <div><div className="text-xs text-muted-foreground">Founded</div><div className="font-medium">{(i.company as {founded?: string}).founded ?? "—"}</div></div>
@@ -410,9 +422,16 @@ export default function InvitationDetail() {
         <div className="pt-3 border-t border-border">
          <div className="text-xs text-muted-foreground mb-1">Traction (last 90 days)</div>
          <ul className="space-y-1.5">
-          {((i.round as {highlights?: string[]}).highlights ?? ["ARR data not available", "NRR data not available", "Compliance status not available"]).map((h, idx) => (
-           <li key={idx} className="flex items-center gap-2"><Check className="h-3.5 w-3.5 text-emerald-600" /> {h}</li>
-          ))}
+          {((i.round as {highlights?: string[]}).highlights ?? ["ARR data not available", "NRR data not available", "Compliance status not available"]).map((h, idx) => {
+            const absent = /not available|unavailable|not disclosed|not provided|\bn\/a\b|no (?:data|info|information)\b/i.test(h);
+            return (
+             <li key={idx} className="flex items-center gap-2">
+              {absent
+               ? <Minus className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+               : <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" />} {h}
+             </li>
+            );
+          })}
          </ul>
         </div>
        </CardContent>
@@ -597,6 +616,11 @@ export default function InvitationDetail() {
           </tr>
          </thead>
          <tbody>
+          {(dr.data ?? []).length === 0 && (
+           <tr data-testid="row-dr-empty">
+            <td colSpan={5} className="px-5 py-8 text-center text-muted-foreground">No documents shared yet.</td>
+           </tr>
+          )}
           {(dr.data ?? []).slice(0, 8).map(f => (
            <tr key={f.id} className="border-b border-border/60" data-testid={`row-dr-${f.id}`}>
             <td className="px-5 py-2.5 flex items-center gap-2"><FileText className="h-4 w-4 text-muted-foreground" /> {f.name}</td>
@@ -728,10 +752,10 @@ export default function InvitationDetail() {
          </div>
          <div>
           <Label>Note to founder (optional)</Label>
-          <Textarea rows={2} className="mt-1" value={note} onChange={e => setNote(e.target.value)} placeholder="Looking forward to partnering." data-testid="input-note" />
+          <Textarea rows={2} className="mt-1" value={note} onChange={e => setNote(e.target.value)} placeholder="e.g. Looking forward to partnering…" data-testid="input-note" />
          </div>
          <div className="rounded-md border border-border bg-secondary/40 p-3 text-xs leading-relaxed">
-          I, <strong>{signerName.trim() || "[Typed Name]"}</strong>, indicate my intention to invest <strong>{fmtUSD(Number(amount) || 0)}</strong> in <strong>{i.company.name}</strong>'s <strong>{i.round.name}</strong> round at the terms stated. This soft-circle is a non-binding indication of interest, not a contract. A binding subscription requires definitive transaction documents executed by both parties.
+          I, <strong>{signerName.trim() || "[Typed Name]"}</strong>, indicate my intention to invest <strong>{fmtUSD(Number(amount) || 0)}</strong> in <strong>{nonEmpty(i.company.name, "this company")}</strong>'s <strong>{roundPhrase(i.round.name)}</strong> at the terms stated. This soft-circle is a non-binding indication of interest, not a contract. A binding subscription requires definitive transaction documents executed by both parties.
          </div>
          <label className="flex items-start gap-2 text-xs cursor-pointer">
           <Checkbox checked={ack} onCheckedChange={(v) => setAck(!!v)} data-testid="checkbox-investor-ack" />
@@ -794,7 +818,7 @@ export default function InvitationDetail() {
        <Card>
         <CardHeader className="pb-3"><CardTitle className="text-base">Pass on this round</CardTitle></CardHeader>
         <CardContent className="space-y-3">
-         <p className="text-sm text-muted-foreground">If this isn't a fit, let the founder know. Your decline is private to {i.company.name}.</p>
+         <p className="text-sm text-muted-foreground">If this isn't a fit, let the founder know. Your decline is private to {nonEmpty(i.company.name, "the company")}.</p>
          <div className="rounded-md border border-border bg-secondary/40 p-3 text-sm">
           <div className="font-medium mb-1">Common reasons</div>
           <ul className="text-muted-foreground space-y-1">

@@ -14,6 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Bell, CheckCheck, BellOff } from "lucide-react";
 import { useEntitlement } from "@/lib/entitlement";
+import { notificationKindLabel } from "@/lib/investorLabels";
 
 type Notification = {
   id: string;
@@ -123,13 +124,13 @@ export default function InvestorNotificationsPage() {
                 queryClient.invalidateQueries({ queryKey: [`/api/notifications?userId=${userId}`] });
               }}
               data-testid={`chip-notif-kind-${k}`}
-              className={`px-3 py-1 text-xs rounded-full border capitalize transition-colors ${
+              className={`px-3 py-1 text-xs rounded-full border transition-colors ${
                 kindFilter === k
                   ? "bg-[hsl(0_100%_40%)] text-white border-transparent"
                   : "bg-white text-slate-700 hover:bg-slate-50"
               }`}
             >
-              {k}
+              {notificationKindLabel(k)}
             </button>
           ))}
         </div>
@@ -154,7 +155,7 @@ export default function InvestorNotificationsPage() {
           <Card>
             <CardContent className="py-16 text-center text-sm text-muted-foreground">
               <BellOff className="h-8 w-8 mx-auto mb-3 text-muted-foreground/40" />
-              {kindFilter === "all" ? "You're all caught up." : `No ${kindFilter} notifications.`}
+              {kindFilter === "all" ? "You're all caught up." : `No ${notificationKindLabel(kindFilter).toLowerCase()} notifications.`}
             </CardContent>
           </Card>
         )}

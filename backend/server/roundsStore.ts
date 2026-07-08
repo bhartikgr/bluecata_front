@@ -68,6 +68,8 @@ export type Round = {
   openDate?: string | null;
   instrument?: string | null;
   createdAt?: string;
+  // v25.54 G0-2 — archived rounds stay VISIBLE (unlike deleted_at) but inert.
+  archivedAt?: string | null;
   // long-tail form fields preserved verbatim (useOfProceeds, tranches, etc.).
   [extra: string]: unknown;
 };
@@ -115,6 +117,7 @@ function rowToRound(row: any): Round {
     openDate: row.open_date ?? row.openDate ?? null,
     instrument: row.instrument ?? null,
     createdAt: row.created_at ?? row.createdAt ?? undefined,
+    archivedAt: row.archived_at ?? row.archivedAt ?? null,
     ...extras,
   };
 }
@@ -396,6 +399,69 @@ export function softDeleteRound(id: string, actorUserId: string): boolean {
     appendAdminAudit(actorUserId, `company:${round.companyId}`, "round.deleted", { roundId: id }, tenantId);
   } catch { /* tolerated */ }
   return true;
+}
+
+/**
+ * v25.54 G0-2 — founder round archival. Unlike softDeleteRound, the round STAYS
+ * in the in-memory cache and remains readable (archived ≠ deleted); it is only
+ * marked inert via archived_at. The route layer enforces ownership + the
+ * cap-table safety invariant BEFORE calling this. Returns the updated Round, or
+ * null if the id is unknown. Idempotent: archiving an already-archived round is
+ * a no-op that returns the current record.
+ */
+export function archiveRound(id: string, actorUserId: string): Round | null {
+  const round = ROUNDS_BY_ID.get(id);
+  if (!round) return null;
+  if (round.archivedAt) return round;
+  const tenantId = tenantForCompany(round.companyId);
+  const archivedAt = new Date().toISOString();
+  try {
+    const db = getDb();
+    db.transaction((tx: any) => {
+      tx.update(roundsTable)
+        .set({ archivedAt })
+        .where(and(eq(roundsTable.id, id), isNull(roundsTable.deletedAt)))
+        .run();
+    });
+  } catch (err) {
+    log.warn("[roundsStore.archiveRound] DB write failed:", (err as Error).message);
+    return null;
+  }
+  const updated: Round = { ...round, archivedAt };
+  cacheUpsert(updated);
+  try {
+    appendAdminAudit(actorUserId, `company:${round.companyId}`, "round.archived", { roundId: id, archivedAt }, tenantId);
+  } catch { /* tolerated */ }
+  return updated;
+}
+
+/**
+ * v25.54 G0-2 — reverse archiveRound. Clears archived_at so the round is live
+ * again. Idempotent: un-archiving a live round is a no-op.
+ */
+export function unarchiveRound(id: string, actorUserId: string): Round | null {
+  const round = ROUNDS_BY_ID.get(id);
+  if (!round) return null;
+  if (!round.archivedAt) return round;
+  const tenantId = tenantForCompany(round.companyId);
+  try {
+    const db = getDb();
+    db.transaction((tx: any) => {
+      tx.update(roundsTable)
+        .set({ archivedAt: null })
+        .where(and(eq(roundsTable.id, id), isNull(roundsTable.deletedAt)))
+        .run();
+    });
+  } catch (err) {
+    log.warn("[roundsStore.unarchiveRound] DB write failed:", (err as Error).message);
+    return null;
+  }
+  const updated: Round = { ...round, archivedAt: null };
+  cacheUpsert(updated);
+  try {
+    appendAdminAudit(actorUserId, `company:${round.companyId}`, "round.unarchived", { roundId: id }, tenantId);
+  } catch { /* tolerated */ }
+  return updated;
 }
 
 /* ────────────────────────────────────────────────────────────────────────

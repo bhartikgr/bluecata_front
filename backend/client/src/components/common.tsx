@@ -37,6 +37,10 @@ const STATE_COLORS: Record<string, string> = {
  declined: "bg-rose-100 text-rose-900 border-rose-300/50",
  expired: "bg-zinc-200 text-zinc-700 border-zinc-300/50",
  revoked: "bg-zinc-300 text-zinc-800 border-zinc-400/50",
+ // Shadie V6 5b — presentational-only chip for a resent (still "sent") invite.
+ // NOT part of the RoundInvitationState lifecycle union; derived in the UI from
+ // state === "sent" && resentAt.
+ resent: "bg-teal-100 text-teal-900 border-teal-300/50",
  // Sprint 10: Your Decision 10-state machine
  soft_circled: "bg-cyan-100 text-cyan-900 border-cyan-300/50",
  signed: "bg-emerald-100 text-emerald-900 border-emerald-300/50",

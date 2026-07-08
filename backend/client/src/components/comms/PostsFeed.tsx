@@ -304,14 +304,17 @@ export function PostsFeed({
  </SelectContent>
  </Select>
 
- <input
-  type="datetime-local"
-  value={scheduledFor}
-  onChange={(e) => setScheduledFor(e.target.value)}
-  className="h-8 px-2 text-xs rounded-md border border-input bg-background"
-  data-testid="input-post-schedule"
-  aria-label="Schedule for later"
- />
+ <label className="inline-flex flex-col gap-0.5 leading-none" data-testid="label-post-schedule">
+  <span className="text-[10px] text-muted-foreground">Schedule for later (optional)</span>
+  <input
+   type="datetime-local"
+   value={scheduledFor}
+   onChange={(e) => setScheduledFor(e.target.value)}
+   className="h-8 px-2 text-xs rounded-md border border-input bg-background"
+   data-testid="input-post-schedule"
+   aria-label="Schedule for later (optional)"
+  />
+ </label>
  <Button
   type="button"
   variant="ghost"

@@ -484,6 +484,18 @@ export const spvEngineStore = {
     if (data.feeType !== "fixed" && (data.carryPct == null || data.carryPct < 0 || data.carryPct > 1)) {
       throw new Error("CARRY_PCT_REQUIRED");
     }
+    // W2-F — fail-closed guard: a fixed/absolute fee may never exceed the SPV's
+    // target raise (the "$33 fee on a $30 raise" bug). Only enforced when a
+    // positive target raise is set; skipped for pure-carry fees and when the
+    // raise is unknown (null) or zero.
+    if (
+      data.feeType !== "carry" &&
+      typeof s.targetRaiseMinor === "number" &&
+      s.targetRaiseMinor > 0 &&
+      (data.fixedAmountMinor ?? 0) > s.targetRaiseMinor
+    ) {
+      throw new Error("FEES_EXCEED_RAISE");
+    }
     const now = nowIso();
     const f: SpvFeeDTO = {
       id: newId("spvfee"),

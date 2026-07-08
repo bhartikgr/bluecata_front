@@ -29,6 +29,7 @@ import { getDb } from "../db/connection";
 import { seedDemoData } from "../lib/seedDemoData";
 import { investorNominations as investorNominationsTable } from "../../shared/schema";
 import * as collectiveMembershipStore from "../collectiveMembershipStore";
+import { upsertCapTablePositionForTests } from "../membershipStore";
 import { hydrateMultiCompanyStore } from "../multiCompanyStore";
 
 const CHAPTER_ID = "chap_keiretsu_canada";
@@ -64,6 +65,7 @@ beforeAll(async () => {
   // codebase, and we want this test to be independent of process-wide state.
   for (const uid of [MAYA, AISHA, DANIEL]) {
     collectiveMembershipStore.activate(uid, "u_admin_test");
+    upsertCapTablePositionForTests(uid); // W3-C: cap-table hard gate needs a position
   }
 
   app = express();

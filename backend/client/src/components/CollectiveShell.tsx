@@ -28,7 +28,7 @@ import { useLegalDrawer } from "@/lib/legalDrawer";
 import { useRole } from "@/lib/role";
 import { usePartnerMembership } from "@/lib/partner/usePartnerMembership";
 import { useQuery } from "@tanstack/react-query"; /* v16 Fix 6 — read COLLECTIVE_ENABLED */
-import { apiRequest } from "@/lib/queryClient"; /* v16 Fix 6 */
+import { apiRequest, queryClient } from "@/lib/queryClient"; /* v16 Fix 6 */
 import { ChapterSelector } from "@/components/ChapterSelector"; /* v17 Phase A — chapter scope dropdown in topbar */
 import { MarketTicker } from "@/components/feeds/MarketTicker"; /* v25.43 R3-4 — persistent live ticker strip */
 import { CollectiveMemberGate } from "@/components/CollectiveMemberGate"; /* v25.48.2 MF7 (Q9) — member gate on the common shell */
@@ -166,7 +166,14 @@ const PARTNER_WORKSPACE_GROUPS: NavGroup[] = [
          page. The legacy /spvs and /funds routes stay reachable (they redirect to
          the canonical surface) so no bookmark/link breaks — Sacred Rule #78. */
       { href: "/collective/partner/spv-engine", label: "SPVs", icon: Building2, "data-testid": "nav-partner-spvs" },
-      /* v25.50.0 Phase 6 (spec 4a) — "Clients" nav item removed (page deleted). */
+      /* W2-A — "Clients" nav item restored. (The prior "(page deleted)" comment
+         was inaccurate: PartnerClients.tsx / PartnerClientDetail.tsx were never
+         deleted — only their routes/nav were trimmed in v25.50.0, and the read
+         endpoints were re-added in W2-A.) */
+      { href: "/collective/partner/clients", label: "Clients", icon: Users, "data-testid": "nav-partner-clients" },
+      /* W2-D — "Portfolio" nav item added; the /api/partner/me/portfolio API
+         already existed but had no client route/nav to reach it. */
+      { href: "/collective/partner/portfolio", label: "Portfolio", icon: PiggyBank, "data-testid": "nav-partner-portfolio" },
     ],
   },
   {
@@ -385,6 +392,27 @@ function CollectiveTopbar({ onMenuClick }: { onMenuClick: () => void }) {
     navigate(dest);
   }
 
+  const [loggingOut, setLoggingOut] = useState(false);
+  /* W2-B — partner logout. The LogOut icon was imported but never wired. This
+     calls the existing server session-revoke route, clears the React Query
+     cache so no stale authed data survives, and hard-navigates to the partner
+     login (window.location so all in-memory app state is dropped). */
+  async function logout() {
+    if (loggingOut) return;
+    setLoggingOut(true);
+    try {
+      await apiRequest("POST", "/api/auth/logout");
+    } catch {
+      /* fail-safe: even if the revoke call fails we still clear the client
+         and redirect so the user is not left in a half-authed state. */
+    } finally {
+      try {
+        await queryClient.resetQueries();
+      } catch { /* non-fatal */ }
+      window.location.href = "/partner/login";
+    }
+  }
+
   return (
     <header
       className="h-14 flex items-center justify-between px-4 gap-3"
@@ -434,6 +462,22 @@ function CollectiveTopbar({ onMenuClick }: { onMenuClick: () => void }) {
           >
             <ArrowLeftRight className="h-3 w-3" />
             Switch to Capavate
+          </Button>
+        )}
+        {/* W2-B — logout. Shown for partner-only sessions (whose only home is
+            the partner workspace); dual-role/Collective users retain their
+            existing Capavate portal logout via AppShell. */}
+        {partnerOnly && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={logout}
+            disabled={loggingOut}
+            data-testid="button-partner-logout"
+            className="gap-2 text-xs border-[#041e41]/30 text-[#041e41] hover:bg-[rgba(4,30,65,0.05)]"
+          >
+            <LogOut className="h-3 w-3" />
+            {loggingOut ? "Signing out…" : "Log out"}
           </Button>
         )}
       </div>

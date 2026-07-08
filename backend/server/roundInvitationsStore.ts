@@ -79,6 +79,8 @@ export interface RoundInvitationRow {
   expiresAt: string | null;
   createdAt: string | null;
   updatedAt: string | null;
+  /** v25.55 5b — ISO timestamp of the last resend, or null if never resent. */
+  resentAt: string | null;
 }
 
 export interface CreateInvitationArgs {
@@ -225,6 +227,7 @@ function mapDbRow(r: any): RoundInvitationRow {
     expiresAt: r.expires_at ?? null,
     createdAt: r.created_at ?? null,
     updatedAt: r.updated_at ?? null,
+    resentAt: r.resent_at ?? null,
   };
 }
 
@@ -376,6 +379,7 @@ export async function createInvitation(args: CreateInvitationArgs): Promise<Crea
     expiresAt,
     createdAt,
     updatedAt: createdAt,
+    resentAt: null,
   };
 
   // Persist atomically. v25.0 fix: use raw SQL because the Drizzle schema (sacred
@@ -830,7 +834,12 @@ export function markInvitationRedeemed(id: string, redeemedByUserId?: string | n
 export function revokeInvitation(id: string, actorUserId: string): void {
   const row = memInvitations.find((r) => r.id === id);
   if (!row) return;
-  if (row.state === "accepted") return; // cannot revoke after redeem
+  // v25.55 4a (Ozan / Scenario 2) — an accepted invite CAN now be revoked so
+  // the founder can pull access from an investor who redeemed but should no
+  // longer participate. The accepted->revoked transition persists via the
+  // UPDATE path below; access is cut automatically because buildInvitedRounds
+  // filters out `revoked`. (A committed investor holding a cap-table position
+  // keeps their seat — that access does not flow through the invite.)
   // v25.35 fix-2 (Concern 3) — persist-first-throw. Previously the in-memory
   // row was flipped to `revoked` BEFORE the DB update, and the DB failure was
   // tolerated, so a revoke could report success while the durable row stayed
@@ -883,7 +892,12 @@ export function extendInvitation(id: string, expiryDays: number, _actorUserId: s
   // so an extend could report success while the durable row kept the old
   // expiry. We now stage the new expiry, persist FIRST, throw on DB failure
   // (route -> 500), and mutate the cache only after the durable commit.
-  const expiresAt = plusDaysIso(expiryDays);
+  // v25.55 6a (Ozan) — the extension is ADDITIVE: anchor +expiryDays on the
+  // LATER of now / the current expiry so re-extending a still-live invite
+  // actually pushes the expiry out (previously `now+days` could look unchanged
+  // when the current expiry was already further in the future).
+  const anchorMs = Math.max(Date.now(), Date.parse(row.expiresAt ?? "") || 0);
+  const expiresAt = plusDaysIso(expiryDays, new Date(anchorMs));
   const updatedAt = nowIso();
   // v25.35 fix-3 (Concern 3, GPT-5.5 strict re-verify) — same zero-row guard
   // as revoke. If the DB row is missing, do not silently extend the cached
@@ -917,6 +931,142 @@ export function extendInvitation(id: string, expiryDays: number, _actorUserId: s
     change: "update",
     tenantId: row.tenantId ?? undefined,
   });
+}
+
+/* ---------- Resend / notify (v25.55 4a + 5a/5b) ---------- */
+
+/** Resolve human-readable company + round display names, best-effort. */
+function resolveDealNames(companyId: string | null, roundId: string): { companyName: string; roundName: string } {
+  let companyName = "a company";
+  let roundName = "a funding round";
+  try {
+    const resolved = companyId ? getCompanyNameById(companyId) : null;
+    if (resolved && resolved.trim()) companyName = resolved.trim();
+  } catch { /* non-fatal */ }
+  try {
+    const resolved = getRoundById(roundId);
+    if (resolved?.name && resolved.name.trim()) roundName = resolved.name.trim();
+  } catch { /* non-fatal */ }
+  return { companyName, roundName };
+}
+
+/** Locate a row in the cache, falling back to the DB (opportunistically cached). */
+function findRowById(id: string): RoundInvitationRow | null {
+  let row = memInvitations.find((r) => r.id === id);
+  if (!row) {
+    const dbRow = dbFindById(id);
+    if (dbRow) row = cacheUpsert(dbRow);
+  }
+  return row ?? null;
+}
+
+export interface ResendInvitationResult {
+  ok: boolean;
+  emailSent: boolean;
+  emailMode: string;
+  resentAt: string;
+  redeemUrl?: string;
+}
+
+/**
+ * v25.55 5a/5b — resend a pending invitation. Because only the token HASH is
+ * stored (never the raw token), a working redeem link requires TOKEN ROTATION:
+ * we mint a NEW raw token, UPDATE token_hash, and email a fresh redeem link.
+ * The previous link stops working (expected, Ozan-confirmed Caveat A). We also
+ * stamp `resent_at` (durable, migration 0104) so the UI can show a "resent"
+ * chip. Persist-first: the DB UPDATE commits before the cache is mutated or the
+ * email is sent.
+ */
+export async function resendInvitation(id: string, _actorUserId: string): Promise<ResendInvitationResult> {
+  const row = findRowById(id);
+  if (!row) throw new Error("invitation_not_found");
+
+  const token = generateToken();
+  const tokenHash = sha256Hex(token);
+  const resentAt = nowIso();
+
+  let affected = 0;
+  try {
+    const info = rawDb()
+      .prepare(
+        `UPDATE round_invitations SET token_hash = ?, resent_at = ?, updated_at = ? WHERE id = ?`,
+      )
+      .run(tokenHash, resentAt, resentAt, row.id);
+    affected = info.changes;
+  } catch (err) {
+    log.error("[roundInvitationsStore.resendInvitation] DB write failed:", (err as Error).message);
+    throw err;
+  }
+  if (affected === 0) {
+    const idx = memInvitations.findIndex((r) => r.id === row.id);
+    if (idx >= 0) memInvitations.splice(idx, 1);
+    throw new Error(`Invitation ${row.id} not found in DB; cache cleared`);
+  }
+  // Cache mutated only after the durable commit.
+  row.tokenHash = tokenHash;
+  row.resentAt = resentAt;
+  row.updatedAt = resentAt;
+
+  const { companyName, roundName } = resolveDealNames(row.companyId, row.roundId);
+  const baseUrl = process.env.INVITATION_BASE_URL ?? process.env.APP_URL ?? "https://capavate.com";
+  const link = `${baseUrl}/auth/redeem?token=${encodeURIComponent(token)}`;
+  let emailSent = false;
+  try {
+    const result = await sendMail({
+      to: row.investorEmail,
+      subject: `[Capavate] Reminder: your pending invitation to ${companyName} — ${roundName}`,
+      html:
+        `<p>Hi ${e(row.investorName ?? "there")},</p>` +
+        `<p>This is a reminder that you have a <strong>pending invitation</strong> to review <strong>${e(roundName)}</strong> at <strong>${e(companyName)}</strong>.</p>` +
+        `<p><a href="${e(link)}">Click here to review the invitation</a></p>` +
+        `<p>This link replaces any earlier one you may have received.</p>`,
+      text:
+        `Reminder: you have a pending invitation to review ${roundName} at ${companyName} on Capavate.\n` +
+        `Review it here: ${link}\n` +
+        `This link replaces any earlier one you may have received.`,
+    });
+    emailSent = !!result.ok;
+  } catch (err) {
+    log.warn("[roundInvitationsStore.resendInvitation] email send failed (continuing):", (err as Error).message);
+  }
+
+  emitMutation({ aggregate: "invitation", id: row.id, change: "update", tenantId: row.tenantId ?? undefined });
+
+  const emailMode = (() => {
+    try { return getEmailConfig().mode; } catch { return "console"; }
+  })();
+  const appUrl = process.env.APP_URL ?? process.env.INVITATION_BASE_URL ?? "https://capavate.com";
+  const redeemUrl = `${appUrl}/invite/${encodeURIComponent(token)}`;
+  return { ok: true, emailSent, emailMode, resentAt, redeemUrl };
+}
+
+/**
+ * v25.55 4a — notify an investor that a round is no longer available after the
+ * founder revoked their invitation. No redeem link (there is nothing to
+ * redeem). Best-effort; a send failure is logged, not thrown.
+ */
+export async function notifyInvitationRevoked(id: string): Promise<{ emailSent: boolean }> {
+  const row = findRowById(id);
+  if (!row) return { emailSent: false };
+  const { companyName, roundName } = resolveDealNames(row.companyId, row.roundId);
+  let emailSent = false;
+  try {
+    const result = await sendMail({
+      to: row.investorEmail,
+      subject: `[Capavate] The ${roundName} round at ${companyName} is no longer available`,
+      html:
+        `<p>Hi ${e(row.investorName ?? "there")},</p>` +
+        `<p>We're writing to let you know that your invitation to <strong>${e(roundName)}</strong> at <strong>${e(companyName)}</strong> has been withdrawn and the round is no longer available to you.</p>` +
+        `<p>If you believe this is a mistake, please reach out to the founder directly.</p>`,
+      text:
+        `Your invitation to ${roundName} at ${companyName} has been withdrawn and the round is no longer available to you.\n` +
+        `If you believe this is a mistake, please reach out to the founder directly.`,
+    });
+    emailSent = !!result.ok;
+  } catch (err) {
+    log.warn("[roundInvitationsStore.notifyInvitationRevoked] email send failed (continuing):", (err as Error).message);
+  }
+  return { emailSent };
 }
 
 /* ---------- Hydration ---------- */
@@ -953,6 +1103,7 @@ export async function hydrateRoundInvitationsStore(): Promise<void> {
         expiresAt: r.expires_at ?? r.expiresAt ?? null,
         createdAt: r.created_at ?? r.createdAt ?? null,
         updatedAt: r.updated_at ?? r.updatedAt ?? null,
+        resentAt: r.resent_at ?? r.resentAt ?? null,
       });
     }
     if (rows.length > 0) {

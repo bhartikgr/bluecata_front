@@ -22,6 +22,7 @@ import { registerRoutes } from "../routes";
 import { getDb } from "../db/connection";
 import { seedDemoData } from "../lib/seedDemoData";
 import * as collectiveMembershipStore from "../collectiveMembershipStore";
+import { upsertCapTablePositionForTests } from "../membershipStore";
 import { hydrateMultiCompanyStore } from "../multiCompanyStore";
 import {
   periodBounds,
@@ -45,6 +46,7 @@ beforeAll(async () => {
 
   for (const uid of [MAYA, AISHA]) {
     collectiveMembershipStore.activate(uid, "u_admin_test");
+    upsertCapTablePositionForTests(uid); // W3-C: cap-table hard gate needs a position
   }
 
   app = express();

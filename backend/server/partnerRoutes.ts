@@ -27,6 +27,7 @@ import type { Express, Request, Response } from "express";
 import { createHash, randomBytes } from "node:crypto"; /* v25.14 NC1 — secure team-invite redeem password */
 import { requireAdmin, requireAuth } from "./lib/authMiddleware";
 import { requirePartnerAuth, assertSubRole, assertTier, assertTierSeats } from "./lib/requirePartnerAuth";
+import { requireSignedAgreement } from "./lib/requireSignedAgreement";
 import { getUserContext } from "./lib/userContext";
 import { appendAdminAudit } from "./adminPlatformStore";
 import { emitBridgeEvent } from "./bridgeStore";
@@ -52,6 +53,7 @@ import {
 } from "./partnerWorkspaceStore";
 import { getAllContacts, listContacts, updateContact, createContact, upsertConsortiumPartner } from "./adminContactsStore";
 import { registerPersona, getUserContextForId } from "./lib/userContext";
+import { resolveDisplayNames } from "./lib/displayNameResolver"; /* W2-G — shared userId->name resolver */
 import { hashPassword } from "./lib/auth"; /* v25.49.3 R1 — partner-role auth_users seed hash */
 import { storeCredential, lookupByUserId } from "./userCredentialsStore"; /* v25.49.3 R1 — durable bcrypt credential + hydration probe */
 import { rawDb } from "./db/connection";
@@ -607,11 +609,59 @@ export function registerPartnerRoutes(app: Express): void {
     res.json(partnerDashboardSnapshot(req.partnerContext!.partnerId));
   });
 
-  // CLIENTS — v25.50.0 Phase 6 (spec 4a): the CP-facing Clients page is removed,
-  // so its read-only `GET /api/partner/me/clients` + `/clients/:id` route surface
-  // is deleted here. Attribution store + WRITES (admin attributions above, source/
-  // revoke), commission accrual (partnerConsortiumRoutes), CRM guard, dashboard
-  // count and boot hydration are DELIBERATELY PRESERVED and untouched.
+  // CLIENTS — W2-A restore. The read-only `GET /api/partner/me/clients` +
+  // `/clients/:id` surface was trimmed in v25.50.0 Phase 6 (spec 4a) WITHOUT
+  // authorization (rule #78) while the entire data model, CRM engine, writes,
+  // attribution store, dashboard count and boot hydration were DELIBERATELY
+  // PRESERVED. These two endpoints are rebuilt from the preserved
+  // partnerAttributionStore; both are read-only, requirePartnerAuth, and
+  // fail-closed on attribution (the `:id` route 404s on any company not
+  // attributed to THE SESSION's partner — never the URL — so there is no
+  // cross-partner read). Shapes match what PartnerClients.tsx /
+  // PartnerClientDetail.tsx consume.
+  app.get("/api/partner/me/clients", requirePartnerAuth, (req: Request, res: Response) => {
+    const pid = req.partnerContext!.partnerId;
+    const clients = partnerAttributionStore
+      .listByPartner(pid)
+      .map((a) => ({
+        id: a.id,
+        companyId: a.companyId,
+        attributionSource: a.attributionSource,
+        attributedAt: a.attributedAt,
+      }));
+    res.json({ clients });
+  });
+
+  app.get("/api/partner/me/clients/:id", requirePartnerAuth, (req: Request, res: Response) => {
+    const pid = req.partnerContext!.partnerId;
+    const companyId = String(req.params.id);
+    // Fail-closed: the company must be attributed to THIS partner. A miss
+    // returns 404 without leaking whether the company exists elsewhere.
+    const attribution = partnerAttributionStore
+      .listByPartner(pid)
+      .find((a) => a.companyId === companyId);
+    if (!attribution) {
+      return res.status(404).json({ error: "CLIENT_NOT_FOUND_OR_NOT_ATTRIBUTED" });
+    }
+    const rec = getCompanyRecordById(companyId);
+    const profile = getCompanyProfile(companyId);
+    const snapshot = {
+      sector: rec?.sector ?? null,
+      stage: rec?.stage ?? null,
+      valuationMinor: profile?.valuationMinor ?? null,
+      lastRaiseAmount: profile?.lastRaiseAmount ?? null,
+      lastRaiseDate: profile?.lastRaiseDate ?? null,
+    };
+    const notes = partnerNotesStore
+      .listByPartner(pid, { scope: "client", scopeId: companyId })
+      .map((n) => ({ id: n.id, title: n.title, body: n.body }));
+    res.json({
+      companyId,
+      snapshot,
+      attribution: { attributionSource: attribution.attributionSource, attributedAt: attribution.attributedAt },
+      notes,
+    });
+  });
 
   // PIPELINE
   app.get("/api/partner/me/pipeline", requirePartnerAuth, (req: Request, res: Response) => {
@@ -679,6 +729,7 @@ export function registerPartnerRoutes(app: Express): void {
     "/api/partner/me/portfolio/:companyId",
     requirePartnerAuth,
     assertSubRole("managing_partner", "associate"),
+    requireSignedAgreement,
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       const companyId = String(req.params.companyId);
@@ -698,6 +749,7 @@ export function registerPartnerRoutes(app: Express): void {
     "/api/partner/me/portfolio/:companyId",
     requirePartnerAuth,
     assertSubRole("managing_partner"),
+    requireSignedAgreement,
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       const companyId = String(req.params.companyId);
@@ -715,6 +767,7 @@ export function registerPartnerRoutes(app: Express): void {
     "/api/partner/me/pipeline",
     requirePartnerAuth,
     assertSubRole("managing_partner", "associate", "bd"),
+    requireSignedAgreement,
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       const { dealName, companyId, stage, estCheckSizeMinor, currency, sector, geography, expectedClose, notes } = req.body ?? {};
@@ -743,6 +796,7 @@ export function registerPartnerRoutes(app: Express): void {
     "/api/partner/me/pipeline/:id",
     requirePartnerAuth,
     assertSubRole("managing_partner", "associate"),
+    requireSignedAgreement,
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       try {
@@ -758,6 +812,7 @@ export function registerPartnerRoutes(app: Express): void {
     "/api/partner/me/pipeline/:id",
     requirePartnerAuth,
     assertSubRole("managing_partner"),
+    requireSignedAgreement,
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       try {
@@ -773,6 +828,7 @@ export function registerPartnerRoutes(app: Express): void {
     "/api/partner/me/pipeline/:id/activities",
     requirePartnerAuth,
     assertSubRole("managing_partner", "associate", "bd"),
+    requireSignedAgreement,
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       const { activityType, body } = req.body ?? {};
@@ -800,6 +856,7 @@ export function registerPartnerRoutes(app: Express): void {
     "/api/partner/me/pipeline/:id/promote-to-collective",
     requirePartnerAuth,
     assertSubRole("managing_partner", "associate"),
+    requireSignedAgreement,
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       const dealId = String(req.params.id);
@@ -835,6 +892,7 @@ export function registerPartnerRoutes(app: Express): void {
     "/api/partner/me/pipeline/:id/refer-to-capavate",
     requirePartnerAuth,
     assertSubRole("managing_partner", "associate"),
+    requireSignedAgreement,
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       const dealId = String(req.params.id);
@@ -878,6 +936,7 @@ export function registerPartnerRoutes(app: Express): void {
     "/api/partner/me/promotions/:id/withdraw",
     requirePartnerAuth,
     assertSubRole("managing_partner"),
+    requireSignedAgreement,
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       const promoId = String(req.params.id);
@@ -1056,18 +1115,12 @@ export function registerPartnerRoutes(app: Express): void {
     const rawMembers = partnerTeamStore.listByPartner(pid);
     const contactMap = partnerTeamContactStore.listByPartner(pid);
     const memberIds = rawMembers.map((m) => m.userId);
-    const identityById = new Map<string, { name: string | null; email: string | null }>();
-    if (memberIds.length > 0) {
-      try {
-        const placeholders = memberIds.map(() => "?").join(",");
-        const rows = rawDb().prepare(
-          `SELECT id, name, email FROM users WHERE id IN (${placeholders})`,
-        ).all(...memberIds) as Array<{ id: string; name: string | null; email: string | null }>;
-        for (const r of rows) identityById.set(String(r.id), { name: r.name ?? null, email: r.email ?? null });
-      } catch {
-        /* non-fatal — fall back to raw ids below */
-      }
-    }
+    /* W2-G — resolve identities through the shared displayNameResolver instead
+       of a bare `users` JOIN. The prior JOIN missed synthetic ids (e.g. the
+       `u_redeemed_*` personas minted in userContext.ts) and surfaced a null /
+       raw id in place of a name. The resolver checks users -> credentials ->
+       user-context and GUARANTEES it never returns a raw "u_..." id as a name. */
+    const identityById = resolveDisplayNames(memberIds);
     const members = rawMembers.map((m) => {
       const idn = identityById.get(m.userId);
       const contact = contactMap.get(m.userId);
@@ -1090,6 +1143,7 @@ export function registerPartnerRoutes(app: Express): void {
     "/api/partner/me/team/:userId/contact",
     requirePartnerAuth,
     assertSubRole("managing_partner"),
+    requireSignedAgreement,
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       const userId = String(req.params.userId);
@@ -1114,6 +1168,7 @@ export function registerPartnerRoutes(app: Express): void {
     "/api/partner/me/team/invitations",
     requirePartnerAuth,
     assertSubRole("managing_partner"),
+    requireSignedAgreement,
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       const { email, subRole } = req.body ?? {};
@@ -1149,6 +1204,7 @@ export function registerPartnerRoutes(app: Express): void {
     "/api/partner/me/team/:userId",
     requirePartnerAuth,
     assertSubRole("managing_partner"),
+    requireSignedAgreement,
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       /* v25.23 NL-U fix — surface the server-side last-managing_partner guard
@@ -1185,6 +1241,7 @@ export function registerPartnerRoutes(app: Express): void {
     "/api/partner/me/notes",
     requirePartnerAuth,
     assertSubRole("managing_partner", "associate", "bd"),
+    requireSignedAgreement,
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       const { scope, scopeId, title, body } = req.body ?? {};
@@ -1198,6 +1255,7 @@ export function registerPartnerRoutes(app: Express): void {
     "/api/partner/me/notes/:id",
     requirePartnerAuth,
     assertSubRole("managing_partner", "associate"),
+    requireSignedAgreement,
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       // Notes are soft-deleted by overwriting body to indicate deletion.
@@ -1223,6 +1281,7 @@ export function registerPartnerRoutes(app: Express): void {
     "/api/partner/me/notes/:id",
     requirePartnerAuth,
     assertSubRole("managing_partner", "associate", "bd"),
+    requireSignedAgreement,
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       try {
@@ -1254,6 +1313,7 @@ export function registerPartnerRoutes(app: Express): void {
     "/api/partner/me/workspace-settings",
     requirePartnerAuth,
     assertSubRole("managing_partner"),
+    requireSignedAgreement,
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       const patch = req.body ?? {};
@@ -1293,6 +1353,7 @@ export function registerPartnerRoutes(app: Express): void {
     "/api/partner/me/spvs",
     requirePartnerAuth,
     assertSubRole("managing_partner"),
+    requireSignedAgreement,
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       const { spvName, jurisdiction, vintage, currency, status, targetCompanyId, entityStructure, externalAdminProvider, externalAdminRef, notes } = req.body ?? {};
@@ -1337,6 +1398,7 @@ export function registerPartnerRoutes(app: Express): void {
     "/api/partner/me/spvs/:id",
     requirePartnerAuth,
     assertSubRole("managing_partner", "associate"),
+    requireSignedAgreement,
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       // Blocker 1 (4D): mutate THROUGH the canonical engine so a legacy PATCH can
@@ -1368,6 +1430,7 @@ export function registerPartnerRoutes(app: Express): void {
     "/api/partner/me/spvs/:id/positions",
     requirePartnerAuth,
     assertSubRole("managing_partner"),
+    requireSignedAgreement,
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       const { lpContactId, positionAmountMinor, currency } = req.body ?? {};
@@ -1406,6 +1469,7 @@ export function registerPartnerRoutes(app: Express): void {
     "/api/partner/me/funds",
     requirePartnerAuth,
     assertSubRole("managing_partner", "associate"),
+    requireSignedAgreement,
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       const { fundName, fundType, jurisdiction, vintage, currency, status, targetSizeMinor, externalAdminProvider, externalAdminRef, notes } = req.body ?? {};
@@ -1450,6 +1514,7 @@ export function registerPartnerRoutes(app: Express): void {
     "/api/partner/me/funds/:id",
     requirePartnerAuth,
     assertSubRole("managing_partner", "associate"),
+    requireSignedAgreement,
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       const existing = spvEngineStore.getSpv(ctx.partnerId, String(req.params.id));
@@ -1477,6 +1542,7 @@ export function registerPartnerRoutes(app: Express): void {
     "/api/partner/me/funds/:id/commitments",
     requirePartnerAuth,
     assertSubRole("managing_partner"),
+    requireSignedAgreement,
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       const { lpContactId, commitmentMinor, currency } = req.body ?? {};

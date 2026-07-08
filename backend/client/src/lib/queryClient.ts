@@ -227,12 +227,32 @@ function handleGlobal401(err: unknown): void {
   window.location.assign(`/login?next=${next}`);
 }
 
+/**
+ * W2-I — global AGREEMENT_NOT_SIGNED recovery. A partner WRITE route gated by
+ * requireSignedAgreement returns 403 with { error:"AGREEMENT_NOT_SIGNED",
+ * redirect:"/collective/partner/agreement" }. On the first such write we send
+ * the managing partner to the sign page (sign-once), skipping the bounce if
+ * they're already there.
+ */
+let redirectingToAgreement = false;
+function handleGlobalAgreementNotSigned(err: unknown): void {
+  if (redirectingToAgreement) return;
+  if (!(err instanceof ApiError)) return;
+  if (err.status !== 403 || err.code !== "AGREEMENT_NOT_SIGNED") return;
+  if (typeof window === "undefined") return;
+  const redirect =
+    (err.payload as { redirect?: string } | null)?.redirect ?? "/collective/partner/agreement";
+  if (window.location.pathname === redirect) return;
+  redirectingToAgreement = true;
+  window.location.assign(redirect);
+}
+
 export const queryClient = new QueryClient({
   queryCache: new QueryCache({
-    onError: (err) => handleGlobal401(err),
+    onError: (err) => { handleGlobal401(err); handleGlobalAgreementNotSigned(err); },
   }),
   mutationCache: new MutationCache({
-    onError: (err) => handleGlobal401(err),
+    onError: (err) => { handleGlobal401(err); handleGlobalAgreementNotSigned(err); },
   }),
   defaultOptions: {
     queries: {
