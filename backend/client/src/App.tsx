@@ -68,6 +68,7 @@ import PartnerPipeline from "@/pages/partner/PartnerPipeline";
 import PartnerClients from "@/pages/partner/PartnerClients";
 import PartnerClientDetail from "@/pages/partner/PartnerClientDetail";
 import PartnerPortfolio from "@/pages/partner/PartnerPortfolio";
+import PartnerContacts from "@/pages/partner/PartnerContacts";
 import PartnerTeam from "@/pages/partner/PartnerTeam";
 import PartnerNotes from "@/pages/partner/PartnerNotes";
 import PartnerSettings from "@/pages/partner/PartnerSettings";
@@ -1051,6 +1052,10 @@ function AppRouter() {
         {/* W2-D — Private Portfolio (API existed but was unrouted client-side). */}
         <Route path="/collective/partner/portfolio">
           {() => <RequireAuth><CollectiveShell><PartnerPortfolio /></CollectiveShell></RequireAuth>}
+        </Route>
+        {/* GROUP F1 — Partner CRM person-level contacts (full parity). */}
+        <Route path="/collective/partner/contacts">
+          {() => <RequireAuth><CollectiveShell><PartnerContacts /></CollectiveShell></RequireAuth>}
         </Route>
         <Route path="/collective/partner/pipeline">
           {() => <RequireAuth><CollectiveShell><PartnerPipeline /></CollectiveShell></RequireAuth>}

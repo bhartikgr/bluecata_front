@@ -87,6 +87,16 @@ export default function PartnerSettings() {
   const canBrand = canWrite && TIER_RANK[me.tier] >= TIER_RANK.nexus;
   const settings = { ...(data?.settings ?? {}), ...form };
 
+  /* GROUP E (E1) — non-blocking onboarding nudge. Lists the profile fields
+     that are still blank so the partner can complete their profile. We only
+     report what is genuinely empty — nothing is pre-filled or fabricated. */
+  const isBlank = (v?: string) => !v || v.trim().length === 0;
+  const missingProfileFields = [
+    { label: "Legal Company Name", empty: isBlank(settings.legalName) },
+    { label: "Website", empty: isBlank(settings.website) },
+    { label: "Address", empty: isBlank(settings.addressLine1) },
+  ].filter((f) => f.empty).map((f) => f.label);
+
   return (
     <PartnerShell title="Settings" tier={me.tier} subRole={me.subRole} partnerName={me.identity.name}>
       <div className="flex gap-2 mb-4 border-b">
@@ -97,14 +107,14 @@ export default function PartnerSettings() {
             key={t}
             data-testid={`partner-settings-tab-${t}`}
             onClick={() => setTab(t)}
-            className={`px-3 py-2 text-sm capitalize ${tab === t ? "border-b-2 border-[#cc0001] text-[#cc0001] font-medium" : "text-slate-600"}`}
+            className={`px-3 py-2 text-sm capitalize ${tab === t ? "border-b-2 border-[var(--cv-color-primary)] text-[var(--cv-color-primary)] font-medium" : "text-[var(--cv-color-text-secondary)]"}`}
           >
             {t} {t === "branding" && TIER_RANK[me.tier] < TIER_RANK.nexus && "🔒"}
           </button>
         ))}
       </div>
 
-      {isLoading && <div className="text-sm text-slate-500" data-testid="settings-loading">Loading…</div>}
+      {isLoading && <div className="text-sm text-[var(--cv-color-text-muted)]" data-testid="settings-loading">Loading…</div>}
       {/* v25.15 NM8 — explicit error branch. */}
       {isError && (
         <div
@@ -117,6 +127,22 @@ export default function PartnerSettings() {
 
       {tab === "profile" && (
         <Card className="p-4 space-y-3" data-testid="partner-settings-profile">
+          {/* GROUP E (E1) — non-blocking onboarding nudge for an incomplete profile. */}
+          {missingProfileFields.length > 0 && (
+            <div
+              className="rounded-md p-3 text-sm"
+              style={{
+                background: "var(--cv-color-warning-light)",
+                border: "1px solid var(--cv-color-warning)",
+                color: "var(--cv-color-text)",
+                borderRadius: "var(--cv-radius-md)",
+              }}
+              data-testid="partner-settings-onboarding-nudge"
+            >
+              Complete your partner profile to help clients find you. Still to
+              add: <strong>{missingProfileFields.join(", ")}</strong>.
+            </div>
+          )}
           {/* v25.50 Phase 7 (11a) — expanded editable profile: display name plus
              a CompanyProfile-taxonomy subset (legal name, website, address). */}
           <div>

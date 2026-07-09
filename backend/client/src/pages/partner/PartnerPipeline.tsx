@@ -213,7 +213,7 @@ export default function PartnerPipeline() {
           </div>
         )}
         {showLoading && (
-          <div className="text-sm text-slate-500" data-testid="pipeline-loading">Loading…</div>
+          <div className="text-sm text-[var(--cv-color-text-muted)]" data-testid="pipeline-loading">Loading…</div>
         )}
         {showError && (
           <div
@@ -242,18 +242,18 @@ export default function PartnerPipeline() {
         <div className="grid grid-cols-2 md:grid-cols-6 gap-3" data-testid="pipeline-kanban">
           {STAGES.map((s) => (
             <div key={s} className="bg-white rounded-lg border p-2 min-h-[120px]" data-testid={`column-${s}`}>
-              <div className="text-xs uppercase tracking-wide text-slate-600 font-semibold">{PARTNER_PIPELINE_STAGE_LABELS[s]} ({byStage[s].length})</div>
+              <div className="text-xs uppercase tracking-wide text-[var(--cv-color-text-secondary)] font-semibold">{PARTNER_PIPELINE_STAGE_LABELS[s]} ({byStage[s].length})</div>
               {/* v25.50.0 Phase 2 (2c-a) — per-stage description. */}
-              <div className="text-[10px] leading-tight text-slate-400 mb-2" data-testid={`column-${s}-desc`}>{PARTNER_PIPELINE_STAGE_DESCRIPTIONS[s]}</div>
+              <div className="text-[10px] leading-tight text-[var(--cv-color-text-faint)] mb-2" data-testid={`column-${s}-desc`}>{PARTNER_PIPELINE_STAGE_DESCRIPTIONS[s]}</div>
               <div className="space-y-2">
                 {byStage[s].map((d) => {
                   const promos = promosByDeal.get(d.id) ?? [];
                   const liveCollective = promos.find((p) => p.promotionType === "collective_deal_room" && p.status === "live");
                   const pendingRefer = promos.find((p) => p.promotionType === "capavate_referral" && (p.status === "pending" || p.status === "live"));
                   return (
-                    <div key={d.id} className="border rounded p-2 text-xs bg-slate-50" data-testid={`deal-${d.id}`}>
+                    <div key={d.id} className="border rounded p-2 text-xs bg-[var(--cv-color-surface-2)]" data-testid={`deal-${d.id}`}>
                       <div className="font-medium">{d.dealName}</div>
-                      <div className="text-slate-500">{d.sector ?? "—"}</div>
+                      <div className="text-[var(--cv-color-text-muted)]">{d.sector ?? "—"}</div>
                       {(liveCollective || pendingRefer) && (
                         <div className="flex flex-wrap gap-1 mt-1" data-testid={`deal-${d.id}-badges`}>
                           {liveCollective && (
@@ -342,7 +342,7 @@ export default function PartnerPipeline() {
                 data-testid={`spv-row-${s.id}`}
               >
                 <div className="font-medium text-sm">{s.spvName ?? s.name ?? s.id}</div>
-                <div className="text-xs text-slate-500">{s.type ?? "SPV"}{s.status ? ` · ${s.status}` : ""}</div>
+                <div className="text-xs text-[var(--cv-color-text-muted)]">{s.type ?? "SPV"}{s.status ? ` · ${s.status}` : ""}</div>
               </a>
             ))}
           </div>
@@ -373,7 +373,7 @@ export default function PartnerPipeline() {
                 data-testid={`following-row-${c.companyId}`}
               >
                 {c.companyName ?? c.companyId}
-                <span aria-hidden className="text-slate-400">↗</span>
+                <span aria-hidden className="text-[var(--cv-color-text-faint)]">↗</span>
               </a>
             ))}
           </div>
@@ -392,7 +392,7 @@ export default function PartnerPipeline() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
-            <div className="text-xs text-slate-600">Deal: <span className="font-medium">{promoteDeal?.dealName}</span></div>
+            <div className="text-xs text-[var(--cv-color-text-secondary)]">Deal: <span className="font-medium">{promoteDeal?.dealName}</span></div>
             <label className="text-xs font-medium">Notes (optional)</label>
             <Textarea
               data-testid="promote-notes"
@@ -423,7 +423,7 @@ export default function PartnerPipeline() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
-            <div className="text-xs text-slate-600">Deal: <span className="font-medium">{referDeal?.dealName}</span></div>
+            <div className="text-xs text-[var(--cv-color-text-secondary)]">Deal: <span className="font-medium">{referDeal?.dealName}</span></div>
             <label className="text-xs font-medium">Founder contact email (optional)</label>
             <Input
               data-testid="refer-email"

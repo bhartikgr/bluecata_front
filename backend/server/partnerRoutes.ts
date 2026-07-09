@@ -26,8 +26,9 @@ const require = createRequire(import.meta.url);
 import type { Express, Request, Response } from "express";
 import { createHash, randomBytes } from "node:crypto"; /* v25.14 NC1 — secure team-invite redeem password */
 import { requireAdmin, requireAuth } from "./lib/authMiddleware";
-import { requirePartnerAuth, assertSubRole, assertTier, assertTierSeats } from "./lib/requirePartnerAuth";
+import { requirePartnerAuth, requirePartnerSelf, assertSubRole, assertTier, assertTierSeats } from "./lib/requirePartnerAuth";
 import { requireSignedAgreement } from "./lib/requireSignedAgreement";
+import { resolvePartnerEffectivePlan, EffectivePlanError } from "./lib/partnerEffectivePlan"; /* GROUP C (C5) — /api/partner/me surfaces the dynamic effective plan (price incl override, commission, report-only quota, rev-share) that drives the partner FE. */
 import { getUserContext } from "./lib/userContext";
 import { appendAdminAudit } from "./adminPlatformStore";
 import { emitBridgeEvent } from "./bridgeStore";
@@ -595,13 +596,49 @@ export function registerPartnerRoutes(app: Express): void {
    * PARTNER workspace endpoints — /api/partner/me/*
    * ============================================================ */
 
-  app.get("/api/partner/me", requirePartnerAuth, (req: Request, res: Response) => {
+  /* GROUP F3 — `/me` is the ONE bootstrap read behind `requirePartnerSelf`
+   * (the ONLY relaxation vs requirePartnerAuth is dropping the status==='active'
+   * check) so a SUSPENDED partner can still load THIS route to see a status
+   * banner. It grants NO data and NO writes; every OTHER /api/partner/me/*
+   * route below keeps hard requirePartnerAuth. The payload is extended
+   * ADDITIVELY: `status`, `commissionPct` (DISPLAY-ONLY — derived from the
+   * EXISTING effectivePlan.commission.rate; no calc/ledger/payment change),
+   * `partnerType`, `region`. Existing keys are unchanged. */
+  app.get("/api/partner/me", requirePartnerSelf, (req: Request, res: Response) => {
     const ctx = req.partnerContext!;
+    /* GROUP C (C5) — dynamic effective plan drives the partner FE. Read-only
+     * composition of the EXISTING resolvers. Fail-closed pricing throws
+     * EffectivePlanError; we surface effectivePlan: null (never break /me) so a
+     * mis-configured tier degrades gracefully rather than 500-ing the session. */
+    let effectivePlan: ReturnType<typeof resolvePartnerEffectivePlan> | null = null;
+    try {
+      effectivePlan = resolvePartnerEffectivePlan(ctx.partnerId, ctx.tier);
+    } catch (err) {
+      if (!(err instanceof EffectivePlanError)) throw err;
+      effectivePlan = null;
+    }
+    /* Read admin-set reconciliation fields from the EXISTING partner contact
+     * record (getById) — no new store, no body/query input. */
+    const partner = getById(ctx.partnerId);
+    const status = partner?.status ?? null;
+    const partnerType = partner?.partnerType ?? null;
+    const region = partner?.region ?? null;
+    /* commissionPct is DISPLAY-ONLY: it renders the SAME commission rate the
+     * existing resolver already returns (rate is a fraction, e.g. 0.12), scaled
+     * to a percent for the FE. It NEVER drives any calculation, ledger or
+     * payment path. null when no effective plan resolved (mis-config). */
+    const commissionPct =
+      effectivePlan ? effectivePlan.commission.rate * 100 : null;
     res.json({
       partnerId: ctx.partnerId,
       tier: ctx.tier,
       subRole: ctx.partnerSubRole,
       identity: { userId: ctx.userId, email: ctx.email, name: ctx.name },
+      effectivePlan,
+      status,
+      commissionPct,
+      partnerType,
+      region,
     });
   });
 
@@ -1126,7 +1163,9 @@ export function registerPartnerRoutes(app: Express): void {
       const contact = contactMap.get(m.userId);
       return {
         ...m,
-        name: idn?.name ?? null,
+        /* v25.56 GROUP-D — never null; resolver already guarantees a non-raw
+           name, so a missing identity gets a stable placeholder not null. */
+        name: idn?.name ?? "Pending member",
         email: idn?.email ?? null,
         mobile: contact?.mobile ?? null,
         contactEmail: contact?.contactEmail ?? null,

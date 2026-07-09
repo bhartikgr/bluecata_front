@@ -11,6 +11,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 /* v25.12 NH6 — surface invite + remove failures (seat limit, network, etc). */
 import { useToast } from "@/hooks/use-toast";
+/* v25.56 GROUP-D — client-side guard so a raw synthetic id can never render. */
+import { safeMemberName } from "@/lib/investorLabels";
 
 /* v25.50 Phase 7 (7b) — comprehensive, properly-labeled positions list. The 5
    canonical values are enforced server-side (invite endpoint); this maps each to
@@ -159,11 +161,11 @@ export default function PartnerTeam() {
 
   return (
     <PartnerShell title="Team" tier={role.identity.tier} subRole={role.identity.subRole} partnerName={role.identity.identity.name}>
-      <div className="mb-4 text-sm text-slate-600" data-testid="seat-banner">
+      <div className="mb-4 text-sm text-[var(--cv-color-text-secondary)]" data-testid="seat-banner">
         {activeCount} active seats + {pendingCount} pending invitations
       </div>
       {/* v25.15 NM3b — explicit error + loading branches. */}
-      {q.isLoading && <div className="text-sm text-slate-500 mb-2" data-testid="team-loading">Loading…</div>}
+      {q.isLoading && <div className="text-sm text-[var(--cv-color-text-muted)] mb-2" data-testid="team-loading">Loading…</div>}
       {q.isError && (
         <div
           className="rounded-md border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900 mb-4"
@@ -214,32 +216,33 @@ export default function PartnerTeam() {
         </div>
       )}
       <div className="bg-white rounded-lg border overflow-hidden mb-6">
-        <div className="px-3 py-2 text-xs uppercase text-slate-500 bg-slate-50">Members</div>
+        <div className="px-3 py-2 text-xs uppercase text-[var(--cv-color-text-muted)] bg-[var(--cv-color-surface-2)]">Members</div>
         <table className="w-full text-sm" data-testid="members-table">
-          <thead className="bg-slate-50"><tr><th className="p-2 text-left">Member</th><th className="p-2 text-left">Contact</th><th className="p-2 text-left">Position</th><th className="p-2 text-left">Status</th><th className="p-2"></th></tr></thead>
+          <thead className="bg-[var(--cv-color-surface-2)]"><tr><th className="p-2 text-left">Member</th><th className="p-2 text-left">Contact</th><th className="p-2 text-left">Position</th><th className="p-2 text-left">Status</th><th className="p-2"></th></tr></thead>
           <tbody>
             {(q.data?.members ?? []).map((m) => (
               <tr key={m.id} className="border-t" data-testid={`member-${m.userId}`}>
                 <td className="p-2">
-                  {/* v25.50 Phase 7 (7a) — real name/email from users JOIN; fall
-                     back to the raw id only if the identity lookup missed. */}
-                  <div className="font-medium text-slate-800">{m.name || m.userId}</div>
-                  {m.email && <div className="text-xs text-slate-500">{m.email}</div>}
+                  {/* v25.50 Phase 7 (7a) — real name/email from users JOIN.
+                     v25.56 GROUP-D — safeMemberName guarantees a raw synthetic
+                     id (u_…) never renders; userId stays in key/data-testid only. */}
+                  <div className="font-medium text-[var(--cv-color-text)]">{safeMemberName(m.name, m.email, m.userId)}</div>
+                  {m.email && <div className="text-xs text-[var(--cv-color-text-muted)]">{m.email}</div>}
                 </td>
-                <td className="p-2 text-xs text-slate-500">
+                <td className="p-2 text-xs text-[var(--cv-color-text-muted)]">
                   {m.mobile && <div>{m.mobile}</div>}
                   {m.contactEmail && <div>{m.contactEmail}</div>}
                   {m.positionNote && <div className="italic">{m.positionNote}</div>}
-                  {!m.mobile && !m.contactEmail && !m.positionNote && <span>—</span>}
+                  {!m.mobile && !m.contactEmail && !m.positionNote && <span className="text-[var(--cv-color-text-faint)]">No contact info</span>}
                 </td>
-                <td className="p-2 text-slate-500">{positionLabel(m.subRole)}</td>
-                <td className="p-2 text-slate-500">{m.status}</td>
+                <td className="p-2 text-[var(--cv-color-text-muted)]">{positionLabel(m.subRole)}</td>
+                <td className="p-2 text-[var(--cv-color-text-muted)]">{m.status}</td>
                 <td className="p-2 text-right whitespace-nowrap">
                   {/* v25.50 Phase 7 (7c) — managing_partner may edit contact info. */}
                   {canInvite && m.status === "active" && (
                     <button
                       data-testid={`edit-contact-${m.userId}`}
-                      className="text-slate-600 text-xs mr-3 hover:text-slate-900"
+                      className="text-[var(--cv-color-text-secondary)] text-xs mr-3 hover:text-[var(--cv-color-text)]"
                       onClick={() => openEdit(m)}
                     >
                       Edit
@@ -272,16 +275,16 @@ export default function PartnerTeam() {
         </table>
       </div>
       <div className="bg-white rounded-lg border overflow-hidden">
-        <div className="px-3 py-2 text-xs uppercase text-slate-500 bg-slate-50">Pending invitations</div>
+        <div className="px-3 py-2 text-xs uppercase text-[var(--cv-color-text-muted)] bg-[var(--cv-color-surface-2)]">Pending invitations</div>
         <table className="w-full text-sm" data-testid="invitations-table">
-          <thead className="bg-slate-50"><tr><th className="p-2 text-left">Email</th><th className="p-2 text-left">Role</th><th className="p-2 text-left">Expires</th></tr></thead>
+          <thead className="bg-[var(--cv-color-surface-2)]"><tr><th className="p-2 text-left">Email</th><th className="p-2 text-left">Role</th><th className="p-2 text-left">Expires</th></tr></thead>
           <tbody>
             {(q.data?.invitations ?? []).filter((i) => !i.redeemedAt).map((i) => (
               <tr key={i.id} className="border-t" data-testid={`invite-${i.id}`}>
                 <td className="p-2">{i.invitedEmail}</td>
-                <td className="p-2 text-slate-500">{positionLabel(i.subRole)}</td>
+                <td className="p-2 text-[var(--cv-color-text-muted)]">{positionLabel(i.subRole)}</td>
                 {/* v25.16 NM7 — guard against null expiresAt. */}
-                <td className="p-2 text-slate-500">{i.expiresAt ? new Date(i.expiresAt).toLocaleDateString() : "—"}</td>
+                <td className="p-2 text-[var(--cv-color-text-muted)]">{i.expiresAt ? new Date(i.expiresAt).toLocaleDateString() : "—"}</td>
               </tr>
             ))}
           </tbody>
@@ -291,13 +294,13 @@ export default function PartnerTeam() {
       {editing && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" data-testid="edit-contact-dialog">
           <div className="bg-white rounded-lg border shadow-lg w-full max-w-md p-5">
-            <div className="text-base font-semibold text-slate-800 mb-1">Edit contact</div>
-            <div className="text-xs text-slate-500 mb-4">{editing.name || editing.userId}</div>
-            <label className="block text-xs text-slate-600 mb-1">Mobile</label>
+            <div className="text-base font-semibold text-[var(--cv-color-text)] mb-1">Edit contact</div>
+            <div className="text-xs text-[var(--cv-color-text-muted)] mb-4">{editing.name || editing.userId}</div>
+            <label className="block text-xs text-[var(--cv-color-text-secondary)] mb-1">Mobile</label>
             <Input data-testid="edit-mobile" value={editMobile} onChange={(e) => setEditMobile(e.target.value)} placeholder="+1 555 000 0000" className="mb-3" />
-            <label className="block text-xs text-slate-600 mb-1">Contact email</label>
+            <label className="block text-xs text-[var(--cv-color-text-secondary)] mb-1">Contact email</label>
             <Input data-testid="edit-contact-email" value={editContactEmail} onChange={(e) => setEditContactEmail(e.target.value)} placeholder="name@example.com" className="mb-3" />
-            <label className="block text-xs text-slate-600 mb-1">Position note</label>
+            <label className="block text-xs text-[var(--cv-color-text-secondary)] mb-1">Position note</label>
             <Input data-testid="edit-position-note" value={editPositionNote} onChange={(e) => setEditPositionNote(e.target.value)} placeholder="e.g. Head of Deal Flow" className="mb-4" />
             <div className="flex justify-end gap-2">
               <Button variant="outline" size="sm" data-testid="edit-contact-cancel" onClick={() => setEditing(null)}>Cancel</Button>

@@ -110,11 +110,11 @@ export default function PartnerFundDetail() {
       <Card className="p-4 mb-4 space-y-2" data-testid="partner-fund-detail">
         <div className="grid grid-cols-2 gap-4 text-sm">
           <div>
-            <div className="text-slate-500">Target Size</div>
+            <div className="text-[var(--cv-color-text-muted)]">Target Size</div>
             <div className="font-mono">{formatMinor(f.targetSizeMinor, f.currency)}</div>
           </div>
           <div>
-            <div className="text-slate-500">Currency (ISO 4217)</div>
+            <div className="text-[var(--cv-color-text-muted)]">Currency (ISO 4217)</div>
             <div className="font-mono">{f.currency}</div>
           </div>
         </div>
@@ -125,7 +125,7 @@ export default function PartnerFundDetail() {
           <div className="font-medium">Commitments</div>
         </div>
         {f.commitments.length === 0 ? (
-          <div className="text-sm text-slate-500">No commitments pledged yet.</div>
+          <div className="text-sm text-[var(--cv-color-text-muted)]">No commitments pledged yet.</div>
         ) : (
           <div className="space-y-2">
             {f.commitments.map((c) => (

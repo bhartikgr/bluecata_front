@@ -185,6 +185,15 @@ function InvestorWizard({
       // The investor's screen name affects every cap-table view they're on.
       queryClient.invalidateQueries({ queryKey: ["/api/companies"] });
     },
+    // v25.56 Avi item 2 — autosave previously failed SILENTLY (no onError), so a
+    // rejected contact patch looked like "the field didn't save". Surface it.
+    onError: (err: unknown) => {
+      toast({
+        title: "Couldn't save",
+        description: (err as Error)?.message || "Some profile changes could not be saved. Please try again.",
+        variant: "destructive",
+      });
+    },
   });
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -194,7 +203,14 @@ function InvestorWizard({
   };
 
   const updateRole = (n: typeof role) => { setRole(n); queueAutosave({ role: n }); };
-  const updateContact = (n: typeof contact) => { setContact(n); queueAutosave({ contact: n }); };
+  const updateContact = (n: typeof contact) => {
+    setContact(n);
+    // v25.56 Avi item 2 — email is read-only server-side; sending it (even
+    // unchanged) risks a 403 on any normalization delta. Omit it when unchanged
+    // from the loaded profile so a normal contact edit isn't rejected wholesale.
+    const payload = n.email === profile.contact.email ? (({ email, ...rest }) => rest)(n) : n;
+    queueAutosave({ contact: payload });
+  };
   const updateCore = (n: typeof coreProfile) => { setCoreProfile(n); queueAutosave({ profile: n }); };
   const updateNetwork = (n: typeof network) => { setNetwork(n); queueAutosave({ network: n }); };
   const updateVisibility = (n: typeof visibility) => { setVisibility(n); queueAutosave({ visibility: n }); };

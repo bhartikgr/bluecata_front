@@ -30,7 +30,12 @@ import { requireSignedAgreement } from "./requireSignedAgreement";
 import { rawDb } from "../db/connection";
 import { appendAdminAudit } from "../adminPlatformStore";
 import { sanitizeErrorMessage } from "./sanitize"; /* v25.33 — scrub raw err.message from client responses in prod (backlog item 33 extension). */
-import { resolveChargeTier } from "./partnerTiers"; /* v25.48 CP-2b — advertised price == charged price: the SAME tier row the pricing page advertises is the ONLY charge source (no legacy fee-schedule fallback). Replaces the prior resolvePartnerFee path for partner subscription charges. */
+/* GROUP C (C3) — the partner's OWN checkout amount honors an admin-set per-partner
+ * price override (incl explicit $0) that supersedes the tier; absent an override it
+ * falls back to the advertised tier price via resolvePartnerEffectivePlan (which
+ * itself reuses resolveChargeTier — v25.48 CP-2b advertised==charged). The PUBLIC
+ * pricing page stays tier-based. Fail-closed. */
+import { resolvePartnerEffectivePlan, EffectivePlanError } from "./partnerEffectivePlan";
 import { putObject, getObject } from "./objectStorage"; /* v25.50 Phase 7 (10) — store/serve tax-form docs via the sanctioned object-storage layer. */
 import { CONSORTIUM_AGREEMENT_VERSION, CONSORTIUM_AGREEMENT_TEXT } from "@shared/consortiumAgreement"; /* W2-I — viewable+configurable agreement text/version. */
 
@@ -436,26 +441,48 @@ export function registerPartnerSelfServiceRoutes(app: Express): void {
       const body = (req.body ?? {}) as { cycle?: unknown };
       const cycle = body.cycle === "annual" ? "annual" : "monthly";
       try {
-        let resolved: { amountMinor: number; currency: string; computedVia: string };
-        // v25.48 CP-2b — SINGLE SOURCE OF TRUTH (strict). The subscription charge
-        // reads the EXACT tier row the /consortium/pricing page advertises
-        // (platform_fees via resolveConsortiumPricing). There is NO legacy
-        // fee-schedule fallback: advertised == charged, always. If the tier is
-        // not live on the advertised pricing surface (unknown or admin
-        // soft-deleted), we FAIL CLOSED with 409 rather than charging a stale
-        // partner_fee_schedules amount — this also preserves CP-2a soft-delete
-        // semantics (a hidden tier cannot be charged). The advertised monthly
-        // price is authoritative; an annual cycle bills 12× that monthly amount
-        // so the per-month rate the partner saw is exactly honored.
-        const advertised = resolveChargeTier(tier);
-        if (!advertised) {
-          return res.status(409).json({
-            error: "PARTNER_SUBSCRIPTION_NOT_AVAILABLE",
-            message: "This partner tier is not available for subscription (not on the advertised pricing surface).",
-          });
+        // GROUP C (C3) — re-connect the per-partner subscription override on the
+        // partner's OWN checkout. resolvePartnerEffectivePlan composes:
+        //   • effectivePrice = admin-set per-partner override in
+        //     contacts.fee_override_json (subscription_monthly/annual), incl. an
+        //     explicit $0, when present — this supersedes the tier for THIS
+        //     partner only. The PUBLIC /consortium/pricing page (collectiveRoutes)
+        //     is untouched and stays tier-based (advertised == charged there).
+        //   • otherwise the advertised tier price (resolveChargeTier), preserving
+        //     the v25.48 CP-2b advertised==charged fallback: the advertised
+        //     monthly price is authoritative and an annual cycle bills 12× it.
+        // FAIL-CLOSED: if NEITHER an override NOR an advertised tier resolves the
+        // resolver throws and we return 409 (never charge a silent $0). A per-
+        // partner explicit $0 override is the ONLY path to a $0 amount.
+        let plan;
+        try {
+          plan = resolvePartnerEffectivePlan(pid, tier, { cycle });
+        } catch (planErr) {
+          if (planErr instanceof EffectivePlanError) {
+            return res.status(409).json({
+              error: "PARTNER_SUBSCRIPTION_NOT_AVAILABLE",
+              message: "This partner tier is not available for subscription (not on the advertised pricing surface).",
+            });
+          }
+          throw planErr;
         }
-        const amountMinor = cycle === "annual" ? advertised.amountMinor * 12 : advertised.amountMinor;
-        resolved = { amountMinor, currency: advertised.currency, computedVia: "consortium_pricing_advertised" };
+        // The effective override amount is the EXACT per-cycle amount the admin
+        // set; the advertised fallback keeps the 12× annual convention so the
+        // per-month rate the partner saw on the pricing page is honored.
+        const amountMinor =
+          plan.effectivePrice.source === "partner_override"
+            ? plan.effectivePrice.amountMinor
+            : cycle === "annual"
+              ? plan.effectivePrice.amountMinor * 12
+              : plan.effectivePrice.amountMinor;
+        const resolved = {
+          amountMinor,
+          currency: plan.effectivePrice.currency,
+          computedVia:
+            plan.effectivePrice.source === "partner_override"
+              ? "partner_override"
+              : "consortium_pricing_advertised",
+        };
         res.json({
           ok: true,
           tier,
@@ -463,6 +490,8 @@ export function registerPartnerSelfServiceRoutes(app: Express): void {
           amountMinor: resolved.amountMinor,
           currency: resolved.currency,
           computedVia: resolved.computedVia,
+          // The AMOUNT above is the ONLY value that flows into the existing
+          // billing/gateway path — the Airwallex adapter/call itself is UNCHANGED.
           // The client completes checkout via the existing billing plan flow.
           checkoutPath: "/api/billing/plan",
         });

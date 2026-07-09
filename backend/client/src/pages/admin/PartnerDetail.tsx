@@ -8,7 +8,7 @@
  * Renders: partner summary + team members + notes + tasks + workspace audit.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 /* v25.12 NL4 — explicit queryFn for the two queries below. */
@@ -23,8 +23,27 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select"; /* v25.41 Bug-3 */
 import { useToast } from "@/hooks/use-toast"; /* v25.41 Bug-3 */
-import { ArrowLeft, Building2, Users, FileText, CheckSquare, FolderOpen, Layers, Plus, Archive } from "lucide-react";
+import { ArrowLeft, Building2, Users, FileText, CheckSquare, FolderOpen, Layers, Plus, Archive, Sliders } from "lucide-react";
 import { Link } from "wouter";
+
+/* GROUP C (C4) — consolidated per-partner Arrangement editor response shape
+   (GET /api/admin/partners/:id/fee-override). The per-partner PRICE lives in
+   feeOverride.subscription_monthly/annual; the non-price arrangement (model,
+   report-only quota, fixed rev-share) lives in `arrangement`. */
+interface FeeOverrideResp {
+  ok: boolean;
+  feeOverride: {
+    subscription_monthly?: { amountMinor?: number; currency?: string };
+    subscription_annual?: { amountMinor?: number; currency?: string };
+  } | null;
+  commissionOverridePct: number | null;
+  arrangement: {
+    subscriptionModel?: string | null;
+    quota?: { metric?: string; threshold?: number; period?: string; enforcement?: string } | null;
+    revShare?: { enabled?: boolean; fixedAmountMinor?: number; currency?: string; appliesTo?: string; source?: string } | null;
+    notes?: string | null;
+  } | null;
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -155,6 +174,108 @@ export default function AdminPartnerDetail() {
     queryFn: async () => (await apiRequest("GET", `/api/admin/partners/${partnerId}`)).json(),
   });
 
+  /* GROUP C (C4) — Arrangement editor state. Prices are entered/stored in MINOR
+     units (cents) so an explicit 0 is a real "$0 override" (blank = no override,
+     falls back to the advertised tier). Commission is entered as a percent and
+     stored as a fraction. */
+  const [arr, setArr] = useState({
+    priceOverrideEnabled: false,
+    subscriptionMonthlyMinor: "",
+    commissionPct: "",
+    subscriptionModel: "",
+    quotaThreshold: "",
+    quotaEnforcement: "report" as "report" | "warn",
+    revShareEnabled: false,
+    revShareFixedMinor: "",
+    revShareCurrency: "USD",
+    notes: "",
+  });
+  const [arrSeeded, setArrSeeded] = useState(false);
+
+  const feeOverrideQ = useQuery<FeeOverrideResp>({
+    queryKey: [`/api/admin/partners/${partnerId}/fee-override`],
+    enabled: !!partnerId,
+    queryFn: async () => (await apiRequest("GET", `/api/admin/partners/${partnerId}/fee-override`)).json(),
+  });
+
+  // Seed the form once from the server, then let the admin edit freely.
+  useEffect(() => {
+    if (arrSeeded || !feeOverrideQ.data?.ok) return;
+    const d = feeOverrideQ.data;
+    const monthly = d.feeOverride?.subscription_monthly;
+    const q = d.arrangement?.quota;
+    const rev = d.arrangement?.revShare;
+    setArr({
+      priceOverrideEnabled: typeof monthly?.amountMinor === "number",
+      subscriptionMonthlyMinor: typeof monthly?.amountMinor === "number" ? String(monthly.amountMinor) : "",
+      commissionPct: d.commissionOverridePct != null ? String(d.commissionOverridePct * 100) : "",
+      subscriptionModel: d.arrangement?.subscriptionModel ?? "",
+      quotaThreshold: typeof q?.threshold === "number" ? String(q.threshold) : "",
+      quotaEnforcement: q?.enforcement === "warn" ? "warn" : "report",
+      revShareEnabled: rev?.enabled === true,
+      revShareFixedMinor: typeof rev?.fixedAmountMinor === "number" ? String(rev.fixedAmountMinor) : "",
+      revShareCurrency: rev?.currency ?? "USD",
+      notes: d.arrangement?.notes ?? "",
+    });
+    setArrSeeded(true);
+  }, [feeOverrideQ.data, arrSeeded]);
+
+  const saveArrangementMut = useMutation({
+    mutationFn: async () => {
+      const body: Record<string, unknown> = {};
+      // Per-partner PRICE override (minor units; explicit 0 honored). Blank +
+      // toggle-off clears any existing override (send null).
+      if (arr.priceOverrideEnabled) {
+        const minor = parseInt(arr.subscriptionMonthlyMinor, 10);
+        if (!Number.isInteger(minor) || minor < 0) throw new Error("Monthly price override must be a non-negative integer (minor units)");
+        body.feeOverrideJson = { subscription_monthly: { amountMinor: minor, currency: arr.revShareCurrency || "USD" } };
+      } else {
+        body.feeOverrideJson = null;
+      }
+      // Commission override (percent → fraction). Blank clears it.
+      if (arr.commissionPct.trim() === "") {
+        body.commissionOverridePct = null;
+      } else {
+        const pct = Number(arr.commissionPct);
+        if (!Number.isFinite(pct) || pct < 0 || pct > 100) throw new Error("Commission must be a percent between 0 and 100");
+        body.commissionOverridePct = pct / 100;
+      }
+      // Non-price arrangement (subscription model, report-only quota, fixed rev-share).
+      const threshold = arr.quotaThreshold.trim() === "" ? undefined : parseInt(arr.quotaThreshold, 10);
+      if (threshold !== undefined && (!Number.isInteger(threshold) || threshold < 0)) throw new Error("Quota threshold must be a non-negative integer");
+      let revFixed: number | undefined;
+      if (arr.revShareEnabled) {
+        revFixed = parseInt(arr.revShareFixedMinor, 10);
+        if (!Number.isInteger(revFixed) || revFixed < 0) throw new Error("Rev-share amount must be a non-negative integer (minor units)");
+      }
+      body.arrangementJson = {
+        subscriptionModel: arr.subscriptionModel.trim() || null,
+        quota: {
+          metric: "registered_companies",
+          threshold: threshold ?? 0,
+          period: "monthly",
+          enforcement: arr.quotaEnforcement,
+        },
+        revShare: {
+          enabled: arr.revShareEnabled,
+          fixedAmountMinor: revFixed ?? 0,
+          currency: arr.revShareCurrency || "USD",
+          appliesTo: "portfolio_company_paid",
+          source: "capavate",
+        },
+        notes: arr.notes.trim() || null,
+      };
+      const r = await apiRequest("PUT", `/api/admin/partners/${partnerId}/fee-override`, body);
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || "save_failed");
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [`/api/admin/partners/${partnerId}/fee-override`] });
+      toast({ title: "Arrangement saved" });
+    },
+    onError: (e: any) => toast({ title: "Save arrangement failed", description: e?.message, variant: "destructive" }),
+  });
+
   const auditQ = useQuery<WorkspaceAuditResp>({
     /* v25.12 NL4 — explicit queryFn. */
     queryKey: [`/api/admin/partners/${partnerId}/workspace/audit`],
@@ -220,6 +341,147 @@ export default function AdminPartnerDetail() {
                   <p className="font-mono text-xs text-muted-foreground/60">ID: {partner.id}</p>
                 </div>
               </div>
+            </div>
+          </Card>
+        )}
+
+        {/* ── GROUP C (C4) — consolidated Arrangement editor ───────── */}
+        {partner && (
+          <Card className="p-5 mb-6" data-testid="admin-partner-arrangement">
+            <div className="flex items-center gap-2 mb-1">
+              <Sliders className="h-4 w-4 text-muted-foreground" />
+              <h3 className="font-semibold text-sm">Arrangement (plan / deal engine)</h3>
+            </div>
+            <p className="text-xs text-muted-foreground mb-4">
+              Per-partner price supersedes the tier on this partner's OWN checkout (the public
+              pricing page stays tier-based). Quota is report-only. Rev-share is a fixed amount
+              credited when a portfolio company pays Capavate.
+            </p>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {/* Price override */}
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <input
+                    id="arr-price-enabled"
+                    type="checkbox"
+                    data-testid="checkbox-price-override"
+                    checked={arr.priceOverrideEnabled}
+                    onChange={(e) => setArr((a) => ({ ...a, priceOverrideEnabled: e.target.checked }))}
+                  />
+                  <Label htmlFor="arr-price-enabled" className="text-xs">Custom monthly price</Label>
+                </div>
+                <Input
+                  data-testid="input-price-minor"
+                  inputMode="numeric"
+                  disabled={!arr.priceOverrideEnabled}
+                  value={arr.subscriptionMonthlyMinor}
+                  onChange={(e) => setArr((a) => ({ ...a, subscriptionMonthlyMinor: e.target.value }))}
+                  placeholder="minor units, e.g. 0 or 49900"
+                />
+              </div>
+              {/* Commission */}
+              <div className="space-y-1">
+                <Label htmlFor="arr-commission" className="text-xs">Commission override (%)</Label>
+                <Input
+                  id="arr-commission"
+                  data-testid="input-commission-pct"
+                  inputMode="decimal"
+                  value={arr.commissionPct}
+                  onChange={(e) => setArr((a) => ({ ...a, commissionPct: e.target.value }))}
+                  placeholder="e.g. 3 (blank = tier default)"
+                />
+              </div>
+              {/* Subscription model */}
+              <div className="space-y-1">
+                <Label htmlFor="arr-model" className="text-xs">Subscription model</Label>
+                <Input
+                  id="arr-model"
+                  data-testid="input-subscription-model"
+                  value={arr.subscriptionModel}
+                  onChange={(e) => setArr((a) => ({ ...a, subscriptionModel: e.target.value }))}
+                  placeholder="e.g. seat_based"
+                />
+              </div>
+              {/* Quota threshold */}
+              <div className="space-y-1">
+                <Label htmlFor="arr-quota" className="text-xs">Quota threshold / month</Label>
+                <Input
+                  id="arr-quota"
+                  data-testid="input-quota-threshold"
+                  inputMode="numeric"
+                  value={arr.quotaThreshold}
+                  onChange={(e) => setArr((a) => ({ ...a, quotaThreshold: e.target.value }))}
+                  placeholder="registered companies"
+                />
+              </div>
+              {/* Quota enforcement */}
+              <div className="space-y-1">
+                <Label className="text-xs">Quota enforcement</Label>
+                <Select
+                  value={arr.quotaEnforcement}
+                  onValueChange={(v) => setArr((a) => ({ ...a, quotaEnforcement: v as "report" | "warn" }))}
+                >
+                  <SelectTrigger data-testid="select-quota-enforcement"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="report">report (silent)</SelectItem>
+                    <SelectItem value="warn">warn</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {/* Rev-share currency */}
+              <div className="space-y-1">
+                <Label htmlFor="arr-rev-ccy" className="text-xs">Rev-share currency</Label>
+                <Input
+                  id="arr-rev-ccy"
+                  data-testid="input-revshare-currency"
+                  value={arr.revShareCurrency}
+                  maxLength={3}
+                  onChange={(e) => setArr((a) => ({ ...a, revShareCurrency: e.target.value.toUpperCase() }))}
+                  placeholder="USD"
+                />
+              </div>
+              {/* Rev-share enable + amount */}
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <input
+                    id="arr-rev-enabled"
+                    type="checkbox"
+                    data-testid="checkbox-revshare-enabled"
+                    checked={arr.revShareEnabled}
+                    onChange={(e) => setArr((a) => ({ ...a, revShareEnabled: e.target.checked }))}
+                  />
+                  <Label htmlFor="arr-rev-enabled" className="text-xs">Rev-share enabled (fixed)</Label>
+                </div>
+                <Input
+                  data-testid="input-revshare-minor"
+                  inputMode="numeric"
+                  disabled={!arr.revShareEnabled}
+                  value={arr.revShareFixedMinor}
+                  onChange={(e) => setArr((a) => ({ ...a, revShareFixedMinor: e.target.value }))}
+                  placeholder="minor units, e.g. 25000"
+                />
+              </div>
+              {/* Notes */}
+              <div className="space-y-1 lg:col-span-2">
+                <Label htmlFor="arr-notes" className="text-xs">Notes</Label>
+                <Input
+                  id="arr-notes"
+                  data-testid="input-arrangement-notes"
+                  value={arr.notes}
+                  onChange={(e) => setArr((a) => ({ ...a, notes: e.target.value }))}
+                  placeholder="internal notes"
+                />
+              </div>
+            </div>
+            <div className="flex justify-end mt-4">
+              <Button
+                size="sm"
+                data-testid="button-save-arrangement"
+                onClick={() => saveArrangementMut.mutate()}
+                disabled={saveArrangementMut.isPending || feeOverrideQ.isPending}
+              >
+                {saveArrangementMut.isPending ? "Saving..." : "Save Arrangement"}
+              </Button>
             </div>
           </Card>
         )}

@@ -15,6 +15,17 @@ import { rawDb } from "./db/connection";
 
 const SETTINGS_KEY = "collective";
 
+/**
+ * GROUP E (1e/E2) — admin-swappable venture-market data provider id. Kept as a
+ * loose string here (the ventureMarketsStore owns the canonical union +
+ * validation) to avoid a server→store import cycle. Default resolves from the
+ * VENTURE_MARKET_PROVIDER env var when set, else "stooq".
+ */
+function defaultVentureProvider(): string {
+  const env = process.env.VENTURE_MARKET_PROVIDER;
+  return typeof env === "string" && env.trim().length > 0 ? env.trim() : "stooq";
+}
+
 export interface CollectiveSettings {
   /** Whether the Collective is accepting new founder applications. */
   applicationsOpen: boolean;
@@ -26,6 +37,8 @@ export interface CollectiveSettings {
   supportEmail: string;
   /** Admin-only internal note (never exposed publicly). */
   internalNote: string;
+  /** GROUP E — active venture-market data provider id (admin-swappable). */
+  ventureProvider: string;
 }
 
 export const DEFAULT_COLLECTIVE_SETTINGS: CollectiveSettings = {
@@ -34,6 +47,7 @@ export const DEFAULT_COLLECTIVE_SETTINGS: CollectiveSettings = {
   membershipBlurb: "A curated network of founders and private investors.",
   supportEmail: "scale@capavate.com",
   internalNote: "",
+  ventureProvider: defaultVentureProvider(),
 };
 
 /** Fields safe to expose without authentication. */
@@ -69,6 +83,10 @@ function coerce(raw: unknown): CollectiveSettings {
       typeof obj.internalNote === "string"
         ? obj.internalNote
         : DEFAULT_COLLECTIVE_SETTINGS.internalNote,
+    ventureProvider:
+      typeof obj.ventureProvider === "string" && obj.ventureProvider.trim().length > 0
+        ? obj.ventureProvider.trim()
+        : DEFAULT_COLLECTIVE_SETTINGS.ventureProvider,
   };
 }
 

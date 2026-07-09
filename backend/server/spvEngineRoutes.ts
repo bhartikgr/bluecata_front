@@ -22,13 +22,15 @@
  * the sacred ledger, in spv_deployment, at this route/parallel layer.
  */
 import type { Express, Request, Response } from "express";
+import { createHash } from "crypto";
 import { requirePartnerAuth, assertSubRole } from "./lib/requirePartnerAuth";
 import { requireSignedAgreement } from "./lib/requireSignedAgreement";
 import { getUserContext } from "./lib/userContext";
-import { commitFunded } from "./captableCommitStore";
+import { commitFunded, getLedger } from "./captableCommitStore";
 import { spvEngineStore } from "./spvEngineStore";
 import { resolveDisplayNames } from "./lib/displayNameResolver";
 import { listLpInvites, createLpInvite } from "./spvLpInviteStore";
+import { createInvitation } from "./roundInvitationsStore";
 import {
   SPV_JURISDICTIONS,
   SPV_CARRY_BASES,
@@ -372,28 +374,154 @@ export function registerSpvEngineRoutes(app: Express): void {
 
   /* ── W2-H — GP (partner) LP invite (WRITE, sub-role gated). Rule #13: last
      name is MANDATORY. Fail-closed: store throws LP_INVITE_* which err() maps
-     to 400. */
+     to 400.
+
+     B5 — an LP onboards exactly like a cap-table (round) investor: after the
+     GP-display invite persists, ALSO fire the shared createInvitation()
+     (roundInvitationsStore) with companyId=spv.id and a synthetic per-SPV
+     roundId, mirroring the founder backfill. That makes the LP's redeem =
+     register = the SAME flow round investors use. This second call is
+     ADDITIVE and DECOUPLED: a pre-existing active invite (duplicate_invitation)
+     or any transport hiccup must NOT fail the GP invite (best-effort). */
   app.post(
     "/api/partner/me/spv/:spvId/lp-invites",
+    requirePartnerAuth,
+    assertSubRole(...WRITE_ROLES),
+    requireSignedAgreement,
+    async (req: Request, res: Response) => {
+      const ctx = req.partnerContext!;
+      const spvId = String(req.params.spvId);
+      const spv = spvEngineStore.getSpv(ctx.partnerId, spvId);
+      if (!spv) return res.status(404).json({ error: "SPV_NOT_FOUND" });
+      const body = req.body ?? {};
+      let invite;
+      try {
+        invite = createLpInvite(
+          ctx.partnerId,
+          spvId,
+          { email: body.email, firstName: body.firstName, lastName: body.lastName, note: body.note },
+          ctx.userId,
+        );
+      } catch (e) { return err(res, e); }
+
+      // B5 — shared platform-registration invite (redeem link IS register).
+      let inviteEmailSent = false;
+      try {
+        const result = await createInvitation({
+          roundId: `spvlp_${spv.id}`,
+          companyId: spv.id,
+          investorEmail: invite.email,
+          investorFirstName: invite.firstName,
+          investorLastName: invite.lastName,
+          invitedByUserId: ctx.userId,
+        });
+        inviteEmailSent = !!result.emailSent;
+      } catch {
+        // best-effort: duplicate_invitation / transport hiccup never fails the
+        // GP-side LP invite (the row above is authoritative for GP display).
+      }
+      res.status(201).json({ invite, inviteEmailSent });
+    },
+  );
+
+  /* ── B3 — SPV detail = SPV cap table + LP commit (CORE).
+     Modeled LINE-FOR-LINE on the founder backfill (founderOpsRoutes.ts:146):
+     seat a named LP onto the SPV's cap table by calling the SACRED commitFunded
+     UNCHANGED with companyId=spv.id (an SPV IS a company in the entity-agnostic
+     ledger). The partner gate (requirePartnerAuth + getSpv ownership → 404
+     cross-partner BEFORE any write) SUBSTITUTES the founder-owns-company gate.
+     Deterministic keys make it idempotent; a synthetic price-less roundId avoids
+     reconcile()'s price coupling. After the authoritative ledger write, the
+     subscription roster is advanced to `committed` as a PROJECTION. */
+  app.post(
+    "/api/partner/me/spv/:spvId/lp-commit",
     requirePartnerAuth,
     assertSubRole(...WRITE_ROLES),
     requireSignedAgreement,
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       const spvId = String(req.params.spvId);
-      if (!spvEngineStore.getSpv(ctx.partnerId, spvId)) {
-        return res.status(404).json({ error: "SPV_NOT_FOUND" });
+      // Ownership gate FIRST — cross-partner id yields 404 (no existence leak),
+      // BEFORE any ledger read/write (fail-closed).
+      const spv = spvEngineStore.getSpv(ctx.partnerId, spvId);
+      if (!spv) return res.status(404).json({ error: "SPV_NOT_FOUND" });
+
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const holderFirstName = typeof body.holderFirstName === "string" ? body.holderFirstName.trim() : "";
+      const holderLastName = typeof body.holderLastName === "string" ? body.holderLastName.trim() : "";
+      const investorEmailRaw = typeof body.investorEmail === "string" ? body.investorEmail.trim() : "";
+      const investorEmail = investorEmailRaw.toLowerCase();
+      const amount = typeof body.amount === "string" ? body.amount.trim()
+        : (typeof body.amount === "number" ? String(body.amount) : "");
+      const shares = typeof body.shares === "string" ? body.shares.trim()
+        : (typeof body.shares === "number" ? String(body.shares) : "");
+      const currency = typeof body.currency === "string" && body.currency.trim()
+        ? body.currency.trim() : spv.currency;
+
+      if (!amount || !shares) {
+        return res.status(400).json({ error: "COMMIT_FIELDS_REQUIRED", message: "amount and shares (units) are required." });
       }
-      const body = req.body ?? {};
+      // Rule #13 — never seat an LP without a full legal name.
+      if (!holderFirstName || !holderLastName) {
+        return res.status(400).json({ error: "MISSING_HOLDER_NAME", message: "Both first and last name are required for the LP." });
+      }
+      if (!investorEmail || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(investorEmail)) {
+        return res.status(400).json({ error: "INVALID_EMAIL", message: "A valid LP email is required." });
+      }
+
+      // Deterministic per-LP + per-SPV keys → idempotent re-commit (no dup line).
+      const stableKey = createHash("sha256").update(investorEmail, "utf8").digest("hex").slice(0, 16);
+      const investorId = `ext_${stableKey}`;
+      const roundId = `spvlp_${spv.id}`;            // synthetic, price-less → no reconcile price coupling
+      const invitationId = `spvlp_${spv.id}_${stableKey}`;
+
+      // Idempotency: a prior commit under this deterministic invitationId is
+      // returned rather than double-writing the ledger. Ledger reads fail-closed.
+      let existing;
       try {
-        const invite = createLpInvite(
-          ctx.partnerId,
-          spvId,
-          { email: body.email, firstName: body.firstName, lastName: body.lastName, note: body.note },
-          ctx.userId,
-        );
-        res.status(201).json({ invite });
-      } catch (e) { err(res, e); }
+        existing = getLedger().find((e) => e.invitationId === invitationId);
+      } catch {
+        return res.status(503).json({ error: "ledger_unavailable" });
+      }
+
+      let entry = existing;
+      if (!existing) {
+        const result = commitFunded({
+          invitationId,
+          roundId,
+          companyId: spv.id,     // an SPV is a company in the entity-agnostic ledger
+          investorId,
+          amount,
+          currency,
+          shares,
+          holderFirstName,
+          holderLastName,
+        });
+        if (!result.ok) {
+          const status = result.error.startsWith("compliance_hold") ? 409 : 400;
+          return res.status(status).json({ error: "LEDGER_COMMIT_FAILED", detail: result.error });
+        }
+        entry = result.entry;
+      }
+
+      // PROJECTION — reflect the authoritative commit onto the SPV roster.
+      const amountMinor = Math.round(Number(amount) * 100);
+      let subscription;
+      try {
+        subscription = spvEngineStore.projectLpCommitted(ctx.partnerId, spvId, {
+          investorId,
+          commitmentMinor: Number.isFinite(amountMinor) ? amountMinor : 0,
+          currency,
+          investorPersona: "partner",
+        });
+      } catch (e) { return err(res, e); }
+
+      return res.status(existing ? 200 : 201).json({
+        ok: true,
+        idempotent: !!existing,
+        ledger: entry ? { hash: entry.hash, seq: entry.seq } : null,
+        subscription,
+      });
     },
   );
 

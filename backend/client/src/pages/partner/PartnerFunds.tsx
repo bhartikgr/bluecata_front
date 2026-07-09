@@ -78,7 +78,7 @@ export default function PartnerFunds() {
 
   return (
     <PartnerShell title="Funds" tier={me.tier} subRole={me.subRole} partnerName={me.identity.name}>
-      <div className="mb-4 bg-[rgba(4,30,65,0.05)] border border-[rgba(4,30,65,0.2)] text-[#041e41] p-3 rounded text-sm" data-testid="partner-funds-disclaimer">
+      <div className="mb-4 bg-[rgba(4,30,65,0.05)] border border-[rgba(4,30,65,0.2)] text-[var(--cv-color-navy)] p-3 rounded text-sm" data-testid="partner-funds-disclaimer">
         Fund records are for documentation only. No funds are moved by Capavate.
       </div>
 
@@ -121,7 +121,7 @@ export default function PartnerFunds() {
         </Card>
       )}
 
-      {isLoading && <div className="text-sm text-slate-500" data-testid="funds-loading">Loading…</div>}
+      {isLoading && <div className="text-sm text-[var(--cv-color-text-muted)]" data-testid="funds-loading">Loading…</div>}
       {/* v25.15 NM7 — explicit error branch. */}
       {isError && (
         <div
@@ -142,15 +142,15 @@ export default function PartnerFunds() {
         <div className="space-y-2" data-testid="partner-funds-list">
           {funds.map((f) => (
             <Card key={f.id} className="p-3" data-testid={`partner-fund-${f.id}`}>
-              <Link href={`/collective/partner/funds/${f.id}`} className="block hover:bg-slate-50 -m-3 p-3 rounded">
+              <Link href={`/collective/partner/funds/${f.id}`} className="block hover:bg-[var(--cv-color-surface-2)] -m-3 p-3 rounded">
                 <div className="flex justify-between items-center">
                   <div>
                     <div className="font-medium">{f.fundName}</div>
-                    <div className="text-xs text-slate-500">Vintage {f.vintageYear} · {f.status}</div>
+                    <div className="text-xs text-[var(--cv-color-text-muted)]">Vintage {f.vintageYear} · {f.status}</div>
                   </div>
                   <div className="text-right">
                     <div className="font-mono">{formatMinor(f.targetSizeMinor, f.currency)}</div>
-                    <div className="text-xs text-slate-500">target</div>
+                    <div className="text-xs text-[var(--cv-color-text-muted)]">target</div>
                   </div>
                 </div>
               </Link>

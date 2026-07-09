@@ -57,7 +57,7 @@ export default function PartnerNotes() {
           </div>
         )}
         <div className="bg-white p-4 rounded border" data-testid="notes-list">
-          <div className="text-xs uppercase text-slate-500 mb-2">All notes</div>
+          <div className="text-xs uppercase text-[var(--cv-color-text-muted)] mb-2">All notes</div>
           {/* v25.15 NM3 — explicit error branch (mirrors PartnerClients NM2). */}
           {q.isError && (
             <div
@@ -67,15 +67,15 @@ export default function PartnerNotes() {
               Could not load notes. Please refresh and try again.
             </div>
           )}
-          {q.isLoading && <div className="text-xs text-slate-500" data-testid="notes-loading">Loading…</div>}
-          {!q.isLoading && !q.isError && (q.data?.notes ?? []).length === 0 && <div className="text-xs text-slate-500">No notes yet.</div>}
+          {q.isLoading && <div className="text-xs text-[var(--cv-color-text-muted)]" data-testid="notes-loading">Loading…</div>}
+          {!q.isLoading && !q.isError && (q.data?.notes ?? []).length === 0 && <div className="text-xs text-[var(--cv-color-text-muted)]">No notes yet.</div>}
           <ul className="space-y-2">
             {(q.data?.notes ?? []).map((n) => (
               <li key={n.id} className="border-b pb-2" data-testid={`note-${n.id}`}>
                 <div className="text-sm font-medium">{n.title}</div>
                 {/* v25.16 NM6 — guard against null updatedAt to avoid "Invalid Date". */}
-                <div className="text-xs text-slate-500 mt-0.5">{n.scope} · {n.updatedAt ? new Date(n.updatedAt).toLocaleDateString() : "—"}</div>
-                <div className="text-xs text-slate-700 mt-1 whitespace-pre-wrap">{n.body}</div>
+                <div className="text-xs text-[var(--cv-color-text-muted)] mt-0.5">{n.scope} · {n.updatedAt ? new Date(n.updatedAt).toLocaleDateString() : "—"}</div>
+                <div className="text-xs text-[var(--cv-color-text-secondary)] mt-1 whitespace-pre-wrap">{n.body}</div>
               </li>
             ))}
           </ul>

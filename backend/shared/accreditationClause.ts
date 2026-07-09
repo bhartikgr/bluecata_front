@@ -20,7 +20,7 @@
  */
 
 /** Version tag recorded on every self-certification. Bump to force re-signature. */
-export const ACCREDITATION_CLAUSE_VERSION = "ACCRED-v0.1-DRAFT";
+export const ACCREDITATION_CLAUSE_VERSION = "ACCRED-v0.2";
 
 /** Self-certification validity window (drives when a re-attestation is prompted). */
 export const ACCREDITATION_VALIDITY_DAYS = 365;
@@ -78,16 +78,15 @@ export const ACCREDITATION_CRITERIA: AccreditationCriterion[] = [
  * checks criteria and types their full legal name. Placeholder DRAFT (see
  * version tag) — pending external counsel finalization.
  */
-export const ACCREDITATION_CLAUSE_TEXT = `# ACCREDITED / ELIGIBLE INVESTOR SELF-CERTIFICATION — DRAFT v0.1
-### (Global investor-grade best-practice draft for Capavate — FOR LEGAL REVIEW; NOT LEGAL ADVICE)
+export const ACCREDITATION_CLAUSE_TEXT = `# Accredited / Eligible Investor Self-Certification (ACCRED-v0.2)
 
-By signing below, I certify that I qualify as an accredited, sophisticated, or otherwise eligible investor under the laws of my jurisdiction, on the basis of at least ONE of the criteria I have checked above.
+By signing below with my full legal name, I certify that I qualify as an accredited, sophisticated, or otherwise eligible investor under the laws of my jurisdiction, on the basis of at least ONE of the criteria I have checked above (US Regulation D, Rule 501(a), or my home-jurisdiction equivalent).
 
 I further acknowledge and agree that:
-1. Private investments are high-risk, illiquid, and I may lose my entire investment; they are not registered with or approved by any securities regulator.
+1. Private investments are high-risk and illiquid, and I may lose my entire investment; they are not registered with or approved by any securities regulator.
 2. The information in this certification is true and accurate as of the date signed, and I will promptly notify Capavate if it ceases to be true.
 3. This self-certification is valid for twelve (12) months from the date signed, after which I may be asked to re-certify.
-4. Capavate and issuers may rely on this certification, and I understand Capavate may request additional documentation or third-party verification where required by applicable law.`;
+4. Capavate and issuers may rely on this certification, and Capavate may request additional documentation or third-party verification where applicable law requires it.`;
 
 /** The explicit acknowledgment the investor ticks before signing. */
 export const ACCREDITATION_CLAUSE_ACK =

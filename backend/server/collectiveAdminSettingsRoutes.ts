@@ -18,6 +18,7 @@ import {
   updateCollectiveSettings,
   type CollectiveSettings,
 } from "./collectiveAdminSettingsStore";
+import { isVentureProviderId, setProvider } from "./ventureMarketsStore"; /* GROUP E (1e/E2) */
 
 function actorOf(req: Request): string {
   const ctx = (req as Request & {
@@ -55,9 +56,20 @@ export function registerCollectiveAdminSettingsRoutes(app: Express): void {
         patch[key] = b[key] as string;
       }
     }
+    // GROUP E (1e/E2) — admin-swappable venture-market data provider.
+    if ("ventureProvider" in b) {
+      if (!isVentureProviderId(b.ventureProvider)) {
+        return res.status(400).json({ ok: false, error: "ventureProvider is not a known provider id" });
+      }
+      patch.ventureProvider = b.ventureProvider;
+    }
     let saved: CollectiveSettings;
     try {
       saved = updateCollectiveSettings(patch);
+      // GROUP E — apply the provider swap live (env still wins at read time).
+      if (patch.ventureProvider && isVentureProviderId(saved.ventureProvider)) {
+        setProvider(saved.ventureProvider);
+      }
     } catch (err) {
       log.error("[collectiveAdminSettingsRoutes.put] failed:", (err as Error).message);
       return res

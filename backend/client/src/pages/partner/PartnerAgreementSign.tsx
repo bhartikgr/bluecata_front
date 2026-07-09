@@ -7,9 +7,11 @@
  * server-side. Nothing here is hardcoded; the version/URL come from server config.
  */
 import { useState } from "react";
+import { useLocation } from "wouter"; /* GROUP E 1d — post-sign redirect */
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, ApiError, queryClient } from "@/lib/queryClient";
 import { useRequirePartnerRole } from "@/lib/partner/useRequirePartnerRole";
+import { displayAgreementLabel, displayAgreementVersion } from "@/lib/partner/partnerAgreement"; /* GROUP E 1b — display-only label */
 import { PartnerShell } from "@/components/partner/PartnerShell";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -17,6 +19,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { CONSORTIUM_AGREEMENT_TEXT } from "@shared/consortiumAgreement"; /* W2-I — viewable text fallback */
+
+/* GROUP E 1d — partner dashboard destination after a successful signature. */
+const PARTNER_DASHBOARD_PATH = "/collective/partner/dashboard";
 
 /* W2-I — the page now reads the canonical GET /api/partner/me/agreement, which
    returns the viewable agreement text, the current version/url AND the DURABLE
@@ -42,6 +47,7 @@ function formatDate(value: string | null) {
 export default function PartnerAgreementSign() {
   const role = useRequirePartnerRole();
   const { toast } = useToast();
+  const [, navigate] = useLocation(); /* GROUP E 1d */
   const [accepted, setAccepted] = useState(false);
   const [signatureName, setSignatureName] = useState("");
   const [signedAt, setSignedAt] = useState<string | null>(null);
@@ -62,9 +68,12 @@ export default function PartnerAgreementSign() {
       return j as { signedAt: string };
     },
     onSuccess: (j) => {
+      // onSuccess only runs when the server returned ok:true (mutationFn throws
+      // otherwise), so this redirect never fires on a failed signature.
       setSignedAt(j.signedAt);
       queryClient.invalidateQueries({ queryKey: ["/api/partner/me/agreement"] });
       toast({ title: "Agreement signed" });
+      navigate(PARTNER_DASHBOARD_PATH); /* GROUP E 1d — land on the partner dashboard after signing */
     },
     onError: (e: any) => toast({ title: "Could not record signature", description: e?.message, variant: "destructive" }),
   });
@@ -90,32 +99,102 @@ export default function PartnerAgreementSign() {
 
       {!isForbidden && (
         <Card className="p-6 max-w-2xl" data-testid="partner-agreement-card">
-          <div className="mb-4">
-            <div className="text-xs uppercase tracking-wide text-slate-500">Current version</div>
-            <div className="text-lg font-semibold text-[#041e41]" data-testid="partner-agreement-version">{version}</div>
+          {/* GROUP E 1c/1b — professional document header. `version` (the raw
+              server id) is still what the POST body sends; only the label shown
+              here is cosmetic via displayAgreementLabel(). */}
+          <div
+            className="mb-5 border-b pb-4"
+            style={{ borderColor: "var(--cv-color-divider)" }}
+          >
+            <div
+              className="text-xs uppercase tracking-wide"
+              style={{ color: "var(--cv-color-text-muted)" }}
+            >
+              Agreement
+            </div>
+            <div
+              className="font-semibold"
+              style={{
+                fontFamily: "var(--cv-font-display)",
+                fontSize: "var(--cv-text-xl)",
+                color: "var(--cv-color-navy)",
+              }}
+              data-testid="partner-agreement-version"
+            >
+              {displayAgreementLabel(version)}
+            </div>
           </div>
 
-          {isLoading && <div className="text-sm text-slate-500" data-testid="partner-agreement-loading">Loading…</div>}
+          {isLoading && (
+            <div
+              className="text-sm"
+              style={{ color: "var(--cv-color-text-muted)" }}
+              data-testid="partner-agreement-loading"
+            >
+              Loading…
+            </div>
+          )}
 
           {!isLoading && (
             <>
-              <p className="text-sm text-slate-700 mb-3">
-                By signing below you accept the Capavate Consortium Partner Agreement
-                {url ? <> (full text also <a href={url} target="_blank" rel="noreferrer" className="text-[#cc0001] hover:underline">available here</a>)</> : null},
-                which governs commission economics, SPV fees, payout terms, and tax compliance.
+              <p
+                className="text-sm mb-3"
+                style={{ color: "var(--cv-color-text-secondary)" }}
+              >
+                By signing below you accept the Capavate Consortium Partner
+                Agreement, which governs commission economics, SPV fees, payout
+                terms, and tax compliance.
               </p>
 
-              {/* W2-I — full viewable agreement body (read-only). */}
-              <div
+              {/* GROUP E 1a/1c/E5 — full agreement body rendered as a styled,
+                  professional legal document. The text is VERBATIM from the
+                  canonical CONSORTIUM_AGREEMENT_TEXT (server-provided when
+                  available); it is never rewritten here. */}
+              <article
                 data-testid="partner-agreement-text"
-                className="mb-4 max-h-72 overflow-y-auto whitespace-pre-wrap rounded-md border border-slate-200 bg-slate-50 p-3 text-[13px] leading-relaxed text-slate-800"
+                className="mb-3 max-h-80 overflow-y-auto whitespace-pre-wrap"
+                style={{
+                  fontFamily: "var(--cv-font-body)",
+                  fontSize: "var(--cv-text-sm)",
+                  lineHeight: 1.7,
+                  color: "var(--cv-color-text)",
+                  background: "var(--cv-color-surface-cream)",
+                  border: "1px solid var(--cv-color-border)",
+                  borderRadius: "var(--cv-radius-lg)",
+                  padding: "var(--cv-space-6)",
+                  boxShadow: "var(--cv-shadow-sm)",
+                }}
               >
                 {agreementText}
+              </article>
+
+              {/* GROUP E E5 — "View full agreement document" link. */}
+              <div className="mb-3">
+                <a
+                  href={url ?? "#partner-agreement-text"}
+                  {...(url ? { target: "_blank", rel: "noreferrer" } : {})}
+                  className="text-sm underline"
+                  style={{ color: "var(--cv-color-primary)" }}
+                  data-testid="link-agreement-document"
+                >
+                  View full agreement document
+                </a>
               </div>
+
+              {/* GROUP E 1c — counsel footnote. This is a draft for review by
+                  counsel; it must NOT be misrepresented as an executed contract. */}
+              <p
+                className="mb-4 text-xs italic"
+                style={{ color: "var(--cv-color-text-muted)" }}
+                data-testid="partner-agreement-counsel-note"
+              >
+                This document is provided for review by counsel and does not
+                constitute legal advice.
+              </p>
 
               {effectiveSignedAt ? (
                 <div className="rounded-md border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900" data-testid="partner-agreement-signed">
-                  Agreement <span className="font-medium">{data?.signedVersion ?? version}</span> signed on {formatDate(effectiveSignedAt)}.
+                  Agreement <span className="font-medium">{displayAgreementVersion(data?.signedVersion ?? version)}</span> signed on {formatDate(effectiveSignedAt)}.
                 </div>
               ) : !canSign ? (
                 <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900" data-testid="partner-agreement-cannot-sign">
@@ -123,7 +202,7 @@ export default function PartnerAgreementSign() {
                 </div>
               ) : (
                 <div className="space-y-4">
-                  <label className="flex items-start gap-2 text-sm text-slate-700">
+                  <label className="flex items-start gap-2 text-sm text-[var(--cv-color-text-secondary)]">
                     <input
                       type="checkbox"
                       checked={accepted}
@@ -131,7 +210,7 @@ export default function PartnerAgreementSign() {
                       className="mt-0.5"
                       data-testid="checkbox-agreement-accept"
                     />
-                    <span>I have read and agree to the terms of the Consortium Partner Agreement ({version}).</span>
+                    <span>I have read and agree to the terms of the Consortium Partner Agreement ({displayAgreementVersion(version)}).</span>
                   </label>
                   <div className="space-y-1.5 max-w-sm">
                     <Label className="text-xs">Type your full name to sign</Label>

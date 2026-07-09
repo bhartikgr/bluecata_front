@@ -53,13 +53,17 @@ import { z } from "zod";
 import { requireAuth } from "./lib/authMiddleware";
 import { requirePartnerAuth, assertSubRole } from "./lib/requirePartnerAuth"; /* v25.14 NL5 */
 import { requireSignedAgreement } from "./lib/requireSignedAgreement"; /* W2-I override — fail-closed sign gate on partner writes */
-import { partnerTeamStore } from "./partnerWorkspaceStore";
+import { partnerTeamStore, partnerAttributionStore } from "./partnerWorkspaceStore";
+import { listMembersForCompany } from "./membershipStore";
+import { partnerClientCrmStore } from "./partnerClientCrmStore";
 import { getDb, rawDb } from "./db/connection";
 import {
   partnerPortfolioCompanies as portfolioTable,
   partnerCrmContacts as crmTable,
   partnerDealPipeline as dealsTable,
   chapterMemberships as chapterMembershipsTable,
+  spvs as spvsTable,
+  spvCommitments as spvCommitmentsTable,
 } from "@shared/schema";
 import { publish as ssePublish } from "./lib/sseHub";
 import { emitNotification, type NotificationKind } from "./notificationsStore";
@@ -115,6 +119,28 @@ export interface PortfolioRow {
   deletedAt: string | null;
 }
 
+/** GROUP F1 — structured note-log entry (parity with investor CRM). */
+export interface CrmNote {
+  id: string;
+  body: string;
+  createdAt: string;
+  authorId: string | null;
+}
+
+export type CrmTaskPriority = "low" | "medium" | "high";
+export type CrmTaskStatus = "open" | "done";
+
+/** GROUP F1 — structured task (priority / status / due). */
+export interface CrmTask {
+  id: string;
+  title: string;
+  priority: CrmTaskPriority;
+  status: CrmTaskStatus;
+  due: string | null;
+  createdAt: string;
+  completedAt: string | null;
+}
+
 export interface CrmContactRow {
   id: string;
   tenantId: string;
@@ -132,6 +158,16 @@ export interface CrmContactRow {
   lastContactAt: string | null;
   notes: string;
   tags: string[];
+  // GROUP F1 (migration 0106) — parity fields. None of these enter the CP-008
+  // hash payload (which stays the stable identity subset), so writing them
+  // still extends the SAME chain via the existing computeHash/findCrmChainTip.
+  stage: string | null;
+  companyId: string | null;
+  noteLog: CrmNote[];
+  tasks: CrmTask[];
+  starred: boolean;
+  sourceKind: string | null;
+  sourceRef: string | null;
   /** CP-008: prev/curr hash chain across all CRM contacts owned by a partner. */
   prevHash: string | null;
   currHash: string;
@@ -216,6 +252,18 @@ function rowToPortfolio(r: any): PortfolioRow {
   };
 }
 
+/** Parse a JSON array of objects (note_log / tasks), tolerant of null/garbage. */
+function safeJsonObjArray<T>(s: unknown): T[] {
+  if (Array.isArray(s)) return s as T[];
+  if (typeof s !== "string" || s.length === 0) return [];
+  try {
+    const v = JSON.parse(s);
+    return Array.isArray(v) ? (v as T[]) : [];
+  } catch {
+    return [];
+  }
+}
+
 function rowToCrm(r: any): CrmContactRow {
   return {
     id: r.id,
@@ -231,6 +279,13 @@ function rowToCrm(r: any): CrmContactRow {
     lastContactAt: r.last_contact_at ?? r.lastContactAt ?? null,
     notes: r.notes ?? "",
     tags: safeJsonArray(r.tags),
+    stage: r.stage ?? null,
+    companyId: r.company_id ?? r.companyId ?? null,
+    noteLog: safeJsonObjArray<CrmNote>(r.note_log ?? r.noteLog),
+    tasks: safeJsonObjArray<CrmTask>(r.tasks),
+    starred: (r.starred ?? 0) === 1 || r.starred === true,
+    sourceKind: r.source_kind ?? r.sourceKind ?? null,
+    sourceRef: r.source_ref ?? r.sourceRef ?? null,
     prevHash: r.prev_hash ?? r.prevHash ?? null,
     currHash: r.curr_hash ?? r.currHash ?? "",
     createdAt: r.created_at ?? r.createdAt,
@@ -364,6 +419,483 @@ const dealCreateSchema = z.object({
   notes: z.string().max(4000).optional(),
 });
 const dealUpdateSchema = dealCreateSchema.partial();
+
+/* ============================================================
+ * GROUP F1 — parity CRM (full person-level surface)
+ *
+ * All of the following operate on the SAME partner_crm_contacts table and the
+ * SAME CP-008 hash chain (via findCrmChainTip + computeHash + crmHashPayload).
+ * There is NO second store and NO second chain — every parity mutation extends
+ * the existing per-partner chain. Every read/write is fail-closed partner-scoped
+ * (partnerId always comes from the session, never a client-supplied field).
+ * ============================================================ */
+
+// Rule #13 — BOTH first and last name are mandatory on the full-parity create.
+const crmMeCreateSchema = z.object({
+  first_name: z.string().min(1).max(100),
+  last_name: z.string().min(1).max(100),
+  email: z.string().email().optional(),
+  contact_user_id: z.string().min(1).optional(),
+  role: z.string().max(120).optional(),
+  org: z.string().max(200).optional(),
+  stage: z.string().max(60).optional(),
+  company_id: z.string().min(1).max(120).optional(),
+  notes: z.string().max(4000).optional(),
+  tags: z.array(z.string().max(40)).max(20).optional(),
+  last_contact_at: z.string().optional(),
+});
+
+const crmMeUpdateSchema = z.object({
+  first_name: z.string().min(1).max(100).optional(),
+  last_name: z.string().min(1).max(100).optional(),
+  email: z.string().email().optional(),
+  role: z.string().max(120).optional(),
+  org: z.string().max(200).optional(),
+  stage: z.string().max(60).nullable().optional(),
+  company_id: z.string().min(1).max(120).nullable().optional(),
+  notes: z.string().max(4000).optional(),
+  tags: z.array(z.string().max(40)).max(20).optional(),
+  last_contact_at: z.string().optional(),
+});
+
+const crmNoteSchema = z.object({ body: z.string().min(1).max(4000) });
+const crmTaskCreateSchema = z.object({
+  title: z.string().min(1).max(300),
+  priority: z.enum(["low", "medium", "high"]).optional(),
+  due: z.string().max(40).optional(),
+});
+const crmTaskUpdateSchema = z.object({
+  title: z.string().min(1).max(300).optional(),
+  priority: z.enum(["low", "medium", "high"]).optional(),
+  status: z.enum(["open", "done"]).optional(),
+  due: z.string().max(40).nullable().optional(),
+});
+const crmStarSchema = z.object({ starred: z.boolean() });
+
+const crmFromSourceSchema = z.object({
+  source_kind: z.enum(["spv_lp"]),
+  source_ref: z.string().min(1).max(200),
+  identity: z.object({
+    email: z.string().email().optional(),
+    name: z.string().max(200).optional(),
+    first_name: z.string().max(100).optional(),
+    last_name: z.string().max(100).optional(),
+  }),
+});
+
+/**
+ * Resolve an email to a platform userId (partner-owned email identity). This is
+ * the ONLY way we derive a user linkage — we NEVER trust a client-supplied
+ * contact_user_id for cross-module connection reads. Fail-closed: any error or
+ * missing row yields null (no connection is surfaced).
+ */
+function findUserIdByEmail(email: string | null | undefined): string | null {
+  const e = typeof email === "string" ? email.trim() : "";
+  if (!e) return null;
+  try {
+    const pdb = rawDb() as unknown as { prepare?: (sql: string) => { get: (...a: unknown[]) => unknown } };
+    if (!pdb || typeof pdb.prepare !== "function") return null;
+    const row = pdb
+      .prepare(`SELECT id FROM users WHERE lower(trim(email)) = lower(trim(?)) AND deleted_at IS NULL LIMIT 1`)
+      .get(e) as { id?: string } | undefined;
+    return row?.id ?? null;
+  } catch (err) {
+    log.warn("[partner CRM] findUserIdByEmail failed (fail-closed to null):", (err as Error).message);
+    return null;
+  }
+}
+
+export interface CrmContactConnections {
+  /** Resolved from the contact EMAIL (partner-owned identity), not a client id. */
+  resolvedUserId: string | null;
+  spvLpMemberships: Array<{ spvId: string; spvName: string; status: string; amountMinor: number }>;
+  capTableHoldings: Array<{ companyId: string; ownershipPct: number }>;
+  portfolio: Array<{ id: string; companyId: string; displayName: string; stage: string }>;
+  collectiveMembership: { userId: string; chapterId: string; role: string; status: string } | null;
+  client: { companyId: string; stage: string; lastActivityAt: string | null } | null;
+}
+
+/**
+ * Partner-scoped, READ-ONLY cross-module connections for a CRM contact. Every
+ * join is bounded by the caller's partnerId; a contact belonging to partner A
+ * can never surface partner B's SPVs, attributions, portfolio, or client rows.
+ * The Collective linkage is derived from the contact's EMAIL → userId only.
+ */
+export function resolveContactConnections(
+  partnerId: string,
+  contact: Pick<CrmContactRow, "email" | "companyId">,
+): CrmContactConnections {
+  const out: CrmContactConnections = {
+    resolvedUserId: null,
+    spvLpMemberships: [],
+    capTableHoldings: [],
+    portfolio: [],
+    collectiveMembership: null,
+    client: null,
+  };
+  const resolvedUserId = findUserIdByEmail(contact.email);
+  out.resolvedUserId = resolvedUserId;
+
+  // 1) SPV LP memberships — only THIS partner's SPVs, matched by the
+  //    email-derived userId against spv_commitments.lp_user_id.
+  if (resolvedUserId) {
+    try {
+      const db: any = getDb();
+      const spvRows = db
+        .select()
+        .from(spvsTable)
+        .where(and(eq((spvsTable as any).partnerId, partnerId), isNull((spvsTable as any).deletedAt)))
+        .all() as any[];
+      const spvById = new Map<string, any>();
+      for (const s of spvRows) spvById.set(s.id, s);
+      if (spvById.size > 0) {
+        const commits = db
+          .select()
+          .from(spvCommitmentsTable)
+          .where(
+            and(
+              eq((spvCommitmentsTable as any).lpUserId, resolvedUserId),
+              inArray((spvCommitmentsTable as any).spvId, Array.from(spvById.keys())),
+            ),
+          )
+          .all() as any[];
+        for (const c of commits) {
+          const s = spvById.get(c.spv_id ?? c.spvId);
+          if (!s) continue; // defensive: only this partner's SPVs
+          out.spvLpMemberships.push({
+            spvId: c.spv_id ?? c.spvId,
+            spvName: s.name ?? "",
+            status: c.status ?? "pending",
+            amountMinor: Number(c.amount_minor ?? c.amountMinor ?? 0),
+          });
+        }
+      }
+    } catch (err) {
+      log.warn("[partner CRM] SPV LP connection read failed:", (err as Error).message);
+    }
+  }
+
+  // 2) Cap-table holdings — READ-ONLY via listMembersForCompany over companies
+  //    attributed to THIS partner. No ledger write. Matched by email→userId.
+  if (resolvedUserId) {
+    try {
+      const attrs = partnerAttributionStore.listByPartner(partnerId);
+      for (const a of attrs) {
+        if (!a.companyId) continue;
+        const members = listMembersForCompany(a.companyId);
+        const mine = members.find((m) => m.userId === resolvedUserId);
+        if (mine) out.capTableHoldings.push({ companyId: a.companyId, ownershipPct: mine.ownershipPct });
+      }
+    } catch (err) {
+      log.warn("[partner CRM] cap-table connection read failed:", (err as Error).message);
+    }
+  }
+
+  // 3) Portfolio — this partner's portfolio rows for the contact's company_id.
+  if (contact.companyId) {
+    try {
+      const db: any = getDb();
+      const pRows = db
+        .select()
+        .from(portfolioTable)
+        .where(
+          and(
+            eq((portfolioTable as any).partnerId, partnerId),
+            eq((portfolioTable as any).companyId, contact.companyId),
+            isNull((portfolioTable as any).deletedAt),
+          ),
+        )
+        .all() as any[];
+      for (const r of pRows) {
+        const p = rowToPortfolio(r);
+        out.portfolio.push({ id: p.id, companyId: p.companyId, displayName: p.displayName, stage: p.stage });
+      }
+    } catch (err) {
+      log.warn("[partner CRM] portfolio connection read failed:", (err as Error).message);
+    }
+  }
+
+  // 4) Collective membership — from the email-derived userId ONLY (fail-closed;
+  //    NEVER a client-supplied contact id). Person-level, not partner data.
+  if (resolvedUserId) {
+    try {
+      const db: any = getDb();
+      const cm = db
+        .select()
+        .from(chapterMembershipsTable)
+        .where(
+          and(
+            eq((chapterMembershipsTable as any).userId, resolvedUserId),
+            eq((chapterMembershipsTable as any).status, "active"),
+            isNull((chapterMembershipsTable as any).deletedAt),
+          ),
+        )
+        .limit(1)
+        .all() as any[];
+      if (cm.length > 0) {
+        const r = cm[0];
+        out.collectiveMembership = {
+          userId: r.user_id ?? r.userId,
+          chapterId: r.chapter_id ?? r.chapterId,
+          role: r.role ?? "member",
+          status: r.status ?? "active",
+        };
+      }
+    } catch (err) {
+      log.warn("[partner CRM] collective connection read failed:", (err as Error).message);
+    }
+  }
+
+  // 5) Client stage/activity — existing company-level partner_client_crm surface
+  //    (kept intact), scoped to this partner + the contact's company_id.
+  if (contact.companyId) {
+    try {
+      const stage = partnerClientCrmStore.getStage(partnerId, contact.companyId);
+      const activity = partnerClientCrmStore.listActivity(partnerId, contact.companyId);
+      out.client = {
+        companyId: contact.companyId,
+        stage,
+        lastActivityAt: activity.length > 0 ? activity[0].occurredAt : null,
+      };
+    } catch (err) {
+      log.warn("[partner CRM] client connection read failed:", (err as Error).message);
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Fail-closed pre-write dedup check for the partner CRM. Returns the existing
+ * contact id when a live (partner_id, lower(trim(email))) row already exists
+ * (optionally excluding one id), or null. Throws on infra failure so callers
+ * can fail closed (503). Mirrors the create/patch guards already in this file.
+ */
+function findLiveDuplicateEmailId(partnerId: string, email: string, excludeId?: string): string | null {
+  const e = typeof email === "string" ? email.trim() : "";
+  if (!e) return null;
+  const pdb = rawDb() as unknown as { prepare?: (sql: string) => { get: (...a: unknown[]) => unknown } };
+  if (!pdb || typeof pdb.prepare !== "function") {
+    throw new Error("rawDb().prepare unavailable — cannot run partner dedup guard");
+  }
+  const sql = excludeId
+    ? `SELECT id FROM partner_crm_contacts WHERE partner_id = ? AND lower(trim(email)) = lower(trim(?)) AND id <> ? AND deleted_at IS NULL LIMIT 1`
+    : `SELECT id FROM partner_crm_contacts WHERE partner_id = ? AND lower(trim(email)) = lower(trim(?)) AND deleted_at IS NULL LIMIT 1`;
+  const stmt = pdb.prepare(sql);
+  const dup = (excludeId ? stmt.get(partnerId, e, excludeId) : stmt.get(partnerId, e)) as { id?: string } | undefined;
+  return dup?.id ?? null;
+}
+
+/**
+ * CP-008 chain-extending write for a set of parity column changes on an existing
+ * contact. Every parity mutation (notes/tasks/star/stage/tags) funnels through
+ * here so the SAME per-partner chain is extended (never forked). The hash uses
+ * the stable identity payload + a mutation marker (mirrors the delete path's
+ * `{ ...payload, deleted: true }`).
+ */
+function writeCrmMutation(
+  row: CrmContactRow,
+  fields: Partial<CrmContactRow>,
+  columns: Record<string, unknown>,
+  mutation: string,
+): CrmContactRow {
+  const now = nowIso();
+  const nextPrev = findCrmChainTip(row.partnerId);
+  const seed: Pick<CrmContactRow, "partnerId" | "contactUserId" | "email" | "name" | "createdAt"> = {
+    partnerId: row.partnerId,
+    contactUserId: row.contactUserId,
+    email: fields.email ?? row.email,
+    name: fields.name ?? row.name,
+    createdAt: now,
+  };
+  const nextHash = computeHash(nextPrev, { ...crmHashPayload(seed, nextPrev), mutation });
+  const next: CrmContactRow = { ...row, ...fields, prevHash: nextPrev, currHash: nextHash, updatedAt: now };
+  const db: any = getDb();
+  db.transaction((tx: any) => {
+    tx.update(crmTable)
+      .set({ ...columns, prevHash: nextPrev, currHash: nextHash, updatedAt: now })
+      .where(eq((crmTable as any).id, row.id))
+      .run();
+  });
+  crmCache.set(next.id, next);
+  ssePublish(row.partnerId, "crm", { type: mutation, contactId: next.id, partnerId: row.partnerId });
+  return next;
+}
+
+/** Build + persist a NEW parity contact (chain-extended). Assumes caller has
+ *  already validated input + run the dedup guard. */
+function insertCrmContact(args: {
+  partnerId: string;
+  email: string;
+  name: string;
+  firstName: string | null;
+  lastName: string | null;
+  contactUserId: string | null;
+  role: string;
+  org: string;
+  stage: string | null;
+  companyId: string | null;
+  notes: string;
+  tags: string[];
+  lastContactAt: string | null;
+  sourceKind: string | null;
+  sourceRef: string | null;
+}): CrmContactRow {
+  const id = newId("pcc");
+  const now = nowIso();
+  const tenantId = `tenant_partner_${args.partnerId}`;
+  const prevHash = findCrmChainTip(args.partnerId);
+  const seed: Pick<CrmContactRow, "partnerId" | "contactUserId" | "email" | "name" | "createdAt"> = {
+    partnerId: args.partnerId,
+    contactUserId: args.contactUserId,
+    email: args.email,
+    name: args.name,
+    createdAt: now,
+  };
+  const currHash = computeHash(prevHash, crmHashPayload(seed, prevHash));
+  const row: CrmContactRow = {
+    id,
+    tenantId,
+    partnerId: args.partnerId,
+    contactUserId: args.contactUserId,
+    email: args.email,
+    name: args.name,
+    firstName: args.firstName,
+    lastName: args.lastName,
+    role: args.role,
+    org: args.org,
+    lastContactAt: args.lastContactAt,
+    notes: args.notes,
+    tags: args.tags,
+    stage: args.stage,
+    companyId: args.companyId,
+    noteLog: [],
+    tasks: [],
+    starred: false,
+    sourceKind: args.sourceKind,
+    sourceRef: args.sourceRef,
+    prevHash,
+    currHash,
+    createdAt: now,
+    updatedAt: now,
+    deletedAt: null,
+  };
+  const db: any = getDb();
+  db.transaction((tx: any) => {
+    tx.insert(crmTable).values({
+      id: row.id,
+      tenantId: row.tenantId,
+      partnerId: row.partnerId,
+      contactUserId: row.contactUserId,
+      email: row.email,
+      name: row.name,
+      firstName: row.firstName,
+      lastName: row.lastName,
+      role: row.role,
+      org: row.org,
+      lastContactAt: row.lastContactAt,
+      notes: row.notes,
+      tags: JSON.stringify(row.tags),
+      stage: row.stage,
+      companyId: row.companyId,
+      noteLog: JSON.stringify(row.noteLog),
+      tasks: JSON.stringify(row.tasks),
+      starred: row.starred,
+      sourceKind: row.sourceKind,
+      sourceRef: row.sourceRef,
+      prevHash: row.prevHash,
+      currHash: row.currHash,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      deletedAt: null,
+    }).run();
+  });
+  crmCache.set(row.id, row);
+  ssePublish(args.partnerId, "crm", { type: "crm.created", contactId: row.id, partnerId: args.partnerId });
+  return row;
+}
+
+export type FromSourceResult =
+  | { status: 201; contact: CrmContactRow }
+  | { status: 200; contact: CrmContactRow; existing: true }
+  | { status: 404; error: string }
+  | { status: 400; error: string }
+  | { status: 409; error: string; existingId: string | null }
+  | { status: 503; error: string };
+
+/**
+ * Idempotent creation of a CRM contact from an owned source (e.g. an SPV LP
+ * row). Verifies the source belongs to THIS partner (else 404), then upserts by
+ * (partnerId, lower(trim(email))). Chain-extended via insertCrmContact.
+ */
+export function createFromSource(args: {
+  partnerId: string;
+  sourceKind: string;
+  sourceRef: string;
+  identity: { email?: string; name?: string; first_name?: string; last_name?: string };
+}): FromSourceResult {
+  const { partnerId, sourceKind, sourceRef, identity } = args;
+
+  // Verify source ownership. Only 'spv_lp' is supported: sourceRef = spvId, and
+  // the SPV must belong to this partner. Cross-partner / unknown source → 404.
+  if (sourceKind === "spv_lp") {
+    try {
+      const db: any = getDb();
+      const spv = db
+        .select()
+        .from(spvsTable)
+        .where(and(eq((spvsTable as any).id, sourceRef), eq((spvsTable as any).partnerId, partnerId)))
+        .limit(1)
+        .all() as any[];
+      if (spv.length === 0) return { status: 404, error: "source_not_found" };
+    } catch (err) {
+      log.error("[partner CRM from-source] source verify failed — failing closed:", (err as Error).message);
+      return { status: 503, error: "source_verify_unavailable" };
+    }
+  } else {
+    return { status: 400, error: "unsupported_source_kind" };
+  }
+
+  const email = typeof identity.email === "string" ? identity.email.trim() : "";
+  const first = identity.first_name?.trim() || null;
+  const last = identity.last_name?.trim() || null;
+  const composed = composeCrmContactName(identity.name, first, last, email || "SPV LP");
+
+  // Idempotent by (partnerId, email). If a live contact already exists, return
+  // it unchanged (no duplicate chain row written).
+  if (email) {
+    let existingId: string | null = null;
+    try {
+      existingId = findLiveDuplicateEmailId(partnerId, email);
+    } catch (err) {
+      log.error("[partner CRM from-source] dedup guard failed — failing closed:", (err as Error).message);
+      return { status: 503, error: "crm_dedup_check_unavailable" };
+    }
+    if (existingId) {
+      const existing = findCrmByIdAnyTenant(existingId);
+      if (existing) return { status: 200, contact: existing, existing: true };
+    }
+  }
+
+  const row = insertCrmContact({
+    partnerId,
+    email,
+    name: composed,
+    firstName: first,
+    lastName: last,
+    contactUserId: null,
+    role: "",
+    org: "",
+    stage: null,
+    companyId: null,
+    notes: "",
+    tags: [],
+    lastContactAt: null,
+    sourceKind,
+    sourceRef,
+  });
+  return { status: 201, contact: row };
+}
 
 /* ============================================================
  * SSE
@@ -929,6 +1461,13 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
       lastContactAt: parsed.data.last_contact_at ?? null,
       notes: parsed.data.notes ?? "",
       tags: parsed.data.tags ?? [],
+      stage: null,
+      companyId: null,
+      noteLog: [],
+      tasks: [],
+      starred: false,
+      sourceKind: null,
+      sourceRef: null,
       prevHash,
       currHash,
       createdAt: now,
@@ -1361,6 +1900,301 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
     });
     res.json({ ok: true, deal: next });
   });
+
+  /* ===================== GROUP F1 — full-parity person CRM =====================
+   * New `/api/partner/me/crm/contacts` surface over the SAME partner_crm_contacts
+   * table + CP-008 chain as the legacy `/api/partner/crm/contacts` routes above
+   * (which stay intact — no silent drop). Adds list-filter, connections,
+   * notes/tasks/star, and idempotent from-source import. Writes are role- and
+   * signed-agreement-gated exactly like the other partner writes.
+   */
+  const CRM_WRITE = [
+    requirePartnerAuth,
+    assertSubRole("managing_partner", "associate", "bd"),
+    requireSignedAgreement,
+  ] as const;
+
+  /** Load a contact owned by the session partner, or write 404/403 + return null. */
+  function loadOwnedContact(req: Request, res: Response): CrmContactRow | null {
+    const ctx = req.partnerContext!;
+    const row = findCrmByIdAnyTenant(String(req.params.id));
+    if (!row || row.deletedAt) {
+      res.status(404).json({ error: "NOT_FOUND" });
+      return null;
+    }
+    if (row.partnerId !== ctx.partnerId) {
+      // Fail-closed: cross-partner access is indistinguishable from not-found.
+      res.status(404).json({ error: "NOT_FOUND" });
+      return null;
+    }
+    return row;
+  }
+
+  // ---- List (filter: q / stage / starred / tag) ----
+  app.get("/api/partner/me/crm/contacts", requirePartnerAuth, (req, res) => {
+    const ctx = req.partnerContext!;
+    let rows: CrmContactRow[] = [];
+    try {
+      const db: any = getDb();
+      const all = db
+        .select()
+        .from(crmTable)
+        .where(eq((crmTable as any).partnerId, ctx.partnerId))
+        .all() as any[];
+      rows = all.map(rowToCrm).filter((r) => !r.deletedAt);
+    } catch {
+      rows = Array.from(crmCache.values()).filter((r) => !r.deletedAt && r.partnerId === ctx.partnerId);
+    }
+    const q = typeof req.query.q === "string" ? req.query.q.trim().toLowerCase() : "";
+    const stage = typeof req.query.stage === "string" ? req.query.stage.trim() : "";
+    const tag = typeof req.query.tag === "string" ? req.query.tag.trim().toLowerCase() : "";
+    const starredOnly = req.query.starred === "1" || req.query.starred === "true";
+    let filtered = rows;
+    if (q) {
+      filtered = filtered.filter(
+        (r) =>
+          r.name.toLowerCase().includes(q) ||
+          (r.email ?? "").toLowerCase().includes(q) ||
+          (r.org ?? "").toLowerCase().includes(q),
+      );
+    }
+    if (stage) filtered = filtered.filter((r) => (r.stage ?? "") === stage);
+    if (tag) filtered = filtered.filter((r) => r.tags.some((t) => t.toLowerCase() === tag));
+    if (starredOnly) filtered = filtered.filter((r) => r.starred);
+    filtered.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    res.json({ contacts: filtered, count: filtered.length });
+  });
+
+  // ---- From-source import (idempotent; registered before /:id GET is fine
+  //      since this is POST on a distinct path) ----
+  app.post("/api/partner/me/crm/contacts/from-source", ...CRM_WRITE, (req, res) => {
+    const ctx = req.partnerContext!;
+    const parsed = crmFromSourceSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "INVALID_BODY", details: parsed.error.flatten() });
+      return;
+    }
+    const result = createFromSource({
+      partnerId: ctx.partnerId,
+      sourceKind: parsed.data.source_kind,
+      sourceRef: parsed.data.source_ref,
+      identity: parsed.data.identity,
+    });
+    if (result.status === 201) {
+      res.status(201).json({ ok: true, contact: result.contact });
+    } else if (result.status === 200) {
+      res.status(200).json({ ok: true, contact: result.contact, existing: true });
+    } else {
+      res.status(result.status).json({ ok: false, error: result.error });
+    }
+  });
+
+  // ---- Detail incl. connections ----
+  app.get("/api/partner/me/crm/contacts/:id", requirePartnerAuth, (req, res) => {
+    const ctx = req.partnerContext!;
+    const row = loadOwnedContact(req, res);
+    if (!row) return;
+    const connections = resolveContactConnections(ctx.partnerId, row);
+    res.json({ contact: row, connections });
+  });
+
+  // ---- Create (Rule #13: first + last mandatory; per-partner dedup) ----
+  app.post("/api/partner/me/crm/contacts", ...CRM_WRITE, (req, res) => {
+    const ctx = req.partnerContext!;
+    const parsed = crmMeCreateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "INVALID_BODY", details: parsed.error.flatten() });
+      return;
+    }
+    const email = parsed.data.email?.trim() ?? "";
+    if (email) {
+      try {
+        const dupId = findLiveDuplicateEmailId(ctx.partnerId, email);
+        if (dupId) {
+          res.status(409).json({ ok: false, error: "crm_contact_duplicate_email", existingId: dupId });
+          return;
+        }
+      } catch (err) {
+        log.error("[partner CRM me POST] dedup check failed — failing closed:", (err as Error).message);
+        res.status(503).json({ ok: false, error: "crm_dedup_check_unavailable" });
+        return;
+      }
+    }
+    const name = composeCrmContactName(undefined, parsed.data.first_name, parsed.data.last_name, "New contact");
+    const row = insertCrmContact({
+      partnerId: ctx.partnerId,
+      email,
+      name,
+      firstName: parsed.data.first_name,
+      lastName: parsed.data.last_name,
+      contactUserId: parsed.data.contact_user_id ?? null,
+      role: parsed.data.role ?? "",
+      org: parsed.data.org ?? "",
+      stage: parsed.data.stage ?? null,
+      companyId: parsed.data.company_id ?? null,
+      notes: parsed.data.notes ?? "",
+      tags: parsed.data.tags ?? [],
+      lastContactAt: parsed.data.last_contact_at ?? null,
+      sourceKind: null,
+      sourceRef: null,
+    });
+    res.status(201).json({ ok: true, contact: row });
+  });
+
+  // ---- Update (email change re-runs the dedup guard) ----
+  app.patch("/api/partner/me/crm/contacts/:id", ...CRM_WRITE, (req, res) => {
+    const ctx = req.partnerContext!;
+    const row = loadOwnedContact(req, res);
+    if (!row) return;
+    const parsed = crmMeUpdateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "INVALID_BODY", details: parsed.error.flatten() });
+      return;
+    }
+    if (typeof parsed.data.email === "string") {
+      const nextEmail = parsed.data.email.trim();
+      const changed = nextEmail.toLowerCase() !== String(row.email ?? "").trim().toLowerCase();
+      if (nextEmail && changed) {
+        try {
+          const dupId = findLiveDuplicateEmailId(ctx.partnerId, nextEmail, row.id);
+          if (dupId) {
+            res.status(409).json({ ok: false, error: "crm_contact_duplicate_email", existingId: dupId });
+            return;
+          }
+        } catch (err) {
+          log.error("[partner CRM me PATCH] dedup check failed — failing closed:", (err as Error).message);
+          res.status(503).json({ ok: false, error: "crm_dedup_check_unavailable" });
+          return;
+        }
+      }
+    }
+    const nextFirst = parsed.data.first_name ?? row.firstName;
+    const nextLast = parsed.data.last_name ?? row.lastName;
+    const nameChanged = parsed.data.first_name !== undefined || parsed.data.last_name !== undefined;
+    const nextName = nameChanged ? composeCrmContactName(undefined, nextFirst, nextLast, row.name) : row.name;
+    const nextEmail = parsed.data.email ?? row.email;
+    const fields: Partial<CrmContactRow> = {
+      email: nextEmail,
+      name: nextName,
+      firstName: nextFirst,
+      lastName: nextLast,
+      role: parsed.data.role ?? row.role,
+      org: parsed.data.org ?? row.org,
+      stage: parsed.data.stage !== undefined ? parsed.data.stage : row.stage,
+      companyId: parsed.data.company_id !== undefined ? parsed.data.company_id : row.companyId,
+      notes: parsed.data.notes ?? row.notes,
+      tags: parsed.data.tags ?? row.tags,
+      lastContactAt: parsed.data.last_contact_at ?? row.lastContactAt,
+    };
+    const columns: Record<string, unknown> = {
+      email: fields.email,
+      name: fields.name,
+      firstName: fields.firstName,
+      lastName: fields.lastName,
+      role: fields.role,
+      org: fields.org,
+      stage: fields.stage,
+      companyId: fields.companyId,
+      notes: fields.notes,
+      tags: JSON.stringify(fields.tags),
+      lastContactAt: fields.lastContactAt,
+    };
+    const next = writeCrmMutation(row, fields, columns, "crm.updated");
+    res.json({ ok: true, contact: next });
+  });
+
+  // ---- Soft delete (chain-extended tombstone) ----
+  app.delete("/api/partner/me/crm/contacts/:id", ...CRM_WRITE, (req, res) => {
+    const row = loadOwnedContact(req, res);
+    if (!row) return;
+    const now = nowIso();
+    const next = writeCrmMutation(row, { deletedAt: now }, { deletedAt: now }, "crm.deleted");
+    res.json({ ok: true, contact: next });
+  });
+
+  // ---- Append a note to note_log ----
+  app.post("/api/partner/me/crm/contacts/:id/notes", ...CRM_WRITE, (req, res) => {
+    const ctx = req.partnerContext!;
+    const row = loadOwnedContact(req, res);
+    if (!row) return;
+    const parsed = crmNoteSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "INVALID_BODY", details: parsed.error.flatten() });
+      return;
+    }
+    const actorId = (req as Request & { userContext?: { userId?: string } }).userContext?.userId ?? null;
+    const note: CrmNote = { id: newId("pcn"), body: parsed.data.body, createdAt: nowIso(), authorId: actorId };
+    const nextLog = [note, ...row.noteLog];
+    const next = writeCrmMutation(row, { noteLog: nextLog }, { noteLog: JSON.stringify(nextLog) }, "crm.note.added");
+    res.status(201).json({ ok: true, note, contact: next });
+  });
+
+  // ---- Append a task ----
+  app.post("/api/partner/me/crm/contacts/:id/tasks", ...CRM_WRITE, (req, res) => {
+    const row = loadOwnedContact(req, res);
+    if (!row) return;
+    const parsed = crmTaskCreateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "INVALID_BODY", details: parsed.error.flatten() });
+      return;
+    }
+    const task: CrmTask = {
+      id: newId("pct"),
+      title: parsed.data.title,
+      priority: parsed.data.priority ?? "medium",
+      status: "open",
+      due: parsed.data.due ?? null,
+      createdAt: nowIso(),
+      completedAt: null,
+    };
+    const nextTasks = [task, ...row.tasks];
+    const next = writeCrmMutation(row, { tasks: nextTasks }, { tasks: JSON.stringify(nextTasks) }, "crm.task.added");
+    res.status(201).json({ ok: true, task, contact: next });
+  });
+
+  // ---- Update a task (status/title/priority/due) ----
+  app.patch("/api/partner/me/crm/contacts/:id/tasks/:taskId", ...CRM_WRITE, (req, res) => {
+    const row = loadOwnedContact(req, res);
+    if (!row) return;
+    const parsed = crmTaskUpdateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "INVALID_BODY", details: parsed.error.flatten() });
+      return;
+    }
+    const taskId = String(req.params.taskId);
+    const idx = row.tasks.findIndex((t) => t.id === taskId);
+    if (idx === -1) {
+      res.status(404).json({ error: "TASK_NOT_FOUND" });
+      return;
+    }
+    const cur = row.tasks[idx];
+    const nextStatus = parsed.data.status ?? cur.status;
+    const updated: CrmTask = {
+      ...cur,
+      title: parsed.data.title ?? cur.title,
+      priority: parsed.data.priority ?? cur.priority,
+      status: nextStatus,
+      due: parsed.data.due !== undefined ? parsed.data.due : cur.due,
+      completedAt: nextStatus === "done" ? (cur.completedAt ?? nowIso()) : null,
+    };
+    const nextTasks = row.tasks.slice();
+    nextTasks[idx] = updated;
+    const next = writeCrmMutation(row, { tasks: nextTasks }, { tasks: JSON.stringify(nextTasks) }, "crm.task.updated");
+    res.json({ ok: true, task: updated, contact: next });
+  });
+
+  // ---- Star / unstar ----
+  app.post("/api/partner/me/crm/contacts/:id/star", ...CRM_WRITE, (req, res) => {
+    const row = loadOwnedContact(req, res);
+    if (!row) return;
+    const parsed = crmStarSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "INVALID_BODY", details: parsed.error.flatten() });
+      return;
+    }
+    const next = writeCrmMutation(row, { starred: parsed.data.starred }, { starred: parsed.data.starred }, "crm.starred");
+    res.json({ ok: true, contact: next });
+  });
 }
 
 /* ============================================================
@@ -1372,6 +2206,10 @@ export const _partnerWorkspaceV19Internal = {
   findPortfolioByIdAnyTenant,
   findCrmByIdAnyTenant,
   findDealByIdAnyTenant,
+  findCrmChainTip,
+  findUserIdByEmail,
+  resolveContactConnections,
+  createFromSource,
   portfolioCache,
   crmCache,
   dealsCache,

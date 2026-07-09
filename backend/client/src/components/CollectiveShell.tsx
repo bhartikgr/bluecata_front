@@ -20,6 +20,8 @@ import {
   FileSignature, FileCheck,
   /* v25.49 Phase-3B — icons for the new partner NETWORK group (Messages/Posts). */
   MessageSquare, Newspaper,
+  /* GROUP F1 — icon for the person-level partner CRM Contacts nav item. */
+  Contact,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -171,6 +173,8 @@ const PARTNER_WORKSPACE_GROUPS: NavGroup[] = [
          deleted — only their routes/nav were trimmed in v25.50.0, and the read
          endpoints were re-added in W2-A.) */
       { href: "/collective/partner/clients", label: "Clients", icon: Users, "data-testid": "nav-partner-clients" },
+      /* GROUP F1 — person-level CRM (partner_crm_contacts) now has a UI. */
+      { href: "/collective/partner/contacts", label: "Contacts", icon: Contact, "data-testid": "nav-partner-contacts" },
       /* W2-D — "Portfolio" nav item added; the /api/partner/me/portfolio API
          already existed but had no client route/nav to reach it. */
       { href: "/collective/partner/portfolio", label: "Portfolio", icon: PiggyBank, "data-testid": "nav-partner-portfolio" },
@@ -227,8 +231,8 @@ function NavLink({ item }: { item: NavItem }) {
              (#8E2A4E) to the capavate.com brand red (#cc0001) at a soft 8%
              tint, matching the live site's nav treatment. */
           isActive
-            ? "bg-[rgba(204,0,1,0.08)] text-[#cc0001]"
-            : "text-slate-700 hover:bg-[rgba(204,0,1,0.08)] hover:text-[#cc0001]",
+            ? "bg-[rgba(204,0,1,0.08)] text-[var(--cv-color-primary)]"
+            : "text-[var(--cv-color-text-secondary)] hover:bg-[rgba(204,0,1,0.08)] hover:text-[var(--cv-color-primary)]",
         ].join(" ")}
         style={{ textDecoration: "none" }}
       >
@@ -301,7 +305,7 @@ function CollectiveSidebar({ onClose }: { onClose?: () => void }) {
                capavate.com navy (#041e41); Collective sessions use the
                capavate.com brand red (#cc0001), re-skinned from the old plum
                (#8E2A4E) to match the live site. */
-            style={{ backgroundColor: partnerOnly ? "#041e41" : "#cc0001" }}
+            style={{ backgroundColor: partnerOnly ? "var(--cv-color-navy)" : "var(--cv-color-primary)" }}
           >
             C
           </div>
@@ -311,7 +315,7 @@ function CollectiveSidebar({ onClose }: { onClose?: () => void }) {
             </span>
             <span
               className="text-xs font-medium ml-1 px-1.5 py-0.5 rounded"
-              style={{ backgroundColor: partnerOnly ? "#041e41" : "#cc0001", color: "#fff", fontSize: "9px" }}
+              style={{ backgroundColor: partnerOnly ? "var(--cv-color-navy)" : "var(--cv-color-primary)", color: "#fff", fontSize: "9px" }}
               data-testid="brand-chip"
             >
               {/* v25.41 Bug-1 — partner-only sessions are branded CONSORTIUM. */}
@@ -325,7 +329,7 @@ function CollectiveSidebar({ onClose }: { onClose?: () => void }) {
             className="md:hidden p-1 rounded hover:bg-black/05"
             data-testid="button-close-sidebar"
           >
-            <X className="h-4 w-4 text-slate-600" />
+            <X className="h-4 w-4 text-[var(--cv-color-text-secondary)]" />
           </button>
         )}
       </div>
@@ -341,7 +345,7 @@ function CollectiveSidebar({ onClose }: { onClose?: () => void }) {
                    v25.48.3 Phase-2B — partner-only sessions use the muted
                    capavate.com navy (#041e41) for the new grouped section
                    headers; Collective/combined sessions keep brand red. */
-                style={{ color: partnerOnly ? "#041e41" : "#cc0001", opacity: 0.7 }}
+                style={{ color: partnerOnly ? "var(--cv-color-navy)" : "var(--cv-color-primary)", opacity: 0.7 }}
               >
                 {group.title}
               </p>
@@ -360,7 +364,7 @@ function CollectiveSidebar({ onClose }: { onClose?: () => void }) {
         <button
           onClick={() => openDrawer()}
           data-testid="button-legal-privacy"
-          className="flex items-center gap-2 text-xs text-slate-500 hover:text-slate-700 transition-colors w-full"
+          className="flex items-center gap-2 text-xs text-[var(--cv-color-text-muted)] hover:text-[var(--cv-color-text-secondary)] transition-colors w-full"
         >
           <Scale className="h-3 w-3" />
           Legal &amp; Privacy
@@ -425,11 +429,11 @@ function CollectiveTopbar({ onMenuClick }: { onMenuClick: () => void }) {
         {/* Mobile menu button */}
         <button
           onClick={onMenuClick}
-          className="md:hidden p-2 rounded hover:bg-slate-100"
+          className="md:hidden p-2 rounded hover:bg-[var(--cv-color-surface-2)]"
           data-testid="button-mobile-menu"
           aria-label="Open navigation"
         >
-          <Menu className="h-5 w-5 text-slate-700" />
+          <Menu className="h-5 w-5 text-[var(--cv-color-text-secondary)]" />
         </button>
 
         <div
@@ -458,7 +462,7 @@ function CollectiveTopbar({ onMenuClick }: { onMenuClick: () => void }) {
             size="sm"
             onClick={switchToCapavate}
             data-testid="button-switch-to-capavate"
-            className="gap-2 text-xs border-[#cc0001]/30 text-[#cc0001] hover:bg-[rgba(204,0,1,0.05)]"
+            className="gap-2 text-xs border-[var(--cv-color-primary)]/30 text-[var(--cv-color-primary)] hover:bg-[rgba(204,0,1,0.05)]"
           >
             <ArrowLeftRight className="h-3 w-3" />
             Switch to Capavate
@@ -474,7 +478,7 @@ function CollectiveTopbar({ onMenuClick }: { onMenuClick: () => void }) {
             onClick={logout}
             disabled={loggingOut}
             data-testid="button-partner-logout"
-            className="gap-2 text-xs border-[#041e41]/30 text-[#041e41] hover:bg-[rgba(4,30,65,0.05)]"
+            className="gap-2 text-xs border-[var(--cv-color-navy)]/30 text-[var(--cv-color-navy)] hover:bg-[rgba(4,30,65,0.05)]"
           >
             <LogOut className="h-3 w-3" />
             {loggingOut ? "Signing out…" : "Log out"}
@@ -570,7 +574,7 @@ export function CollectiveShell({ children }: CollectiveShellProps) {
             Collective + Consortium Partner shells, immediately under the top
             app header. */}
         <MarketTicker />
-        <main className="flex-1 overflow-auto bg-[#FAFAF8]">
+        <main className="flex-1 overflow-auto bg-[var(--cv-color-bg)]">
           {isMemberGateExempt(location)
             ? children
             : <CollectiveMemberGate>{children}</CollectiveMemberGate>}

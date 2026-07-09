@@ -54,7 +54,7 @@ export default function PartnerPortfolio() {
       partnerName={role.identity.identity.name}
     >
       {q.isLoading && (
-        <div className="text-slate-500" data-testid="portfolio-loading">Loading…</div>
+        <div className="text-[var(--cv-color-text-muted)]" data-testid="portfolio-loading">Loading…</div>
       )}
       {q.isError && (
         <div
@@ -78,16 +78,16 @@ export default function PartnerPortfolio() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search company…"
-            className="max-w-xs flex-1 rounded-md border border-[#ddd9d3] px-3 py-2 text-sm"
+            className="max-w-xs flex-1 rounded-md border border-[var(--cv-color-border)] px-3 py-2 text-sm"
             data-testid="portfolio-search"
           />
         </div>
       )}
 
       {!q.isError && hasRows && (
-        <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+        <div className="bg-white rounded-lg border border-[var(--cv-color-border)] overflow-hidden">
           <table className="w-full text-sm" data-testid="portfolio-table">
-            <thead className="bg-slate-50">
+            <thead className="bg-[var(--cv-color-surface-2)]">
               <tr>
                 <th className="text-left p-3">Company</th>
                 <th className="text-left p-3">Company ID</th>
@@ -97,14 +97,14 @@ export default function PartnerPortfolio() {
             <tbody>
               {filtered.length === 0 && (
                 <tr data-testid="portfolio-no-match">
-                  <td className="p-3 text-slate-500" colSpan={3}>No companies match your search.</td>
+                  <td className="p-3 text-[var(--cv-color-text-muted)]" colSpan={3}>No companies match your search.</td>
                 </tr>
               )}
               {filtered.map((r) => (
                 <tr key={r.companyId} className="border-t" data-testid={`portfolio-row-${r.companyId}`}>
                   <td className="p-3 font-medium">{r.companyName ?? r.companyId}</td>
-                  <td className="p-3 text-slate-500">{r.companyId}</td>
-                  <td className="p-3 text-slate-500">
+                  <td className="p-3 text-[var(--cv-color-text-muted)]">{r.companyId}</td>
+                  <td className="p-3 text-[var(--cv-color-text-muted)]">
                     {r.updatedAt ? new Date(r.updatedAt).toLocaleDateString() : "—"}
                   </td>
                 </tr>

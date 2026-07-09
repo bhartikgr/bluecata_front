@@ -39,6 +39,7 @@ import {
   SPV_MANDATE_MODE_LABELS,
   SPV_MANDATE_MODE_HELP,
   SPV_TOP_JURISDICTION_COUNTRIES,
+  SPV_JURISDICTION_ENTITY_STRUCTURES,
   SPV_DISTRIBUTION_SCOPE_WIZARD_OPTIONS,
   type SpvDTO,
 } from "@shared/spvEngine";
@@ -48,7 +49,7 @@ function fmt(minor: number | null, currency: string) {
   return formatMinorLib(minor, currency, { locale: "en-US" });
 }
 
-const NAVY = "#041e41";
+const NAVY = "var(--cv-color-navy)";
 const STEPS = ["Name & jurisdiction", "Mandate", "Fees", "Terms", "Review & launch"] as const;
 const CURRENCY_OPTIONS = buildCurrencyOptions();
 const MANDATE_DESCRIPTION_MAX = 1200;
@@ -56,8 +57,10 @@ const MANDATE_DESCRIPTION_MAX = 1200;
 interface WizardState {
   name: string;
   jurisdiction: string;          // legal-entity enum (engine-required)
-  jurisdictionCountry: string;   // 3b — country jurisdiction (top-10 or "__other__")
+  jurisdictionCountry: string;   // 3b — country jurisdiction (top-15 or "__other__")
   jurisdictionOther: string;     // 3b — free text when "Other"
+  legalEntityStructure: string;  // 2a — dependent on jurisdictionCountry; stored on terms.legalEntityStructure
+  legalEntityStructureOther: string; // 2a — free text when structure is "Other (specify)" or country is Other
   spvType: string;
   carryBasis: string;            // NO default — must be chosen (now in Terms step)
   distributionScope: string;
@@ -82,6 +85,8 @@ const OTHER = "__other__";
 
 const EMPTY_WIZARD: WizardState = {
   name: "", jurisdiction: "delaware", jurisdictionCountry: "United States", jurisdictionOther: "",
+  legalEntityStructure: SPV_JURISDICTION_ENTITY_STRUCTURES["United States"][0],
+  legalEntityStructureOther: "",
   spvType: "spv", carryBasis: "", distributionScope: "network", lpVisibility: "own_only",
   targetRaiseMinor: "0", minCheckMinor: "0", capMinor: "0", currency: "USD",
   mandateMode: "deal_specific", mandateDescription: "", sectors: [], subSector: "",
@@ -131,11 +136,19 @@ export default function PartnerSpvEngine() {
       // Descriptive fields ride on the SPV's `terms` JSON blob (round-tripped by
       // the store as terms_json) — no schema churn required.
       const jurisdictionCountry = w.jurisdictionCountry === OTHER ? w.jurisdictionOther.trim() : w.jurisdictionCountry;
+      // 2a — resolve the dependent legal-entity structure ADDITIVELY (the strict
+      // `jurisdiction` enum stays untouched). Free-text when the country is
+      // "Other" or the chosen structure is "Other (specify)".
+      const legalEntityStructure =
+        w.jurisdictionCountry === OTHER || w.legalEntityStructure === "Other (specify)"
+          ? w.legalEntityStructureOther.trim()
+          : w.legalEntityStructure;
       const terms = {
         mandateDescription: w.mandateDescription.trim(),
         subSector: w.subSector.trim() || null,
         jurisdictionCountry: jurisdictionCountry || null,
         jurisdictionOther: w.jurisdictionCountry === OTHER ? w.jurisdictionOther.trim() : null,
+        legalEntityStructure: legalEntityStructure || null,
         termsDocRef: w.termsDocRef.trim() || null,
       };
       const spvRes = await apiRequest("POST", "/api/partner/me/spv", {
@@ -181,6 +194,19 @@ export default function PartnerSpvEngine() {
   const spvs = list.data?.spvs ?? [];
 
   const jurisdictionCountryValid = w.jurisdictionCountry === OTHER ? !!w.jurisdictionOther.trim() : !!w.jurisdictionCountry;
+  // 2a — entity-structure options for the currently selected country. Empty for
+  // the free-text "Other" jurisdiction (the engine's strict enum is separate).
+  const entityStructureOptions = w.jurisdictionCountry === OTHER ? [] : (SPV_JURISDICTION_ENTITY_STRUCTURES[w.jurisdictionCountry] ?? []);
+  const entityStructureIsFreeText = w.jurisdictionCountry === OTHER || w.legalEntityStructure === "Other (specify)";
+  // 2a — on country change, RESET the entity structure to the new list's first
+  // option (or clear for the free-text "Other" jurisdiction).
+  const onJurisdictionCountryChange = (country: string) =>
+    setW((prev) => ({
+      ...prev,
+      jurisdictionCountry: country,
+      legalEntityStructure: country === OTHER ? "" : (SPV_JURISDICTION_ENTITY_STRUCTURES[country]?.[0] ?? ""),
+      legalEntityStructureOther: "",
+    }));
   const canAdvance = (): boolean => {
     if (step === 0) return !!w.name.trim() && !!w.jurisdiction && jurisdictionCountryValid;
     if (step === 1) return !!w.mandateMode && !!w.mandateDescription.trim(); // 3e mandatory
@@ -193,6 +219,12 @@ export default function PartnerSpvEngine() {
 
   const amountLabel = (base: string) => `${base} (${w.currency})`;
   const juruDisplay = w.jurisdictionCountry === OTHER ? (w.jurisdictionOther || "Other") : w.jurisdictionCountry;
+  const legalEntityDisplay = entityStructureIsFreeText ? w.legalEntityStructureOther : w.legalEntityStructure;
+  // B2 — a short per-SPV-type reminder shown on the Review step.
+  const SPV_TYPE_REVIEW_NOTE: Record<string, string> = {
+    syndicate: "Syndicate: a lead + backers co-invest per deal — carry typically accrues to the lead.",
+    rolling_fund: "Rolling Fund: raises and deploys in recurring quarterly cycles rather than a single close.",
+  };
 
   return (
     <PartnerShell title="SPV Engine" tier={me.tier} subRole={me.subRole} partnerName={me.identity.name}>
@@ -232,7 +264,13 @@ export default function PartnerSpvEngine() {
 
           {step === 0 && (
             <div className="space-y-3" data-testid="spv-wizard-step-0">
-              <div><Label>SPV name</Label><Input data-testid="spv-w-name" value={w.name} onChange={(e) => setW({ ...w, name: e.target.value })} /></div>
+              <div><Label>SPV name *</Label><Input data-testid="spv-w-name" value={w.name} onChange={(e) => setW({ ...w, name: e.target.value })} /></div>
+              {/* B1 — inline error so the GP knows WHY Next is disabled */}
+              {!w.name.trim() && (
+                <div className="text-xs text-rose-600" data-testid="spv-w-name-error">
+                  An SPV name is required before you can continue.
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   {/* 3c — SPV type: 5 choices w/ help */}
@@ -240,23 +278,49 @@ export default function PartnerSpvEngine() {
                   <select data-testid="spv-w-type" className="w-full border rounded h-9 px-2" value={w.spvType} onChange={(e) => setW({ ...w, spvType: e.target.value })}>
                     {SPV_TYPES.map((t) => <option key={t} value={t}>{SPV_TYPE_LABELS[t]}</option>)}
                   </select>
-                  <div className="text-xs text-slate-500 mt-1">{SPV_TYPE_HELP[w.spvType as keyof typeof SPV_TYPE_HELP]}</div>
+                  <div className="text-xs text-[var(--cv-color-text-muted)] mt-1">{SPV_TYPE_HELP[w.spvType as keyof typeof SPV_TYPE_HELP]}</div>
                 </div>
                 <div>
-                  {/* 3b — country jurisdiction dropdown (top-10) + Other, MANDATORY */}
+                  {/* 3b — country jurisdiction dropdown (top-15) + Other, MANDATORY */}
                   <Label>Jurisdiction (country) *</Label>
-                  <select data-testid="spv-w-jurisdiction-country" className="w-full border rounded h-9 px-2" value={w.jurisdictionCountry} onChange={(e) => setW({ ...w, jurisdictionCountry: e.target.value })}>
+                  <select data-testid="spv-w-jurisdiction-country" className="w-full border rounded h-9 px-2" value={w.jurisdictionCountry} onChange={(e) => onJurisdictionCountryChange(e.target.value)}>
                     {SPV_TOP_JURISDICTION_COUNTRIES.map((c) => <option key={c} value={c}>{c}</option>)}
                     <option value={OTHER}>Other jurisdiction…</option>
                   </select>
                   {w.jurisdictionCountry === OTHER && (
                     <Input className="mt-2" data-testid="spv-w-jurisdiction-other" placeholder="Enter jurisdiction" value={w.jurisdictionOther} onChange={(e) => setW({ ...w, jurisdictionOther: e.target.value })} />
                   )}
+                  {/* B1 — inline error for the mandatory country jurisdiction */}
+                  {!jurisdictionCountryValid && (
+                    <div className="text-xs text-rose-600 mt-1" data-testid="spv-w-jurisdiction-country-error">
+                      A jurisdiction is required before you can continue.
+                    </div>
+                  )}
                 </div>
               </div>
+              {/* 2a — dependent Legal entity structure, driven by the selected
+                  country. Stored ADDITIVELY on terms.legalEntityStructure. */}
               <div>
-                {/* Legal-entity jurisdiction the engine still needs (kept separate per spec 3b). */}
                 <Label>Legal entity structure</Label>
+                {entityStructureOptions.length > 0 ? (
+                  <select data-testid="spv-w-legal-entity-structure" className="w-full border rounded h-9 px-2" value={w.legalEntityStructure} onChange={(e) => setW({ ...w, legalEntityStructure: e.target.value, legalEntityStructureOther: "" })}>
+                    {entityStructureOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                ) : null}
+                {entityStructureIsFreeText && (
+                  <Input
+                    className="mt-2"
+                    data-testid="spv-w-legal-entity-structure-other"
+                    placeholder="Specify the legal entity structure"
+                    value={w.legalEntityStructureOther}
+                    onChange={(e) => setW({ ...w, legalEntityStructureOther: e.target.value })}
+                  />
+                )}
+              </div>
+              {/* Engine legal-entity type — the strict SPV_JURISDICTIONS enum the
+                  store still validates (kept separate per spec 3b / rule #8). */}
+              <div>
+                <Label>Engine legal-entity type</Label>
                 <select data-testid="spv-w-jurisdiction" className="w-full border rounded h-9 px-2" value={w.jurisdiction} onChange={(e) => setW({ ...w, jurisdiction: e.target.value })}>
                   {SPV_JURISDICTIONS.map((j) => <option key={j} value={j}>{j}</option>)}
                 </select>
@@ -272,7 +336,7 @@ export default function PartnerSpvEngine() {
                 <select data-testid="spv-w-mode" className="w-full border rounded h-9 px-2" value={w.mandateMode} onChange={(e) => setW({ ...w, mandateMode: e.target.value })}>
                   {SPV_MANDATE_MODES.map((m) => <option key={m} value={m}>{SPV_MANDATE_MODE_LABELS[m]}</option>)}
                 </select>
-                <div className="text-xs text-slate-500 mt-1">{SPV_MANDATE_MODE_HELP[w.mandateMode as keyof typeof SPV_MANDATE_MODE_HELP]}</div>
+                <div className="text-xs text-[var(--cv-color-text-muted)] mt-1">{SPV_MANDATE_MODE_HELP[w.mandateMode as keyof typeof SPV_MANDATE_MODE_HELP]}</div>
               </div>
               {/* 3e — mandate description, mandatory, max 1200 */}
               <div>
@@ -285,7 +349,7 @@ export default function PartnerSpvEngine() {
                   onChange={(e) => setW({ ...w, mandateDescription: e.target.value.slice(0, MANDATE_DESCRIPTION_MAX) })}
                   placeholder="Describe what this vehicle will invest in, the thesis, and any restrictions…"
                 />
-                <div className="text-[10px] text-slate-400 text-right">{w.mandateDescription.length}/{MANDATE_DESCRIPTION_MAX}</div>
+                <div className="text-[10px] text-[var(--cv-color-text-faint)] text-right">{w.mandateDescription.length}/{MANDATE_DESCRIPTION_MAX}</div>
                 {/* W2-E — inline error so the user knows WHY Next is disabled */}
                 {!w.mandateDescription.trim() && (
                   <div className="text-xs text-rose-600 mt-1" data-testid="spv-w-mandate-desc-error">
@@ -310,7 +374,7 @@ export default function PartnerSpvEngine() {
                 </div>
               </div>
               <div><Label>Sub-sector (optional)</Label><Input data-testid="spv-w-subsector" value={w.subSector} onChange={(e) => setW({ ...w, subSector: e.target.value })} placeholder="e.g. embedded payments" /></div>
-              <p className="text-xs text-slate-500">Only active, paid Capavate companies with a valid M&amp;A profile and an open round can ever match — eligibility is fail-closed.</p>
+              <p className="text-xs text-[var(--cv-color-text-muted)]">Only active, paid Capavate companies with a valid M&amp;A profile and an open round can ever match — eligibility is fail-closed.</p>
             </div>
           )}
 
@@ -336,7 +400,7 @@ export default function PartnerSpvEngine() {
                 </div>
               )}
               {w.mgmtFeeType !== "fixed" && <div><Label>Carry %</Label><Input data-testid="spv-w-carrypct" type="number" value={w.mgmtCarryPct} onChange={(e) => setW({ ...w, mgmtCarryPct: e.target.value })} /></div>}
-              <p className="text-xs text-slate-500">The platform fee layer is set by Capavate and is read-only to you.</p>
+              <p className="text-xs text-[var(--cv-color-text-muted)]">The platform fee layer is set by Capavate and is read-only to you.</p>
             </div>
           )}
 
@@ -361,7 +425,7 @@ export default function PartnerSpvEngine() {
                 <select data-testid="spv-w-scope" className="w-full border rounded h-9 px-2" value={w.distributionScope} onChange={(e) => setW({ ...w, distributionScope: e.target.value })}>
                   {SPV_DISTRIBUTION_SCOPE_WIZARD_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
-                <div className="text-xs text-slate-500 mt-1">{SPV_DISTRIBUTION_SCOPE_WIZARD_OPTIONS.find((o) => o.value === w.distributionScope)?.help}</div>
+                <div className="text-xs text-[var(--cv-color-text-muted)] mt-1">{SPV_DISTRIBUTION_SCOPE_WIZARD_OPTIONS.find((o) => o.value === w.distributionScope)?.help}</div>
               </div>
               {/* 3n — co-investor visibility toggle */}
               <div className="flex items-start gap-2 p-2 border rounded">
@@ -374,7 +438,7 @@ export default function PartnerSpvEngine() {
                 />
                 <div>
                   <Label>Let investors in this SPV see each other (co-investors)?</Label>
-                  <div className="text-xs text-slate-500">Off = each investor sees only their own position. On = a transparent club deal where LPs see each other's names &amp; commitments. The founder never sees the investor list either way.</div>
+                  <div className="text-xs text-[var(--cv-color-text-muted)]">Off = each investor sees only their own position. On = a transparent club deal where LPs see each other's names &amp; commitments. The founder never sees the investor list either way.</div>
                 </div>
               </div>
               {/* 3o — carry basis moved into Terms, fuller descriptions */}
@@ -384,7 +448,7 @@ export default function PartnerSpvEngine() {
                   {SPV_CARRY_BASES.map((cb) => (
                     <label key={cb} className="flex gap-2 items-start p-2 border rounded cursor-pointer" data-testid={`spv-w-carrybasis-${cb}`} style={{ borderColor: w.carryBasis === cb ? NAVY : undefined }}>
                       <input type="radio" name="carryBasis" checked={w.carryBasis === cb} onChange={() => setW({ ...w, carryBasis: cb })} />
-                      <span><span className="font-medium">{cb === "per_deployment" ? "Per deployment" : "Whole SPV"}</span><br /><span className="text-xs text-slate-500">{SPV_CARRY_BASIS_HELP[cb]}</span></span>
+                      <span><span className="font-medium">{cb === "per_deployment" ? "Per deployment" : "Whole SPV"}</span><br /><span className="text-xs text-[var(--cv-color-text-muted)]">{SPV_CARRY_BASIS_HELP[cb]}</span></span>
                     </label>
                   ))}
                 </div>
@@ -406,10 +470,12 @@ export default function PartnerSpvEngine() {
               <ReviewRow label="Name" value={w.name || "(unnamed)"} onEdit={() => setStep(0)} />
               <ReviewRow label="SPV type" value={SPV_TYPE_LABELS[w.spvType as keyof typeof SPV_TYPE_LABELS]} onEdit={() => setStep(0)} />
               <ReviewRow label="Jurisdiction (country)" value={juruDisplay} onEdit={() => setStep(0)} />
-              <ReviewRow label="Legal entity" value={w.jurisdiction} onEdit={() => setStep(0)} />
+              <ReviewRow label="Legal entity structure" value={legalEntityDisplay || "—"} onEdit={() => setStep(0)} />
+              <ReviewRow label="Engine legal-entity type" value={w.jurisdiction} onEdit={() => setStep(0)} />
               <ReviewRow label="Mandate mode" value={SPV_MANDATE_MODE_LABELS[w.mandateMode as keyof typeof SPV_MANDATE_MODE_LABELS]} onEdit={() => setStep(1)} />
               <ReviewRow label="Mandate" value={w.mandateDescription || "—"} onEdit={() => setStep(1)} />
-              <ReviewRow label="Sectors" value={w.sectors.length ? w.sectors.join(", ") : "—"} onEdit={() => setStep(1)} />
+              {/* B2 — friendlier empty-sectors copy instead of a bare em-dash */}
+              <ReviewRow label="Sectors" value={w.sectors.length ? w.sectors.join(", ") : "None / No sectors selected"} onEdit={() => setStep(1)} />
               {w.subSector && <ReviewRow label="Sub-sector" value={w.subSector} onEdit={() => setStep(1)} />}
               <ReviewRow
                 label="Management fee"
@@ -421,6 +487,12 @@ export default function PartnerSpvEngine() {
               <ReviewRow label="Co-investor visibility" value={w.lpVisibility === "co_investors" ? "On (club deal)" : "Off (own only)"} onEdit={() => setStep(3)} />
               <ReviewRow label="Carry basis" value={w.carryBasis ? (w.carryBasis === "per_deployment" ? "Per deployment" : "Whole SPV") : "— (required)"} onEdit={() => setStep(3)} />
               {w.termsDocRef && <ReviewRow label="Terms doc" value={w.termsDocRef} onEdit={() => setStep(3)} />}
+              {/* B2 — per-SPV-type helper note (Syndicate, Rolling Fund) */}
+              {SPV_TYPE_REVIEW_NOTE[w.spvType] && (
+                <div className="text-xs text-[var(--cv-color-text-muted)] rounded p-2" style={{ background: "rgba(4,30,65,0.05)" }} data-testid="spv-review-type-note">
+                  {SPV_TYPE_REVIEW_NOTE[w.spvType]}
+                </div>
+              )}
               {!w.carryBasis && <div className="text-xs text-rose-600">Choose a carry basis in the Terms step before launching.</div>}
             </div>
           )}
@@ -440,7 +512,7 @@ export default function PartnerSpvEngine() {
         </Card>
       )}
 
-      {list.isLoading && <div className="text-sm text-slate-500" data-testid="spv-engine-loading">Loading…</div>}
+      {list.isLoading && <div className="text-sm text-[var(--cv-color-text-muted)]" data-testid="spv-engine-loading">Loading…</div>}
       {!list.isLoading && spvs.length === 0 && (
         <PartnerEmptyState title="No SPVs yet" description="Create your first SPV with the 5-step wizard." />
       )}
@@ -448,11 +520,11 @@ export default function PartnerSpvEngine() {
       {spvs.length > 0 && (
         <div className="space-y-2 mt-4" data-testid="spv-engine-list">
           {spvs.map((s) => (
-            <Card key={s.id} className="p-3 cursor-pointer hover:bg-slate-50" data-testid={`spv-row-${s.id}`} onClick={() => setSelectedId(s.id === selectedId ? null : s.id)}>
+            <Card key={s.id} className="p-3 cursor-pointer hover:bg-[var(--cv-color-surface-2)]" data-testid={`spv-row-${s.id}`} onClick={() => setSelectedId(s.id === selectedId ? null : s.id)}>
               <div className="flex justify-between items-center">
                 <div>
                   <div className="font-medium">{s.name} {s.migratedFrom && <span className="text-[10px] px-1 rounded" style={{ background: "rgba(4,30,65,0.1)", color: NAVY }}>migrated</span>}</div>
-                  <div className="text-xs text-slate-500">{(SPV_TYPE_LABELS as Record<string, string>)[s.spvType] ?? s.spvType} · {s.status} · {s.distributionScope} · carry {s.carryBasis}</div>
+                  <div className="text-xs text-[var(--cv-color-text-muted)]">{(SPV_TYPE_LABELS as Record<string, string>)[s.spvType] ?? s.spvType} · {s.status} · {s.distributionScope} · carry {s.carryBasis}</div>
                 </div>
                 <div className="flex items-center gap-3">
                   <div className="text-right font-mono">{fmt(s.targetRaiseMinor, s.currency)}</div>
@@ -489,7 +561,7 @@ export default function PartnerSpvEngine() {
 function ReviewRow({ label, value, onEdit }: { label: string; value: string; onEdit: () => void }) {
   return (
     <div className="flex justify-between items-start gap-3 border-b pb-1" data-testid={`spv-review-${label.toLowerCase().replace(/[^a-z]+/g, "-")}`}>
-      <div className="text-slate-500 min-w-[140px]">{label}</div>
+      <div className="text-[var(--cv-color-text-muted)] min-w-[140px]">{label}</div>
       <div className="flex-1 break-words">{value}</div>
       <button type="button" className="text-xs underline text-[color:var(--cv-color-primary)]" onClick={onEdit}>Edit</button>
     </div>
@@ -510,7 +582,7 @@ function SpvDetailBlock({ detail, currency }: { detail: Record<string, unknown>;
       </div>
       <div data-testid="spv-detail-fees">
         <div className="font-medium">Fees</div>
-        {fees.length === 0 ? <div className="text-xs text-slate-400">none</div> : fees.map((f, i) => (
+        {fees.length === 0 ? <div className="text-xs text-[var(--cv-color-text-faint)]">none</div> : fees.map((f, i) => (
           <div key={i} className="text-xs">{f.layer}: {f.feeType}{f.carryPct != null ? ` ${(f.carryPct * 100).toFixed(0)}%` : ""}{f.fixedAmountMinor ? ` ${fmt(f.fixedAmountMinor, currency)}` : ""}</div>
         ))}
       </div>
@@ -524,19 +596,19 @@ function SpvDetailBlock({ detail, currency }: { detail: Record<string, unknown>;
       </div>
       <div data-testid="spv-detail-roster">
         <div className="font-medium">LP roster</div>
-        {register.length === 0 ? <div className="text-xs text-slate-400">no LPs yet</div> : register.map((r) => (
+        {register.length === 0 ? <div className="text-xs text-[var(--cv-color-text-faint)]">no LPs yet</div> : register.map((r) => (
           <div key={r.investorId} className="text-xs">{r.investorId}: {fmt(r.commitmentMinor, currency)} ({(r.ownershipPct * 100).toFixed(1)}%)</div>
         ))}
       </div>
       <div data-testid="spv-detail-deployments">
         <div className="font-medium">Deployments</div>
-        {deployments.length === 0 ? <div className="text-xs text-slate-400">none</div> : deployments.map((d, i) => (
+        {deployments.length === 0 ? <div className="text-xs text-[var(--cv-color-text-faint)]">none</div> : deployments.map((d, i) => (
           <div key={i} className="text-xs">{d.companyId}: {fmt(d.amountMinor, currency)} · {d.status}</div>
         ))}
       </div>
       <div data-testid="spv-detail-distributions" className="col-span-2">
         <div className="font-medium">Distributions</div>
-        {distributions.length === 0 ? <div className="text-xs text-slate-400">none</div> : distributions.map((d, i) => (
+        {distributions.length === 0 ? <div className="text-xs text-[var(--cv-color-text-faint)]">none</div> : distributions.map((d, i) => (
           <div key={i} className="text-xs">{d.event}: gross {fmt(d.grossProceedsMinor, currency)} · GP carry {fmt(d.gpCarryMinor, currency)} · platform carry {fmt(d.platformCarryMinor, currency)}</div>
         ))}
       </div>

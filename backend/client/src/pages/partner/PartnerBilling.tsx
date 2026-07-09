@@ -110,7 +110,7 @@ function ReferralCommissionsTab({ ready }: { ready: boolean }) {
     <>
       {/* Path 1 explainer — partners earn commissions, they are not billed a subscription. */}
       <div
-        className="mb-4 rounded-md border border-[rgba(4,30,65,0.2)] bg-[rgba(4,30,65,0.05)] p-4 text-sm text-[#041e41]"
+        className="mb-4 rounded-md border border-[rgba(4,30,65,0.2)] bg-[rgba(4,30,65,0.05)] p-4 text-sm text-[var(--cv-color-navy)]"
         data-testid="partner-billing-explainer"
       >
         <p className="font-medium">Consortium Partners earn commissions on referred founders.</p>
@@ -146,11 +146,11 @@ function ReferralCommissionsTab({ ready }: { ready: boolean }) {
             {currencies.length === 0 ? (
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <AppCard className="p-4">
-                  <div className="text-xs uppercase tracking-wide text-slate-500">Pending commission</div>
+                  <div className="text-xs uppercase tracking-wide text-[var(--cv-color-text-muted)]">Pending commission</div>
                   <div className="mt-1 font-mono text-lg" data-testid="partner-billing-total-pending">{formatMinor(0)}</div>
                 </AppCard>
                 <AppCard className="p-4">
-                  <div className="text-xs uppercase tracking-wide text-slate-500">Paid commission</div>
+                  <div className="text-xs uppercase tracking-wide text-[var(--cv-color-text-muted)]">Paid commission</div>
                   <div className="mt-1 font-mono text-lg" data-testid="partner-billing-total-paid">{formatMinor(0)}</div>
                 </AppCard>
               </div>
@@ -158,13 +158,13 @@ function ReferralCommissionsTab({ ready }: { ready: boolean }) {
               currencies.map((ccy) => (
                 <div key={ccy} className="grid grid-cols-1 gap-3 sm:grid-cols-2" data-testid={`partner-billing-totals-${ccy}`}>
                   <AppCard className="p-4">
-                    <div className="text-xs uppercase tracking-wide text-slate-500">Pending commission ({ccy})</div>
+                    <div className="text-xs uppercase tracking-wide text-[var(--cv-color-text-muted)]">Pending commission ({ccy})</div>
                     <div className="mt-1 font-mono text-lg" data-testid={`partner-billing-total-pending-${ccy}`}>
                       {formatMinor(totals[ccy].pending, ccy)}
                     </div>
                   </AppCard>
                   <AppCard className="p-4">
-                    <div className="text-xs uppercase tracking-wide text-slate-500">Paid commission ({ccy})</div>
+                    <div className="text-xs uppercase tracking-wide text-[var(--cv-color-text-muted)]">Paid commission ({ccy})</div>
                     <div className="mt-1 font-mono text-lg" data-testid={`partner-billing-total-paid-${ccy}`}>
                       {formatMinor(totals[ccy].paid, ccy)}
                     </div>
@@ -175,7 +175,7 @@ function ReferralCommissionsTab({ ready }: { ready: boolean }) {
           </div>
 
           {isLoading && (
-            <div className="text-sm text-slate-500" data-testid="partner-billing-loading">Loading…</div>
+            <div className="text-sm text-[var(--cv-color-text-muted)]" data-testid="partner-billing-loading">Loading…</div>
           )}
 
           {!isLoading && entries.length === 0 && (
@@ -189,7 +189,7 @@ function ReferralCommissionsTab({ ready }: { ready: boolean }) {
             <AppCard className="overflow-hidden" data-testid="partner-billing-table">
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
-                  <thead className="border-b bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                  <thead className="border-b bg-[var(--cv-color-surface-2)] text-left text-xs uppercase tracking-wide text-[var(--cv-color-text-muted)]">
                     <tr>
                       <th className="px-4 py-2">Deal</th>
                       <th className="px-4 py-2">Date</th>
@@ -272,21 +272,21 @@ function SubscriptionTab({ ready }: { ready: boolean }) {
       </div>
     );
   }
-  if (isLoading) return <div className="text-sm text-slate-500" data-testid="partner-subscription-loading">Loading…</div>;
+  if (isLoading) return <div className="text-sm text-[var(--cv-color-text-muted)]" data-testid="partner-subscription-loading">Loading…</div>;
   if (isError) return <div className="rounded-md border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900">Could not load subscription.</div>;
 
   return (
     <div className="space-y-4">
       {sub ? (
         <AppCard className="p-6 max-w-xl" data-testid="partner-subscription-card">
-          <div className="text-xs uppercase tracking-wide text-slate-500">Active subscription</div>
-          <div className="mt-1 text-lg font-semibold text-[#041e41]">{sub.tierId}</div>
+          <div className="text-xs uppercase tracking-wide text-[var(--cv-color-text-muted)]">Active subscription</div>
+          <div className="mt-1 text-lg font-semibold text-[var(--cv-color-navy)]">{sub.tierId}</div>
           <dl className="mt-3 grid grid-cols-2 gap-2 text-sm">
-            <dt className="text-slate-500">Amount</dt>
+            <dt className="text-[var(--cv-color-text-muted)]">Amount</dt>
             <dd className="font-mono">{formatMinor(sub.amountMinor, sub.currency)} / {sub.billingCycle}</dd>
-            <dt className="text-slate-500">Status</dt>
+            <dt className="text-[var(--cv-color-text-muted)]">Status</dt>
             <dd>{sub.status}</dd>
-            <dt className="text-slate-500">Renews</dt>
+            <dt className="text-[var(--cv-color-text-muted)]">Renews</dt>
             <dd>{formatDate(sub.currentPeriodEnd)}</dd>
           </dl>
         </AppCard>
@@ -299,7 +299,7 @@ function SubscriptionTab({ ready }: { ready: boolean }) {
 
       {/* Merged tier-quote + checkout flow (9a). */}
       <AppCard className="p-6 max-w-xl" data-testid="partner-subscribe-quote">
-        <div className="text-xs uppercase tracking-wide text-slate-500">Subscription tier quote</div>
+        <div className="text-xs uppercase tracking-wide text-[var(--cv-color-text-muted)]">Subscription tier quote</div>
         <div className="mt-3 flex items-center gap-2">
           <select
             data-testid="subscribe-cycle"
@@ -321,10 +321,10 @@ function SubscriptionTab({ ready }: { ready: boolean }) {
         )}
         {quote && (
           <div className="mt-3 text-sm" data-testid="subscribe-quote-result">
-            <div className="font-mono text-lg text-[#041e41]">
+            <div className="font-mono text-lg text-[var(--cv-color-navy)]">
               {formatMinor(quote.amountMinor, quote.currency)} / {quote.cycle}
             </div>
-            <div className="mt-1 text-xs text-slate-500">Tier: {quote.tier}</div>
+            <div className="mt-1 text-xs text-[var(--cv-color-text-muted)]">Tier: {quote.tier}</div>
             <a href={quote.checkoutPath} data-testid="subscribe-checkout-link">
               <Button size="sm" className="mt-3">Proceed to checkout</Button>
             </a>
@@ -379,11 +379,11 @@ function SpvFeesTab({ ready }: { ready: boolean }) {
           {currencies.map((ccy) => (
             <div key={ccy} className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <AppCard className="p-4">
-                <div className="text-xs uppercase tracking-wide text-slate-500">Pending SPV fees ({ccy})</div>
+                <div className="text-xs uppercase tracking-wide text-[var(--cv-color-text-muted)]">Pending SPV fees ({ccy})</div>
                 <div className="mt-1 font-mono text-lg">{formatMinor(totals[ccy].pending, ccy)}</div>
               </AppCard>
               <AppCard className="p-4">
-                <div className="text-xs uppercase tracking-wide text-slate-500">Paid SPV fees ({ccy})</div>
+                <div className="text-xs uppercase tracking-wide text-[var(--cv-color-text-muted)]">Paid SPV fees ({ccy})</div>
                 <div className="mt-1 font-mono text-lg">{formatMinor(totals[ccy].paid, ccy)}</div>
               </AppCard>
             </div>
@@ -391,7 +391,7 @@ function SpvFeesTab({ ready }: { ready: boolean }) {
         </div>
       )}
 
-      {isLoading && <div className="text-sm text-slate-500" data-testid="partner-spvfees-loading">Loading…</div>}
+      {isLoading && <div className="text-sm text-[var(--cv-color-text-muted)]" data-testid="partner-spvfees-loading">Loading…</div>}
 
       {!isLoading && entries.length === 0 && (
         <PartnerEmptyState
@@ -404,7 +404,7 @@ function SpvFeesTab({ ready }: { ready: boolean }) {
         <AppCard className="overflow-hidden" data-testid="partner-spvfees-table">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
-              <thead className="border-b bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+              <thead className="border-b bg-[var(--cv-color-surface-2)] text-left text-xs uppercase tracking-wide text-[var(--cv-color-text-muted)]">
                 <tr>
                   <th className="px-4 py-2">SPV</th>
                   <th className="px-4 py-2">Kind</th>
@@ -477,11 +477,11 @@ function TaxFormsTab({ ready }: { ready: boolean }) {
 
   return (
     <>
-      <div className="mb-4 text-sm text-slate-600">
+      <div className="mb-4 text-sm text-[var(--cv-color-text-secondary)]">
         Submit or update a tax form on the{" "}
-        <Link href="/collective/partner/tax-form" className="text-[#cc0001] hover:underline">Tax Forms page</Link>.
+        <Link href="/collective/partner/tax-form" className="text-[var(--cv-color-primary)] hover:underline">Tax Forms page</Link>.
       </div>
-      {isLoading && <div className="text-sm text-slate-500" data-testid="partner-taxforms-loading">Loading…</div>}
+      {isLoading && <div className="text-sm text-[var(--cv-color-text-muted)]" data-testid="partner-taxforms-loading">Loading…</div>}
       {!isLoading && forms.length === 0 && (
         <PartnerEmptyState
           title="No tax forms on file"
@@ -492,7 +492,7 @@ function TaxFormsTab({ ready }: { ready: boolean }) {
         <AppCard className="overflow-hidden" data-testid="partner-taxforms-table">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
-              <thead className="border-b bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+              <thead className="border-b bg-[var(--cv-color-surface-2)] text-left text-xs uppercase tracking-wide text-[var(--cv-color-text-muted)]">
                 <tr>
                   <th className="px-4 py-2">Form</th>
                   <th className="px-4 py-2">Jurisdiction</th>
@@ -585,14 +585,14 @@ function InvoicesTab({ ready }: { ready: boolean }) {
   return (
     <>
       <div className="mb-4 flex items-center justify-between">
-        <div className="text-sm text-slate-600">
+        <div className="text-sm text-[var(--cv-color-text-secondary)]">
           A consolidated view of your commission and SPV-fee line items.
         </div>
         <Button size="sm" variant="outline" data-testid="invoices-download-csv" disabled={lines.length === 0} onClick={downloadCsv}>
           Download CSV
         </Button>
       </div>
-      {isLoading && <div className="text-sm text-slate-500" data-testid="partner-invoices-loading">Loading…</div>}
+      {isLoading && <div className="text-sm text-[var(--cv-color-text-muted)]" data-testid="partner-invoices-loading">Loading…</div>}
       {!isLoading && lines.length === 0 && (
         <PartnerEmptyState
           title="No invoice line items yet"
@@ -603,7 +603,7 @@ function InvoicesTab({ ready }: { ready: boolean }) {
         <AppCard className="overflow-hidden" data-testid="partner-invoices-table">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
-              <thead className="border-b bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+              <thead className="border-b bg-[var(--cv-color-surface-2)] text-left text-xs uppercase tracking-wide text-[var(--cv-color-text-muted)]">
                 <tr>
                   <th className="px-4 py-2">Date</th>
                   <th className="px-4 py-2">Kind</th>

@@ -14,6 +14,10 @@ import { partnerSpvStore } from "../partnerWorkspaceStore"; /* v25.41 Bug-3 — 
 import { spvEngineStore } from "../spvEngineStore"; /* Blocker 1 (4D) — admin SPV create/read shim THROUGH the canonical engine so no SPV is ever created outside it. */
 import { isSpvJurisdiction } from "../../shared/spvEngine";
 import { sanitizeErrorMessage } from "./sanitize"; /* v25.33 — scrub raw err.message from the generic 500 path in prod (backlog item 33 extension). The UNIQUE-constraint 409 message is intentionally surfaced as safe admin feedback. */
+/* GROUP C (C6) — fixed per-partner rev-share: query the paid, rev-share-enabled
+ * partner-attributed companies and materialise idempotent partner_billing_entries
+ * rows (settled via the EXISTING mark-paid endpoint). Auto-trigger deferred. */
+import { listRevShareCandidates, materializeRevShareEntries } from "./partnerRevShare";
 
 const FEE_KINDS = new Set([
   "subscription_monthly",
@@ -133,12 +137,36 @@ export function registerPartnerFeeAdminRoutes(app: Express): void {
       .prepare(`SELECT id FROM contacts WHERE id = ? AND kind = 'consortium_partner' AND deleted_at IS NULL`)
       .get(partnerId);
     if (!partner) return res.status(404).json({ ok: false, error: "partner_not_found" });
-    const b = req.body as { feeOverrideJson?: Record<string, unknown> | null; commissionOverridePct?: number | null };
+    const b = req.body as {
+      feeOverrideJson?: Record<string, unknown> | null;
+      commissionOverridePct?: number | null;
+      /* GROUP C (C4) — the consolidated Arrangement editor writes the per-partner
+       * arrangement (subscription model, report-only quota, fixed rev-share) here.
+       * The per-partner PRICE still travels in feeOverrideJson.subscription_* — it
+       * is NOT stored in arrangementJson (no price duplication). null clears it. */
+      arrangementJson?: Record<string, unknown> | null;
+    };
     // feeOverrideJson: object keyed by fee_kind -> { amountMinor, currency }, or null to clear.
     let feeJson: string | null = null;
     if (b.feeOverrideJson !== undefined && b.feeOverrideJson !== null) {
       try { feeJson = JSON.stringify(b.feeOverrideJson); }
       catch { return res.status(400).json({ ok: false, error: "bad_fee_override_json" }); }
+    }
+    let arrangementJson: string | null = null;
+    if (b.arrangementJson !== undefined && b.arrangementJson !== null) {
+      if (typeof b.arrangementJson !== "object" || Array.isArray(b.arrangementJson)) {
+        return res.status(400).json({ ok: false, error: "bad_arrangement_json" });
+      }
+      // Validate the rev-share amount is a non-negative integer (minor units)
+      // when rev-share is enabled — money must never be a fractional/negative.
+      const rev = (b.arrangementJson as { revShare?: { enabled?: unknown; fixedAmountMinor?: unknown } }).revShare;
+      if (rev && rev.enabled === true) {
+        if (!Number.isInteger(rev.fixedAmountMinor) || (rev.fixedAmountMinor as number) < 0) {
+          return res.status(400).json({ ok: false, error: "revShare.fixedAmountMinor must be a non-negative integer (minor units)" });
+        }
+      }
+      try { arrangementJson = JSON.stringify(b.arrangementJson); }
+      catch { return res.status(400).json({ ok: false, error: "bad_arrangement_json" }); }
     }
     const commissionPct = b.commissionOverridePct === undefined ? undefined : b.commissionOverridePct;
     if (commissionPct !== undefined && commissionPct !== null && (typeof commissionPct !== "number" || commissionPct < 0 || commissionPct > 1)) {
@@ -149,6 +177,7 @@ export function registerPartnerFeeAdminRoutes(app: Express): void {
     const params: unknown[] = [];
     if (b.feeOverrideJson !== undefined) { sets.push("fee_override_json = ?"); params.push(feeJson); }
     if (commissionPct !== undefined) { sets.push("commission_override_pct = ?"); params.push(commissionPct); }
+    if (b.arrangementJson !== undefined) { sets.push("arrangement_json = ?"); params.push(arrangementJson); }
     if (sets.length === 0) return res.status(400).json({ ok: false, error: "no_fields" });
     sets.push("updated_at = ?"); params.push(nowIso());
     params.push(partnerId);
@@ -232,6 +261,50 @@ export function registerPartnerFeeAdminRoutes(app: Express): void {
     rawDb().prepare(`UPDATE partner_billing_entries SET status = 'paid', paid_at = ? WHERE id = ?`).run(nowIso(), entryId);
     appendAdminAudit(actorOf(req), `partner_billing_entry:${entryId}`, "partner_billing_entry.marked_paid", { entryId });
     res.json({ ok: true });
+  });
+
+  /* ---- GROUP C (C6): rev-share query + materialise ----
+   *
+   * The "validate by query" path for fixed per-partner rev-share. Because the
+   * paid signal lives in the untouchable Airwallex webhook (auto-trigger is
+   * DEFERRED — rule #14), an admin drives entry creation here instead:
+   *
+   *   GET  /api/admin/partner-revshare[?partnerId=]  — preview the eligible
+   *        (paid + rev-share-enabled) partner-attributed companies and whether a
+   *        rev-share billing entry already exists. Read-only.
+   *   POST /api/admin/partner-revshare/record[ {partnerId?} ] — idempotently
+   *        materialise a partner_billing_entries row (entry_kind 'revshare') for
+   *        each eligible company. Re-running only creates missing rows. The rows
+   *        start 'pending' and are settled via the existing mark-paid endpoint.
+   *
+   * Both are under the router-level requireAdmin gate (routes.ts). No payment /
+   * Airwallex code is touched; the subscription 'active' state is read-only. */
+  app.get("/api/admin/partner-revshare", (req: Request, res: Response) => {
+    const partnerId = req.query.partnerId === undefined ? undefined : String(req.query.partnerId);
+    try {
+      const candidates = listRevShareCandidates(partnerId);
+      const pendingCount = candidates.filter((c) => !c.alreadyRecorded).length;
+      res.json({ ok: true, candidates, total: candidates.length, pendingCount });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: "revshare_query_failed", message: sanitizeErrorMessage(err) });
+    }
+  });
+
+  app.post("/api/admin/partner-revshare/record", (req: Request, res: Response) => {
+    const b = (req.body ?? {}) as { partnerId?: string };
+    const partnerId = b.partnerId ? String(b.partnerId) : undefined;
+    try {
+      const result = materializeRevShareEntries(partnerId);
+      appendAdminAudit(actorOf(req), `partner_revshare:${partnerId ?? "all"}`, "partner_revshare.materialized", {
+        partnerId: partnerId ?? null,
+        eligible: result.eligible,
+        created: result.created,
+        alreadyRecorded: result.alreadyRecorded,
+      });
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: "revshare_record_failed", message: sanitizeErrorMessage(err) });
+    }
   });
 
   /* ---- v25.41 Bug-3 — Admin SPV creation for a partner ----
@@ -324,11 +397,14 @@ export function registerPartnerFeeAdminRoutes(app: Express): void {
   app.get("/api/admin/partners/:partnerId/fee-override", (req: Request, res: Response) => {
     const partnerId = req.params.partnerId;
     const row = rawDb()
-      .prepare(`SELECT fee_override_json, commission_override_pct FROM contacts WHERE id = ? AND kind = 'consortium_partner' AND deleted_at IS NULL`)
-      .get(partnerId) as { fee_override_json: string | null; commission_override_pct: number | null } | undefined;
+      .prepare(`SELECT fee_override_json, commission_override_pct, arrangement_json FROM contacts WHERE id = ? AND kind = 'consortium_partner' AND deleted_at IS NULL`)
+      .get(partnerId) as { fee_override_json: string | null; commission_override_pct: number | null; arrangement_json: string | null } | undefined;
     if (!row) return res.status(404).json({ ok: false, error: "partner_not_found" });
     let feeOverride: unknown = null;
     if (row.fee_override_json) { try { feeOverride = JSON.parse(row.fee_override_json); } catch { feeOverride = null; } }
-    res.json({ ok: true, feeOverride, commissionOverridePct: row.commission_override_pct });
+    // GROUP C (C4) — surface the per-partner arrangement for the consolidated editor.
+    let arrangement: unknown = null;
+    if (row.arrangement_json) { try { arrangement = JSON.parse(row.arrangement_json); } catch { arrangement = null; } }
+    res.json({ ok: true, feeOverride, commissionOverridePct: row.commission_override_pct, arrangement });
   });
 }

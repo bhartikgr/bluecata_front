@@ -18,7 +18,7 @@ interface ClientRow { id: string; companyId: string; attributionSource: string; 
 function StageBadge({ stage }: { stage: PartnerClientStage }) {
   return (
     <span
-      className="inline-block rounded px-2 py-0.5 text-xs font-medium border border-[rgba(4,30,65,0.2)] bg-[rgba(4,30,65,0.05)] text-[#041e41]"
+      className="inline-block rounded px-2 py-0.5 text-xs font-medium border border-[rgba(4,30,65,0.2)] bg-[rgba(4,30,65,0.05)] text-[var(--cv-color-navy)]"
       data-testid={`client-stage-badge-${stage}`}
     >
       {PARTNER_CLIENT_STAGE_LABELS[stage]}
@@ -67,7 +67,7 @@ export default function PartnerClients() {
 
   return (
     <PartnerShell title="Clients" tier={role.identity.tier} subRole={role.identity.subRole} partnerName={role.identity.identity.name}>
-      {q.isLoading && <div className="text-slate-500" data-testid="clients-loading">Loading…</div>}
+      {q.isLoading && <div className="text-[var(--cv-color-text-muted)]" data-testid="clients-loading">Loading…</div>}
       {/* v25.14 NM2 — explicit error branch; previously a fetch failure
          rendered a permanently blank page body. */}
       {q.isError && (
@@ -94,13 +94,13 @@ export default function PartnerClients() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search company or source…"
-            className="max-w-xs flex-1 rounded-md border border-[#ddd9d3] px-3 py-2 text-sm"
+            className="max-w-xs flex-1 rounded-md border border-[var(--cv-color-border)] px-3 py-2 text-sm"
             data-testid="clients-search"
           />
           <select
             value={stageFilter}
             onChange={(e) => setStageFilter(e.target.value as "all" | PartnerClientStage)}
-            className="rounded-md border border-[#ddd9d3] px-3 py-2 text-sm"
+            className="rounded-md border border-[var(--cv-color-border)] px-3 py-2 text-sm"
             data-testid="clients-stage-filter"
           >
             <option value="all">All stages</option>
@@ -112,9 +112,9 @@ export default function PartnerClients() {
       )}
 
       {!q.isError && hasClients && (
-        <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+        <div className="bg-white rounded-lg border border-[var(--cv-color-border)] overflow-hidden">
           <table className="w-full text-sm" data-testid="clients-table">
-            <thead className="bg-slate-50">
+            <thead className="bg-[var(--cv-color-surface-2)]">
               <tr>
                 <th className="text-left p-3">Company ID</th>
                 <th className="text-left p-3">Stage</th>
@@ -126,21 +126,21 @@ export default function PartnerClients() {
             <tbody>
               {filtered.length === 0 && (
                 <tr data-testid="clients-no-match">
-                  <td className="p-3 text-slate-500" colSpan={5}>No clients match your filters.</td>
+                  <td className="p-3 text-[var(--cv-color-text-muted)]" colSpan={5}>No clients match your filters.</td>
                 </tr>
               )}
               {filtered.map((c) => (
                 <tr key={c.id} className="border-t" data-testid={`client-row-${c.id}`}>
                   <td className="p-3 font-medium">{c.companyId}</td>
                   <td className="p-3"><StageBadge stage={stageOf(c.companyId)} /></td>
-                  <td className="p-3 text-slate-500">{c.attributionSource}</td>
+                  <td className="p-3 text-[var(--cv-color-text-muted)]">{c.attributionSource}</td>
                   {/* v25.16 NM5 — guard null attributedAt to avoid "Invalid Date". */}
-                  <td className="p-3 text-slate-500">{c.attributedAt ? new Date(c.attributedAt).toLocaleDateString() : "—"}</td>
+                  <td className="p-3 text-[var(--cv-color-text-muted)]">{c.attributedAt ? new Date(c.attributedAt).toLocaleDateString() : "—"}</td>
                   <td className="p-3 text-right">
                     {/* v25.13 NM6 — wouter Link renders its own <a>; nesting a literal <a> produced invalid HTML (<a><a>). */}
                     <Link
                       href={`/collective/partner/clients/${c.companyId}`}
-                      className="text-[#cc0001] hover:underline"
+                      className="text-[var(--cv-color-primary)] hover:underline"
                       data-testid={`client-view-${c.companyId}`}
                     >
                       View

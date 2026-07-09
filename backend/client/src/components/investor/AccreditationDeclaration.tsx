@@ -147,6 +147,33 @@ export function AccreditationDeclaration({ onSigned }: { onSigned?: () => void }
             {clause.text}
           </div>
 
+          {/* v25.56 Avi item 5 — investor-grade disclosure: self-certification
+              does NOT substitute for KYC/AML, which is between the investor and
+              the company/founder. Plus an OPTIONAL (non-blocking) convenience
+              link to the KYC document upload on the investor profile. */}
+          <div
+            data-testid="accreditation-kyc-disclosure"
+            className="mb-4 rounded-md border p-3 text-[12px] leading-relaxed"
+            style={{ background: "var(--cv-surface-muted, #f8fafc)", borderColor: "var(--cv-border, #e2e8f0)", color: "var(--cv-text-muted, #475569)" }}
+          >
+            <p>
+              Any required KYC/AML identity verification should be completed directly
+              between you and the company/founder. This self-declaration does not
+              substitute for that verification, and Capavate does not perform it on
+              your behalf.
+            </p>
+            <p className="mt-2">
+              <a
+                href="/investor/profile"
+                className="underline"
+                data-testid="link-optional-kyc-upload"
+                style={{ color: "var(--cv-link, #2563eb)" }}
+              >
+                Optional: upload KYC documents (not required)
+              </a>
+            </p>
+          </div>
+
           {alreadySignedCurrent && data?.declaration ? (
             <div
               className="rounded-md border p-4 text-sm"

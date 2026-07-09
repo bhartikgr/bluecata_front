@@ -110,12 +110,12 @@ export default function PartnerSubscribe() {
 
       {!isForbidden && (
         <>
-          {isLoading && <div className="text-sm text-slate-500" data-testid="partner-subscribe-loading">Loading…</div>}
+          {isLoading && <div className="text-sm text-[var(--cv-color-text-muted)]" data-testid="partner-subscribe-loading">Loading…</div>}
 
           {!isLoading && subscriptionActive && (
             <Card className="p-6 max-w-xl mb-4" data-testid="partner-subscribe-success">
               <div className="text-xs uppercase tracking-wide text-emerald-700">Subscription active</div>
-              <p className="mt-1 text-sm text-slate-700">
+              <p className="mt-1 text-sm text-[var(--cv-color-text-secondary)]">
                 Subscription active — you&rsquo;ll be redirected in 3 seconds.
               </p>
               <Button
@@ -130,14 +130,14 @@ export default function PartnerSubscribe() {
 
           {!isLoading && sub && (
             <Card className="p-6 max-w-xl mb-4" data-testid="partner-subscribe-current">
-              <div className="text-xs uppercase tracking-wide text-slate-500">Active subscription</div>
-              <div className="mt-1 text-lg font-semibold text-[#041e41]">{sub.tierId}</div>
+              <div className="text-xs uppercase tracking-wide text-[var(--cv-color-text-muted)]">Active subscription</div>
+              <div className="mt-1 text-lg font-semibold text-[var(--cv-color-navy)]">{sub.tierId}</div>
               <dl className="mt-3 grid grid-cols-2 gap-2 text-sm">
-                <dt className="text-slate-500">Amount</dt>
+                <dt className="text-[var(--cv-color-text-muted)]">Amount</dt>
                 <dd className="font-mono">{formatMinor(sub.amountMinor, sub.currency)} / {sub.billingCycle}</dd>
-                <dt className="text-slate-500">Status</dt>
+                <dt className="text-[var(--cv-color-text-muted)]">Status</dt>
                 <dd>{sub.status}</dd>
-                <dt className="text-slate-500">Renews</dt>
+                <dt className="text-[var(--cv-color-text-muted)]">Renews</dt>
                 <dd>{formatDate(sub.currentPeriodEnd)}</dd>
               </dl>
             </Card>
@@ -145,7 +145,7 @@ export default function PartnerSubscribe() {
 
           {!isLoading && !sub && (
             <Card className="p-6 max-w-xl" data-testid="partner-subscribe-checkout">
-              <p className="text-sm text-slate-700 mb-4">
+              <p className="text-sm text-[var(--cv-color-text-secondary)] mb-4">
                 Consortium partners on a subscription plan unlock the full partner workspace. Choose a billing
                 cycle to see your tier-resolved price (set by the admin fee catalogue — never hardcoded).
               </p>
@@ -175,18 +175,18 @@ export default function PartnerSubscribe() {
               </Button>
 
               {quote && (
-                <div className="mt-4 rounded-md border border-[#041e41]/20 bg-slate-50 p-4" data-testid="partner-subscribe-quote">
-                  <div className="text-2xl font-semibold text-[#041e41]">
+                <div className="mt-4 rounded-md border border-[var(--cv-color-navy)]/20 bg-[var(--cv-color-surface-2)] p-4" data-testid="partner-subscribe-quote">
+                  <div className="text-2xl font-semibold text-[var(--cv-color-navy)]">
                     {formatMinor(quote.amountMinor, quote.currency)}
-                    <span className="text-sm font-normal text-slate-500"> / {quote.cycle}</span>
+                    <span className="text-sm font-normal text-[var(--cv-color-text-muted)]"> / {quote.cycle}</span>
                   </div>
-                  <div className="text-xs text-slate-500 mt-1">Resolved via {quote.computedVia}.</div>
+                  <div className="text-xs text-[var(--cv-color-text-muted)] mt-1">Resolved via {quote.computedVia}.</div>
                   {quote.amountMinor === 0 ? (
-                    <p className="mt-2 text-sm text-slate-600">
+                    <p className="mt-2 text-sm text-[var(--cv-color-text-secondary)]">
                       Your tier currently has a $0 subscription — there is nothing to pay.
                     </p>
                   ) : (
-                    <p className="mt-2 text-sm text-slate-600">
+                    <p className="mt-2 text-sm text-[var(--cv-color-text-secondary)]">
                       Complete checkout through the standard billing flow to activate your subscription.
                     </p>
                   )}

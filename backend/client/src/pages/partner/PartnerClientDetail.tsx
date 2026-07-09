@@ -90,10 +90,10 @@ export default function PartnerClientDetail() {
 
   return (
     <PartnerShell title="Client" tier={role.identity.tier} subRole={role.identity.subRole} partnerName={role.identity.identity.name}>
-      <div className="text-xs text-slate-500 mb-3" data-testid="client-id">{id}</div>
+      <div className="text-xs text-[var(--cv-color-text-muted)] mb-3" data-testid="client-id">{id}</div>
       {/* v25.15 NM13b — explicit loading + error UI. */}
       {q.isLoading && (
-        <div className="text-sm text-slate-500 mb-3" data-testid="client-detail-loading">Loading…</div>
+        <div className="text-sm text-[var(--cv-color-text-muted)] mb-3" data-testid="client-detail-loading">Loading…</div>
       )}
       {q.isError && (
         <div
@@ -109,9 +109,9 @@ export default function PartnerClientDetail() {
             <CardHeader><CardTitle className="text-sm">Overview</CardTitle></CardHeader>
             <CardContent>
               <div className="text-xs space-y-1">
-                <div>Sector: <span className="text-slate-500">{snapshot?.sector ?? "—"}</span></div>
-                <div>Company stage: <span className="text-slate-500">{snapshot?.stage ?? "—"}</span></div>
-                <div>Attribution: <span className="text-slate-500">{q.data.attribution?.attributionSource ?? "—"}</span></div>
+                <div>Sector: <span className="text-[var(--cv-color-text-muted)]">{snapshot?.sector ?? "—"}</span></div>
+                <div>Company stage: <span className="text-[var(--cv-color-text-muted)]">{snapshot?.stage ?? "—"}</span></div>
+                <div>Attribution: <span className="text-[var(--cv-color-text-muted)]">{q.data.attribution?.attributionSource ?? "—"}</span></div>
               </div>
             </CardContent>
           </Card>
@@ -125,17 +125,17 @@ export default function PartnerClientDetail() {
                   value={stage}
                   disabled={!canWrite || setStage.isPending}
                   onChange={(e) => setStage.mutate(e.target.value as PartnerClientStage)}
-                  className="rounded-md border border-[#ddd9d3] px-3 py-2 text-sm disabled:opacity-60"
+                  className="rounded-md border border-[var(--cv-color-border)] px-3 py-2 text-sm disabled:opacity-60"
                   data-testid="client-crm-stage-select"
                 >
                   {PARTNER_CLIENT_STAGES.map((s) => (
                     <option key={s} value={s}>{PARTNER_CLIENT_STAGE_LABELS[s]}</option>
                   ))}
                 </select>
-                {setStage.isPending && <span className="text-xs text-slate-500">Saving…</span>}
+                {setStage.isPending && <span className="text-xs text-[var(--cv-color-text-muted)]">Saving…</span>}
               </div>
               {!canWrite && (
-                <div className="text-xs text-slate-500 mt-2">Your role has read-only access to the CRM stage.</div>
+                <div className="text-xs text-[var(--cv-color-text-muted)] mt-2">Your role has read-only access to the CRM stage.</div>
               )}
             </CardContent>
           </Card>
@@ -148,13 +148,13 @@ export default function PartnerClientDetail() {
             <CardContent>
               {hasFinancials ? (
                 <div className="text-xs space-y-1" data-testid="client-captable-data">
-                  <div>Valuation: <span className="text-slate-500">{snapshot?.valuationMinor != null ? formatMinor(snapshot.valuationMinor, "USD", { locale: "en-US" }) + " USD" : "—"}</span></div>
-                  <div>Last raise: <span className="text-slate-500">{snapshot?.lastRaiseAmount != null ? formatMinor(snapshot.lastRaiseAmount, "USD", { locale: "en-US" }) + " USD" : "—"}</span></div>
-                  <div>Last raise date: <span className="text-slate-500">{snapshot?.lastRaiseDate ? new Date(snapshot.lastRaiseDate).toLocaleDateString() : "—"}</span></div>
-                  <div className="text-slate-400 pt-1">Detailed cap table is editable only by the founder in Capavate's frozen engine.</div>
+                  <div>Valuation: <span className="text-[var(--cv-color-text-muted)]">{snapshot?.valuationMinor != null ? formatMinor(snapshot.valuationMinor, "USD", { locale: "en-US" }) + " USD" : "—"}</span></div>
+                  <div>Last raise: <span className="text-[var(--cv-color-text-muted)]">{snapshot?.lastRaiseAmount != null ? formatMinor(snapshot.lastRaiseAmount, "USD", { locale: "en-US" }) + " USD" : "—"}</span></div>
+                  <div>Last raise date: <span className="text-[var(--cv-color-text-muted)]">{snapshot?.lastRaiseDate ? new Date(snapshot.lastRaiseDate).toLocaleDateString() : "—"}</span></div>
+                  <div className="text-[var(--cv-color-text-faint)] pt-1">Detailed cap table is editable only by the founder in Capavate's frozen engine.</div>
                 </div>
               ) : (
-                <div className="text-xs text-slate-500" data-testid="client-captable-empty">
+                <div className="text-xs text-[var(--cv-color-text-muted)]" data-testid="client-captable-empty">
                   No read-only financials are shared for this company yet. Cap-table detail is available to the founder inside Capavate's engine.
                 </div>
               )}
@@ -183,13 +183,13 @@ export default function PartnerClientDetail() {
                   </Button>
                 </div>
               )}
-              {activity.length === 0 && <div className="text-xs text-slate-500" data-testid="client-activity-empty">No activity yet.</div>}
+              {activity.length === 0 && <div className="text-xs text-[var(--cv-color-text-muted)]" data-testid="client-activity-empty">No activity yet.</div>}
               <ul className="text-xs space-y-2" data-testid="client-activity-list">
                 {activity.map((a) => (
                   <li key={a.id} className="border-b pb-1" data-testid={`client-activity-${a.id}`}>
-                    <span className="text-slate-400 mr-2">{a.occurredAt ? new Date(a.occurredAt).toLocaleString() : "—"}</span>
-                    <span className="text-[#041e41] font-medium mr-2">{a.activityType}</span>
-                    <span className="text-slate-600">{a.body}</span>
+                    <span className="text-[var(--cv-color-text-faint)] mr-2">{a.occurredAt ? new Date(a.occurredAt).toLocaleString() : "—"}</span>
+                    <span className="text-[var(--cv-color-navy)] font-medium mr-2">{a.activityType}</span>
+                    <span className="text-[var(--cv-color-text-secondary)]">{a.body}</span>
                   </li>
                 ))}
               </ul>
@@ -199,12 +199,12 @@ export default function PartnerClientDetail() {
           <Card className="md:col-span-2" data-testid="client-notes">
             <CardHeader><CardTitle className="text-sm">Notes</CardTitle></CardHeader>
             <CardContent>
-              {(!q.data.notes || q.data.notes.length === 0) && <div className="text-xs text-slate-500">No notes for this client yet.</div>}
+              {(!q.data.notes || q.data.notes.length === 0) && <div className="text-xs text-[var(--cv-color-text-muted)]">No notes for this client yet.</div>}
               <ul className="text-xs space-y-2">
                 {(q.data.notes ?? []).map((n: { id: string; title: string; body: string }) => (
                   <li key={n.id} className="border-b pb-1">
                     <div className="font-medium">{n.title}</div>
-                    <div className="text-slate-600">{n.body}</div>
+                    <div className="text-[var(--cv-color-text-secondary)]">{n.body}</div>
                   </li>
                 ))}
               </ul>

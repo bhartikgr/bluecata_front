@@ -1,0 +1,29 @@
+-- 0105_group_c_contacts_arrangement_json
+-- GROUP C — per-Consortium-Partner dynamic plan/deal engine.
+--
+-- Adds ONE additive, nullable column to `contacts` (the canonical partner
+-- entity, kind='consortium_partner') that stores the admin-configured
+-- *arrangement* for a partner: the subscription model label, the report-only
+-- quota config, and the fixed rev-share config. The per-partner PRICE is NOT
+-- stored here — it continues to live in contacts.fee_override_json
+-- (subscription_monthly / subscription_annual), so there is no price
+-- duplication. This column mirrors fee_override_json purely in placement.
+--
+-- arrangement_json shape (admin-authored, all fields optional):
+--   {
+--     "subscriptionModel": string,
+--     "quota":    { "metric": string, "threshold": number,
+--                   "period": "monthly", "enforcement": "report" | "warn" },
+--     "revShare": { "enabled": boolean, "fixedAmountMinor": number,
+--                   "currency": string, "appliesTo": string,
+--                   "source": "capavate" },
+--     "notes": string
+--   }
+--
+-- ADDITIVE + IDEMPOTENT. `ALTER TABLE ... ADD COLUMN` on a nullable column is
+-- non-destructive; re-running raises "duplicate column name", which the migrate
+-- runner (server/db/migrate.ts isIdempotentSkip) swallows. This file is mirrored
+-- VERBATIM in both migrations/ and server/db/migrations/, plus the inline
+-- applyInlineMigrations() alters (connection.ts) for :memory: test DBs.
+
+ALTER TABLE contacts ADD COLUMN arrangement_json TEXT;

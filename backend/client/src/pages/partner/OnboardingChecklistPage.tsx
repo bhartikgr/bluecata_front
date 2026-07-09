@@ -270,7 +270,7 @@ export default function PartnerOnboardingChecklistPage() {
         <Card className="mb-4">
           <CardContent className="py-4">
             <div className="flex items-center gap-3 mb-2">
-              <ShieldCheck className="h-5 w-5 text-[#cc0001]" />
+              <ShieldCheck className="h-5 w-5 text-[var(--cv-color-primary)]" />
               <div className="text-sm font-medium">Progress</div>
               <Badge variant="outline" className="ml-auto" data-testid="badge-progress">
                 {progress.done} / {progress.total} complete · {progress.pct}%
@@ -278,7 +278,7 @@ export default function PartnerOnboardingChecklistPage() {
             </div>
             <div className="h-2 rounded bg-secondary overflow-hidden">
               <div
-                className="h-full bg-[#cc0001] transition-all"
+                className="h-full bg-[var(--cv-color-primary)] transition-all"
                 style={{ width: `${progress.pct}%` }}
                 data-testid="bar-progress"
               />
@@ -348,7 +348,7 @@ export default function PartnerOnboardingChecklistPage() {
                         {isAgreement && !done && (
                           <a
                             href={AGREEMENT_SIGN_PATH}
-                            className="text-xs text-[#cc0001] underline"
+                            className="text-xs text-[var(--cv-color-primary)] underline"
                             data-testid="link-sign-agreement"
                           >
                             Sign the Consortium Partner Agreement →

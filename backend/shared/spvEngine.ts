@@ -102,7 +102,41 @@ export const SPV_TOP_JURISDICTION_COUNTRIES: readonly string[] = [
   "Canada",
   "Hong Kong",
   "United Arab Emirates",
+  // 2a — expanded 10→15 (existing 10 first, then the additive five per
+  // JURISDICTION_ENTITY_MAP.md). Free-text "Other" is handled by the wizard.
+  "Jersey",
+  "Guernsey",
+  "Netherlands",
+  "Mauritius",
+  "Australia",
 ] as const;
+
+/** 2a — dependent Legal-entity-structure options per jurisdiction country
+ *  (JURISDICTION_ENTITY_MAP.md). The wizard drives this dropdown off the
+ *  selected `jurisdictionCountry`, resets the value to the list's first option
+ *  on country change, and every list ends with "Other (specify)" so a GP can
+ *  always type a bespoke structure. This is PURELY additive display metadata:
+ *  the chosen structure is captured on `terms.legalEntityStructure` and the
+ *  engine's strict `SPV_JURISDICTIONS` enum is left completely untouched
+ *  (rule #8 — no enum change, no migration). Keyed by the exact country label
+ *  above; the "Other" jurisdiction is free-form for BOTH fields. */
+export const SPV_JURISDICTION_ENTITY_STRUCTURES: Record<string, string[]> = {
+  "United States": ["Delaware LLC", "Delaware LP", "Delaware Series LLC", "Delaware C-Corp", "Other (specify)"],
+  "Cayman Islands": ["Exempted Company", "Exempted Limited Partnership (ELP)", "Segregated Portfolio Company (SPC)", "LLC", "Other (specify)"],
+  "British Virgin Islands": ["BVI Business Company", "Limited Partnership", "Segregated Portfolio Company", "Other (specify)"],
+  "United Kingdom": ["Private Limited Company (Ltd)", "Limited Partnership (LP)", "Limited Liability Partnership (LLP)", "Scottish Limited Partnership", "Other (specify)"],
+  "Singapore": ["Private Limited Company (Pte Ltd)", "Variable Capital Company (VCC)", "Limited Partnership", "Other (specify)"],
+  "Luxembourg": ["Reserved Alternative Investment Fund (RAIF)", "Special Limited Partnership (SCSp)", "Private Limited Company (S.à r.l.)", "SICAV-SIF", "Other (specify)"],
+  "Ireland": ["Irish Collective Asset-management Vehicle (ICAV)", "Investment Limited Partnership (ILP)", "Private Limited Company (LTD)", "Other (specify)"],
+  "Canada": ["Limited Partnership", "Corporation (Inc.)", "Ontario LP", "Other (specify)"],
+  "Hong Kong": ["Private Limited Company", "Limited Partnership Fund (LPF)", "Open-ended Fund Company (OFC)", "Other (specify)"],
+  "United Arab Emirates": ["ADGM Special Purpose Vehicle", "DIFC Special Purpose Company", "ADGM Investment Company", "Free Zone Company", "Other (specify)"],
+  "Jersey": ["Private Limited Company", "Limited Partnership", "Incorporated Cell Company", "Other (specify)"],
+  "Guernsey": ["Protected Cell Company (PCC)", "Limited Partnership", "Private Limited Company", "Other (specify)"],
+  "Netherlands": ["Besloten Vennootschap (B.V.)", "Cooperative (Coöperatie)", "Limited Partnership (CV)", "Other (specify)"],
+  "Mauritius": ["Global Business Company (GBC)", "Authorised Company", "Limited Partnership", "Other (specify)"],
+  "Australia": ["Proprietary Limited Company (Pty Ltd)", "Unit Trust", "Limited Partnership", "Other (specify)"],
+};
 
 /** Spec 3j — GP-facing distribution-scope labels (relabelled EXACTLY as the
  * spec requires) mapped to the existing SPV_DISTRIBUTION_SCOPES values. These

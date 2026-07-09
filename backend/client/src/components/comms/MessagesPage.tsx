@@ -117,6 +117,10 @@ export function MessagesPage({ role, hideHeader = false }: { role: "founder" | "
  // role comes from prop (see component signature) — do not redeclare via useRole().
  // Sprint 18 Phase 3 E2 — Cmd-K to focus the channel search input.
  const searchInputRef = useRef<HTMLInputElement | null>(null);
+ // GROUP E (E4) — platform-neutral shortcut hint (handler still fires on
+ // metaKey||ctrlKey; only the DISPLAYED glyph adapts to Mac vs. other).
+ const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent || "");
+ const searchShortcutHint = isMac ? "⌘K" : "Ctrl K";
  // v25.13 NH4 — guard against duplicate DM-start POSTs across location changes.
  const dmStartedForRef = useRef<string | null>(null);
  useEffect(() => {
@@ -359,7 +363,7 @@ export function MessagesPage({ role, hideHeader = false }: { role: "founder" | "
  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
  <Input
  ref={searchInputRef}
- placeholder="Search conversations... (⌘K)"
+ placeholder={`Search conversations... (${searchShortcutHint})`}
  value={search}
  onChange={(e) => setSearch(e.target.value)}
  className="pl-8 h-8 text-sm"

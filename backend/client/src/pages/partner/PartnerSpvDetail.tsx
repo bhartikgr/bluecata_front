@@ -64,6 +64,13 @@ export default function PartnerSpvDetail() {
   const [lpEmail, setLpEmail] = useState("");
   const [lpFirstName, setLpFirstName] = useState("");
   const [lpLastName, setLpLastName] = useState("");
+  /* B3 — LP commitment (seats a named LP on the SPV cap table via the sacred
+     commitFunded path). amount is a major-unit decimal string; units = shares. */
+  const [commitFirst, setCommitFirst] = useState("");
+  const [commitLast, setCommitLast] = useState("");
+  const [commitEmail, setCommitEmail] = useState("");
+  const [commitAmount, setCommitAmount] = useState("");
+  const [commitUnits, setCommitUnits] = useState("");
 
   /* W2-H — GP LP roster (subscribers + pending invites). */
   const roster = useQuery<{
@@ -92,6 +99,25 @@ export default function PartnerSpvDetail() {
       toast({ title: "LP invited" });
     },
     onError: (e: Error) => toast({ variant: "destructive", title: "Invite failed", description: e.message }),
+  });
+
+  const commitMut = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/partner/me/spv/${spvId}/lp-commit`, {
+        holderFirstName: commitFirst.trim(),
+        holderLastName: commitLast.trim(),
+        investorEmail: commitEmail.trim(),
+        amount: commitAmount.trim(),
+        shares: commitUnits.trim(),
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      setCommitFirst(""); setCommitLast(""); setCommitEmail(""); setCommitAmount(""); setCommitUnits("");
+      qc.invalidateQueries({ queryKey: ["/api/partner/me/spv", spvId, "lp-roster"] });
+      toast({ title: "LP committed to the cap table" });
+    },
+    onError: (e: Error) => toast({ variant: "destructive", title: "LP commit failed", description: e.message }),
   });
 
   const callMut = useMutation({
@@ -130,6 +156,25 @@ export default function PartnerSpvDetail() {
     onError: (e: Error) => toast({ variant: "destructive", title: "Distribution failed", description: e.message }),
   });
 
+  /* GROUP F1 — seed a person-level CRM contact from an SPV LP row. Idempotent
+     server-side by (partner_id, email); the server verifies this SPV belongs to
+     the calling partner (source_ref) before creating. */
+  const addToCrmMut = useMutation({
+    mutationFn: async (sub: { name: string | null; email: string | null }) => {
+      const res = await apiRequest("POST", "/api/partner/me/crm/contacts/from-source", {
+        source_kind: "spv_lp",
+        source_ref: spvId,
+        identity: { email: sub.email ?? undefined, name: sub.name ?? undefined },
+      });
+      return res.json();
+    },
+    onSuccess: (r: any) => {
+      qc.invalidateQueries({ queryKey: ["/api/partner/me/crm/contacts"] });
+      toast({ title: r?.existing ? "Already in CRM" : "Added to CRM" });
+    },
+    onError: (e: Error) => toast({ variant: "destructive", title: "Add to CRM failed", description: e.message }),
+  });
+
   if (!role.ready || !role.identity) return null;
   const me = role.identity;
   if (isLoading) return <PartnerShell title="SPV" tier={me.tier} subRole={me.subRole} partnerName={me.identity.name}><div>Loading…</div></PartnerShell>;
@@ -149,19 +194,19 @@ export default function PartnerSpvDetail() {
       <Card className="p-4 mb-4 space-y-2" data-testid="partner-spv-detail">
         <div className="grid grid-cols-2 gap-4 text-sm">
           <div>
-            <div className="text-slate-500">Target Size</div>
+            <div className="text-[var(--cv-color-text-muted)]">Target Size</div>
             <div className="font-mono">{formatMinor(s.targetSizeMinor, s.currency)}</div>
           </div>
           <div>
-            <div className="text-slate-500">Currency (ISO 4217)</div>
+            <div className="text-[var(--cv-color-text-muted)]">Currency (ISO 4217)</div>
             <div className="font-mono">{s.currency}</div>
           </div>
           <div>
-            <div className="text-slate-500">Jurisdiction</div>
+            <div className="text-[var(--cv-color-text-muted)]">Jurisdiction</div>
             <div>{s.jurisdiction}</div>
           </div>
           <div>
-            <div className="text-slate-500">Status</div>
+            <div className="text-[var(--cv-color-text-muted)]">Status</div>
             <div>{s.status}</div>
           </div>
         </div>
@@ -235,7 +280,7 @@ export default function PartnerSpvDetail() {
       {/* W2-H — LP roster (subscribers + pending invites) + partner-gated invite. */}
       <Card className="p-4 mb-4 space-y-3" data-testid="partner-spv-lp-roster">
         <div className="font-medium">LP Roster</div>
-        {roster.isLoading && <div className="text-sm text-slate-500" data-testid="partner-spv-lp-roster-loading">Loading…</div>}
+        {roster.isLoading && <div className="text-sm text-[var(--cv-color-text-muted)]" data-testid="partner-spv-lp-roster-loading">Loading…</div>}
         {roster.isError && (
           <div className="text-sm text-rose-600" data-testid="partner-spv-lp-roster-error">
             Could not load the LP roster. Please refresh and try again.
@@ -244,34 +289,49 @@ export default function PartnerSpvDetail() {
         {roster.data && (
           <>
             {roster.data.subscribers.length === 0 && roster.data.invites.length === 0 ? (
-              <div className="text-sm text-slate-500" data-testid="partner-spv-lp-roster-empty">
+              <div className="text-sm text-[var(--cv-color-text-muted)]" data-testid="partner-spv-lp-roster-empty">
                 No LPs yet. Invite one below to get started.
               </div>
             ) : (
               <table className="w-full text-sm" data-testid="partner-spv-lp-roster-table">
-                <thead className="bg-slate-50">
+                <thead className="bg-[var(--cv-color-surface-2)]">
                   <tr>
                     <th className="text-left p-2">LP</th>
                     <th className="text-left p-2">Email</th>
                     <th className="text-left p-2">Commitment</th>
                     <th className="text-left p-2">Status</th>
+                    {canWriteLp && <th className="text-left p-2">CRM</th>}
                   </tr>
                 </thead>
                 <tbody>
                   {roster.data.subscribers.map((sub) => (
                     <tr key={sub.investorId} className="border-t" data-testid={`partner-spv-lp-sub-${sub.investorId}`}>
                       <td className="p-2">{sub.name ?? "—"}</td>
-                      <td className="p-2 text-slate-500">{sub.email ?? "—"}</td>
+                      <td className="p-2 text-[var(--cv-color-text-muted)]">{sub.email ?? "—"}</td>
                       <td className="p-2 font-mono">{formatMinor(sub.commitmentMinor, s.currency)}</td>
                       <td className="p-2">{sub.status}</td>
+                      {canWriteLp && (
+                        <td className="p-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={!sub.email || addToCrmMut.isPending}
+                            onClick={() => addToCrmMut.mutate({ name: sub.name, email: sub.email })}
+                            data-testid={`partner-spv-lp-add-crm-${sub.investorId}`}
+                          >
+                            Add to CRM
+                          </Button>
+                        </td>
+                      )}
                     </tr>
                   ))}
                   {roster.data.invites.map((inv) => (
-                    <tr key={inv.id} className="border-t text-slate-500" data-testid={`partner-spv-lp-invite-${inv.id}`}>
+                    <tr key={inv.id} className="border-t text-[var(--cv-color-text-muted)]" data-testid={`partner-spv-lp-invite-${inv.id}`}>
                       <td className="p-2">{[inv.firstName, inv.lastName].filter(Boolean).join(" ") || inv.lastName}</td>
                       <td className="p-2">{inv.email}</td>
                       <td className="p-2">—</td>
                       <td className="p-2">invited</td>
+                      {canWriteLp && <td className="p-2">—</td>}
                     </tr>
                   ))}
                 </tbody>
@@ -315,6 +375,68 @@ export default function PartnerSpvDetail() {
               data-testid="partner-spv-lp-invite-submit"
             >
               {inviteMut.isPending ? "Inviting…" : "Send invite"}
+            </Button>
+          </div>
+        )}
+
+        {/* B3 — commit a named LP onto the SPV cap table (advances them to
+            committed via the sacred commitFunded ledger path). */}
+        {canWriteLp && (
+          <div className="pt-2 border-t space-y-2" data-testid="partner-spv-lp-commit-form">
+            <div className="text-sm font-medium">Commit an LP to the cap table</div>
+            <div className="grid grid-cols-3 gap-2">
+              <Input
+                placeholder="First name *"
+                value={commitFirst}
+                onChange={(e) => setCommitFirst(e.target.value)}
+                data-testid="partner-spv-lp-commit-firstname"
+              />
+              <Input
+                placeholder="Last name *"
+                value={commitLast}
+                onChange={(e) => setCommitLast(e.target.value)}
+                data-testid="partner-spv-lp-commit-lastname"
+              />
+              <Input
+                type="email"
+                placeholder="Email *"
+                value={commitEmail}
+                onChange={(e) => setCommitEmail(e.target.value)}
+                data-testid="partner-spv-lp-commit-email"
+              />
+              <Input
+                type="number"
+                inputMode="decimal"
+                min="0"
+                placeholder={`Amount (${s.currency})`}
+                value={commitAmount}
+                onChange={(e) => setCommitAmount(e.target.value)}
+                data-testid="partner-spv-lp-commit-amount"
+              />
+              <Input
+                type="number"
+                inputMode="numeric"
+                min="1"
+                placeholder="Units (shares)"
+                value={commitUnits}
+                onChange={(e) => setCommitUnits(e.target.value)}
+                data-testid="partner-spv-lp-commit-units"
+              />
+            </div>
+            {!commitLast.trim() && (
+              <div className="text-xs text-rose-600" data-testid="partner-spv-lp-commit-lastname-error">
+                Last name is required to commit an LP.
+              </div>
+            )}
+            <Button
+              disabled={
+                !commitFirst.trim() || !commitLast.trim() || !commitEmail.trim() ||
+                !commitAmount.trim() || !commitUnits.trim() || commitMut.isPending
+              }
+              onClick={() => commitMut.mutate()}
+              data-testid="partner-spv-lp-commit-submit"
+            >
+              {commitMut.isPending ? "Committing…" : "Commit LP"}
             </Button>
           </div>
         )}

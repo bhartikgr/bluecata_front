@@ -125,7 +125,7 @@ export default function PartnerFiles() {
         </div>
       )}
 
-      {isLoading && <div className="text-sm text-slate-500" data-testid="files-loading">Loading…</div>}
+      {isLoading && <div className="text-sm text-[var(--cv-color-text-muted)]" data-testid="files-loading">Loading…</div>}
       {/* v25.15 NM5b — explicit error branch. */}
       {isError && (
         <div
@@ -148,7 +148,7 @@ export default function PartnerFiles() {
             <Card key={f.id} className="p-3 flex justify-between items-center" data-testid={`partner-file-${f.id}`}>
               <div>
                 <div className="font-medium">{f.fileName}</div>
-                <div className="text-xs text-slate-500">{/* v25.16 NL5 — format uploadedAt as a human date (consistent with other partner pages). */}
+                <div className="text-xs text-[var(--cv-color-text-muted)]">{/* v25.16 NL5 — format uploadedAt as a human date (consistent with other partner pages). */}
                 {f.mimeType} · {f.sizeBytes} bytes · {f.uploadedAt ? new Date(f.uploadedAt).toLocaleDateString() : "—"}</div>
               </div>
               {/* v25.23 NM-P / FINDING-05 — View + Delete controls wire the
@@ -156,7 +156,7 @@ export default function PartnerFiles() {
               <div className="flex gap-3 items-center shrink-0">
                 <button
                   type="button"
-                  className="text-[#cc0001] text-xs hover:underline"
+                  className="text-[var(--cv-color-primary)] text-xs hover:underline"
                   data-testid={`file-view-${f.id}`}
                   onClick={() => viewFile(f.id)}
                 >

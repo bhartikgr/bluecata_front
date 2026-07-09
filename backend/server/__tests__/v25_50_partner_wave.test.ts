@@ -327,6 +327,17 @@ describe("v25.50 — Team real-name JOIN + contact overrides", () => {
     expect(mp.name).toBe(TEST_PARTNER_USERS.managing.name);
     expect(mp.email).toBe(TEST_PARTNER_USERS.managing.email);
   });
+  it("GROUP-D — every member name is non-null and never a raw synthetic id", () => {
+    return get("/api/partner/me/team", MANAGING).then((r) => {
+      expect(r.status).toBe(200);
+      expect(r.body.members.length).toBeGreaterThan(0);
+      for (const m of r.body.members) {
+        expect(m.name).not.toBeNull();
+        expect(typeof m.name).toBe("string");
+        expect(m.name).not.toMatch(/^u_/);
+      }
+    });
+  });
   it("managing_partner can PATCH a member contact override; it round-trips", async () => {
     const up = await patch(`/api/partner/me/team/${MANAGING}/contact`, MANAGING, {
       mobile: "+1-555-0100",

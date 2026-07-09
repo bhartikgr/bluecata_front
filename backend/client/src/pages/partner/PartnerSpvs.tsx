@@ -75,7 +75,7 @@ export default function PartnerSpvs() {
 
   return (
     <PartnerShell title="SPVs" tier={me.tier} subRole={me.subRole} partnerName={me.identity.name}>
-      <div className="mb-4 bg-[rgba(4,30,65,0.05)] border border-[rgba(4,30,65,0.2)] text-[#041e41] p-3 rounded text-sm" data-testid="partner-spvs-disclaimer">
+      <div className="mb-4 bg-[rgba(4,30,65,0.05)] border border-[rgba(4,30,65,0.2)] text-[var(--cv-color-navy)] p-3 rounded text-sm" data-testid="partner-spvs-disclaimer">
         SPV records are for documentation only. No funds are moved by Capavate.
       </div>
 
@@ -121,7 +121,7 @@ export default function PartnerSpvs() {
         </Card>
       )}
 
-      {isLoading && <div className="text-sm text-slate-500" data-testid="spvs-loading">Loading…</div>}
+      {isLoading && <div className="text-sm text-[var(--cv-color-text-muted)]" data-testid="spvs-loading">Loading…</div>}
       {/* v25.15 NM6 — explicit error branch. */}
       {isError && (
         <div
@@ -142,15 +142,15 @@ export default function PartnerSpvs() {
         <div className="space-y-2" data-testid="partner-spvs-list">
           {spvs.map((s) => (
             <Card key={s.id} className="p-3" data-testid={`partner-spv-${s.id}`}>
-              <Link href={`/collective/partner/spvs/${s.id}`} className="block hover:bg-slate-50 -m-3 p-3 rounded">
+              <Link href={`/collective/partner/spvs/${s.id}`} className="block hover:bg-[var(--cv-color-surface-2)] -m-3 p-3 rounded">
                 <div className="flex justify-between items-center">
                   <div>
                     <div className="font-medium">{s.spvName}</div>
-                    <div className="text-xs text-slate-500">{s.jurisdiction} · {s.status}</div>
+                    <div className="text-xs text-[var(--cv-color-text-muted)]">{s.jurisdiction} · {s.status}</div>
                   </div>
                   <div className="text-right">
                     <div className="font-mono">{formatMinor(s.targetSizeMinor, s.currency)}</div>
-                    <div className="text-xs text-slate-500">target</div>
+                    <div className="text-xs text-[var(--cv-color-text-muted)]">target</div>
                   </div>
                 </div>
               </Link>

@@ -68,6 +68,56 @@ export function requirePartnerAuth(req: Request, res: Response, next: NextFuncti
   next();
 }
 
+/**
+ * GROUP F3 — self-gate for the ONE bootstrap read `GET /api/partner/me`.
+ *
+ * IDENTICAL to `requirePartnerAuth` in EVERY fail-closed respect, with a
+ * SINGLE, DELIBERATE relaxation: it does NOT require
+ * `partner.status === "active"`. This lets a SUSPENDED / ARCHIVED (but still
+ * existing) consortium_partner load `/me` — and ONLY `/me` — so the FE can
+ * render a "your account is suspended" status banner. It grants NO data and NO
+ * writes: every other `/api/partner/me/*` route keeps hard `requirePartnerAuth`.
+ *
+ * Still FAIL-CLOSED on everything else, exactly like requirePartnerAuth:
+ *   - 401 PARTNER_AUTH_REQUIRED   — no authenticated user.
+ *   - 403 PARTNER_NOT_FOUND       — no partner_team_members record.
+ *   - 403 PARTNER_NOT_FOUND       — the contact was deleted / does not exist,
+ *                                    OR is not a consortium_partner.
+ * `partnerId` is ALWAYS taken from the session-resolved team member — NEVER
+ * from the request body or query — preserving the data-isolation guarantee.
+ * This middleware does NOT weaken requirePartnerAuth or any other gate.
+ */
+export function requirePartnerSelf(req: Request, res: Response, next: NextFunction): void {
+  const ctx = getUserContext(req);
+  if (!ctx?.isAuthed || !ctx.userId) {
+    res.status(401).json({ error: "PARTNER_AUTH_REQUIRED", message: "Sign in to access partner workspace." });
+    return;
+  }
+  const teamMember = partnerTeamStore.findByUserId(ctx.userId);
+  if (!teamMember) {
+    res.status(403).json({ error: "PARTNER_NOT_FOUND", message: "No active partner membership for this account." });
+    return;
+  }
+  const partner = getContactById(teamMember.partnerId);
+  // Fail-closed on a deleted/non-existent record or a non-partner contact.
+  // The ONLY relaxation vs requirePartnerAuth is that `status` need NOT be
+  // "active" — a suspended/archived consortium_partner PASSES here.
+  if (!partner || partner.kind !== "consortium_partner") {
+    res.status(403).json({ error: "PARTNER_NOT_FOUND", message: "No partner record for this account." });
+    return;
+  }
+  req.partnerContext = {
+    userId: ctx.userId,
+    email: ctx.identity.email,
+    name: ctx.identity.name,
+    partnerId: teamMember.partnerId,
+    partnerSubRole: teamMember.subRole as PartnerSubRole,
+    tier: (partner.tier as PartnerTier) ?? "catalyst",
+    isAdmin: ctx.isAdmin,
+  };
+  next();
+}
+
 export function assertSubRole(...allowed: PartnerSubRole[]) {
   return (req: Request, res: Response, next: NextFunction): void => {
     if (!req.partnerContext) {

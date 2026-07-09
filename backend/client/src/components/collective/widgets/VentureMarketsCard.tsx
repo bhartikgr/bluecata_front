@@ -12,6 +12,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Globe, Info } from "lucide-react";
+import { metricUnitLabel, metricDescription, metricDisplayName } from "@/data/ventureMarketRegistry";
 
 interface VentureRecord {
   exchangeSymbol: string;
@@ -33,8 +34,6 @@ interface VentureResponse {
   status: "OK" | "PROVIDER_NOT_CONFIGURED";
 }
 
-const METRIC_TOOLTIP = "Issuer count = number of listed companies on the venture/growth market.";
-
 export function VentureMarketsCard() {
   const q = useQuery<VentureResponse>({
     queryKey: ["/api/feeds/venture-markets"],
@@ -45,6 +44,9 @@ export function VentureMarketsCard() {
   const data = q.data;
   const notConfigured = data?.status === "PROVIDER_NOT_CONFIGURED";
   const records = data?.records ?? [];
+  // GROUP E (1e) — metric-aware English labels (issuer count vs index level …).
+  const metricType = data?.metricType ?? "issuer_count";
+  const metricTooltip = metricDescription(metricType);
 
   return (
     <Card data-testid="widget-venture-markets">
@@ -82,7 +84,7 @@ export function VentureMarketsCard() {
                         <TooltipTrigger asChild>
                           <Info className="h-3 w-3 cursor-help" />
                         </TooltipTrigger>
-                        <TooltipContent className="text-xs max-w-xs">{METRIC_TOOLTIP}</TooltipContent>
+                        <TooltipContent className="text-xs max-w-xs">{metricTooltip}</TooltipContent>
                       </Tooltip>
                     </span>
                   </th>
@@ -119,11 +121,11 @@ export function VentureMarketsCard() {
                           <div
                             className="font-semibold tabular-nums text-sm"
                             style={{ color: "#041e41" }}
-                            aria-label={`${r.marketValue.toLocaleString()} issuers`}
+                            aria-label={`${r.marketValue.toLocaleString()} ${metricUnitLabel(r.marketValueType)}`}
                           >
                             {r.marketValue.toLocaleString()}
                           </div>
-                          <div className="text-[11px] text-slate-400">issuers</div>
+                          <div className="text-[11px] text-slate-400">{metricUnitLabel(r.marketValueType)}</div>
                         </div>
                       )}
                     </td>
@@ -132,7 +134,8 @@ export function VentureMarketsCard() {
               </tbody>
             </table>
             <p className="text-[10px] text-slate-400 mt-2" data-testid="widget-venture-provenance">
-              Metric: issuer count · Source: OECD / official exchanges
+              Metric: {metricDisplayName(metricType)}
+              {records[0]?.source ? ` · Source: ${records[0].source}` : ""}
               {data?.asOfDate ? ` · as of ${data.asOfDate}` : ""}
             </p>
           </TooltipProvider>

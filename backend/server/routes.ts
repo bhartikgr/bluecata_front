@@ -42,6 +42,7 @@ import { sanitizeErrorMessage } from "./lib/sanitize"; /* v25.32 burndown — it
 // v17 Phase A — chapter scoping store (used by /api/me/chapters).
 import { listChaptersForUser as v17ListChaptersForUser } from "./chaptersStore";
 import { registerProfileRoutes } from "./profileStore";
+import { registerInvestorMediaRoutes } from "./investorMediaRoutes"; /* v25.56 Avi item 1a — missing avatar upload route */
 import { registerCommsRoutes } from "./commsStore";
 import { registerCommsTiersRoutes } from "./commsTiersStore";
 import { resetDemoState } from "../scripts/reset-demo";
@@ -268,6 +269,10 @@ import { getOutbox } from "./bridgeStore";
 import { loadUserContext, requireEntitlement } from "./lib/requireEntitlement";
 import { registerPersona } from "./lib/userContext";
 import { getUserContextForId, getUserContext } from "./lib/userContext";
+// v25.56 Avi wave item 2 — provision a populated durable investor profile at
+// invitation redemption so the contact is valid + email matches (fixes silent
+// contact-save + KYC-upload 404). NON-sacred.
+import { provisionRedeemedInvestorProfile } from "./investorProvisioning";
 // v25.45 ROUND 2 — per-route archive gate (canonical enforcement; the
 // /api/founder path-prefix middleware is defense-in-depth only).
 import { assertWorkspaceNotArchived } from "./middleware/archiveCheck";
@@ -544,6 +549,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   /* ------------ Sprint 8: profile store + PATCH endpoints ------------ */
   registerProfileRoutes(app);
+  registerInvestorMediaRoutes(app); /* v25.56 Avi item 1a — POST /api/investors/:id/avatar */
 
   /* ------------ Sprint 9: communications store + endpoints ------------ */
   registerCommsRoutes(app);
@@ -2426,7 +2432,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   /** Redeem a token + create the investor account stub. PUBLIC — no auth (this IS the login). */
-  app.post("/api/invitations/redeem", (req, res) => {
+  app.post("/api/invitations/redeem", async (req, res) => {
     const ip = req.ip ?? "anon";
     if (!allow(ip)) return res.status(429).json({ ok: false, reason: "rate_limited" });
     type Body = { token?: string; profile?: Record<string, unknown>; password?: string };
@@ -2473,6 +2479,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         roundId: entry.roundId,
         companyId: entry.companyId,
       });
+      // v25.56 Avi item 2 — provision a populated durable profile from the
+      // invitation identity so contact fields persist + KYC upload resolves.
+      await provisionRedeemedInvestorProfile({ investorId: personaId, email: entry.inviteeEmail, name: entry.inviteeName });
       setSessionCookie(res, personaId);
       // v25.47 APD-033 (HIGH-1) — mark the auto-created CRM contact registered.
       if (entry.companyId) {
@@ -2535,6 +2544,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
     const marked = markInvitationRedeemed(modernEntry.id, personaId);
     if (!marked) return res.status(404).json({ ok: false, reason: "not_found" });
+    // v25.56 Avi item 2 — provision a populated durable profile from the
+    // invitation identity so contact fields persist + KYC upload resolves.
+    await provisionRedeemedInvestorProfile({
+      investorId: personaId,
+      email: modernEntry.investorEmail,
+      name: modernEntry.investorName ?? modernEntry.investorEmail.split("@")[0],
+    });
     setSessionCookie(res, personaId);
     // v25.47 APD-033 (HIGH-1) — mark the auto-created CRM contact registered.
     if (modernEntry.companyId) {

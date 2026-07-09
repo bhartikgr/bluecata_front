@@ -2198,6 +2198,22 @@ export const partnerCrmContacts = sqliteTable("partner_crm_contacts", {
   notes: text("notes").notNull().default(""),
   /** JSON string[] of tags. */
   tags: text("tags").notNull().default("[]"),
+  // GROUP F1 (migration 0106) — parity columns (additive, nullable). Mirror
+  // investor_crm_contacts; the CP-008 hash payload still hashes only the stable
+  // identity subset (partnerId/email/name/createdAt), so these are unhashed.
+  /** Free-text pipeline stage label. */
+  stage: text("stage"),
+  /** Optional cross-link to a company (portfolio / cap-table join key). */
+  companyId: text("company_id"),
+  /** JSON Array<{ id, body, createdAt, authorId }>. */
+  noteLog: text("note_log"),
+  /** JSON Array<{ id, title, priority, status, due, createdAt }>. */
+  tasks: text("tasks"),
+  starred: integer("starred", { mode: "boolean" }).notNull().default(false),
+  /** Provenance of a from-source import (e.g. 'spv_lp'). */
+  sourceKind: text("source_kind"),
+  /** Origin id for a from-source import (e.g. SPV / commitment id). */
+  sourceRef: text("source_ref"),
   /**
    * Hash chain (CP-008 / CP Phase A). Added in migration 0042. Default '' so
    * existing rows can backfill cleanly; the chain stitcher in

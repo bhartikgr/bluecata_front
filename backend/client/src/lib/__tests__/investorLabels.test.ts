@@ -14,6 +14,7 @@ import {
   fullLegalName,
   greetingName,
   safeInitials,
+  safeMemberName,
   looksLikeEmail,
 } from "../investorLabels";
 
@@ -130,5 +131,27 @@ describe("safeInitials (BUG-02)", () => {
     expect(safeInitials("New User")).toBe("");
     expect(safeInitials("")).toBe("");
     expect(safeInitials(null)).toBe("");
+  });
+});
+
+describe("safeMemberName (GROUP-D, rule #13)", () => {
+  it("returns a real name when present and non-raw", () => {
+    expect(safeMemberName("Jane Doe", "jane@firm.com", "u_123")).toBe("Jane Doe");
+    expect(safeMemberName("  Mary Watson ", null, "u_abc")).toBe("Mary Watson");
+  });
+  it("falls back to email when the name is null/empty", () => {
+    expect(safeMemberName(null, "jane@firm.com", "u_123")).toBe("jane@firm.com");
+    expect(safeMemberName("", "jane@firm.com", "u_123")).toBe("jane@firm.com");
+    expect(safeMemberName("   ", "jane@firm.com", "u_123")).toBe("jane@firm.com");
+  });
+  it("returns 'Pending member' when both name and email are absent — never a u_ id", () => {
+    expect(safeMemberName(null, null, "u_redeemed_123")).toBe("Pending member");
+    expect(safeMemberName("", "", "u_redeemed_123")).toBe("Pending member");
+    expect(safeMemberName(null, null, "u_redeemed_123")).not.toMatch(/^u_/);
+  });
+  it("NEVER returns a raw synthetic id even if one is passed as the name", () => {
+    expect(safeMemberName("u_redeemed_123", null, "u_redeemed_123")).not.toMatch(/^u_/);
+    expect(safeMemberName("u_redeemed_123", null, "u_redeemed_123")).toBe("Pending member");
+    expect(safeMemberName("u_redeemed_123", "jane@firm.com", "u_redeemed_123")).toBe("jane@firm.com");
   });
 });

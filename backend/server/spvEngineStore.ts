@@ -853,6 +853,59 @@ export const spvEngineStore = {
     return sub;
   },
 
+  /** B3 — PROJECTION of an authoritative LP cap-table commit.
+   *
+   *  The `commitFunded` ledger line (written at the route layer with
+   *  companyId=spv.id) is the SINGLE source of truth for an LP's committed
+   *  capital. This method merely projects that fact onto the SPV subscription
+   *  roster so the GP surface reflects it: it finds the LP's existing non-
+   *  withdrawn subscription (or creates one) and sets it to the terminal
+   *  `committed` state. It deliberately does NOT re-run the subscribe() money
+   *  gates (KYC / accreditation / e-sign / cap / min-check / dup) — those guard
+   *  the on-platform subscription flow, whereas this reflects a commit the
+   *  ledger has ALREADY recorded. Idempotent: re-projecting the same LP just
+   *  refreshes the existing row (never a duplicate). */
+  projectLpCommitted(
+    partnerId: string,
+    spvId: string,
+    data: { investorId: string; commitmentMinor: number; currency?: string; investorPersona?: string },
+  ): SpvSubscriptionDTO {
+    const s = this.getSpv(partnerId, spvId);
+    if (!s) throw new Error("SPV_NOT_FOUND");
+    if (!data.investorId) throw new Error("INVESTOR_ID_REQUIRED");
+    const now = nowIso();
+    const existing = (subsBySpv.get(spvId) ?? []).find((x) => x.investorId === data.investorId && x.status !== "withdrawn");
+    if (existing) {
+      if (Number.isFinite(data.commitmentMinor) && data.commitmentMinor > 0) existing.commitmentMinor = data.commitmentMinor;
+      existing.status = "committed";
+      existing.updatedAt = now;
+      this._persistSub(existing);
+      emit("spv.lp_committed", spvId, { partnerId, spvId, subscriptionId: existing.id, investorId: existing.investorId, projected: true });
+      return existing;
+    }
+    const sub: SpvSubscriptionDTO = {
+      id: newId("spvsub"),
+      spvId,
+      investorId: data.investorId,
+      investorPersona: (data.investorPersona as SpvSubscriptionDTO["investorPersona"]) ?? null,
+      commitmentMinor: Number.isFinite(data.commitmentMinor) && data.commitmentMinor > 0 ? data.commitmentMinor : 0,
+      wiredMinor: 0,
+      currency: data.currency ?? s.currency,
+      status: "committed",
+      kycRef: null,
+      accreditationRef: null,
+      subscriptionDocRef: null,
+      ownershipPct: null,
+      createdAt: now,
+      updatedAt: now,
+      revisionHash: "",
+    };
+    this._persistSub(sub);
+    pushInto(subsBySpv, spvId, sub);
+    emit("spv.lp_committed", spvId, { partnerId, spvId, subscriptionId: sub.id, investorId: sub.investorId, projected: true });
+    return sub;
+  },
+
   listSubscriptions(partnerId: string, spvId: string): SpvSubscriptionDTO[] {
     if (!this.getSpv(partnerId, spvId)) return [];
     return (subsBySpv.get(spvId) ?? []).slice();

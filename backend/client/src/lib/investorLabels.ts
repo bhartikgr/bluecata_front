@@ -111,6 +111,27 @@ export function greetingName(
 }
 
 /**
+ * Safe display name for a partner team member row (rule #13). NEVER returns a
+ * raw synthetic id (a `u_…` token such as the `u_redeemed_*` personas minted in
+ * userContext.ts): if `name` is present but is a raw id, it is discarded and we
+ * fall through to `email`, then to a stable `"Pending member"` placeholder. The
+ * server resolver already guarantees non-raw names; this is the client-side
+ * belt-and-suspenders so a raw id can never leak into the UI even if a future
+ * payload regresses.
+ */
+export function safeMemberName(
+  name: string | null | undefined,
+  email: string | null | undefined,
+  userId?: string | null,
+): string {
+  const trimmedName = (name ?? "").trim();
+  if (trimmedName && !/^u_/.test(trimmedName)) return trimmedName;
+  const trimmedEmail = (email ?? "").trim();
+  if (trimmedEmail && !/^u_/.test(trimmedEmail)) return trimmedEmail;
+  return "Pending member";
+}
+
+/**
  * Safe up-to-2-char initials from a display name. Never derives initials from
  * an email local-part or a placeholder; returns "" when nothing safe is found
  * (caller renders a neutral avatar glyph instead).

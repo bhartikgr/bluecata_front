@@ -53,6 +53,10 @@ import { getSoftCircle, updateSoftCircleStatus } from "./softCircleStore";
 // the founder for shares, only the wired $ amount).
 import { getRoundById } from "./roundsStore";
 import { log } from "./lib/logger";
+// v25.56 Avi wave item 4 — funding precondition is now a signed accreditation
+// self-declaration (KYC docs optional/non-blocking). Function declaration is
+// hoisted; only called at request time, so the module cycle is safe.
+import { hasAccreditedDeclaration } from "./investorComplianceRoutes";
 
 export type CommitState =
   | "invited"
@@ -857,21 +861,21 @@ export function registerCaptableCommitRoutes(app: Express): void {
         return res.status(409).json({ ok: false, error: "compliance_hold_active", tenantId: tenantForHold, message: "Funding is blocked until admin resolves the hold." });
       }
 
-      /* v25.4 — KYC + accreditation gate. Admin role bypasses (admins resolve
-       * compliance manually). Defaults ON; can be disabled via
-       * KYC_ENFORCE_WIRE_FUNDED=0 for backfills. */
+      /* v25.56 Avi wave item 4 — funding precondition swapped from KYC to a
+       * SIGNED ACCREDITATION SELF-DECLARATION. KYC document upload stays
+       * available but is NO LONGER a funding precondition. Admin role bypasses
+       * (admins resolve compliance manually). Fail-closed: no valid declaration
+       * ⇒ 412. Resolution of the investor userId is unchanged from the prior
+       * KYC gate (sc.investorUserId). */
       const investorIdForKyc = sc.investorUserId ?? "";
-      if (!id.isAdmin && investorIdForKyc) {
-        const kycGate = checkInvestorKycForWireFunded(investorIdForKyc);
-        if (!kycGate.ok) {
-          return res.status(412).json({
-            ok: false,
-            error: kycGate.code ?? "KYC_REQUIRED",
-            message: kycGate.message,
-            investorId: investorIdForKyc,
-            resolutionUrl: kycGate.resolutionUrl,
-          });
-        }
+      if (!id.isAdmin && investorIdForKyc && !hasAccreditedDeclaration(investorIdForKyc)) {
+        return res.status(412).json({
+          ok: false,
+          error: "ACCREDITATION_REQUIRED",
+          message: "Investor must sign the accredited-investor self-declaration before this round can be marked funded.",
+          investorId: investorIdForKyc,
+          resolutionUrl: `/investor/accreditation?investorId=${encodeURIComponent(investorIdForKyc)}`,
+        });
       }
 
       // Build the funded-queue entry from the durable soft-circle. invitationId

@@ -95,7 +95,7 @@ export default function PartnerTasks() {
         )}
       </div>
 
-      {isLoading && <div className="text-sm text-slate-500" data-testid="tasks-loading">Loading…</div>}
+      {isLoading && <div className="text-sm text-[var(--cv-color-text-muted)]" data-testid="tasks-loading">Loading…</div>}
       {/* v25.15 NM4 — explicit error branch. */}
       {isError && (
         <div
@@ -118,7 +118,7 @@ export default function PartnerTasks() {
             <Card key={t.id} className="p-3 flex justify-between items-center" data-testid={`partner-task-${t.id}`}>
               <div>
                 <div className="font-medium">{t.title}</div>
-                <div className="text-xs text-slate-500">{t.status}{t.dueDate ? ` · due ${t.dueDate}` : ""}</div>
+                <div className="text-xs text-[var(--cv-color-text-muted)]">{t.status}{t.dueDate ? ` · due ${t.dueDate}` : ""}</div>
               </div>
             </Card>
           ))}
@@ -128,7 +128,7 @@ export default function PartnerTasks() {
       {tasks.length > 0 && view === "board" && (
         <div className="grid grid-cols-3 gap-4" data-testid="partner-tasks-board">
           {(["open", "in_progress", "done"] as const).map((col) => (
-            <div key={col} className="bg-slate-50 p-3 rounded">
+            <div key={col} className="bg-[var(--cv-color-surface-2)] p-3 rounded">
               <div className="font-medium mb-2 capitalize">{col.replace("_", " ")}</div>
               {tasks.filter((t) => t.status === col).map((t) => (
                 <Card key={t.id} className="p-2 mb-2 text-sm" data-testid={`partner-task-board-${t.id}`}>
@@ -141,7 +141,7 @@ export default function PartnerTasks() {
       )}
 
       {tasks.length > 0 && view === "calendar" && (
-        <div data-testid="partner-tasks-calendar" className="text-sm text-slate-600">
+        <div data-testid="partner-tasks-calendar" className="text-sm text-[var(--cv-color-text-secondary)]">
           Calendar view — tasks grouped by due date.
           {tasks.filter((t) => t.dueDate).map((t) => (
             <div key={t.id} className="border-b py-2">

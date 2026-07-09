@@ -1467,6 +1467,57 @@ export function buildDerivedContactById(id: string): AdminContact | null {
   return null;
 }
 
+/**
+ * v25.56 Avi item 3 — MATERIALIZE a virtual `derived_inv_` contact into the real
+ * `contacts` table so admin write actions (verify / suspend / archive / restore)
+ * can persist against a real row. Virtual derived contacts are computed on-read
+ * from redeemed invitations and never inserted, so the write routes' DB-first
+ * lookup 404s. This inserts the derived projection at version 1 (proper hash
+ * chain) preserving its `derived_inv_` id; the subsequent updateContact() call
+ * then applies the mutation as version 2.
+ *
+ * Idempotent: returns the already-materialized row if present. Returns null when
+ * the id is not a resolvable derived contact.
+ */
+export function materializeDerivedContact(id: string, actor: string): AdminContact | null {
+  if (!id.startsWith("derived_inv_")) return null;
+  const already = resolveContactDbFirst(id);
+  if (already) return already;
+
+  const derived = buildDerivedContactById(id);
+  if (!derived) return null;
+
+  const now = new Date().toISOString();
+  const contact: AdminContact = {
+    ...derived,
+    createdBy: actor || "system",
+    updatedBy: actor || "system",
+    createdAt: derived.createdAt || now,
+    updatedAt: now,
+    version: 1,
+    prevRevisionHash: "0".repeat(64),
+    revisionHash: "",
+  };
+  contact.revisionHash = computeRevisionHash(contact);
+
+  const db = getDb();
+  db.transaction((tx: any) => {
+    persistContact(tx, contact);
+    const rev = buildRevision(contact, "contact.materialized");
+    persistRevision(tx, rev);
+    contacts.set(contact.id, contact);
+    const arr = revisions.get(contact.id) ?? [];
+    arr.push(rev);
+    revisions.set(contact.id, arr);
+  });
+
+  appendAdminAudit(actor, `contact:${contact.id}`, "contact.materialized", {
+    legalName: contact.legalName,
+    source: "derived_inv",
+  });
+  return contact;
+}
+
 export function registerAdminContactsRoutes(app: Express): void {
   if (DEMO_SEED_ENABLED) seedContacts();
 
@@ -1670,7 +1721,10 @@ export function registerAdminContactsRoutes(app: Express): void {
   // ── PATCH /api/admin/contacts/:id ─────────────────────────
   app.patch("/api/admin/contacts/:id", (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"];
-    const contact = resolveContactDbFirst(String(req.params.id)); // v25.34 (BLOCKER 2): DB-first lookup
+    // v25.56 Avi item 3 — resolve a virtual derived_inv_ contact READ-ONLY for
+    // the preview; the real contacts row is materialized ONLY on the applied
+    // (x-confirm) path below, so a preview/diff request never inserts a row.
+    const contact = resolveContactDbFirst(String(req.params.id)) ?? buildDerivedContactById(String(req.params.id)); // v25.34 (BLOCKER 2): DB-first lookup
     if (!contact) return res.status(404).json({ ok: false, error: "not_found" });
 
     const patch = req.body ?? {};
@@ -1706,6 +1760,9 @@ export function registerAdminContactsRoutes(app: Express): void {
       return res.status(400).json({ ok: false, error: "checkSizeMaxMinor must be an integer" });
     }
 
+    // v25.56 Avi item 3 — applied path only: materialize the derived_inv_
+    // projection into a real contacts row before the mutation persists.
+    if (String(req.params.id).startsWith("derived_inv_")) materializeDerivedContact(String(req.params.id), actor);
     const updated = updateContact(req.params.id, patch, actor);
     if (!updated) return res.status(404).json({ ok: false, error: "not_found" });
 
@@ -1722,7 +1779,10 @@ export function registerAdminContactsRoutes(app: Express): void {
   // ── POST /api/admin/contacts/:id/verify ───────────────────
   app.post("/api/admin/contacts/:id/verify", (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"];
-    const contact = resolveContactDbFirst(String(req.params.id)); // v25.34 (BLOCKER 2): DB-first lookup
+    // v25.56 Avi item 3 — resolve a virtual derived_inv_ contact READ-ONLY for
+    // the preview; the real contacts row is materialized ONLY on the applied
+    // (x-confirm) path below, so a preview/diff request never inserts a row.
+    const contact = resolveContactDbFirst(String(req.params.id)) ?? buildDerivedContactById(String(req.params.id)); // v25.34 (BLOCKER 2): DB-first lookup
     if (!contact) return res.status(404).json({ ok: false, error: "not_found" });
 
     const actor = String((req as any).userContext?.userId ?? "") /* v25.18 Lane B NC1: actor from session only */;
@@ -1738,6 +1798,9 @@ export function registerAdminContactsRoutes(app: Express): void {
       });
     }
 
+    // v25.56 Avi item 3 — applied path only: materialize the derived_inv_
+    // projection into a real contacts row before the mutation persists.
+    if (String(req.params.id).startsWith("derived_inv_")) materializeDerivedContact(String(req.params.id), actor);
     const updated = updateContact(req.params.id, { verification: "verified" }, actor, "contact.verified");
     if (!updated) return res.status(404).json({ ok: false, error: "not_found" });
 
@@ -1754,7 +1817,10 @@ export function registerAdminContactsRoutes(app: Express): void {
   // ── POST /api/admin/contacts/:id/suspend ──────────────────
   app.post("/api/admin/contacts/:id/suspend", (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"];
-    const contact = resolveContactDbFirst(String(req.params.id)); // v25.34 (BLOCKER 2): DB-first lookup
+    // v25.56 Avi item 3 — resolve a virtual derived_inv_ contact READ-ONLY for
+    // the preview; the real contacts row is materialized ONLY on the applied
+    // (x-confirm) path below, so a preview/diff request never inserts a row.
+    const contact = resolveContactDbFirst(String(req.params.id)) ?? buildDerivedContactById(String(req.params.id)); // v25.34 (BLOCKER 2): DB-first lookup
     if (!contact) return res.status(404).json({ ok: false, error: "not_found" });
 
     const actor = String((req as any).userContext?.userId ?? "") /* v25.18 Lane B NC1: actor from session only */;
@@ -1771,6 +1837,9 @@ export function registerAdminContactsRoutes(app: Express): void {
       });
     }
 
+    // v25.56 Avi item 3 — applied path only: materialize the derived_inv_
+    // projection into a real contacts row before the mutation persists.
+    if (String(req.params.id).startsWith("derived_inv_")) materializeDerivedContact(String(req.params.id), actor);
     const updated = updateContact(
       req.params.id,
       { status: "suspended", notes: contact.notes + (reason ? `\n\n[SUSPENDED] ${reason}` : "\n\n[SUSPENDED]") },
@@ -1787,7 +1856,10 @@ export function registerAdminContactsRoutes(app: Express): void {
   // ── POST /api/admin/contacts/:id/archive ──────────────────
   app.post("/api/admin/contacts/:id/archive", (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"];
-    const contact = resolveContactDbFirst(String(req.params.id)); // v25.34 (BLOCKER 2): DB-first lookup
+    // v25.56 Avi item 3 — resolve a virtual derived_inv_ contact READ-ONLY for
+    // the preview; the real contacts row is materialized ONLY on the applied
+    // (x-confirm) path below, so a preview/diff request never inserts a row.
+    const contact = resolveContactDbFirst(String(req.params.id)) ?? buildDerivedContactById(String(req.params.id)); // v25.34 (BLOCKER 2): DB-first lookup
     if (!contact) return res.status(404).json({ ok: false, error: "not_found" });
 
     const actor = String((req as any).userContext?.userId ?? "") /* v25.18 Lane B NC1: actor from session only */;
@@ -1803,6 +1875,9 @@ export function registerAdminContactsRoutes(app: Express): void {
       });
     }
 
+    // v25.56 Avi item 3 — applied path only: materialize the derived_inv_
+    // projection into a real contacts row before the mutation persists.
+    if (String(req.params.id).startsWith("derived_inv_")) materializeDerivedContact(String(req.params.id), actor);
     const updated = updateContact(req.params.id, { status: "archived" }, actor, "contact.archived");
     if (!updated) return res.status(404).json({ ok: false, error: "not_found" });
 
@@ -1819,7 +1894,10 @@ export function registerAdminContactsRoutes(app: Express): void {
   // ── POST /api/admin/contacts/:id/restore ──────────────────
   app.post("/api/admin/contacts/:id/restore", (req: Request, res: Response) => {
     const confirm = req.headers["x-confirm"];
-    const contact = resolveContactDbFirst(String(req.params.id)); // v25.34 (BLOCKER 2): DB-first lookup
+    // v25.56 Avi item 3 — resolve a virtual derived_inv_ contact READ-ONLY for
+    // the preview; the real contacts row is materialized ONLY on the applied
+    // (x-confirm) path below, so a preview/diff request never inserts a row.
+    const contact = resolveContactDbFirst(String(req.params.id)) ?? buildDerivedContactById(String(req.params.id)); // v25.34 (BLOCKER 2): DB-first lookup
     if (!contact) return res.status(404).json({ ok: false, error: "not_found" });
 
     const actor = String((req as any).userContext?.userId ?? "") /* v25.18 Lane B NC1: actor from session only */;
@@ -1835,6 +1913,9 @@ export function registerAdminContactsRoutes(app: Express): void {
       });
     }
 
+    // v25.56 Avi item 3 — applied path only: materialize the derived_inv_
+    // projection into a real contacts row before the mutation persists.
+    if (String(req.params.id).startsWith("derived_inv_")) materializeDerivedContact(String(req.params.id), actor);
     const updated = updateContact(req.params.id, { status: "active" }, actor, "contact.restored");
     if (!updated) return res.status(404).json({ ok: false, error: "not_found" });
 

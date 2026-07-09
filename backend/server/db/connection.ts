@@ -749,6 +749,10 @@ function applyV2533PartnerPaymentSchema(db: any) {
     // These are the brief's `consortium_partners` columns, retargeted.
     ["contacts", "ALTER TABLE contacts ADD COLUMN fee_override_json TEXT"],
     ["contacts", "ALTER TABLE contacts ADD COLUMN commission_override_pct REAL"],
+    // GROUP C (migration 0105) — per-partner arrangement (subscription model,
+    // report-only quota, fixed rev-share config). Mirrors fee_override_json in
+    // placement; the per-partner PRICE stays in fee_override_json (no dup).
+    ["contacts", "ALTER TABLE contacts ADD COLUMN arrangement_json TEXT"],
     ["contacts", "ALTER TABLE contacts ADD COLUMN subscription_id TEXT"],
     ["contacts", "ALTER TABLE contacts ADD COLUMN tax_form_collected_at TEXT"],
     ["contacts", "ALTER TABLE contacts ADD COLUMN partner_agreement_version TEXT"],
@@ -805,6 +809,19 @@ function applyV2533PartnerPaymentSchema(db: any) {
     ["consortium_applications", "ALTER TABLE consortium_applications ADD COLUMN agreement_signed_name TEXT"],
     ["consortium_applications", "ALTER TABLE consortium_applications ADD COLUMN agreement_signed_at TEXT"],
     ["consortium_applications", "ALTER TABLE consortium_applications ADD COLUMN agreement_signature_hash TEXT"],
+
+    // GROUP F1 (migration 0106) — expand the EXISTING person-level partner CRM
+    // to full parity, ON THE SAME TABLE the CP-008 hash chain already covers
+    // (no second table → chain is not forked). Seven additive columns mirroring
+    // investor_crm_contacts (stage/note_log/tasks/starred) plus company_id cross-
+    // link and source_kind/source_ref provenance for from-source imports.
+    ["partner_crm_contacts", "ALTER TABLE partner_crm_contacts ADD COLUMN stage TEXT"],
+    ["partner_crm_contacts", "ALTER TABLE partner_crm_contacts ADD COLUMN company_id TEXT"],
+    ["partner_crm_contacts", "ALTER TABLE partner_crm_contacts ADD COLUMN note_log TEXT"],
+    ["partner_crm_contacts", "ALTER TABLE partner_crm_contacts ADD COLUMN tasks TEXT"],
+    ["partner_crm_contacts", "ALTER TABLE partner_crm_contacts ADD COLUMN starred INTEGER NOT NULL DEFAULT 0"],
+    ["partner_crm_contacts", "ALTER TABLE partner_crm_contacts ADD COLUMN source_kind TEXT"],
+    ["partner_crm_contacts", "ALTER TABLE partner_crm_contacts ADD COLUMN source_ref TEXT"],
   ];
   for (const [table, sql] of alters) {
     try {
@@ -821,6 +838,11 @@ function applyV2533PartnerPaymentSchema(db: any) {
     "CREATE INDEX IF NOT EXISTS idx_pbe_entry_kind ON partner_billing_entries(entry_kind)",
     "CREATE INDEX IF NOT EXISTS idx_pbe_spv_fund ON partner_billing_entries(spv_fund_id)",
     "CREATE INDEX IF NOT EXISTS idx_spv_sourcing_partner ON spvs(sourcing_partner_id)",
+    // GROUP F1 (migration 0106) — parity partial UNIQUE email index (self-
+    // sufficient; does NOT reference dedup_exempt, unlike 0098) + company_id
+    // cross-link lookup index. Both mirrored VERBATIM in the 0106 SQL file.
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_partner_crm_email_parity ON partner_crm_contacts (partner_id, lower(trim(email))) WHERE email IS NOT NULL AND trim(email) <> '' AND deleted_at IS NULL",
+    "CREATE INDEX IF NOT EXISTS idx_partner_crm_company ON partner_crm_contacts (partner_id, company_id)",
   ];
   for (const sql of v2533Indices) {
     try { db.exec(sql); } catch { /* tolerated */ }

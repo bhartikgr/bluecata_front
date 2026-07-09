@@ -125,7 +125,7 @@ export function PartnerPortfolioProfileDialog({
         </div>
 
         {profileQ.isLoading ? (
-          <div className="text-sm text-slate-500">Loading…</div>
+          <div className="text-sm text-[var(--cv-color-text-muted)]">Loading…</div>
         ) : (
           <div className="space-y-2" data-testid={`portfolio-step-panel-${step}`}>
             {step === 1 && (

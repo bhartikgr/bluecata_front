@@ -103,7 +103,7 @@ export default function PartnerTaxForm() {
   return (
     <PartnerShell title="Tax Forms" tier={me.tier} subRole={me.subRole} partnerName={me.identity.name}>
       <div
-        className="mb-4 rounded-md border border-[rgba(4,30,65,0.2)] bg-[rgba(4,30,65,0.05)] p-4 text-sm text-[#041e41]"
+        className="mb-4 rounded-md border border-[rgba(4,30,65,0.2)] bg-[rgba(4,30,65,0.05)] p-4 text-sm text-[var(--cv-color-navy)]"
         data-testid="partner-taxform-explainer"
       >
         <p className="font-medium">Tax compliance for commission & fee payouts.</p>
@@ -122,7 +122,7 @@ export default function PartnerTaxForm() {
       {!isForbidden && (
         <>
           <Card className="mb-4 p-4" data-testid="partner-taxform-form">
-            <h2 className="text-sm font-semibold text-slate-900 mb-3">Submit a tax form</h2>
+            <h2 className="text-sm font-semibold text-[var(--cv-color-text)] mb-3">Submit a tax form</h2>
             <div className="grid gap-4 sm:grid-cols-2">
               {/* v25.50 Phase 7 (10) — Jurisdiction (canonical country) FIRST,
                  before the dependent Form type / Tax ID fields. */}
@@ -148,7 +148,7 @@ export default function PartnerTaxForm() {
               </div>
               <div className="space-y-1.5">
                 <Label className="text-xs">Expires at (optional, ISO date)</Label>
-                <Input value={form.expiresAt} onChange={(e) => setForm((f) => ({ ...f, expiresAt: e.target.value }))} placeholder="2029-12-31" data-testid="input-taxform-expires" />
+                <Input value={form.expiresAt} onChange={(e) => setForm((f) => ({ ...f, expiresAt: e.target.value }))} placeholder="YYYY-MM-DD" data-testid="input-taxform-expires" />
               </div>
               {/* v25.50 Phase 7 (10) — real file upload OR a document URL. */}
               <div className="space-y-1.5">
@@ -160,7 +160,7 @@ export default function PartnerTaxForm() {
                   disabled={uploading}
                   onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadFile(f); }}
                 />
-                {uploading && <div className="text-xs text-slate-500">Uploading…</div>}
+                {uploading && <div className="text-xs text-[var(--cv-color-text-muted)]">Uploading…</div>}
               </div>
               <div className="space-y-1.5">
                 <Label className="text-xs">Document URL (optional)</Label>
@@ -178,8 +178,8 @@ export default function PartnerTaxForm() {
             </div>
           </Card>
 
-          <h2 className="text-sm font-semibold text-slate-900 mb-2">Forms on file</h2>
-          {isLoading && <div className="text-sm text-slate-500" data-testid="partner-taxform-loading">Loading…</div>}
+          <h2 className="text-sm font-semibold text-[var(--cv-color-text)] mb-2">Forms on file</h2>
+          {isLoading && <div className="text-sm text-[var(--cv-color-text-muted)]" data-testid="partner-taxform-loading">Loading…</div>}
           {!isLoading && forms.length === 0 && (
             <PartnerEmptyState title="No tax forms on file" description="Submit a W-9, W-8BEN, or T4A above so payouts can be remitted." />
           )}
@@ -187,7 +187,7 @@ export default function PartnerTaxForm() {
             <Card className="overflow-hidden" data-testid="partner-taxform-table">
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
-                  <thead className="border-b bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                  <thead className="border-b bg-[var(--cv-color-surface-2)] text-left text-xs uppercase tracking-wide text-[var(--cv-color-text-muted)]">
                     <tr>
                       <th className="px-4 py-2">Form</th>
                       <th className="px-4 py-2">Jurisdiction</th>
@@ -205,8 +205,8 @@ export default function PartnerTaxForm() {
                         <td className="px-4 py-2">{formatDate(tf.expiresAt)}</td>
                         <td className="px-4 py-2">
                           {tf.documentUrl
-                            ? <a href={tf.documentUrl} target="_blank" rel="noreferrer" className="text-[#cc0001] hover:underline">View</a>
-                            : <span className="text-slate-400">—</span>}
+                            ? <a href={tf.documentUrl} target="_blank" rel="noreferrer" className="text-[var(--cv-color-primary)] hover:underline">View</a>
+                            : <span className="text-[var(--cv-color-text-faint)]">—</span>}
                         </td>
                       </tr>
                     ))}

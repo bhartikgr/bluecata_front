@@ -18,11 +18,29 @@ import { apiRequest, ApiError } from "@/lib/queryClient";
 export type PartnerTier = "catalyst" | "builder" | "amplifier" | "nexus" | "founding_member";
 export type PartnerSubRole = "managing_partner" | "associate" | "bd" | "analyst" | "viewer";
 
+/* GROUP F3 — admin↔partner reconciliation status. Mirrors the server
+ * ContactStatus. A partner whose status !== "active" (suspended/archived) is
+ * still allowed to REACH the shell so PartnerShell can render a non-blocking
+ * status banner — this is the CLIENT mirror of the server `requirePartnerSelf`
+ * relaxation, and it applies to the /me bootstrap ONLY. All data pages remain
+ * gated by the server's hard requirePartnerAuth (a suspended partner gets 403
+ * on every other /api/partner/me/* route), so no client route guard is
+ * loosened here. */
+export type PartnerStatus = "active" | "inactive" | "suspended" | "archived";
+
 export interface PartnerIdentity {
   partnerId: string;
   tier: PartnerTier;
   subRole: PartnerSubRole;
   identity: { userId: string; email: string; name: string };
+  /* GROUP F3 — additive, DISPLAY-only reconciliation fields from GET /me.
+   * Optional so older/mis-config payloads (or effectivePlan null) degrade
+   * gracefully. commissionPct is DISPLAY-only (server-derived percent); it
+   * NEVER drives any calculation. */
+  status?: PartnerStatus | null;
+  commissionPct?: number | null;
+  partnerType?: string | null;
+  region?: string | null;
 }
 
 export interface PartnerRoleState {
