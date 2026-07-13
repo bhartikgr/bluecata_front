@@ -139,12 +139,21 @@ export default function InvestorGlossaryPage() {
           <main className="space-y-4">
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              {/* FIX #10 (Wave 3) — empty search is VALID (shows ALL terms), not
+                  an error. The shared <Input> uses focus-visible:ring-ring, and
+                  --ring is the brand RED (index.css :122). Combined with the
+                  previous `autoFocus`, the search field grabbed a RED focus ring
+                  the instant the page loaded, reading as an invalid/error state
+                  even though nothing is wrong. Fix at the component-class level
+                  (no sacred-token edit): drop the load-time autoFocus so the
+                  field isn't force-focused red on mount, and override the focus
+                  ring to a NEUTRAL token (ring-input, the soft gray-blue border
+                  color). Genuine invalid state is never reached here. */}
               <Input
-                autoFocus
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
                 placeholder="Search terms (e.g. 'cap', 'liquidation', 'cliff')…"
-                className="pl-9 h-10"
+                className="pl-9 h-10 focus-visible:ring-input"
                 data-testid="input-glossary-search"
               />
               {(q || letter || category) && (

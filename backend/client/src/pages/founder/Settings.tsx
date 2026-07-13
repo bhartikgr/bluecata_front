@@ -170,7 +170,10 @@ export default function Settings() {
     if (typeof p.visibleToCollectiveNetwork === "boolean") setVisibleNet(p.visibleToCollectiveNetwork);
   }, [privacyQ.data]);
 
-  // Sprint 18 T11.1 — timezone selector (browser-detected default)
+  // Sprint 18 T11.1 — timezone selector.
+  // AVI-TZ (Wave 3) — initial value is the browser tz ONLY as a fallback; the
+  // persisted me.timezone is hydrated in the effect below (see meQ hydration)
+  // so the Select displays the SAVED value, matching the investor Settings fix.
   const [timezone, setTimezone] = useState<string>(() => detectBrowserTimezone());
 
   // Group timezones by region for the selector
@@ -239,6 +242,10 @@ export default function Settings() {
     lastName?: string;
     email?: string;
     title?: string;
+    // AVI-TZ (Wave 3) — the persisted timezone from PATCH /api/auth/me, needed
+    // to hydrate the timezone Select so it shows the SAVED value, not the
+    // browser default. Backend already returns this (rich /api/auth/me handler).
+    timezone?: string;
   };
   const meQ = useQuery<MeShape>({
     queryKey: ["/api/auth/me"],
@@ -270,6 +277,15 @@ export default function Settings() {
     if (e) setProfileEmail(e);
     if (t) setProfileTitle(t);
   }, [meQ.data]);
+
+  // AVI-TZ (Wave 3) — hydrate the timezone Select from the PERSISTED value so it
+  // shows the saved me.timezone rather than the browser default. Browser tz is
+  // used only when nothing is persisted (the useState initializer above). This
+  // mirrors the investor Settings fix so both roles display the saved tz.
+  useEffect(() => {
+    const tz = meQ.data?.timezone;
+    if (tz) setTimezone(tz);
+  }, [meQ.data?.timezone]);
 
   // Team members are sourced from the API; show empty state if none.
   type TeamMember = { id: string; name: string; email: string; role: string; joined: string };

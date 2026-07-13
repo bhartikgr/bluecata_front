@@ -18,6 +18,13 @@
  *     User is also added to the cap-table channel (security issued).
  *   - On soft-circle.cancelled (declined / withdrawn) → user removed.
  *   - On round.closed → channel.archivedAt set; participants frozen for read.
+ *
+ * SPINE-0 (Wave 2): these rules are already consistent with the canonical
+ * investor ladder and MUST NOT be forked. The client-side derived view of the
+ * same unlock semantics is `useInvestorSpine().channelUnlockState`
+ * (client/src/lib/investor/investorSpine.ts): soft_circled → soft-circle
+ * channel for that round; funded → cap-table channel; accepting alone unlocks
+ * nothing. Keep both in lock-step — this module stays the server-event engine.
  */
 
 import type { Channel } from "./types";

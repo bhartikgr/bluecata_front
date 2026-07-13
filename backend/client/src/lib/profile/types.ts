@@ -277,7 +277,20 @@ export interface InvestorProfileCore {
   countryOfTaxResidencyCode: string;
   taxIdOrNationalId: string;
   /** kyc_documents — multi-file. Each entry: filename + size + sha256 hash. */
-  kycDocuments: Array<{ name: string; sizeBytes: number; sha256: string; uploadedAt: string }>;
+  // v26.1.x WAVE 2.5 AVI-B — additive optional reference fields so server-returned
+  // docs carrying the durable storage reference (id/mime/size/storageKey/backend)
+  // typecheck. The original 4 fields stay required for backward compatibility.
+  kycDocuments: Array<{
+    name: string;
+    sizeBytes: number;
+    sha256: string;
+    uploadedAt: string;
+    id?: string;
+    mime?: string;
+    size?: number;
+    storageKey?: string;
+    backend?: "s3" | "fs";
+  }>;
   profilePictureName: string | null;
   /** kyc_variant (DERIVED) — set from countryOfTaxResidencyCode. */
   kycVariant: KycVariantValue;
@@ -544,11 +557,22 @@ export const investorProfileCoreSchema = z.object({
   investmentEntityJurisdiction: countryEnum.or(z.literal("")).nullable(),
   countryOfTaxResidencyCode: countryEnum.or(z.literal("")),
   taxIdOrNationalId: z.string().max(80),
+  // v26.1.x WAVE 2.5 AVI-B — the KYC doc entry is a FILE REFERENCE (never the
+  // binary). The original {name, sizeBytes, sha256, uploadedAt} fields are kept
+  // byte-compatible for existing records; the reference fields (id, mime, size,
+  // storageKey, backend) are ADDITIVE + optional so legacy docs still validate
+  // and NO migration is needed (additive JSON on the existing profile record).
   kycDocuments: z.array(z.object({
     name: z.string(),
     sizeBytes: z.number().nonnegative(),
     sha256: z.string(),
     uploadedAt: z.string(),
+    // Additive reference fields (optional for backward compatibility):
+    id: z.string().optional(),
+    mime: z.string().optional(),
+    size: z.number().nonnegative().optional(),
+    storageKey: z.string().optional(),
+    backend: z.enum(["s3", "fs"]).optional(),
   })),
   profilePictureName: z.string().nullable(),
   kycVariant: kycVariantEnum,

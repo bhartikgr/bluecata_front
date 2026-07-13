@@ -796,7 +796,7 @@ function MaIntelligenceSection({ intel, companyId }: { intel: MaIntelligence; co
  <div>
  <div className="text-xs uppercase text-muted-foreground tracking-wide font-medium mb-2">Comparable exits (24 mo)</div>
  <ul className="space-y-2">
- {intel.comparableExits.map(c => (
+ {(intel.comparableExits ?? []).map(c => (
  <li key={c.target} className="flex items-start gap-2 text-sm" data-testid={`row-comp-${c.target}`}>
  <ChevronRight className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
  <div>
@@ -805,9 +805,9 @@ function MaIntelligenceSection({ intel, companyId }: { intel: MaIntelligence; co
  </div>
  </li>
  ))}
- {intel.comparableExits.length === 0 && <li className="text-xs text-muted-foreground">No qualifying comps in window.</li>}
+ {(intel.comparableExits ?? []).length === 0 && <li className="text-xs text-muted-foreground">No qualifying comps in window.</li>}
  </ul>
- <div className="mt-3 text-xs text-muted-foreground">Revenue multiple range: <span className="font-mono">{intel.revenueMultipleRange.low.toFixed(1)}x – {intel.revenueMultipleRange.high.toFixed(1)}x</span></div>
+ <div className="mt-3 text-xs text-muted-foreground">Revenue multiple range: <span className="font-mono">{(intel.revenueMultipleRange?.low ?? 0).toFixed(1)}x – {(intel.revenueMultipleRange?.high ?? 0).toFixed(1)}x</span></div>
  </div>
  </div>
  </CardContent>

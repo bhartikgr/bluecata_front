@@ -19,6 +19,19 @@ import { ArrowRight, Check, Activity, AlertTriangle, Users } from "lucide-react"
 import { fmtUSD, fmtPct, fmtDate } from "@/lib/format";
 import type { MaIntelligence } from "@shared/schema";
 import { useRealtimeSync } from "@/lib/realtimeSync";
+// SPINE-0 (Wave 2): the ONE canonical source of investor ladder derivation.
+// This surface must NOT re-derive `state === x` locally — it groups by spine
+// buckets. FIX #3 (count parity, Option A): the "Active" (pending) tab counts
+// and shows the IDENTICAL set as the Dashboard pending badge —
+// spine.pendingInvitations = invited + viewed + accepted (isPendingStage).
+// soft_circled/confirmed/signed live in the "Soft-circle" tab (isSoftCircledStage),
+// so no invitation is ever dropped from every tab.
+import {
+  useInvestorSpine,
+  isPendingStage,
+  isSoftCircledStage,
+  type NormalizedStage,
+} from "@/lib/investor/investorSpine";
 
 type Inv = {
   id: string;
@@ -36,6 +49,37 @@ type Inv = {
 
 type TabFilter = "all" | "pending" | "soft_circled" | "declined" | "expired";
 
+/**
+ * Map a TabFilter onto a spine-bucket predicate over the canonical
+ * NormalizedStage. This is the single place that decides tab membership; it
+ * uses the SAME spine derivations every surface reads — never exact
+ * `state === tab` equality.
+ *
+ * FIX #3 (count parity, Option A): the "Active" (pending) tab === the Dashboard
+ * pending badge === spine.pendingInvitations = isPendingStage (invited + viewed
+ * + accepted). soft_circled/confirmed/signed are NOT in "Active" — they belong
+ * to the "Soft-circle" tab (isSoftCircledStage). Every ladder invitation short
+ * of funded therefore lands in exactly one tab (pending OR soft_circled),
+ * declined/expired/revoked in their own tabs — no invitation is silently
+ * dropped from all tabs. (funded is a holding, surfaced in Portfolio.)
+ */
+function matchesTab(tab: Exclude<TabFilter, "all">, stage: NormalizedStage): boolean {
+  switch (tab) {
+    // "Active" (pending tab key) = the Ozan-locked pending set, byte-identical
+    // to spine.pendingInvitations: invited + viewed + accepted only.
+    case "pending":
+      return isPendingStage(stage);
+    // Soft-circle tab absorbs soft_circled + confirmed + signed (on/past the
+    // soft-circle rung, short of funded) — nothing here is dropped.
+    case "soft_circled":
+      return isSoftCircledStage(stage);
+    case "declined":
+      return stage === "declined";
+    case "expired":
+      return stage === "expired" || stage === "revoked";
+  }
+}
+
 const TAB_LABELS: { key: TabFilter; label: string }[] = [
   { key: "all", label: "All" },
   { key: "pending", label: "Active" },
@@ -51,30 +95,47 @@ export default function Invitations() {
   const inv = useQuery<Inv[]>({ queryKey: ["/api/investor/invitations"], staleTime: 30_000 });
   const [activeTab, setActiveTab] = useState<TabFilter>("all");
 
+  // SPINE-0 (Wave 2): read the canonical ladder-attached invitations from the
+  // spine. Every count and filter below is derived from spine buckets — this
+  // surface no longer re-buckets raw `state` locally.
+  const spine = useInvestorSpine();
+  const spineInvs = spine.allInvitations;
+
+  // The card renderer still wants the enriched Inv rows. Build a stage lookup
+  // from the spine keyed by id so grouping stays spine-authoritative while the
+  // card keeps its rich fields.
+  const stageById = useMemo(() => {
+    const m = new Map<string, NormalizedStage>();
+    for (const si of spineInvs) m.set(si.id, si.stage);
+    return m;
+  }, [spineInvs]);
+
   const allData = inv.data ?? [];
 
-  // B2: useMemo to compute counts by state from live data
+  // B2 / Wave 2: counts derived from spine buckets (NOT exact `state === key`).
+  // FIX #3: "pending" (label "Active") counts EXACTLY invited+viewed+accepted,
+  // identical to spine.pendingInvitations that the Dashboard badge reads.
   const tabCounts = useMemo<Record<TabFilter, number>>(() => {
-    const counts: Record<TabFilter, number> = {
-      all: allData.length,
-      pending: 0,
-      soft_circled: 0,
-      declined: 0,
-      expired: 0,
+    return {
+      all: spineInvs.length,
+      pending: spineInvs.filter((si) => matchesTab("pending", si.stage)).length,
+      soft_circled: spineInvs.filter((si) => matchesTab("soft_circled", si.stage)).length,
+      declined: spineInvs.filter((si) => matchesTab("declined", si.stage)).length,
+      expired: spineInvs.filter((si) => matchesTab("expired", si.stage)).length,
     };
-    for (const i of allData) {
-      const key = i.state as TabFilter;
-      if (key in counts && key !== "all") {
-        counts[key]++;
-      }
-    }
-    return counts;
-  }, [allData]);
+  }, [spineInvs]);
 
   const filtered =
     activeTab === "all"
       ? allData
-      : allData.filter((i) => i.state === activeTab);
+      : allData.filter((i) => {
+          const stage = stageById.get(i.id);
+          // Fail-closed: if the spine hasn't attached a stage for this row yet
+          // (e.g. mid-hydration), normalize its own state via the same bucket
+          // predicate would still be spine-consistent, but during the gap we
+          // simply hide it rather than mis-bucket.
+          return stage !== undefined && matchesTab(activeTab, stage);
+        });
 
   // DEF-050: removed the blanket invalidateQueries on every mount (was causing flicker).
   // The realtimeSync.ts already maps "invitation" aggregate → "/api/investor/invitations".

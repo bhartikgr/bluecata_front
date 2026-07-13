@@ -119,7 +119,10 @@ async function tryRecoverFromCompanyNotFound(res: Response): Promise<string | nu
 export async function apiRequest(
   method: string,
   url: string,
-  data?: unknown | undefined,
+  // v26.1.x WAVE 2.5 AVI-B — accept FormData cleanly (in addition to JSON
+  // bodies) so multipart callers (e.g. KYC upload) no longer need an unsafe
+  // `as unknown as Record<string, unknown>` cast.
+  data?: unknown | FormData | undefined,
   // v25.13 NL2 — optional extra headers (e.g. x-confirm) so callers can
   // stop dropping out of apiRequest just to attach a single header.
   extraHeaders?: Record<string, string>,
@@ -129,7 +132,24 @@ export async function apiRequest(
   // credentialed term-sheet save endpoint and any future endpoint that
   // gates writes on session identity. Same-origin browsers already do this
   // by default; explicit "include" also covers cross-origin (proxy) deploys.
+  // v26.1.x WAVE 2.5 AVI-B — FormData branch. When the caller passes a
+  // FormData body we MUST (a) NOT set Content-Type (the browser sets the
+  // multipart/form-data boundary itself; setting it manually loses the
+  // boundary) and (b) pass the FormData through AS-IS (never JSON.stringify
+  // it — that serialized it to "{}" and the server saw no files).
+  // The JSON path below is left byte-identical for every existing caller.
+  const isFormData = typeof FormData !== "undefined" && data instanceof FormData;
   const doFetch = () => {
+    if (isFormData) {
+      return fetch(`${API_BASE}${url}`, {
+        method,
+        // No Content-Type — the browser sets multipart boundary. Still merge
+        // any caller-supplied extra headers.
+        headers: extraHeaders ? { ...extraHeaders } : undefined,
+        body: data as FormData,
+        credentials: "include",
+      });
+    }
     const baseHeaders: Record<string, string> = data
       ? { "Content-Type": "application/json" }
       : {};

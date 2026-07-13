@@ -105,10 +105,13 @@ export function PortfolioCompanySwitcher({
         </div>
         <div>
           <h2 className="text-lg font-semibold">Your portfolio is empty</h2>
+          {/* Wave 2 (#8): educational ladder copy — a holding requires
+              soft-circling AND the founder marking the investment funded.
+              Accepting an invitation alone does NOT create a position. */}
           <p className="text-sm text-muted-foreground mt-1 max-w-md">
-            Once you accept an investment invitation and your holding is recorded, the
-            company will appear here with its updates, marks, and analytics. You have no
-            holdings yet.
+            You don't hold any positions yet. Once you soft-circle a round and the founder
+            marks your investment funded, it will appear here with its updates, marks, and
+            analytics.
           </p>
         </div>
         <div className="flex flex-wrap items-center justify-center gap-2">

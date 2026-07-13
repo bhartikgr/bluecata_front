@@ -75,12 +75,17 @@ export function AccreditationDeclaration({ onSigned }: { onSigned?: () => void }
 
   const selectedCriteria = Object.keys(checked).filter((id) => checked[id]);
 
+  /* v26.1.x AVI-ACCRED — the sign mutation now serves BOTH the first-time
+     full-form path AND the "confirm you are still accredited" re-declaration.
+     When re-declaring, we reuse the criteria + signature already on the prior
+     declaration (server is authoritative on criterion ids) so the confirm
+     button re-POSTs the existing endpoint without forcing a full re-entry. */
   const signMut = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (override?: { criteria?: string[]; signatureName?: string; jurisdiction?: string }) => {
       const body = {
-        signatureName: signatureName.trim(),
-        criteria: selectedCriteria,
-        jurisdiction: jurisdiction.trim() || undefined,
+        signatureName: (override?.signatureName ?? signatureName).trim(),
+        criteria: override?.criteria ?? selectedCriteria,
+        jurisdiction: (override?.jurisdiction ?? jurisdiction).trim() || undefined,
       };
       const j = await (await apiRequest("POST", ENDPOINT, body)).json();
       if (!j.ok) throw new Error(j.message || j.error || "sign_failed");
@@ -174,14 +179,52 @@ export function AccreditationDeclaration({ onSigned }: { onSigned?: () => void }
             </p>
           </div>
 
-          {alreadySignedCurrent && data?.declaration ? (
-            <div
-              className="rounded-md border p-4 text-sm"
-              data-testid="accreditation-signed"
-              style={{ background: "var(--cv-ok-bg, #ecfdf5)", borderColor: "var(--cv-ok-border, #a7f3d0)", color: "var(--cv-ok-text, #065f46)" }}
-            >
-              Self-certification <span className="font-medium">{data.declaration.clauseVersion}</span> signed on{" "}
-              {formatDate(data.declaration.signedAt)}. Valid for {clause.validityDays} days.
+          {/* v26.1.x AVI-ACCRED — confirm-vs-first-time. Branch on the presence
+              of a declaration (valid OR lapsed), NOT only signedCurrent: an
+              investor whose declaration exists always sees the signed summary
+              plus a working "Confirm you are still accredited" re-declaration
+              (append-only re-POST via the existing endpoint). Only a truly
+              first-time investor (declaration == null) gets the full form. */}
+          {data?.declaration ? (
+            <div className="space-y-3">
+              <div
+                className="rounded-md border p-4 text-sm"
+                data-testid="accreditation-signed"
+                style={{ background: "var(--cv-ok-bg, #ecfdf5)", borderColor: "var(--cv-ok-border, #a7f3d0)", color: "var(--cv-ok-text, #065f46)" }}
+              >
+                Self-certification <span className="font-medium">{data.declaration.clauseVersion}</span> signed on{" "}
+                {formatDate(data.declaration.signedAt)} by{" "}
+                <span className="font-medium">{data.declaration.signatureName}</span>. Valid for {clause.validityDays} days.
+                {!alreadySignedCurrent && (
+                  <span data-testid="accreditation-reconfirm-needed">
+                    {" "}This declaration is no longer current — please re-confirm below.
+                  </span>
+                )}
+              </div>
+              <div
+                className="rounded-md border p-4 text-sm"
+                data-testid="accreditation-reconfirm"
+                style={{ background: "var(--cv-surface-muted, #f8fafc)", borderColor: "var(--cv-border, #e2e8f0)", color: "var(--cv-text, #334155)" }}
+              >
+                <p className="mb-3">
+                  If your accredited-investor status is unchanged, confirm your
+                  declaration is still accurate. This records a new dated
+                  self-certification on your profile.
+                </p>
+                <Button
+                  onClick={() =>
+                    signMut.mutate({
+                      criteria: data.declaration!.criteria,
+                      signatureName: data.declaration!.signatureName,
+                      jurisdiction: data.declaration!.jurisdiction ?? undefined,
+                    })
+                  }
+                  disabled={signMut.isPending}
+                  data-testid="button-confirm-accreditation"
+                >
+                  Confirm you are still accredited
+                </Button>
+              </div>
             </div>
           ) : (
             <div className="space-y-4">
@@ -238,7 +281,7 @@ export function AccreditationDeclaration({ onSigned }: { onSigned?: () => void }
               </div>
 
               <Button
-                onClick={() => signMut.mutate()}
+                onClick={() => signMut.mutate(undefined)}
                 disabled={signMut.isPending || !canSubmit}
                 data-testid="button-sign-accreditation"
               >

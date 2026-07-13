@@ -57,6 +57,19 @@ export interface DerivedMaIntel {
    *  no buyer shortlist in the Step 4 schema, so this is always null for derived
    *  records. (The static buyer mocks were the round-1 leak.) */
   topBuyer: { name: string; rationale: string } | null;
+  /** Comparable exits + revenue-multiple range. The Step 4 profile schema has no
+   *  comps library, so derived records carry NONE — these stay undefined here and
+   *  the route falls back to an honest empty list / zero range (never fabricated
+   *  from the DEMO-SEED COMPS_LIBRARY). Declared so the route can surface them to
+   *  authorized investors as part of the M&A intelligence contract. */
+  comparableExits?: Array<{
+    target: string;
+    acquirer: string;
+    date: string;
+    valuationUsd: number;
+    revenueMultiple: number | null;
+  }>;
+  revenueMultipleRange?: { low: number; high: number };
 }
 
 function clamp100(n: number): number {

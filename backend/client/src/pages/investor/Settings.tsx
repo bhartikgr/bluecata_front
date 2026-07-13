@@ -10,7 +10,7 @@
  *   - All actionable buttons have data-testid.
  *   - SSE invalidation hook on `user` aggregate.
  */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Link } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageBody, PageHeader } from "@/components/AppShell";
@@ -97,14 +97,34 @@ export default function InvestorSettings() {
   const me = useQuery<MeData>({ queryKey: ["/api/auth/me"] });
 
   /* -------- Timezone edit state -------- */
-  const [tzEditing, setTzEditing] = useState(false);
-  const [tzValue, setTzValue] = useState<string>(
-    Intl.DateTimeFormat().resolvedOptions().timeZone || "Europe/London"
+  /* AVI-TZ (Wave 3) — the PERSISTED value is the source of truth. The old code
+     seeded `tzValue` from the browser (Intl) and only *maybe* overwrote it via
+     an effect once the `me` query resolved, so the Select could display the
+     browser default instead of the saved me.timezone. Now:
+       - browserTz is only a FALLBACK computed once;
+       - the displayed/persisted tz derives from me.data?.timezone ?? browserTz;
+       - the edit buffer (tzValue) is seeded/reset FROM the persisted value
+         whenever the query resolves or changes, so entering edit / cancel /
+         save all read the saved value (never the stale browser default).
+     Backend unchanged (save still PATCH /api/auth/me). */
+  const browserTz = useMemo(
+    () => Intl.DateTimeFormat().resolvedOptions().timeZone || "Europe/London",
+    []
   );
+  // The effective persisted timezone: saved value wins; browser only when unset.
+  const savedTz = me.data?.timezone ?? browserTz;
 
+  const [tzEditing, setTzEditing] = useState(false);
+  // Local edit buffer, seeded from the persisted value (browser fallback only
+  // when nothing is saved).
+  const [tzValue, setTzValue] = useState<string>(savedTz);
+
+  // Keep the edit buffer in sync with the persisted value whenever the me query
+  // resolves/refetches. Only reseed while NOT actively editing so an in-progress
+  // edit isn't clobbered by a background refetch.
   useEffect(() => {
-    if (me.data?.timezone) setTzValue(me.data.timezone);
-  }, [me.data?.timezone]);
+    if (!tzEditing) setTzValue(savedTz);
+  }, [savedTz, tzEditing]);
 
   /* -------- Notification prefs edit state -------- */
   const [notifEditing, setNotifEditing] = useState(false);
@@ -216,7 +236,7 @@ export default function InvestorSettings() {
                     <Button
                       size="sm"
                       variant="ghost"
-                      onClick={() => setTzEditing(false)}
+                      onClick={() => { setTzValue(savedTz); setTzEditing(false); }}
                       data-testid="button-cancel-timezone"
                     >
                       Cancel
@@ -226,7 +246,7 @@ export default function InvestorSettings() {
               ) : (
                 <div className="flex items-center justify-between gap-4">
                   <p>
-                    {me.data?.timezone ?? tzValue}
+                    {savedTz}
                     <span className="ml-2 text-xs text-muted-foreground">
                       (Used for deadline countdowns and scheduled digest emails.)
                     </span>
@@ -235,7 +255,7 @@ export default function InvestorSettings() {
                     variant="outline"
                     size="sm"
                     className="shrink-0"
-                    onClick={() => setTzEditing(true)}
+                    onClick={() => { setTzValue(savedTz); setTzEditing(true); }}
                     data-testid="button-edit-timezone"
                   >
                     Edit

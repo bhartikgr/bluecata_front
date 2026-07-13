@@ -35,8 +35,12 @@ import { DEMO_SEED_ENABLED } from "./lib/demoGate";
  * source. The legacy per-company endpoint below MUST apply the exact same
  * privacy tiers as /api/collective/ma-intel. */
 import { getUserContext } from "./lib/userContext";
-import { decideMaAccess } from "./lib/maAuthzGate";
-import { deriveMaIntelFromProfile, readMaReadinessNarrative } from "./lib/maProfileSource";
+import { decideMaAccess, type MaAccessDecision } from "./lib/maAuthzGate";
+import {
+  deriveMaIntelFromProfile,
+  readMaReadinessNarrative,
+  type DerivedMaIntel,
+} from "./lib/maProfileSource";
 
 /* ----------------- deterministic acquirer-fit math ----------------- */
 
@@ -232,6 +236,70 @@ export function hydrateMaInitiativesStore(): number {
   }
 }
 
+/* ----------------- response body builders (pure, testable) ----------------- */
+
+/**
+ * AGGREGATE tier body — scores + sub-dimensions + buyer COUNT only. Deliberately
+ * omits comparableExits / revenueMultipleRange (and buyer names/narrative): the
+ * cross-Collective tier stays scores-only.
+ */
+export function buildMaAggregateResponse(
+  companyId: string,
+  intel: DerivedMaIntel,
+): Record<string, unknown> {
+  return {
+    companyId,
+    accessLevel: "AGGREGATE",
+    maScore: intel.maScore,
+    acquirerFitScore: intel.acquirerFitScore,
+    intentSignal: intel.intentSignal,
+    productMarketFit: intel.productMarketFit,
+    technologyDifferentiation: intel.technologyDifferentiation,
+    customerConcentration: intel.customerConcentration,
+    growthRate: intel.growthRate,
+    marketShare: intel.marketShare,
+    managementTeamStrength: intel.managementTeamStrength,
+    strategicBuyerCount: intel.topBuyer ? 1 : 0,
+  };
+}
+
+/**
+ * FULL / DETAIL tier body. comparableExits + revenueMultipleRange are exposed to
+ * ALL authorized investors at the SAME tier as the basic scores (not gated behind
+ * canSeeBuyers / canSeeNarrative). Derived profiles carry no comps, so the honest
+ * fallbacks are an empty list / zero range — NEVER fabricated. Narrative stays
+ * gated behind decision.canSeeNarrative.
+ */
+export function buildMaFullBody(
+  companyId: string,
+  intel: DerivedMaIntel,
+  decision: MaAccessDecision,
+  narrative: string | null,
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    companyId,
+    accessLevel: decision.level,
+    maScore: intel.maScore,
+    acquirerFitScore: intel.acquirerFitScore,
+    intentSignal: intel.intentSignal,
+    productMarketFit: intel.productMarketFit,
+    technologyDifferentiation: intel.technologyDifferentiation,
+    customerConcentration: intel.customerConcentration,
+    growthRate: intel.growthRate,
+    marketShare: intel.marketShare,
+    managementTeamStrength: intel.managementTeamStrength,
+    strategicPriorities: intel.strategicPriorities,
+    transactionInterests: intel.transactionInterests,
+    topStrategicBuyers: decision.canSeeBuyers && intel.topBuyer ? [intel.topBuyer] : [],
+    comparableExits: intel.comparableExits ?? [],
+    revenueMultipleRange: intel.revenueMultipleRange ?? { low: 0, high: 0 },
+  };
+  if (decision.canSeeNarrative) {
+    body.maReadinessNarrative = narrative ?? "";
+  }
+  return body;
+}
+
 export function registerMaIntelligenceRoutes(app: Express): void {
   /**
    * v25.44 ROUND 2 (BLOCKER 1) — legacy per-company M&A intelligence endpoint,
@@ -279,44 +347,15 @@ export function registerMaIntelligenceRoutes(app: Express): void {
 
     // (c) AGGREGATE — scores + sector + buyer COUNT only.
     if (decision.level === "AGGREGATE") {
-      res.json({
-        companyId,
-        accessLevel: "AGGREGATE",
-        maScore: intel.maScore,
-        acquirerFitScore: intel.acquirerFitScore,
-        intentSignal: intel.intentSignal,
-        productMarketFit: intel.productMarketFit,
-        technologyDifferentiation: intel.technologyDifferentiation,
-        customerConcentration: intel.customerConcentration,
-        growthRate: intel.growthRate,
-        marketShare: intel.marketShare,
-        managementTeamStrength: intel.managementTeamStrength,
-        strategicBuyerCount: intel.topBuyer ? 1 : 0,
-      });
+      res.json(buildMaAggregateResponse(companyId, intel));
       return;
     }
 
-    // (a) FULL / (b) DETAIL — full detail; narrative only when authorized.
-    const body: Record<string, unknown> = {
-      companyId,
-      accessLevel: decision.level,
-      maScore: intel.maScore,
-      acquirerFitScore: intel.acquirerFitScore,
-      intentSignal: intel.intentSignal,
-      productMarketFit: intel.productMarketFit,
-      technologyDifferentiation: intel.technologyDifferentiation,
-      customerConcentration: intel.customerConcentration,
-      growthRate: intel.growthRate,
-      marketShare: intel.marketShare,
-      managementTeamStrength: intel.managementTeamStrength,
-      strategicPriorities: intel.strategicPriorities,
-      transactionInterests: intel.transactionInterests,
-      topStrategicBuyers: decision.canSeeBuyers && intel.topBuyer ? [intel.topBuyer] : [],
-    };
-    if (decision.canSeeNarrative) {
-      body.maReadinessNarrative = readMaReadinessNarrative(companyId) ?? "";
-    }
-    res.json(body);
+    // (a) FULL / (b) DETAIL — full detail (incl. comparableExits +
+    // revenueMultipleRange for all authorized investors); narrative only when
+    // authorized.
+    const narrative = decision.canSeeNarrative ? readMaReadinessNarrative(companyId) : null;
+    res.json(buildMaFullBody(companyId, intel, decision, narrative));
   });
 
   app.post("/api/investor/ma/initiative", (req: Request, res: Response) => {

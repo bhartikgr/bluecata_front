@@ -17,7 +17,15 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Users2, Heart, Network } from "lucide-react";
+import { Users2, Heart, Network, Info } from "lucide-react";
+// SPINE-0 (Wave 2, #7): channel-unlock semantics live in the spine + the pure
+// `channels.ts` rules (unchanged, already ladder-consistent):
+//   soft_circled → that round's soft-circle channel
+//   funded       → cap-table channel
+//   accepting alone unlocks NOTHING.
+// This surface only ADDS a first-class callout describing what soft-circling
+// opens; it does not fork channel logic. See client/src/lib/comms/channels.ts
+// and useInvestorSpine().channelUnlockState for the single source of truth.
 
 interface TabbedView {
   capTableCommunity: Array<{ id: string; companyId?: string; tier: 1; badge: string }>;
@@ -104,6 +112,23 @@ export function CommsTiersTabs({ userId }: { userId: string }) {
                 <CardTitle className="text-sm">Soft-Circle Community</CardTitle>
               </CardHeader>
               <CardContent>
+                {/* Wave 2 (#7): HIGHLIGHTED first-class callout — NOT fine print.
+                    Makes the soft-circle channel semantics unmistakable:
+                    soft-circling a round opens a communication channel with the
+                    OTHER soft-circle investors in that SAME round. Accepting an
+                    invitation alone does not open any channel. */}
+                <div
+                  data-testid="callout-soft-circle-unlock"
+                  className="mb-3 flex items-start gap-2 rounded-md border border-[hsl(333_75%_35%)]/40 bg-[hsl(333_75%_35%)]/10 p-3"
+                >
+                  <Info className="h-4 w-4 mt-0.5 shrink-0 text-[hsl(333_75%_35%)]" />
+                  <p className="text-sm font-medium text-foreground">
+                    Soft-circling a round opens a communication channel with the{" "}
+                    <strong>other soft-circle investors in that same round</strong> — coordinate,
+                    compare notes, and build the syndicate together. Simply accepting an invitation
+                    does not open a channel; you must soft-circle the round.
+                  </p>
+                </div>
                 <p className="text-xs text-muted-foreground mb-2">
                   Default: opt-OUT. Cross-cohort DM is OFF unless explicitly enabled.
                 </p>

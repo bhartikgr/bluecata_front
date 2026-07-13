@@ -753,6 +753,31 @@ export const YOUR_DECISION_TRANSITIONS: Record<YourDecisionState, readonly YourD
   revoked:      [],
 };
 
+/* v26.1.x ENH-1 — durable Your-Decision store (migration 0107).
+ * Source-of-truth table for the Your-Decision 10-state machine
+ * (server/yourDecisionStore.ts), migrated off the RAM-only Map. Column shape
+ * mirrors the DecisionRecord type; history/mim are JSON-encoded text. UNIQUE key
+ * on invitation_id (PRIMARY KEY); index on round_id (see connection.ts inline
+ * bootstrap + migrations/0107_enh1_your_decision_durable.sql). The legacy
+ * kv_yourDecisionStore mirror is kept this release as a secondary,
+ * non-authoritative belt-and-suspenders mirror. */
+export const yourDecisionRecords = sqliteTable("your_decision_records", {
+  invitationId: text("invitation_id").primaryKey(),
+  roundId: text("round_id").notNull(),
+  companyId: text("company_id").notNull().default(""),
+  state: text("state").notNull(), // one of YOUR_DECISION_STATES
+  amount: real("amount"),
+  currency: text("currency"),
+  softCircleType: text("soft_circle_type"),
+  viewedAt: text("viewed_at"),
+  note: text("note"),
+  historyJson: text("history_json").notNull().default("[]"), // JSON Array<{ts,from,to,action,reason?}>
+  mimJson: text("mim_json").notNull().default("[]"),          // JSON Array<{screenName,amountUsd,softCircleType}>
+  actor: text("actor"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
 export const SUPPORTED_CURRENCIES = ["USD", "CAD", "GBP", "EUR", "SGD", "HKD", "CNY"] as const;
 export type SupportedCurrency = (typeof SUPPORTED_CURRENCIES)[number];
 

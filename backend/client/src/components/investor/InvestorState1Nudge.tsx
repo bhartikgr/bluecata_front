@@ -27,8 +27,13 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { PageBody, PageHeader } from "@/components/AppShell";
-import type { InvitedRound, UserContext } from "@/lib/entitlement";
+import type { UserContext } from "@/lib/entitlement";
 import { greetingName } from "@/lib/investorLabels";
+// FIX #3 (SPINE-0, Wave 2 Option A) — the pending-invitation count/list here
+// MUST match Invitations.tsx exactly. Both now read the ONE spine selector
+// (pending = invited + viewed + accepted; accepted DOES count). No local
+// re-derivation of invitation state.
+import { useInvestorSpine, type SpineInvitation } from "@/lib/investor/investorSpine";
 
 export interface InvestorState1NudgeProps {
   ctx: UserContext;
@@ -43,7 +48,10 @@ const UNLOCKS = [
 
 export function InvestorState1Nudge({ ctx }: InvestorState1NudgeProps) {
   const [, navigate] = useLocation();
-  const invitations = ctx.investor.invitedRounds;
+  // SPINE-0: the actionable/pending set (invited + viewed + accepted), derived
+  // in ONE place so this nudge and the Invitations page never disagree.
+  const spine = useInvestorSpine();
+  const invitations = spine.pendingInvitations;
   // BUG-01: never surface a raw email or a placeholder like "New" as the
   // greeting token; fall back to a neutral "there".
   const screenName = greetingName(ctx.identity.screenName, ctx.identity.name, "there");
@@ -110,27 +118,32 @@ export function InvestorState1Nudge({ ctx }: InvestorState1NudgeProps) {
                 </div>
               ) : (
                 <ul className="divide-y">
-                  {invitations.map((inv: InvitedRound) => (
+                  {invitations.map((si: SpineInvitation) => {
+                    const inv = si.raw;
+                    const companyName = inv.company?.name ?? "Company";
+                    const roundName = inv.round?.name ?? "Round";
+                    return (
                     <li
-                      key={inv.invitationId}
+                      key={si.id}
                       className="flex items-center justify-between py-3 group cursor-pointer hover:bg-muted/30 -mx-2 px-2 rounded transition"
-                      data-testid={`invitation-row-${inv.invitationId}`}
-                      onClick={() => navigate(`/investor/invitations/${inv.invitationId}`)}
+                      data-testid={`invitation-row-${si.id}`}
+                      onClick={() => navigate(`/investor/invitations/${si.id}`)}
                     >
                       <div className="min-w-0">
                         <div className="font-medium text-sm truncate">
-                          {inv.companyName}
-                          <span className="text-muted-foreground"> · {inv.roundName}</span>
+                          {companyName}
+                          <span className="text-muted-foreground"> · {roundName}</span>
                         </div>
                         <div className="text-[11px] text-muted-foreground mt-0.5">
-                          {inv.state === "PENDING" ? "Awaiting your decision" : `State: ${inv.state}`}
+                          {si.stage === "invited" ? "Awaiting your decision" : `State: ${si.stage}`}
                         </div>
                       </div>
                       <span className="inline-flex items-center text-xs text-primary group-hover:translate-x-0.5 transition">
                         View round <ArrowRight className="h-3 w-3 ml-1" />
                       </span>
                     </li>
-                  ))}
+                  );
+                  })}
                 </ul>
               )}
 

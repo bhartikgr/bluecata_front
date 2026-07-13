@@ -39,6 +39,13 @@ import type { MaIntelligence } from "@shared/schema";
 import { useEntitlement, hasCapTable } from "@/lib/entitlement";
 import { useRealtimeSync } from "@/lib/realtimeSync";
 import { InvestorState1Nudge } from "@/components/investor/InvestorState1Nudge";
+// SPINE-0 (Wave 2 Option A) — single source of truth for pending invitations
+// and funded holdings. Dashboard no longer re-derives any invitation state.
+import { useInvestorSpine } from "@/lib/investor/investorSpine";
+// Wave 5 (ENH-2) — the full SPINE-0 dashboard section (5 panels, Ozan-locked
+// order: Portfolio → Activity → Invitations → Messages → M&A). Additive:
+// rendered ABOVE the preserved existing widgets. Every panel reads SPINE-0.
+import { DashboardSpinePanels } from "@/components/investor/DashboardSpinePanels";
 
 type Position = {
   id: string; companyId: string; company: string; sector: string; stage: string;
@@ -82,6 +89,13 @@ export default function InvestorDashboard() {
 
   const a = analytics.data;
 
+  // FIX #3 (SPINE-0) — pending-invitation count comes from the ONE spine
+  // selector, identical to what Invitations.tsx reads. Ozan-locked semantics:
+  // pending = invited + viewed + accepted (accepted DOES count). No local
+  // re-derivation of `state === x` here.
+  const spine = useInvestorSpine();
+  const pendingCount = spine.pendingInvitations.length;
+
   // DEF-045: SSE subscription for invitation badge refresh
   useRealtimeSync();
 
@@ -103,12 +117,24 @@ export default function InvestorDashboard() {
             <Link href="/investor/invitations">
               <Button className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-invitations">
                 <Inbox className="h-4 w-4 mr-2" /> Invitations
+                {pendingCount > 0 && (
+                  <span
+                    data-testid="badge-pending-invitations"
+                    className="ml-2 inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full text-xs font-semibold bg-white text-[hsl(0_100%_40%)]"
+                  >
+                    {pendingCount}
+                  </span>
+                )}
               </Button>
             </Link>
           </div>
         }
       />
       <PageBody>
+        {/* Wave 5 (ENH-2) — full SPINE-0 dashboard section (5 panels, in
+            Ozan-locked order). Additive; all existing widgets below preserved. */}
+        <DashboardSpinePanels />
+
         {/* Sprint 15 D8 — lapsed renewal banner. */}
         {ctx && ctx.collective.status === "lapsed" && (
           <div
@@ -228,7 +254,7 @@ export default function InvestorDashboard() {
               <CardTitle className="text-sm">Quick actions</CardTitle>
             </CardHeader>
             <CardContent className="flex flex-wrap gap-2">
-              <Link href="/investor/invitations"><Button size="sm" variant="outline" data-testid="bento-action-invitations"><Inbox className="h-3.5 w-3.5 mr-1.5" /> Invitations</Button></Link>
+              <Link href="/investor/invitations"><Button size="sm" variant="outline" data-testid="bento-action-invitations"><Inbox className="h-3.5 w-3.5 mr-1.5" /> Invitations{pendingCount > 0 && <span data-testid="badge-pending-invitations-bento" className="ml-1.5 inline-flex items-center justify-center min-w-[1.125rem] h-4 px-1 rounded-full text-[10px] font-semibold bg-[hsl(0_100%_40%)] text-white">{pendingCount}</span>}</Button></Link>
               <Link href="/investor/crm"><Button size="sm" variant="outline" data-testid="bento-action-crm"><Building2 className="h-3.5 w-3.5 mr-1.5" /> CRM</Button></Link>
               <Link href="/investor/profile"><Button size="sm" variant="outline" data-testid="bento-action-profile"><Sparkles className="h-3.5 w-3.5 mr-1.5" /> Update profile</Button></Link>
             </CardContent>
@@ -342,7 +368,7 @@ export default function InvestorDashboard() {
                 )}
                 {!portfolio.isLoading && (portfolio.data?.length ?? 0) === 0 && (
                   <tr><td colSpan={6} className="text-center py-12 text-sm text-muted-foreground">
-                    No portfolio companies yet. Accept an invitation to build your cap-table.
+                    You don&apos;t hold any positions yet. Once you soft-circle a round and the founder marks your investment funded, it will appear here.
                   </td></tr>
                 )}
                 {!portfolio.isLoading && asArray(portfolio.data).map(p => (

@@ -40,6 +40,12 @@ import { getDb } from "./db/connection"; /* v17 Phase B */
 import { pAll } from "./db/portable"; /* Wave H Track A — Postgres compatibility */
 import { DEFAULT_CHAPTER_ID, DEFAULT_CHAPTER_TENANT_ID } from "./lib/chapterDefaults";
 import { log } from "./lib/logger";
+// Wave 2 (#5): admin-granted eligibility path. STATIC ESM import (NOT require) —
+// verified no circular import: collectiveMembershipStore only imports
+// drizzle/schema/db/chapterDefaults/logger, none of which import this file.
+// `isActive(userId)` is the durable admin-granted signal (an operator's
+// activate() writes a durable active row with activatedBy = admin userId).
+import { isActive as isCollectiveMemberActive } from "./collectiveMembershipStore";
 // W3-B C-5 — capture the accreditation self-declaration at individual apply time
 // (mirrors W2's sign-at-application). Best-effort + non-fatal: the dedicated
 // POST /api/investor/compliance/accreditation-declaration route is the primary
@@ -252,7 +258,12 @@ export type EligibilityResult = {
     founderOfCompany: boolean;
     signatoryOnCompany: boolean;
     vouchedByPartner: boolean;
+    /* Wave 2 (#5): admin/chapter operator granted access explicitly. */
+    adminGranted: boolean;
   };
+  /* Wave 2 (#5): surfaced so the client spine can read the same signal the
+     route exposes without re-deriving it. */
+  adminGranted: boolean;
 };
 
 export function isEligibleForCollective(userId?: string): EligibilityResult {
@@ -270,8 +281,17 @@ export function isEligibleForCollective(userId?: string): EligibilityResult {
   let vouchedByPartner = false;
   let founderOfCompany = false;
   let signatoryOnCompany = false;
+  // Wave 2 (#5): admin-granted is an independent, first-class eligibility
+  // signal — an operator's activate() writes a durable active membership row.
+  let adminGranted = false;
   let hasLiveData = false;
   if (userId) {
+    try {
+      if (isCollectiveMemberActive(userId)) {
+        adminGranted = true;
+        hasLiveData = true;
+      }
+    } catch { /* best-effort — durable membership check is non-fatal */ }
     const m = getMembership(userId);
     if (m) {
       hasLiveData = true;
@@ -304,7 +324,7 @@ export function isEligibleForCollective(userId?: string): EligibilityResult {
     } catch { /* best-effort — falls back to membership-only signal */ }
   }
   if (!hasLiveData) {
-    // No live portfolio data — not mock-backed. Ineligible.
+    // No live portfolio data and no admin grant — not mock-backed. Ineligible.
     return {
       eligible: false,
       reasons: ["no_portfolio_data"],
@@ -313,18 +333,21 @@ export function isEligibleForCollective(userId?: string): EligibilityResult {
         founderOfCompany: false,
         signatoryOnCompany: false,
         vouchedByPartner: false,
+        adminGranted: false,
       },
+      adminGranted: false,
     };
   }
-  const passes = { investorOnCapTable, founderOfCompany, signatoryOnCompany, vouchedByPartner };
+  const passes = { investorOnCapTable, founderOfCompany, signatoryOnCompany, vouchedByPartner, adminGranted };
   const eligible = Object.values(passes).some(Boolean);
   const reasons: string[] = [];
   if (investorOnCapTable) reasons.push("Verified position on a Capavate cap table.");
   if (founderOfCompany)   reasons.push("Founder of a Capavate company.");
   if (signatoryOnCompany) reasons.push("Signatory on a Capavate company.");
   if (vouchedByPartner)   reasons.push("Vouched by a consortium partner.");
+  if (adminGranted)       reasons.push("Access granted by a Capavate Collective operator.");
   if (!eligible) reasons.push("No eligibility signal found. Apply to the waitlist or seek a partner vouch.");
-  return { eligible, reasons, passes };
+  return { eligible, reasons, passes, adminGranted };
 }
 
 export function registerCollectiveAppRoutes(app: Express): void {

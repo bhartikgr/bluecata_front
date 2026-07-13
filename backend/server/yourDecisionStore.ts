@@ -27,15 +27,21 @@
  * The store is in-memory and seeded from `incomingInvitations` so the state
  * machine is always exercised on first request.
  */
-/* v25.25.2 — createRequire shim: lazy require() calls in this file must work
-   in BOTH the dev/prod tsx runtime (ESM, where `require` is undefined) AND
-   the bundled CJS dist. This is the minimal, zero-risk way to unblock the
-   v25.25 login 500 ("require is not defined" at userContext.ts:585 and other
-   sites) without converting every lazy require() to a static import (which
-   would re-introduce circular-import bugs). */
-import { createRequire } from "node:module";
-const require = createRequire(import.meta.url);
-
+/* v26.1.x ENH-1 — durable Your-Decision store.
+ *
+ * The Your-Decision 10-state machine was previously RAM-only (a Map) with a
+ * best-effort kv mirror written through a LAZY `require("./lib/storePersistenceShim")`.
+ * Under the tsx ESM runtime that lazy require() threw `Unexpected token ')'`,
+ * so the kv persist silently failed and every decision (view/accept/soft_circle)
+ * drifted back to seed state on restart (root cause of FIX #1's soft-circle
+ * "survives-restart" gap).
+ *
+ * ENH-1 makes the durable SQLite table `your_decision_records` (migration 0107)
+ * the SOURCE OF TRUTH via STATIC imports (persistence shim + rawDb). The
+ * in-memory Map is retained as a hot-path cache that is always reconciled with
+ * the table (write-through + read-hydrate). The legacy kv_yourDecisionStore
+ * mirror is KEPT this release as a secondary, non-authoritative belt-and-
+ * suspenders mirror (retired in a later cleanup wave). No new require(). */
 import type { Express, Request, Response } from "express";
 import { randomBytes } from "node:crypto";
 import {
@@ -58,6 +64,11 @@ import type { UserContext } from "./lib/userContext";
 import { createSoftCircle as softCircleCreate } from "./softCircleStore";
 import { setSoftCircleSource } from "./track4Routes";
 import { log } from "./lib/logger";
+// v26.1.x ENH-1 — STATIC imports (ESM-safe). The prior lazy require() of the
+// persistence shim threw under tsx ("Unexpected token ')'") and silently
+// dropped every kv write; these static imports fix that structurally.
+import { persistEntry, hydrateEntries } from "./lib/storePersistenceShim";
+import { rawDb, getDbDriver } from "./db/connection";
 
 /**
  * Resolves the request's UserContext, falling back to getUserContext(req)
@@ -170,24 +181,177 @@ export type DecisionRecord = {
 const records = new Map<string, DecisionRecord>();
 
 /**
- * v25.11 NC1 — yourDecisionStore was 100% RAM-only. Every investor decision
- * (view, accept, decline, soft_circle, confirm, sign, fund) was erased on any
- * server restart, leaving the founder pipeline phantom-clean. The fix wraps
- * the existing Map with the v25.9 generic kv-shim so:
- *   - every mutation persists to kv_yourDecisionStore
- *   - every boot hydrates the Map from the table
- * The Map remains as the hot-path cache; the table is authoritative.
+ * v26.1.x ENH-1 — durable-store internals.
+ *
+ * The Map above is retained as a hot-path cache. The DB table
+ * `your_decision_records` (migration 0107) is the SOURCE OF TRUTH. Reads
+ * reconcile the cache with the table (no-downgrade); writes are write-through
+ * to BOTH the durable table and the legacy kv_yourDecisionStore mirror.
  */
-/* v25.11 NM6 — exported so the legacy POST shortcuts can mirror the
- * canonical PATCH handler's write-through path. */
-export function _persistRecord(rec: DecisionRecord): void {
+
+/**
+ * Monotonic rank of the 10 states along the progress chain. Terminal branches
+ * (declined/expired/revoked) rank ABOVE their non-terminal predecessors so a
+ * re-read can never silently downgrade a terminal decision back to an earlier
+ * live state. Used purely for the ensureRecord no-downgrade guard; the state
+ * machine itself is unchanged (validateTransition/YOUR_DECISION_TRANSITIONS).
+ */
+const STATE_RANK: Record<YourDecisionState, number> = {
+  pending: 0,
+  viewed: 1,
+  accepted: 2,
+  soft_circled: 3,
+  confirmed: 4,
+  signed: 5,
+  funded: 6,
+  declined: 7,
+  expired: 7,
+  revoked: 7,
+};
+
+function stateRank(s: YourDecisionState): number {
+  return STATE_RANK[s] ?? 0;
+}
+
+/** True when the durable SQLite path is usable (rawDb throws on Postgres). */
+function durableAvailable(): boolean {
+  return getDbDriver() === "sqlite";
+}
+
+/** Serialize a DecisionRecord into the your_decision_records row columns. */
+function recordToRow(rec: DecisionRecord): Record<string, unknown> {
+  const now = new Date().toISOString();
+  return {
+    invitation_id: rec.invitationId,
+    round_id: rec.roundId,
+    company_id: rec.companyId ?? "",
+    state: rec.state,
+    amount: typeof rec.amount === "number" ? rec.amount : null,
+    currency: rec.currency ?? null,
+    soft_circle_type: rec.softCircleType ?? null,
+    viewed_at: rec.viewedAt ?? null,
+    note: rec.note ?? null,
+    history_json: JSON.stringify(rec.history ?? []),
+    mim_json: JSON.stringify(rec.mim ?? []),
+    actor: (rec as { actor?: string }).actor ?? null,
+    updated_at: now,
+  };
+}
+
+/** Deserialize a your_decision_records row back into a DecisionRecord. */
+function rowToRecord(row: any): DecisionRecord | null {
+  if (!row || !row.invitation_id) return null;
+  let history: DecisionRecord["history"] = [];
+  let mim: DecisionRecord["mim"] = [];
+  try { history = JSON.parse(row.history_json ?? "[]"); } catch { history = []; }
+  try { mim = JSON.parse(row.mim_json ?? "[]"); } catch { mim = []; }
+  const rec: DecisionRecord = {
+    invitationId: String(row.invitation_id),
+    roundId: String(row.round_id ?? ""),
+    companyId: String(row.company_id ?? ""),
+    state: (row.state as YourDecisionState) ?? "pending",
+    history: Array.isArray(history) ? history : [],
+    mim: Array.isArray(mim) ? mim : [],
+  };
+  if (row.amount != null) rec.amount = Number(row.amount);
+  if (row.currency != null) rec.currency = String(row.currency);
+  if (row.soft_circle_type != null) rec.softCircleType = String(row.soft_circle_type);
+  if (row.viewed_at != null) rec.viewedAt = String(row.viewed_at);
+  if (row.note != null) rec.note = String(row.note);
+  return rec;
+}
+
+/** Upsert one record into the durable your_decision_records table. */
+function dbUpsertRecord(rec: DecisionRecord): void {
+  if (!durableAvailable()) return;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { persistEntry } = require("./lib/storePersistenceShim");
+    const db: any = rawDb();
+    const r = recordToRow(rec);
+    db.prepare(
+      `INSERT INTO your_decision_records
+         (invitation_id, round_id, company_id, state, amount, currency,
+          soft_circle_type, viewed_at, note, history_json, mim_json, actor,
+          created_at, updated_at)
+       VALUES
+         (@invitation_id, @round_id, @company_id, @state, @amount, @currency,
+          @soft_circle_type, @viewed_at, @note, @history_json, @mim_json, @actor,
+          @updated_at, @updated_at)
+       ON CONFLICT(invitation_id) DO UPDATE SET
+         round_id = excluded.round_id,
+         company_id = excluded.company_id,
+         state = excluded.state,
+         amount = excluded.amount,
+         currency = excluded.currency,
+         soft_circle_type = excluded.soft_circle_type,
+         viewed_at = excluded.viewed_at,
+         note = excluded.note,
+         history_json = excluded.history_json,
+         mim_json = excluded.mim_json,
+         actor = excluded.actor,
+         updated_at = excluded.updated_at`,
+    ).run(r);
+  } catch (err) {
+    log.warn(
+      "[yourDecisionStore] durable upsert failed (non-fatal):",
+      (err as Error).message,
+    );
+  }
+}
+
+/** Read one record from the durable table. Returns null if absent/unavailable. */
+function dbGetRecord(invitationId: string): DecisionRecord | null {
+  if (!durableAvailable()) return null;
+  try {
+    const db: any = rawDb();
+    const row = db
+      .prepare(`SELECT * FROM your_decision_records WHERE invitation_id = ?`)
+      .get(invitationId);
+    return rowToRecord(row);
+  } catch (err) {
+    log.warn(
+      "[yourDecisionStore] durable read failed (non-fatal):",
+      (err as Error).message,
+    );
+    return null;
+  }
+}
+
+/** Read every durable record (boot hydration). */
+function dbAllRecords(): DecisionRecord[] {
+  if (!durableAvailable()) return [];
+  try {
+    const db: any = rawDb();
+    const rows: any[] = db.prepare(`SELECT * FROM your_decision_records`).all();
+    const out: DecisionRecord[] = [];
+    for (const row of rows) {
+      const rec = rowToRecord(row);
+      if (rec) out.push(rec);
+    }
+    return out;
+  } catch (err) {
+    log.warn(
+      "[yourDecisionStore] durable list failed (non-fatal):",
+      (err as Error).message,
+    );
+    return [];
+  }
+}
+
+/* v25.11 NM6 / v26.1.x ENH-1 — exported so the legacy POST shortcuts can mirror
+ * the canonical PATCH handler's write-through path. Write-through order:
+ *   1. durable table `your_decision_records` (source of truth)
+ *   2. legacy kv_yourDecisionStore mirror (secondary, kept this release)
+ * Static imports (no lazy require) so this can never throw under tsx ESM — the
+ * exact silent-persist-failure that caused the FIX #1 restart drift. */
+export function _persistRecord(rec: DecisionRecord): void {
+  // 1) Durable source of truth.
+  dbUpsertRecord(rec);
+  // 2) Legacy kv mirror (belt-and-suspenders; retired in a later cleanup wave).
+  try {
     persistEntry("yourDecisionStore", rec.invitationId, rec);
   } catch (err) {
     log.warn(
-      "[yourDecisionStore] persist failed (non-fatal):",
+      "[yourDecisionStore] kv mirror persist failed (non-fatal):",
       (err as Error).message,
     );
   }
@@ -195,27 +359,46 @@ export function _persistRecord(rec: DecisionRecord): void {
 
 /**
  * Boot hydrator. Called from HYDRATE_ORDER in lib/hydrateStores.ts.
+ *
+ * v26.1.x ENH-1 — hydrate from the durable table first (source of truth), then
+ * top up from the legacy kv mirror for any invitation the table does not yet
+ * carry (live-cutover safety). Never downgrades a state already in the cache.
  */
 export function hydrateYourDecisionStore(): number {
+  let n = 0;
+  // 1) Durable table (authoritative).
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { hydrateEntries } = require("./lib/storePersistenceShim");
+    for (const rec of dbAllRecords()) {
+      const id = rec.invitationId;
+      if (!id) continue;
+      const existing = records.get(id);
+      if (!existing || stateRank(rec.state) >= stateRank(existing.state)) {
+        records.set(id, rec);
+        if (!existing) n++;
+      }
+    }
+  } catch (err) {
+    log.warn(
+      "[yourDecisionStore.hydrate] durable hydrate failed (non-fatal):",
+      (err as Error).message,
+    );
+  }
+  // 2) Legacy kv mirror — only fills gaps the durable table has not yet covered.
+  try {
     const rows = hydrateEntries("yourDecisionStore") as Array<[string, DecisionRecord]>;
-    let n = 0;
     for (const [id, rec] of rows) {
       if (rec && id && !records.has(id)) {
         records.set(id, rec);
         n++;
       }
     }
-    return n;
   } catch (err) {
     log.warn(
-      "[yourDecisionStore.hydrate] failed (non-fatal):",
+      "[yourDecisionStore.hydrate] kv mirror hydrate failed (non-fatal):",
       (err as Error).message,
     );
-    return 0;
   }
+  return n;
 }
 
 /**
@@ -231,10 +414,38 @@ function mapModernInvitationState(state: string): YourDecisionState {
   return "pending";
 }
 
-/* v25.11 NM6 — exported so the legacy POST shortcuts can locate the record
- * via the same lazy-seed path the canonical PATCH uses. */
+/* v25.11 NM6 / v26.1.x ENH-1 — exported so the legacy POST shortcuts can locate
+ * the record via the same lazy-seed path the canonical PATCH uses.
+ *
+ * ENH-1 resolution order (durable-first with a strict NO-DOWNGRADE guard):
+ *   1. Reconcile the in-memory cache with the durable table. Whichever holds the
+ *      MORE-ADVANCED state (by STATE_RANK) wins; on a tie the durable row wins.
+ *      This guarantees a re-read after a restart can never downgrade an
+ *      already-progressed decision (e.g. soft_circled) back to a seed state.
+ *   2. If neither cache nor table knows it, seed from the mock/modern invitation
+ *      and PERSIST the seed so the durable table becomes authoritative going
+ *      forward.
+ */
 export function ensureRecord(invitationId: string): DecisionRecord | null {
-  if (records.has(invitationId)) return records.get(invitationId)!;
+  const cached = records.get(invitationId) ?? null;
+  const durable = dbGetRecord(invitationId);
+
+  if (cached || durable) {
+    // No-downgrade reconciliation. Prefer the more-advanced state; tie → durable.
+    let winner: DecisionRecord;
+    if (cached && durable) {
+      winner = stateRank(durable.state) >= stateRank(cached.state) ? durable : cached;
+    } else {
+      winner = (durable ?? cached)!;
+    }
+    records.set(invitationId, winner);
+    // Backfill the durable table if it was missing or behind the cache.
+    if (!durable || stateRank(winner.state) > stateRank(durable.state)) {
+      dbUpsertRecord(winner);
+    }
+    return winner;
+  }
+
   const inv = incomingInvitations.find((i) => i.id === invitationId);
   if (inv) {
     const initialState = (YOUR_DECISION_STATES as readonly string[]).includes(inv.state)
@@ -250,6 +461,9 @@ export function ensureRecord(invitationId: string): DecisionRecord | null {
       mim: seedMim(inv.round.id),
     };
     records.set(invitationId, rec);
+    // v26.1.x ENH-1 — persist the seed so the durable table is the source of
+    // truth from first touch (write-through to table + kv mirror).
+    _persistRecord(rec);
     return rec;
   }
 
@@ -269,6 +483,8 @@ export function ensureRecord(invitationId: string): DecisionRecord | null {
     };
     // Cache so subsequent GET/PATCH calls return the same authoritative record.
     records.set(invitationId, rec);
+    // v26.1.x ENH-1 — persist the seed (durable source of truth + kv mirror).
+    _persistRecord(rec);
     return rec;
   }
 
@@ -385,6 +601,19 @@ export function getRecord(invitationId: string): DecisionRecord | null {
 
 export function clearRecords(): void {
   records.clear();
+  // v26.1.x ENH-1 — also clear the durable table so test isolation (and any
+  // deliberate reset) truly starts from a clean slate, matching the prior
+  // Map-only semantics. Best-effort; never throws.
+  if (durableAvailable()) {
+    try {
+      rawDb().prepare(`DELETE FROM your_decision_records`).run();
+    } catch (err) {
+      log.warn(
+        "[yourDecisionStore] durable clear failed (non-fatal):",
+        (err as Error).message,
+      );
+    }
+  }
 }
 
 const TELEMETRY_EVENT_BY_ACTION: Record<YourDecisionPatch["action"], string> = {

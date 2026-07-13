@@ -49,6 +49,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { InvestorProfile } from "@/lib/profile/types";
 import { screenNameSchema, deriveInvestorKycVariant } from "@/lib/profile/types";
 import { AccreditationForm } from "@/components/AccreditationForm";
+import { AccreditationDeclaration } from "@/components/investor/AccreditationDeclaration"; /* v26.1.x AVI-ACCRED */
 import { useEntitlement } from "@/lib/entitlement";
 
 const STEPS = [
@@ -159,6 +160,10 @@ function InvestorWizard({
   const [network, setNetwork] = useState(profile.network);
   const [visibility, setVisibility] = useState(profile.visibility);
   const [savedAt, setSavedAt] = useState<Date | null>(new Date(profile.updatedAt));
+  // v26.1.x WAVE 2.5 AVI-A — per-field inline errors keyed by dotted path
+  // (e.g. "contact.mobileCountryCode"). Populated from the server's partial
+  // patch response; cleared on a fully-valid save.
+  const [contactFieldErrors, setContactFieldErrors] = useState<Record<string, string>>({});
 
   // Re-derive KYC variant whenever the country of tax residency changes.
   useEffect(() => {
@@ -179,11 +184,26 @@ function InvestorWizard({
       const r = await apiRequest("PATCH", `/api/investors/${profile.id}/profile`, patch);
       return r.json();
     },
-    onSuccess: () => {
+    onSuccess: (data: { fieldErrors?: Record<string, string> }) => {
       setSavedAt(new Date());
       queryClient.invalidateQueries({ queryKey: ["/api/investors", profile.id, "profile"] });
       // The investor's screen name affects every cap-table view they're on.
       queryClient.invalidateQueries({ queryKey: ["/api/companies"] });
+      // v26.1.x WAVE 2.5 AVI-A — per-field partial patch. The server now saves
+      // the valid fields (200) and returns `fieldErrors` for any invalid
+      // sub-field. Surface those inline instead of reverting the whole form.
+      const fieldErrors = data?.fieldErrors;
+      if (fieldErrors && Object.keys(fieldErrors).length > 0) {
+        setContactFieldErrors(fieldErrors);
+        const first = Object.entries(fieldErrors)[0];
+        toast({
+          title: "Some fields weren't saved",
+          description: `${first[0]}: ${first[1]} (your other changes were saved).`,
+          variant: "destructive",
+        });
+      } else {
+        setContactFieldErrors({});
+      }
     },
     // v25.56 Avi item 2 — autosave previously failed SILENTLY (no onError), so a
     // rejected contact patch looked like "the field didn't save". Surface it.
@@ -301,6 +321,7 @@ function InvestorWizard({
             onRole={updateRole}
             onContact={updateContact}
             onVisibility={updateVisibility}
+            fieldErrors={contactFieldErrors}
           />
         )}
         {step === 2 && <Step2Profile value={coreProfile} onChange={updateCore} investorId={profile.id} toast={toast} />}
@@ -340,7 +361,7 @@ function InvestorWizard({
 
 /* ---------- STEP 1 ---------- */
 function Step1Contact({
-  role, contact, visibility, onRole, onContact, onVisibility,
+  role, contact, visibility, onRole, onContact, onVisibility, fieldErrors,
 }: {
   role: InvestorProfile["role"];
   contact: InvestorProfile["contact"];
@@ -348,6 +369,8 @@ function Step1Contact({
   onRole: (n: InvestorProfile["role"]) => void;
   onContact: (n: InvestorProfile["contact"]) => void;
   onVisibility: (n: InvestorProfile["visibility"]) => void;
+  /* v26.1.x WAVE 2.5 AVI-A — per-field inline errors (dotted paths). */
+  fieldErrors?: Record<string, string>;
 }) {
   const setR = <K extends keyof InvestorProfile["role"]>(k: K, v: InvestorProfile["role"][K]) => onRole({ ...role, [k]: v });
   const setC = <K extends keyof InvestorProfile["contact"]>(k: K, v: InvestorProfile["contact"][K]) => onContact({ ...contact, [k]: v });
@@ -356,39 +379,53 @@ function Step1Contact({
   const snParse = screenNameVal.length === 0 ? null : screenNameSchema.safeParse(screenNameVal);
 
   /**
-   * E4: track whether the user has manually overridden the phone dial code.
-   * If they haven't touched it since the last country change, auto-update.
+   * E4: track whether the user has manually overridden the phone country.
+   * If they haven't touched it since the last country change, auto-follow the
+   * contact country.
+   *
+   * v26.1.x WAVE 2.5 AVI-A — ROOT-CAUSE FIX. `contact.mobileCountryCode` is
+   * validated by investorProfilePatchSchema as an ISO-3166 alpha-2 code (or ""),
+   * NOT a phone dial code. The previous code wrote the DIAL CODE (e.g. "1") into
+   * mobileCountryCode, which the schema rejected → the whole contact patch 400'd
+   * "Invalid patch" and name/city/phone silently reverted. We now always store
+   * the ISO alpha-2 code in mobileCountryCode. The dial code is derived purely
+   * for PRESENTATION (dialCodeDisplay below + PhoneCountryPicker's own +NN
+   * label) and is NEVER sent to the schema.
    */
   const [dialCodeManuallySet, setDialCodeManuallySet] = useState(false);
+
+  // Presentation-only dial code (e.g. "+1"). Derived from the ISO country code
+  // stored in mobileCountryCode; used for display, never persisted/validated.
+  const dialCodeDisplay = resolveDialCode(contact.mobileCountryCode) ?? "";
 
   const handleCountryStateCityChange = (next: { countryCode: string; stateProvince: string; city: string }) => {
     onContact({ ...contact, countryCode: next.countryCode, stateProvince: next.stateProvince, city: next.city });
   };
 
-  const handleDialCodeChange = (dialCode: string) => {
-    if (!dialCodeManuallySet) {
-      // Find the country code that corresponds to this dial code and auto-set
-      // The dial code comes from REGIONS — we use the country code directly
-      setC("mobileCountryCode", dialCode.replace(/^\+/, ""));
-    }
+  const handleDialCodeChange = (_dialCode: string) => {
+    // AVI-A: the picker emits a dial code for DISPLAY only. We intentionally do
+    // NOT write it into mobileCountryCode (that field is ISO alpha-2). The ISO
+    // follow is handled by the country-change effect below.
   };
 
   const handleManualDialCodeChange = (code: string) => {
+    // PhoneCountryPicker.onChange already returns the ISO alpha-2 country code
+    // (c.code), not the dial code — see CountryPicker.tsx. Store it verbatim.
     setDialCodeManuallySet(true);
     setC("mobileCountryCode", code);
   };
 
-  // Reset the "manually set" flag when the country changes (new selection resets auto-follow)
+  // Reset the "manually set" flag when the country changes (new selection resets
+  // auto-follow), and auto-follow mobileCountryCode to the contact's ISO country
+  // code (NOT the dial code) so the patch always carries a schema-valid value.
   const prevCountry = useRef(contact.countryCode);
   useEffect(() => {
     if (contact.countryCode !== prevCountry.current) {
       prevCountry.current = contact.countryCode;
       setDialCodeManuallySet(false);
-      // Auto-apply dial code for new country
-      const dc = resolveDialCode(contact.countryCode);
-      if (dc) {
-        const stripped = dc.replace(/^\+/, "");
-        onContact({ ...contact, mobileCountryCode: stripped });
+      // Auto-apply the ISO alpha-2 country code for the newly-picked country.
+      if (contact.countryCode) {
+        onContact({ ...contact, mobileCountryCode: contact.countryCode });
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -596,6 +633,16 @@ function Step1Contact({
                 onChange={handleManualDialCodeChange}
                 testId="picker-mobile-country"
               />
+              {/* AVI-A: dial code shown for PRESENTATION only — derived from the
+                  ISO alpha-2 stored in mobileCountryCode, never persisted. */}
+              {dialCodeDisplay && (
+                <span
+                  className="text-xs font-mono text-muted-foreground shrink-0"
+                  data-testid="text-mobile-dial-code"
+                >
+                  {dialCodeDisplay}
+                </span>
+              )}
               <Input
                 value={contact.mobileNumber}
                 onChange={(e) => setC("mobileNumber", e.target.value)}
@@ -606,6 +653,13 @@ function Step1Contact({
             <p className="text-[11px] text-muted-foreground">
               The dial code auto-updates when you change your contact country above. You can override it manually.
             </p>
+            {/* AVI-A: inline per-field error — the offending field surfaces here
+                while all other (valid) edits are already saved. */}
+            {fieldErrors?.["contact.mobileCountryCode"] && (
+              <p className="text-[11px] text-destructive" data-testid="error-mobile-country">
+                {fieldErrors["contact.mobileCountryCode"]}
+              </p>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -631,7 +685,10 @@ function Step2Profile({
     const fd = new FormData();
     for (let i = 0; i < files.length; i++) fd.append("files", files[i]);
     try {
-      const res = await apiRequest("POST", `/api/investors/${investorId}/kyc`, fd as unknown as Record<string, unknown>);
+      // v26.1.x WAVE 2.5 AVI-B — apiRequest now accepts FormData directly and
+      // sends it as-is (multipart), so the previous `as unknown as
+      // Record<string, unknown>` cast is gone.
+      const res = await apiRequest("POST", `/api/investors/${investorId}/kyc`, fd);
       const data = await res.json();
       if (data.ok) {
         set("kycDocuments", [...value.kycDocuments, ...data.added]);
@@ -778,6 +835,13 @@ function Step2Profile({
       </Card>
       {/* Sprint 14 D10 — 9-jurisdiction accreditation form */}
       <AccreditationForm initialJurisdiction="US" />
+      {/* v26.1.x AVI-ACCRED — expose the accredited-investor self-declaration
+          (confirm-vs-first-time) on the profile surface. Same migration-0103
+          endpoint that satisfies the money-core 412 funding gate; write is
+          keyed off the authed session userId. */}
+      <div className="mt-4" data-testid="profile-accreditation-declaration">
+        <AccreditationDeclaration />
+      </div>
     </div>
   );
 }

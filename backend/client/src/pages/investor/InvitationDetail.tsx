@@ -18,12 +18,23 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
 import { StateBadge } from "@/components/common";
-import { GlossaryLink } from "@/components/Glossary";
+/* COS-6 (Wave 4) — the duplicate in-page text-link glossary control
+   (<GlossaryLink /> from @/components/Glossary, data-testid="link-glossary") was
+   removed from this page header. PageHeader already renders the shared ICON
+   glossary control (data-testid="button-open-glossary", AppShell.tsx) on EVERY
+   page, so the detail header showed TWO "Open glossary" controls. Ozan-approved
+   single-control dedupe: keep the icon, drop the text-link. The `link-glossary`
+   testid is unreferenced by any test and still exported for other surfaces
+   (founder pages), so nothing is dropped from those. */
 import { HelpTip } from "@/components/HelpTip";
 import { ArrowLeft, FileText, Eye, Download, ShieldCheck, Check, X, Layers, PieChart as PieIcon, Building2, Info, Hash, Undo2, Wallet, Copy, Minus } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
-import { fmtUSD, fmtPct, fmtDate, fmtNum, fmtBytes, safeToFixed } from "@/lib/format";
+import { fmtUSD, fmtPct, fmtDate, fmtNum, fmtBytes } from "@/lib/format";
 import { roundPhrase, nonEmpty, fullLegalName } from "@/lib/investorLabels";
+import {
+  NOT_PROVIDED, ppsDisplay, computeIllustrativePosition,
+} from "@/lib/wave4Display";
+import type { InvestorProfile } from "@/lib/profile/types";
 import { useToast } from "@/hooks/use-toast";
 import { emit } from "@/lib/sprint3";
 import { useEffect } from "react";
@@ -87,6 +98,17 @@ function TabIntro({ children }: { children: React.ReactNode }) {
    <Info className="h-3.5 w-3.5 mt-0.5 text-[hsl(0_100%_40%)] shrink-0" />
    <span className="text-muted-foreground">{children}</span>
   </div>
+ );
+}
+
+/* COS-1 (Wave 4) — consistent, muted "Not provided" treatment for an empty deal
+   field. Ozan: ALWAYS show a "Not provided" line for empty sections/fields — do
+   NOT hide sections and do NOT fabricate data. */
+function NotProvided({ className = "" }: { className?: string }) {
+ return (
+  <span className={`text-muted-foreground italic ${className}`} data-testid="text-not-provided">
+   {NOT_PROVIDED}
+  </span>
  );
 }
 
@@ -178,6 +200,55 @@ export default function InvitationDetail() {
    enabled: !!roundId && !!id,
  });
 
+ // v26.1.x AVI-ACCRED — accreditation status for the deal/soft-circle surface
+ // banner. When the investor has no valid accredited-investor self-declaration,
+ // the founder's wire-funded step 412s (money core, captableCommitStore.ts:872)
+ // — so we surface a proactive banner here linking to /investor/accreditation.
+ // Read-only; catches ApiError → treat as unknown (no banner) rather than crash.
+ const accreditationStatus = useQuery<{ accredited?: boolean }>({
+   queryKey: ["/api/investor/compliance/accreditation-declaration"],
+   retry: false,
+   queryFn: async () => {
+     try {
+       return await (await apiRequest("GET", "/api/investor/compliance/accreditation-declaration")).json();
+     } catch (err) {
+       if (err instanceof ApiError) return {};
+       throw err;
+     }
+   },
+ });
+ const needsAccreditation = accreditationStatus.data?.accredited === false;
+
+ // COS-2 (Wave 4) — seed the Your-Decision legal name from the investor
+ // PROFILE's legal name (contact.firstName + lastName, rule #13) rather than the
+ // "New contact" / session placeholder. The investor profile is the authoritative
+ // source (Ozan). Read-only; catches ApiError → treat as absent (blank seed).
+ const investorId = entitlementCtx?.userId;
+ const profile = useQuery<InvestorProfile>({
+   queryKey: ["/api/investors", investorId, "profile"],
+   enabled: !!investorId,
+   retry: false,
+   queryFn: async () => {
+     try {
+       return await (await apiRequest("GET", `/api/investors/${investorId}/profile`)).json();
+     } catch (err) {
+       if (err instanceof ApiError) return {} as InvestorProfile;
+       throw err;
+     }
+   },
+ });
+ // Trimmed profile name parts. Never mutate stored values — display/seed only.
+ const profileFirstName = (profile.data?.contact?.firstName ?? "").trim();
+ const profileLastName = (profile.data?.contact?.lastName ?? "").trim();
+ // Full legal name from the profile ONLY when both parts are present (rule #13).
+ const profileLegalName =
+   profileFirstName && profileLastName
+     ? `${profileFirstName} ${profileLastName}`
+     : "";
+ // rule #13 prompt condition: a first name exists but the last name is missing.
+ // We PROMPT inline (do NOT hard-block submit) — Ozan's Wave-4 decision.
+ const profileMissingLastName = !!profileFirstName && !profileLastName;
+
  const [acceptOpen, setAcceptOpen] = useState(false);
  const [declineOpen, setDeclineOpen] = useState(false);
  // Sign term sheet state
@@ -185,6 +256,11 @@ export default function InvitationDetail() {
  const [signName, setSignName] = useState("");
  const [signAck, setSignAck] = useState(false);
  const [amount, setAmount] = useState("250000");
+ // COS-5 (Wave 4): track whether the investor has ACTUALLY edited the amount.
+ // The cap-table illustrative position binds to a genuinely-entered amount; when
+ // untouched it is a labelled "Example" (never a hard-coded $250,000 presented as
+ // the investor's real position). Display-only — no ledger/money-core write.
+ const [amountTouched, setAmountTouched] = useState(false);
  const [note, setNote] = useState("");
  const [signerName, setSignerName] = useState("");
  // Defect 6 fix: signerEmail from session identity, not hardcoded
@@ -203,16 +279,21 @@ export default function InvitationDetail() {
   }
  }, [entitlementCtx?.identity?.email]);
 
- // BUG-21: prefill the typed legal signature from the session's full legal
- // name (first + last, rule #13). Only prefill when a genuine full name is
- // available — never a lone first name or an email; leave editable + blank
- // otherwise so the investor types their own.
+ // BUG-21 + COS-2 (Wave 4): prefill the typed legal signature from the investor
+ // PROFILE's full legal name (contact.firstName + lastName, rule #13). The
+ // profile is the authoritative source (Ozan); we fall back to the session
+ // identity full name only when the profile has not resolved one. Only prefill a
+ // genuine full name (never a lone first name, placeholder, or email — never
+ // "New contact"); leave editable + blank otherwise so the investor types their
+ // own. Prefill is one-shot (guarded by `!signerName`) so it never clobbers what
+ // the investor has typed.
  useEffect(() => {
-  const legal = fullLegalName(entitlementCtx?.identity?.name);
-  if (legal && !signerName) {
+  if (signerName) return;
+  const legal = profileLegalName || fullLegalName(entitlementCtx?.identity?.name);
+  if (legal) {
    setSignerName(legal);
   }
- }, [entitlementCtx?.identity?.name]);
+ }, [profileLegalName, entitlementCtx?.identity?.name]);
 
  // Decision mutation helper
  const decisionMutation = useMutation({
@@ -230,18 +311,41 @@ export default function InvitationDetail() {
    return res.json();
   },
   onError: (err: Error) => {
-   // noop_transition:viewed is benign — the server already recorded the view on a prior mount
+   // v26.1.x AVI-C-EXT / FIX #2 — a benign, already-past-view transition is NOT
+   // a user-facing failure. When the record has already progressed past
+   // `viewed` (viewed/accepted/soft_circled/…), the mount view ping is a no-op
+   // the server rejects with `noop_transition` or `forbidden_transition:*->viewed`.
+   // Treat those as silent; the view is already recorded. Genuine failures
+   // (network, auth, mismatch, real forbidden actions) still surface.
    if (/noop_transition/i.test(err.message)) return;
-   toast({ title: "Action failed", description: "Please try again. If this continues, contact support.", variant: "destructive" });
+   if (/forbidden_transition:[a-z_]+->viewed/i.test(err.message)) return;
+   // Contact-support affordance removed (v26.1.x AVI-C-EXT, Ozan): there is no
+   // in-app support destination, so no dead link is shown. Keep the rest of the
+   // error copy.
+   toast({ title: "Action failed", description: "Please try again.", variant: "destructive" });
   },
  });
 
  useEffect(() => {
   if (!inv.data) return;
-  // Defect 19: record viewedAt on the server
-  decisionMutation.mutate({ action: "view" });
+  // v26.1.x AVI-C-EXT / FIX #2 — gate the mount view ping so it is NON-DESTRUCTIVE.
+  // Only fire {action:"view"} when the current decision-record state can legally
+  // accept a view (i.e. it is still `pending`). For any already-progressed state
+  // (viewed/accepted/soft_circled/confirmed/signed/funded/declined/expired/revoked)
+  // the view is already recorded, so we SKIP the ping entirely — no server 409,
+  // no benign error, no toast. The `viewed` client event still emits so downstream
+  // channels are unaffected. Do NOT add an accepted->viewed edge to the sacred
+  // state machine.
+  const currentState = decisionRecord.data?.record?.state;
+  // When the record hasn't loaded yet, `currentState` is undefined; only ping
+  // once we know the state is `pending` to avoid a spurious ping on an
+  // already-progressed record. If the record query errors/empties, we skip
+  // (the onError guard above is the belt-and-suspenders fallback).
+  if (currentState === "pending") {
+   decisionMutation.mutate({ action: "view" });
+  }
   emit({ type: "invitation.viewed", payload: { invitationId: `inv-${inv.data.id}` } }, { companyId: inv.data.company.id ?? "co-x", roundId: inv.data.round.id, actorId: entitlementCtx?.userId ?? "investor-current", actorRole: "investor" });
- }, [inv.data?.id]);
+ }, [inv.data?.id, decisionRecord.data?.record?.state]);
 
  // v25.48 INV-CRASH fix — Rules of Hooks: these hooks MUST run on every render,
  // BEFORE the `if (!inv.data) return …` early return below. Previously they lived
@@ -325,7 +429,8 @@ export default function InvitationDetail() {
     breadcrumbs={[{ href: "/investor/dashboard", label: "Workspace" }, { href: "/investor/invitations", label: "Invitations" }, { label: i.company.name }]}
     actions={
      <>
-      <GlossaryLink />
+      {/* COS-6 (Wave 4): duplicate text-link glossary removed here; PageHeader
+          renders the shared icon glossary control (button-open-glossary). */}
       <Link href="/investor/invitations">
        <Button variant="ghost" data-testid="button-back"><ArrowLeft className="h-4 w-4 mr-2" /> All invitations</Button>
       </Link>
@@ -333,6 +438,27 @@ export default function InvitationDetail() {
     }
    />
    <PageBody>
+    {/* v26.1.x AVI-ACCRED — accreditation-required banner on the deal/soft-circle
+        surface. Links to /investor/accreditation so the investor can clear the
+        money-core 412 before the founder marks the round funded. */}
+    {needsAccreditation && (
+     <div
+      className="mb-6 rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900"
+      data-testid="banner-accreditation-required"
+     >
+      <div className="font-medium mb-1">Accreditation required to fund this round</div>
+      <p className="mb-3">
+       Before this round can be marked funded, you must sign an accredited-investor
+       self-declaration. Soft-circling is unaffected, but funding is blocked until
+       your declaration is on file.
+      </p>
+      <Link href="/investor/accreditation">
+       <Button size="sm" data-testid="button-goto-accreditation">
+        <ShieldCheck className="h-4 w-4 mr-2" /> Complete accreditation
+       </Button>
+      </Link>
+     </div>
+    )}
     {/* Header strip */}
     <Card className="mb-6">
      <CardContent className="p-5">
@@ -397,7 +523,10 @@ export default function InvitationDetail() {
        <Card><CardContent className="p-4">
         <div className="text-xs uppercase text-muted-foreground tracking-wide font-medium">Pre / post-money</div>
         <div className="text-2xl font-semibold mt-1">{fmtUSD(i.preMoney, { compact: true })}</div>
-        <div className="text-xs text-muted-foreground mt-1">Post: {fmtUSD(i.postMoney, { compact: true })} · {/* v25.25 Avi-8: was `${i.pricePerShare?.toFixed(2)}/sh` which rendered "undefined/sh" when PPS unset */}{i.pricePerShare != null ? `$${safeToFixed(i.pricePerShare, 2)}/sh` : "PPS not set"}</div>
+        {/* COS-4 (Wave 4): render exactly "Not set" when PPS is 0/null/unset
+            (never $0.0000 / "PPS not set"). ppsDisplay returns "Not set" or
+            "$X.XX"; the "/sh" suffix is only appended when a real PPS exists. */}
+        <div className="text-xs text-muted-foreground mt-1">Post: {fmtUSD(i.postMoney, { compact: true })} · {i.pricePerShare != null && i.pricePerShare !== 0 ? `${ppsDisplay(i.pricePerShare, 2)}/sh` : ppsDisplay(i.pricePerShare, 2)}</div>
        </CardContent></Card>
        <Card><CardContent className="p-4">
         <div className="text-xs uppercase text-muted-foreground tracking-wide font-medium">Min ticket</div>
@@ -407,44 +536,56 @@ export default function InvitationDetail() {
       </div>
 
       <Card>
-       <CardHeader className="pb-3"><CardTitle className="text-base">About the company</CardTitle></CardHeader>
+       <CardHeader className="pb-3"><CardTitle role="heading" aria-level={2} className="text-base">About the company</CardTitle></CardHeader>
        <CardContent className="space-y-4 text-sm">
-        {/* Defect 18 fix: render company description from API data */}
+        {/* Defect 18 + COS-1 (Wave 4): render company description from API data.
+            When empty, show a calm "Not provided" line — do NOT fabricate a
+            "No description available" sentence. */}
         <p>
-         {(i.company as { description?: string }).description ||
-          `${nonEmpty(i.company.name, "This company")} is participating in a ${roundPhrase(i.round.name).toLowerCase()} on Capavate. No description available.`}
+         {(i.company as { description?: string }).description?.trim()
+          ? (i.company as { description?: string }).description
+          : <NotProvided />}
         </p>
         <div className="grid md:grid-cols-3 gap-3 pt-3 border-t border-border">
-         <div><div className="text-xs text-muted-foreground">Founded</div><div className="font-medium">{(i.company as {founded?: string}).founded ?? "—"}</div></div>
-         <div><div className="text-xs text-muted-foreground">Headquarters</div><div className="font-medium">{(i.company as {headquarters?: string}).headquarters ?? "—"}</div></div>
-         <div><div className="text-xs text-muted-foreground">Team size</div><div className="font-medium">{(i.company as {teamSize?: string}).teamSize ?? "—"}</div></div>
+         {/* COS-1: empty founding/HQ/team fields render "Not provided", not "—". */}
+         <div><div className="text-xs text-muted-foreground">Founded</div><div className="font-medium">{(i.company as {founded?: string}).founded?.trim() ? (i.company as {founded?: string}).founded : <NotProvided />}</div></div>
+         <div><div className="text-xs text-muted-foreground">Headquarters</div><div className="font-medium">{(i.company as {headquarters?: string}).headquarters?.trim() ? (i.company as {headquarters?: string}).headquarters : <NotProvided />}</div></div>
+         <div><div className="text-xs text-muted-foreground">Team size</div><div className="font-medium">{(i.company as {teamSize?: string}).teamSize?.trim() ? (i.company as {teamSize?: string}).teamSize : <NotProvided />}</div></div>
         </div>
         <div className="pt-3 border-t border-border">
          <div className="text-xs text-muted-foreground mb-1">Traction (last 90 days)</div>
-         <ul className="space-y-1.5">
-          {((i.round as {highlights?: string[]}).highlights ?? ["ARR data not available", "NRR data not available", "Compliance status not available"]).map((h, idx) => {
-            const absent = /not available|unavailable|not disclosed|not provided|\bn\/a\b|no (?:data|info|information)\b/i.test(h);
-            return (
-             <li key={idx} className="flex items-center gap-2">
-              {absent
-               ? <Minus className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-               : <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" />} {h}
-             </li>
-            );
-          })}
-         </ul>
+         {/* COS-1: when the founder has published no traction highlights, show a
+             single "Not provided" line instead of fabricated "data not
+             available" bullets. When highlights exist, render them as-is. */}
+         {((i.round as {highlights?: string[]}).highlights ?? []).filter((h) => (h ?? "").trim()).length === 0 ? (
+          <NotProvided className="text-sm" />
+         ) : (
+          <ul className="space-y-1.5">
+           {((i.round as {highlights?: string[]}).highlights ?? []).filter((h) => (h ?? "").trim()).map((h, idx) => {
+             const absent = /not available|unavailable|not disclosed|not provided|\bn\/a\b|no (?:data|info|information)\b/i.test(h);
+             return (
+              <li key={idx} className="flex items-center gap-2">
+               {absent
+                ? <Minus className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                : <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" />} {h}
+              </li>
+             );
+           })}
+          </ul>
+         )}
         </div>
        </CardContent>
       </Card>
 
       {/* DEF-021 fix: source "Why now" from round.whyNow API field */}
       <Card>
-       <CardHeader className="pb-3"><CardTitle className="text-base">Why now</CardTitle></CardHeader>
+       <CardHeader className="pb-3"><CardTitle role="heading" aria-level={2} className="text-base">Why now</CardTitle></CardHeader>
        <CardContent className="text-sm space-y-2">
-        {i.round.whyNow ? (
+        {/* COS-1 (Wave 4): consistent "Not provided" line when no "Why now". */}
+        {i.round.whyNow?.trim() ? (
          <p>{i.round.whyNow}</p>
         ) : (
-         <p className="text-muted-foreground italic">Founder has not published a "Why now" statement yet.</p>
+         <p><NotProvided /></p>
         )}
         {i.round.leadInvestorNote && (
          <p className="text-muted-foreground">{i.round.leadInvestorNote}</p>
@@ -467,7 +608,7 @@ export default function InvitationDetail() {
       <Card>
        <CardHeader className="pb-3 flex flex-row items-center justify-between space-y-0">
         <div>
-         <CardTitle className="text-base flex items-center gap-2"><PieIcon className="h-4 w-4" /> Pre-money cap table</CardTitle>
+         <CardTitle role="heading" aria-level={2} className="text-base flex items-center gap-2"><PieIcon className="h-4 w-4" /> Pre-money cap table</CardTitle>
          <p className="text-sm text-muted-foreground mt-0.5">Fully-diluted view, shared with you under R165 §4 redaction policy.</p>
         </div>
         <Badge variant="outline" className="text-[10px]"><ShieldCheck className="h-3 w-3 mr-1" /> Redacted to investor-grade</Badge>
@@ -504,24 +645,49 @@ export default function InvitationDetail() {
        </CardContent>
       </Card>
 
-      <Card>
-       <CardHeader className="pb-3"><CardTitle className="text-base">Your post-round position (illustrative)</CardTitle></CardHeader>
+      {/* COS-5 (Wave 4): the illustrative position binds to the investor's ENTERED
+          soft-circle amount (recomputed shares/ownership from it). When no amount
+          has been entered yet it is a labelled "Example" computed from the min
+          ticket — never a hard-coded $250,000 presented as the investor's real
+          holding. Pure display math; the money core / cap-table engine is
+          untouched. */}
+      {(() => {
+       const pos = computeIllustrativePosition(
+        amountTouched ? amount : "",
+        i.minTicket,
+        i.pricePerShare,
+        i.postMoney,
+       );
+       return (
+      <Card data-testid="card-illustrative-position">
+       <CardHeader className="pb-3 flex flex-row items-center justify-between space-y-0">
+        <CardTitle role="heading" aria-level={2} className="text-base">Your post-round position (illustrative)</CardTitle>
+        {pos.isExample && (
+         <Badge variant="outline" className="text-[10px]" data-testid="badge-illustrative-example">Example</Badge>
+        )}
+       </CardHeader>
        <CardContent className="text-sm">
-        <p className="text-muted-foreground mb-3">Assuming you commit at the {fmtUSD(Number(amount) || i.minTicket)} level on a {fmtUSD(i.preMoney, { compact: true })} pre-money:</p>
+        <p className="text-muted-foreground mb-3">
+         {pos.isExample
+          ? <>Example only — enter a soft-circle amount below to see your position. Based on a {fmtUSD(pos.amount)} example on a {fmtUSD(i.preMoney, { compact: true })} pre-money:</>
+          : <>Assuming you commit at the {fmtUSD(pos.amount)} level on a {fmtUSD(i.preMoney, { compact: true })} pre-money:</>}
+        </p>
         <div className="grid md:grid-cols-3 gap-3">
-         <div><div className="text-xs text-muted-foreground">Shares purchased</div><div className="font-mono tabular-nums font-medium">{fmtNum(Math.round((Number(amount) || i.minTicket) / (i.pricePerShare || 1)))}</div></div>
-         <div><div className="text-xs text-muted-foreground">Implied ownership</div><div className="font-mono tabular-nums font-medium">{fmtPct(((Number(amount) || i.minTicket) / i.postMoney) * 100, 3)}</div></div>
-         <div><div className="text-xs text-muted-foreground">Pro-rata reservation</div><div className="font-mono tabular-nums font-medium">{Number(amount) >= 250000 ? "Yes" : "No"}</div></div>
+         <div><div className="text-xs text-muted-foreground">Shares purchased</div><div className="font-mono tabular-nums font-medium" data-testid="text-illustrative-shares">{fmtNum(pos.shares)}</div></div>
+         <div><div className="text-xs text-muted-foreground">Implied ownership</div><div className="font-mono tabular-nums font-medium" data-testid="text-illustrative-ownership">{pos.ownershipPct != null ? fmtPct(pos.ownershipPct, 3) : NOT_PROVIDED}</div></div>
+         <div><div className="text-xs text-muted-foreground">Pro-rata reservation</div><div className="font-mono tabular-nums font-medium">{pos.proRata ? "Yes" : "No"}</div></div>
         </div>
        </CardContent>
       </Card>
+       );
+      })()}
      </TabsContent>
 
      {/* TAB 3 — INVESTMENT TERMS */}
      <TabsContent value="terms" className="space-y-5">
       <TabIntro>The deal terms — instrument, valuation, and the preferences that decide who gets paid first on an exit.</TabIntro>
       <Card>
-       <CardHeader className="pb-3"><CardTitle className="text-base flex items-center gap-2"><Layers className="h-4 w-4" /> Headline terms</CardTitle></CardHeader>
+       <CardHeader className="pb-3"><CardTitle role="heading" aria-level={2} className="text-base flex items-center gap-2"><Layers className="h-4 w-4" /> Headline terms</CardTitle></CardHeader>
        <CardContent className="grid md:grid-cols-2 gap-x-6 gap-y-3 text-sm">
         {/* DEF-022 fix: source liquidation pref / anti-dilution / pro-rata / board from round.terms */}
         {([
@@ -532,12 +698,15 @@ export default function InvitationDetail() {
          /* v25.25 Avi-8 — was `$${i.pricePerShare?.toFixed(4)}` which rendered
             "$undefined" when price_per_share is NULL (priced rounds where the
             founder didn't fill sharesAuthorized). Surface honestly. */
-         ["Price per share", i.pricePerShare != null ? `$${safeToFixed(i.pricePerShare, 4)}` : "Not set — priced at close", "The cost of one share in this round, set by pre-money divided by fully-diluted shares."],
+         /* COS-4 (Wave 4): exactly "Not set" when PPS is 0/null/unset. */
+         ["Price per share", ppsDisplay(i.pricePerShare, 4), "The cost of one share in this round, set by pre-money divided by fully-diluted shares."],
          ["Min ticket", fmtUSD(i.minTicket), "The smallest cheque the founder will accept."],
-         ["Liquidation preference", i.round.terms?.liquidationPref ?? "Not specified", "On exit you receive your invested capital back BEFORE common shareholders — OR you convert to common and share pro-rata, whichever is better. 1× non-participating is the founder-friendly standard."],
-         ["Anti-dilution", i.round.terms?.antiDilution ?? "Not specified", "If the company later raises at a lower valuation, your conversion ratio adjusts in your favour. Broad-based weighted-average is the gentle, mainstream version."],
-         ["Pro-rata rights", i.round.terms?.proRataMinimum ?? "Not specified", "The right to participate in future rounds at an amount that maintains your current ownership %."],
-         ["Board composition", i.round.terms?.boardComposition ?? "Not specified", "How the board of directors is structured."],
+         /* COS-1 (Wave 4): empty term fields render "Not provided" (consistent
+            with the rest of the deal surface) instead of "Not specified". */
+         ["Liquidation preference", nonEmpty(i.round.terms?.liquidationPref, NOT_PROVIDED), "On exit you receive your invested capital back BEFORE common shareholders — OR you convert to common and share pro-rata, whichever is better. 1× non-participating is the founder-friendly standard."],
+         ["Anti-dilution", nonEmpty(i.round.terms?.antiDilution, NOT_PROVIDED), "If the company later raises at a lower valuation, your conversion ratio adjusts in your favour. Broad-based weighted-average is the gentle, mainstream version."],
+         ["Pro-rata rights", nonEmpty(i.round.terms?.proRataMinimum, NOT_PROVIDED), "The right to participate in future rounds at an amount that maintains your current ownership %."],
+         ["Board composition", nonEmpty(i.round.terms?.boardComposition, NOT_PROVIDED), "How the board of directors is structured."],
          ["Information rights", "Quarterly financials + KPI dashboard", "What financial reporting the company commits to share with you."],
          ["ESOP top-up", "10% post-money pool refresh", "Size of the new employee option pool created at this round. Pool timing affects who is diluted by it."],
         ] as Array<[string, string, string]>).map(([k, v, tip]) => (
@@ -554,10 +723,11 @@ export default function InvitationDetail() {
 
       {/* DEF-023 fix: source use-of-proceeds from round.useOfProceeds API field */}
       <Card>
-       <CardHeader className="pb-3"><CardTitle className="text-base">Use of proceeds</CardTitle></CardHeader>
+       <CardHeader className="pb-3"><CardTitle role="heading" aria-level={2} className="text-base">Use of proceeds</CardTitle></CardHeader>
        <CardContent>
+        {/* COS-1 (Wave 4): consistent "Not provided" line when no use-of-proceeds. */}
         {(!i.round.useOfProceeds || i.round.useOfProceeds.length === 0) ? (
-         <p className="text-sm text-muted-foreground italic">Founder has not published use-of-proceeds data yet.</p>
+         <p className="text-sm"><NotProvided /></p>
         ) : (
          <div className="space-y-3">
           {(i.round.useOfProceeds ?? []).map((u, idx) => (
@@ -572,7 +742,7 @@ export default function InvitationDetail() {
       </Card>
 
       <Card>
-       <CardHeader className="pb-3"><CardTitle className="text-base">Round timeline</CardTitle></CardHeader>
+       <CardHeader className="pb-3"><CardTitle role="heading" aria-level={2} className="text-base">Round timeline</CardTitle></CardHeader>
        <CardContent>
         {/* Defect 17 fix: derive dates from round data */}
         <ol className="relative border-l border-border ml-2 space-y-4">
@@ -599,7 +769,7 @@ export default function InvitationDetail() {
       <Card>
        <CardHeader className="pb-3 flex flex-row items-center justify-between space-y-0">
         <div>
-         <CardTitle className="text-base flex items-center gap-2"><Building2 className="h-4 w-4" /> Files shared with you</CardTitle>
+         <CardTitle role="heading" aria-level={2} className="text-base flex items-center gap-2"><Building2 className="h-4 w-4" /> Files shared with you</CardTitle>
          <p className="text-sm text-muted-foreground mt-0.5">All access is logged in the company's audit ledger. Watermarked on download.</p>
         </div>
         <Badge variant="outline" className="text-[10px]"><Eye className="h-3 w-3 mr-1" /> Read-only</Badge>
@@ -658,7 +828,7 @@ export default function InvitationDetail() {
       {isConfirmed && (
        <Card className="border-[hsl(0_100%_40%)]/40" data-testid="card-wire-instructions-investor">
         <CardHeader className="pb-3">
-         <CardTitle className="text-base flex items-center gap-2"><Wallet className="h-4 w-4" /> Wire Transfer Instructions</CardTitle>
+         <CardTitle role="heading" aria-level={2} className="text-base flex items-center gap-2"><Wallet className="h-4 w-4" /> Wire Transfer Instructions</CardTitle>
         </CardHeader>
         <CardContent className="text-sm">
          {wireInstr.isLoading ? (
@@ -713,7 +883,7 @@ export default function InvitationDetail() {
       {mySig && !mySig.withdrawn && (
        <Card className="border-emerald-300/40 bg-emerald-50/30 " data-testid="card-softcircle-recorded">
         <CardHeader className="pb-3">
-         <CardTitle className="text-base flex items-center gap-2 text-emerald-700 "><ShieldCheck className="h-4 w-4" /> Soft-circle recorded</CardTitle>
+         <CardTitle role="heading" aria-level={2} className="text-base flex items-center gap-2 text-emerald-700 "><ShieldCheck className="h-4 w-4" /> Soft-circle recorded</CardTitle>
         </CardHeader>
         <CardContent className="text-sm space-y-2">
          <div>You indicated <strong>{fmtUSD(mySig.amount)}</strong> in the {i.round.name} round.</div>
@@ -735,16 +905,25 @@ export default function InvitationDetail() {
 
       <div className="grid md:grid-cols-2 gap-5">
        <Card className="border-[hsl(0_100%_40%)]/40">
-        <CardHeader className="pb-3"><CardTitle className="text-base text-[hsl(0_100%_40%)] ">{mySig && !mySig.withdrawn ? "Update soft-circle" : "Soft-circle this round"}</CardTitle></CardHeader>
+        <CardHeader className="pb-3"><CardTitle role="heading" aria-level={2} className="text-base text-[hsl(0_100%_40%)] ">{mySig && !mySig.withdrawn ? "Update soft-circle" : "Soft-circle this round"}</CardTitle></CardHeader>
         <CardContent className="space-y-3">
          <div>
           <Label>Investment amount (USD)</Label>
-          <Input className="mt-1 font-mono" value={amount} onChange={e => setAmount(e.target.value)} data-testid="input-amount" />
+          <Input className="mt-1 font-mono" value={amount} onChange={e => { setAmount(e.target.value); setAmountTouched(true); }} data-testid="input-amount" />
           <div className="text-xs text-muted-foreground mt-1">Min ticket {fmtUSD(i.minTicket)}. Pro-rata available at $250k+.</div>
          </div>
          <div>
           <Label>Your full legal name (typed signature)</Label>
           <Input className="mt-1" placeholder="Your full legal name" value={signerName} onChange={(e) => setSignerName(e.target.value)} data-testid="input-investor-signer-name" />
+          {/* COS-2 (Wave 4): when the profile has a first name but no last name,
+              PROMPT to complete the full legal name (rule #13) inline. This is
+              guidance only — it does NOT hard-block the submit (Ozan). */}
+          {profileMissingLastName && (
+           <p className="text-xs text-amber-700 mt-1" data-testid="text-lastname-prompt">
+            Add your last name to complete your full legal name (rule #13).{" "}
+            <Link href="/investor/profile" className="underline">Complete your profile</Link>.
+           </p>
+          )}
          </div>
          <div>
           <Label>Your email</Label>
@@ -757,10 +936,20 @@ export default function InvitationDetail() {
          <div className="rounded-md border border-border bg-secondary/40 p-3 text-xs leading-relaxed">
           I, <strong>{signerName.trim() || "[Typed Name]"}</strong>, indicate my intention to invest <strong>{fmtUSD(Number(amount) || 0)}</strong> in <strong>{nonEmpty(i.company.name, "this company")}</strong>'s <strong>{roundPhrase(i.round.name)}</strong> at the terms stated. This soft-circle is a non-binding indication of interest, not a contract. A binding subscription requires definitive transaction documents executed by both parties.
          </div>
-         <label className="flex items-start gap-2 text-xs cursor-pointer">
-          <Checkbox checked={ack} onCheckedChange={(v) => setAck(!!v)} data-testid="checkbox-investor-ack" />
-          <span>I acknowledge this is a non-binding indication of interest.</span>
-         </label>
+         {/* FIX #6 (Wave 3) — a NATIVE <label> wrapping a Radix Checkbox (a
+             <button role="checkbox">) double-fired: clicking the text made the
+             label synthesize a click on the button AND the button toggled from
+             the direct/keyboard interaction, so the two events cancelled and
+             `ack` desynced from the visible checkmark (submit guard then read
+             ack=false). Bind the checkbox to an explicit id and associate the
+             text via htmlFor so exactly ONE toggle fires per interaction
+             (label click, checkbox click, keyboard space). Same className, same
+             data-testid, same `ack` source of truth the guard reads. `signAck`
+             (signing) stays a SEPARATE gate. */}
+         <div className="flex items-start gap-2 text-xs">
+          <Checkbox id="investor-ack" checked={ack} onCheckedChange={(v) => setAck(!!v)} data-testid="checkbox-investor-ack" />
+          <label htmlFor="investor-ack" className="cursor-pointer">I acknowledge this is a non-binding indication of interest.</label>
+         </div>
          <Button
           className="w-full bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white h-11"
           onClick={async () => {
@@ -816,7 +1005,7 @@ export default function InvitationDetail() {
        </Card>
 
        <Card>
-        <CardHeader className="pb-3"><CardTitle className="text-base">Pass on this round</CardTitle></CardHeader>
+        <CardHeader className="pb-3"><CardTitle role="heading" aria-level={2} className="text-base">Pass on this round</CardTitle></CardHeader>
         <CardContent className="space-y-3">
          <p className="text-sm text-muted-foreground">If this isn't a fit, let the founder know. Your decline is private to {nonEmpty(i.company.name, "the company")}.</p>
          <div className="rounded-md border border-border bg-secondary/40 p-3 text-sm">
@@ -835,7 +1024,7 @@ export default function InvitationDetail() {
       </div>
 
       <Card>
-       <CardHeader className="pb-3"><CardTitle className="text-base">Decision history</CardTitle></CardHeader>
+       <CardHeader className="pb-3"><CardTitle role="heading" aria-level={2} className="text-base">Decision history</CardTitle></CardHeader>
        <CardContent>
         <ul className="space-y-2 text-sm">
          <li className="flex justify-between border-b border-border/60 py-2"><span>Invitation received</span><span className="text-muted-foreground">{fmtDate(i.receivedAt)}</span></li>

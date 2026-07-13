@@ -44,6 +44,11 @@ import { AccreditationDeclaration } from "@/components/investor/AccreditationDec
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { fmtUSD } from "@/lib/format";
 import { useEntitlement } from "@/lib/entitlement";
+// SPINE-0 (Wave 2): unify the Collective eligibility verdict. The hero and the
+// step-1 gate must read ONE signal (#5) — funded cap-table position OR
+// admin-granted — not accepted/soft-circled alone. The spine folds the server
+// eligibility query + funded-position signal into a single `eligible` verdict.
+import { useInvestorSpine } from "@/lib/investor/investorSpine";
 
 import {
   COLLECTIVE_SECTORS_45,
@@ -67,7 +72,11 @@ type Eligibility = {
     founderOfCompany: boolean;
     signatoryOnCompany: boolean;
     vouchedByPartner: boolean;
+    /* Wave 2 (#5): admin/chapter operator granted access. */
+    adminGranted: boolean;
   };
+  /* Wave 2 (#5): mirrored from the server for spine consistency. */
+  adminGranted?: boolean;
 };
 
 /**
@@ -151,6 +160,13 @@ export default function ApplyToCollective() {
     queryKey: ["/api/collective/eligibility"],
   });
 
+  // SPINE-0 (Wave 2, #5): the SINGLE eligibility verdict consumed by BOTH the
+  // hero heading and the step-1 gate. `eligibilitySignals.eligible` = funded
+  // cap-table position OR admin-granted (it folds in the same
+  // /api/collective/eligibility server signal the gate previously read alone).
+  const spine = useInvestorSpine();
+  const isCollectiveEligible = spine.eligibilitySignals.eligible;
+
   // Sprint 21 Wave G — active member: show banner instead of redirecting away.
   // (Old redirect to /investor/collective is removed — that page redirects back here.)
   const isActiveMember = elig.data?.collectiveStatus === "active";
@@ -226,7 +242,8 @@ export default function ApplyToCollective() {
 
   /* ---- step validation ---- */
   function stepOk(s: number): boolean {
-    if (s === 1) return Boolean(elig.data?.eligible);
+    // Wave 2 (#5): gate reads the SAME unified spine verdict the hero shows.
+    if (s === 1) return isCollectiveEligible;
     if (s === 2) {
       return form.thesis.trim().length >= 20
         && form.minCheckUsd >= 5_000
@@ -366,8 +383,12 @@ export default function ApplyToCollective() {
         <Card className="overflow-hidden mb-6">
           <div className="bg-gradient-to-br from-[hsl(219_45%_20%)] via-[hsl(219_45%_18%)] to-[hsl(333_75%_35%)] text-white p-8">
             <Badge className="bg-white/20 text-white border-0 mb-3">Collective · Investor</Badge>
-            <h2 className="text-2xl md:text-3xl font-semibold tracking-tight max-w-2xl">
-              You're eligible to join Capavate Collective.
+            {/* Wave 2 (#5): heading reflects the unified spine verdict — it must
+                agree with the step-1 gate. No unconditional "eligible" claim. */}
+            <h2 className="text-2xl md:text-3xl font-semibold tracking-tight max-w-2xl" data-testid="text-hero-eligibility">
+              {isCollectiveEligible
+                ? "You're eligible to join Capavate Collective."
+                : "Capavate Collective — for funded investors."}
             </h2>
             <p className="text-white/85 mt-3 max-w-2xl">
               Collective gives accredited investors access to <strong>SPV co-investments, DSC voting on
@@ -633,6 +654,7 @@ function Step1Eligibility({ eligibility, loading }: { eligibility?: Eligibility;
                 {k === "founderOfCompany" && "Founder of a Capavate company"}
                 {k === "signatoryOnCompany" && "Signatory on at least one Capavate company"}
                 {k === "vouchedByPartner" && "Vouched by a consortium partner"}
+                {k === "adminGranted" && "Access granted by a Capavate Collective operator"}
               </span>
             </div>
           ))}
