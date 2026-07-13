@@ -112,6 +112,10 @@ export default function RoundDetail() {
  const [inviteLastName, setInviteLastName] = useState("");
  const [inviteEmail, setInviteEmail] = useState("");
  const [inviteNote, setInviteNote] = useState("");
+ // Wave C3 (Shadie 2a) — exact-HTML preview of the invitation email. The founder
+ // edits ONLY the personal note; the preview shows precisely what the investor
+ // will receive (rendered server-side via the shared renderer). No token/email.
+ const [invitePreviewHtml, setInvitePreviewHtml] = useState<string | null>(null);
  // v25.53 8a — optional invite fields mirroring the CRM menu.
  const [inviteCompany, setInviteCompany] = useState("");
  const [inviteStageFocus, setInviteStageFocus] = useState("");
@@ -180,7 +184,7 @@ export default function RoundDetail() {
      }
      queryClient.invalidateQueries({ queryKey: [`/api/rounds/${id}/invitations`] });
      emitMutationLocal("invitation", `inv-${Date.now()}`, "create");
-     setInviteOpen(false); setInviteName(""); setInviteFirstName(""); setInviteLastName(""); setInviteEmail(""); setInviteNote(""); setInviteCompany(""); setInviteStageFocus(""); setInviteMarketSize(""); setInviteExpiry("30");
+     setInviteOpen(false); setInviteName(""); setInviteFirstName(""); setInviteLastName(""); setInviteEmail(""); setInviteNote(""); setInviteCompany(""); setInviteStageFocus(""); setInviteMarketSize(""); setInviteExpiry("30"); setInvitePreviewHtml(null);
    },
    // v25.55 8a — a duplicate active invite is a friendly conflict, not a
    // failure. Give it a clear title instead of the generic "Failed to send".
@@ -194,8 +198,35 @@ export default function RoundDetail() {
    },
  });
 
+ // Wave C3 (Shadie 2a) — fetch the EXACT invitation email HTML (same renderer
+ // the send uses) so the founder previews precisely what the investor receives.
+ const previewInviteMut = useMutation({
+   mutationFn: async () => {
+     const previewName = (inviteSource === "new"
+       ? `${inviteFirstName} ${inviteLastName}`.trim()
+       : inviteName).trim();
+     // Wave C3 REVISE — mirror the SEND's expiry mapping EXACTLY so the preview
+     // shows the same "expires in N days" the investor will receive. "never"
+     // omits expiryDays (send does the same → renderer default applies to both).
+     const expiryDaysVal = inviteExpiry === "never" ? null : parseInt(inviteExpiry, 10);
+     const res = await apiRequest("POST", `/api/rounds/${id}/invitations/preview`, {
+       investorName: previewName || undefined,
+       note: inviteNote || undefined,
+       ...(expiryDaysVal !== null && Number.isFinite(expiryDaysVal) ? { expiryDays: expiryDaysVal } : {}),
+     });
+     return res.json() as Promise<{ ok: boolean; preview?: { subject: string; html: string; text: string } }>;
+   },
+   onSuccess: (data) => {
+     setInvitePreviewHtml(data.preview?.html ?? "");
+   },
+   onError: (e: Error) => {
+     toast({ title: "Could not build preview", description: e.message, variant: "destructive" });
+   },
+ });
+
  const resendMut = useMutation({
    mutationFn: async (invId: string) => (await apiRequest("POST", `/api/rounds/${id}/invitations/${invId}/resend`, {})).json(),
+ // (resend keeps its existing behavior; preview is a separate action below)
    onSuccess: (_d, invId) => {
      toast({ title: "Reminder sent", description: "A fresh invitation email with a new link was sent." });
      emitMutationLocal("invitation", invId, "update");
@@ -524,10 +555,14 @@ export default function RoundDetail() {
  <td className="px-3 py-3 text-muted-foreground">{fmtDate(i.expiresAt)}</td>
  <td className="px-6 py-3 text-right">
  <div className="inline-flex gap-1">
- {/* v25.55 3a — cannot remind an investor who already accepted. */}
- <Button size="sm" variant="ghost" onClick={() => resendMut.mutate(i.id)} disabled={resendMut.isPending || i.state === "accepted"} data-testid={`button-resend-${i.id}`}><Repeat className="h-3.5 w-3.5" /></Button>
- <Button size="sm" variant="ghost" onClick={() => extendExpiryMut.mutate(i.id)} disabled={extendExpiryMut.isPending} data-testid={`button-expiry-${i.id}`}><Calendar className="h-3.5 w-3.5" /></Button>
- <Button size="sm" variant="ghost" onClick={() => setRevokeId(i.id)} className="text-destructive hover:text-destructive" data-testid={`button-revoke-${i.id}`}><Ban className="h-3.5 w-3.5" /></Button>
+ {/* v25.55 3a — cannot remind an investor who already accepted.
+     Wave C1 (Shadie 3a/4a/5a) — a REVOKED invitation is terminal: resend,
+     extend-expiry, and revoke are all disabled (no re-notifying a revoked
+     investor). Expiry extend is also disabled for accepted (Ozan: revoked
+     AND accepted). */}
+ <Button size="sm" variant="ghost" onClick={() => resendMut.mutate(i.id)} disabled={resendMut.isPending || i.state === "accepted" || i.state === "revoked"} data-testid={`button-resend-${i.id}`}><Repeat className="h-3.5 w-3.5" /></Button>
+ <Button size="sm" variant="ghost" onClick={() => extendExpiryMut.mutate(i.id)} disabled={extendExpiryMut.isPending || i.state === "revoked" || i.state === "accepted"} data-testid={`button-expiry-${i.id}`}><Calendar className="h-3.5 w-3.5" /></Button>
+ <Button size="sm" variant="ghost" onClick={() => setRevokeId(i.id)} disabled={i.state === "revoked"} className="text-destructive hover:text-destructive" data-testid={`button-revoke-${i.id}`}><Ban className="h-3.5 w-3.5" /></Button>
  </div>
  </td>
  </tr>
@@ -860,9 +895,27 @@ export default function RoundDetail() {
  Inviting <strong>{inviteName || "—"}</strong>{inviteEmail ? ` (${inviteEmail})` : ""}
  </div>
  )}
- <div><Label>Personal note (optional)</Label><Input className="mt-1" value={inviteNote} onChange={e => setInviteNote(e.target.value)} placeholder="Following up from our coffee at Latitude…" data-testid="input-invite-note" /></div>
+ <div>
+ <Label>Personal note (optional)</Label>
+ <Input className="mt-1" value={inviteNote} onChange={e => { setInviteNote(e.target.value); setInvitePreviewHtml(null); }} placeholder="Following up from our coffee at Latitude…" data-testid="input-invite-note" />
+ <p className="text-[11px] text-muted-foreground mt-1">Your note is added to the standard invitation email. The round terms and name are not changed — only your message.</p>
+ </div>
+ {/* Wave C3 (Shadie 2a) — exact-HTML preview: the founder can SEE precisely
+     what the investor receives before sending, and refine only the note. */}
+ <div>
+ <Button type="button" variant="outline" size="sm" onClick={() => previewInviteMut.mutate()} disabled={previewInviteMut.isPending} data-testid="button-preview-invite">
+ {previewInviteMut.isPending ? "Building preview…" : "Preview email"}
+ </Button>
+ {invitePreviewHtml !== null && (
+ <div className="mt-2 border rounded-md p-3 bg-white max-h-64 overflow-auto text-sm" data-testid="invite-email-preview">
+ <div className="text-[11px] uppercase tracking-wide text-muted-foreground mb-2">Email preview — exactly what the investor will receive</div>
+ {/* Server-rendered markup; every interpolated value is HTML-escaped server-side. */}
+ <div dangerouslySetInnerHTML={{ __html: invitePreviewHtml }} />
+ </div>
+ )}
+ </div>
  <div><Label>Expires in</Label>
- <select className="mt-1 w-full h-9 px-3 rounded-md border border-input bg-background text-sm" data-testid="select-invite-expiry" value={inviteExpiry} onChange={e => setInviteExpiry(e.target.value)}>
+ <select className="mt-1 w-full h-9 px-3 rounded-md border border-input bg-background text-sm" data-testid="select-invite-expiry" value={inviteExpiry} onChange={e => { setInviteExpiry(e.target.value); setInvitePreviewHtml(null); }}>
  <option value="14">14 days</option><option value="30">30 days</option><option value="60">60 days</option><option value="never">Never</option>
  </select>
  </div>
@@ -969,11 +1022,22 @@ function ProjectionPanel({ round }: { round: Round }) {
  if (!securities.data) return <div className="py-10 text-center text-muted-foreground">Loading securities…</div>;
 
  const pre = runEngine(securities.data, "fully_diluted", "US");
- const post = projectPostClose(securities.data, {
- preMoneyValuation: round.preMoney,
- investmentAmount: round.targetAmount,
+ // Wave C4 — a post-close projection is only meaningful with a real (positive)
+ // pre-money valuation AND target/investment amount. A freshly-created round
+ // often has neither (shown as "Unknown"/$0); feeding 0/0 into the engine
+ // produced a price-per-share of 0/0 = NaN and crashed on BigInt(NaN),
+ // taking down the whole tab. We now gate the projection: show the pre-close
+ // cap table plus clear guidance instead of computing a degenerate round.
+ const preMoneyNum = Number(round.preMoney);
+ const targetNum = Number(round.targetAmount);
+ const canProject = Number.isFinite(preMoneyNum) && preMoneyNum > 0 && Number.isFinite(targetNum) && targetNum > 0;
+ const post = canProject
+ ? projectPostClose(securities.data, {
+ preMoneyValuation: preMoneyNum,
+ investmentAmount: targetNum,
  series: round.name,
- }, "US");
+ }, "US")
+ : null;
 
  return (
  <div className="space-y-4">
@@ -988,6 +1052,8 @@ function ProjectionPanel({ round }: { round: Round }) {
  <p className="text-sm text-muted-foreground mt-0.5">Computed live by <code className="font-mono text-[10px] bg-secondary/60 px-1 py-0.5 rounded">@capavate/cap-table-engine</code> by appending a synthetic priced round and re-running the pipeline.</p>
  </CardHeader>
  <CardContent>
+ {canProject && post ? (
+ <>
  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
  <SideTable title="Pre-close" rows={pre.rows} totalShares={pre.totalShares} testid="table-pre" />
  <SideTable title="Post-close" rows={post.rows} totalShares={post.totalShares} testid="table-post" highlight />
@@ -996,6 +1062,21 @@ function ProjectionPanel({ round }: { round: Round }) {
  <ArrowRight className="h-3.5 w-3.5" />
  New investor allocation: <strong className="text-foreground">{fmtUSD(round.targetAmount)}</strong> at <strong className="text-foreground">${safeToFixed(round.pricePerShare, 4)}</strong>/share — {pre.formulaIdsUsed.length} → {post.formulaIdsUsed.length} formulas applied.
  </div>
+ </>
+ ) : (
+ <>
+ {/* Wave C4 — projection gated until the round has a positive pre-money + target. */}
+ <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+ <SideTable title="Pre-close (current cap table)" rows={pre.rows} totalShares={pre.totalShares} testid="table-pre" />
+ <div className="rounded-lg border border-dashed border-border flex items-center justify-center p-6 text-center text-sm text-muted-foreground" data-testid="projection-needs-terms">
+ Add a pre-money valuation and a target amount in <strong className="mx-1 text-foreground">Edit terms</strong> to see the post-close projection.
+ </div>
+ </div>
+ <div className="text-xs text-muted-foreground mt-4" data-testid="projection-gated-note">
+ The post-close projection needs a positive pre-money valuation and target raise to compute the new-investor allocation and price per share.
+ </div>
+ </>
+ )}
  <div className="mt-3">
  <Button size="sm" variant="outline" onClick={() => toast({ title: "Soft circle validated", description: `Engine projection committed for ${round.name}.` })} data-testid="button-validate-soft-circle">
  <Check className="h-4 w-4 mr-2" /> Validate soft circle (commit projection)

@@ -427,6 +427,11 @@ export function isSpvLpVisibility(v: unknown): v is SpvLpVisibility {
 export function isSpvType(v: unknown): v is SpvType {
   return typeof v === "string" && (SPV_TYPES as readonly string[]).includes(v);
 }
+/* Wave B2 (3b) — runtime guard for a lifecycle status, so a status PATCH (now
+   exposed from the Partner pipeline) cannot persist an out-of-enum value. */
+export function isSpvStatus(v: unknown): v is SpvStatus {
+  return typeof v === "string" && (SPV_STATUSES as readonly string[]).includes(v);
+}
 export function isSpvMandateMode(v: unknown): v is SpvMandateMode {
   return typeof v === "string" && (SPV_MANDATE_MODES as readonly string[]).includes(v);
 }

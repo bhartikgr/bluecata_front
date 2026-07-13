@@ -63,8 +63,12 @@ import { canDM } from "./messagingPolicy";
 // effect on the messaging surface. readUserPrivacyRaw returns null when the
 // user has no saved row, in which case we keep the legacy resolveDisplayIdentity
 // behavior (backward-compatible — no retroactive masking).
-import { resolveDisplayName } from "./lib/userPrivacyResolver";
+import { resolveDisplayName, readUserPrivacyRaw } from "./lib/userPrivacyResolver";
 import { areCoMembersOnAnyCapTable } from "./lib/capTableMembership";
+// 1d — Consortium Partner author-label fallback (non-sacred): screen name →
+// registered/company name → "Consortium Partner". Keeps a partner author from
+// rendering as a raw u_redeemed_… id in the Posts feed.
+import { getConsortiumPartnerDisplayName } from "./adminContactsStore";
 import { emitMutation } from "./lib/eventBus";
 import { publish as ssePublish } from "./lib/sseHub";
 import { emitNotification } from "./notificationsStore";
@@ -1252,6 +1256,53 @@ function projectMessage(msg: Message, channel: Channel | undefined, viewerUserId
   };
 }
 
+/**
+ * 1d — Author label for a Consortium Partner post.
+ *
+ * The generic identity resolver has no notion of a partner's org identity, so a
+ * partner author (whose platform id is often a synthetic `u_redeemed_…`) can
+ * leak a raw id into the Posts byline. This applies the QA-specified precedence
+ * for a partner author, honoring the user's privacy setting:
+ *   1) the partner's chosen SCREEN NAME (if set), unless
+ *   2) they've opted to remain anonymous → "Consortium Partner", else
+ *   3) their registered / company name (partner org displayName / legalName),
+ *      else "Consortium Partner" as a final safe fallback.
+ *
+ * Returns null when `authorUserId` is not an active Consortium Partner (so the
+ * caller keeps the normal resolved label for founders/investors/members).
+ */
+function resolvePartnerPostAuthorLabel(authorUserId: string): string | null {
+  if (!authorUserId) return null;
+  let membership: { partnerId: string } | null = null;
+  try {
+    membership = partnerTeamStore.findByUserId(authorUserId);
+  } catch {
+    membership = null;
+  }
+  if (!membership) return null; // not a partner — leave the normal label
+
+  // Privacy: a partner who has opted out of co-member visibility is treated as
+  // choosing anonymity on the social surface. If they set a screen name, that
+  // wins (that IS their chosen public identity); otherwise show the generic
+  // "Consortium Partner" label rather than their org name.
+  const privacy = (() => {
+    try {
+      return readUserPrivacyRaw(authorUserId);
+    } catch {
+      return null;
+    }
+  })();
+  const screenName = (privacy?.screenName ?? "").trim();
+  const isAnonymous = privacy ? privacy.visibleToCoMembers === false : false;
+
+  if (screenName) return screenName; // 1) chosen screen name always wins
+  if (isAnonymous) return "Consortium Partner"; // 2) anonymous, no screen name
+
+  // 3) registered / company name, else the generic partner label.
+  const orgName = getConsortiumPartnerDisplayName(membership.partnerId);
+  return orgName || "Consortium Partner";
+}
+
 function projectPost(post: Post, viewerUserId: string): PostView {
   let resolvedName = "";
   let isAnon = false;
@@ -1280,6 +1331,14 @@ function projectPost(post: Post, viewerUserId: string): PostView {
     const r = resolveIdentity(viewerUserId, post.authorUserId, undefined);
     resolvedName = r.displayName;
     isAnon = r.isAnonymous;
+    // 1d — if the author is a Consortium Partner, apply the partner label
+    // precedence (screen name → company name → "Consortium Partner") so the
+    // byline reflects their chosen identity instead of a raw u_… id.
+    const partnerLabel = resolvePartnerPostAuthorLabel(post.authorUserId);
+    if (partnerLabel) {
+      resolvedName = partnerLabel;
+      isAnon = partnerLabel === "Consortium Partner";
+    }
     const author = COMMS_USERS[post.authorUserId];
     location = author?.location ?? "";
     // v24.0 C13: derive the Capavate Angel Network badge from live membership

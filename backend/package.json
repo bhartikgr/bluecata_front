@@ -1,12 +1,14 @@
 {
   "name": "rest-express",
-  "version": "26.0.0",
+  "version": "26.1.2",
   "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "cross-env NODE_ENV=development tsx server/index.ts",
     "dev:windows": "set NODE_ENV=development && tsx server/index.ts",
     "dev:ps": "$env:NODE_ENV='development'; tsx server/index.ts",
+    "guard": "tsx scripts/silent-drop-guard/guard.ts",
+    "guard:test": "vitest run --config scripts/silent-drop-guard/vitest.guard.config.ts",
     "build": "tsx script/build.ts",
     "start": "NODE_ENV=production node dist/index.cjs",
     "check": "tsc",

@@ -162,6 +162,9 @@ const PARTNER_WORKSPACE_GROUPS: NavGroup[] = [
     title: "DEALS & SPVs",
     items: [
       { href: "/collective/partner/pipeline", label: "Pipeline", icon: Briefcase, "data-testid": "nav-partner-pipeline" },
+      /* Wave B1 (3a) — create a net-new, independent company (founder-owned,
+         tagged to this partner) directly below Pipeline. */
+      { href: "/collective/partner/add-portfolio-company", label: "Add Portfolio Company", icon: Building2, "data-testid": "nav-partner-add-portfolio-company" },
       /* Ozan decision #4 — ONE canonical, user-facing SPVs engine + ONE nav entry.
          The duplicate "SPV Engine" and separate "Funds" entries were collapsed
          into this single "SPVs" link pointing at the canonical PartnerSpvEngine
@@ -174,7 +177,7 @@ const PARTNER_WORKSPACE_GROUPS: NavGroup[] = [
          endpoints were re-added in W2-A.) */
       { href: "/collective/partner/clients", label: "Clients", icon: Users, "data-testid": "nav-partner-clients" },
       /* GROUP F1 — person-level CRM (partner_crm_contacts) now has a UI. */
-      { href: "/collective/partner/contacts", label: "Contacts", icon: Contact, "data-testid": "nav-partner-contacts" },
+      { href: "/collective/partner/contacts", label: "Contacts (CRM)", icon: Contact, "data-testid": "nav-partner-contacts" },
       /* W2-D — "Portfolio" nav item added; the /api/partner/me/portfolio API
          already existed but had no client route/nav to reach it. */
       { href: "/collective/partner/portfolio", label: "Portfolio", icon: PiggyBank, "data-testid": "nav-partner-portfolio" },

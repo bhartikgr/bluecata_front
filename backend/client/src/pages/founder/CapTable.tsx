@@ -121,6 +121,15 @@ export default function CapTable() {
  queryFn: async () => (await apiRequest("GET", `/api/companies/${companyId}/securities`)).json(),
  });
  const rounds = useQuery<ApiRound[]>({ queryKey: ["/api/rounds"] });
+ // Wave B1 (3a) addendum — "Led by <Consortium Partner>" attribution, resolved
+ // read-only from the additive /api/companies/:id/attribution endpoint (the
+ // sacred company-profile endpoint is untouched).
+ const attributionQ = useQuery<{ attributedPartner: { partnerId: string; name: string } | null }>({
+   queryKey: ["/api/companies", companyId, "attribution"],
+   queryFn: async () => (await apiRequest("GET", `/api/companies/${encodeURIComponent(companyId)}/attribution`)).json(),
+   enabled: Boolean(companyId),
+ });
+ const attributedPartner = attributionQ.data?.attributedPartner ?? null;
 
  // Filter securities to those issued at-or-before the as-of date
  const securitiesAsOf = useMemo(() => {
@@ -287,6 +296,12 @@ export default function CapTable() {
  <>
  <GlossaryLink />
  <EngineBadge result={result} region={region} />
+ {/* Wave B1 (3a) — Consortium Partner leading this company's raise, when attributed. */}
+ {attributedPartner?.name && (
+   <Badge className="text-xs bg-[hsl(219_45%_20%)] text-white" data-testid="badge-led-by-partner">
+     Led by {attributedPartner.name}
+   </Badge>
+ )}
  <Button variant="outline" onClick={exportCSV} data-testid="button-export-csv"><Download className="h-4 w-4 mr-2" /> CSV</Button>
  <Button variant="outline" onClick={exportPDFSnapshot} data-testid="button-export-pdf"><FileIcon className="h-4 w-4 mr-2" /> PDF snapshot</Button>
  <Button variant="outline" onClick={exportXLSX} data-testid="button-export-xlsx"><FileSpreadsheet className="h-4 w-4 mr-2" /> Excel</Button>

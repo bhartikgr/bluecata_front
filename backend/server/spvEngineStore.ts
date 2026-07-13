@@ -38,6 +38,7 @@ import {
   isSpvCarryBasis,
   isSpvJurisdiction,
   isSpvType,
+  isSpvStatus,
   isSpvDistributionScope,
   isSpvLpVisibility,
   isSpvMandateMode,
@@ -265,6 +266,9 @@ export const spvEngineStore = {
     if (!isSpvType(spvType)) throw new Error("INVALID_SPV_TYPE");
     const scope = data.distributionScope ?? SPV_DEFAULT_SCOPE;
     if (!isSpvDistributionScope(scope)) throw new Error("INVALID_DISTRIBUTION_SCOPE");
+    // Wave B2 (3b) — an explicit create status must be a valid lifecycle value.
+    const createStatus = data.status ?? "draft";
+    if (!isSpvStatus(createStatus)) throw new Error("INVALID_SPV_STATUS");
     const lpVisibility = data.lpVisibility ?? SPV_DEFAULT_LP_VISIBILITY;
     if (!isSpvLpVisibility(lpVisibility)) throw new Error("INVALID_LP_VISIBILITY");
     assertValidMandateDescription(data.terms);
@@ -276,7 +280,7 @@ export const spvEngineStore = {
       name: data.name.trim(),
       spvType,
       jurisdiction: data.jurisdiction as SpvDTO["jurisdiction"],
-      status: data.status ?? "draft",
+      status: createStatus,
       distributionScope: scope,
       targetRaiseMinor: data.targetRaiseMinor ?? null,
       minCheckMinor: data.minCheckMinor ?? null,
@@ -334,6 +338,10 @@ export const spvEngineStore = {
   updateSpv(partnerId: string, spvId: string, patch: Partial<SpvDTO>, actor: string): SpvDTO {
     const s = this.getSpv(partnerId, spvId);
     if (!s) throw new Error("SPV_NOT_FOUND");
+    // Wave B2 (3b) — status is now client-mutable via the Partner pipeline PATCH;
+    // fail-closed on any out-of-enum value so an invalid lifecycle state can
+    // never be persisted.
+    if (patch.status !== undefined && !isSpvStatus(patch.status)) throw new Error("INVALID_SPV_STATUS");
     if (patch.distributionScope && !isSpvDistributionScope(patch.distributionScope)) throw new Error("INVALID_DISTRIBUTION_SCOPE");
     if (patch.lpVisibility !== undefined && !isSpvLpVisibility(patch.lpVisibility)) throw new Error("INVALID_LP_VISIBILITY");
     /* v25.50 REVISE R3 — same fail-closed guard as createSpv: a patch may not

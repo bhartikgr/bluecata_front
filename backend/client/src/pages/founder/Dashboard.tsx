@@ -200,6 +200,16 @@ export default function FounderDashboard() {
   const companyId = active.data?.activeCompanyId ?? "";
   const company = active.data?.company;
 
+  // Wave B1 (3a) addendum — "Led by <Consortium Partner>" attribution, resolved
+  // read-only from the additive /api/companies/:id/attribution endpoint (does
+  // NOT touch the sacred company-profile endpoint). Shown on the founder hero.
+  const attributionQ = useQuery<{ attributedPartner: { partnerId: string; name: string } | null }>({
+    queryKey: ["/api/companies", companyId, "attribution"],
+    queryFn: async () => (await apiRequest("GET", `/api/companies/${encodeURIComponent(companyId)}/attribution`)).json(),
+    enabled: Boolean(companyId),
+  });
+  const attributedPartner = attributionQ.data?.attributedPartner ?? null;
+
   const rounds = useQuery<Round[]>({ queryKey: ["/api/rounds"] });
   // v25.11 NM-5 — the prior key was the bare path ["/api/activity"] with no
   // queryFn, so the default queryFn fetched /api/activity with no companyId
@@ -346,6 +356,13 @@ export default function FounderDashboard() {
                 <div className="text-xs uppercase tracking-wide text-[hsl(0_100%_40%)] font-medium">Founder workspace</div>
                 <div className="text-xl font-semibold mt-1">{company ? company.companyName : "Your dashboard"}</div>
                 <div className="text-sm text-muted-foreground mt-0.5">{company?.sector ?? ""} {company?.hq ? `· ${company.hq}` : ""}</div>
+                {/* Wave B1 (3a) — the Consortium Partner leading this company's
+                    raise, when partner-attributed. */}
+                {attributedPartner?.name && (
+                  <Badge className="mt-2 text-xs bg-[hsl(0_100%_40%)] text-white" data-testid="badge-led-by-partner">
+                    Led by {attributedPartner.name}
+                  </Badge>
+                )}
               </div>
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 {activeRound ? <Badge variant="secondary">Active round: {activeRound.name}</Badge> : <Badge variant="outline">No active round</Badge>}

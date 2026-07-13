@@ -13,6 +13,8 @@ import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 /* v25.56 GROUP-D — client-side guard so a raw synthetic id can never render. */
 import { safeMemberName } from "@/lib/investorLabels";
+/* 2a — display/CRM titles (distinct from the 5 permission tiers). */
+import { PARTNER_TITLES } from "@shared/partnerTitles";
 
 /* v25.50 Phase 7 (7b) — comprehensive, properly-labeled positions list. The 5
    canonical values are enforced server-side (invite endpoint); this maps each to
@@ -27,6 +29,11 @@ const POSITIONS: Array<{ value: string; label: string; hint: string }> = [
 const POSITION_LABELS: Record<string, string> = Object.fromEntries(POSITIONS.map((p) => [p.value, p.label]));
 const positionLabel = (v: string) => POSITION_LABELS[v] ?? v;
 
+/* 2a — the professional TITLES shown in the picker (18 per the QA slide). These
+   are display/CRM metadata only; the ACCESS LEVEL below (the 5 permission tiers)
+   is what the server enforces. Default title mirrors the default access level. */
+const DEFAULT_TITLE = "Viewer";
+
 type TeamMember = {
   id: string;
   userId: string;
@@ -38,17 +45,21 @@ type TeamMember = {
   mobile: string | null;
   contactEmail: string | null;
   positionNote: string | null;
+  /* 2a — display title (presentational); null when unset. */
+  title: string | null;
 };
 
 export default function PartnerTeam() {
   const role = useRequirePartnerRole();
-  const q = useQuery<{ members: TeamMember[]; invitations: Array<{ id: string; invitedEmail: string; subRole: string; expiresAt: string; redeemedAt: string | null }> }>({
+  const q = useQuery<{ members: TeamMember[]; invitations: Array<{ id: string; invitedEmail: string; subRole: string; title?: string | null; expiresAt: string; redeemedAt: string | null }> }>({
     queryKey: ["/api/partner/me/team"],
     enabled: role.ready,
     queryFn: async () => (await apiRequest("GET", "/api/partner/me/team")).json(),
   });
   const [email, setEmail] = useState("");
   const [subRole, setSubRole] = useState<string>("viewer");
+  /* 2a — the chosen display title (from PARTNER_TITLES), separate from subRole. */
+  const [title, setTitle] = useState<string>(DEFAULT_TITLE);
 
   /* v25.12 NH6 — toast helper. */
   const { toast } = useToast();
@@ -78,7 +89,7 @@ export default function PartnerTeam() {
        guard (here and in removeMut below) was unreachable dead code. The thrown
        ApiError reaches onError unchanged, preserving the failure toast. */
     mutationFn: async (): Promise<{ invitation: { invitedEmail: string }; plainToken: string }> => {
-      const res = await apiRequest("POST", "/api/partner/me/team/invitations", { email, subRole });
+      const res = await apiRequest("POST", "/api/partner/me/team/invitations", { email, subRole, title });
       return res.json();
     },
     onSuccess: (data) => {
@@ -175,11 +186,26 @@ export default function PartnerTeam() {
         </div>
       )}
       {canInvite && (
-        <div className="flex gap-2 mb-6 bg-white p-3 rounded border" data-testid="invite-form">
-          <Input data-testid="invite-email" placeholder="member@example.com" value={email} onChange={(e) => setEmail(e.target.value)} className="max-w-xs" />
-          <select data-testid="invite-role" value={subRole} onChange={(e) => setSubRole(e.target.value)} className="border rounded px-2 text-sm" title={POSITIONS.find((p) => p.value === subRole)?.hint}>
-            {POSITIONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
-          </select>
+        <div className="flex flex-wrap gap-2 mb-6 bg-white p-3 rounded border items-end" data-testid="invite-form">
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] uppercase text-[var(--cv-color-text-muted)]">Email</label>
+            <Input data-testid="invite-email" placeholder="member@example.com" value={email} onChange={(e) => setEmail(e.target.value)} className="max-w-xs" />
+          </div>
+          {/* 2a — TITLE (display/CRM): the QA professional titles. Presentational
+              only; does NOT grant permissions. */}
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] uppercase text-[var(--cv-color-text-muted)]">Title</label>
+            <select data-testid="invite-title" value={title} onChange={(e) => setTitle(e.target.value)} className="border rounded px-2 h-9 text-sm">
+              {PARTNER_TITLES.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
+          {/* Access level = the 5 permission tiers the server enforces. */}
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] uppercase text-[var(--cv-color-text-muted)]">Access level</label>
+            <select data-testid="invite-role" value={subRole} onChange={(e) => setSubRole(e.target.value)} className="border rounded px-2 h-9 text-sm" title={POSITIONS.find((p) => p.value === subRole)?.hint}>
+              {POSITIONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+            </select>
+          </div>
           <Button data-testid="invite-btn" disabled={!email || inviteMut.isPending} onClick={() => inviteMut.mutate()}>
             {inviteMut.isPending ? "Inviting…" : "Invite"}
           </Button>
@@ -218,7 +244,7 @@ export default function PartnerTeam() {
       <div className="bg-white rounded-lg border overflow-hidden mb-6">
         <div className="px-3 py-2 text-xs uppercase text-[var(--cv-color-text-muted)] bg-[var(--cv-color-surface-2)]">Members</div>
         <table className="w-full text-sm" data-testid="members-table">
-          <thead className="bg-[var(--cv-color-surface-2)]"><tr><th className="p-2 text-left">Member</th><th className="p-2 text-left">Contact</th><th className="p-2 text-left">Position</th><th className="p-2 text-left">Status</th><th className="p-2"></th></tr></thead>
+          <thead className="bg-[var(--cv-color-surface-2)]"><tr><th className="p-2 text-left">Member</th><th className="p-2 text-left">Contact</th><th className="p-2 text-left">Title</th><th className="p-2 text-left">Access</th><th className="p-2 text-left">Status</th><th className="p-2"></th></tr></thead>
           <tbody>
             {(q.data?.members ?? []).map((m) => (
               <tr key={m.id} className="border-t" data-testid={`member-${m.userId}`}>
@@ -235,6 +261,8 @@ export default function PartnerTeam() {
                   {m.positionNote && <div className="italic">{m.positionNote}</div>}
                   {!m.mobile && !m.contactEmail && !m.positionNote && <span className="text-[var(--cv-color-text-faint)]">No contact info</span>}
                 </td>
+                {/* 2a — Title (display/CRM) then Access (permission tier). */}
+                <td className="p-2 text-[var(--cv-color-text-muted)]" data-testid={`member-title-${m.userId}`}>{m.title || <span className="text-[var(--cv-color-text-faint)]">—</span>}</td>
                 <td className="p-2 text-[var(--cv-color-text-muted)]">{positionLabel(m.subRole)}</td>
                 <td className="p-2 text-[var(--cv-color-text-muted)]">{m.status}</td>
                 <td className="p-2 text-right whitespace-nowrap">
@@ -277,11 +305,12 @@ export default function PartnerTeam() {
       <div className="bg-white rounded-lg border overflow-hidden">
         <div className="px-3 py-2 text-xs uppercase text-[var(--cv-color-text-muted)] bg-[var(--cv-color-surface-2)]">Pending invitations</div>
         <table className="w-full text-sm" data-testid="invitations-table">
-          <thead className="bg-[var(--cv-color-surface-2)]"><tr><th className="p-2 text-left">Email</th><th className="p-2 text-left">Role</th><th className="p-2 text-left">Expires</th></tr></thead>
+          <thead className="bg-[var(--cv-color-surface-2)]"><tr><th className="p-2 text-left">Email</th><th className="p-2 text-left">Title</th><th className="p-2 text-left">Access</th><th className="p-2 text-left">Expires</th></tr></thead>
           <tbody>
             {(q.data?.invitations ?? []).filter((i) => !i.redeemedAt).map((i) => (
               <tr key={i.id} className="border-t" data-testid={`invite-${i.id}`}>
                 <td className="p-2">{i.invitedEmail}</td>
+                <td className="p-2 text-[var(--cv-color-text-muted)]">{i.title || <span className="text-[var(--cv-color-text-faint)]">—</span>}</td>
                 <td className="p-2 text-[var(--cv-color-text-muted)]">{positionLabel(i.subRole)}</td>
                 {/* v25.16 NM7 — guard against null expiresAt. */}
                 <td className="p-2 text-[var(--cv-color-text-muted)]">{i.expiresAt ? new Date(i.expiresAt).toLocaleDateString() : "—"}</td>

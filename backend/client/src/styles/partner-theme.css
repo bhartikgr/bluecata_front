@@ -84,3 +84,97 @@
   border-color: var(--cv-color-primary);
   box-shadow: 0 0 0 3px var(--cv-color-primary-light);
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * v26.1.x QA (slide 1) — BOLDER capavate.com parity pass.
+ *
+ * The Phase-1 rules above only themed the page bg + h1/h2 + primary buttons,
+ * which read too subtly. This block pushes the marketing look deeper across the
+ * WHOLE partner workspace: serif section/card titles, warm card surfaces +
+ * borders + shadow, branded section eyebrows, tables, badges, sidebar, and the
+ * top app bar. STILL: scoped under [data-product="partner"], consumes ONLY the
+ * canonical --cv-* tokens (no new hexes), and edits NO sacred file. Purely
+ * presentational — zero markup / logic / testid change.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Card / section TITLES → Instrument Serif, navy ─────────────────────────
+ * These class/element titles were previously plain sans-serif, which is the
+ * single biggest reason the workspace read as a generic admin dashboard. */
+[data-product="partner"] h3,
+[data-product="partner"] .cv-card-title,
+[data-product="partner"] .partner-section-title,
+[data-product="partner"] [data-slot="card-title"],
+[data-product="partner"] [data-testid$="-title"] {
+  font-family: var(--cv-font-display);
+  color: var(--cv-color-navy);
+  letter-spacing: 0.005em;
+}
+
+/* Small uppercase section eyebrows (the "OVERVIEW / DEALS & SPVs" group labels
+ * and table section captions) get the brand-red marketing treatment. */
+[data-product="partner"] .cv-nav-group-label,
+[data-product="partner"] .partner-eyebrow {
+  color: var(--cv-color-primary);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+/* ── Card SURFACES ──────────────────────────────────────────────────────────
+ * Theme both the canonical .cv-app-card AND the raw Tailwind card containers
+ * (`bg-white rounded-* border`) that several partner pages still use, so every
+ * panel gets the warm border + soft shadow + 12px radius marketing look. */
+[data-product="partner"] .cv-app-card,
+[data-product="partner"] .bg-white.rounded-lg.border,
+[data-product="partner"] .bg-white.rounded-xl.border,
+[data-product="partner"] [data-slot="card"] {
+  background: var(--cv-color-surface);
+  border-color: var(--cv-color-border) !important;
+  border-radius: var(--cv-radius-lg);
+  box-shadow: var(--cv-shadow-sm);
+}
+
+/* ── TABLES → warm header, hairline dividers, comfortable rows ───────────── */
+[data-product="partner"] table thead {
+  background: var(--cv-color-surface-cream);
+}
+[data-product="partner"] table thead th {
+  color: var(--cv-color-text-secondary);
+  font-weight: 600;
+}
+[data-product="partner"] table tbody tr {
+  border-color: var(--cv-color-divider);
+}
+[data-product="partner"] table tbody tr:hover {
+  background: var(--cv-color-surface-cream);
+}
+
+/* ── Section-caption strips (the small uppercase "MEMBERS" / "PENDING …" bars
+ *    that use bg-surface-2) warm up to the cream marketing surface. ───────── */
+[data-product="partner"] .bg-\[var\(--cv-color-surface-2\)\] {
+  background: var(--cv-color-surface-cream);
+}
+
+/* ── BADGES / pills → fully rounded marketing pill radius ───────────────── */
+[data-product="partner"] [data-slot="badge"],
+[data-product="partner"] .rounded-full {
+  border-radius: var(--cv-radius-full);
+}
+
+/* ── SIDEBAR → warm rail, serif brand, red active state ─────────────────── */
+[data-product="partner"] aside {
+  background: var(--cv-color-surface);
+  border-right: 1px solid var(--cv-color-border);
+}
+
+/* ── Top app bar keeps the navy marketing panel (already navy via MarketTicker
+ *    strip); ensure any partner header band uses the canonical navy token. */
+[data-product="partner"] .partner-app-navy {
+  background: var(--cv-color-navy);
+  color: var(--cv-color-text-inverse);
+}
+
+/* ── Muted helper text warms slightly for marketing parity ──────────────── */
+[data-product="partner"] .text-\[var\(--cv-color-text-muted\)\] {
+  color: var(--cv-color-text-muted);
+}

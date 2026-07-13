@@ -166,6 +166,14 @@ export default function CollectiveDealRoomDetail() {
                 {profile.stage}
               </Badge>
             )}
+            {/* Wave B1 (3a) — "Led by" the originating Consortium Partner, when the
+                company is partner-attributed (from consortium_links). Investors
+                and members can see a registered partner is leading the raise. */}
+            {profile.attributedPartner?.name && (
+              <Badge className="text-xs bg-[var(--cv-color-navy)] text-white" data-testid="badge-led-by-partner">
+                Led by {profile.attributedPartner.name}
+              </Badge>
+            )}
             {/* v25.17 Lane D NC3 — safeExternalHref hides any link whose URL is not http/https */}
             {safeExternalHref(profile.linkedinUrl) && (
               <a href={safeExternalHref(profile.linkedinUrl)!} target="_blank" rel="noopener noreferrer" data-testid="link-linkedin">

@@ -24,6 +24,10 @@ import { listChaptersForUser } from "./chaptersStore";
 import { partnerDealPromotionsStore } from "./partnerWorkspaceStore";
 import { getSubscription } from "./subscriptionsStore";
 import { getLatestForCompany, listFeedback, ingestDscScores } from "./dscFeedbackStore";
+// Wave B1 (3a) — surface the originating Consortium Partner ("led by") on the
+// Collective company profile. Read-only resolvers; no sacred store touched.
+import { getConsortiumPartnerId } from "./consortiumLinkStore";
+import { getConsortiumPartnerDisplayName } from "./adminContactsStore";
 import { getChannelByCompany, listChannels, TRANSACTION_PREP_THREADS } from "./transactionPrepStore";
 import { listContacts } from "./adminContactsStore";
 // v25.45 ROUND 2 (F13b) — privacy resolver: every rendered user name MUST route
@@ -935,6 +939,20 @@ export function registerCollectiveRoutes(app: Express): void {
         grossMarginPct: profile.grossMarginPct ?? null,
         growthRatePct: profile.growthRatePct ?? null,
         customerCount: profile.customerCount ?? null,
+        // Wave B1 (3a) — the Consortium Partner leading this company's raise, if
+        // any. Resolved read-only from the durable consortium_links attribution;
+        // null when the company is not partner-attributed. Investors/members see
+        // "Led by <partner>" on the profile.
+        attributedPartner: (() => {
+          try {
+            const pid = getConsortiumPartnerId(String(id));
+            if (!pid) return null;
+            const name = getConsortiumPartnerDisplayName(pid);
+            return name ? { partnerId: pid, name } : null;
+          } catch {
+            return null;
+          }
+        })(),
       },
       mnaReadiness: {
         ipDdReadinessPct: profile.ipDdReadinessPct ?? null,

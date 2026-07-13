@@ -62,6 +62,9 @@ describe("Blocker 1 — legacy SPV path is a shim over the ONE canonical engine"
       vintage: 2025,
       currency: "USD",
       status: "open",
+      // 1c — the legacy create path is now sign-off-gated (same as canonical).
+      signoffLegalName: "Test Managing Partner",
+      signoffAccepted: true,
     });
     expect(r.status).toBe(201);
     const spvId = r.body.spv.id as string;
@@ -84,6 +87,8 @@ describe("Blocker 1 — legacy SPV path is a shim over the ONE canonical engine"
       vintage: 2025,
       currency: "USD",
       status: "open",
+      signoffLegalName: "Test Managing Partner",
+      signoffAccepted: true,
     });
     expect(created.status).toBe(201);
     const spvId = created.body.spv.id as string;
@@ -106,6 +111,8 @@ describe("Blocker 1 — legacy SPV path is a shim over the ONE canonical engine"
       vintage: 2024,
       currency: "USD",
       status: "planned",
+      signoffLegalName: "Test Managing Partner",
+      signoffAccepted: true,
     });
     const spvId = created.body.spv.id as string;
     const legacyList = await get("/api/partner/me/spvs", MANAGING);
@@ -122,6 +129,8 @@ describe("Blocker 1 — legacy SPV path is a shim over the ONE canonical engine"
       vintage: 2025,
       currency: "USD",
       status: "open",
+      signoffLegalName: "Test Managing Partner",
+      signoffAccepted: true,
     });
     const spvId = created.body.spv.id as string;
     // Partner B must NOT be able to see Partner A's legacy-created (canonical) SPV.
@@ -200,6 +209,7 @@ describe("Blocker 1 (4D) — no live route creates a non-canonical SPV/fund", ()
   it("the legacy SPV PATCH mutates the canonical row (no divergent legacy row)", async () => {
     const created = await post("/api/partner/me/spvs", MANAGING, {
       spvName: "Patch Target SPV", jurisdiction: "delaware", vintage: 2025, currency: "USD", status: "planned",
+      signoffLegalName: "Test Managing Partner", signoffAccepted: true,
     });
     const spvId = created.body.spv.id as string;
     expect(created.body.spv.status).toBe("draft");
@@ -214,6 +224,7 @@ describe("Blocker 1 (4D) — no live route creates a non-canonical SPV/fund", ()
     const spy = vi.spyOn(partnerSpvStore, "addPosition");
     const created = await post("/api/partner/me/spvs", MANAGING, {
       spvName: "Position Host SPV", jurisdiction: "delaware", vintage: 2025, currency: "USD", status: "open",
+      signoffLegalName: "Test Managing Partner", signoffAccepted: true,
     });
     const spvId = created.body.spv.id as string;
     const pos = await post(`/api/partner/me/spvs/${spvId}/positions`, MANAGING, {

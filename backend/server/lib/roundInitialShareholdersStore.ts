@@ -57,6 +57,9 @@ export type InitialShareholder = {
   company?: string | null;
   email?: string | null;
   checkSize?: string | null; // decimal-as-string (Sprint 25 precision rule)
+  // Wave C3 (Shadie 2a) — optional personal note injected into this investor's
+  // invitation email (message only; never the round terms).
+  note?: string | null;
   source: InitialShareholderSource;
   crmContactId?: string | null;
   addedAt: string;
@@ -148,7 +151,7 @@ function normaliseDecimalString(v: unknown): string | null {
 }
 
 export function registerRoundInitialShareholdersRoutes(app: Express): void {
-  app.patch("/api/founder/rounds/:roundId/initial-shareholders", (req: Request, res: Response) => {
+  app.patch("/api/founder/rounds/:roundId/initial-shareholders", async (req: Request, res: Response) => {
     const ctx = getUserContext(req);
     if (!ctx.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
     const roundId = String(req.params.roundId ?? "");
@@ -183,6 +186,7 @@ export function registerRoundInitialShareholdersRoutes(app: Express): void {
         company: optStr(raw.company),
         email: optStr(raw.email),
         checkSize: normaliseDecimalString(raw.checkSize),
+        note: optStr(raw.note),
         source,
         crmContactId: typeof raw.crmContactId === "string" ? raw.crmContactId : null,
         addedAt: now,
@@ -221,6 +225,70 @@ export function registerRoundInitialShareholdersRoutes(app: Express): void {
     store.set(roundId, normalised);
     persistRoundInitialShareholders(roundId);
 
+    /* Wave C2 (Shadie 1a/1b) — CRM/manual investors picked in round-creation
+     * Step 4 must actually LAND on the round and be NOTIFIED. Previously this
+     * endpoint only recorded initial-shareholder rows, so the pick never
+     * appeared in the round's Invitations table and no email was sent. We now
+     * issue a canonical round invitation (roundInvitationsStore.createInvitation)
+     * for each picked investor that has a valid email — which both surfaces them
+     * in the Invitations table AND sends the invitation email via the existing
+     * path. Idempotent: an already-active invite throws `duplicate_invitation`
+     * and is counted as a benign skip, so a re-PATCH never double-sends. A pick
+     * without an email is skipped (recorded as a shareholder only). Per-invite
+     * failures are collected and reported (never silently swallowed) but do not
+     * fail the shareholder save that already persisted. */
+    let invited = 0;
+    let skippedNoEmail = 0;
+    let skippedDuplicate = 0;
+    const inviteErrors: Array<{ email: string; error: string }> = [];
+    // Lazy import to avoid a static circular import (matches this file's
+    // existing lazy-require pattern for the sacred roundsStore boundary).
+    // Guarded: if the module can't be loaded (e.g. an isolated test harness
+    // that can't parse the .ts), we skip invite issuance without failing the
+    // shareholder save that already persisted.
+    let createInvitation:
+      | ((a: {
+          roundId: string; companyId: string; investorEmail: string;
+          investorName?: string | null; investorFirstName?: string | null;
+          investorLastName?: string | null; investorCompany?: string | null;
+          note?: string | null;
+          invitedByUserId: string; tenantId?: string | null;
+        }) => Promise<unknown>)
+      | null = null;
+    try {
+      createInvitation = require("../roundInvitationsStore").createInvitation ?? null;
+    } catch (err) {
+      log.warn("[roundInitialShareholdersStore] could not load roundInvitationsStore for invite issuance:", (err as Error).message);
+    }
+    if (companyId && createInvitation) {
+      for (const row of normalised) {
+        if (!row.email) { skippedNoEmail++; continue; }
+        try {
+          await createInvitation({
+            roundId,
+            companyId,
+            investorEmail: row.email,
+            investorName: row.name,
+            investorFirstName: row.firstName,
+            investorLastName: row.lastName,
+            investorCompany: row.company,
+            // Wave C3 (Shadie 2a) — personal note injected into the email.
+            note: row.note ?? null,
+            invitedByUserId: ctx.userId ?? "founder",
+            tenantId: tenantForCompany(companyId),
+          });
+          invited++;
+        } catch (err) {
+          const msg = (err as Error).message ?? "invite_failed";
+          // An already-active invitation for this (round, email) is a benign,
+          // idempotent skip — the investor is already on the round + notified.
+          if (msg === "duplicate_invitation") { skippedDuplicate++; continue; }
+          inviteErrors.push({ email: row.email, error: msg });
+          log.warn("[roundInitialShareholdersStore] invitation issue failed:", row.email, msg);
+        }
+      }
+    }
+
     // Best-effort audit append. We don't have a companyId here directly, so
     // the audit row is keyed off the roundId. (The sacred roundsStore owns
     // the round→company map; we deliberately do NOT import it.)
@@ -238,7 +306,17 @@ export function registerRoundInitialShareholdersRoutes(app: Express): void {
       }
     }
 
-    return res.json({ ok: true, roundId, count: normalised.length });
+    return res.json({
+      ok: true,
+      roundId,
+      count: normalised.length,
+      // Wave C2 (Shadie 1a/1b) — invitation issuance summary so the client can
+      // surface "N investors invited" and any failures.
+      invited,
+      skippedNoEmail,
+      skippedDuplicate,
+      inviteErrors,
+    });
   });
 
   app.get("/api/founder/rounds/:roundId/initial-shareholders", (req: Request, res: Response) => {

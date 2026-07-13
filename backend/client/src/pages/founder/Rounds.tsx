@@ -18,7 +18,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useActiveCompanyId } from "@/lib/useActiveCompany";
 
-type Round = { id: string; company: string; name: string; type: string; state: string; targetAmount: number; raisedAmount: number; preMoney: number | null; postMoney: number | null; pricePerShare: number | null; minTicket: number | null; closeDate: string; termsSummary?: string; instrument?: string | null; valuationCap?: number | null; discount?: number | null; interestRate?: number | null; maturityMonths?: number | null; strikePrice?: number | null; expiryYears?: number | null; mfn?: boolean | null; archivedAt?: string | null };
+type Round = { id: string; company: string; name: string; type: string; state: string; targetAmount: number; raisedAmount: number; preMoney: number | null; postMoney: number | null; pricePerShare: number | null; minTicket: number | null; closeDate: string; termsSummary?: string; instrument?: string | null; valuationCap?: number | null; discount?: number | null; interestRate?: number | null; maturityMonths?: number | null; strikePrice?: number | null; expiryYears?: number | null; mfn?: boolean | null; archivedAt?: string | null; createdAt?: string | null };
 
 // BUG 034 — group instruments so the Edit-Terms dialog can show the right
 // field set. Priced rounds use pre/post-money + PPS; SAFEs and notes use a
@@ -152,7 +152,18 @@ export default function Rounds() {
           />
         ) : (
           <div className="grid gap-4">
-            {rounds.data?.map(r => {
+            {/* Wave C1 (Shadie 6a) — newest (latest-created) round on TOP, oldest
+                at the bottom: sort by createdAt DESC. Stable tiebreak on id so
+                two rounds sharing a createdAt keep a deterministic order.
+                Sort a COPY (never mutate the query cache). */}
+            {[...(rounds.data ?? [])]
+              .sort((a, b) => {
+                const at = a.createdAt ? Date.parse(a.createdAt) : 0;
+                const bt = b.createdAt ? Date.parse(b.createdAt) : 0;
+                if (bt !== at) return bt - at; // newest first
+                return String(b.id).localeCompare(String(a.id));
+              })
+              .map(r => {
               const pct = r.targetAmount > 0 ? (r.raisedAmount / r.targetAmount) * 100 : 0;
               const isArchived = Boolean(r.archivedAt);
               return (

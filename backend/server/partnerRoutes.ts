@@ -55,6 +55,8 @@ import {
 import { getAllContacts, listContacts, updateContact, createContact, upsertConsortiumPartner } from "./adminContactsStore";
 import { registerPersona, getUserContextForId } from "./lib/userContext";
 import { resolveDisplayNames } from "./lib/displayNameResolver"; /* W2-G — shared userId->name resolver */
+import { isPartnerTitle } from "../shared/partnerTitles"; /* 2a — display title enum (distinct from permission tier) */
+import { recordSignoff, linkSignoffToSpv } from "./spvLaunchSignoffStore"; /* 1c — durable launch sign-off (also gates the legacy /spvs create path) */
 import { hashPassword } from "./lib/auth"; /* v25.49.3 R1 — partner-role auth_users seed hash */
 import { storeCredential, lookupByUserId } from "./userCredentialsStore"; /* v25.49.3 R1 — durable bcrypt credential + hydration probe */
 import { rawDb } from "./db/connection";
@@ -900,6 +902,18 @@ export function registerPartnerRoutes(app: Express): void {
       // Verify deal is owned by this partner (URL injection guard)
       const deal = partnerPipelineStore.getById(ctx.partnerId, dealId);
       if (!deal) return res.status(404).json({ error: "DEAL_NOT_FOUND" });
+      // Wave B2 (3b) INVARIANT — a company must exist ON CAPAVATE (so its cap-table
+      // and rounds management are operating) BEFORE it can be published to the
+      // Collective. A bare name-only pipeline deal has no linked Capavate company
+      // (no companyId / no company record), so promotion is refused with guidance
+      // to add it as a real portfolio company first (Wave B1 "Add Portfolio
+      // Company" creates the Capavate company + cap table + rounds surface).
+      if (!deal.companyId || !getCompanyRecordById(deal.companyId)) {
+        return res.status(409).json({
+          error: "COMPANY_NOT_ON_CAPAVATE",
+          message: "This deal is not yet a company on Capavate. Add it as a portfolio company (so its cap table and rounds are operating) before publishing to the Collective.",
+        });
+      }
       const { notes } = (req.body ?? {}) as { notes?: unknown };
       try {
         const p = partnerDealPromotionsStore.create(
@@ -907,7 +921,7 @@ export function registerPartnerRoutes(app: Express): void {
           dealId,
           {
             promotionType: "collective_deal_room",
-            companyId: deal.companyId ?? null,
+            companyId: deal.companyId,
             notes: isString(notes) ? notes : null,
           },
           ctx.userId,
@@ -1170,6 +1184,10 @@ export function registerPartnerRoutes(app: Express): void {
         mobile: contact?.mobile ?? null,
         contactEmail: contact?.contactEmail ?? null,
         positionNote: contact?.positionNote ?? null,
+        /* 2a — display title for an active member (presentational). Stored in the
+           partner-local contact override's positionNote field; null when unset.
+           This is DISTINCT from `subRole` (the enforced permission tier). */
+        title: contact?.positionNote ?? null,
       };
     });
     res.json({ members, invitations });
@@ -1210,10 +1228,14 @@ export function registerPartnerRoutes(app: Express): void {
     requireSignedAgreement,
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
-      const { email, subRole } = req.body ?? {};
+      const { email, subRole, title } = req.body ?? {};
       if (!isString(email)) return badRequest(res, "email required");
       const allowed: PartnerSubRole[] = ["managing_partner", "associate", "bd", "analyst", "viewer"];
       if (!allowed.includes(subRole)) return badRequest(res, "subRole invalid");
+      // 2a — optional DISPLAY title (distinct from the permission tier). Accept
+      // only a known title from the shared list; unknown/empty => null (never a
+      // permission, so a bad value is harmless — fail soft to null, not 400).
+      const resolvedTitle: string | null = isPartnerTitle(title) ? title : null;
       try {
         assertTierSeats(ctx.partnerId);
       } catch (e) {
@@ -1222,7 +1244,7 @@ export function registerPartnerRoutes(app: Express): void {
       const ip = (req.ip ?? "").toString();
       const ua = String(req.headers["user-agent"] ?? "");
       const { invitation, plainToken } = partnerInvitationStore.create(
-        ctx.partnerId, email, subRole as PartnerSubRole, ctx.userId, { ip, ua },
+        ctx.partnerId, email, subRole as PartnerSubRole, ctx.userId, { ip, ua, title: resolvedTitle },
       );
       // Plain token is returned ONCE to the inviter so they can copy/send via email
       res.status(201).json({ invitation, plainToken });
@@ -1395,13 +1417,38 @@ export function registerPartnerRoutes(app: Express): void {
     requireSignedAgreement,
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
-      const { spvName, jurisdiction, vintage, currency, status, targetCompanyId, entityStructure, externalAdminProvider, externalAdminRef, notes } = req.body ?? {};
+      const body = req.body ?? {};
+      const { spvName, jurisdiction, vintage, currency, status, targetCompanyId, entityStructure, externalAdminProvider, externalAdminRef, notes } = body;
       if (!isString(spvName) || !isString(jurisdiction) || !isNumber(vintage) || !isISOCurrency(currency) || !isString(status)) {
         return badRequest(res, "spvName, jurisdiction, vintage, ISO 4217 currency, status required");
       }
       const validSpvStatus = ["planned", "open", "closed", "wound_down"] as const;
       if (!validSpvStatus.includes(status as typeof validSpvStatus[number])) {
         return badRequest(res, "status must be one of " + validSpvStatus.join("|"));
+      }
+      // 1c (per GPT-5.5 round-2 review) — this legacy create path must ALSO be
+      // sign-off-gated so there is no partner-accessible way to create an SPV
+      // without a durable, verifiable authorization record. Same contract as the
+      // canonical POST /api/partner/me/spv: typed legal name + accepted
+      // attestation required; record the sign-off FIRST (fail-closed 500 on
+      // persist failure, no SPV created), then create + link.
+      const signoffLegalName = typeof body.signoffLegalName === "string" ? body.signoffLegalName.trim() : "";
+      const signoffAccepted = body.signoffAccepted === true;
+      if (!signoffLegalName) return res.status(400).json({ error: "SIGNOFF_LEGAL_NAME_REQUIRED" });
+      if (!signoffAccepted) return res.status(400).json({ error: "SIGNOFF_ATTESTATION_REQUIRED" });
+      let legacySignoff;
+      try {
+        legacySignoff = recordSignoff({
+          partnerId: ctx.partnerId,
+          spvId: "",
+          userId: ctx.userId,
+          signerLegalName: signoffLegalName,
+          signerSubRole: ctx.partnerSubRole ?? null,
+          ip: (req.headers["x-forwarded-for"] as string) || req.socket?.remoteAddress || null,
+          userAgent: (req.headers["user-agent"] as string) ?? null,
+        });
+      } catch {
+        return res.status(500).json({ error: "SIGNOFF_PERSIST_FAILED" });
       }
       try {
         const canonicalJurisdiction = isSpvJurisdiction(jurisdiction) ? jurisdiction : "delaware";
@@ -1420,6 +1467,7 @@ export function registerPartnerRoutes(app: Express): void {
           },
           ctx.userId,
         );
+        linkSignoffToSpv(legacySignoff.id, spv.id);
         res.status(201).json({ spv });
       } catch (e) {
         return badRequest(res, (e as Error).message);

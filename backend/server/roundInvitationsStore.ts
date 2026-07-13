@@ -150,6 +150,40 @@ function plusDaysIso(days: number, from: Date = new Date()): string {
   return d.toISOString();
 }
 
+/**
+ * Wave C3 (Shadie 2a) — SINGLE SOURCE OF TRUTH for the invitation email markup.
+ * Both the real send (createInvitation) and the founder-facing PREVIEW endpoint
+ * render through this, so "what the founder sees == what the investor receives".
+ * Only the personal note is founder-editable; the round facts (company, round
+ * name, expiry) and the secure invite link are fixed by the caller. Every
+ * interpolated value is HTML-escaped (Lane A NH4).
+ */
+export function renderInvitationEmail(input: {
+  investorName?: string | null;
+  companyName: string;
+  roundName: string;
+  link: string;
+  note?: string | null;
+  expiryDays?: number | null;
+}): { subject: string; html: string; text: string } {
+  const investorName = input.investorName ?? "there";
+  const expiryDays = input.expiryDays ?? 14;
+  const note = (input.note ?? "").trim();
+  const subject = `[Capavate] You're invited to ${input.companyName} — ${input.roundName}`;
+  const html =
+    `<p>Hi ${e(investorName)},</p>` +
+    `<p>You've been invited to participate in <strong>${e(input.roundName)}</strong> at <strong>${e(input.companyName)}</strong>.</p>` +
+    `<p><a href="${e(input.link)}">Click here to view the invitation</a></p>` +
+    (note ? `<p>Note from the founder: ${e(note)}</p>` : "") +
+    `<p>This invitation expires in ${e(String(expiryDays))} days.</p>`;
+  const text =
+    `You've been invited to participate in ${input.roundName} at ${input.companyName} on Capavate.\n` +
+    `View it here: ${input.link}\n` +
+    (note ? `Note: ${note}\n` : "") +
+    `This invitation expires in ${expiryDays} days.`;
+  return { subject, html, text };
+}
+
 function normalizeEmail(email: string): string {
   return (email ?? "").trim().toLowerCase();
 }
@@ -493,24 +527,21 @@ export async function createInvitation(args: CreateInvitationArgs): Promise<Crea
   let emailMessageId: string | undefined;
   if (!args.dryRun) {
     try {
+      // Wave C3 (Shadie 2a) — render through the shared renderer so the sent
+      // email is byte-identical to the founder's preview.
+      const composed = renderInvitationEmail({
+        investorName: args.investorName,
+        companyName,
+        roundName,
+        link,
+        note: args.note,
+        expiryDays: args.expiryDays ?? 14,
+      });
       const result = await sendMail({
         to: investorEmail,
-        // v24.4 BUG 047 + 048 — unique per-deal subject with company + round name.
-        subject: `[Capavate] You're invited to ${companyName} — ${roundName}`,
-        /* v25.17 Lane A NH4 — escape every interpolated value so an
-           attacker-controlled investorName/note/roundName/companyName cannot
-           inject markup or script into the recipient's email client. */
-        html:
-          `<p>Hi ${e(args.investorName ?? "there")},</p>` +
-          `<p>You've been invited to participate in <strong>${e(roundName)}</strong> at <strong>${e(companyName)}</strong>.</p>` +
-          `<p><a href="${e(link)}">Click here to view the invitation</a></p>` +
-          (args.note ? `<p>Note from the founder: ${e(args.note)}</p>` : "") +
-          `<p>This invitation expires in ${e(String(args.expiryDays ?? 14))} days.</p>`,
-        text:
-          `You've been invited to participate in ${roundName} at ${companyName} on Capavate.\n` +
-          `View it here: ${link}\n` +
-          (args.note ? `Note: ${args.note}\n` : "") +
-          `This invitation expires in ${args.expiryDays ?? 14} days.`,
+        subject: composed.subject,
+        html: composed.html,
+        text: composed.text,
       });
       emailSent = !!result.ok;
       emailMessageId = result.messageId;
@@ -834,6 +865,10 @@ export function markInvitationRedeemed(id: string, redeemedByUserId?: string | n
 export function revokeInvitation(id: string, actorUserId: string): void {
   const row = memInvitations.find((r) => r.id === id);
   if (!row) return;
+  // Wave C1 (Shadie 3a) FAIL-CLOSED — revoking an ALREADY-revoked invitation is a
+  // no-op: no DB write, no cache mutation, and (critically) NO notification.
+  // The prior code re-ran the UPDATE + could re-notify a revoked investor.
+  if (row.state === "revoked") throw new Error("ALREADY_REVOKED");
   // v25.55 4a (Ozan / Scenario 2) — an accepted invite CAN now be revoked so
   // the founder can pull access from an investor who redeemed but should no
   // longer participate. The accepted->revoked transition persists via the
@@ -887,6 +922,11 @@ export function revokeInvitation(id: string, actorUserId: string): void {
 export function extendInvitation(id: string, expiryDays: number, _actorUserId: string): void {
   const row = memInvitations.find((r) => r.id === id);
   if (!row) return;
+  // Wave C1 (Shadie 4a) FAIL-CLOSED — a terminal invitation cannot have its
+  // expiry extended. Revoked access is gone; an accepted investor no longer
+  // needs an expiry (Ozan: disable extend for revoked AND accepted).
+  if (row.state === "revoked") throw new Error("INVITATION_REVOKED");
+  if (row.state === "accepted") throw new Error("INVITATION_ACCEPTED");
   // v25.35 fix-2 (Concern 3) — persist-first-throw. Previously the in-memory
   // expiry was extended BEFORE the DB update and the DB failure was tolerated,
   // so an extend could report success while the durable row kept the old
@@ -980,6 +1020,10 @@ export interface ResendInvitationResult {
 export async function resendInvitation(id: string, _actorUserId: string): Promise<ResendInvitationResult> {
   const row = findRowById(id);
   if (!row) throw new Error("invitation_not_found");
+  // Wave C1 (Shadie 5a) FAIL-CLOSED — a revoked invitation cannot be resent; the
+  // prior code re-minted a token + emailed the revoked investor. (An accepted
+  // invite is already blocked at the route/UI; guard revoked here server-side.)
+  if (row.state === "revoked") throw new Error("INVITATION_REVOKED");
 
   const token = generateToken();
   const tokenHash = sha256Hex(token);

@@ -63,6 +63,7 @@ import PostDetail from "@/pages/PostDetail";
 // Patch v6 — Partner workspace pages
 import PartnerDashboard from "@/pages/partner/PartnerDashboard";
 import PartnerPipeline from "@/pages/partner/PartnerPipeline";
+import PartnerAddPortfolioCompany from "@/pages/partner/PartnerAddPortfolioCompany"; /* Wave B1 (3a) */
 /* W2-A — restored Clients CRM pages (components were never deleted; only their
    routes were trimmed in v25.50.0). W2-D — new Private Portfolio page. */
 import PartnerClients from "@/pages/partner/PartnerClients";
@@ -94,6 +95,7 @@ import InvestorCRM from "@/pages/investor/CRM";
 import InvestorCRMNew from "@/pages/investor/CRMNew";
 import InvestorApplyToCollective from "@/pages/investor/ApplyToCollective";
 import InvestorProfile from "@/pages/investor/Profile";
+import InvestorAccreditation from "@/pages/investor/Accreditation"; /* v26.1.x AVI-ACCRED */
 import InvestorMessages from "@/pages/investor/Messages";
 import InvestorCollective from "@/pages/investor/Collective";
 import InvestorSignup from "@/pages/investor/Signup";
@@ -657,6 +659,11 @@ function AppRouter() {
         <Route path="/investor/profile">
           {() => <RequireAuth redirectTo="/investor/login"><InvestorProfile /></RequireAuth>}
         </Route>
+        {/* v26.1.x AVI-ACCRED — accreditation self-declaration page; target of the
+            money-core 412 resolutionUrl (/investor/accreditation?investorId=…). */}
+        <Route path="/investor/accreditation">
+          {() => <RequireAuth redirectTo="/investor/login"><InvestorAccreditation /></RequireAuth>}
+        </Route>
         <Route path="/investor/messages">
           {() => <RequireAuth redirectTo="/investor/login"><InvestorMessages /></RequireAuth>}
         </Route>
@@ -1059,6 +1066,10 @@ function AppRouter() {
         </Route>
         <Route path="/collective/partner/pipeline">
           {() => <RequireAuth><CollectiveShell><PartnerPipeline /></CollectiveShell></RequireAuth>}
+        </Route>
+        {/* Wave B1 (3a) — Add Portfolio Company (create net-new independent company). */}
+        <Route path="/collective/partner/add-portfolio-company">
+          {() => <RequireAuth><CollectiveShell><PartnerAddPortfolioCompany /></CollectiveShell></RequireAuth>}
         </Route>
         <Route path="/collective/partner/team">
           {() => <RequireAuth><CollectiveShell><PartnerTeam /></CollectiveShell></RequireAuth>}

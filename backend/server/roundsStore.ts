@@ -155,6 +155,37 @@ export async function hydrateRoundsStore(): Promise<void> {
  * Create a new round. Writes through `rounds` (DB) and updates the in-memory
  * cache. Also emits the v11 B-V11-7 `round.created` audit event.
  */
+/**
+ * Wave C3 (Shadie 7a) — round names must be UNIQUE PER COMPANY (case-insensitive,
+ * across all non-deleted rounds). Two rounds named "MVP" for the same company
+ * (even at different stages) confuse investors, so we reject a duplicate at
+ * create time. Helpers below are also reused by the client's auto-suggest.
+ */
+function normalizeRoundName(name: string): string {
+  return (name ?? "").trim().toLowerCase();
+}
+export function roundNameExistsForCompany(companyId: string, name: string, excludeRoundId?: string): boolean {
+  const target = normalizeRoundName(name);
+  if (!target) return false;
+  return getRoundsForCompany(companyId).some(
+    (r) => r.id !== excludeRoundId && normalizeRoundName(r.name) === target,
+  );
+}
+/**
+ * Suggest a unique, human-friendly round name for a company by suffixing
+ * " (2)", " (3)", … until free. Returns `base` unchanged when it is already
+ * unique. The client pre-fills this (editable) so the founder is never blocked.
+ */
+export function suggestUniqueRoundName(companyId: string, base: string): string {
+  const trimmed = (base ?? "").trim();
+  if (!trimmed || !roundNameExistsForCompany(companyId, trimmed)) return trimmed;
+  for (let n = 2; n < 1000; n++) {
+    const candidate = `${trimmed} (${n})`;
+    if (!roundNameExistsForCompany(companyId, candidate)) return candidate;
+  }
+  return `${trimmed} (${Date.now()})`;
+}
+
 export function createRound(input: {
   companyId: string;
   name: string;
@@ -175,6 +206,17 @@ export function createRound(input: {
   actorUserId?: string;
   extras?: Record<string, unknown>;
 }): Round {
+  // Wave C3 (Shadie 7a) FAIL-CLOSED — reject a duplicate round name for this
+  // company (case-insensitive). The client auto-suggests a unique name, but the
+  // server is authoritative so a duplicate can never be persisted even via a
+  // direct API call. Typed error → route maps to 409.
+  {
+    const trimmedName = (input.name ?? "").trim();
+    if (!trimmedName) throw new Error("ROUND_NAME_REQUIRED");
+    if (roundNameExistsForCompany(input.companyId, trimmedName)) {
+      throw new Error("ROUND_NAME_DUPLICATE");
+    }
+  }
   const id = `rnd_${randomBytes(6).toString("hex")}`;
   const tenantId = tenantForCompany(input.companyId);
   const now = new Date().toISOString();

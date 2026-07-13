@@ -29,7 +29,6 @@ import { Label } from "@/components/ui/label";
 import { COLLECTIVE_SECTORS_45 } from "@shared/schema";
 import { buildCurrencyOptions } from "@/lib/currencyOptions";
 import {
-  SPV_JURISDICTIONS,
   SPV_CARRY_BASES,
   SPV_CARRY_BASIS_HELP,
   SPV_TYPES,
@@ -79,9 +78,54 @@ interface WizardState {
   feeCurrency: string;           // 3g — fixed/hybrid fee currency
   termsDocRef: string;           // 3m — optional terms doc link/ref
   closeDate: string;
+  // 1c — launch sign-off (typed full legal name + explicit attestation ack).
+  signoffLegalName: string;
+  signoffAccepted: boolean;
 }
 
 const OTHER = "__other__";
+
+/**
+ * 1c — the versioned launch attestation text shown to the signer. Must match
+ * server/spvLaunchSignoffStore.ts ATTESTATION_TEXT_V1 (the server records the
+ * canonical text; this is the presentation copy for the same version). If the
+ * server bumps the version, update this string to match.
+ */
+const ATTESTATION_TEXT_V1 =
+  "I certify that I am authorized to launch this special-purpose vehicle on " +
+  "behalf of this Consortium Partner. I confirm that the information entered " +
+  "— including jurisdiction, legal structure, mandate, fees, carry, and terms " +
+  "— is accurate and complete to the best of my knowledge. I understand this " +
+  "action creates a recorded, timestamped commitment on the Capavate " +
+  "platform, and I consent to the use of my electronic signature as the legal " +
+  "equivalent of a handwritten signature under applicable e-signature law " +
+  "(ESIGN/UETA).";
+
+/**
+ * 1e — Derive the strict engine legal-entity enum (SPV_JURISDICTIONS) from the
+ * user-chosen country. The standalone "Engine legal-entity type" field was
+ * redundant with "Jurisdiction (country)" + "Legal entity structure", so it is
+ * removed from the UI and auto-derived here. This mapper ALWAYS returns a
+ * VALID member of the strict SPV_JURISDICTIONS enum (unmapped/unknown countries
+ * => "delaware"), so the canonical SPV store — which REJECTS any non-enum
+ * jurisdiction (INVALID_JURISDICTION) — always accepts the derived value. No
+ * engine enum change and no migration is required (rule #8). See
+ * WAVE_A_1e_LEGAL_ENTITY_ANALYSIS.md.
+ */
+function deriveEngineJurisdiction(country: string): string {
+  switch (country) {
+    case "United States":
+      return "delaware";
+    case "Cayman Islands":
+      return "cayman";
+    case "British Virgin Islands":
+      return "bvi";
+    case "Canada":
+      return "canadian_lp";
+    default:
+      return "delaware"; // matches server canonicalJurisdiction fallback
+  }
+}
 
 const EMPTY_WIZARD: WizardState = {
   name: "", jurisdiction: "delaware", jurisdictionCountry: "United States", jurisdictionOther: "",
@@ -92,6 +136,7 @@ const EMPTY_WIZARD: WizardState = {
   mandateMode: "deal_specific", mandateDescription: "", sectors: [], subSector: "",
   mgmtFeeType: "carry", mgmtFixedMinor: "0", mgmtCarryPct: "20", feeCurrency: "USD",
   termsDocRef: "", closeDate: "",
+  signoffLegalName: "", signoffAccepted: false,
 };
 
 export default function PartnerSpvEngine() {
@@ -160,6 +205,9 @@ export default function PartnerSpvEngine() {
         capMinor: parseInt(w.capMinor || "0", 10),
         currency: w.currency, closeDate: w.closeDate || null, status: "open",
         terms,
+        // 1c — launch sign-off recorded server-side before the SPV is created.
+        signoffLegalName: w.signoffLegalName.trim(),
+        signoffAccepted: w.signoffAccepted,
       });
       const { spv } = await spvRes.json();
       await apiRequest("PUT", `/api/partner/me/spv/${spv.id}/mandate`, {
@@ -206,6 +254,9 @@ export default function PartnerSpvEngine() {
       jurisdictionCountry: country,
       legalEntityStructure: country === OTHER ? "" : (SPV_JURISDICTION_ENTITY_STRUCTURES[country]?.[0] ?? ""),
       legalEntityStructureOther: "",
+      // 1e — auto-derive the strict engine enum from the country (the standalone
+      // "Engine legal-entity type" field was removed as redundant).
+      jurisdiction: deriveEngineJurisdiction(country),
     }));
   const canAdvance = (): boolean => {
     if (step === 0) return !!w.name.trim() && !!w.jurisdiction && jurisdictionCountryValid;
@@ -317,14 +368,13 @@ export default function PartnerSpvEngine() {
                   />
                 )}
               </div>
-              {/* Engine legal-entity type — the strict SPV_JURISDICTIONS enum the
-                  store still validates (kept separate per spec 3b / rule #8). */}
-              <div>
-                <Label>Engine legal-entity type</Label>
-                <select data-testid="spv-w-jurisdiction" className="w-full border rounded h-9 px-2" value={w.jurisdiction} onChange={(e) => setW({ ...w, jurisdiction: e.target.value })}>
-                  {SPV_JURISDICTIONS.map((j) => <option key={j} value={j}>{j}</option>)}
-                </select>
-              </div>
+              {/* 1e — the standalone "Engine legal-entity type" field was removed
+                  as redundant with Jurisdiction (country) + Legal entity
+                  structure. The strict engine enum is now auto-derived from the
+                  chosen country (deriveEngineJurisdiction) and carried on a
+                  hidden input so the value still submits and the existing
+                  data-testid is preserved (anti-silent-drop / test parity). */}
+              <input type="hidden" data-testid="spv-w-jurisdiction" value={w.jurisdiction} readOnly />
             </div>
           )}
 
@@ -471,7 +521,6 @@ export default function PartnerSpvEngine() {
               <ReviewRow label="SPV type" value={SPV_TYPE_LABELS[w.spvType as keyof typeof SPV_TYPE_LABELS]} onEdit={() => setStep(0)} />
               <ReviewRow label="Jurisdiction (country)" value={juruDisplay} onEdit={() => setStep(0)} />
               <ReviewRow label="Legal entity structure" value={legalEntityDisplay || "—"} onEdit={() => setStep(0)} />
-              <ReviewRow label="Engine legal-entity type" value={w.jurisdiction} onEdit={() => setStep(0)} />
               <ReviewRow label="Mandate mode" value={SPV_MANDATE_MODE_LABELS[w.mandateMode as keyof typeof SPV_MANDATE_MODE_LABELS]} onEdit={() => setStep(1)} />
               <ReviewRow label="Mandate" value={w.mandateDescription || "—"} onEdit={() => setStep(1)} />
               {/* B2 — friendlier empty-sectors copy instead of a bare em-dash */}
@@ -494,6 +543,39 @@ export default function PartnerSpvEngine() {
                 </div>
               )}
               {!w.carryBasis && <div className="text-xs text-rose-600">Choose a carry basis in the Terms step before launching.</div>}
+
+              {/* 1c — full launch sign-off: typed legal name + attestation ack +
+                  timestamp, recorded durably server-side before the SPV is
+                  created. Launch is gated on both being provided. */}
+              <div className="mt-2 rounded-md border p-3 space-y-2" style={{ borderColor: NAVY, background: "rgba(4,30,65,0.04)" }} data-testid="spv-launch-signoff">
+                <div className="font-medium">Authorized sign-off (required)</div>
+                <div>
+                  <Label>Full legal name *</Label>
+                  <Input
+                    data-testid="spv-signoff-legalname"
+                    value={w.signoffLegalName}
+                    onChange={(e) => setW({ ...w, signoffLegalName: e.target.value })}
+                    placeholder="Type your full legal name"
+                  />
+                </div>
+                <label className="flex items-start gap-2 cursor-pointer" htmlFor="spv-signoff-accept">
+                  <input
+                    id="spv-signoff-accept"
+                    type="checkbox"
+                    className="mt-1"
+                    data-testid="spv-signoff-accept"
+                    checked={w.signoffAccepted}
+                    onChange={(e) => setW({ ...w, signoffAccepted: e.target.checked })}
+                  />
+                  <span className="text-xs text-[var(--cv-color-text-secondary)]">{ATTESTATION_TEXT_V1}</span>
+                </label>
+                {(!w.signoffLegalName.trim() || !w.signoffAccepted) && (
+                  <div className="text-xs text-rose-600" data-testid="spv-signoff-error">
+                    Type your full legal name and accept the attestation to launch.
+                  </div>
+                )}
+                <div className="text-[10px] text-[var(--cv-color-text-faint)]">Your name, assent, and a UTC timestamp are recorded for audit (ESIGN/UETA).</div>
+              </div>
             </div>
           )}
 
@@ -504,7 +586,7 @@ export default function PartnerSpvEngine() {
             {step < STEPS.length - 1 ? (
               <Button data-testid="spv-wizard-next" disabled={!canAdvance()} onClick={() => setStep(step + 1)} style={{ background: NAVY }}>Next</Button>
             ) : (
-              <Button data-testid="spv-wizard-launch" disabled={!w.carryBasis || create.isPending} onClick={() => create.mutate()} style={{ background: NAVY }}>
+              <Button data-testid="spv-wizard-launch" disabled={!w.carryBasis || !w.signoffLegalName.trim() || !w.signoffAccepted || create.isPending} onClick={() => create.mutate()} style={{ background: NAVY }}>
                 {create.isPending ? "Launching…" : "Launch SPV"}
               </Button>
             )}

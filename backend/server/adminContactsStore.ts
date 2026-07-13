@@ -595,6 +595,30 @@ function appendRevision(contact: AdminContact, action: string): void {
  * Stats
  * ============================================================ */
 
+/**
+ * 1d — Resolve a Consortium Partner org's registered display name from its
+ * partnerId (an admin `consortium_partner` contact id). Returns the partner's
+ * `displayName` (preferred) or `legalName`, or null when the id is unknown or
+ * is not a consortium_partner. Non-sacred; used by the Posts author-label
+ * fallback so a partner author never renders as a raw `u_...` id.
+ */
+export function getConsortiumPartnerDisplayName(partnerId: string): string | null {
+  const pid = String(partnerId ?? "").trim();
+  if (!pid) return null;
+  // Cache first, then DB fallback (matches the by-id read pattern elsewhere).
+  let c = contacts.get(pid) ?? null;
+  if (!c) {
+    try {
+      c = readAllContactsFromDb().find((x) => x.id === pid) ?? null;
+    } catch {
+      /* sandbox / pre-migration — cache miss is a clean null */
+    }
+  }
+  if (!c || c.kind !== "consortium_partner") return null;
+  const name = (c.displayName || c.legalName || "").trim();
+  return name || null;
+}
+
 export function getContactStats() {
   // v25.34: DB-first; fall back to the cache only if the DB read throws.
   let all: AdminContact[];

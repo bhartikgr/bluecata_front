@@ -255,6 +255,86 @@ function applyInlineMigrations(db: any) {
    * index creation fails and is logged (the app-level preflight still blocks new
    * dupes); the migrate runner's 0099 fail-hard probe surfaces that loudly. */
   applyV2553RoundInviteUniqueIndex(db);
+
+  /* v26.1.x ENH-1 — durable Your-Decision store. Mirrors migration 0107
+   * idempotently so the DB-authoritative `your_decision_records` table (the new
+   * source of truth for the Your-Decision 10-state machine) is present on a fresh
+   * boot / fresh :memory: test DB, not only after the migrate runner has run.
+   * Additive only (CREATE TABLE IF NOT EXISTS + CREATE INDEX IF NOT EXISTS). No
+   * FKs to Avi-owned / money-core tables and NEVER touches Airwallex/payments or
+   * the cap-table ledger. The legacy kv_yourDecisionStore mirror is kept this
+   * release as a secondary, non-authoritative belt-and-suspenders mirror. */
+  applyEnh1YourDecisionDurableSchema(db);
+
+  /* v26.1.x 1c — durable SPV launch sign-off. Mirrors migration 0108
+   * idempotently so the `spv_launch_signoffs` table (the verifiable attestation
+   * record captured before an SPV launch) is present on a fresh boot / fresh
+   * :memory: test DB, not only after the migrate runner has run. Additive only
+   * (CREATE TABLE / INDEX IF NOT EXISTS). No FKs to Avi-owned / money-core
+   * tables and NEVER touches Airwallex/payments or the cap-table ledger. */
+  applyC1cSpvLaunchSignoffSchema(db);
+}
+
+/* v26.1.x ENH-1 — see call-site comment above. Boot-safe + idempotent.
+ * Mirrors migrations/0107_enh1_your_decision_durable.sql VERBATIM in shape. */
+function applyEnh1YourDecisionDurableSchema(db: any) {
+  const stmts: string[] = [
+    `CREATE TABLE IF NOT EXISTS your_decision_records (
+       invitation_id    TEXT PRIMARY KEY NOT NULL,
+       round_id         TEXT NOT NULL,
+       company_id       TEXT NOT NULL DEFAULT '',
+       state            TEXT NOT NULL,
+       amount           REAL,
+       currency         TEXT,
+       soft_circle_type TEXT,
+       viewed_at        TEXT,
+       note             TEXT,
+       history_json     TEXT NOT NULL DEFAULT '[]',
+       mim_json         TEXT NOT NULL DEFAULT '[]',
+       actor            TEXT,
+       created_at       TEXT NOT NULL,
+       updated_at       TEXT NOT NULL
+     );`,
+    `CREATE INDEX IF NOT EXISTS idx_your_decision_records_round
+       ON your_decision_records (round_id);`,
+  ];
+  try {
+    const tx = db.transaction(() => { for (const sql of stmts) db.exec(sql); });
+    tx();
+  } catch (err) {
+    log.warn("[db] v26.1.x ENH-1 your_decision_records bootstrap failed (continuing):", (err as Error).message);
+  }
+}
+
+/* v26.1.x 1c — see call-site comment above. Boot-safe + idempotent.
+ * Mirrors migrations/0108_1c_spv_launch_signoffs.sql VERBATIM in shape. */
+function applyC1cSpvLaunchSignoffSchema(db: any) {
+  const stmts: string[] = [
+    `CREATE TABLE IF NOT EXISTS spv_launch_signoffs (
+       id                  TEXT PRIMARY KEY NOT NULL,
+       partner_id          TEXT NOT NULL,
+       spv_id              TEXT NOT NULL DEFAULT '',
+       user_id             TEXT NOT NULL,
+       signer_legal_name   TEXT NOT NULL,
+       signer_sub_role     TEXT,
+       attestation_text    TEXT NOT NULL,
+       attestation_version TEXT NOT NULL DEFAULT 'v1',
+       signed_at           TEXT NOT NULL,
+       ip                  TEXT,
+       user_agent          TEXT,
+       created_at          TEXT NOT NULL
+     );`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_launch_signoffs_partner
+       ON spv_launch_signoffs (partner_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_spv_launch_signoffs_spv
+       ON spv_launch_signoffs (spv_id);`,
+  ];
+  try {
+    const tx = db.transaction(() => { for (const sql of stmts) db.exec(sql); });
+    tx();
+  } catch (err) {
+    log.warn("[db] v26.1.x 1c spv_launch_signoffs bootstrap failed (continuing):", (err as Error).message);
+  }
 }
 
 /* v25.53 REVISE B3 — see call-site comment above. Boot-safe + idempotent. */

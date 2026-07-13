@@ -30,6 +30,8 @@ import { commitFunded, getLedger } from "./captableCommitStore";
 import { spvEngineStore } from "./spvEngineStore";
 import { resolveDisplayNames } from "./lib/displayNameResolver";
 import { listLpInvites, createLpInvite } from "./spvLpInviteStore";
+// 1c — durable, verifiable launch sign-off recorded before an SPV is created.
+import { recordSignoff, linkSignoffToSpv, listSignoffsForSpv } from "./spvLaunchSignoffStore";
 import { createInvitation } from "./roundInvitationsStore";
 import {
   SPV_JURISDICTIONS,
@@ -53,7 +55,7 @@ function err(res: Response, e: unknown): Response {
   const msg = (e as Error).message || "ERROR";
   const map: Record<string, number> = {
     SPV_NOT_FOUND: 404, DEPLOYMENT_NOT_FOUND: 404, SUBSCRIPTION_NOT_FOUND: 404, NO_MANDATE: 404,
-    CARRY_BASIS_REQUIRED: 400, INVALID_JURISDICTION: 400, INVALID_SPV_TYPE: 400, SPV_NAME_REQUIRED: 400,
+    CARRY_BASIS_REQUIRED: 400, INVALID_JURISDICTION: 400, INVALID_SPV_TYPE: 400, INVALID_SPV_STATUS: 400, SPV_NAME_REQUIRED: 400,
     INVALID_DISTRIBUTION_SCOPE: 400, INVALID_FEE_LAYER: 400, INVALID_FEE_TYPE: 400, FIXED_AMOUNT_REQUIRED: 400,
     CARRY_PCT_REQUIRED: 400, FEES_EXCEED_RAISE: 400, RULE_TREE_REQUIRED: 400, INVALID_COMMITMENT: 400, INVALID_AMOUNT: 400,
     INVALID_GROSS: 400, EVENT_REQUIRED: 400, BELOW_MIN_CHECK: 400, EXCEEDS_CAP: 400, ALREADY_SUBSCRIBED: 409,
@@ -98,9 +100,56 @@ export function registerSpvEngineRoutes(app: Express): void {
 
   app.post("/api/partner/me/spv", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
     try {
-      const spv = spvEngineStore.createSpv(req.partnerContext!.partnerId, req.body ?? {}, req.partnerContext!.userId);
-      res.status(201).json({ spv });
+      const ctx = req.partnerContext!;
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      // Preserve the original untyped payload for createSpv (its typed param is
+      // satisfied by the store's own validation, as before this change).
+      const createBody = req.body ?? {};
+      // 1c — a full launch sign-off is REQUIRED before an SPV can be created.
+      // The signer must type their full legal name AND explicitly accept the
+      // versioned attestation. Identity of record is the SESSION user, never a
+      // client-supplied id. Missing/invalid sign-off => 400 (no SPV created).
+      const signoffLegalName = typeof body.signoffLegalName === "string" ? body.signoffLegalName.trim() : "";
+      const signoffAccepted = body.signoffAccepted === true;
+      if (!signoffLegalName) {
+        return res.status(400).json({ error: "SIGNOFF_LEGAL_NAME_REQUIRED" });
+      }
+      if (!signoffAccepted) {
+        return res.status(400).json({ error: "SIGNOFF_ATTESTATION_REQUIRED" });
+      }
+      // 1c FAIL-CLOSED (per GPT-5.5 review): record the durable sign-off BEFORE
+      // creating the SPV. recordSignoff THROWS on a durable-persist failure, so
+      // if the sign-off cannot be recorded we return 500 and NO SPV is ever
+      // created — an SPV can never exist without its authorization record. The
+      // signer sub-role comes from the session context field `partnerSubRole`.
+      let signoff;
+      try {
+        signoff = recordSignoff({
+          partnerId: ctx.partnerId,
+          spvId: "", // linked to the real id below once the SPV exists
+          userId: ctx.userId,
+          signerLegalName: signoffLegalName,
+          signerSubRole: ctx.partnerSubRole ?? null,
+          ip: (req.headers["x-forwarded-for"] as string) || req.socket?.remoteAddress || null,
+          userAgent: (req.headers["user-agent"] as string) ?? null,
+        });
+      } catch {
+        return res.status(500).json({ error: "SIGNOFF_PERSIST_FAILED" });
+      }
+      // Sign-off is now durably recorded; create the SPV and link the two.
+      const spv = spvEngineStore.createSpv(ctx.partnerId, createBody, ctx.userId);
+      linkSignoffToSpv(signoff.id, spv.id);
+      res.status(201).json({ spv, signoff: { id: signoff.id, signedAt: signoff.signedAt, attestationVersion: signoff.attestationVersion } });
     } catch (e) { err(res, e); }
+  });
+
+  // 1c — read the recorded launch sign-off(s) for an SPV (verifiability).
+  // Partner-scoped by the session partnerId; a cross-partner spvId returns 404.
+  app.get("/api/partner/me/spv/:spvId/signoffs", requirePartnerAuth, (req: Request, res: Response) => {
+    const pid = req.partnerContext!.partnerId;
+    const spv = spvEngineStore.getSpv(pid, String(req.params.spvId));
+    if (!spv) return res.status(404).json({ error: "SPV_NOT_FOUND" });
+    res.json({ signoffs: listSignoffsForSpv(pid, spv.id) });
   });
 
   app.get("/api/partner/me/spv/:spvId", requirePartnerAuth, (req: Request, res: Response) => {

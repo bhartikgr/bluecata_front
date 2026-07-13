@@ -239,9 +239,16 @@ export function runEngine(secs: ApiSecurity[], view: View, region: Region = "US"
 /** Project a post-close cap table by appending a synthetic priced round. */
 export function projectPostClose(
   secs: ApiSecurity[],
-  round: { preMoneyValuation: number; investmentAmount: number; series: string },
+  // Wave C4 — widen to accept null/undefined: a freshly-created round often has
+  // no pre-money / target yet (shown as "Unknown"/$0). Previously these were
+  // typed as `number` but the caller passed `round.preMoney` (number | null),
+  // and `null.toString()` below crashed the whole projection tab.
+  round: { preMoneyValuation: number | null | undefined; investmentAmount: number | null | undefined; series: string },
   region: Region = "US",
 ): CapTableResult {
+  // Fail-safe coercion so a null/undefined/NaN can never crash `.toString()`.
+  const preMoneyValuation = Number.isFinite(Number(round.preMoneyValuation)) ? Number(round.preMoneyValuation) : 0;
+  const investmentAmount = Number.isFinite(Number(round.investmentAmount)) ? Number(round.investmentAmount) : 0;
   const { holders, transactions } = adaptSecuritiesToEngine(secs);
   if (!holders.find((h) => h.id === `investors-${round.series}`)) {
     holders.push({ id: `investors-${round.series}`, name: `${round.series} investors`, type: "investor" });
@@ -252,8 +259,8 @@ export function projectPostClose(
     round: {
       id: round.series,
       series: round.series,
-      preMoneyValuation: round.preMoneyValuation.toString(),
-      investmentAmount: round.investmentAmount.toString(),
+      preMoneyValuation: preMoneyValuation.toString(),
+      investmentAmount: investmentAmount.toString(),
       liquidationPreferenceMultiple: 1,
       participating: false,
       antiDilution: "broad_based",

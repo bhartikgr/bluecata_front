@@ -1,0 +1,13 @@
+{
+  "removedRoutes": [],
+  "removedClientRoutes": [],
+  "removedNav": [
+    {
+      "id": "/collective/partner/contacts\tContacts",
+      "reason": "1f (v26.1.x Consortium Partner QA) — nav label renamed 'Contacts' -> 'Contacts (CRM)'. The route/page (/collective/partner/contacts) is UNCHANGED and still reachable; only the display label changed, which the guard tracks as href+label. No functionality removed.",
+      "approvedBy": "Ozan",
+      "date": "2026-07-09"
+    }
+  ],
+  "note": "each entry must include reason + approvedBy + date. Entry shape: { \"id\": \"<exact baseline id>\", \"reason\": \"...\", \"approvedBy\": \"...\", \"date\": \"YYYY-MM-DD\" }. A plain string id is also accepted but the object form (with reason/approvedBy/date) is required for a legitimate, logged removal."
+}

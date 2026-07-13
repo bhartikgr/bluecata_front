@@ -3,6 +3,15 @@ import { build as viteBuild } from "vite";
 import { rm, readFile, cp, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 
+// v26.1.1-qa2 — The Anti-Silent-Drop guard is NO LONGER run from the build.
+// Reason: invoking it here (spawnSync("tsx", ...)) hard-failed the build on
+// Windows/PowerShell (tsx.cmd spawn → NativeCommandError), blocking install even
+// though NO functionality had been dropped. The no-silent-drop protection now
+// lives as a first-class TEST that runs under `npm test`
+// (server/__tests__/anti_silent_drop.test.ts) and remains runnable on demand via
+// `npm run guard`. The build must never be gated by it again. (rule #8 upheld via
+// the test, not the build.)
+
 // server deps to bundle to reduce openat(2) syscalls
 // which helps cold start times
 const allowlist = [

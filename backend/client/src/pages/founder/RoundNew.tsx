@@ -129,6 +129,9 @@ type WizardInitialShareholder = {
  company?: string;
  email: string;
  checkSize: string;
+ // Wave C3 (Shadie 2a) — optional personal note added to this investor's
+ // invitation email (message only; never the round terms).
+ note?: string | null;
  source: "crm" | "manual";
  crmContactId?: string;
 };
@@ -282,7 +285,16 @@ export default function RoundNew() {
  // v23.4.8 Phase 2 / BUG 012 — initial-shareholders state (step 4).
  const [selectedShareholders, setSelectedShareholders] = useState<WizardInitialShareholder[]>([]);
  const [manualOpen, setManualOpen] = useState(false);
- const [manualDraft, setManualDraft] = useState<{ firstName: string; lastName: string; company: string; email: string; checkSize: string }>({ firstName: "", lastName: "", company: "", email: "", checkSize: "" });
+ // Wave C3 (Shadie 2a) — optional personal note added to the standard invitation
+ // email for this manually-added investor (only the message; not the terms).
+ const [manualDraft, setManualDraft] = useState<{ firstName: string; lastName: string; company: string; email: string; checkSize: string; note: string }>({ firstName: "", lastName: "", company: "", email: "", checkSize: "", note: "" });
+ // Exact-HTML preview of the invitation email for the manual dialog.
+ const [manualPreviewHtml, setManualPreviewHtml] = useState<string | null>(null);
+ // Wave C3 (Shadie 7a) — round-name uniqueness hint. When the typed name
+ // collides with an existing round for this company, we auto-fill an editable
+ // unique suggestion so the founder is never blocked and never ships two
+ // same-named rounds (which confuses investors).
+ const [roundNameHint, setRoundNameHint] = useState<string | null>(null);
 
  // Defect A — use real active companyId (never hardcode co_novapay).
  const companyId = useActiveCompanyId();
@@ -371,9 +383,13 @@ export default function RoundNew() {
  // v23.4.8 Phase 2 / BUG 012 — persist initial-shareholders picks against
  // the new round via the dedicated (non-sacred) endpoint. Failure here is
  // non-fatal: the round is already created and the picker can be revisited.
+ // Wave C2 (Shadie 1a/1b) — Step-4 picks are now issued round invitations
+ // server-side (they land in the Invitations table AND get emailed), so we
+ // surface the invitation summary instead of silently swallowing.
+ let inviteSummary: { invited?: number; skippedNoEmail?: number; inviteErrors?: Array<{ email: string; error: string }> } | null = null;
  if (selectedShareholders.length > 0) {
  try {
- await apiRequest("PATCH", `/api/founder/rounds/${data.id}/initial-shareholders`, {
+ const r = await apiRequest("PATCH", `/api/founder/rounds/${data.id}/initial-shareholders`, {
  companyId,
  shareholders: selectedShareholders.map((s) => ({
  name: s.name,
@@ -384,15 +400,26 @@ export default function RoundNew() {
  company: s.company ?? null,
  email: s.email || null,
  checkSize: s.checkSize || null,
+ // Wave C3 (Shadie 2a) — carry the personal note so the server injects it
+ // into this investor's invitation email.
+ note: s.note ?? null,
  source: s.source,
  crmContactId: s.crmContactId ?? null,
  })),
  });
+ inviteSummary = await r.json().catch(() => null);
  } catch {
- /* non-fatal */
+ /* non-fatal: round exists; investors can be added from the round page */
  }
  }
- toast({ title: "Round created", description: `Round ${data.id} is now active.` });
+ const invited = inviteSummary?.invited ?? 0;
+ const noEmail = inviteSummary?.skippedNoEmail ?? 0;
+ const failed = inviteSummary?.inviteErrors?.length ?? 0;
+ const parts: string[] = [`Round ${data.id} is now active.`];
+ if (invited > 0) parts.push(`${invited} investor${invited === 1 ? "" : "s"} invited by email.`);
+ if (noEmail > 0) parts.push(`${noEmail} added without an email (no invite sent).`);
+ if (failed > 0) parts.push(`${failed} invitation${failed === 1 ? "" : "s"} could not be sent.`);
+ toast({ title: "Round created", description: parts.join(" "), variant: failed > 0 ? "destructive" : undefined });
  // Shadie V6 7a — respect the Step-5 term-sheet choice. "upload" routes
  // straight to the term-sheet page WITH ?action=upload so it lands directly on
  // the Upload panel (Generate was removed entirely per Ozan). "skip" goes to
@@ -404,6 +431,18 @@ export default function RoundNew() {
  }
  },
  onError: (err: unknown) => {
+  // Wave C3 (Shadie 7a) backstop — if two rounds race to the same name, the
+  // server returns 409 ROUND_NAME_DUPLICATE with an editable unique suggestion.
+  // Auto-apply it to the name field and tell the founder to re-submit.
+  if (err instanceof ApiError && err.code === "ROUND_NAME_DUPLICATE") {
+   const payload = err.payload as { suggestedName?: string } | undefined;
+   if (payload?.suggestedName) {
+    update("name", payload.suggestedName);
+    setRoundNameHint(`That round name is already in use. Renamed to “${payload.suggestedName}” — review and create again.`);
+   }
+   toast({ title: "Round name already used", description: "Round names must be unique for a company. We suggested a unique name — review and create again.", variant: "destructive" });
+   return;
+  }
   // v24.1 Bug B (Avi #2): surface server field-level validation errors so the
   // founder learns exactly which field is wrong instead of a generic toast.
   if (err instanceof ApiError && err.code === "validation_failed") {
@@ -720,7 +759,30 @@ export default function RoundNew() {
  </div>
  <div>
  <Label>Round name</Label>
- <Input className="mt-1" value={form.name} onChange={e => update("name", e.target.value)} data-testid="input-round-name" />
+ <Input
+ className="mt-1"
+ value={form.name}
+ onChange={e => { update("name", e.target.value); if (roundNameHint) setRoundNameHint(null); }}
+ data-testid="input-round-name"
+ onBlur={async () => {
+ const nm = form.name.trim();
+ if (!nm || !companyId) { setRoundNameHint(null); return; }
+ try {
+ const res = await apiRequest("GET", `/api/rounds/name-availability?companyId=${encodeURIComponent(companyId)}&name=${encodeURIComponent(nm)}`);
+ const j = await res.json().catch(() => null);
+ if (j && j.available === false && j.suggestedName) {
+ // Auto-fill the editable unique suggestion + explain why.
+ update("name", j.suggestedName);
+ setRoundNameHint(`“${nm}” is already used for this company. Renamed to “${j.suggestedName}” — edit if you like.`);
+ } else {
+ setRoundNameHint(null);
+ }
+ } catch { setRoundNameHint(null); }
+ }}
+ />
+ {roundNameHint && (
+ <p className="text-[11px] text-amber-600 mt-1" data-testid="round-name-uniqueness-hint">{roundNameHint}</p>
+ )}
  </div>
  <div>
  <Label className="flex items-center gap-1.5">Jurisdiction (formula region) <HelpTip>The formula region picks which formulas the engine uses for SAFE/Note conversion, anti-dilution, ESOP top-up and waterfall — and which legal documents Capavate generates.</HelpTip></Label>
@@ -1086,6 +1148,36 @@ export default function RoundNew() {
  <div><Label>Company name (optional)</Label><Input className="mt-1" value={manualDraft.company} onChange={(e) => setManualDraft({ ...manualDraft, company: e.target.value })} data-testid="input-manual-company" /></div>
  <div><Label className="flex items-center gap-1">Email <span className="text-rose-500">*</span></Label><Input className="mt-1" type="email" value={manualDraft.email} onChange={(e) => setManualDraft({ ...manualDraft, email: e.target.value })} data-testid="input-manual-email" /></div>
  <div><Label>Check size (USD, optional)</Label><FormattedNumberInput className="mt-1" value={manualDraft.checkSize} onChange={(raw) => setManualDraft({ ...manualDraft, checkSize: raw })} data-testid="input-manual-check-size" /></div>
+ {/* Wave C3 (Shadie 2a) — optional personal note added to the standard
+     invitation email (message only; the round terms/name are unchanged). */}
+ <div>
+ <Label>Personal note (optional)</Label>
+ <Input className="mt-1" value={manualDraft.note} onChange={(e) => { setManualDraft({ ...manualDraft, note: e.target.value }); setManualPreviewHtml(null); }} placeholder="Great meeting you at the event last week…" data-testid="input-manual-note" />
+ <p className="text-[11px] text-muted-foreground mt-1">Added to the standard invitation email. Only your message — not the terms, duration or round name.</p>
+ </div>
+ {/* Exact-HTML preview of the email this investor will receive. */}
+ <div>
+ <Button type="button" variant="outline" size="sm" data-testid="button-preview-manual-invite"
+ onClick={async () => {
+ try {
+ const res = await apiRequest("POST", `/api/companies/${encodeURIComponent(companyId ?? "")}/invitation-preview`, {
+ investorName: `${manualDraft.firstName} ${manualDraft.lastName}`.trim() || undefined,
+ roundName: form.name || undefined,
+ note: manualDraft.note || undefined,
+ });
+ const j = await res.json().catch(() => null);
+ setManualPreviewHtml(j?.preview?.html ?? "");
+ } catch {
+ setManualPreviewHtml("<p>Could not build preview.</p>");
+ }
+ }}>Preview email</Button>
+ {manualPreviewHtml !== null && (
+ <div className="mt-2 border rounded-md p-3 bg-white max-h-56 overflow-auto text-sm" data-testid="manual-invite-email-preview">
+ <div className="text-[11px] uppercase tracking-wide text-muted-foreground mb-2">Email preview — exactly what the investor will receive</div>
+ <div dangerouslySetInnerHTML={{ __html: manualPreviewHtml }} />
+ </div>
+ )}
+ </div>
  </div>
  <DialogFooter>
  <Button variant="outline" onClick={() => setManualOpen(false)}>Cancel</Button>
@@ -1094,8 +1186,9 @@ export default function RoundNew() {
  onClick={() => {
  const first = manualDraft.firstName.trim();
  const last = manualDraft.lastName.trim();
- setSelectedShareholders((prev) => [...prev, { name: `${first} ${last}`.trim(), firstName: first, lastName: last, company: manualDraft.company.trim(), email: manualDraft.email.trim(), checkSize: manualDraft.checkSize.trim(), source: "manual" }]);
- setManualDraft({ firstName: "", lastName: "", company: "", email: "", checkSize: "" });
+ setSelectedShareholders((prev) => [...prev, { name: `${first} ${last}`.trim(), firstName: first, lastName: last, company: manualDraft.company.trim(), email: manualDraft.email.trim(), checkSize: manualDraft.checkSize.trim(), note: manualDraft.note.trim() || null, source: "manual" }]);
+ setManualDraft({ firstName: "", lastName: "", company: "", email: "", checkSize: "", note: "" });
+ setManualPreviewHtml(null);
  setManualOpen(false);
  }}
  className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"

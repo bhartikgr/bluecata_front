@@ -134,6 +134,41 @@ export function fromMinor(minor: number, currency: string): number {
   return (Number(minor) || 0) / Math.pow(10, exp);
 }
 
+/**
+ * 1a — Canonical thousands-separator formatter for COUNTS (share counts, unit
+ * counts, any integer quantity) across the ENTIRE platform (Consortium
+ * Partners, Collective, Investor, Capavate/founder, Admin). Currency amounts
+ * should use `formatMinor` (which already groups via Intl); this is the
+ * matching primitive for NON-currency quantities so shares/units never render
+ * as a bare ungrouped number (e.g. "1000000" → "1,000,000").
+ *
+ * Groups by thousands using the en-US locale for a stable, deterministic
+ * presentation (matches the existing `formatMinor({ locale: "en-US" })` call
+ * convention used across the app). Fractional inputs keep up to `maxFraction`
+ * digits (default 0 — shares are whole). Null/NaN → "—".
+ */
+export function formatShares(
+  value: number | string | null | undefined,
+  opts: { maxFraction?: number } = {},
+): string {
+  if (value == null) return "—";
+  const n = typeof value === "string" ? Number(value) : value;
+  if (!Number.isFinite(n)) return "—";
+  return n.toLocaleString("en-US", {
+    maximumFractionDigits: opts.maxFraction ?? 0,
+    minimumFractionDigits: 0,
+  });
+}
+
+/** 1a — alias of `formatShares` for generic integer counts (non-share
+ * quantities). Same grouping behavior; separate name for call-site clarity. */
+export function formatCount(
+  value: number | string | null | undefined,
+  opts: { maxFraction?: number } = {},
+): string {
+  return formatShares(value, opts);
+}
+
 /** Format a value with the region's currency symbol. */
 export function fmtCurrency(n: number | null | undefined, region: Region | string | undefined | null = "US", opts: { compact?: boolean; digits?: number } = {}): string {
   if (n == null || isNaN(n as number)) return "—";

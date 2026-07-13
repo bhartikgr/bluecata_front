@@ -672,6 +672,49 @@ export function addCompanyForFounder(userId: string, company: FounderCompanyMemb
 }
 
 /**
+ * Wave B1 (3a) — COMPENSATING ROLLBACK for a company created via
+ * addCompanyForFounder when a downstream REQUIRED step (partner attribution or
+ * the founder owner-invite) fails. Because those steps live in separate stores
+ * (no single cross-store transaction), the create flow must be able to undo a
+ * just-created company so it never leaves an orphan/unclaimable company.
+ *
+ * Soft-deletes the companies + company_members rows (sets deleted_at so the
+ * member-keyed hydrate — WHERE deleted_at IS NULL — excludes it on the next boot)
+ * inside one transaction, then evicts the in-memory cache mirror for the owner.
+ * Idempotent and self-contained; safe to call after a partial create. Returns
+ * true when the rollback DB write succeeded.
+ */
+export function rollbackFounderCompany(userId: string, companyId: string): boolean {
+  const now = new Date().toISOString();
+  let dbOk = false;
+  try {
+    const raw: any = rawDb();
+    raw.transaction(() => {
+      raw.prepare(`UPDATE companies SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL`).run(now, companyId);
+      raw.prepare(`UPDATE company_members SET deleted_at = ?, is_active = 0 WHERE company_id = ? AND deleted_at IS NULL`).run(now, companyId);
+    })();
+    dbOk = true;
+  } catch (err) {
+    log.error({
+      route: "multiCompanyStore.rollbackFounderCompany",
+      errorType: "company_rollback_failed",
+      companyId,
+      userId,
+      message: (err as Error).message,
+    });
+  }
+  // Evict the in-memory mirror regardless, so the just-created phantom company
+  // is not served from cache even if the DB soft-delete failed.
+  try {
+    const list = (USER_COMPANIES.get(userId) ?? []).filter((c) => c.companyId !== companyId);
+    if (list.length > 0) USER_COMPANIES.set(userId, list);
+    else USER_COMPANIES.delete(userId);
+    if (USER_ACTIVE_COMPANY.get(userId) === companyId) USER_ACTIVE_COMPANY.delete(userId);
+  } catch { /* cache eviction best-effort */ }
+  return dbOk;
+}
+
+/**
  * v25.48.3 Q-J1 — add a user as a team member of an EXISTING company.
  *
  * Unlike addCompanyForFounder (which creates a brand-new company + tenant),

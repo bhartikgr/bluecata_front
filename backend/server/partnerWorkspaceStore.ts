@@ -118,6 +118,10 @@ export interface PartnerTeamInvitation {
   partnerId: string;
   invitedEmail: string;
   subRole: SubRole;
+  /* 2a — DISPLAY/CRM title (from shared PARTNER_TITLES), distinct from the
+   * permission tier `subRole`. Optional + stored in invitation_json, so no
+   * migration is required. Null when the inviter left it unset. */
+  title?: string | null;
   tokenHash: string;
   expiresAt: string;
   redeemedAt: string | null;
@@ -1031,7 +1035,7 @@ export const partnerInvitationStore = {
     invitedEmail: string,
     subRole: SubRole,
     createdBy: string,
-    opts: { isSeed?: boolean; ip?: string; ua?: string } = {},
+    opts: { isSeed?: boolean; ip?: string; ua?: string; title?: string | null } = {},
   ): { invitation: PartnerTeamInvitation; plainToken: string } {
     requirePid(partnerId);
     if (!invitedEmail) throw new Error("EMAIL_REQUIRED");
@@ -1044,6 +1048,8 @@ export const partnerInvitationStore = {
       partnerId,
       invitedEmail: invitedEmail.toLowerCase(),
       subRole,
+      /* 2a — optional display title (presentational, never a permission). */
+      title: opts.title ?? null,
       tokenHash,
       expiresAt: new Date(now.getTime() + INVITE_TTL_MS).toISOString(),
       redeemedAt: null,
@@ -1209,6 +1215,25 @@ export const partnerInvitationStore = {
         subRole: result.member.subRole,
         idempotencyKey: `${result.member.partnerId}|${result.member.userId}`,
       });
+    }
+    // 2a (per GPT-5.5 review) — carry the invitation's DISPLAY title onto the
+    // newly-created member so it survives redemption. Titles are stored in the
+    // partner-local contact override's positionNote field (the same field the
+    // team-list read maps to `title`). Only for a brand-new member with a title;
+    // never overwrites an existing member's contact info, and never affects the
+    // permission tier (subRole). Best-effort: a failure here is logged, not fatal
+    // (the membership + sign-in already succeeded).
+    if (result.memberWasNew && result.durable.title) {
+      try {
+        partnerTeamContactStore.upsert(
+          result.durable.partnerId,
+          result.member.userId,
+          { positionNote: result.durable.title },
+          redeemingUserId,
+        );
+      } catch (err) {
+        log.warn("[partnerInvitationStore.redeem] title carry-over failed (continuing):", (err as Error).message);
+      }
     }
     audit(redeemingUserId, `partner:${result.durable.partnerId}`, "partner.team_invitation.redeemed", { invitationId: result.durable.id });
     return result.durable;

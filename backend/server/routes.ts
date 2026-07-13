@@ -42,6 +42,10 @@ import { sanitizeErrorMessage } from "./lib/sanitize"; /* v25.32 burndown — it
 // v17 Phase A — chapter scoping store (used by /api/me/chapters).
 import { listChaptersForUser as v17ListChaptersForUser } from "./chaptersStore";
 import { registerProfileRoutes } from "./profileStore";
+/* v26.1.x WAVE 2.5 AVI-A + AVI-B — additive, non-sacred interceptors registered
+ * BEFORE registerProfileRoutes so they run first and delegate to the sacred
+ * profileStore handlers via next(). See server/wave25InvestorProfileRoutes.ts. */
+import { registerWave25InvestorProfileRoutes } from "./wave25InvestorProfileRoutes";
 import { registerInvestorMediaRoutes } from "./investorMediaRoutes"; /* v25.56 Avi item 1a — missing avatar upload route */
 import { registerCommsRoutes } from "./commsStore";
 import { registerCommsTiersRoutes } from "./commsTiersStore";
@@ -91,12 +95,13 @@ import { registerEmailRoutes } from "./emailStore";
 import { registerEmailCampaignRoutes, registerEmailTransportRoutes } from "./emailCampaignStore";
 import { registerAdminPlatformRoutes, appendAdminAudit, getAuditLog } from "./adminPlatformStore";
 import { registerAdminV25Routes } from "./adminV25Store";
-import { createRound as roundsStoreCreate, getRoundsForCompany as roundsStoreForCompany, listRounds as roundsStoreList, getRoundById as roundsStoreGetById, updateRound as roundsStoreUpdate } from "./roundsStore";
+import { createRound as roundsStoreCreate, getRoundsForCompany as roundsStoreForCompany, listRounds as roundsStoreList, getRoundById as roundsStoreGetById, updateRound as roundsStoreUpdate, suggestUniqueRoundName, roundNameExistsForCompany } from "./roundsStore";
 // v25.45 Bug C — durable backing for the LEGACY in-memory invitationStore array.
 import { persistLegacyInvitationStrict, registerLegacyInvitationTarget } from "./legacyInvitationStore";
 // v15 P0-4..P0-11 — real invitation + soft-circle stores.
 import {
   createInvitation as roundInvitationsCreate,
+  renderInvitationEmail as roundInvitationsRenderEmail, /* Wave C3 (2a) — exact-HTML preview */
   redeemInvitation as roundInvitationsRedeem,
   listForRound as roundInvitationsListForRound,
   revokeInvitation as roundInvitationsRevoke,
@@ -147,6 +152,8 @@ import { registerPartnerConsortiumRoutes } from "./partnerConsortiumRoutes";
 // v25.49 Phase-3A — separate Partner Clients CRM (durable stages + activity).
 import { registerPartnerClientCrmRoutes } from "./partnerClientCrmRoutes";
 import { registerSpvEngineRoutes } from "./spvEngineRoutes";
+import { registerPartnerPortfolioCompanyRoutes } from "./partnerPortfolioCompanyRoutes"; /* Wave B1 — Add Portfolio Company */
+import { registerCompanyAttributionRoutes } from "./companyAttributionRoutes"; /* Wave B1 addendum — read-only "Led by" attribution */
 import { seedTestPartnerSandbox } from "./partnerWorkspaceStore";
 // Sprint 28 Wave 6 — Notification Campaigns
 import { registerNotificationCampaignRoutes } from "./notificationCampaignStore";
@@ -548,6 +555,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   /* ------------ Sprint 8: profile store + PATCH endpoints ------------ */
+  /* v26.1.x WAVE 2.5 — interceptors FIRST (per-field partial patch + durable KYC
+   * storage), then the sacred profileStore handlers they delegate into. */
+  registerWave25InvestorProfileRoutes(app);
   registerProfileRoutes(app);
   registerInvestorMediaRoutes(app); /* v25.56 Avi item 1a — POST /api/investors/:id/avatar */
 
@@ -834,6 +844,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Distinct /api/partner/me/spv*, /api/collective/spvs, /api/capavate/spvs,
   // /api/admin/consortium-spv* paths; shadows nothing.
   registerSpvEngineRoutes(app);
+  // Wave B1 (3a) — partner "Add Portfolio Company" create+attribute+invite path.
+  registerPartnerPortfolioCompanyRoutes(app);
+  registerCompanyAttributionRoutes(app);
   // Patch v6 — seed TEST PARTNER sandbox under demo gate only.
   // Production NEVER seeds (DEMO_SEED_ENABLED already enforces production exclusion).
   if (DEMO_SEED_ENABLED) seedTestPartnerSandbox();
@@ -2681,6 +2694,63 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   }
 
   // Founder — create a new invitation. Sends email, NEVER returns raw token.
+  // Wave C3 (Shadie 2a) — EXACT-HTML invitation preview. Returns the same
+  // subject/html/text the investor would receive (rendered via the single
+  // shared renderer), so the founder sees precisely what will be sent before
+  // sending. READ-ONLY: mints NO token, creates NO invitation, sends NO email.
+  // Only the personal note is founder-supplied; round facts (company, round
+  // name) are resolved server-side and are NOT client-overridable. The preview
+  // link is a clearly-labelled placeholder — the real secure token is only
+  // minted at actual send time.
+  // Wave C3 (Shadie 2a) — PRE-CREATE preview for round-creation Step 4, where the
+  // round does not exist yet. Company-scoped + ownership-gated; the round name is
+  // supplied from the wizard draft. Same shared renderer => identical to what the
+  // investor will receive. READ-ONLY: no token, no invite, no email.
+  app.post("/api/companies/:companyId/invitation-preview", requireAuth, (req, res) => {
+    const ctx = req.userContext!;
+    const companyId = paramStr(req.params.companyId);
+    const ownsCompany = ctx.isAdmin || ctx.founder.companies.some((c) => c.companyId === companyId);
+    if (!ownsCompany) return res.status(403).json({ ok: false, error: "FOUNDER_WRONG_COMPANY" });
+    const body = (req.body ?? {}) as { investorName?: unknown; note?: unknown; roundName?: unknown; expiryDays?: unknown };
+    let companyName = "a company";
+    try { const c = getCompanyNameById(companyId); if (c && c.trim()) companyName = c.trim(); } catch { /* fallback */ }
+    const roundName = (typeof body.roundName === "string" && body.roundName.trim()) ? body.roundName.trim() : "a funding round";
+    const preview = roundInvitationsRenderEmail({
+      investorName: typeof body.investorName === "string" ? body.investorName : null,
+      companyName,
+      roundName,
+      link: "https://capavate.com/auth/redeem?token=… (a secure link is generated when you send)",
+      note: typeof body.note === "string" ? body.note : null,
+      expiryDays: typeof body.expiryDays === "number" ? body.expiryDays : null,
+    });
+    return res.json({ ok: true, preview });
+  });
+
+  app.post("/api/rounds/:id/invitations/preview", requireAuth, (req, res) => {
+    const check = requireFounderOwnsRound(req, res);
+    if (!check.ok) return; // requireFounderOwnsRound already sent the response
+    const id = paramStr(req.params.id);
+    const body = (req.body ?? {}) as { investorName?: unknown; note?: unknown; expiryDays?: unknown };
+    let companyName = "a company";
+    let roundName = "a funding round";
+    try { const c = getCompanyNameById(check.companyId ?? ""); if (c && c.trim()) companyName = c.trim(); } catch { /* fallback */ }
+    try { const r = roundsStoreGetById(id); if (r?.name && r.name.trim()) roundName = r.name.trim(); } catch { /* fallback */ }
+    const preview = roundInvitationsRenderEmail({
+      investorName: typeof body.investorName === "string" ? body.investorName : null,
+      companyName,
+      roundName,
+      // Placeholder link for preview ONLY — the real per-invite token is minted
+      // server-side at send time and is never exposed in a preview.
+      link: "https://capavate.com/auth/redeem?token=… (a secure link is generated when you send)",
+      note: typeof body.note === "string" ? body.note : null,
+      // Wave C3 REVISE (GPT-5.5/Opus) — mirror the SEND exactly: the founder's
+      // selected expiry must render in the preview (the send passes the same
+      // expiryDays; when omitted, the renderer's 14-day default applies to BOTH).
+      expiryDays: typeof body.expiryDays === "number" ? body.expiryDays : null,
+    });
+    return res.json({ ok: true, preview });
+  });
+
   app.post("/api/rounds/:id/invitations", requireAuth, async (req, res) => {
     const check = requireFounderOwnsRound(req, res);
     if (!check.ok || !check.companyId || !check.userId) return;
@@ -2826,6 +2896,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         message: "This investor has already accepted the invitation.",
       });
     }
+    // Wave C1 (Shadie 5a) — do NOT resend/remind a REVOKED invitation; return a
+    // typed conflict and send nothing (no email, no token re-mint).
+    if (inv.state === "revoked") {
+      return res.status(409).json({
+        ok: false,
+        error: "invitation_revoked",
+        message: "This invitation has been revoked and cannot be resent.",
+      });
+    }
     try {
       const result = await roundInvitationsResend(invId, check.userId ?? "founder");
       const updated = roundInvitationsGet(invId);
@@ -2840,6 +2919,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const msg = (err as Error).message ?? "";
       if (msg === "invitation_not_found") {
         return res.status(404).json({ ok: false, error: "invitation_not_found" });
+      }
+      // Fail-closed guard from the store (defense in depth with the route check).
+      if (msg === "INVITATION_REVOKED") {
+        return res.status(409).json({ ok: false, error: "invitation_revoked", message: "This invitation has been revoked and cannot be resent." });
       }
       return res.status(500).json({ ok: false, error: "INVITATION_RESEND_FAILED" });
     }
@@ -2857,9 +2940,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (existing.roundId !== paramStr(req.params.id) || (check.companyId && existing.companyId !== check.companyId)) {
       return res.status(404).json({ ok: false, error: "invitation_not_found" });
     }
+    // Wave C1 (Shadie 4a) — a terminal invitation cannot be extended. Revoked
+    // access is gone; an accepted investor no longer needs an expiry. Typed
+    // conflict, no mutation.
+    if (existing.state === "revoked") {
+      return res.status(409).json({ ok: false, error: "invitation_revoked", message: "This invitation has been revoked; its expiry cannot be extended." });
+    }
+    if (existing.state === "accepted") {
+      return res.status(409).json({ ok: false, error: "already_accepted", message: "This investor has already accepted; no expiry extension is needed." });
+    }
     const { expiryDays } = req.body ?? {};
     const extendDays = typeof expiryDays === "number" && expiryDays > 0 ? expiryDays : 14;
-    roundInvitationsExtend(invId, extendDays, check.userId);
+    try {
+      roundInvitationsExtend(invId, extendDays, check.userId);
+    } catch (err) {
+      const msg = (err as Error).message ?? "";
+      if (msg === "INVITATION_REVOKED") return res.status(409).json({ ok: false, error: "invitation_revoked" });
+      if (msg === "INVITATION_ACCEPTED") return res.status(409).json({ ok: false, error: "already_accepted" });
+      return res.status(500).json({ ok: false, error: "INVITATION_EXTEND_FAILED" });
+    }
     const inv = roundInvitationsGet(invId);
     if (!inv) return res.status(404).json({ ok: false, error: "invitation_not_found" });
     return res.json({ ok: true, invitation: inv, extendedDays: extendDays });
@@ -2880,9 +2979,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (existing.roundId !== paramStr(req.params.id) || (check.companyId && existing.companyId !== check.companyId)) {
       return res.status(404).json({ ok: false, error: "invitation_not_found" });
     }
-    roundInvitationsRevoke(invId, check.userId);
+    // Wave C1 (Shadie 3a) — revoking an ALREADY-revoked invitation is a no-op:
+    // return a typed conflict and CRUCIALLY do NOT re-send the revoked
+    // notification (the prior code re-notified the revoked investor).
+    if (existing.state === "revoked") {
+      return res.status(409).json({ ok: false, error: "already_revoked", message: "This invitation has already been revoked." });
+    }
+    try {
+      roundInvitationsRevoke(invId, check.userId);
+    } catch (err) {
+      const msg = (err as Error).message ?? "";
+      if (msg === "ALREADY_REVOKED") return res.status(409).json({ ok: false, error: "already_revoked" });
+      return res.status(500).json({ ok: false, error: "INVITATION_REVOKE_FAILED" });
+    }
     // v25.55 4a — best-effort "round no longer available" notification. A send
     // failure must not fail the revoke (the state change already persisted).
+    // Only fires on a FIRST revoke (already-revoked returned 409 above).
     try {
       await roundInvitationsNotifyRevoked(invId);
     } catch { /* non-fatal */ }
@@ -4147,6 +4259,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // POST /api/rounds — create a round — requireAuth
   // Patch v10 (B-F5): verify caller owns body.companyId.
   // v13 (Avi's Issue 3): persisted to `rounds` SQL table via roundsStore.
+  // Wave C3 (Shadie 7a) — round-name uniqueness helper for the create wizard.
+  // The client calls this to (a) check whether a typed name collides with an
+  // existing round for the company, and (b) get an editable unique suggestion.
+  // Ownership-gated; read-only.
+  app.get("/api/rounds/name-availability", requireAuth, (req, res) => {
+    const ctx = req.userContext!;
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId : "";
+    const name = typeof req.query.name === "string" ? req.query.name : "";
+    if (!companyId) return res.status(400).json({ ok: false, error: "companyId required" });
+    const ownsCompany = ctx.isAdmin || ctx.founder.companies.some((c) => c.companyId === companyId);
+    if (!ownsCompany) return res.status(403).json({ ok: false, error: "FOUNDER_WRONG_COMPANY" });
+    const taken = roundNameExistsForCompany(companyId, name);
+    return res.json({
+      ok: true,
+      available: !taken,
+      suggestedName: taken ? suggestUniqueRoundName(companyId, name) : name.trim(),
+    });
+  });
+
   app.post("/api/rounds", requireAuth, (req, res) => {
     const ctx = req.userContext!;
     const body = req.body ?? {};
@@ -4471,6 +4602,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         extras,
       });
     } catch (err) {
+      const emsg = (err as Error).message ?? "";
+      // Wave C3 (Shadie 7a) — a duplicate round name for this company is a client
+      // conflict, not a server failure. Return 409 with the offending name so the
+      // client can offer the auto-suggested unique alternative.
+      if (emsg === "ROUND_NAME_DUPLICATE") {
+        return res.status(409).json({
+          ok: false,
+          error: "ROUND_NAME_DUPLICATE",
+          message: "A round with this name already exists for this company. Round names must be unique.",
+          suggestedName: suggestUniqueRoundName(companyId, String(body.name ?? "")),
+        });
+      }
+      if (emsg === "ROUND_NAME_REQUIRED") {
+        return res.status(400).json({ ok: false, error: "ROUND_NAME_REQUIRED", message: "Please enter a round name." });
+      }
       // Avi 22-May Issue 3 — surface real DB persistence failures.
       return res.status(500).json({
         ok: false,
