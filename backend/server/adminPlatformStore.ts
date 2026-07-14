@@ -578,6 +578,81 @@ function dbGet(sql: string, ...binds: any[]): any {
 }
 
 /**
+ * W2 Avi#2 (v26.2.0-w2) — admin↔investor profile/KYC RECONCILIATION.
+ *
+ * Root cause (Avi finding #2): the admin investor record reads `users`+`securities`
+ * (and a `derived_inv_<invitationId>` snapshot elsewhere), NEVER the SACRED
+ * profileStore where investors actually save name/bio/tax-id/KYC. So the admin
+ * sees "empty / unverified" even though the investor's edits persisted.
+ *
+ * This helper lives in the NON-SACRED admin layer and only READS:
+ *   - the real investor profile JSON from `profilestore_investor_profile`
+ *     (the table SACRED profileStore writes; we do not import or mutate it),
+ *   - the accreditation status via getAccreditationGateStatus (W2 A2),
+ *   - KYC document descriptors embedded in the profile JSON.
+ * It resolves synthetic `derived_inv_<invitationId>` ids to the real redeemer
+ * userId via the previously-UNUSED `redeemed_by_user_id` join key.
+ * Fail-soft: any read error returns nulls (never throws / never blocks the page).
+ */
+function reconcileInvestorProfileForAdmin(rawId: string): {
+  resolvedUserId: string;
+  profile: Record<string, any> | null;
+  accreditationStatus: "none" | "self_certified" | "verified" | null;
+  kycDocuments: Array<{ id?: string; name?: string; url?: string; uploadedAt?: string }>;
+} {
+  let resolvedUserId = rawId;
+  // Resolve synthetic invitation-derived ids to the real redeemer userId.
+  if (rawId.startsWith("derived_inv_")) {
+    try {
+      const invId = rawId.slice("derived_inv_".length);
+      const inv = dbGet(
+        "SELECT redeemed_by_user_id FROM round_invitations WHERE id = ?",
+        invId,
+      ) as { redeemed_by_user_id: string | null } | undefined;
+      if (inv?.redeemed_by_user_id) resolvedUserId = inv.redeemed_by_user_id;
+    } catch { /* fail-soft */ }
+  }
+
+  let profile: Record<string, any> | null = null;
+  let kycDocuments: Array<{ id?: string; name?: string; url?: string; uploadedAt?: string }> = [];
+  try {
+    const row = dbGet(
+      "SELECT profile_json FROM profilestore_investor_profile WHERE investor_id = ? AND deleted_at IS NULL",
+      resolvedUserId,
+    ) as { profile_json: string } | undefined;
+    if (row?.profile_json) {
+      const parsed = JSON.parse(row.profile_json);
+      // profileStore stores { profile: {...}, ... } or a flat profile; handle both.
+      profile = (parsed && typeof parsed === "object" && parsed.profile && typeof parsed.profile === "object")
+        ? parsed.profile
+        : parsed;
+      const docs = profile && Array.isArray(profile.kycDocuments) ? profile.kycDocuments : [];
+      kycDocuments = docs.filter((d: any) => d && typeof d === "object");
+    }
+  } catch { /* fail-soft: leave profile null */ }
+
+  // Read the denormalized accreditation fast-flag DIRECTLY from the compliance
+  // profile table. A static import of getAccreditationGateStatus would be
+  // circular (investorComplianceRoutes already imports this module), and this
+  // file has no createRequire shim (ESM-only, no new shims per project rules),
+  // so we query the same source table the gate helper reads.
+  let accreditationStatus: "none" | "self_certified" | "verified" | null = null;
+  try {
+    const acc = dbGet(
+      "SELECT accreditation_status FROM investor_compliance_profile WHERE investor_id = ?",
+      resolvedUserId,
+    ) as { accreditation_status: string | null } | undefined;
+    const s = acc?.accreditation_status ?? null;
+    accreditationStatus =
+      s === "verified" || s === "self_certified" ? s
+      : s === null ? null
+      : "none";
+  } catch { accreditationStatus = null; }
+
+  return { resolvedUserId, profile, accreditationStatus, kycDocuments };
+}
+
+/**
  * MoM growth / churn / NRR from subscriptions + subscriptions_history.
  * Returns null for any metric that cannot be computed from real history
  * (so the UI shows "N/A — historical data not available" instead of a lie).
@@ -1290,10 +1365,31 @@ export function registerAdminPlatformRoutes(app: Express): void {
     // 404 when the id is unknown.
     const id = req.params.id;
     try {
-      const u = dbGet(
+      // W2 Avi#2 (verifier round-1 fix) — resolve FIRST. A synthetic
+      // `derived_inv_<invitationId>` admin id has no row in `users`, so the old
+      // code 404'd BEFORE reconciliation ever ran — defeating the fix for the
+      // exact case Avi hit (admin viewing a derived_inv_ contact). We now run
+      // reconciliation first (it resolves derived_inv_ → real redeemer userId
+      // via redeemed_by_user_id and reads the real profile/KYC), then look up
+      // the RESOLVED user. 404 only when neither the raw nor resolved id maps to
+      // a user AND no investor profile exists.
+      const reconciled = reconcileInvestorProfileForAdmin(String(id));
+      let u = dbGet(
         `SELECT id, COALESCE(name, email, id) AS name, email, role FROM users WHERE id = ? AND deleted_at IS NULL`,
         id,
       ) as { id: string; name: string; email: string | null; role: string } | undefined;
+      if (!u && reconciled.resolvedUserId && reconciled.resolvedUserId !== id) {
+        u = dbGet(
+          `SELECT id, COALESCE(name, email, id) AS name, email, role FROM users WHERE id = ? AND deleted_at IS NULL`,
+          reconciled.resolvedUserId,
+        ) as { id: string; name: string; email: string | null; role: string } | undefined;
+      }
+      // Synthesize a minimal user shell when the id resolved to a real profile
+      // but no users row exists (e.g. invitation redeemed but user record not
+      // yet materialized) so the admin still sees the reconciled data.
+      if (!u && reconciled.profile) {
+        u = { id: reconciled.resolvedUserId, name: reconciled.resolvedUserId, email: null, role: "investor" };
+      }
       if (!u) return res.status(404).json({ ok: false, error: "not_found" });
       // Holdings: securities rows whose holder matches this user's id/name/email.
       let holdings: { companyId: string; company: string; ownershipPct: number | null; valueUsd: number | null; instrument: string }[] = [];
@@ -1316,9 +1412,33 @@ export function registerAdminPlatformRoutes(app: Express): void {
         log.warn("[adminPlatformStore.investors.byId.holdings] DB read failed:", (err as Error).message);
         throw new DbUnavailableError("investor holdings", err);
       }
+      // W2 Avi#2 — reconciled profile/KYC (resolved above, before the users
+      // lookup) drives the response so the admin record reflects what the
+      // investor actually saved instead of "empty / unverified".
+      const rp = reconciled.profile ?? {};
+      const reconciledName =
+        [rp.firstName, rp.lastName].filter(Boolean).join(" ").trim() ||
+        (typeof rp.name === "string" ? rp.name : "") || u.name;
+
       return res.json({
         id: u.id,
-        profile: { name: u.name, region: null, tier: null, checkSizeUsd: null, accreditation: null },
+        resolvedUserId: reconciled.resolvedUserId,
+        profile: {
+          name: reconciledName,
+          region: (rp.region ?? rp.jurisdiction ?? null) as string | null,
+          tier: (rp.tier ?? null) as string | null,
+          checkSizeUsd: (typeof rp.checkSizeUsd === "number" ? rp.checkSizeUsd : null),
+          accreditation: reconciled.accreditationStatus,
+          bio: (typeof rp.bio === "string" ? rp.bio : null),
+          taxId: (typeof rp.taxId === "string" ? rp.taxId : null),
+        },
+        // W2 Avi#2 — surface the investor's KYC documents in the admin record
+        // (previously invisible: uploads went to profileStore, admin never read it).
+        kyc: {
+          status: reconciled.accreditationStatus === null && reconciled.kycDocuments.length === 0
+            ? "unknown" : (reconciled.kycDocuments.length > 0 ? "documents_on_file" : "none"),
+          documents: reconciled.kycDocuments,
+        },
         holdings,
         softCircleHistory: [],          // no per-investor soft-circle history source this wave
         committedUsd: null,

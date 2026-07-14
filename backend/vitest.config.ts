@@ -53,9 +53,18 @@ export default defineConfig({
     include: [
       "packages/*/test/**/*.test.ts",
       "client/src/**/*.test.ts",
+      // W2M — client component tests (New-DM picker, identity-display safety)
+      // render with @testing-library/react and need jsdom (see `environment`
+      // below). Pure-TS tests are unaffected by jsdom being available.
+      "client/src/**/*.test.tsx",
       "shared/**/*.test.ts",
       "server/**/*.test.ts",
     ],
+    // W2M — default remains "node" (matches historical baseline for the
+    // 500+ existing server/shared/packages tests); only the new client
+    // component tests opt into jsdom via environmentMatchGlobs below, so
+    // nothing about the existing suite's environment changes.
+    environmentMatchGlobs: [["client/src/**/*.test.tsx", "jsdom"]],
     // v25.20 Lane 3 — see _fixtures/vitestRequireShim.ts. Teaches Node's CJS
     // require() resolver to find relative `.ts` modules used by lazy
     // require("./store") cycle-breakers, which Vitest otherwise can't resolve.

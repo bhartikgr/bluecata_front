@@ -273,6 +273,74 @@ function applyInlineMigrations(db: any) {
    * (CREATE TABLE / INDEX IF NOT EXISTS). No FKs to Avi-owned / money-core
    * tables and NEVER touches Airwallex/payments or the cap-table ledger. */
   applyC1cSpvLaunchSignoffSchema(db);
+
+  /* v26.2.0 W1 H6 — fail-closed membership deactivation queue. Boot-safe +
+   * idempotent so the gate can deny access while a deactivation is pending on a
+   * fresh boot / :memory: test DB, before the migrate runner runs. Additive only.
+   * State-table only; NEVER touches Airwallex/payments or the cap-table ledger. */
+  applyH6MembershipDeactivationQueueSchema(db);
+
+  /* v26.2.0 W2 A3/A4 (0110) — durable cap_table_exempt column on
+   * collective_memberships for admin-bootstrapped members who bypass the
+   * cap-table sub-check. Boot-safe + idempotent (ADD COLUMN wrapped; duplicate
+   * column tolerated). Additive only; NEVER touches Airwallex/payments or the
+   * cap-table ledger. */
+  applyW2CapTableExemptSchema(db);
+}
+
+/* v26.2.0 W2 A3/A4 — mirrors migrations/0110_collective_membership_captable_exempt.sql.
+ * SQLite ADD COLUMN has no IF NOT EXISTS, so we swallow the duplicate-column error. */
+function applyW2CapTableExemptSchema(db: any) {
+  try {
+    db.exec(
+      "ALTER TABLE collective_memberships ADD COLUMN cap_table_exempt INTEGER NOT NULL DEFAULT 0",
+    );
+  } catch (e: any) {
+    const msg = String(e?.message ?? e);
+    // Idempotent: already present (self-heal re-run / fresh CREATE already has it).
+    if (!/duplicate column name|no such table/i.test(msg)) {
+      throw e;
+    }
+  }
+  try {
+    db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_collective_memberships_cap_table_exempt ON collective_memberships(cap_table_exempt)",
+    );
+  } catch { /* index create is best-effort; table may not exist yet on a bare DB */ }
+}
+
+/* v26.2.0 W1 H6 — see call-site comment above. Boot-safe + idempotent.
+ * Mirrors migrations/0109_collective_membership_deactivation_queue.sql in shape. */
+function applyH6MembershipDeactivationQueueSchema(db: any) {
+  const stmts: string[] = [
+    `CREATE TABLE IF NOT EXISTS collective_membership_deactivation_queue (
+       id TEXT PRIMARY KEY,
+       billing_id TEXT,
+       user_id TEXT NOT NULL,
+       target_status TEXT NOT NULL CHECK (target_status IN ('cancelled', 'past_due')),
+       source TEXT NOT NULL,
+       reason TEXT,
+       attempts INTEGER NOT NULL DEFAULT 0,
+       next_attempt_at TEXT NOT NULL,
+       last_error TEXT,
+       resolved_at TEXT,
+       created_at TEXT NOT NULL,
+       updated_at TEXT NOT NULL
+     );`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS uq_collective_deactivation_open_user_status
+       ON collective_membership_deactivation_queue(user_id, target_status)
+       WHERE resolved_at IS NULL;`,
+    `CREATE INDEX IF NOT EXISTS idx_collective_deactivation_next
+       ON collective_membership_deactivation_queue(resolved_at, next_attempt_at);`,
+    `CREATE INDEX IF NOT EXISTS idx_collective_deactivation_user
+       ON collective_membership_deactivation_queue(user_id, resolved_at);`,
+  ];
+  try {
+    const tx = db.transaction(() => { for (const sql of stmts) db.exec(sql); });
+    tx();
+  } catch (err) {
+    log.warn("[db] v26.2.0 W1 H6 membership deactivation queue bootstrap failed (continuing):", (err as Error).message);
+  }
 }
 
 /* v26.1.x ENH-1 — see call-site comment above. Boot-safe + idempotent.
@@ -2330,6 +2398,7 @@ function buildProductionTableStatements(): string[] {
       activated_by TEXT NOT NULL,
       deactivated_at TEXT,
       deactivated_by TEXT,
+      cap_table_exempt INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT,
       deleted_at TEXT

@@ -50,6 +50,7 @@ import type { InvestorProfile } from "@/lib/profile/types";
 import { screenNameSchema, deriveInvestorKycVariant } from "@/lib/profile/types";
 import { AccreditationForm } from "@/components/AccreditationForm";
 import { AccreditationDeclaration } from "@/components/investor/AccreditationDeclaration"; /* v26.1.x AVI-ACCRED */
+import { OptionalKycUploadCard } from "@/components/collective/OptionalKycUploadCard"; /* W2 A6 */
 import { useEntitlement } from "@/lib/entitlement";
 
 const STEPS = [
@@ -841,6 +842,11 @@ function Step2Profile({
           keyed off the authed session userId. */}
       <div className="mt-4" data-testid="profile-accreditation-declaration">
         <AccreditationDeclaration />
+      </div>
+      {/* W2 A6 — optional KYC document upload convenience, mounted near the
+          accreditation card. Never gates Collective access. */}
+      <div className="mt-4">
+        <OptionalKycUploadCard />
       </div>
     </div>
   );

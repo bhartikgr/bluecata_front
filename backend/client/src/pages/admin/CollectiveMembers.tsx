@@ -166,7 +166,12 @@ export default function CollectiveMembers() {
                   {members.map((m) => (
                     <tr key={m.userId} className="border-b hover:bg-slate-50" data-testid={`row-${m.userId}`}>
                       <td className="px-4 py-2">
-                        <div className="font-medium" data-testid={`member-name-${m.userId}`}>{m.userName || "—"}</div>
+                        {/* W3.2 — the name slot must never render an email or a raw
+                            "u_..." id; the server already resolves userName strictly,
+                            but fall back to "Pending member" defensively here too. */}
+                        <div className="font-medium" data-testid={`member-name-${m.userId}`}>
+                          {m.userName && !/^u_/.test(m.userName) && !m.userName.includes("@") ? m.userName : "Pending member"}
+                        </div>
                         <div className="font-mono text-[10px] text-muted-foreground">{m.userId}</div>
                       </td>
                       <td className="px-4 py-2" data-testid={`member-email-${m.userId}`}>{m.userEmail || "—"}</td>

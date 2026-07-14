@@ -32,6 +32,13 @@ export type CollectiveMembershipRow = {
   activatedBy: string; // admin userId
   deactivatedAt: string | null;
   deactivatedBy: string | null;
+  /**
+   * W2 A3 (0110) — durable admin-bypass flag. When true, the member was
+   * admin-bootstrapped and bypasses the cap-table sub-check in the gate. Does
+   * NOT bypass auth, active-membership, accreditation capture, chapter, or
+   * partner-only redirect. Defaults false for organic (cap-table) members.
+   */
+  capTableExempt: boolean;
   /** v17 Phase B — chapter scoping. */
   chapterId?: string;
   tenantId?: string;
@@ -43,11 +50,17 @@ export function activate(
   userId: string,
   byAdminUserId: string,
   tier: "standard" | "plus" = "standard",
-  opts?: { chapterId?: string },
+  opts?: { chapterId?: string; capTableExempt?: boolean },
 ): CollectiveMembershipRow {
   const chapterId = opts?.chapterId ?? DEFAULT_CHAPTER_ID;
   const tenantId = `tenant_chap_${chapterId}`;
   const now = new Date().toISOString();
+  // W2 A3 — default false; caller (bootstrap) passes true. Re-activation without
+  // an explicit flag preserves an existing exemption (see merge below).
+  const existingExempt = (() => {
+    try { return get(userId)?.capTableExempt === true; } catch { return false; }
+  })();
+  const capTableExempt = opts?.capTableExempt ?? existingExempt;
   const row: CollectiveMembershipRow = {
     userId,
     status: "active",
@@ -56,6 +69,7 @@ export function activate(
     activatedBy: byAdminUserId,
     deactivatedAt: null,
     deactivatedBy: null,
+    capTableExempt,
     chapterId,
     tenantId,
   };
@@ -80,6 +94,7 @@ export function activate(
           activatedBy: byAdminUserId,
           deactivatedAt: null,
           deactivatedBy: null,
+          capTableExempt: capTableExempt ? 1 : 0,
           createdAt: now,
           updatedAt: now,
         } as any).run();
@@ -94,6 +109,7 @@ export function activate(
             activatedBy: byAdminUserId,
             deactivatedAt: null,
             deactivatedBy: null,
+            capTableExempt: capTableExempt ? 1 : 0,
             updatedAt: now,
           } as any)
           .where(eq((collectiveMembershipsTable as any).userId, userId))
@@ -172,9 +188,12 @@ export function deactivate(userId: string, byAdminUserId: string): CollectiveMem
  */
 function readMembershipFromDb(userId: string): CollectiveMembershipRow | null {
   try {
+    // W2 A3 — SELECT * so a DB that has not yet self-healed the cap_table_exempt
+    // column (older row / mid-migration) does not throw "no such column"; we
+    // read the field defensively below (undefined => false).
     const r: any = rawDb()
       .prepare(
-        "SELECT user_id, tenant_id, chapter_id, status, tier, activated_at, activated_by, deactivated_at, deactivated_by FROM collective_memberships WHERE user_id = ? AND deleted_at IS NULL",
+        "SELECT * FROM collective_memberships WHERE user_id = ? AND deleted_at IS NULL",
       )
       .get(userId);
     if (!r) return null;
@@ -186,6 +205,7 @@ function readMembershipFromDb(userId: string): CollectiveMembershipRow | null {
       activatedBy: r.activated_by,
       deactivatedAt: r.deactivated_at ?? null,
       deactivatedBy: r.deactivated_by ?? null,
+      capTableExempt: r.cap_table_exempt === 1 || r.cap_table_exempt === true,
       chapterId: r.chapter_id,
       tenantId: r.tenant_id,
     };
@@ -260,6 +280,9 @@ export function listActive(): CollectiveMembershipRow[] {
         activatedBy: r.activated_by ?? r.activatedBy ?? "",
         deactivatedAt: r.deactivated_at ?? r.deactivatedAt ?? null,
         deactivatedBy: r.deactivated_by ?? r.deactivatedBy ?? null,
+        capTableExempt:
+          r.cap_table_exempt === 1 || r.cap_table_exempt === true ||
+          r.capTableExempt === 1 || r.capTableExempt === true,
         chapterId: r.chapter_id ?? r.chapterId,
         tenantId: r.tenant_id ?? r.tenantId,
       };
@@ -290,7 +313,7 @@ export function listAll(): CollectiveMembershipRow[] {
   try {
     const rows = rawDb()
       .prepare(
-        "SELECT user_id, tenant_id, chapter_id, status, tier, activated_at, activated_by, deactivated_at, deactivated_by FROM collective_memberships WHERE deleted_at IS NULL",
+        "SELECT * FROM collective_memberships WHERE deleted_at IS NULL",
       )
       .all() as any[];
     for (const r of rows) {
@@ -304,6 +327,7 @@ export function listAll(): CollectiveMembershipRow[] {
           activatedBy: r.activated_by,
           deactivatedAt: r.deactivated_at ?? null,
           deactivatedBy: r.deactivated_by ?? null,
+          capTableExempt: r.cap_table_exempt === 1 || r.cap_table_exempt === true,
           chapterId: r.chapter_id,
           tenantId: r.tenant_id,
         });
@@ -340,6 +364,9 @@ export async function hydrateCollectiveMembershipStore(): Promise<void> {
         activatedBy: r.activated_by ?? r.activatedBy,
         deactivatedAt: r.deactivated_at ?? r.deactivatedAt ?? null,
         deactivatedBy: r.deactivated_by ?? r.deactivatedBy ?? null,
+        capTableExempt:
+          r.cap_table_exempt === 1 || r.cap_table_exempt === true ||
+          r.capTableExempt === 1 || r.capTableExempt === true,
         chapterId: r.chapter_id ?? r.chapterId,
         tenantId: r.tenant_id ?? r.tenantId,
       };

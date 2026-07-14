@@ -21,6 +21,7 @@ import {
 import { DollarSign, Plus, Trash2 } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { labelFor, FEE_KIND_LABELS } from "@/lib/collectiveLabels"; /* W3.6 */
 
 interface FeeScheduleRow {
   id: string;
@@ -218,8 +219,8 @@ export default function PartnerFeeSchedules() {
                 <TableBody>
                   {rows.map((r) => (
                     <TableRow key={r.id} data-testid={`row-fee-${r.id}`}>
-                      <TableCell className="font-medium">{r.fee_kind}</TableCell>
-                      <TableCell>{r.tier ? <Badge variant="secondary">{r.tier}</Badge> : <span className="text-muted-foreground">platform</span>}</TableCell>
+                      <TableCell className="font-medium">{labelFor(FEE_KIND_LABELS, r.fee_kind)}</TableCell>
+                      <TableCell>{r.tier ? <Badge variant="secondary">{labelFor({}, r.tier)}</Badge> : <span className="text-muted-foreground">Platform</span>}</TableCell>
                       <TableCell>{fmtMoney(r.amount_minor, r.currency)}</TableCell>
                       <TableCell className="text-xs text-muted-foreground">{fmtBand(r.size_band_min, r.size_band_max, r.currency)}</TableCell>
                       <TableCell className="text-xs">{new Date(r.effective_from).toLocaleDateString()}</TableCell>

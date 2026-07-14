@@ -12,6 +12,7 @@
  */
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
+import { safePersonDisplayName } from "@/lib/personName"; /* W3.2 — never render email/opaque id as a person name */
 
 export interface MeResponse {
   isAuthed?: boolean;
@@ -32,14 +33,16 @@ export function useMe() {
   });
 }
 
-/** Resolve a friendly display name from the me payload. */
+/** Resolve a friendly display name from the me payload. W3.2 — guarded so an
+ *  email-like or raw opaque-id value can never surface as the dashboard
+ *  greeting; falls through candidates in priority order, then "Member". */
 export function meDisplayName(m?: MeResponse): string {
-  return (
-    m?.identity?.displayName ||
-    m?.identity?.name ||
-    m?.name ||
-    "Member"
-  );
+  const candidates = [m?.identity?.displayName, m?.identity?.name, m?.name];
+  for (const c of candidates) {
+    const safe = safePersonDisplayName(c, "");
+    if (safe) return safe;
+  }
+  return "Member";
 }
 
 export type BadgeKey =

@@ -22,6 +22,10 @@ import { maySendOutboundBridge } from "./lib/bridgeOutboundGuard"; /* v25.48.2 M
 import { startCollectiveRenewalWorker, isRenewalWorkerEnabled } from "./lib/collectiveRenewalWorker";
 import { hydrateBridgeStore } from "./bridgeStore";
 import { hydrateAllStores } from "./lib/hydrateStores";
+// W3 #9 — privacy resolver bridge (NON-SACRED). Mirrors
+// privacy.visibility.changed outbox events (emitted by sacred profileStore.ts)
+// into the sacred resolver's profilestore_user_privacy table.
+import { registerPrivacyVisibilityBridge, startPrivacyVisibilityBridgeWorker } from "./privacyVisibilityBridge";
 // Sprint-fix May 14 2026 — wire the catch-all route guard AFTER registerRoutes.
 import { applyRouteGuards } from "./lib/applyRouteGuards";
 import { originAllowlistForWrites } from "./middleware/security";
@@ -133,6 +137,21 @@ app.use((req, res, next) => {
 
   // KL-04: Hydrate in-memory stores from DB on startup (no-op in sandbox)
   await hydrateAllStores();
+
+  // W3 #9 — mirror any not-yet-processed privacy.visibility.changed outbox
+  // events (emitted by sacred profileStore.ts) into the sacred resolver's
+  // profilestore_user_privacy table. Registered at startup like
+  // hydrateBridgeStore(); fail-closed — logs + continues, never blocks boot.
+  try {
+    registerPrivacyVisibilityBridge();
+    // W3 #9 (live consumption) — profileStore only appends to its outbox on the
+    // live PATCH path, so a single startup drain misses post-boot changes.
+    // Start a production-gated, unref'd drain tick so live privacy changes are
+    // mirrored into the sacred resolver within one tick, not only on restart.
+    startPrivacyVisibilityBridgeWorker();
+  } catch (err) {
+    log(`privacy visibility bridge failed (non-fatal): ${(err as Error).message}`, "privacy-bridge");
+  }
 
   // v23.4.1 Task J — Boot-time migration drift check.
   // Runs db_doctor logic inline (not via child_process) to avoid startup overhead.

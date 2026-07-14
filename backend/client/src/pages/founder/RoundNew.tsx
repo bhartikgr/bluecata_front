@@ -132,6 +132,9 @@ type WizardInitialShareholder = {
  // Wave C3 (Shadie 2a) — optional personal note added to this investor's
  // invitation email (message only; never the round terms).
  note?: string | null;
+ // W3 Shadie 3a — optional stage focus + invite expiry (days) for manual picks.
+ stageFocus?: string | null;
+ expiryDays?: number | null;
  source: "crm" | "manual";
  crmContactId?: string;
 };
@@ -287,7 +290,10 @@ export default function RoundNew() {
  const [manualOpen, setManualOpen] = useState(false);
  // Wave C3 (Shadie 2a) — optional personal note added to the standard invitation
  // email for this manually-added investor (only the message; not the terms).
- const [manualDraft, setManualDraft] = useState<{ firstName: string; lastName: string; company: string; email: string; checkSize: string; note: string }>({ firstName: "", lastName: "", company: "", email: "", checkSize: "", note: "" });
+ // W3 Shadie 3a — manual-investor draft now also carries stageFocus (optional)
+ // and expiryDays (invite window; default 14). expiryDays is a string in the
+ // draft for the <select>, coerced to a number on add.
+ const [manualDraft, setManualDraft] = useState<{ firstName: string; lastName: string; company: string; email: string; checkSize: string; note: string; stageFocus: string; expiryDays: string }>({ firstName: "", lastName: "", company: "", email: "", checkSize: "", note: "", stageFocus: "", expiryDays: "14" });
  // Exact-HTML preview of the invitation email for the manual dialog.
  const [manualPreviewHtml, setManualPreviewHtml] = useState<string | null>(null);
  // Wave C3 (Shadie 7a) — round-name uniqueness hint. When the typed name
@@ -403,6 +409,9 @@ export default function RoundNew() {
  // Wave C3 (Shadie 2a) — carry the personal note so the server injects it
  // into this investor's invitation email.
  note: s.note ?? null,
+ // W3 Shadie 3a — carry stage focus + invite expiry into the invitation.
+ stageFocus: s.stageFocus ?? null,
+ expiryDays: s.expiryDays ?? null,
  source: s.source,
  crmContactId: s.crmContactId ?? null,
  })),
@@ -415,11 +424,22 @@ export default function RoundNew() {
  const invited = inviteSummary?.invited ?? 0;
  const noEmail = inviteSummary?.skippedNoEmail ?? 0;
  const failed = inviteSummary?.inviteErrors?.length ?? 0;
- const parts: string[] = [`Round ${data.id} is now active.`];
+ // W3 Shadie 5a — on the "Upload my own term sheet" path, do NOT declare the
+ // round "active": the founder's mental model is that the round finalizes after
+ // the term sheet is uploaded. Use upload-forward copy there; keep the "active"
+ // copy for the skip/generate paths.
+ const isUploadPath = termsheetChoice === "upload";
+ const parts: string[] = [isUploadPath ? "Next: upload your term sheet." : `Round ${data.id} is now active.`];
  if (invited > 0) parts.push(`${invited} investor${invited === 1 ? "" : "s"} invited by email.`);
  if (noEmail > 0) parts.push(`${noEmail} added without an email (no invite sent).`);
  if (failed > 0) parts.push(`${failed} invitation${failed === 1 ? "" : "s"} could not be sent.`);
- toast({ title: "Round created", description: parts.join(" "), variant: failed > 0 ? "destructive" : undefined });
+ toast({
+  title: isUploadPath ? "Almost done — upload your term sheet" : "Round created",
+  description: isUploadPath
+   ? `Once your term sheet is uploaded, the round will be created.${parts.length > 1 ? " " + parts.slice(1).join(" ") : ""}`
+   : parts.join(" "),
+  variant: failed > 0 ? "destructive" : undefined,
+ });
  // Shadie V6 7a — respect the Step-5 term-sheet choice. "upload" routes
  // straight to the term-sheet page WITH ?action=upload so it lands directly on
  // the Upload panel (Generate was removed entirely per Ozan). "skip" goes to
@@ -438,9 +458,9 @@ export default function RoundNew() {
    const payload = err.payload as { suggestedName?: string } | undefined;
    if (payload?.suggestedName) {
     update("name", payload.suggestedName);
-    setRoundNameHint(`That round name is already in use. Renamed to “${payload.suggestedName}” — review and create again.`);
+    setRoundNameHint(`That round name is already in use at this stage. Renamed to “${payload.suggestedName}” — review and create again.`);
    }
-   toast({ title: "Round name already used", description: "Round names must be unique for a company. We suggested a unique name — review and create again.", variant: "destructive" });
+   toast({ title: "Round name already used", description: "Round names must be unique within a stage. We suggested a unique name — review and create again.", variant: "destructive" });
    return;
   }
   // v24.1 Bug B (Avi #2): surface server field-level validation errors so the
@@ -588,8 +608,13 @@ export default function RoundNew() {
  };
  const openDateMalformed = badYear(form.openDate);
  const closeDateMalformed = badYear(form.closeDate);
+ // W3 Shadie 1a (Ozan spec) — BOTH Open date and Target close date are now
+ // MANDATORY. Previously an empty date passed every check (badYear("")===false,
+ // dateRangeInvalid needs both present) so Step 3 advanced with blank dates.
+ const openDateMissing = !(form.openDate ?? "").trim();
+ const closeDateMissing = !(form.closeDate ?? "").trim();
  const scheduleInvalid =
- dateRangeInvalid || openDateMalformed || closeDateMalformed;
+ dateRangeInvalid || openDateMalformed || closeDateMalformed || openDateMissing || closeDateMissing;
 
  // v25.53 1a / N2 / N3 — per-vehicle required-field validation for Step 2
  // (Terms). Previously Continue advanced with empty price/shares and the step
@@ -1037,8 +1062,8 @@ export default function RoundNew() {
 
  {step === 3 && (
  <div className="grid md:grid-cols-2 gap-5">
- <div><Label>Open date</Label><Input type="date" className={`mt-1 ${openDateMalformed ? "border-rose-500 focus-visible:ring-rose-500" : ""}`} value={form.openDate} onChange={e => update("openDate", e.target.value)} data-testid="input-open" />{openDateMalformed && <p className="text-xs text-rose-500 mt-1" data-testid="open-date-malformed">Enter a valid date with a 4-digit year.</p>}</div>
- <div><Label>Target close date</Label><Input type="date" className={`mt-1 ${(dateRangeInvalid || closeDateMalformed) ? "border-rose-500 focus-visible:ring-rose-500" : ""}`} value={form.closeDate} onChange={e => update("closeDate", e.target.value)} data-testid="input-close" />{closeDateMalformed && <p className="text-xs text-rose-500 mt-1" data-testid="close-date-malformed">Enter a valid date with a 4-digit year.</p>}</div>
+ <div><Label className="flex items-center gap-1">Open date <span className="text-rose-500">*</span></Label><Input type="date" className={`mt-1 ${(openDateMalformed || openDateMissing) ? "border-rose-500 focus-visible:ring-rose-500" : ""}`} value={form.openDate} onChange={e => update("openDate", e.target.value)} data-testid="input-open" />{openDateMalformed ? <p className="text-xs text-rose-500 mt-1" data-testid="open-date-malformed">Enter a valid date with a 4-digit year.</p> : openDateMissing ? <p className="text-xs text-rose-500 mt-1" data-testid="open-date-required">Open date is required.</p> : null}</div>
+ <div><Label className="flex items-center gap-1">Target close date <span className="text-rose-500">*</span></Label><Input type="date" className={`mt-1 ${(dateRangeInvalid || closeDateMalformed || closeDateMissing) ? "border-rose-500 focus-visible:ring-rose-500" : ""}`} value={form.closeDate} onChange={e => update("closeDate", e.target.value)} data-testid="input-close" />{closeDateMalformed ? <p className="text-xs text-rose-500 mt-1" data-testid="close-date-malformed">Enter a valid date with a 4-digit year.</p> : closeDateMissing ? <p className="text-xs text-rose-500 mt-1" data-testid="close-date-required">Target close date is required.</p> : null}</div>
  {dateRangeInvalid && (
  <p className="md:col-span-2 text-xs text-rose-500" data-testid="date-range-error">Target close date must be on or after the open date.</p>
  )}
@@ -1155,6 +1180,32 @@ export default function RoundNew() {
  <Input className="mt-1" value={manualDraft.note} onChange={(e) => { setManualDraft({ ...manualDraft, note: e.target.value }); setManualPreviewHtml(null); }} placeholder="Great meeting you at the event last week…" data-testid="input-manual-note" />
  <p className="text-[11px] text-muted-foreground mt-1">Added to the standard invitation email. Only your message — not the terms, duration or round name.</p>
  </div>
+ {/* W3 Shadie 3a — Stage focus (optional) + Expires in (days). Both are
+     threaded into the round invitation issued on round creation. */}
+ <div>
+ <Label>Stage focus (optional)</Label>
+ <Input className="mt-1" value={manualDraft.stageFocus} onChange={(e) => setManualDraft({ ...manualDraft, stageFocus: e.target.value })} placeholder="e.g. Seed–Series A, deep tech" data-testid="input-manual-stage-focus" />
+ </div>
+ <div>
+ <Label>Expires in</Label>
+ <Select value={manualDraft.expiryDays} onValueChange={(v) => setManualDraft({ ...manualDraft, expiryDays: v })}>
+ <SelectTrigger className="mt-1" data-testid="select-manual-expiry"><SelectValue /></SelectTrigger>
+ <SelectContent>
+ {[7, 14, 30, 60, 90].map((d) => (
+ <SelectItem key={d} value={String(d)}>{d} days</SelectItem>
+ ))}
+ </SelectContent>
+ </Select>
+ {/* Show BOTH the number of days AND the actual calendar date (Ozan). */}
+ <p className="text-[11px] text-muted-foreground mt-1" data-testid="manual-expiry-hint">
+ {(() => {
+ const d = Number(manualDraft.expiryDays) || 14;
+ const dt = new Date(Date.now() + d * 24 * 60 * 60 * 1000);
+ const cal = dt.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+ return `${d} days · expires ${cal}`;
+ })()}
+ </p>
+ </div>
  {/* Exact-HTML preview of the email this investor will receive. */}
  <div>
  <Button type="button" variant="outline" size="sm" data-testid="button-preview-manual-invite"
@@ -1186,8 +1237,8 @@ export default function RoundNew() {
  onClick={() => {
  const first = manualDraft.firstName.trim();
  const last = manualDraft.lastName.trim();
- setSelectedShareholders((prev) => [...prev, { name: `${first} ${last}`.trim(), firstName: first, lastName: last, company: manualDraft.company.trim(), email: manualDraft.email.trim(), checkSize: manualDraft.checkSize.trim(), note: manualDraft.note.trim() || null, source: "manual" }]);
- setManualDraft({ firstName: "", lastName: "", company: "", email: "", checkSize: "", note: "" });
+ setSelectedShareholders((prev) => [...prev, { name: `${first} ${last}`.trim(), firstName: first, lastName: last, company: manualDraft.company.trim(), email: manualDraft.email.trim(), checkSize: manualDraft.checkSize.trim(), note: manualDraft.note.trim() || null, stageFocus: manualDraft.stageFocus.trim() || null, expiryDays: Number(manualDraft.expiryDays) || 14, source: "manual" }]);
+ setManualDraft({ firstName: "", lastName: "", company: "", email: "", checkSize: "", note: "", stageFocus: "", expiryDays: "14" });
  setManualPreviewHtml(null);
  setManualOpen(false);
  }}

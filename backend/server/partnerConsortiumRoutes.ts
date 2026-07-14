@@ -34,9 +34,12 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 
 import { randomBytes } from "node:crypto";
+import { z } from "zod";
 import type { Express, Request, Response } from "express";
 import { requirePartnerAuth, requirePartnerSubrole } from "./lib/requirePartnerAuth";
 import { requireSignedAgreement } from "./lib/requireSignedAgreement";
+import { getUserContext } from "./lib/userContext";
+import { getCompanyRecordById } from "./multiCompanyStore";
 import { rawDb } from "./db/connection";
 import { partnerFundsStore } from "./partnerWorkspaceStore";
 import type { PartnerTier } from "./adminContactsStoreShim";
@@ -630,34 +633,50 @@ export function registerPartnerConsortiumRoutes(app: Express): void {
   /* ==========================================================
    * POST /api/partner/me/soft-circles/source
    *
-   * Admin/test helper: tag a soft_circle as sourced by this partner.
-   * Creates a synthetic funded soft_circle for billing/P&L testing.
-   * Auth: managing_partner only.
+   * Admin/test helper: create a synthetic funded soft_circle for billing/P&L
+   * testing (source_type='partner', collective_visible=1).
+   *
+   * W1 H5 (v26.2.0) — SECURITY: this route USED to be exposed to any
+   * managing_partner and validated only that amountMinor was a number, letting a
+   * production partner mint synthetic FUNDED, collective-visible rows that pollute
+   * funded totals / P&L and bypass the canonical commit path. It is now
+   * ADMIN-ONLY with strict validation. No client/test consumes the old partner
+   * behaviour, so this is a clean lock-down (no functionality legitimately lost).
+   * The route path is unchanged for backward-compatible denial; non-admins get 403.
    * ========================================================== */
+  const softCircleSourceSchema = z.object({
+    partnerId: z.string().trim().min(1),
+    amountMinor: z.number().int().positive().max(100_000_000_000),
+    currency: z.enum(["USD", "CAD", "GBP", "EUR", "SGD"]),
+    status: z.enum(["soft_circled", "confirmed", "committed", "funded"]),
+    companyId: z.string().trim().min(1),
+  }).strict();
+
   app.post(
     "/api/partner/me/soft-circles/source",
-    requirePartnerAuth,
-    requirePartnerSubrole(["managing_partner"]),
-    requireSignedAgreement,
     (req: Request, res: Response) => {
-      const ctx = req.partnerContext!;
-      const pid  = ctx.partnerId;
-      const { amountMinor, currency, status, companyId } = req.body ?? {};
+      // Admin-only: authenticate + require platform admin BEFORE anything else.
+      const uctx = getUserContext(req);
+      if (!uctx?.isAuthed) return res.status(401).json({ error: "AUTH_REQUIRED" });
+      if (!uctx.isAdmin) return res.status(403).json({ error: "ADMIN_REQUIRED" });
 
-      if (typeof amountMinor !== "number") {
-        return res.status(400).json({ error: "BAD_REQUEST", message: "amountMinor (integer) required" });
+      const parsed = softCircleSourceSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res.status(400).json({ error: "INVALID_SOFT_CIRCLE_SOURCE", issues: parsed.error.flatten() });
+      }
+      const { partnerId: pid, amountMinor, currency: cur, status: st, companyId: compId } = parsed.data;
+
+      // Company must exist (minimum visibility proof) before minting a visible row.
+      if (!getCompanyRecordById(compId)) {
+        return res.status(404).json({ error: "COMPANY_NOT_VISIBLE" });
       }
 
       try {
         const db  = rawDb();
         const now = new Date().toISOString();
-        const cur = isString(currency) ? currency : "USD";
-        const st  = isString(status)   ? status   : "funded";
-        const compId = isString(companyId) ? companyId : null;
-        /* v25.16 NM2 — make this idempotent. Use deterministic id derived from
-           (partner, company, currency, status, amount) so a retry/double-click
-           collapses to one row instead of duplicating P&L data. */
-        const idemKey = `${pid}:${compId ?? "-"}:${cur}:${st}:${amountMinor}`;
+        /* v25.16 NM2 — idempotent: deterministic id from validated values only so a
+           retry collapses to one row instead of duplicating P&L data. */
+        const idemKey = `${pid}:${compId}:${cur}:${st}:${amountMinor}`;
         const idHash  = require("node:crypto").createHash("sha1").update(idemKey).digest("hex").slice(0, 16);
         const id  = `sc_${idHash}`;
 
@@ -669,7 +688,7 @@ export function registerPartnerConsortiumRoutes(app: Express): void {
           VALUES (?, ?, ?, ?, ?, ?, ?, 'partner', ?, ?, ?, ?, 1)
         `).run(id, "round_partner_test", "Partner-Sourced Investor", amountMinor / 100, amountMinor, cur, st, pid, compId, now, now);
 
-        res.status(201).json({ ok: true, softCircleId: id, amountMinor, currency: cur, status: st });
+        res.status(201).json({ ok: true, softCircleId: id, amountMinor, currency: cur, status: st, companyId: compId, partnerId: pid });
       } catch (err) {
         res.status(500).json({ error: "SOURCE_SC_FAILED", message: (err as Error).message });
       }

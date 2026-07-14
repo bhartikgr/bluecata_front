@@ -4267,14 +4267,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const ctx = req.userContext!;
     const companyId = typeof req.query.companyId === "string" ? req.query.companyId : "";
     const name = typeof req.query.name === "string" ? req.query.name : "";
+    // W3 Shadie 4a — uniqueness is now scoped to company + STAGE (`type`). The
+    // client passes the currently-selected stage; when absent we fall back to a
+    // company-wide check (backward-compatible).
+    const stage = typeof req.query.type === "string" ? req.query.type : "";
     if (!companyId) return res.status(400).json({ ok: false, error: "companyId required" });
     const ownsCompany = ctx.isAdmin || ctx.founder.companies.some((c) => c.companyId === companyId);
     if (!ownsCompany) return res.status(403).json({ ok: false, error: "FOUNDER_WRONG_COMPANY" });
-    const taken = roundNameExistsForCompany(companyId, name);
+    const taken = roundNameExistsForCompany(companyId, name, stage);
     return res.json({
       ok: true,
       available: !taken,
-      suggestedName: taken ? suggestUniqueRoundName(companyId, name) : name.trim(),
+      suggestedName: taken ? suggestUniqueRoundName(companyId, name, stage) : name.trim(),
     });
   });
 
@@ -4291,6 +4295,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
     // v25.45 ROUND 2 — archive gate: block round creation on archived workspaces.
     if (assertWorkspaceNotArchived(req, res, companyId)) return;
+    // W3 Shadie 1a (Ozan spec) FAIL-CLOSED backstop — Open date AND Target close
+    // date are mandatory. The client blocks Step 3 without them, but the server
+    // must reject an empty date on a direct API call too. (Past dates remain
+    // allowed; only emptiness is rejected here — the close<open guard lives in
+    // roundsStore.)
+    {
+      const openDateStr = typeof body.openDate === "string" ? body.openDate.trim() : "";
+      const closeDateStr = typeof body.closeDate === "string" ? body.closeDate.trim() : "";
+      if (!openDateStr) {
+        return res.status(400).json({ ok: false, error: "OPEN_DATE_REQUIRED", message: "Open date is required." });
+      }
+      if (!closeDateStr) {
+        return res.status(400).json({ ok: false, error: "CLOSE_DATE_REQUIRED", message: "Target close date is required." });
+      }
+    }
     // v23.9 A2/AV-03 — numeric coercion + validation. The round-form sends
     // human-typed money strings ("500,000", "$1,000,000"); a bare Number()
     // on those yields NaN which used to reach roundsStore and surface as a
@@ -4607,11 +4626,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // conflict, not a server failure. Return 409 with the offending name so the
       // client can offer the auto-suggested unique alternative.
       if (emsg === "ROUND_NAME_DUPLICATE") {
+        // W3 Shadie 4a — duplicate is scoped to company + STAGE; suggestion too.
         return res.status(409).json({
           ok: false,
           error: "ROUND_NAME_DUPLICATE",
-          message: "A round with this name already exists for this company. Round names must be unique.",
-          suggestedName: suggestUniqueRoundName(companyId, String(body.name ?? "")),
+          message: "A round with this name already exists at this stage for this company. Round names must be unique within a stage.",
+          suggestedName: suggestUniqueRoundName(companyId, String(body.name ?? ""), typeof body.type === "string" ? body.type : undefined),
         });
       }
       if (emsg === "ROUND_NAME_REQUIRED") {

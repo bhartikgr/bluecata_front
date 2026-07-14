@@ -20,7 +20,9 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
+import type { CollectiveLegalCopy, CollectiveLegalCopySlot } from "@shared/collectiveLegalCopy";
 
 interface AccreditationCriterion {
   id: string;
@@ -60,7 +62,22 @@ function formatDate(value: string | null): string {
 
 const ENDPOINT = "/api/investor/compliance/accreditation-declaration";
 
-export function AccreditationDeclaration({ onSigned }: { onSigned?: () => void } = {}) {
+/* W2 A7 — optional legal-copy slot props. Callers (e.g. the Collective
+   first-sign-on blocker) may pass either `legalCopy` directly (already
+   fetched, e.g. from `GET /api/collective/gate-state`) or a `copySlot`
+   identifier for future direct-fetch callers. When present we render the
+   `accreditation_declaration_indemnity` slot body + NON-LEGAL-ADVICE badge
+   above the existing clause text. Neither prop changes any existing
+   behavior, testids, or the KYC-is-separate disclosure below. */
+export function AccreditationDeclaration({
+  onSigned,
+  copySlot,
+  legalCopy,
+}: {
+  onSigned?: () => void;
+  copySlot?: CollectiveLegalCopySlot;
+  legalCopy?: CollectiveLegalCopy;
+} = {}) {
   const { toast } = useToast();
   const [accepted, setAccepted] = useState(false);
   const [signatureName, setSignatureName] = useState("");
@@ -144,6 +161,23 @@ export function AccreditationDeclaration({ onSigned }: { onSigned?: () => void }
 
       {!isLoading && !isError && clause && (
         <>
+          {legalCopy && (
+            <div
+              className="mb-4 rounded-md border p-3 text-[12px] leading-relaxed"
+              style={{ background: "var(--cv-surface-muted, #f8fafc)", borderColor: "var(--cv-border, #e2e8f0)", color: "var(--cv-text-muted, #475569)" }}
+              data-testid={`collective-legal-copy-${legalCopy.slot}`}
+            >
+              <div className="mb-1.5 flex items-center gap-2">
+                {legalCopy.status === "NON_LEGAL_ADVICE" && (
+                  <Badge variant="outline" className="text-[10px] uppercase tracking-wide" data-testid={`badge-non-legal-advice-${legalCopy.slot}`}>
+                    NON-LEGAL-ADVICE
+                  </Badge>
+                )}
+                {legalCopy.title && <span className="text-xs font-semibold">{legalCopy.title}</span>}
+              </div>
+              <p className="whitespace-pre-wrap">{legalCopy.body}</p>
+            </div>
+          )}
           <div
             data-testid="accreditation-text"
             className="mb-4 max-h-72 overflow-y-auto whitespace-pre-wrap rounded-md border p-3 text-[13px] leading-relaxed"

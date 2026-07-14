@@ -60,6 +60,10 @@ import {
 import { appendAdminAudit } from "./adminPlatformStore";
 import { tenantForChapter, DEFAULT_CHAPTER_ID } from "./lib/chapterDefaults";
 import * as collectiveMembershipStore from "./collectiveMembershipStore";
+import {
+  enforceMembershipDeactivation,
+  resolvePendingMembershipDeactivationsForUser,
+} from "./collectiveMembershipDeactivationStore";
 /*
  * v25.4 — migrated from Stripe to Airwallex per Ozan's directive
  * (11-Jun-2026). The old stripeCollective module is retained on disk for
@@ -896,21 +900,20 @@ async function dispatchStripeEvent(event: {
     billing.status !== newStatus &&
     billing.userId
   ) {
-    try {
-      collectiveMembershipStore.deactivate(
-        billing.userId,
-        "system:stripe_webhook",
-      );
-    } catch (deactivateErr) {
-      // Best-effort; the billing transition is the source of truth.
-      try {
-        const { log } = require("./lib/logger");
-        log.warn(
-          "[collectiveBillingStore.applyWebhookEvent] membership deactivate failed (non-fatal):",
-          (deactivateErr as Error).message,
-        );
-      } catch { /* logger optional */ }
-    }
+    // W1 H6 (v26.2.0) — FAIL-CLOSED: record an intent-to-deactivate BEFORE
+    // attempting it, so if deactivate() throws, the membership gate still denies
+    // via the open marker (no more best-effort divergence). State-table only;
+    // no Airwallex/payment code touched.
+    enforceMembershipDeactivation({
+      userId: billing.userId,
+      billingId: billing.id,
+      targetStatus: newStatus,
+      source: "system:stripe_webhook",
+      reason: `billing_status_${newStatus}`,
+    });
+  } else if (newStatus === "active" && billing.userId) {
+    // Billing recovered → clear any open fail-closed deactivation markers.
+    resolvePendingMembershipDeactivationsForUser(billing.userId, "system:stripe_webhook");
   }
 
   // Audit append (outside the data tx; appendAdminAudit opens its own).
@@ -1072,6 +1075,8 @@ export async function dispatchAirwallexEvent(event: {
   if (newStatus === "active" && billing.status !== "active") {
     const fresh = result.billing ?? findBillingByIdAnyTenant(billing.id);
     if (fresh) autoJoinCollectiveMembership(fresh, "system:airwallex_webhook");
+    // W1 H6 — clear any open fail-closed deactivation markers on recovery.
+    if (billing.userId) resolvePendingMembershipDeactivationsForUser(billing.userId, "system:airwallex_webhook");
   }
 
   /* v25.22 NC-1 fix (FALSE-CLOSURE recovery from v25.21 D-NC-002): the
@@ -1085,18 +1090,17 @@ export async function dispatchAirwallexEvent(event: {
     billing.status !== newStatus &&
     billing.userId
   ) {
-    try {
-      const membership = require("./collectiveMembershipStore");
-      membership.deactivate(billing.userId, "system:airwallex_webhook");
-    } catch (deactivateErr) {
-      try {
-        const { log } = require("./lib/logger");
-        log.warn(
-          "[dispatchAirwallexEvent] membership deactivate failed (non-fatal):",
-          (deactivateErr as Error).message,
-        );
-      } catch { /* logger optional */ }
-    }
+    // W1 H6 (v26.2.0) — FAIL-CLOSED (LIVE Airwallex path): record intent-to-
+    // deactivate BEFORE attempting, so a deactivate() failure leaves the gate
+    // denying via the open marker rather than admitting a cancelled member.
+    // State-table only; the Airwallex/payment gateway code is NOT touched.
+    enforceMembershipDeactivation({
+      userId: billing.userId,
+      billingId: billing.id,
+      targetStatus: newStatus,
+      source: "system:airwallex_webhook",
+      reason: `billing_status_${newStatus}`,
+    });
   }
 
   try {

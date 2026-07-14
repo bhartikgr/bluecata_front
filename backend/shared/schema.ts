@@ -1549,6 +1549,8 @@ export const collectiveMemberships = sqliteTable("collective_memberships", {
   activatedBy: text("activated_by").notNull(),
   deactivatedAt: text("deactivated_at"),
   deactivatedBy: text("deactivated_by"),
+  /** W2 A3 (0110) — admin-bootstrapped members bypass cap-table vetting (durable). */
+  capTableExempt: integer("cap_table_exempt").notNull().default(0),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at"),
   deletedAt: text("deleted_at"),

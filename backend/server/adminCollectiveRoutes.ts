@@ -46,6 +46,10 @@ import { getUserContextForId } from "./lib/userContext";
 import { appendAdminAudit } from "./adminPlatformStore"; /* v25.19 Lane 4 NC2 — immutable cross-product approval audit */
 import { lookupByUserId, lookupByEmail } from "./userCredentialsStore"; // v23.8 W-14 member enrichment; v24.4 bootstrap
 import { upsertDirectoryListing, removeDirectoryListing } from "./collectiveInterestStore"; /* v25.0 Track 2 B3 */
+import { filterSeedRows, hideSeedDataEnabled } from "./lib/seedDataGuard"; /* W3.1 — hide QA/seed rows behind HIDE_SEED_DATA */
+import { resolveDisplayName } from "./lib/displayNameResolver"; /* W3.2 — strict, non-sacred name resolver */
+import { listPitchDecksForCompany } from "./collectivePitchDeckStore"; /* W3.3 — pitch-deck metadata for download link */
+import { registerAdminPitchDeckDownloadRoute } from "./lib/adminPitchDeckDownloadRoute"; /* W3.3 */
 import { joinChapter } from "./chaptersStore"; /* v25.52 Track 3.0 C-1 — place approved member into a chapter */
 import { DEFAULT_CHAPTER_ID } from "./lib/chapterDefaults"; /* v25.52 Track 3.0 C-1/C-2 */
 import { listChaptersForUser } from "./chaptersStore"; /* v25.52 Track 3.0 — reuse existing membership if any */
@@ -106,7 +110,42 @@ async function ensureChapterPlacementAndListing(
   return null;
 }
 
+/** W3.2 — defense-in-depth: never trust a raw "u_..." id as a display name,
+ *  even if a resolver upstream regresses. */
+function isRawUserIdLike(s: string | null | undefined): boolean {
+  if (!s) return false;
+  return /^u_[A-Za-z0-9_]*$/.test(s.trim());
+}
+
+/** W3.3 — resolve the latest pitch-deck metadata for an application, never
+ *  exposing the raw s3Key/storage path to the browser. Prefers a deck tied to
+ *  the applicationId; falls back to the most recent deck for the company. */
+function resolvePitchDeckMeta(
+  applicationId: string | undefined,
+  companyId: string | undefined,
+): { id: string; originalName: string; mimeType: string; sizeBytes: number; uploadedAt: string; downloadUrl: string } | null {
+  if (!companyId) return null;
+  try {
+    const decks = listPitchDecksForCompany(companyId);
+    if (decks.length === 0) return null;
+    const deck = (applicationId ? decks.find((d) => d.applicationId === applicationId) : undefined) ?? decks[0];
+    return {
+      id: deck.id,
+      originalName: deck.originalName,
+      mimeType: deck.mimeType,
+      sizeBytes: deck.sizeBytes,
+      uploadedAt: deck.uploadedAt,
+      downloadUrl: `/api/admin/collective/pitch-decks/${encodeURIComponent(deck.id)}/download`,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function registerAdminCollectiveRoutes(app: Express): void {
+  // W3.3 — admin-only pitch-deck download route (streams via objectStorage;
+  // never exposes the raw s3Key to the browser).
+  registerAdminPitchDeckDownloadRoute(app);
   /**
    * GET /api/admin/collective/applications
    *   ?status=submitted|reviewing|accepted|rejected|waitlisted
@@ -128,29 +167,59 @@ export function registerAdminCollectiveRoutes(app: Express): void {
       .sort((a, b) =>
         new Date((b.submittedAt ?? 0)).getTime() - new Date((a.submittedAt ?? 0)).getTime()
       );
-    // C-011 fix v23.6: enrich admin applications list with resolved names
+    // C-011 fix v23.6: enrich admin applications list with resolved names.
+    // W3.2/W3.4 — use the strict resolver so a raw "u_..." id or an email is
+    // never used as the founder NAME; companyDisplayName is a human label
+    // (never a founder/company opaque id). technicalCompanyId keeps the raw id
+    // available for support/debug without putting it in a display slot.
+    // W3.3 — attach latest pitch-deck metadata (never the raw s3Key).
     const enriched = merged.map((app) => {
       const companyId = (app as any).companyId as string | undefined;
       const founderId = (app as any).founderId as string | undefined;
       const userId = (app as any).userId as string | undefined;
-      // Resolve company name: try multiCompanyStore (all real companies)
-      const companyName = companyId ? getCompanyNameById(companyId) : undefined;
-      // Resolve founder name: try userContext for founderId or userId
+      const applicationId = (app as any).id as string | undefined;
+      // Resolve company name: try multiCompanyStore (all real companies) first.
+      const canonicalCompanyName = companyId ? getCompanyNameById(companyId) : undefined;
+      // Resolve founder identity through the strict, non-sacred resolver so a
+      // raw "u_..." id is never returned as a name.
       let founderName: string | undefined;
+      let founderEmail: string | undefined;
       try {
         const uid = founderId ?? userId;
         if (uid) {
-          const uctx = getUserContextForId(uid);
-          founderName = uctx?.identity?.name || undefined;
+          const resolved = resolveDisplayName(uid);
+          founderName = resolved.resolved && !isRawUserIdLike(resolved.name) ? resolved.name : undefined;
+          founderEmail = resolved.email ?? undefined;
         }
       } catch { /* non-fatal — founderName stays undefined */ }
+      const companyDisplayName =
+        canonicalCompanyName ??
+        (app as any).companyName ??
+        (founderName ? `${founderName}'s company` : "Company pending");
+      const pitchDeck = resolvePitchDeckMeta(applicationId, companyId);
       return {
         ...app,
-        companyName: companyName ?? companyId,
-        founderName: founderName ?? founderId ?? userId,
+        // Human-safe display fields (never a raw opaque id):
+        companyName: companyDisplayName,
+        companyDisplayName,
+        founderName: founderName ?? "Unknown founder",
+        founderEmail: founderEmail ?? (app as any).founderEmail ?? null,
+        // Technical/debug-only fields (not for display slots):
+        technicalCompanyId: companyId ?? null,
+        technicalFounderId: founderId ?? userId ?? null,
+        pitchDeck,
       };
     });
-    res.json({ items: enriched, count: enriched.length });
+    // W3.1 — hide QA/seed rows behind HIDE_SEED_DATA=true. Never deletes rows;
+    // reports hiddenSeedCount so operators can tell why rows disappeared.
+    const { rows: visible, hiddenSeedCount } = filterSeedRows(enriched as Array<Record<string, unknown>>, {
+      emailFields: ["founderEmail", "userEmail", "email", "applicantEmail"],
+    });
+    res.json({
+      items: visible,
+      count: visible.length,
+      meta: { hideSeedData: hideSeedDataEnabled(), hiddenSeedCount },
+    });
   });
 
   /**
@@ -161,28 +230,36 @@ export function registerAdminCollectiveRoutes(app: Express): void {
   app.get("/api/admin/collective/members", requireAdmin, (_req: Request, res: Response) => {
     const members = collectiveMembershipStore.listActive();
     // v23.8 W-14: enrich each row with userName + userEmail so the admin UI can
-    // show real identities instead of raw opaque user IDs. Personas resolve via
-    // getUserContextForId; real signups via the credential store.
+    // show real identities instead of raw opaque user IDs.
+    // W3.2 — route through the strict, non-sacred resolver so userName is
+    // NEVER an email or a raw "u_..." id; email stays in its own field.
     const items = members.map((m) => {
       let userName = "";
       let userEmail = "";
       try {
-        const ident = getUserContextForId(m.userId).identity;
-        userName = ident.name ?? "";
-        userEmail = ident.email ?? "";
+        const resolved = resolveDisplayName(m.userId);
+        if (resolved.resolved && !isRawUserIdLike(resolved.name)) userName = resolved.name;
+        userEmail = resolved.email ?? "";
       } catch { /* non-fatal */ }
       if (!userEmail) {
         try {
           const cred = lookupByUserId(m.userId);
           if (cred) {
             userEmail = cred.email;
-            if (!userName) userName = cred.name ?? "";
           }
         } catch { /* non-fatal */ }
       }
       return { ...m, userName, userEmail };
     });
-    res.json({ items, count: items.length });
+    // W3.1 — hide QA/seed rows behind HIDE_SEED_DATA=true.
+    const { rows: visible, hiddenSeedCount } = filterSeedRows(items as Array<Record<string, unknown>>, {
+      emailFields: ["userEmail", "email"],
+    });
+    res.json({
+      items: visible,
+      count: visible.length,
+      meta: { hideSeedData: hideSeedDataEnabled(), hiddenSeedCount },
+    });
   });
 
   /**
@@ -227,12 +304,17 @@ export function registerAdminCollectiveRoutes(app: Express): void {
     // Coerce tier to a valid value ("standard" | "plus"); default "standard".
     const tier: "standard" | "plus" = body.tier === "plus" ? "plus" : "standard";
 
+    // W2 A3 — admin bootstrap is the explicit cap-table BYPASS path, so a
+    // bootstrapped member is cap-table-exempt by default. An admin can opt out
+    // of the bypass by sending capTableExempt:false (non-bypass activation).
+    const capTableExempt = body.capTableExempt !== false;
+
     // v25.35 — fail-closed: activate() now throws if the membership row does not
     // durably persist. Translate to 500 so the admin UI never shows a phantom
     // "member activated" that vanishes on restart.
     let membership;
     try {
-      membership = collectiveMembershipStore.activate(userId, adminUserId, tier);
+      membership = collectiveMembershipStore.activate(userId, adminUserId, tier, { capTableExempt });
     } catch (err) {
       log.error("[adminCollectiveRoutes.bootstrap] membership activate failed:", (err as Error).message);
       return res.status(500).json({ ok: false, error: "MEMBERSHIP_PERSIST_FAILED", message: "Could not persist membership; please retry." });
@@ -261,7 +343,14 @@ export function registerAdminCollectiveRoutes(app: Express): void {
         adminUserId,
         `member:${userId}`,
         "collective.member.bootstrapped",
-        { userId, tier, bootstrap: true, activatedAt: new Date().toISOString() },
+        {
+          userId,
+          tier,
+          bootstrap: true,
+          capTableExempt,
+          capTableExemptReason: capTableExempt ? "admin_bootstrap" : "admin_bootstrap_no_exempt",
+          activatedAt: membership.activatedAt,
+        },
       );
     } catch { /* non-fatal */ }
     return res.json({ ok: true, membership });

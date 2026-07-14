@@ -277,11 +277,17 @@ function InvitationCard({ inv: i }: { inv: Inv }) {
             </div>
           </div>
 
-          {/* CTA column — B1: "Review Deal and Soft-Circle" primary button */}
-          <div className="md:w-52 flex flex-col gap-2 shrink-0">
+          {/* CTA column — B1: "Review Deal and Soft-Circle" primary button.
+              W3 Shadie 7a — the label was clipped ("eview Deal and Soft-Circle"):
+              the fixed md:w-52 column + the Button's default whitespace-nowrap +
+              trailing arrow overflowed and hid the leading "R". Fix: widen the
+              column, allow the label to wrap (whitespace-normal), let the button
+              grow to fit (h-auto + vertical padding), shrink the text a touch,
+              and keep the icon from pushing the text off-canvas. */}
+          <div className="md:w-60 flex flex-col gap-2 shrink-0">
             <Link href={`/investor/invitations/${i.id}`}>
-              <Button className="w-full bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid={`button-open-${i.id}`}>
-                Review Deal and Soft-Circle <ArrowRight className="h-4 w-4 ml-2" />
+              <Button className="w-full h-auto min-h-9 py-2 whitespace-normal text-center text-sm leading-snug bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid={`button-open-${i.id}`}>
+                <span className="inline-flex items-center justify-center gap-1.5">Review Deal and Soft-Circle <ArrowRight className="h-4 w-4 shrink-0" /></span>
               </Button>
             </Link>
             <Link href={`/investor/invitations/${i.id}?tab=decision`}>

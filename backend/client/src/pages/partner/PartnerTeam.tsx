@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input";
 /* v25.12 NH6 — surface invite + remove failures (seat limit, network, etc). */
 import { useToast } from "@/hooks/use-toast";
 /* v25.56 GROUP-D — client-side guard so a raw synthetic id can never render. */
-import { safeMemberName } from "@/lib/investorLabels";
+import { safePersonDisplayName } from "@/lib/personName"; /* W3.2 — name slot must never render email/opaque id */
 /* 2a — display/CRM titles (distinct from the 5 permission tiers). */
 import { PARTNER_TITLES } from "@shared/partnerTitles";
 
@@ -51,7 +51,7 @@ type TeamMember = {
 
 export default function PartnerTeam() {
   const role = useRequirePartnerRole();
-  const q = useQuery<{ members: TeamMember[]; invitations: Array<{ id: string; invitedEmail: string; subRole: string; title?: string | null; expiresAt: string; redeemedAt: string | null }> }>({
+  const q = useQuery<{ members: TeamMember[]; invitations: Array<{ id: string; invitedEmail: string; subRole: string; title?: string | null; expiresAt: string; redeemedAt: string | null }>; meta?: { duplicateSeatCount?: number } }>({
     queryKey: ["/api/partner/me/team"],
     enabled: role.ready,
     queryFn: async () => (await apiRequest("GET", "/api/partner/me/team")).json(),
@@ -175,6 +175,16 @@ export default function PartnerTeam() {
       <div className="mb-4 text-sm text-[var(--cv-color-text-secondary)]" data-testid="seat-banner">
         {activeCount} active seats + {pendingCount} pending invitations
       </div>
+      {/* W3.5 — admin-only note when duplicate historical seats were collapsed
+          server-side; the roster below always shows one row per member. */}
+      {canInvite && (q.data?.meta?.duplicateSeatCount ?? 0) > 0 && (
+        <div
+          className="mb-4 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"
+          data-testid="duplicate-seat-warning"
+        >
+          Duplicate historical seats hidden; cleanup required.
+        </div>
+      )}
       {/* v25.15 NM3b — explicit error + loading branches. */}
       {q.isLoading && <div className="text-sm text-[var(--cv-color-text-muted)] mb-2" data-testid="team-loading">Loading…</div>}
       {q.isError && (
@@ -250,9 +260,12 @@ export default function PartnerTeam() {
               <tr key={m.id} className="border-t" data-testid={`member-${m.userId}`}>
                 <td className="p-2">
                   {/* v25.50 Phase 7 (7a) — real name/email from users JOIN.
-                     v25.56 GROUP-D — safeMemberName guarantees a raw synthetic
-                     id (u_…) never renders; userId stays in key/data-testid only. */}
-                  <div className="font-medium text-[var(--cv-color-text)]">{safeMemberName(m.name, m.email, m.userId)}</div>
+                     W3.2 — the NAME slot renders m.name (or "Pending member"); it
+                     must never fall back to email. safePersonDisplayName is a
+                     defensive client-side guard in case a future payload
+                     regresses and puts an email/opaque id in `name`. Email stays
+                     in its own separate line below. */}
+                  <div className="font-medium text-[var(--cv-color-text)]">{safePersonDisplayName(m.name, "Pending member")}</div>
                   {m.email && <div className="text-xs text-[var(--cv-color-text-muted)]">{m.email}</div>}
                 </td>
                 <td className="p-2 text-xs text-[var(--cv-color-text-muted)]">

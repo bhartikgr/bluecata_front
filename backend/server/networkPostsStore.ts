@@ -48,6 +48,10 @@ export type NetworkPostRow = {
   parentPostId?: string | null;
   mediaUrls?: string[];
   topics?: string[];
+  /** W2M B3(2) — schedule metadata (persisted in content_json). */
+  status?: "draft" | "scheduled" | "published";
+  scheduledFor?: string | null;
+  publishedAt?: string | null;
 };
 
 /**
@@ -78,8 +82,16 @@ const HYDRATED_POSTS: NetworkPostRow[] = [];
  * still returns 200 with the post; the next boot will be missing this row
  * but the user already saw their post render.
  */
-export function persistNetworkPost(p: NetworkPostRow, actorUserId?: string): void {
+export function persistNetworkPost(
+  p: NetworkPostRow,
+  actorUserId?: string,
+): { ok: true } | { ok: false; error: string } {
   const tenantId = tenantForPost(p);
+  // W2M B3 (rule #8 — no silent drops) — the PRIMARY network_posts write must
+  // succeed or the caller is told. Previously a failed write was logged as
+  // "non-fatal" and the route still returned 200, silently dropping the post on
+  // restart. We now return {ok:false} (and let the route return 500). The audit
+  // append below stays best-effort (it is a secondary side-effect, not the post).
   try {
     const db = getDb();
     db.transaction((tx: any) => {
@@ -96,6 +108,11 @@ export function persistNetworkPost(p: NetworkPostRow, actorUserId?: string): voi
             topics: p.topics ?? [],
             companyId: p.companyId ?? null,
             visibility: p.visibility ?? null,
+            // W2M B3(2) — schedule metadata persisted so scheduled posts survive
+            // restart and the read-side scheduler can publish them.
+            status: p.status ?? (p.scheduledFor ? "scheduled" : "published"),
+            scheduledFor: p.scheduledFor ?? null,
+            publishedAt: p.publishedAt ?? (p.scheduledFor ? null : p.createdAt),
           }),
           likes: 0,
           comments: 0,
@@ -106,7 +123,8 @@ export function persistNetworkPost(p: NetworkPostRow, actorUserId?: string): voi
         .run();
     });
   } catch (err) {
-    log.warn("[networkPostsStore.persistNetworkPost] DB write failed (non-fatal):", (err as Error).message);
+    log.error("[networkPostsStore.persistNetworkPost] PRIMARY DB write failed:", (err as Error).message);
+    return { ok: false, error: (err as Error).message };
   }
 
   // B-V13-5: emit audit event so the founder/admin Activity page surfaces
@@ -122,6 +140,7 @@ export function persistNetworkPost(p: NetworkPostRow, actorUserId?: string): voi
   } catch (err) {
     log.warn("[networkPostsStore.persistNetworkPost] audit append failed:", (err as Error).message);
   }
+  return { ok: true };
 }
 
 /**

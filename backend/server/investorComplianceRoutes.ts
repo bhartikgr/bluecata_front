@@ -117,6 +117,76 @@ export function hasAccreditedDeclaration(userId: string): boolean {
   return false;
 }
 
+/**
+ * W2 A2 (v26.2.0-w2) — gate-facing accreditation status used by the Collective
+ * first-sign-on capture. Unlike the boolean `hasAccreditedDeclaration`, this
+ * distinguishes verified vs self_certified vs none and reports the source, so
+ * the gate can (a) block only genuine "none" members and (b) never downgrade a
+ * verified investor. Reads the SAME store path as `hasAccreditedDeclaration`
+ * (compliance profile + latest declaration). Throws are the CALLER's concern:
+ * the gate wraps this and fails CLOSED (deny) on a read error.
+ */
+export type AccreditationGateStatus = "none" | "self_certified" | "verified";
+
+export function getAccreditationGateStatus(userId: string): {
+  status: AccreditationGateStatus;
+  signedCurrent: boolean;
+  declaration: AccreditationDeclarationRow | null;
+  source: "profile" | "declaration" | "none";
+} {
+  if (!userId) {
+    return { status: "none", signedCurrent: false, declaration: null, source: "none" };
+  }
+
+  // Rule 1 — read the compliance profile through the same store path.
+  const prof = spvEngineStore.getComplianceProfile(userId);
+  const latest = getLatestDeclaration(userId);
+
+  // Rule 2 — verified wins outright; never downgraded by a self-cert row.
+  if (prof && prof.accreditationStatus === "verified") {
+    return {
+      status: "verified",
+      signedCurrent: true,
+      declaration: latest,
+      source: "profile",
+    };
+  }
+
+  // Rule 3 — profile self_certified.
+  if (prof && prof.accreditationStatus === "self_certified") {
+    return {
+      status: "self_certified",
+      signedCurrent: true,
+      declaration: latest,
+      source: "profile",
+    };
+  }
+
+  // Rule 4 — else inspect the latest declaration + validity window.
+  if (latest) {
+    const signedMs = Date.parse(latest.signedAt);
+    if (!Number.isNaN(signedMs)) {
+      const ageDays = (Date.now() - signedMs) / (1000 * 60 * 60 * 24);
+      if (ageDays <= ACCREDITATION_VALIDITY_DAYS) {
+        return { status: "self_certified", signedCurrent: true, declaration: latest, source: "declaration" };
+      }
+    } else {
+      // Legacy grace (mirrors hasAccreditedDeclaration): an unparseable signed
+      // timestamp with a row present is treated as current. Preserved to avoid
+      // behavior drift; logged so operators can spot bad timestamps.
+      log.warn(
+        "[getAccreditationGateStatus] unparseable signed_at for",
+        userId,
+        "- applying legacy grace (treated as self_certified).",
+      );
+      return { status: "self_certified", signedCurrent: true, declaration: latest, source: "declaration" };
+    }
+  }
+
+  // Rule 5 — nothing current.
+  return { status: "none", signedCurrent: false, declaration: latest, source: "none" };
+}
+
 export interface RecordDeclarationInput {
   signatureName: string;
   criteria: unknown;

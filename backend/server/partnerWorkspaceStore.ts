@@ -856,6 +856,67 @@ export const partnerTeamStore = {
     return teamMembers.filter((m) => m.partnerId === partnerId && m.status === "active");
   },
 
+  /**
+   * W3.5 — dedupe historical duplicate ACTIVE seats for the same
+   * (partnerId, userId). `add()` already prevents new duplicates going
+   * forward, but rows created before that guard (or restored from a stale
+   * backup/import) can still carry more than one active row per user. This
+   * is a presentation-safe collapse: it never mutates or deletes anything,
+   * it only picks one representative row per user and reports how many were
+   * hidden (and their ids) so a future cleanup migration can act on them.
+   *
+   * Representative selection order: active status (all inputs are already
+   * active here, kept for clarity/future reuse), then most-privileged
+   * subRole, then newest joinedAt, then stable id as a final tiebreak.
+   */
+  dedupeActiveTeamMembers(rows: PartnerTeamMember[]): {
+    members: PartnerTeamMember[];
+    duplicateSeatCount: number;
+    duplicateSeatIdsByUserId: Record<string, string[]>;
+  } {
+    const subRoleRank: Record<SubRole, number> = {
+      managing_partner: 5,
+      associate: 4,
+      bd: 3,
+      analyst: 2,
+      viewer: 1,
+    };
+    const byUser = new Map<string, PartnerTeamMember[]>();
+    for (const row of rows) {
+      const list = byUser.get(row.userId) ?? [];
+      list.push(row);
+      byUser.set(row.userId, list);
+    }
+    const members: PartnerTeamMember[] = [];
+    const duplicateSeatIdsByUserId: Record<string, string[]> = {};
+    let duplicateSeatCount = 0;
+    for (const [userId, group] of Array.from(byUser.entries())) {
+      if (group.length === 1) {
+        members.push(group[0]);
+        continue;
+      }
+      const sorted = [...group].sort((a, b) => {
+        const activeA = a.status === "active" ? 1 : 0;
+        const activeB = b.status === "active" ? 1 : 0;
+        if (activeA !== activeB) return activeB - activeA;
+        const rankA = subRoleRank[a.subRole as SubRole] ?? 0;
+        const rankB = subRoleRank[b.subRole as SubRole] ?? 0;
+        if (rankA !== rankB) return rankB - rankA;
+        const joinedA = a.joinedAt ?? "";
+        const joinedB = b.joinedAt ?? "";
+        if (joinedA !== joinedB) return joinedB.localeCompare(joinedA);
+        return String(a.id).localeCompare(String(b.id));
+      });
+      const [representative, ...duplicates] = sorted;
+      members.push(representative);
+      if (duplicates.length > 0) {
+        duplicateSeatIdsByUserId[userId] = duplicates.map((d) => d.id);
+        duplicateSeatCount += duplicates.length;
+      }
+    }
+    return { members, duplicateSeatCount, duplicateSeatIdsByUserId };
+  },
+
   findByUserId(userId: string): PartnerTeamMember | null {
     const cached = teamMembers.find((m) => m.userId === userId && m.status === "active");
     if (cached) return cached;

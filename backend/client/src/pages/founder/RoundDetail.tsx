@@ -550,9 +550,16 @@ export default function RoundDetail() {
  </td>
  {/* v25.55 5b — a resent (still "sent") invite shows a teal "resent" chip. */}
  <td className="px-3 py-3"><StateBadge state={i.state === "sent" && i.resentAt ? "resent" : i.state} /></td>
- <td className="px-3 py-3 text-muted-foreground">{timeAgo(i.sentAt)}</td>
- <td className="px-3 py-3 text-muted-foreground">{i.viewedAt ? timeAgo(i.viewedAt) : "—"}</td>
- <td className="px-3 py-3 text-muted-foreground">{fmtDate(i.expiresAt)}</td>
+ {/* W3 Shadie 6a — show BOTH the absolute date AND the relative "Xd ago" in
+     the Sent and Expires columns (previously Sent was relative-only and
+     Expires absolute-only). Absolute on top, relative muted below. */}
+ <td className="px-3 py-3 text-muted-foreground" data-testid={`inv-sent-${i.id}`}>
+  {i.sentAt ? (<div className="leading-tight"><div>{fmtDate(i.sentAt)}</div><div className="text-xs text-muted-foreground/70">{timeAgo(i.sentAt)}</div></div>) : "—"}
+ </td>
+ <td className="px-3 py-3 text-muted-foreground">{i.viewedAt ? (<div className="leading-tight"><div>{fmtDate(i.viewedAt)}</div><div className="text-xs text-muted-foreground/70">{timeAgo(i.viewedAt)}</div></div>) : "—"}</td>
+ <td className="px-3 py-3 text-muted-foreground" data-testid={`inv-expires-${i.id}`}>
+  {i.expiresAt ? (<div className="leading-tight"><div>{fmtDate(i.expiresAt)}</div><div className="text-xs text-muted-foreground/70">{timeAgo(i.expiresAt)}</div></div>) : "—"}
+ </td>
  <td className="px-6 py-3 text-right">
  <div className="inline-flex gap-1">
  {/* v25.55 3a — cannot remind an investor who already accepted.

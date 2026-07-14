@@ -136,7 +136,17 @@ export default function PostsModeration() {
                         <p className="truncate">{p.body || "—"}</p>
                         <p className="text-xs text-muted-foreground">{p.id}</p>
                       </TableCell>
-                      <TableCell className="text-sm">{p.authorUserId ?? "—"}</TableCell>
+                      {/* W2M B5 — identity display safety: the moderation feed only
+                          has the raw authorUserId (no server-resolved authorLabel), so
+                          the PRIMARY cell must never render it directly — it may be an
+                          email-derived id. Show a safe generic label as primary; the raw
+                          id is available in a secondary muted/monospace subtext line. */}
+                      <TableCell className="text-sm">
+                        <p data-testid={`author-name-${p.id}`}>{"Collective member"}</p>
+                        <p className="text-xs text-muted-foreground font-mono" data-testid={`author-id-${p.id}`}>
+                          {p.authorUserId ?? "—"}
+                        </p>
+                      </TableCell>
                       <TableCell>
                         {p.hidden ? (
                           <Badge variant="destructive">Hidden</Badge>

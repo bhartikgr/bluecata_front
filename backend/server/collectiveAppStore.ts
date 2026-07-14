@@ -40,6 +40,9 @@ import { getDb } from "./db/connection"; /* v17 Phase B */
 import { pAll } from "./db/portable"; /* Wave H Track A — Postgres compatibility */
 import { DEFAULT_CHAPTER_ID, DEFAULT_CHAPTER_TENANT_ID } from "./lib/chapterDefaults";
 import { log } from "./lib/logger";
+// W2 A5/A7 — gate-state + indemnity copy (both sacred-free, additive).
+import { getAccreditationGateStatus } from "./investorComplianceRoutes";
+import { getCollectiveLegalCopyBundle } from "./collectiveLegalCopyStore";
 // Wave 2 (#5): admin-granted eligibility path. STATIC ESM import (NOT require) —
 // verified no circular import: collectiveMembershipStore only imports
 // drizzle/schema/db/chapterDefaults/logger, none of which import this file.
@@ -355,7 +358,16 @@ export function registerCollectiveAppRoutes(app: Express): void {
     // Use req.userContext userId if available (Defect 14 fix). v23.8 D2/W-18 —
     // no `u_investor_demo` synthetic fallback; an unauthenticated check passes
     // undefined and hits the anonymous-eligibility branch.
-    const userId = (req.userContext?.userId) ?? (req.query.userId as string | undefined);
+    // W1 (v26.2.0) SECURITY — a client-supplied `?userId=` was previously an
+    // identity FALLBACK, letting anyone probe another user's eligibility /
+    // active-membership status. It is now an ADMIN-ONLY diagnostic override:
+    // non-admins use their session id; anonymous/non-admin `?userId` is silently
+    // ignored (no 403, no shape change — avoids an existence/format oracle).
+    const ctx = req.userContext;
+    const queryUserId = typeof req.query.userId === "string" && req.query.userId.trim()
+      ? req.query.userId.trim()
+      : undefined;
+    const userId = ctx?.isAdmin && queryUserId ? queryUserId : ctx?.userId;
     const elig = isEligibleForCollective(userId);
     /* v25.21 Lane C NH-1 fix — enrich the response with a `collectiveStatus`
      * derived from the real collective membership store. Previously the
@@ -371,6 +383,84 @@ export function registerCollectiveAppRoutes(app: Express): void {
       } catch { /* non-fatal */ }
     }
     res.json({ ...elig, collectiveStatus });
+  });
+
+  // W2 A5 — dedicated gate state for the client CollectiveMemberGate. Returns
+  // the SAME signals the server gate uses (membership, cap-table exemption,
+  // accreditation status) so the client can block child pages until the
+  // first-sign-on declaration is complete — without depending on child API
+  // calls failing. Never consults KYC (A6): KYC is optional and never gates.
+  app.get("/api/collective/gate-state", (req: Request, res: Response) => {
+    const ctx = req.userContext;
+    const userId = ctx?.userId;
+    if (!userId || !ctx?.isAuthed) {
+      return res.status(401).json({ ok: false, error: "NOT_AUTHED", message: "Sign in to continue." });
+    }
+
+    // Admins are members for gate purposes and never blocked.
+    const isAdmin = ctx?.isAdmin === true;
+
+    // Membership + exemption from the authoritative store (DB-backed).
+    let isMember = isAdmin;
+    let capTableExempt = false;
+    try {
+      const membership = require("./collectiveMembershipStore");
+      if (membership.isActive(userId)) isMember = true;
+      capTableExempt = membership.get(userId)?.capTableExempt === true;
+    } catch { /* non-fatal — degrade to ctx below */ }
+    if (!isMember && ctx?.collective?.status === "active") isMember = true;
+
+    // Partner-only session detection (mirrors the server gate's redirect hint).
+    let isPartnerOnly = false;
+    try {
+      const partnerTeam = require("./partnerTeamStore");
+      isPartnerOnly = !isMember && !!partnerTeam.findByUserId(userId);
+    } catch { /* non-fatal */ }
+
+    // Accreditation status — fail CLOSED for the gate (treat read error as
+    // "none" so the client shows the blocker rather than admitting silently).
+    let accreditationStatus: "none" | "self_certified" | "verified" = "none";
+    try {
+      accreditationStatus = getAccreditationGateStatus(userId).status;
+    } catch {
+      accreditationStatus = "none";
+    }
+
+    // Admins never need the declaration; genuine members with status "none" do.
+    const requiresAccreditationDeclaration =
+      !isAdmin && isMember && accreditationStatus === "none";
+
+    const copy = getCollectiveLegalCopyBundle([
+      "collective_gate_indemnity",
+      "accreditation_declaration_indemnity",
+    ]);
+
+    return res.json({
+      ok: true,
+      isMember,
+      isPartnerOnly,
+      capTableExempt,
+      accreditationStatus,
+      requiresAccreditationDeclaration,
+      declarationEndpoint: "/api/investor/compliance/accreditation-declaration",
+      copy: {
+        gateIndemnity: copy.collective_gate_indemnity,
+        declarationIndemnity: copy.accreditation_declaration_indemnity,
+      },
+    });
+  });
+
+  // W2 A7 — indemnity / assumption-of-vetting copy slots. Read-only, safe to
+  // call unauthenticated (copy is not user-specific). Malformed supplied copy
+  // degrades to placeholder, never crashes.
+  app.get("/api/collective/legal-copy", (req: Request, res: Response) => {
+    const slotsRaw = typeof req.query.slots === "string" ? req.query.slots : "";
+    const slots = slotsRaw
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean) as any[];
+    const bundle = getCollectiveLegalCopyBundle(slots);
+    return res.json({ ok: true, copy: bundle });
   });
 
   app.post("/api/collective/applications", requireCollectiveEnabled, (req: Request, res: Response) => {

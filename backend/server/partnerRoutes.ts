@@ -732,6 +732,33 @@ export function registerPartnerRoutes(app: Express): void {
   // sacred founder profile stores.
   // ============================================================
 
+  /**
+   * W1 H3/H4 (v26.2.0) — Partner↔company relationship proof for the portfolio
+   * detail/upsert routes. Without this, GET leaked global company name/logo for
+   * ANY companyId (enumeration) and PATCH created a private portfolio row for any
+   * global company. A partner may access a company's portfolio only via a durable
+   * relationship. Following (member personal interest) is intentionally NOT a proof.
+   * Returns 404 (not 403) on failure so the route cannot be used as an existence oracle.
+   */
+  const partnerCanAccessCompanyPortfolio = (partnerId: string, companyId: string): boolean => {
+    if (!partnerId || !companyId) return false;
+    // 1) live partner-owned portfolio row
+    if (getPortfolioCompany(partnerId, companyId)) return true;
+    // 2) live attribution (listByPartner excludes revoked by default)
+    if (partnerAttributionStore.listByPartner(partnerId).some((a) => a.companyId === companyId && !a.revokedAt)) return true;
+    // 3) consortium sponsor link
+    if (getConsortiumPartnerId(companyId) === partnerId) return true;
+    // 4) partner pipeline deal
+    if (partnerPipelineStore.listByPartner(partnerId).some((p) => p.companyId === companyId)) return true;
+    // 5) live partner deal promotion (exclude terminal/negative states)
+    if (partnerDealPromotionsStore.listByPartner(partnerId).some((p) =>
+      p.companyId === companyId && !(["rejected", "withdrawn", "archived"] as string[]).includes(String(p.status)),
+    )) return true;
+    // 6) partner-sponsored SPV target company
+    if (spvEngineStore.listByPartner(partnerId).some((s) => s.targetCompanyId === companyId && !s.archivedAt)) return true;
+    return false;
+  };
+
   // List all private-portfolio company profiles for this partner.
   app.get("/api/partner/me/portfolio", requirePartnerAuth, (req: Request, res: Response) => {
     const ctx = req.partnerContext!;
@@ -752,6 +779,10 @@ export function registerPartnerRoutes(app: Express): void {
   app.get("/api/partner/me/portfolio/:companyId", requirePartnerAuth, (req: Request, res: Response) => {
     const ctx = req.partnerContext!;
     const companyId = String(req.params.companyId);
+    // W1 H3 — require relationship BEFORE exposing any global company metadata.
+    if (!partnerCanAccessCompanyPortfolio(ctx.partnerId, companyId)) {
+      return res.status(404).json({ error: "PORTFOLIO_COMPANY_NOT_FOUND" });
+    }
     const p = getPortfolioCompany(ctx.partnerId, companyId);
     const rec = getCompanyRecordById(companyId);
     res.json({
@@ -772,6 +803,10 @@ export function registerPartnerRoutes(app: Express): void {
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
       const companyId = String(req.params.companyId);
+      // W1 H4 — require relationship BEFORE body validation (no validation oracle) or upsert.
+      if (!partnerCanAccessCompanyPortfolio(ctx.partnerId, companyId)) {
+        return res.status(404).json({ error: "PORTFOLIO_COMPANY_NOT_FOUND" });
+      }
       const patch = parsePortfolioPatch(req.body ?? {});
       if (!patch) return badRequest(res, "invalid company profile patch");
       try {
@@ -1163,7 +1198,12 @@ export function registerPartnerRoutes(app: Express): void {
        (7c) Merge partner-workspace-local contact overrides (mobile, contact
        email, position note) from the additive partner_team_member_contact
        table. */
-    const rawMembers = partnerTeamStore.listByPartner(pid);
+    // W3.5 — collapse historical duplicate active seats for the same
+    // (partnerId, userId) before identity/contact enrichment. Never drops
+    // data: duplicateSeatCount + duplicateSeatIdsByUserId are reported in
+    // `meta` so operators/cleanup tooling can see exactly what was hidden.
+    const { members: rawMembers, duplicateSeatCount, duplicateSeatIdsByUserId } =
+      partnerTeamStore.dedupeActiveTeamMembers(partnerTeamStore.listByPartner(pid));
     const contactMap = partnerTeamContactStore.listByPartner(pid);
     const memberIds = rawMembers.map((m) => m.userId);
     /* W2-G — resolve identities through the shared displayNameResolver instead
@@ -1190,7 +1230,7 @@ export function registerPartnerRoutes(app: Express): void {
         title: contact?.positionNote ?? null,
       };
     });
-    res.json({ members, invitations });
+    res.json({ members, invitations, meta: { duplicateSeatCount, duplicateSeatIdsByUserId } });
   });
 
   /* v25.50 Phase 7 (7c) — edit a team member's partner-local contact info.

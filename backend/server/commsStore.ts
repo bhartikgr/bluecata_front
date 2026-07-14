@@ -31,6 +31,9 @@ const require = createRequire(import.meta.url);
 import type { Express, Request, Response } from "express";
 import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
+// W2M B3 — static (cycle-safe) import: networkPostsStore breaks the cycle with a
+// runtime `await import("./commsStore")` and has NO static import of this module.
+import { persistNetworkPost } from "./networkPostsStore";
 
 import {
   channelSchema,
@@ -890,6 +893,39 @@ function resolveIdentity(
   return resolved;
 }
 
+/**
+ * W2M B1/B5 (rule #13) — single display-name helper for author/sender labels.
+ * Fallback order: privacy-resolver full name -> supplied full name ->
+ * company/firm label -> safe generic ("Collective member" / "Invited contact").
+ * NEVER returns an email or a raw user id as a display name.
+ */
+function resolveCommsDisplayName(
+  viewerId: string | null,
+  subjectUserId: string,
+  fallback?: { fullName?: string | null; companyName?: string | null },
+): string {
+  const looksUnsafe = (s: string | null | undefined): boolean =>
+    !s || s.includes("@") || /^u_[a-z0-9_]+$/i.test(s) || s.trim().length === 0;
+
+  // 1) privacy resolver (viewer-aware). Guard against it returning id/email.
+  if (viewerId) {
+    try {
+      const r = resolveIdentity(viewerId, subjectUserId, undefined);
+      if (r && !looksUnsafe(r.displayName)) return r.displayName;
+    } catch { /* fall through to safe fallbacks */ }
+  }
+
+  // 2) supplied full name (only if it is not an email / raw id).
+  if (!looksUnsafe(fallback?.fullName)) return fallback!.fullName as string;
+
+  // 3) company / firm label.
+  if (!looksUnsafe(fallback?.companyName)) return fallback!.companyName as string;
+
+  // 4) safe generic — never email/id. Prefer "Collective member" for known
+  // users, "Invited contact" for not-yet-provisioned CRM-only ids.
+  return COMMS_USERS[subjectUserId] ? "Collective member" : "Invited contact";
+}
+
 /** Last message of a channel (used for previews). */
 function lastMessageOf(channelId: string): Message | undefined {
   let last: Message | undefined;
@@ -1576,6 +1612,8 @@ export function registerCommsRoutes(app: Express): void {
   /* ---- Posts: feed ---- */
   app.get("/api/comms/posts", (req, res) => {
     const { actorId } = actorOf(req);
+    // W2M B3(2) — publish any due scheduled posts before serving the feed.
+    try { publishDueScheduledPosts(); } catch { /* never block a read */ }
     const scope = String(req.query.scope ?? "all"); // network | company_followers | all
     const sort = String(req.query.sort ?? "newest"); // newest | featured | following
     // Sprint 19 E — text search and topic filter.
@@ -1680,25 +1718,41 @@ export function registerCommsRoutes(app: Express): void {
         scheduledFor: parsed.data.scheduledFor,
         status: isScheduled ? "scheduled" : "published",
       };
-      posts.set(id, post);
-      // v13 (Avi's Issue 5) — write-through to DB so posts survive restart.
-      try {
-        // Lazy require to avoid circular import at module load.
-        const { persistNetworkPost } = require("./networkPostsStore");
-        persistNetworkPost({
-          id,
-          authorUserId: actorId,
-          authorKind,
-          body: post.body,
-          createdAt: post.createdAt,
-          visibility: parsed.data.visibility,
-          companyId: parsed.data.companyId ?? null,
-          mediaUrls: post.mediaUrls,
-          topics: post.topics,
-        }, actorId);
-      } catch (err) {
-        // Tolerated — keeps the route 200 if persistence layer fails.
+      // W2M B3 (rule #8 — no silent drops) — the PRIMARY DB write must succeed
+      // before we report success. Previously a failed write was swallowed and
+      // the route returned 200, so the post vanished on restart. We now persist
+      // FIRST and return 500 if the primary write fails (removing the in-memory
+      // entry so the projection stays consistent with durable state).
+      //
+      // persistNetworkPost is now a STATIC import (see top of file). This is
+      // cycle-safe: networkPostsStore breaks the cycle with a runtime
+      // `await import("./commsStore")` and has NO static import of this module,
+      // so a static commsStore -> networkPostsStore edge forms no static cycle.
+      // (The prior lazy `require` failed spuriously under the vitest ESM loader
+      // and its error was swallowed — a silent drop this replaces.)
+      const persistResult = persistNetworkPost({
+        id,
+        authorUserId: actorId,
+        authorKind,
+        body: post.body,
+        createdAt: post.createdAt,
+        visibility: parsed.data.visibility,
+        companyId: parsed.data.companyId ?? null,
+        mediaUrls: post.mediaUrls,
+        topics: post.topics,
+        status: post.status,
+        scheduledFor: post.scheduledFor ?? null,
+        publishedAt: isScheduled ? null : post.createdAt,
+      }, actorId);
+      if (!persistResult || persistResult.ok !== true) {
+        posts.delete(id);
+        return res.status(500).json({
+          ok: false,
+          error: "POST_PERSIST_FAILED",
+          message: "Your post could not be saved. Please try again.",
+        });
       }
+      posts.set(id, post);
       // v17 Phase B — Collective slice: persist Collective-visible posts
       // to the dedicated `collective_channel_posts` table so the Collective
       // feed survives restart. Only `public_to_collective` posts go here.
@@ -1725,7 +1779,18 @@ export function registerCommsRoutes(app: Express): void {
             } as any).run();
           });
         } catch (err) {
-          log.warn("[commsStore.collectiveSlice] DB insert failed (memory only):", (err as Error).message);
+          // W2M B3(1) — the requested audience IS the Collective public feed, so
+          // a failed dual-write is a silent drop from that feed. Fail the route
+          // (and roll back the in-memory + network_posts state is already durable
+          // above; we remove the in-memory post so it doesn't render as if it
+          // reached the Collective feed).
+          log.error("[commsStore.collectiveSlice] Collective feed insert FAILED:", (err as Error).message);
+          posts.delete(id);
+          return res.status(500).json({
+            ok: false,
+            error: "COLLECTIVE_POST_PERSIST_FAILED",
+            message: "Your post was saved but could not be published to the Collective feed. Please retry.",
+          });
         }
         // v18 Phase D — SSE fan-out (post-commit, outside the tx).
         try {
@@ -1752,7 +1817,7 @@ export function registerCommsRoutes(app: Express): void {
             emitNotification({
               userId: uid,
               kind: "investor_report.published",
-              title: `New post from ${COMMS_USERS[actorId]?.legalName ?? actorId}`,
+              title: `New post from ${resolveCommsDisplayName(null, actorId, { fullName: COMMS_USERS[actorId]?.legalName })}`,
               body: post.body.slice(0, 100),
               link: `/${viewerRole}/posts/${id}`,
             });
@@ -1967,7 +2032,11 @@ export function registerCommsRoutes(app: Express): void {
       if (crm && crm.email) {
         const provisioned: UserRef = {
           id: parsed.data.targetUserId,
-          legalName: crm.name && crm.name.trim().length > 0 ? crm.name : crm.email,
+          // W2M B5 (rule #13) — NEVER use email as a display name. When the CRM
+          // record has a real name, use it; when only an email exists, fall back
+          // to a safe generic label. The email is retained below in `email` for
+          // non-display metadata only, never surfaced as the name.
+          legalName: crm.name && crm.name.trim().length > 0 ? crm.name : "Invited contact",
           email: crm.email,
           visibility: { screenName: crm.firmName && crm.firmName !== "—" ? crm.firmName : crm.name, visibleToCoMembers: true, visibleToCollectiveNetwork: false },
           capTables: crm.companyId ? [crm.companyId] : [],
@@ -2049,7 +2118,7 @@ export function registerCommsRoutes(app: Express): void {
       emitNotification({
         userId: target.id,
         kind: "message.received",
-        title: `${COMMS_USERS[actorId]?.legalName ?? actorId} opened a DM`,
+        title: `${resolveCommsDisplayName(target.id, actorId)} opened a DM`,
         body: "A new direct message thread was started with you.",
         // v24.0 E7: role-aware link — was hard-coded to /founder regardless of
         // the recipient's role.
@@ -2250,6 +2319,125 @@ export const _commsTest = { channels, messages, posts, outbox, auditEntries, COM
  * Map so the read API (/api/comms/posts) reflects DB state immediately after
  * a server restart.
  */
+/**
+ * W2M B3(4) — moderation-reflect bridge. `postModerationRoutes.moderatePost`
+ * updates `network_posts.deleted_at` + the moderation log, but did NOT touch the
+ * in-memory comms `posts` map or emit an SSE mutation, so a hidden post kept
+ * rendering in `/api/comms/posts` (and the Collective feed) until restart. This
+ * non-sacred bridge reconciles the in-memory projection immediately and emits a
+ * `post` mutation so every connected client re-fetches. Called from the
+ * moderation route AFTER moderatePost succeeds.
+ */
+export function applyPostModerationToComms(
+  postId: string,
+  action: "hide" | "unhide" | "flag",
+  _moderatorUserId: string,
+): void {
+  const post = posts.get(postId);
+  if (action === "hide") {
+    if (post) (post as any).deletedAt = nowIso();
+    emitMutation({ aggregate: "post", id: postId, change: "update" });
+    return;
+  }
+  if (action === "unhide") {
+    if (post) {
+      (post as any).deletedAt = undefined;
+    } else {
+      // In-memory entry missing (e.g. cold cache): rehydrate from DB so the
+      // unhidden post reappears without waiting for a restart.
+      try {
+        const row: any = rawDb()
+          .prepare("SELECT * FROM network_posts WHERE id = ?")
+          .get(postId);
+        if (row) {
+          const cj = (() => { try { return JSON.parse(row.content_json ?? "{}"); } catch { return {}; } })();
+          restorePostFromDb({
+            id: row.id,
+            authorUserId: row.author_user_id,
+            authorKind: cj.authorKind ?? "user",
+            body: row.body,
+            createdAt: row.created_at,
+            visibility: cj.visibility ?? row.audience,
+            companyId: cj.companyId ?? null,
+            mediaUrls: cj.mediaUrls ?? [],
+            topics: cj.topics ?? [],
+          });
+          const restored = posts.get(postId);
+          if (restored) (restored as any).deletedAt = undefined;
+        }
+      } catch (err) {
+        log.warn("[applyPostModerationToComms] unhide rehydrate failed:", (err as Error).message);
+      }
+    }
+    emitMutation({ aggregate: "post", id: postId, change: "update" });
+    return;
+  }
+  // flag — only emit if a visible status/badge would change. We emit a mutation
+  // so any flag badge re-renders; hidden state is unchanged.
+  emitMutation({ aggregate: "post", id: postId, change: "update" });
+}
+
+/**
+ * W2M B3(2) — read-side scheduler. Publishes any in-memory post whose
+ * scheduledFor is due (<= now). Idempotent: a post is published at most once
+ * (status flips scheduled->published, publishedAt set, one notification, DB
+ * content_json updated). Called from GET /api/comms/posts and :id so scheduled
+ * posts become visible at/after their time without a dedicated worker. Returns
+ * the ids published + any failures (never throws — a feed read must still serve).
+ */
+export function publishDueScheduledPosts(now: Date = new Date()): {
+  published: string[];
+  failed: Array<{ id: string; error: string }>;
+} {
+  const published: string[] = [];
+  const failed: Array<{ id: string; error: string }> = [];
+  const nowMs = now.getTime();
+  for (const p of Array.from(posts.values())) {
+    if ((p as any).status !== "scheduled") continue;
+    const sched = (p as any).scheduledFor as string | undefined;
+    if (!sched) continue;
+    const dueMs = Date.parse(sched);
+    if (Number.isNaN(dueMs) || dueMs > nowMs) continue;
+    try {
+      (p as any).status = "published";
+      (p as any).publishedAt = now.toISOString();
+      // Persist the status flip in network_posts.content_json (best-effort but
+      // logged; the in-memory flip already makes it visible this request).
+      try {
+        const row: any = rawDb().prepare("SELECT content_json FROM network_posts WHERE id = ?").get(p.id);
+        if (row) {
+          const cj = (() => { try { return JSON.parse(row.content_json ?? "{}"); } catch { return {}; } })();
+          cj.status = "published";
+          cj.publishedAt = (p as any).publishedAt;
+          rawDb().prepare("UPDATE network_posts SET content_json = ?, updated_at = ? WHERE id = ?")
+            .run(JSON.stringify(cj), (p as any).publishedAt, p.id);
+        }
+      } catch (dbErr) {
+        log.warn("[publishDueScheduledPosts] content_json update failed:", (dbErr as Error).message);
+      }
+      emitMutation({ aggregate: "post", id: p.id, change: "update" });
+      // Notify channel participants ONCE (the post was not notified when created
+      // scheduled).
+      const ch = channels.get(p.channelId);
+      for (const uid of (ch?.participantUserIds ?? []).filter((u: string) => u !== p.authorUserId)) {
+        try {
+          emitNotification({
+            userId: uid,
+            kind: "investor_report.published",
+            title: `New post from ${resolveCommsDisplayName(null, p.authorUserId, { fullName: COMMS_USERS[p.authorUserId]?.legalName })}`,
+            body: p.body.slice(0, 100),
+            link: `/posts/${p.id}`,
+          });
+        } catch { /* noop */ }
+      }
+      published.push(p.id);
+    } catch (err) {
+      failed.push({ id: p.id, error: (err as Error).message });
+    }
+  }
+  return { published, failed };
+}
+
 export function restorePostFromDb(row: {
   id: string;
   authorUserId: string;

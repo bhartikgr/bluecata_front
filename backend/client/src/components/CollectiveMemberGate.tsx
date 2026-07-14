@@ -6,14 +6,17 @@
  * who is NOT an active Collective member every one of those calls 403s, spraying
  * the console with errors and showing a broken page.
  *
- * This gate resolves active membership ONCE (via GET /api/me/chapters — the same
- * source the shell uses for the chapter selector) and:
- *   - while resolving → a lightweight spinner,
- *   - active member    → renders {children} (the real dashboard mounts and its
- *                          member-only queries fire, exactly as before),
- *   - non-member       → renders a marketing panel + an apply CTA and NEVER
- *                          mounts {children}, so none of the members-only calls
- *                          are issued.
+ * W2 A5 (v26.2.0-w2) — the gate now resolves the full first-sign-on decision
+ * via `GET /api/collective/gate-state` (membership, cap-table exemption, and
+ * accreditation status) INSTEAD OF just `/api/me/chapters`, so that an active
+ * member whose `accreditationStatus === "none"` is blocked with the
+ * `CollectiveAccreditationBlocker` self-declaration surface before any
+ * members-only child page mounts. Decision order:
+ *   1. loading                          → spinner.
+ *   2. gate-state fetch error           → visible retry card, children NOT mounted.
+ *   3. !isMember                        → marketing panel + apply CTA (unchanged).
+ *   4. requiresAccreditationDeclaration → CollectiveAccreditationBlocker.
+ *   5. else                             → {children} (the real dashboard mounts).
  *
  * The surrounding CollectiveShell (sidebar + topbar nav) is untouched — the nav
  * stays so a curious non-member can still explore, they just land on the
@@ -21,31 +24,61 @@
  */
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
-import { Sparkles, Users, Briefcase, TrendingUp, ArrowRight } from "lucide-react";
+import { Sparkles, Users, Briefcase, TrendingUp, ArrowRight, AlertTriangle, RotateCw } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
 import { useRole } from "@/lib/role";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { CollectiveAccreditationBlocker } from "@/components/collective/CollectiveAccreditationBlocker";
+import type { CollectiveLegalCopy } from "@shared/collectiveLegalCopy";
 
-type ChaptersResp = { ok?: boolean; chapters?: Array<{ id: string }> };
+interface CollectiveGateStateResponse {
+  ok: boolean;
+  isMember: boolean;
+  isPartnerOnly: boolean;
+  capTableExempt: boolean;
+  accreditationStatus: "none" | "self_certified" | "verified";
+  requiresAccreditationDeclaration: boolean;
+  declarationEndpoint: string;
+  copy?: {
+    gateIndemnity?: CollectiveLegalCopy;
+    declarationIndemnity?: CollectiveLegalCopy;
+  };
+}
 
-function useCollectiveMembership(): { loading: boolean; isMember: boolean } {
-  const q = useQuery<ChaptersResp>({
-    queryKey: ["/api/me/chapters"],
-    queryFn: async () => {
-      try {
-        return await (await apiRequest("GET", "/api/me/chapters")).json();
-      } catch {
-        // COLLECTIVE_ENABLED=0 → the endpoint 503s and apiRequest throws.
-        // Fail closed: treat as "no active membership".
-        return { ok: false, chapters: [] };
-      }
-    },
+const GATE_STATE_KEY = ["/api/collective/gate-state"];
+
+// Fail-closed default used whenever the gate-state fetch throws — treated as
+// "no active membership" so a broken/unavailable endpoint never silently
+// admits a user into members-only pages.
+const FAIL_CLOSED_STATE: CollectiveGateStateResponse = {
+  ok: false,
+  isMember: false,
+  isPartnerOnly: false,
+  capTableExempt: false,
+  accreditationStatus: "none",
+  requiresAccreditationDeclaration: false,
+  declarationEndpoint: "/api/investor/compliance/accreditation-declaration",
+};
+
+function useCollectiveGateState(): {
+  loading: boolean;
+  state: CollectiveGateStateResponse | null;
+  error: Error | null;
+  refetch: () => void;
+} {
+  const q = useQuery<CollectiveGateStateResponse>({
+    queryKey: GATE_STATE_KEY,
+    queryFn: async () => (await apiRequest("GET", "/api/collective/gate-state")).json(),
     retry: false,
     staleTime: 30_000,
   });
-  const isMember = Array.isArray(q.data?.chapters) && q.data!.chapters!.length > 0;
-  return { loading: q.isLoading, isMember };
+  return {
+    loading: q.isLoading,
+    state: q.data ?? null,
+    error: q.isError ? (q.error as Error) : null,
+    refetch: () => void q.refetch(),
+  };
 }
 
 const HIGHLIGHTS = [
@@ -103,8 +136,31 @@ function CollectiveMarketing() {
   );
 }
 
+function CollectiveGateRetry({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div className="max-w-lg mx-auto px-6 py-16" data-testid="collective-member-gate-error">
+      <Card className="border-black/5">
+        <CardContent className="p-6 flex flex-col items-center text-center gap-3">
+          <AlertTriangle className="h-8 w-8 text-[#cc0001]" />
+          <p className="text-sm text-muted-foreground">
+            We could not verify your Collective access. Refresh or contact support.
+          </p>
+          <Button
+            variant="outline"
+            className="gap-2"
+            onClick={onRetry}
+            data-testid="button-collective-gate-retry"
+          >
+            <RotateCw className="h-4 w-4" /> Retry
+          </Button>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 export function CollectiveMemberGate({ children }: { children: React.ReactNode }) {
-  const { loading, isMember } = useCollectiveMembership();
+  const { loading, state, error, refetch } = useCollectiveGateState();
 
   if (loading) {
     return (
@@ -114,7 +170,24 @@ export function CollectiveMemberGate({ children }: { children: React.ReactNode }
     );
   }
 
-  if (!isMember) return <CollectiveMarketing />;
+  if (error) {
+    return <CollectiveGateRetry onRetry={refetch} />;
+  }
+
+  // Fail-closed on a missing/malformed response — never mount children.
+  const resolved = state ?? FAIL_CLOSED_STATE;
+
+  if (!resolved.isMember) return <CollectiveMarketing />;
+
+  if (resolved.requiresAccreditationDeclaration) {
+    return (
+      <CollectiveAccreditationBlocker
+        onDeclared={refetch}
+        gateCopy={resolved.copy?.gateIndemnity}
+        declarationCopy={resolved.copy?.declarationIndemnity}
+      />
+    );
+  }
 
   return <>{children}</>;
 }

@@ -23,9 +23,11 @@
  */
 import type { Express, Request, Response } from "express";
 import { createHash } from "crypto";
+import { z } from "zod";
 import { requirePartnerAuth, assertSubRole } from "./lib/requirePartnerAuth";
 import { requireSignedAgreement } from "./lib/requireSignedAgreement";
 import { getUserContext } from "./lib/userContext";
+import { requireCollectiveMember } from "./lib/requireCollectiveMember";
 import { commitFunded, getLedger } from "./captableCommitStore";
 import { spvEngineStore } from "./spvEngineStore";
 import { resolveDisplayNames } from "./lib/displayNameResolver";
@@ -42,6 +44,18 @@ import {
 } from "../shared/spvEngine";
 
 const WRITE_ROLES = ["managing_partner", "associate", "bd"] as const;
+
+/* W1 C2 (v26.2.0) — strict schema for the investor compliance profile PUT.
+ * Dates are validated as bounded non-empty strings (fixtures may not be RFC3339);
+ * .strict() rejects any unknown key so a partner cannot smuggle arbitrary fields. */
+const investorComplianceProfilePatchSchema = z.object({
+  kycStatus: z.enum(["none", "pending", "verified", "expired", "manual_review"]).optional(),
+  kycVerifiedAt: z.string().trim().min(1).max(64).nullable().optional(),
+  kycExpiry: z.string().trim().min(1).max(64).nullable().optional(),
+  accreditationStatus: z.enum(["none", "self_certified", "verified", "manual_review"]).optional(),
+  accreditationCertifiedAt: z.string().trim().min(1).max(64).nullable().optional(),
+  jurisdiction: z.string().trim().min(2).max(64).nullable().optional(),
+}).strict();
 
 /** minor units → decimal-as-string the ledger expects (2dp). */
 function minorToDecimal(minor: number): string {
@@ -264,16 +278,41 @@ export function registerSpvEngineRoutes(app: Express): void {
   /* ── compliance profile (reusable, investor-level) ─────────────────────── */
   app.get("/api/partner/me/compliance/:investorId", requirePartnerAuth, (req: Request, res: Response) => {
     try {
+      // W1 C1 — IDOR guard: prove the investor belongs to this partner BEFORE any read.
+      const ctx = req.partnerContext!;
+      const investorId = String(req.params.investorId);
+      if (!spvEngineStore.partnerCanAccessInvestorCompliance(ctx.partnerId, investorId)) {
+        return res.status(403).json({
+          error: "INVESTOR_NOT_RELATED_TO_PARTNER",
+          message: "Investor is not related to this partner workspace.",
+        });
+      }
       res.json({
-        profile: spvEngineStore.getComplianceProfile(String(req.params.investorId)),
-        gates: spvEngineStore.gateStatus(String(req.params.investorId)),
+        profile: spvEngineStore.getComplianceProfile(investorId),
+        gates: spvEngineStore.gateStatus(investorId),
       });
     } catch (e) { err(res, e); }
   });
 
   app.put("/api/partner/me/compliance/:investorId", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
     try {
-      res.json({ profile: spvEngineStore.upsertComplianceProfile(String(req.params.investorId), req.body ?? {}) });
+      // W1 C2 — IDOR guard BEFORE any write, then strict body validation.
+      const ctx = req.partnerContext!;
+      const investorId = String(req.params.investorId);
+      if (!spvEngineStore.partnerCanAccessInvestorCompliance(ctx.partnerId, investorId)) {
+        return res.status(403).json({
+          error: "INVESTOR_NOT_RELATED_TO_PARTNER",
+          message: "Investor is not related to this partner workspace.",
+        });
+      }
+      const parsed = investorComplianceProfilePatchSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res.status(400).json({
+          error: "INVALID_COMPLIANCE_PROFILE_PATCH",
+          issues: parsed.error.flatten(),
+        });
+      }
+      res.json({ profile: spvEngineStore.upsertComplianceProfile(investorId, parsed.data) });
     } catch (e) { err(res, e); }
   });
 
@@ -575,7 +614,10 @@ export function registerSpvEngineRoutes(app: Express): void {
   );
 
   /* ── Collective visibility context (read-only) ─────────────────────────── */
-  app.get("/api/collective/spvs", (req: Request, res: Response) => {
+  // W1 H2 (v26.2.0) — Collective-only SPV visibility is a member benefit; gate it
+  // with the canonical membership middleware (admin bypass included). The inner
+  // isAuthed check remains as harmless defense-in-depth.
+  app.get("/api/collective/spvs", requireCollectiveMember, (req: Request, res: Response) => {
     const ctx = getUserContext(req);
     if (!ctx?.isAuthed) return res.status(401).json({ error: "AUTH_REQUIRED" });
     res.json({ spvs: spvEngineStore.listVisibleForContext("collective") });

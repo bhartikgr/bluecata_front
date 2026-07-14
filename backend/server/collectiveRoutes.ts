@@ -33,6 +33,9 @@ import { listContacts } from "./adminContactsStore";
 // v25.45 ROUND 2 (F13b) — privacy resolver: every rendered user name MUST route
 // through resolveDisplayName so the founder/member privacy toggles take effect.
 import { resolveDisplayName } from "./lib/userPrivacyResolver";
+// W3 #9 (live consumption) — lazy drain of privacy.visibility.changed on the
+// directory read path (NON-SACRED bridge; see server/privacyVisibilityBridge.ts).
+import { syncInvestorVisibilityToUserPrivacy } from "./privacyVisibilityBridge";
 import { getAuditLog } from "./adminPlatformStore";
 import { getOutbox } from "./bridgeStore";
 import { computeCompositeForCompany, computeAllComposites, computeAutoTier } from "./dscScoringEngine";
@@ -992,6 +995,14 @@ export function registerCollectiveRoutes(app: Express): void {
    * Collective-scoped member directory (PII-filtered).
    * ----------------------------------------------------------------- */
   app.get("/api/collective/members", requireCollectiveMember, async (req: Request, res: Response) => {
+    /* W3 #9 (live consumption) — lazily drain any not-yet-processed
+     * privacy.visibility.changed events into the sacred resolver BEFORE we read
+     * display names, so a privacy toggle just saved by a member takes effect on
+     * this very read (zero latency; complements the background drain tick and
+     * mirrors the lazy-drain pattern in commsStore.publishDueScheduledPosts).
+     * Idempotent + fail-safe: never blocks the directory read. */
+    try { syncInvestorVisibilityToUserPrivacy(); } catch { /* never block a read */ }
+
     /* v25.36 — chapter-scope the member directory. Previously listContacts({})
      * returned EVERY investor + consortium_partner platform-wide, exposing the
      * cross-chapter roster. The `contacts` table has no chapter column, so we
@@ -1027,9 +1038,15 @@ export function registerCollectiveRoutes(app: Express): void {
     // c.displayName` legacy bypass leaked raw display names for no-row members
     // and has been removed. A member WITH a saved row that sets
     // visibleInCollectiveDirectory:false also renders as "Private Investor".
+    // W3 #9 (spec §7.4 Bypass P1) — a contact with NO linked user id has no
+    // resolvable privacy preference at all. This is a SOCIAL DIRECTORY
+    // surface, so the fail-closed rule applies: no linkage means fail
+    // PRIVATE, never fall back to the raw contact `displayName`. The prior
+    // `if (!uid) return c.displayName;` legacy bypass leaked names for
+    // unlinked contacts and has been removed.
     const dirName = (c: { email?: string | null; displayName: string }): string => {
       const uid = (c.email && emailToUserId.get(c.email.toLowerCase())) || "";
-      if (!uid) return c.displayName; // no user linkage → keep legacy name
+      if (!uid) return "Private Investor";
       // v25.45 ROUND 7 — the Collective directory is a SOCIAL surface, not a
       // counterparty surface (isCoMember:false). It ALWAYS requires explicit
       // opt-in (visibleInCollectiveDirectory:true); no-row members render as
@@ -1041,26 +1058,31 @@ export function registerCollectiveRoutes(app: Express): void {
     };
 
     const members = scoped
-      .map((c) => ({
-        // ALLOWED fields only — no email, no AUM, no check sizes
-        id: c.id,
-        displayName: dirName(c),
-        kind: c.kind,
-        type: c.type,
-        status: c.status,
-        region: c.region,
-        hqCountry: c.hqCountry,
-        industries: c.industries,
-        stages: c.stages,
-        partnerWeight: c.partnerWeight,
-        partnerSince: c.partnerSince,
-        website: c.website,
-        linkedinUrl: c.linkedinUrl,
-        tags: c.tags,
-        // Initials for avatar — derive from the RESOLVED display name so a
-        // private investor never leaks initials from their real name.
-        initials: dirName(c).split(/\s+/).map((w) => w[0]).filter(Boolean).slice(0, 2).join("").toUpperCase(),
-      }));
+      .map((c) => {
+        // Compute the resolved name ONCE per contact (avoid double-calling
+        // dirName for displayName + initials).
+        const resolvedName = dirName(c);
+        return {
+          // ALLOWED fields only — no email, no AUM, no check sizes
+          id: c.id,
+          displayName: resolvedName,
+          kind: c.kind,
+          type: c.type,
+          status: c.status,
+          region: c.region,
+          hqCountry: c.hqCountry,
+          industries: c.industries,
+          stages: c.stages,
+          partnerWeight: c.partnerWeight,
+          partnerSince: c.partnerSince,
+          website: c.website,
+          linkedinUrl: c.linkedinUrl,
+          tags: c.tags,
+          // Initials for avatar — derive from the RESOLVED display name so a
+          // private investor never leaks initials from their real name.
+          initials: resolvedName.split(/\s+/).map((w) => w[0]).filter(Boolean).slice(0, 2).join("").toUpperCase(),
+        };
+      });
 
     res.json({ members, total: members.length });
   });

@@ -108,11 +108,22 @@ export function registerV2546Routes(app: Express): void {
           const verdict = canDM(viewerId, c.userId);
           if (!verdict.allowed) return null;
           const role = resolveDmRole(c.userId);
+          // W3 #9 (spec §7.4 Bypass P6) — pass the PROVEN co-member flag from the
+          // canDM verdict instead of leaving isCoMember at its fail-private
+          // default. 'real' (known counterparty, e.g. founder<->founder /
+          // partner conversations) and 'unblocked-by-cap-table' (investor<->
+          // investor sharing a cap table) both unambiguously mean the viewer
+          // has a proven shared-cap-table/counterparty relationship with this
+          // recipient. 'alias' does NOT prove that relationship, so it must NOT
+          // set isCoMember — an explicit opt-out on the subject's side still
+          // wins either way inside the resolver.
+          const isCoMember =
+            verdict.privacyMode === "real" || verdict.privacyMode === "unblocked-by-cap-table";
           const displayName = resolveDisplayName(
             c.userId,
             viewerId,
             "message",
-            { legalName: c.legalName ?? c.userId },
+            { legalName: c.legalName ?? c.userId, isCoMember },
           );
           return {
             userId: c.userId,

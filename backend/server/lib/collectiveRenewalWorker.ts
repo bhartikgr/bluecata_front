@@ -43,6 +43,10 @@ import { log } from "./logger";
 // deactivated. Without this the gate `requireCollectiveMember` still passes
 // for a non-paying ex-member because it keys off `collectiveMembershipStore.isActive`.
 import * as collectiveMembershipStore from "../collectiveMembershipStore";
+import {
+  enforceMembershipDeactivation,
+  processPendingMembershipDeactivations,
+} from "../collectiveMembershipDeactivationStore";
 
 interface BillingRowDB {
   id: string;
@@ -159,6 +163,13 @@ export async function tick(): Promise<{ swept: number; renewed: number; cancelle
         }
       }
     }
+    // W1 H6 (v26.2.0) — retry any pending fail-closed deactivations (state-table
+    // only; no Airwallex/payment code). Resolves markers once deactivate succeeds.
+    try {
+      processPendingMembershipDeactivations();
+    } catch (err) {
+      log.warn("[collectiveRenewalWorker.tick] pending-deactivation retry failed:", (err as Error).message);
+    }
   } catch (err) {
     log.error("[collectiveRenewalWorker.tick] unexpected error:", (err as Error).message);
   } finally {
@@ -250,17 +261,15 @@ async function cancelMembership(row: BillingRowDB): Promise<void> {
    * gate keeps passing because it checks `collectiveMembershipStore.isActive`,
    * not the billing row's status. Best-effort (the billing transition above
    * is the source of truth; membership deactivation is a downstream gate). */
-  try {
-    collectiveMembershipStore.deactivate(
-      row.user_id,
-      "system:collective_renewal_worker",
-    );
-  } catch (deactivateErr) {
-    log.warn(
-      "[collectiveRenewalWorker.cancelMembership] membership deactivate failed (non-fatal):",
-      (deactivateErr as Error).message,
-    );
-  }
+  // W1 H6 (v26.2.0) — FAIL-CLOSED: record intent-to-deactivate BEFORE attempting,
+  // so a deactivate() failure leaves the gate denying via the open marker.
+  enforceMembershipDeactivation({
+    userId: row.user_id,
+    billingId: row.id,
+    targetStatus: "cancelled",
+    source: "system:collective_renewal_worker",
+    reason: "cancel_at_period_end",
+  });
   try {
     appendAdminAudit(
       "system:collective_renewal_worker",
@@ -293,17 +302,14 @@ async function markPastDue(row: BillingRowDB, reason: string): Promise<void> {
    * If a subsequent successful webhook lands, dispatchAirwallexEvent's
    * activate path re-enables the membership; this is the documented
    * recovery channel. */
-  try {
-    collectiveMembershipStore.deactivate(
-      row.user_id,
-      "system:collective_renewal_worker",
-    );
-  } catch (deactivateErr) {
-    log.warn(
-      "[collectiveRenewalWorker.markPastDue] membership deactivate failed (non-fatal):",
-      (deactivateErr as Error).message,
-    );
-  }
+  // W1 H6 (v26.2.0) — FAIL-CLOSED: record intent-to-deactivate BEFORE attempting.
+  enforceMembershipDeactivation({
+    userId: row.user_id,
+    billingId: row.id,
+    targetStatus: "past_due",
+    source: "system:collective_renewal_worker",
+    reason,
+  });
   try {
     appendAdminAudit(
       "system:collective_renewal_worker",

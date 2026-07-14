@@ -33,11 +33,15 @@
  */
 import type { Request, Response, NextFunction } from "express";
 import * as collectiveMembershipStore from "../collectiveMembershipStore";
+import {
+  hasOpenMembershipDeactivation,
+  hasCancelledOrPastDueBilling,
+} from "../collectiveMembershipDeactivationStore";
 import { getMembership, isOnCapTable } from "../membershipStore";
 // W3-C — accreditation self-declaration read (append-only 0103 table, with a
 // denormalized compliance-profile grace fallback). Source of truth for the
 // individual-membership accreditation sub-check.
-import { hasAccreditedDeclaration } from "../investorComplianceRoutes";
+import { getAccreditationGateStatus } from "../investorComplianceRoutes";
 import { log } from "./logger";
 // v25.32 P0'' — detect partner-only sessions so the 403 can tell the client
 // to switch to the partner workspace instead of silently rendering a
@@ -97,6 +101,26 @@ export function requireCollectiveMember(req: Request, res: Response, next: NextF
     next();
     return;
   }
+  // W1 H6 (v26.2.0) — FAIL-CLOSED: if billing flipped to cancelled/past_due and a
+  // membership deactivation is pending/unresolved (deactivate() may have thrown),
+  // deny access here regardless of what the four active-source signals say. Any
+  // of those signals could still report "active" from a stale mirror; this open
+  // marker is the authoritative fail-closed override. Admins already returned above.
+  // Two INDEPENDENT fail-closed signals (round-2 verifier fix): (1) an open
+  // deactivation marker, AND (2) the user's latest billing row being
+  // cancelled/past_due. (2) is persisted by the billing transition itself, so
+  // the gate stays fail-closed even if the marker write failed (the fail-open
+  // GPT-5.5 flagged: billing status is committed BEFORE the marker is written).
+  if (hasOpenMembershipDeactivation(userId) || hasCancelledOrPastDueBilling(userId)) {
+    res.status(403).json({
+      ok: false,
+      error: "not_collective_member",
+      reason: "billing_deactivation_pending",
+      message: "Your Collective membership is being updated after a billing change. Access will resume once billing is current.",
+    });
+    return;
+  }
+
   // v16 UNIFIED CHECK — any of three sources counts as "active member".
   const fromAdminStore = collectiveMembershipStore.isActive(userId);
   let fromSeedStore = false;
@@ -112,64 +136,75 @@ export function requireCollectiveMember(req: Request, res: Response, next: NextF
     fromAdminStore || fromSeedStore || fromCtxOverlay || isDbActiveMember(userId);
 
   if (isActiveMember) {
-    // W3-C — C-5 INDIVIDUAL Collective MEMBERSHIP now requires BOTH:
-    //   (a) on a cap table (HARD gate, fail-closed), AND
-    //   (b) a valid accreditation self-declaration (SOFT, flag-gated).
+    // W2 A1 — four-step decision tree (auth + active already satisfied above):
+    //   step 3: cap-table sub-check, now EXEMPT-AWARE (admin-bootstrapped members
+    //           carry a durable cap_table_exempt flag and bypass ONLY this check);
+    //   step 4: first-sign-on accreditation CAPTURE — a genuine "none" member is
+    //           blocked (fail-closed) until they self-declare, regardless of the
+    //           old SOFT/strict flag. Verified members are never downgraded.
     // Admins already returned above; this only narrows genuine members.
 
-    // (a) Cap-table sub-check — fail-closed: a read error denies.
-    let onCapTable = false;
+    // ---- step 3: cap-table sub-check (exempt-aware) ----
+    // Read the durable exemption from the authoritative membership store (DB-
+    // backed). capTableExempt bypasses ONLY the cap-table sub-check; it does NOT
+    // bypass accreditation capture below.
+    let capTableExempt = false;
     try {
-      onCapTable = isOnCapTable(userId);
-    } catch {
-      onCapTable = false; /* fail-closed on read error */
-    }
-    if (!onCapTable) {
-      res.status(403).json({
-        ok: false,
-        error: "not_on_cap_table",
-        message:
-          "Collective membership requires an active cap-table position. Once you hold equity in a Collective company you'll gain access.",
-      });
-      return;
+      capTableExempt = collectiveMembershipStore.get(userId)?.capTableExempt === true;
+    } catch { capTableExempt = false; /* fail-closed: treat as non-exempt */ }
+
+    if (!capTableExempt) {
+      let onCapTable = false;
+      try {
+        onCapTable = isOnCapTable(userId);
+      } catch {
+        onCapTable = false; /* fail-closed on read error */
+      }
+      if (!onCapTable) {
+        res.status(403).json({
+          ok: false,
+          error: "not_on_cap_table",
+          message:
+            "Collective membership requires an active cap-table position. Once you hold equity in a Collective company you'll gain access.",
+        });
+        return;
+      }
     }
 
-    // (b) Accreditation sub-check — behind COLLECTIVE_C5_ACCRED_ENFORCE.
-    // DEFAULT = SOFT (env unset / anything but "strict"): log-only, never block,
-    // and a read error must NOT break admission. STRICT: fail-closed 403.
-    const strict = process.env.COLLECTIVE_C5_ACCRED_ENFORCE === "strict";
-    let accredited = false;
-    let accredReadError = false;
+    // ---- step 4: first-sign-on accreditation capture ----
+    // Fail-closed: a read error denies with ACCREDITATION_STATUS_UNAVAILABLE
+    // (otherwise a first-sign-on user could enter without a recorded
+    // declaration). A resolved "none" status blocks with a client-actionable
+    // ACCREDITATION_DECLARATION_REQUIRED so the gate blocker can render.
+    let accredStatus: "none" | "self_certified" | "verified";
     try {
-      accredited = hasAccreditedDeclaration(userId);
+      accredStatus = getAccreditationGateStatus(userId).status;
     } catch (err) {
-      accredReadError = true;
       log.warn(
         "[requireCollectiveMember] accreditation read failed for",
         userId,
         "-",
         (err as Error).message,
       );
+      res.status(403).json({
+        ok: false,
+        error: "ACCREDITATION_STATUS_UNAVAILABLE",
+        message:
+          "We couldn't verify your accreditation status right now. Please refresh or try again shortly.",
+      });
+      return;
     }
 
-    if (strict) {
-      // Fail-closed: a missing declaration OR a read error denies.
-      if (!accredited) {
-        res.status(403).json({
-          ok: false,
-          error: "ACCREDITATION_NOT_DECLARED",
-          message:
-            "Collective membership requires a current accredited-investor self-certification. Please complete your accreditation declaration to continue.",
-        });
-        return;
-      }
-    } else if (!accredited && !accredReadError) {
-      // SOFT default — log the gap for rollout visibility, but admit.
-      log.info(
-        "[requireCollectiveMember] SOFT accreditation gate: admitting member",
-        userId,
-        "without a self-declaration (COLLECTIVE_C5_ACCRED_ENFORCE unset).",
-      );
+    if (accredStatus === "none") {
+      res.status(403).json({
+        ok: false,
+        error: "ACCREDITATION_DECLARATION_REQUIRED",
+        requiresAccreditationDeclaration: true,
+        declarationEndpoint: "/api/investor/compliance/accreditation-declaration",
+        message:
+          "Please complete your accredited-investor self-declaration to enter Collective. This is a self-certification, not KYC/AML.",
+      });
+      return;
     }
 
     next();

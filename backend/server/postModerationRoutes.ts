@@ -10,6 +10,9 @@ import { requireAdmin } from "./lib/authMiddleware";
 import { appendAdminAudit } from "./adminPlatformStore";
 import { sanitizeErrorMessage } from "./lib/sanitize";
 import { log } from "./lib/logger";
+// W2M B3(4) — moderation-reflect bridge (non-sacred, in commsStore). No circular
+// import: commsStore does not import postModerationRoutes/Store.
+import { applyPostModerationToComms } from "./commsStore";
 import {
   listPostsForModeration,
   getModerationLog,
@@ -87,6 +90,17 @@ export function registerPostModerationRoutes(app: Express): void {
         return res
           .status(500)
           .json({ ok: false, error: "moderate_failed", message: sanitizeErrorMessage(err) });
+      }
+      // W2M B3(4) — reflect the moderation into the in-memory comms feed + emit
+      // an SSE mutation so hidden/unhidden posts change in /api/comms/posts and
+      // the Collective feed IMMEDIATELY (previously only the DB row changed).
+      try {
+        applyPostModerationToComms(postId, action as "hide" | "unhide" | "flag", actorOf(req));
+      } catch (bridgeErr) {
+        log.warn(
+          "[postModerationRoutes.moderate] comms reflect bridge failed (non-fatal):",
+          (bridgeErr as Error).message,
+        );
       }
       try {
         appendAdminAudit(actorOf(req), `network_post:${postId}`, `post_${action}`, {

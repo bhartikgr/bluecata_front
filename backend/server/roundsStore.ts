@@ -156,32 +156,49 @@ export async function hydrateRoundsStore(): Promise<void> {
  * cache. Also emits the v11 B-V11-7 `round.created` audit event.
  */
 /**
- * Wave C3 (Shadie 7a) — round names must be UNIQUE PER COMPANY (case-insensitive,
- * across all non-deleted rounds). Two rounds named "MVP" for the same company
- * (even at different stages) confuse investors, so we reject a duplicate at
- * create time. Helpers below are also reused by the client's auto-suggest.
+ * W3 Shadie 4a (RE-SCOPE of the earlier Wave C3 rule) — round names must be
+ * unique PER COMPANY + STAGE (`type`), not per company across ALL stages.
+ * Per Ozan: a company MAY run two rounds at the same stage (e.g. two Series A)
+ * as long as each is named uniquely ("Asia-market-entry" vs "EU VC-partnership").
+ * Matching is case-insensitive AND whitespace-insensitive (collapse internal
+ * runs of whitespace) so "July 13" / "july  13" collide. When `stage` is
+ * omitted the check falls back to company-wide (backward-compatible for any
+ * caller that can't supply a stage).
  */
 function normalizeRoundName(name: string): string {
-  return (name ?? "").trim().toLowerCase();
+  return (name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 }
-export function roundNameExistsForCompany(companyId: string, name: string, excludeRoundId?: string): boolean {
+function normalizeStage(stage: string | null | undefined): string {
+  return (stage ?? "").trim().toLowerCase();
+}
+export function roundNameExistsForCompany(
+  companyId: string,
+  name: string,
+  stage?: string | null,
+  excludeRoundId?: string,
+): boolean {
   const target = normalizeRoundName(name);
   if (!target) return false;
-  return getRoundsForCompany(companyId).some(
-    (r) => r.id !== excludeRoundId && normalizeRoundName(r.name) === target,
-  );
+  const targetStage = normalizeStage(stage);
+  return getRoundsForCompany(companyId).some((r) => {
+    if (r.id === excludeRoundId) return false;
+    if (normalizeRoundName(r.name) !== target) return false;
+    // Stage-scoped when a stage is supplied; company-wide fallback otherwise.
+    if (targetStage) return normalizeStage(r.type) === targetStage;
+    return true;
+  });
 }
 /**
- * Suggest a unique, human-friendly round name for a company by suffixing
+ * Suggest a unique, human-friendly round name for a company+stage by suffixing
  * " (2)", " (3)", … until free. Returns `base` unchanged when it is already
  * unique. The client pre-fills this (editable) so the founder is never blocked.
  */
-export function suggestUniqueRoundName(companyId: string, base: string): string {
+export function suggestUniqueRoundName(companyId: string, base: string, stage?: string | null): string {
   const trimmed = (base ?? "").trim();
-  if (!trimmed || !roundNameExistsForCompany(companyId, trimmed)) return trimmed;
+  if (!trimmed || !roundNameExistsForCompany(companyId, trimmed, stage)) return trimmed;
   for (let n = 2; n < 1000; n++) {
     const candidate = `${trimmed} (${n})`;
-    if (!roundNameExistsForCompany(companyId, candidate)) return candidate;
+    if (!roundNameExistsForCompany(companyId, candidate, stage)) return candidate;
   }
   return `${trimmed} (${Date.now()})`;
 }
@@ -213,7 +230,8 @@ export function createRound(input: {
   {
     const trimmedName = (input.name ?? "").trim();
     if (!trimmedName) throw new Error("ROUND_NAME_REQUIRED");
-    if (roundNameExistsForCompany(input.companyId, trimmedName)) {
+    // W3 Shadie 4a — scope the duplicate check to company + STAGE (input.type).
+    if (roundNameExistsForCompany(input.companyId, trimmedName, input.type)) {
       throw new Error("ROUND_NAME_DUPLICATE");
     }
   }

@@ -23,6 +23,7 @@ import { DollarSign, Plus, Trash2 } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatMinor, toMinor } from "@/lib/currency";
 import { useToast } from "@/hooks/use-toast";
+import { labelFor, FEE_KIND_LABELS, CADENCE_LABELS } from "@/lib/collectiveLabels"; /* W3.6 */
 
 interface ScheduleRow {
   id: string;
@@ -226,14 +227,14 @@ export default function CollectivePaymentSchedules() {
                 <TableBody>
                   {rows.map((r) => (
                     <TableRow key={r.id} data-testid={`row-cps-${r.id}`}>
-                      <TableCell className="font-medium">{r.fee_kind}</TableCell>
+                      <TableCell className="font-medium">{labelFor(FEE_KIND_LABELS, r.fee_kind)}</TableCell>
                       <TableCell>
                         {r.scope_kind === "platform"
-                          ? <span className="text-muted-foreground">platform</span>
-                          : <Badge variant="secondary">{r.scope_kind === "tier" ? r.tier : `member:${(r.member_id || "").slice(0, 8)}`}</Badge>}
+                          ? <span className="text-muted-foreground">Platform</span>
+                          : <Badge variant="secondary">{r.scope_kind === "tier" ? labelFor({}, r.tier ?? undefined) : `Member: ${(r.member_id || "").slice(0, 8)}`}</Badge>}
                       </TableCell>
                       <TableCell>{fmtMoney(r.amount_minor, r.currency)}</TableCell>
-                      <TableCell className="text-xs text-muted-foreground">{r.cadence}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{labelFor(CADENCE_LABELS, r.cadence)}</TableCell>
                       <TableCell className="text-xs">{new Date(r.effective_from).toLocaleDateString()}</TableCell>
                       <TableCell>
                         <Button variant="ghost" size="sm" onClick={() => expireMut.mutate(r.id)} data-testid={`button-expire-cps-${r.id}`}>

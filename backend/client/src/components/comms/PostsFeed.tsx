@@ -18,6 +18,7 @@ import {
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -27,9 +28,40 @@ import {
  DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, queryClient, ApiError } from "@/lib/queryClient";
 import { timeAgo } from "@/lib/format";
 import { ANONYMOUS_LABEL } from "@/lib/comms/visibility";
+
+/**
+ * W2M B4 — styled schedule datetime field.
+ *
+ * Thin wrapper around shadcn `Input` (type="datetime-local") so the field
+ * matches the app's input styling instead of the unstyled native control.
+ * Keeps the exact same value/onChange contract as the native input it
+ * replaces (value: "" | "YYYY-MM-DDTHH:mm", onChange receives the raw string).
+ */
+function DateTimeLocalField({
+ value,
+ onChange,
+ testId,
+ ariaLabel,
+}: {
+ value: string;
+ onChange: (value: string) => void;
+ testId?: string;
+ ariaLabel?: string;
+}) {
+ return (
+ <Input
+ type="datetime-local"
+ value={value}
+ onChange={(e) => onChange(e.target.value)}
+ className="h-8 px-2 text-xs w-[190px]"
+ data-testid={testId}
+ aria-label={ariaLabel}
+ />
+ );
+}
 
 type PostView = {
  id: string;
@@ -117,30 +149,71 @@ export function PostsFeed({
  // Sprint 22 Wave 1 — use entitlement context as primary identity (DEF-006 fix for PostsFeed).
  const feedMeId = ctx?.userId ?? me.data?.id ?? "";
 
+ // W2M B4 — resolve the active companyId from the entitlement context already
+ // available to this component (no new fetch). Founders post as their active
+ // company; investors post to the cap table of a company they actually hold
+ // a position on. If neither is known, `followers`/`cap_table` options are
+ // DISABLED below rather than silently omitting companyId server-side.
+ const activeCompanyId = ctx?.founder?.activeCompanyId
+ || ctx?.investor?.capTablePositions?.[0]?.companyId
+ || "";
+ const hasCompanyContext = !!activeCompanyId;
+
  const createPost = useMutation({
  mutationFn: async () => {
  // For "both" — fire two posts (network + followers) for parity with live site.
- const reqs: Promise<unknown>[] = [];
+ // W2M B4 — collect settled results (not Promise.all-or-nothing) so a
+ // partial failure on "both" can be reported precisely instead of masking
+ // which half succeeded.
+ type Req = { audience: "network" | "followers" | "cap_table"; promise: Promise<Response> };
+ const reqs: Req[] = [];
  if (visibility === "network" || visibility === "both") {
- reqs.push(apiRequest("POST", "/api/comms/posts", {
+ reqs.push({
+ audience: "network",
+ promise: apiRequest("POST", "/api/comms/posts", {
  body: draft, visibility: "network", authorKind: "user",
  scheduledFor: scheduledFor || undefined,
- }));
+ }),
+ });
  }
  if (visibility === "followers" || visibility === "both") {
- // Sprint 20 Wave 2 / Patch v4 — server resolves the active company id from the session.
- reqs.push(apiRequest("POST", "/api/comms/posts", {
+ // W2M B4 — companyId now sent explicitly from the active-company context;
+ // the audience option is disabled below when hasCompanyContext is false.
+ reqs.push({
+ audience: "followers",
+ promise: apiRequest("POST", "/api/comms/posts", {
  body: draft, visibility: "followers", authorKind: "company",
+ companyId: activeCompanyId || undefined,
  scheduledFor: scheduledFor || undefined,
- }));
+ }),
+ });
  }
  if (visibility === "cap_table") {
- reqs.push(apiRequest("POST", "/api/comms/posts", {
+ reqs.push({
+ audience: "cap_table",
+ promise: apiRequest("POST", "/api/comms/posts", {
  body: draft, visibility: "cap_table", authorKind: "user",
+ companyId: activeCompanyId || undefined,
  scheduledFor: scheduledFor || undefined,
- }));
+ }),
+ });
  }
- await Promise.all(reqs);
+ const settled = await Promise.allSettled(reqs.map((r) => r.promise));
+ const failed = settled
+ .map((s, i) => ({ s, audience: reqs[i].audience }))
+ .filter((x) => x.s.status === "rejected") as Array<{ s: PromiseRejectedResult; audience: string }>;
+ const succeeded = settled.filter((s) => s.status === "fulfilled").length;
+ if (failed.length > 0) {
+ // W2M B4 — never report false success. If ANY create failed (incl. a
+ // partial failure on "both"), throw with enough detail for onError to
+ // render a precise partial-failure toast with retry.
+ throw Object.assign(new Error("post_create_partial_failure"), {
+ failedAudiences: failed.map((f) => f.audience),
+ succeededCount: succeeded,
+ totalCount: reqs.length,
+ firstError: failed[0].s.reason,
+ });
+ }
  },
  onSuccess: () => {
  setDraft("");
@@ -156,8 +229,30 @@ export function PostsFeed({
  toast({ title: isScheduled ? "Post scheduled" : "Post published", description: desc });
  },
  // v25.13 NM3 — was previously a silent failure; surface error to user.
+ // W2M B4 — on a 500 (POST_PERSIST_FAILED / COLLECTIVE_POST_PERSIST_FAILED)
+ // or partial "both" failure, keep the composer open with the draft text
+ // intact (no setDraft("")/setScheduledFor("") here) and show a destructive
+ // toast — never a success state.
  onError: (e: unknown) => {
- const msg = e instanceof Error ? e.message : "Could not publish post.";
+ const failedAudiences = (e as { failedAudiences?: string[] })?.failedAudiences;
+ const succeededCount = (e as { succeededCount?: number })?.succeededCount ?? 0;
+ const totalCount = (e as { totalCount?: number })?.totalCount ?? 1;
+ if (failedAudiences && failedAudiences.length > 0 && totalCount > 1 && succeededCount > 0) {
+ // Partial failure on the "both" split — some audiences succeeded.
+ queryClient.invalidateQueries({ queryKey: ["/api/comms/posts"] });
+ toast({
+ title: "Post partially failed",
+ description: `Could not post to: ${failedAudiences.join(", ")}. Your text is still in the composer — retry to finish posting.`,
+ variant: "destructive",
+ });
+ return;
+ }
+ const firstError = (e as { firstError?: unknown })?.firstError;
+ // W2M B4 — surface the server's POST_PERSIST_FAILED / COLLECTIVE_POST_PERSIST_FAILED
+ // 500 body verbatim (via ApiError.message) rather than a generic string.
+ const msg = firstError instanceof ApiError ? firstError.message
+ : firstError instanceof Error ? firstError.message
+ : e instanceof Error ? e.message : "Could not publish post.";
  toast({ title: "Post failed", description: msg, variant: "destructive" });
  },
  });
@@ -289,16 +384,18 @@ export function PostsFeed({
  <SelectItem value="network">
  <span className="inline-flex items-center gap-2"><Globe2 className="h-3.5 w-3.5" /> Network</span>
  </SelectItem>
- <SelectItem value="followers">
- <span className="inline-flex items-center gap-2"><UserCircle2 className="h-3.5 w-3.5" /> My company followers</span>
+ {/* W2M B4 — followers/cap_table audiences need a resolved companyId to post
+ with; disable rather than silently posting without one. */}
+ <SelectItem value="followers" disabled={!hasCompanyContext} data-testid="select-post-visibility-followers">
+ <span className="inline-flex items-center gap-2"><UserCircle2 className="h-3.5 w-3.5" /> My company followers{!hasCompanyContext ? " (no active company)" : ""}</span>
  </SelectItem>
- <SelectItem value="both">
+ <SelectItem value="both" disabled={!hasCompanyContext} data-testid="select-post-visibility-both">
  <span className="inline-flex items-center gap-2"><Sparkles className="h-3.5 w-3.5" /> Both</span>
  </SelectItem>
  {/* Sprint 20 Wave 2 — show cap_table for investors on a cap table (defect 77) */}
  {(role === "founder" || investorHasCapTable) && (
- <SelectItem value="cap_table">
- <span className="inline-flex items-center gap-2"><Lock className="h-3.5 w-3.5" /> Cap table only</span>
+ <SelectItem value="cap_table" disabled={!hasCompanyContext} data-testid="select-post-visibility-cap-table">
+ <span className="inline-flex items-center gap-2"><Lock className="h-3.5 w-3.5" /> Cap table only{!hasCompanyContext ? " (no active company)" : ""}</span>
  </SelectItem>
  )}
  </SelectContent>
@@ -306,13 +403,11 @@ export function PostsFeed({
 
  <label className="inline-flex flex-col gap-0.5 leading-none" data-testid="label-post-schedule">
   <span className="text-[10px] text-muted-foreground">Schedule for later (optional)</span>
-  <input
-   type="datetime-local"
+  <DateTimeLocalField
    value={scheduledFor}
-   onChange={(e) => setScheduledFor(e.target.value)}
-   className="h-8 px-2 text-xs rounded-md border border-input bg-background"
-   data-testid="input-post-schedule"
-   aria-label="Schedule for later (optional)"
+   onChange={setScheduledFor}
+   testId="post-schedule-datetime"
+   ariaLabel="Schedule for later (optional)"
   />
  </label>
  <Button
@@ -339,7 +434,7 @@ export function PostsFeed({
  </Button>
  <Button
  size="sm"
- disabled={!draft.trim() || createPost.isPending}
+ disabled={!draft.trim() || createPost.isPending || ((visibility !== "network") && !hasCompanyContext)}
  onClick={() => createPost.mutate()}
  className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
  data-testid="button-post-submit"
@@ -635,7 +730,9 @@ function PostCard({
  <ul className="mt-3 pt-3 border-t border-border/60 space-y-2">
  {post.comments.slice(-2).map((c) => (
  <li key={c.id} className="text-xs flex gap-2">
- <span className="font-medium">{c.authorLabel ?? c.userId ?? "Anonymous"}:</span>
+ {/* W2M B5 — identity display safety: NEVER fall back to the raw userId
+ (which can be an email-derived id) as the primary author name. */}
+ <span className="font-medium">{c.authorLabel || "Collective member"}:</span>
  <span className="text-muted-foreground flex-1">{c.body}</span>
  <span className="text-[10px] text-muted-foreground/80">{timeAgo(c.createdAt)}</span>
  </li>

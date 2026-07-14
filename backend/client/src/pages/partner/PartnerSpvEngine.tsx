@@ -28,6 +28,7 @@ import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { COLLECTIVE_SECTORS_45 } from "@shared/schema";
 import { buildCurrencyOptions } from "@/lib/currencyOptions";
+import { labelFor, CARRY_BASIS_LABELS, DISTRIBUTION_SCOPE_LABELS } from "@/lib/collectiveLabels"; /* W3.6 */
 import {
   SPV_CARRY_BASES,
   SPV_CARRY_BASIS_HELP,
@@ -606,7 +607,7 @@ export default function PartnerSpvEngine() {
               <div className="flex justify-between items-center">
                 <div>
                   <div className="font-medium">{s.name} {s.migratedFrom && <span className="text-[10px] px-1 rounded" style={{ background: "rgba(4,30,65,0.1)", color: NAVY }}>migrated</span>}</div>
-                  <div className="text-xs text-[var(--cv-color-text-muted)]">{(SPV_TYPE_LABELS as Record<string, string>)[s.spvType] ?? s.spvType} · {s.status} · {s.distributionScope} · carry {s.carryBasis}</div>
+                  <div className="text-xs text-[var(--cv-color-text-muted)]">{(SPV_TYPE_LABELS as Record<string, string>)[s.spvType] ?? s.spvType} · {s.status} · {labelFor(DISTRIBUTION_SCOPE_LABELS, s.distributionScope)} · Carry: {labelFor(CARRY_BASIS_LABELS, s.carryBasis)}</div>
                 </div>
                 <div className="flex items-center gap-3">
                   <div className="text-right font-mono">{fmt(s.targetRaiseMinor, s.currency)}</div>

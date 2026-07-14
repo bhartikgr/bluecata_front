@@ -60,6 +60,11 @@ export type InitialShareholder = {
   // Wave C3 (Shadie 2a) — optional personal note injected into this investor's
   // invitation email (message only; never the round terms).
   note?: string | null;
+  // W3 Shadie 3a — optional stage focus + invite expiry (days) captured in the
+  // manual-investor modal and threaded into the round invitation. Nullable so
+  // pre-existing rows / CRM picks stay valid.
+  stageFocus?: string | null;
+  expiryDays?: number | null;
   source: InitialShareholderSource;
   crmContactId?: string | null;
   addedAt: string;
@@ -187,6 +192,12 @@ export function registerRoundInitialShareholdersRoutes(app: Express): void {
         email: optStr(raw.email),
         checkSize: normaliseDecimalString(raw.checkSize),
         note: optStr(raw.note),
+        // W3 Shadie 3a — stage focus (free text) + expiry days (positive int).
+        stageFocus: optStr(raw.stageFocus),
+        expiryDays: (() => {
+          const n = Number(raw.expiryDays);
+          return Number.isInteger(n) && n > 0 && n <= 3650 ? n : null;
+        })(),
         source,
         crmContactId: typeof raw.crmContactId === "string" ? raw.crmContactId : null,
         addedAt: now,
@@ -252,6 +263,8 @@ export function registerRoundInitialShareholdersRoutes(app: Express): void {
           investorName?: string | null; investorFirstName?: string | null;
           investorLastName?: string | null; investorCompany?: string | null;
           note?: string | null;
+          stageFocus?: string | null;
+          expiryDays?: number;
           invitedByUserId: string; tenantId?: string | null;
         }) => Promise<unknown>)
       | null = null;
@@ -274,6 +287,9 @@ export function registerRoundInitialShareholdersRoutes(app: Express): void {
             investorCompany: row.company,
             // Wave C3 (Shadie 2a) — personal note injected into the email.
             note: row.note ?? null,
+            // W3 Shadie 3a — stage focus + expiry threaded into the invitation.
+            stageFocus: row.stageFocus ?? null,
+            ...(typeof row.expiryDays === "number" ? { expiryDays: row.expiryDays } : {}),
             invitedByUserId: ctx.userId ?? "founder",
             tenantId: tenantForCompany(companyId),
           });

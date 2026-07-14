@@ -919,6 +919,60 @@ export const spvEngineStore = {
     return (subsBySpv.get(spvId) ?? []).slice();
   },
 
+  /**
+   * W1 C1/C2 (v26.2.0) — IDOR guard for the investor-level compliance routes.
+   * A partner may read/write an investor's reusable compliance profile ONLY if
+   * the investor has a durable relationship to that partner:
+   *   (1) a non-withdrawn spv_subscription on an SPV the partner sponsors, OR
+   *   (2) an active partner_sourced_investors row for (partner_id, investor_id).
+   * Fail CLOSED on any error/missing table. Each DB probe is independently
+   * try/caught so that a missing secondary table (partner_sourced_investors is
+   * created lazily in partnerConsortiumRoutes) never suppresses the primary
+   * SPV-roster check, and an in-memory fallback covers un-hydrated DB rows.
+   */
+  partnerCanAccessInvestorCompliance(partnerId: string, investorId: string): boolean {
+    if (!partnerId || !investorId) return false;
+    // (1) Canonical SPV LP roster — investor subscribed to a partner-sponsored SPV.
+    try {
+      const sub = rawDb().prepare(
+        `SELECT 1
+           FROM spv_subscription ss
+           JOIN spv s ON s.id = ss.spv_id
+          WHERE s.sponsor_partner_id = ?
+            AND ss.investor_id = ?
+            AND COALESCE(ss.status, '') <> 'withdrawn'
+            AND s.archived_at IS NULL
+          LIMIT 1`,
+      ).get(partnerId, investorId);
+      if (sub) return true;
+    } catch { /* fail closed on this probe; try the next source */ }
+
+    // (2) Explicit partner-sourced investor relationship (table is lazily created).
+    try {
+      const sourced = rawDb().prepare(
+        `SELECT 1
+           FROM partner_sourced_investors
+          WHERE partner_id = ?
+            AND investor_id = ?
+            AND COALESCE(status, 'active') NOT IN ('revoked', 'deleted', 'inactive')
+          LIMIT 1`,
+      ).get(partnerId, investorId);
+      if (sourced) return true;
+    } catch { /* table may not exist yet; fall through */ }
+
+    // (3) In-memory fallback if DB rows are not hydrated yet; fail closed on error.
+    try {
+      for (const s of this.listByPartner(partnerId)) {
+        if ((this.listSubscriptions(partnerId, s.id) ?? []).some(
+          (sub) => sub.investorId === investorId && sub.status !== "withdrawn",
+        )) {
+          return true;
+        }
+      }
+    } catch { /* fail closed */ }
+    return false;
+  },
+
   _persistSub(sub: SpvSubscriptionDTO): void {
     const { prev, curr } = chain("spv_subscription", { ...sub, revisionHash: undefined });
     sub.revisionHash = curr;

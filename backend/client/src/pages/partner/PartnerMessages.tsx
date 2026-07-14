@@ -8,17 +8,152 @@
  * read another partner's or another tenant's private threads. `hideHeader`
  * suppresses the shared component's investor/founder breadcrumb; PartnerShell
  * supplies the on-brand "Messages" header instead.
+ *
+ * W2M B2 — New-DM button + picker. Mirrors the founder Messages.tsx pattern
+ * (GET /api/comms/users candidate list, POST /api/comms/dm/start on select)
+ * but sourced from the comms users directory instead of the founder CRM,
+ * since a partner has no CRM surface. Never assumes success without `ok`;
+ * 403 (blocked) and 422 (contact_not_provisioned) render visible, actionable
+ * copy instead of failing silently.
  */
+import { useState } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { MessagesPage } from "@/components/comms/MessagesPage";
 import { PartnerShell } from "@/components/partner/PartnerShell";
 import { useRequirePartnerRole } from "@/lib/partner/useRequirePartnerRole";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Plus, Search, MessageSquare } from "lucide-react";
+import { apiRequest, ApiError } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
+
+type CommsUser = {
+  id: string;
+  legalName: string;
+  visibility?: { screenName?: string };
+  roles?: string[];
+  location?: string;
+};
 
 export default function PartnerMessages() {
   const role = useRequirePartnerRole();
+  const { toast } = useToast();
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerQuery, setPickerQuery] = useState("");
+
+  const usersQ = useQuery<CommsUser[]>({
+    queryKey: ["/api/comms/users"],
+    queryFn: async () => (await apiRequest("GET", "/api/comms/users")).json(),
+    enabled: pickerOpen,
+  });
+
+  // W2M B2 — never assume success without `ok`; 403/422 get visible,
+  // actionable copy instead of a silent failure.
+  const startDm = useMutation({
+    mutationFn: async (targetUserId: string) => {
+      const r = await apiRequest("POST", "/api/comms/dm/start", { targetUserId });
+      return (await r.json()) as { ok: boolean; channelId?: string };
+    },
+    onSuccess: (data) => {
+      setPickerOpen(false);
+      if (!data.ok || !data.channelId) {
+        toast({
+          title: "Could not start message",
+          description: "This contact isn't available to message yet.",
+          variant: "destructive",
+        });
+      }
+    },
+    onError: (e: unknown) => {
+      setPickerOpen(false);
+      if (e instanceof ApiError && e.status === 403) {
+        toast({ title: "You can't message this person", variant: "destructive" });
+        return;
+      }
+      if (e instanceof ApiError && e.status === 422) {
+        toast({
+          title: "Contact must accept their invitation first",
+          description: e.message,
+          variant: "destructive",
+        });
+        return;
+      }
+      const msg = e instanceof Error ? e.message : "Could not start the message.";
+      toast({ title: "Failed to start message", description: msg, variant: "destructive" });
+    },
+  });
+
   if (!role.ready || !role.identity) return null;
   const me = role.identity;
+
+  const filteredUsers = (usersQ.data ?? []).filter((u) => {
+    const q = pickerQuery.trim().toLowerCase();
+    if (!q) return true;
+    const screenName = u.visibility?.screenName ?? "";
+    return u.legalName.toLowerCase().includes(q) || screenName.toLowerCase().includes(q);
+  });
+
   return (
     <PartnerShell title="Messages" tier={me.tier} subRole={me.subRole} partnerName={me.identity.name}>
+      <div className="mb-3 flex items-center justify-end">
+        <Button
+          size="sm"
+          className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white h-8"
+          onClick={() => setPickerOpen(true)}
+          data-testid="partner-new-dm-button"
+        >
+          <Plus className="h-3.5 w-3.5 mr-1" /> New message
+        </Button>
+      </div>
+
+      <Dialog open={pickerOpen} onOpenChange={setPickerOpen}>
+        <DialogContent className="max-w-lg" data-testid="partner-new-dm-picker">
+          <DialogHeader>
+            <DialogTitle className="text-sm">Start a new message</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="relative">
+              <Search className="h-3.5 w-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={pickerQuery}
+                onChange={(e) => setPickerQuery(e.target.value)}
+                placeholder="Search by name…"
+                className="h-9 pl-8 text-sm"
+                autoFocus
+                data-testid="partner-new-dm-search"
+              />
+            </div>
+            <div className="max-h-72 overflow-y-auto divide-y divide-border rounded-md border border-border">
+              {usersQ.isLoading && (
+                <div className="p-3 text-xs text-muted-foreground">Loading contacts…</div>
+              )}
+              {!usersQ.isLoading && filteredUsers.length === 0 && (
+                <div className="p-3 text-xs text-muted-foreground">No eligible contacts.</div>
+              )}
+              {filteredUsers.slice(0, 30).map((u) => (
+                <button
+                  key={u.id}
+                  type="button"
+                  className="w-full text-left p-2 text-xs hover:bg-muted flex items-center gap-2 disabled:opacity-50"
+                  onClick={() => startDm.mutate(u.id)}
+                  disabled={startDm.isPending}
+                  data-testid={`partner-new-dm-pick-${u.id}`}
+                >
+                  <MessageSquare className="h-3 w-3 text-[hsl(0_100%_40%)]" />
+                  <span className="font-medium">{u.legalName}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setPickerOpen(false)} data-testid="partner-new-dm-cancel">
+              Cancel
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <MessagesPage role="investor" hideHeader />
     </PartnerShell>
   );

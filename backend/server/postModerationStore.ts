@@ -13,6 +13,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { rawDb } from "./db/connection";
+import { log } from "./lib/logger";
 
 export type ModerationAction = "flag" | "hide" | "unhide";
 
@@ -55,8 +56,12 @@ export function listPostsForModeration(includeHidden = true): ModeratedPost[] {
       .prepare(`SELECT * FROM network_posts ${where} ORDER BY created_at DESC, id DESC`)
       .all();
     return rows.map(rowToPost);
-  } catch {
-    return [];
+  } catch (err) {
+    // W2M B3(4) — no silent empty: a DB read failure previously returned [],
+    // which the admin UI rendered as "no posts to moderate" (a lie). Throw so
+    // the route returns 500 with a visible error instead.
+    log.error("[postModerationStore.listPostsForModeration] read failed:", (err as Error).message);
+    throw err;
   }
 }
 

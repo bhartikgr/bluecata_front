@@ -30,8 +30,11 @@ interface CollectiveApp {
   id: string;
   companyId?: string;
   companyName?: string;  // C-011 fix v23.6: resolved company name
+  companyDisplayName?: string; // W3.4 — human label, never a founder/company opaque id
+  technicalCompanyId?: string | null; // W3.4 — debug-only, never rendered in a display slot
   founderId?: string;
   founderName?: string;  // C-011 fix v23.6: resolved founder name
+  founderEmail?: string | null; // W3.2 — separate email slot (never used as the name)
   userId?: string;
   status: AppStatus;
   submittedAt: string;
@@ -43,9 +46,26 @@ interface CollectiveApp {
   coverLetter?: string;
   references?: string;
   pitchDeckFilename?: string;
+  // W3.3 — sanitized pitch-deck metadata + download link (never a raw s3Key).
+  pitchDeck?: {
+    id: string;
+    originalName: string;
+    mimeType: string;
+    sizeBytes: number;
+    uploadedAt: string;
+    downloadUrl: string;
+  } | null;
   // investor-side fields
   thesis?: string;
   memberTier?: string;
+}
+
+/** W3.3 — human-readable file size, e.g. "2.4 MB". */
+function fmtBytes(n?: number): string {
+  if (!n || n <= 0) return "—";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 const STATUSES: Array<AppStatus | "all"> = ["all", "submitted", "reviewing", "accepted", "rejected", "waitlisted"];
@@ -121,10 +141,15 @@ export default function CollectiveApplications() {
   const items = data?.items ?? [];
 
   // C-013 fix v23.6: row click opens detail modal
+  // W3.4 — companyDisplayName is ALWAYS a human label (server-computed:
+  // canonical company name, or "<Founder>'s company", or "Company pending").
+  // NEVER fall back to companyId/userId/founderId in this display slot.
   const displayName = (app: CollectiveApp) =>
-    app.companyName ?? app.companyId ?? app.userId ?? app.founderId ?? "—";
+    app.companyDisplayName ?? app.companyName ?? "Company pending";
+  // W3.2 — founderName is server-resolved and never a raw id/email; guard
+  // client-side too in case of a future regression.
   const founderDisplayName = (app: CollectiveApp) =>
-    app.founderName ?? app.founderId ?? "—";
+    app.founderName && !/^u_/.test(app.founderName) ? app.founderName : "Unknown founder";
 
   return (
     <>
@@ -246,10 +271,30 @@ export default function CollectiveApplications() {
                       <div><span className="text-muted-foreground text-xs uppercase">Tier</span><div className="capitalize">{selected.memberTier}</div></div>
                     )}
                   </div>
-                  {selected.pitchDeckFilename && (
+                  {selected.pitchDeck ? (
                     <div>
                       <span className="text-xs text-muted-foreground uppercase">Pitch Deck</span>
-                      <p className="text-sm mt-1">{selected.pitchDeckFilename}</p>
+                      <p className="text-sm mt-1">
+                        <a
+                          href={selected.pitchDeck.downloadUrl}
+                          className="text-blue-600 hover:underline font-medium"
+                          data-testid="link-pitch-deck-download"
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Download pitch deck
+                        </a>
+                        <span className="text-xs text-muted-foreground ml-2">
+                          {selected.pitchDeck.originalName} · {selected.pitchDeck.mimeType} · {fmtBytes(selected.pitchDeck.sizeBytes)}
+                        </span>
+                      </p>
+                    </div>
+                  ) : selected.pitchDeckFilename && (
+                    <div>
+                      <span className="text-xs text-muted-foreground uppercase">Pitch Deck</span>
+                      <p className="text-sm mt-1 text-muted-foreground" data-testid="text-pitch-deck-unavailable">
+                        {selected.pitchDeckFilename} (file not available for download)
+                      </p>
                     </div>
                   )}
                   {selected.asks && (
