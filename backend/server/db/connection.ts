@@ -1213,6 +1213,93 @@ function applyV2538PricingConfigSchema(db: any) {
        ('amplifier', 0.04),
        ('nexus', 0.05),
        ('founding_member', 0.06);`,
+    // --- W4 (migration 0111): Collective dynamic subscription-package CRUD ---
+    // Additive + idempotent; NO live packages seeded (empty -> env/static fallback).
+    // Independent of Capavate pricing + Consortium fee tables; touches no payment code.
+    `CREATE TABLE IF NOT EXISTS collective_subscription_configs (
+      id TEXT PRIMARY KEY,
+      slug TEXT NOT NULL UNIQUE,
+      label TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      entitlements_json TEXT NOT NULL DEFAULT '[]',
+      amount_minor INTEGER NOT NULL,
+      currency TEXT NOT NULL DEFAULT 'USD',
+      interval TEXT NOT NULL DEFAULT 'annual',
+      airwallex_tier TEXT NOT NULL,
+      airwallex_price_id TEXT NOT NULL,
+      membership_role TEXT NOT NULL DEFAULT 'member',
+      status TEXT NOT NULL DEFAULT 'draft',
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      effective_from TEXT,
+      effective_to TEXT,
+      version INTEGER NOT NULL DEFAULT 1,
+      prev_revision_hash TEXT NOT NULL DEFAULT '0000000000000000000000000000000000000000000000000000000000000000',
+      revision_hash TEXT NOT NULL DEFAULT '',
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      created_by TEXT,
+      updated_by TEXT,
+      deleted_at TEXT
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_csc_status_sort ON collective_subscription_configs(status, sort_order, label);`,
+    `CREATE INDEX IF NOT EXISTS idx_csc_slug ON collective_subscription_configs(slug);`,
+    `CREATE INDEX IF NOT EXISTS idx_csc_airwallex_tier ON collective_subscription_configs(airwallex_tier);`,
+    `CREATE INDEX IF NOT EXISTS idx_csc_price_id ON collective_subscription_configs(airwallex_price_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_csc_effective_window ON collective_subscription_configs(status, effective_from, effective_to);`,
+    `CREATE TABLE IF NOT EXISTS collective_subscription_config_history (
+      history_id TEXT PRIMARY KEY,
+      config_id TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      snapshot_json TEXT NOT NULL,
+      prev_revision_hash TEXT NOT NULL,
+      revision_hash TEXT NOT NULL,
+      changed_at TEXT NOT NULL,
+      changed_by TEXT,
+      change_kind TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_csch_config_version ON collective_subscription_config_history(config_id, version);`,
+    `CREATE INDEX IF NOT EXISTS idx_csch_changed_at ON collective_subscription_config_history(changed_at);`,
+    // --- W6 (migration 0113): Ask-an-Expert partner-responder / connect backend ---
+    // Additive + idempotent; independent of the expert_questions/answers hash chain.
+    `CREATE TABLE IF NOT EXISTS partner_responder_registry (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT,
+      partner_id TEXT NOT NULL,
+      chapter_id TEXT,
+      display_name TEXT NOT NULL,
+      topics_json TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      created_by TEXT,
+      updated_by TEXT,
+      deleted_at TEXT
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_prr_partner ON partner_responder_registry(partner_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_prr_chapter_status ON partner_responder_registry(chapter_id, status);`,
+    `CREATE TABLE IF NOT EXISTS partner_connect_requests (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT,
+      chapter_id TEXT,
+      question_id TEXT NOT NULL,
+      requester_user_id TEXT NOT NULL,
+      partner_id TEXT NOT NULL,
+      message TEXT,
+      status TEXT NOT NULL DEFAULT 'requested',
+      responder_user_id TEXT,
+      answer_id TEXT,
+      decline_reason TEXT,
+      responded_at TEXT,
+      prev_hash TEXT,
+      curr_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_pcr_question ON partner_connect_requests(question_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_pcr_partner_status ON partner_connect_requests(partner_id, status);`,
+    `CREATE INDEX IF NOT EXISTS idx_pcr_requester ON partner_connect_requests(requester_user_id);`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS uq_pcr_question_partner ON partner_connect_requests(question_id, partner_id);`,
   ];
   try {
     const tx = db.transaction(() => { for (const sql of stmts) db.exec(sql); });
@@ -1436,6 +1523,17 @@ function applyV12AdditiveAlters(db: any) {
     ["investor_crm_contacts", "ALTER TABLE investor_crm_contacts ADD COLUMN last_name TEXT"],
     ["captable_commits", "ALTER TABLE captable_commits ADD COLUMN holder_first_name TEXT"],
     ["captable_commits", "ALTER TABLE captable_commits ADD COLUMN holder_last_name TEXT"],
+    // ---- W-SAFE (2026-07-14) — unpriced-instrument (SAFE / convertible note)
+    // commit support (migration 0112). Additive + idempotent; existing rows keep
+    // instrument_class='priced' so no historical commit/hash is reinterpreted.
+    // instrument_class + principal_amount + valuation_cap + discount_pct ARE part
+    // of the commit hash body for unpriced rows (buildCommitBody) — this is the
+    // one place cap-table hash-chain metadata is intentionally extended.
+    ["captable_commits", "ALTER TABLE captable_commits ADD COLUMN instrument_class TEXT NOT NULL DEFAULT 'priced'"],
+    ["captable_commits", "ALTER TABLE captable_commits ADD COLUMN principal_amount TEXT"],
+    ["captable_commits", "ALTER TABLE captable_commits ADD COLUMN valuation_cap TEXT"],
+    ["captable_commits", "ALTER TABLE captable_commits ADD COLUMN discount_pct TEXT"],
+    ["funded_queue", "ALTER TABLE funded_queue ADD COLUMN instrument_class TEXT NOT NULL DEFAULT 'priced'"],
   ];
   for (const [table, sql] of alters) {
     try {
@@ -2002,6 +2100,10 @@ function buildProductionTableStatements(): string[] {
       compliance_hold INTEGER NOT NULL DEFAULT 0,
       holder_first_name TEXT,        -- v25.51 name-split metadata (NEVER hashed)
       holder_last_name TEXT,         -- v25.51 name-split metadata (NEVER hashed)
+      instrument_class TEXT NOT NULL DEFAULT 'priced', -- W-SAFE: 'priced'|'unpriced' (hashed for unpriced)
+      principal_amount TEXT,         -- W-SAFE: committed principal for unpriced (hashed)
+      valuation_cap TEXT,            -- W-SAFE: SAFE/note valuation cap (hashed for unpriced)
+      discount_pct TEXT,             -- W-SAFE: SAFE/note discount %% (hashed for unpriced)
       deleted_at TEXT
     );`,
     `CREATE TABLE IF NOT EXISTS funded_queue (
@@ -2013,6 +2115,7 @@ function buildProductionTableStatements(): string[] {
       amount TEXT NOT NULL,
       currency TEXT NOT NULL,
       shares TEXT NOT NULL,
+      instrument_class TEXT NOT NULL DEFAULT 'priced', -- W-SAFE: carried from enqueue
       enqueued_at TEXT NOT NULL
     );`,
     `CREATE TABLE IF NOT EXISTS term_sheet_revisions (

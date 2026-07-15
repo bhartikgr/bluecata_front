@@ -24,6 +24,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 /* v25.12 NH3 — toast errors on all four mutations. */
 import { useToast } from "@/hooks/use-toast";
+import PartnerConnectCard from "@/components/collective/PartnerConnectCard"; /* W6 — connect a partner */
 import {
   ChevronUp,
   ChevronDown,
@@ -322,6 +323,11 @@ export default function QuestionDetailPage(): JSX.Element | null {
           ) : null}
         </CardContent>
       </Card>
+
+      {/* W6 — connect a Consortium Partner to respond to this question. */}
+      <div className="mt-4">
+        <PartnerConnectCard questionId={id} />
+      </div>
 
       {/* Answers */}
       <h2 className="text-lg font-semibold mt-6 mb-3">

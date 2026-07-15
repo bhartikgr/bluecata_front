@@ -39,6 +39,7 @@ import {
  type YourDecisionState, type SupportedCurrency, type SoftCircleType,
  type MaIntelligence,
 } from "@shared/schema";
+import { useMaIntelligence } from "@/hooks/useMaIntelligence"; /* W7 — shared M&A intel hook */
 import NotFound from "@/pages/not-found";
 
 type Inv = {
@@ -113,10 +114,18 @@ export default function InvestorCompanyDetail({
    apiRequest("GET", `/api/dataroom?companyId=${encodeURIComponent(id ?? "")}`).then((r) => r.json()),
   enabled: !!id,
  });
- const intel = useQuery<MaIntelligence>({
- queryKey: ["/api/investor/ma/intelligence", id],
- enabled: !!id,
- });
+ /* W7 — route through the SHARED M&A intelligence hook (single source across
+    investor + Collective surfaces). `intel.data` stays defined only when data is
+    visible (available or redacted), so all existing render branches below are
+    behavior-identical. The parity envelope (maIntel) additionally drives the
+    friendly redacted / no-data messaging. */
+ const maIntel = useMaIntelligence({ companyId: id, surface: "investor", enabled: !!id });
+ const intel = {
+   data:
+     maIntel.status === "available" || maIntel.status === "redacted"
+       ? (maIntel.data as MaIntelligence)
+       : undefined,
+ };
 
  // Sprint 20 Wave 2 — fetch real co-investors from API; graceful 404 fallback
  // Sprint 22 Wave 1 — DEF-003 fix: added userId (platform userId) and allowDM fields.
@@ -262,6 +271,17 @@ export default function InvestorCompanyDetail({
 
  {/* M&A Intelligence inline */}
  {intel.data && <MaIntelligenceSection intel={intel.data} companyId={id} />}
+ {/* W7 — friendly redacted / no-data / forbidden messaging (server-authored copy). */}
+ {(maIntel.status === "redacted" || maIntel.status === "no_data" || maIntel.status === "forbidden") && (
+ <Card data-testid="ma-intel-notice">
+ <CardHeader className="pb-2"><CardTitle className="text-base">M&amp;A intelligence</CardTitle></CardHeader>
+ <CardContent>
+ <p className="text-sm text-muted-foreground" data-testid="ma-intel-notice-message">
+ {maIntel.status === "forbidden" ? maIntel.accessMessage : maIntel.envelope.accessMessage}
+ </p>
+ </CardContent>
+ </Card>
+ )}
  </TabsContent>
 
  {/* TEAM */}

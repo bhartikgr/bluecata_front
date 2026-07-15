@@ -27,6 +27,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import KycDocumentsPanel from "@/components/admin/KycDocumentsPanel"; /* W-KYC — admin KYC surface */
 import {
   Select,
   SelectContent,
@@ -577,6 +578,11 @@ export default function AdminInvestorDetail() {
                 Investor Profile
               </TabsTrigger>
             )}
+            {merged.kind === "investor" && (
+              <TabsTrigger value="kyc" data-testid="tab-kyc">
+                KYC
+              </TabsTrigger>
+            )}
             {merged.kind === "founder" && (
               <TabsTrigger value="founder_links" data-testid="tab-founder-links">
                 Founder Links
@@ -928,6 +934,13 @@ export default function AdminInvestorDetail() {
           )}
 
           {/* ── Tags & Notes tab ──────────────────────────── */}
+          {/* ── KYC tab (W-KYC) ─────────────────────────── */}
+          {merged.kind === "investor" && (
+            <TabsContent value="kyc">
+              <KycDocumentsPanel investorId={String(id)} />
+            </TabsContent>
+          )}
+
           <TabsContent value="tags_notes">
             <div className="space-y-4">
               <Card>

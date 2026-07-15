@@ -1,0 +1,202 @@
+/*
+ * W8 (2026-07-14) — SHARED Collective + Consortium Partner brand reskin.
+ *
+ * WHY THIS FILE EXISTS
+ * --------------------
+ * The Consortium Partner workspace had its own reskin (partner-theme.css, scoped
+ * to [data-product="partner"]) but the Collective MEMBER surface
+ * ([data-product="collective"]) had NO scoped theme at all — so the two sections
+ * did NOT share the same design. Ozan's directive: Collective and Consortium
+ * Partner must look IDENTICAL, both adopting the live capavate.com marketing look.
+ *
+ * WHAT IT DOES
+ * ------------
+ * EVERY rule below is scoped to BOTH product surfaces via the shared selector
+ * group `[data-product="collective"], [data-product="partner"]` so the two render
+ * byte-for-byte identically. It consumes ONLY the canonical `--cv-*` tokens from
+ * capavate-tokens.css (which is left byte-UNCHANGED — no new hexes, Tier-9 brand
+ * lock intact). It edits NO markup, NO testid, NO sacred marketing component.
+ *
+ * SCOPE ISOLATION
+ * ---------------
+ * The Capavate FOUNDER workspace renders through AppShell, which does NOT set a
+ * `data-product` attribute, so none of these rules touch it. Only the two
+ * Collective-family surfaces (both wrapped by CollectiveShell, which sets
+ * data-product = "collective" | "partner") receive the reskin.
+ *
+ * Target look (capavate.com marketing parity): Instrument Serif headings,
+ * Montserrat body, warm off-white page (--cv-color-bg #fafaf8), white cards with
+ * warm borders (--cv-color-border #ddd9d3) + soft shadow, navy panels
+ * (--cv-color-navy #041e41), Capavate-red full-pill CTAs (--cv-color-primary
+ * #cc0001, radius 999px). WCAG-AA preserved (red on white ≈ 5.9:1).
+ */
+
+/* ── Body typography + page surface ─────────────────────────────────────── */
+[data-product="collective"],
+[data-product="partner"] {
+  font-family: var(--cv-font-body);
+  color: var(--cv-color-text);
+}
+
+[data-product="collective"] main,
+[data-product="partner"] main {
+  background: var(--cv-color-bg) !important;
+}
+
+/* ── Display headings → Instrument Serif ────────────────────────────────── */
+[data-product="collective"] .cv-page-header__title,
+[data-product="collective"] h1,
+[data-product="collective"] h2,
+[data-product="collective"] [data-testid="page-title"],
+[data-product="partner"] .cv-page-header__title,
+[data-product="partner"] h1,
+[data-product="partner"] h2,
+[data-product="partner"] [data-testid="page-title"] {
+  font-family: var(--cv-font-display);
+  letter-spacing: 0.005em;
+  color: var(--cv-color-text);
+}
+
+/* ── Card / section TITLES → Instrument Serif, navy ─────────────────────── */
+[data-product="collective"] h3,
+[data-product="collective"] .cv-card-title,
+[data-product="collective"] .partner-section-title,
+[data-product="collective"] .cv-section-title,
+[data-product="collective"] [data-slot="card-title"],
+[data-product="collective"] [data-testid$="-title"],
+[data-product="partner"] h3,
+[data-product="partner"] .cv-card-title,
+[data-product="partner"] .partner-section-title,
+[data-product="partner"] .cv-section-title,
+[data-product="partner"] [data-slot="card-title"],
+[data-product="partner"] [data-testid$="-title"] {
+  font-family: var(--cv-font-display);
+  color: var(--cv-color-navy);
+  letter-spacing: 0.005em;
+}
+
+/* ── Small uppercase section eyebrows / nav-group labels → brand red ────── */
+[data-product="collective"] .cv-nav-group-label,
+[data-product="collective"] .partner-eyebrow,
+[data-product="partner"] .cv-nav-group-label,
+[data-product="partner"] .partner-eyebrow {
+  color: var(--cv-color-primary);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+/* ── Card SURFACES (canonical + raw Tailwind card containers) ───────────── */
+[data-product="collective"] .cv-app-card,
+[data-product="collective"] .bg-white.rounded-lg.border,
+[data-product="collective"] .bg-white.rounded-xl.border,
+[data-product="collective"] [data-slot="card"],
+[data-product="partner"] .cv-app-card,
+[data-product="partner"] .bg-white.rounded-lg.border,
+[data-product="partner"] .bg-white.rounded-xl.border,
+[data-product="partner"] [data-slot="card"] {
+  background: var(--cv-color-surface);
+  border-color: var(--cv-color-border) !important;
+  border-radius: var(--cv-radius-lg);
+  box-shadow: var(--cv-shadow-sm);
+}
+
+/* ── Primary action buttons → red full pill ─────────────────────────────── */
+[data-product="collective"] button.bg-primary,
+[data-product="collective"] a.bg-primary,
+[data-product="collective"] .cv-btn--primary,
+[data-product="collective"] button[data-variant="default"],
+[data-product="partner"] button.bg-primary,
+[data-product="partner"] a.bg-primary,
+[data-product="partner"] .cv-btn--primary,
+[data-product="partner"] button[data-variant="default"] {
+  border-radius: var(--cv-radius-full);
+  background-color: var(--cv-color-primary);
+  color: var(--cv-color-text-inverse);
+  font-family: var(--cv-font-body);
+  font-weight: 600;
+}
+
+[data-product="collective"] button.bg-primary:hover,
+[data-product="collective"] a.bg-primary:hover,
+[data-product="collective"] .cv-btn--primary:hover,
+[data-product="collective"] button[data-variant="default"]:hover,
+[data-product="partner"] button.bg-primary:hover,
+[data-product="partner"] a.bg-primary:hover,
+[data-product="partner"] .cv-btn--primary:hover,
+[data-product="partner"] button[data-variant="default"]:hover {
+  background-color: var(--cv-color-primary-hover);
+}
+
+/* ── Filter chips / active pills ────────────────────────────────────────── */
+[data-product="collective"] .cv-filter-chip--active,
+[data-product="partner"] .cv-filter-chip--active {
+  background: var(--cv-color-primary);
+  border-color: var(--cv-color-primary);
+  color: var(--cv-color-text-inverse);
+}
+
+/* ── Focus rings → brand red ────────────────────────────────────────────── */
+[data-product="collective"] input:focus,
+[data-product="collective"] select:focus,
+[data-product="collective"] textarea:focus,
+[data-product="partner"] input:focus,
+[data-product="partner"] select:focus,
+[data-product="partner"] textarea:focus {
+  outline: none;
+  border-color: var(--cv-color-primary);
+  box-shadow: 0 0 0 3px var(--cv-color-primary-light);
+}
+
+/* ── TABLES → warm header, hairline dividers, comfortable rows ──────────── */
+[data-product="collective"] table thead,
+[data-product="partner"] table thead {
+  background: var(--cv-color-surface-cream);
+}
+[data-product="collective"] table thead th,
+[data-product="partner"] table thead th {
+  color: var(--cv-color-text-secondary);
+  font-weight: 600;
+}
+[data-product="collective"] table tbody tr,
+[data-product="partner"] table tbody tr {
+  border-color: var(--cv-color-divider);
+}
+[data-product="collective"] table tbody tr:hover,
+[data-product="partner"] table tbody tr:hover {
+  background: var(--cv-color-surface-cream);
+}
+
+/* ── Section-caption strips (bg-surface-2) → warm cream ─────────────────── */
+[data-product="collective"] .bg-\[var\(--cv-color-surface-2\)\],
+[data-product="partner"] .bg-\[var\(--cv-color-surface-2\)\] {
+  background: var(--cv-color-surface-cream);
+}
+
+/* ── BADGES / pills → fully rounded marketing pill radius ───────────────── */
+[data-product="collective"] [data-slot="badge"],
+[data-product="collective"] .rounded-full,
+[data-product="partner"] [data-slot="badge"],
+[data-product="partner"] .rounded-full {
+  border-radius: var(--cv-radius-full);
+}
+
+/* ── SIDEBAR → warm rail, brand border ──────────────────────────────────── */
+[data-product="collective"] aside,
+[data-product="partner"] aside {
+  background: var(--cv-color-surface);
+  border-right: 1px solid var(--cv-color-border);
+}
+
+/* ── Navy marketing panel band ──────────────────────────────────────────── */
+[data-product="collective"] .partner-app-navy,
+[data-product="partner"] .partner-app-navy {
+  background: var(--cv-color-navy);
+  color: var(--cv-color-text-inverse);
+}
+
+/* ── Muted helper text warms slightly for marketing parity ──────────────── */
+[data-product="collective"] .text-\[var\(--cv-color-text-muted\)\],
+[data-product="partner"] .text-\[var\(--cv-color-text-muted\)\] {
+  color: var(--cv-color-text-muted);
+}

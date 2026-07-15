@@ -33,6 +33,8 @@ import type { Express, Request, Response } from "express";
 import { createHash, randomBytes } from "node:crypto";
 import { rawDb } from "../db/connection";
 import { log } from "./logger";
+import { resolveInvestorIdCandidates } from "./investorIdReconcile"; /* W-KYC — derived_inv_* → canonical id */
+import { appendAdminAudit } from "../adminPlatformStore"; /* W-KYC — audit mark-verified (AK.2) */
 
 export const KYC_DOC_TYPES = [
   "passport",
@@ -240,25 +242,42 @@ export function registerKycDocumentRoutes(app: Express): void {
   /**
    * GET /api/admin/kyc/documents/:investorId
    * Admin lists all KYC documents for a given investor.
+   *
+   * W-KYC — RECONCILE FIRST. The admin may arrive with a synthetic
+   * `derived_inv_<invitationId>` id (from the invitation-derived investor view),
+   * but the investor uploaded documents under their real redeemer userId. We
+   * resolve the id to the canonical userId BEFORE the query (and also match the
+   * raw id, for docs historically stored under the synthetic id) so the list is
+   * never falsely empty. Read-only; fail-soft.
    */
   app.get("/api/admin/kyc/documents/:investorId", async (req: Request, res: Response) => {
     const ctx = (req as any).userContext;
     if (!ctx?.isAdmin) {
       return res.status(403).json({ ok: false, error: "admin_only" });
     }
-    const investorId = String(req.params.investorId);
+    const requestedId = String(req.params.investorId);
+    const { canonicalId, wasDerived } = resolveInvestorIdCandidates(requestedId);
     try {
       const db: any = rawDb();
+      // Match BOTH the canonical id and the originally-requested id (distinct set).
+      const ids = Array.from(new Set([canonicalId, requestedId]));
+      const placeholders = ids.map(() => "?").join(", ");
       const rows: any[] = db
         .prepare(
           `SELECT id, investor_id, kyc_id, doc_type, file_name, mime_type, size_bytes,
                   sha256, verified, verified_by, verified_at, verification_notes, uploaded_at
              FROM kyc_documents
-            WHERE investor_id = ? AND deleted_at IS NULL
+            WHERE investor_id IN (${placeholders}) AND deleted_at IS NULL
             ORDER BY uploaded_at DESC`,
         )
-        .all(investorId);
-      return res.json({ ok: true, investorId, documents: rows.map(rowToSummary) });
+        .all(...ids);
+      return res.json({
+        ok: true,
+        investorId: requestedId,
+        resolvedInvestorId: canonicalId,
+        wasDerived,
+        documents: rows.map(rowToSummary),
+      });
     } catch (err) {
       return res
         .status(500)
@@ -289,12 +308,24 @@ export function registerKycDocumentRoutes(app: Express): void {
       if (!exist) {
         return res.status(404).json({ ok: false, error: "not_found" });
       }
+      const verifiedAt = new Date().toISOString();
       db.prepare(
         `UPDATE kyc_documents
             SET verified = ?, verified_by = ?, verified_at = ?, verification_notes = ?
           WHERE id = ?`,
-      ).run(verified ? 1 : 0, ctx.userId, new Date().toISOString(), notes ?? null, docId);
-      return res.json({ ok: true, docId, verified });
+      ).run(verified ? 1 : 0, ctx.userId, verifiedAt, notes ?? null, docId);
+      // W-KYC (AK.2) — audit the verification decision. Best-effort; never fatal.
+      // NOTE: this writes ONLY the non-sacred kyc_documents.verified flag + an
+      // audit row — it does NOT touch the sacred accreditation/profile path.
+      try {
+        appendAdminAudit(
+          ctx.userId,
+          `kyc_document:${docId}`,
+          verified ? "kyc_document.verified" : "kyc_document.rejected",
+          { docId, verified, notes: notes ?? null, verifiedAt },
+        );
+      } catch { /* audit is best-effort */ }
+      return res.json({ ok: true, docId, verified, verifiedAt });
     } catch (err) {
       return res
         .status(500)

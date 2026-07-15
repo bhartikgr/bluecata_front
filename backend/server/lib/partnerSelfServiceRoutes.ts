@@ -60,15 +60,24 @@ function isNonEmptyString(v: unknown): v is string {
  * Sourced from env with documented defaults (mirrors adminEmailRoutes.ts env use).
  * If a future admin surface manages these in the DB, swap these reads for a DB
  * lookup — callers below already treat them as opaque config. */
-function currentAgreement(): { version: string; url: string | null; text: string } {
+function currentAgreement(): { version: string; url: string | null; text: string; finalDocUrl: string | null; isDraft: boolean } {
+  const version = process.env.PARTNER_AGREEMENT_VERSION ?? CONSORTIUM_AGREEMENT_VERSION;
   return {
     // W2-I — version + viewable text come from the shared config module so
     // counsel's final copy can replace them with NO code surgery. Env can still
     // override the version tag (e.g. to force a re-signature ahead of a code
     // deploy) and supply a hosted document URL.
-    version: process.env.PARTNER_AGREEMENT_VERSION ?? CONSORTIUM_AGREEMENT_VERSION,
+    version,
     url: process.env.PARTNER_AGREEMENT_URL ?? null,
     text: CONSORTIUM_AGREEMENT_TEXT,
+    // W5.1 — FINAL-DOC SLOT. Optional URL of the counsel-executed copy. When set
+    // (env PARTNER_AGREEMENT_FINAL_DOC_URL), signed partners get a link to the
+    // executed document; until set it is null and the draft copy is shown.
+    finalDocUrl: process.env.PARTNER_AGREEMENT_FINAL_DOC_URL ?? null,
+    // W5.1 — DRAFT flag. The current copy is a DRAFT while the version tag ends
+    // with "-DRAFT" (counsel bumps the tag when the executed copy lands). The
+    // client strips the DRAFT watermark on the signed/final view accordingly.
+    isDraft: /-draft$/i.test(version),
   };
 }
 
@@ -250,7 +259,22 @@ export function registerPartnerSelfServiceRoutes(app: Express): void {
       const pid = req.partnerContext!.partnerId;
       const body = (req.body ?? {}) as { version?: unknown; signatureName?: unknown };
       const agreement = currentAgreement();
-      const version = isNonEmptyString(body.version) ? body.version.trim() : agreement.version;
+      // W5.1 — STALE-VERSION SIGNING REJECT. If the client presents a version it
+      // must equal the CURRENT server version; otherwise the partner is signing
+      // an outdated agreement (the copy they read is no longer the live one).
+      // Reject with 409 so the client re-fetches + re-presents the current copy
+      // before signing. When no version is presented we default to current
+      // (backward-compatible with older clients that omit it).
+      const presentedVersion = isNonEmptyString(body.version) ? body.version.trim() : null;
+      if (presentedVersion !== null && presentedVersion !== agreement.version) {
+        return res.status(409).json({
+          error: "agreement_version_stale",
+          message: "The agreement has been updated since you opened it. Please review the current version and sign again.",
+          presentedVersion,
+          currentVersion: agreement.version,
+        });
+      }
+      const version = presentedVersion ?? agreement.version;
       const signatureName = isNonEmptyString(body.signatureName) ? body.signatureName.trim() : null;
       if (!signatureName) {
         return res.status(400).json({ error: "SIGNATURE_NAME_REQUIRED" });

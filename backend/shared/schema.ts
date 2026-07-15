@@ -1179,6 +1179,17 @@ export const captableCommits = sqliteTable("captable_commits", {
   // for display/export. Nullable; legacy rows and callers omit them.
   holderFirstName: text("holder_first_name"),
   holderLastName: text("holder_last_name"),
+  // W-SAFE (2026-07-14) — unpriced-instrument support. `instrument_class` is
+  // 'priced' (legacy default — preferred/common/warrant-via-strike) or
+  // 'unpriced' (SAFE / convertible note). For unpriced rows `shares` is a
+  // legitimate "0" and `principal_amount` carries the committed principal; the
+  // SAFE economic terms `valuation_cap`/`discount_pct` are captured so the
+  // immutable ledger commits the position's substance (these three enter the
+  // hash body — see buildCommitBody). Legacy rows backfill to 'priced'.
+  instrumentClass: text("instrument_class").notNull().default("priced"),
+  principalAmount: text("principal_amount"),   // Decimal-as-string; set for unpriced
+  valuationCap: text("valuation_cap"),         // Decimal-as-string; SAFE/note terms
+  discountPct: text("discount_pct"),           // Decimal-as-string (e.g. "20" = 20%)
   deletedAt: text("deleted_at"),
 });
 
@@ -1191,6 +1202,9 @@ export const fundedQueue = sqliteTable("funded_queue", {
   amount: text("amount").notNull(),
   currency: text("currency").notNull(),
   shares: text("shares").notNull(),
+  // W-SAFE — instrument class carried from enqueue so the commit step resolves
+  // priced vs unpriced without a fragile re-lookup. Nullable/default for legacy.
+  instrumentClass: text("instrument_class").notNull().default("priced"),
   enqueuedAt: text("enqueued_at").notNull(),
 });
 

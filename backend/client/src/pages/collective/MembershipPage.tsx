@@ -1,13 +1,16 @@
 /**
  * v25.47 APD-019 / APD-032(B) — Collective Membership page.
+ * W4 — dynamic admin catalog support.
  *
- * The membership ladder has collapsed to ONE canonical recurring tier
- * (collective.member_subscription.standard, $249/mo). This page renders a
- * SINGLE tier card whose price is read DB-direct from GET
- * /api/collective/member-tier (never hardcoded). The Subscribe CTA still hits
- * the existing POST /api/collective/membership/checkout (unchanged); the legacy
- * /api/collective/membership/tiers catalog endpoint is untouched and no longer
- * consumed here.
+ * This page now consumes GET /api/collective/membership/tiers. When an admin has
+ * published one or more subscription packages the response carries source:"admin"
+ * and the page renders the dynamic package cards, posting `package_id` to
+ * POST /api/collective/membership/checkout. When no admin package is live the
+ * response carries source:"env_fallback" and the page renders the SINGLE canonical
+ * tier card whose price is read DB-direct from GET /api/collective/member-tier
+ * (never hardcoded), posting the legacy `tier:"standard"`. The Airwallex checkout
+ * mechanics are UNCHANGED in both cases (server resolves either shape to the same
+ * createCollectiveIntent path).
  *
  * Preserved data-testids (relied on by e2e + Avi alignment):
  *   collective-membership-page, current-membership-card,
@@ -163,12 +166,24 @@ export default function MembershipPage(): JSX.Element | null {
     return meChaptersQ.data?.chapters?.[0]?.id ?? "chap_keiretsu_canada";
   }, [meChaptersQ.data]);
 
-  // 3) The single canonical member tier (DB-direct price).
+  // 3) The single canonical member tier (DB-direct price). Kept as the compat
+  //    fallback source when no live admin package exists.
   const tierQ = useQuery<MemberTierDTO>({
     queryKey: ["/api/collective/member-tier"],
     queryFn: async () => (await apiRequest("GET", "/api/collective/member-tier")).json(),
     enabled: collectiveOn,
   });
+
+  // 3b) W4 — dynamic admin catalog. When source === "admin", the member page
+  //     renders the admin-authored packages and checkout posts `package_id`.
+  //     When source === "env_fallback", the single canonical tier above is used.
+  const catalogQ = useQuery<{ ok: boolean; source: "admin" | "env_fallback"; tiers: Array<{ packageId?: string; slug: string; label: string; description?: string; unitAmount: number | null; currency: string | null; interval: string | null; available: boolean }> }>({
+    queryKey: ["/api/collective/membership/tiers"],
+    queryFn: async () => (await apiRequest("GET", "/api/collective/membership/tiers")).json(),
+    enabled: collectiveOn,
+  });
+  const adminCatalog = catalogQ.data?.source === "admin" ? (catalogQ.data.tiers ?? []) : [];
+  const useAdminCatalog = adminCatalog.length > 0;
 
   // 4) Current membership for the active chapter.
   const meQ = useQuery<MeResponse>({
@@ -241,13 +256,17 @@ export default function MembershipPage(): JSX.Element | null {
   }, []);
 
   // 6) Checkout mutation — POST and follow the hosted payment page URL.
+  //    W4: when a live admin catalog is active, post `package_id`; otherwise
+  //    post the legacy `tier: "standard"`. The server resolves either to the
+  //    SAME unchanged Airwallex createCollectiveIntent path.
   const checkoutMut = useMutation({
-    mutationFn: async (): Promise<{
+    mutationFn: async (pkgId?: string): Promise<{
       checkout_url?: string | null;
       hostedPaymentPageUrl?: string | null;
     }> => {
+      const chosen = pkgId ?? adminCatalog.find((t) => t.available && t.packageId)?.packageId;
       const resp = await apiRequest("POST", "/api/collective/membership/checkout", {
-        tier: "standard",
+        ...(useAdminCatalog && chosen ? { package_id: chosen } : { tier: "standard" }),
         chapter_id: activeChapterId,
         success_url:
           typeof window !== "undefined"
@@ -380,7 +399,35 @@ export default function MembershipPage(): JSX.Element | null {
         </Card>
       )}
 
-      {tierQ.isLoading ? (
+      {/* W4 — dynamic admin catalog (rendered only when a live admin package exists). */}
+      {useAdminCatalog && (
+        <div className="grid gap-4 md:grid-cols-3" data-testid="dynamic-catalog">
+          {adminCatalog.map((p) => (
+            <Card key={p.packageId ?? p.slug} data-testid={`package-card-${p.slug}`}>
+              <CardHeader>
+                <CardTitle>{p.label}</CardTitle>
+                <p className="text-2xl font-bold">
+                  {formatMoneyMinor(p.unitAmount, p.currency)}
+                  <span className="text-sm font-normal text-muted-foreground"> / {periodLabel(p.interval ?? undefined)}</span>
+                </p>
+                {p.description && <p className="text-sm text-muted-foreground">{p.description}</p>}
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <Button
+                  className="w-full"
+                  onClick={() => checkoutMut.mutate(p.packageId)}
+                  disabled={checkoutMut.isPending || !p.available || !p.packageId}
+                  data-testid={`subscribe-btn-${p.slug}`}
+                >
+                  {checkoutMut.isPending ? "Redirecting…" : p.available ? "Subscribe" : "Unavailable"}
+                </Button>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {useAdminCatalog ? null : tierQ.isLoading ? (
         <Skeleton className="h-80 w-full" />
       ) : (
         <Card
@@ -414,7 +461,7 @@ export default function MembershipPage(): JSX.Element | null {
             </ul>
             <Button
               className="w-full"
-              onClick={() => checkoutMut.mutate()}
+              onClick={() => checkoutMut.mutate(undefined)}
               disabled={checkoutMut.isPending || (isCurrent && !current?.cancelAtPeriodEnd)}
               data-testid="subscribe-btn-standard"
             >

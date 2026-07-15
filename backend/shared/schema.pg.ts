@@ -626,6 +626,11 @@ export const captableCommits = pgTable("captable_commits", {
   reconcileRef: text("reconcile_ref"),
   reconcileMatch: integer("reconcile_match").notNull().default(1),
   complianceHold: integer("compliance_hold").notNull().default(0),
+  // W-SAFE (2026-07-14) — unpriced-instrument support (mirror of sqlite schema).
+  instrumentClass: text("instrument_class").notNull().default("priced"),
+  principalAmount: text("principal_amount"),
+  valuationCap: text("valuation_cap"),
+  discountPct: text("discount_pct"),
   deletedAt: text("deleted_at"),
 });
 
@@ -638,6 +643,7 @@ export const fundedQueue = pgTable("funded_queue", {
   amount: text("amount").notNull(),
   currency: text("currency").notNull(),
   shares: text("shares").notNull(),
+  instrumentClass: text("instrument_class").notNull().default("priced"),
   enqueuedAt: text("enqueued_at").notNull(),
 });
 

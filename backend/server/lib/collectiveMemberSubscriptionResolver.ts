@@ -25,6 +25,14 @@ import {
   COLLECTIVE_MEMBER_SUBSCRIPTION_PREFIX,
   type SubscriptionTier,
 } from "../subscriptionTierStore";
+// W5.3 — SINGLE SOURCE OF TRUTH. The W4 admin-authored catalog
+// (collective_subscription_configs) is now the canonical source for the member
+// subscription tier. We prefer a W4 live published package here; the legacy
+// platform_fees rows below are the FALLBACK only (kept so no deploy is bricked
+// before an admin publishes a package). Static import (ESM; no runtime require
+// of a .ts module) — no import cycle: the W4 store imports only
+// airwallexCollective / db / logger, never this resolver.
+import * as w4Store from "../collectiveSubscriptionConfigStore";
 import { log } from "./logger";
 
 export interface ResolvedMemberSubscriptionTier {
@@ -98,6 +106,8 @@ const CANONICAL_MEMBER_FALLBACK_MINOR = 24900;
 export interface CanonicalMemberTier extends ResolvedMemberSubscriptionTier {
   /** True when a live DB row backed this result; false on seed fallback. */
   fromDb: boolean;
+  /** W5.3 — which source of truth backed this result. */
+  source?: "admin" | "platform_fees" | "seed_fallback";
 }
 
 /**
@@ -120,8 +130,39 @@ export function resolveCanonicalMemberTierSlug(slug: unknown): string {
  * so the membership surface can always render.
  */
 export function resolveCanonicalMemberTier(): CanonicalMemberTier {
+  // W5.3 — PREFER the W4 live admin catalog (single source of truth). Project the
+  // first live published package (lowest sortOrder) onto the canonical member-tier
+  // shape. `interval` maps to a legacy billingPeriod string. On any error or when
+  // no package is live, fall through to the legacy platform_fees resolver.
+  try {
+    const live = w4Store.listPublishedPackages();
+    if (live.length > 0) {
+      const p = [...live].sort((a, b) => a.sortOrder - b.sortOrder)[0];
+      const billingPeriod =
+        p.interval === "monthly" ? "monthly"
+        : p.interval === "annual" ? "yearly"
+        : p.interval === "quarterly" ? "quarterly"
+        : p.interval === "one_time" ? "one_time"
+        : "monthly";
+      return {
+        slug: p.slug,
+        key: `${COLLECTIVE_MEMBER_SUBSCRIPTION_PREFIX}${p.airwallexTier}`,
+        amountMinor: p.amountMinor,
+        currency: p.currency,
+        billingPeriod,
+        fromDb: true,
+        source: "admin",
+      };
+    }
+  } catch (err) {
+    log.warn(
+      "[collectiveMemberSubscriptionResolver] W4 live-package read failed, using platform_fees fallback:",
+      (err as Error).message,
+    );
+  }
+
   const t = resolveCollectiveMemberSubscriptionTier(CANONICAL_MEMBER_TIER_SLUG);
-  if (t) return { ...t, fromDb: true };
+  if (t) return { ...t, fromDb: true, source: "platform_fees" };
   return {
     slug: CANONICAL_MEMBER_TIER_SLUG,
     key: `${COLLECTIVE_MEMBER_SUBSCRIPTION_PREFIX}${CANONICAL_MEMBER_TIER_SLUG}`,
@@ -129,5 +170,6 @@ export function resolveCanonicalMemberTier(): CanonicalMemberTier {
     currency: "USD",
     billingPeriod: "monthly",
     fromDb: false,
+    source: "seed_fallback",
   };
 }

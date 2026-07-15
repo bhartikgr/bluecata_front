@@ -29,6 +29,7 @@ import { GlossaryLink } from "@/components/Glossary";
 import { useLocation } from "wouter"; /* v25.48.3 Q-F1 — redirect "Add security" to Rounds */
 import { HelpTip } from "@/components/HelpTip";
 import { currencySymbol } from "@/lib/currency";
+import CapTableSnapshots from "@/components/founder/CapTableSnapshots"; /* W-CT — projected + previous snapshots */
 import type { ApiRound } from "@/lib/types";
 import type { CompanyProfile } from "@/lib/profile/types";
 import { useEffect } from "react";
@@ -370,6 +371,10 @@ export default function CapTable() {
  </div>
  </CardContent>
  </Card>
+
+ {/* W-CT — projected (pending) + previous (last committed) cap-table snapshots.
+    Read-only; hidden when neither a pending round nor a prior committed snapshot exists. */}
+ <CapTableSnapshots companyId={companyId} sym={sym} />
 
  {/* Totals */}
  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">

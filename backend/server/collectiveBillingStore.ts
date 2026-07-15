@@ -46,6 +46,7 @@ import type { Express, Request, Response } from "express";
 import { and, eq, isNull } from "drizzle-orm";
 import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
+import * as w4Store from "./collectiveSubscriptionConfigStore"; /* W4 — dynamic subscription-package catalog (static import; no runtime require of a .ts module) */
 
 import { requireAuth } from "./lib/authMiddleware";
 import { requireCollectiveMember } from "./lib/requireCollectiveMember";
@@ -382,7 +383,13 @@ export function __resetPriceCache(): void {
 const tierEnum = z.enum(["basic", "standard", "premium"]);
 
 const checkoutBodySchema = z.object({
-  tier: tierEnum,
+  /* W4 — legacy `tier` is now OPTIONAL; new clients post package_id/package_slug.
+     Exactly one of {package_id|package_slug} or {tier} must resolve (validated in
+     the handler). Airwallex checkout mechanics are UNCHANGED — a package resolves
+     to its existing tier + synthetic price ref, then the legacy path runs. */
+  tier: tierEnum.optional(),
+  package_id: z.string().min(1).optional(),
+  package_slug: z.string().min(1).optional(),
   chapter_id: z.string().min(1, "chapter_id required"),
   success_url: z.string().url().optional(),
   cancel_url: z.string().url().optional(),
@@ -1172,6 +1179,60 @@ export function registerCollectiveBillingRoutes(app: Express): void {
       // a Live / Test badge and Avi never has to guess which key is wired.
       const mode = stripeMode();
       const webhookConfigured = stripeWebhookSecretConfigured();
+
+      /* W4 — ADMIN CATALOG FIRST. If any live admin package exists, render the
+       * dynamic admin catalog (source: "admin") instead of the env/static tiers.
+       * A package's `available` reflects whether its selected Airwallex tier ref is
+       * currently configured AND matches the package's amount/currency/interval;
+       * checkout for that package is blocked otherwise (price-mismatch guard).
+       * Falls back to the env/static catalog below (source: "env_fallback") when
+       * no live admin package exists, so no deploy is bricked pre-authoring. */
+      try {
+        const w4 = w4Store;
+        const livePkgs = w4.listPublishedPackages();
+        if (livePkgs.length > 0) {
+          const refs = w4.listAvailableAirwallexPriceRefs();
+          const adminTiers = livePkgs.map((p) => {
+            const ref = refs.find((r) => r.tier === p.airwallexTier);
+            const priceMatches = !!ref && ref.available && ref.priceId === p.airwallexPriceId
+              && ref.amountMinor === p.amountMinor && (ref.currency ?? "") === p.currency
+              && (ref.interval ?? "") === p.interval;
+            return {
+              packageId: p.id,
+              slug: p.slug,
+              tier: p.airwallexTier, // legacy compatibility: tier stays the Airwallex key
+              airwallexTier: p.airwallexTier,
+              label: p.label,
+              blurb: p.description,
+              description: p.description,
+              entitlements: p.entitlements,
+              membershipRole: p.membershipRole,
+              available: stripeReady && priceMatches,
+              priceId: p.airwallexPriceId ?? null,
+              unitAmount: p.amountMinor ?? null,
+              currency: p.currency ?? null,
+              interval: p.interval ?? null,
+              nickname: p.label ?? null,
+              status: "live" as const,
+              sortOrder: p.sortOrder,
+              source: "admin" as const,
+            };
+          });
+          return res.json({
+            ok: true,
+            gateway: "airwallex",
+            source: "admin",
+            airwallexConfigured: stripeReady,
+            stripeConfigured: stripeReady,
+            mode,
+            webhookConfigured,
+            tiers: adminTiers,
+          });
+        }
+      } catch (w4err) {
+        log.warn("[collective/membership/tiers] W4 admin-catalog read failed, using env fallback:", (w4err as Error).message);
+      }
+
       const tiers = await Promise.all(
         COLLECTIVE_TIER_CATALOG.map(async (t) => {
           const priceId = priceIdForTier(t.tier);
@@ -1195,6 +1256,7 @@ export function registerCollectiveBillingRoutes(app: Express): void {
       res.json({
         ok: true,
         gateway: "airwallex",
+        source: "env_fallback", // W4 — no live admin package; env/static catalog
         airwallexConfigured: stripeReady,
         /* Legacy alias — the field name predates the v25.4 gateway swap and
          * still drives the UI's `Configured` badge; we keep it so the client
@@ -1202,7 +1264,7 @@ export function registerCollectiveBillingRoutes(app: Express): void {
         stripeConfigured: stripeReady,
         mode,
         webhookConfigured,
-        tiers,
+        tiers: tiers.map((t) => ({ ...t, source: "env_fallback" as const })),
       });
     },
   );
@@ -1232,7 +1294,7 @@ export function registerCollectiveBillingRoutes(app: Express): void {
           issues: parsed.error.format(),
         });
       }
-      const { tier, chapter_id, success_url, cancel_url } = parsed.data;
+      const { chapter_id, success_url, cancel_url, package_id, package_slug } = parsed.data;
 
       const ctx = (req as any).userContext as
         | { userId?: string; isAdmin?: boolean; identity?: { email?: string } }
@@ -1249,7 +1311,35 @@ export function registerCollectiveBillingRoutes(app: Express): void {
           .status(503)
           .json({ ok: false, error: "airwallex_not_configured" });
       }
-      const priceId = priceIdForTier(tier);
+
+      /* W4 — resolve the charging `tier` + price ref. Preference order:
+       *   1) admin package (package_id|package_slug) -> its airwallexTier/priceId
+       *      (validated live + effective + price-matched by the store resolver),
+       *   2) legacy `tier` (unchanged behaviour).
+       * The Airwallex helper (createCollectiveIntent) is called with the resolved
+       * tier EXACTLY as before — no Airwallex code is touched (rule #14). */
+      let tier: "basic" | "standard" | "premium";
+      let priceId: string | null;
+      let resolvedPackageId: string | null = null;
+      let resolvedPackageSlug: string | null = null;
+      if (package_id || package_slug) {
+        let resolved: any;
+        try {
+          resolved = w4Store.resolvePublishedPackageForCheckout({ packageId: package_id, packageSlug: package_slug });
+        } catch (e) {
+          return res.status(500).json({ ok: false, error: "package_resolve_failed", message: (e as Error).message });
+        }
+        if (!resolved.ok) return res.status(400).json(resolved);
+        tier = resolved.package.airwallexTier;
+        priceId = resolved.package.airwallexPriceId;
+        resolvedPackageId = resolved.package.id;
+        resolvedPackageSlug = resolved.package.slug;
+      } else if (parsed.data.tier) {
+        tier = parsed.data.tier;
+        priceId = priceIdForTier(tier);
+      } else {
+        return res.status(400).json({ ok: false, error: "missing_tier_or_package", message: "Provide package_id/package_slug or a legacy tier." });
+      }
       if (!priceId) {
         return res
           .status(503)
@@ -1359,6 +1449,9 @@ export function registerCollectiveBillingRoutes(app: Express): void {
         ok: true,
         gateway: "airwallex",
         billingId: pending.id,
+        tier, // resolved charging tier (from package or legacy)
+        packageId: resolvedPackageId, // W4 — null on legacy tier path
+        packageSlug: resolvedPackageSlug,
         paymentIntentId: intentResult.intent.id,
         clientSecret: intentResult.intent.client_secret ?? null,
         checkout_url: intentResult.hostedPaymentPageUrl ?? fallbackSuccess,

@@ -19,6 +19,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { CONSORTIUM_AGREEMENT_TEXT } from "@shared/consortiumAgreement"; /* W2-I — viewable text fallback */
+import { renderAgreementHtml } from "@/lib/safeAgreementHtml"; /* W5.1 — sanitized HTML render + DRAFT strip */
 
 /* GROUP E 1d — partner dashboard destination after a successful signature. */
 const PARTNER_DASHBOARD_PATH = "/collective/partner/dashboard";
@@ -29,7 +30,7 @@ const PARTNER_DASHBOARD_PATH = "/collective/partner/dashboard";
    sees it already-signed; an unsigned managing partner signs once here (the
    destination the requireSignedAgreement write gate redirects to). */
 type AgreementResponse = {
-  agreement: { version: string; url: string | null; text?: string | null };
+  agreement: { version: string; url: string | null; text?: string | null; finalDocUrl?: string | null; isDraft?: boolean };
   signed: boolean;
   signedCurrent: boolean;
   signedAt: string | null;
@@ -63,9 +64,25 @@ export default function PartnerAgreementSign() {
   const signMut = useMutation({
     mutationFn: async () => {
       const body = { version: data?.agreement?.version, signatureName: signatureName.trim() };
-      const j = await (await apiRequest("POST", "/api/partner/me/agreement", body)).json();
-      if (!j.ok) throw new Error(j.error || "sign_failed");
-      return j as { signedAt: string };
+      try {
+        const j = await (await apiRequest("POST", "/api/partner/me/agreement", body)).json();
+        if (!j.ok) throw new Error(j.error || "sign_failed");
+        return j as { signedAt: string };
+      } catch (e: any) {
+        // W5.1 — STALE-VERSION guard. apiRequest throws an ApiError on non-2xx, so
+        // the server's 409 agreement_version_stale surfaces here. Re-fetch the
+        // current copy and ask the partner to review + sign again instead of
+        // signing an outdated agreement.
+        const isStale =
+          (e instanceof ApiError && (e.status === 409 || (e as any).code === "agreement_version_stale")) ||
+          /agreement_version_stale/i.test(String(e?.message ?? ""));
+        if (isStale) {
+          await queryClient.invalidateQueries({ queryKey: ["/api/partner/me/agreement"] });
+          setAccepted(false);
+          throw new Error("The agreement was updated. Please review the current version and sign again.");
+        }
+        throw e;
+      }
     },
     onSuccess: (j) => {
       // onSuccess only runs when the server returned ok:true (mutationFn throws
@@ -83,11 +100,15 @@ export default function PartnerAgreementSign() {
   const isForbidden = isError && error instanceof ApiError && error.status === 403;
   const version = data?.agreement?.version ?? "—";
   const url = data?.agreement?.url ?? null;
+  const finalDocUrl = data?.agreement?.finalDocUrl ?? null;
   const agreementText = data?.agreement?.text ?? CONSORTIUM_AGREEMENT_TEXT;
   // Already signed (current version) on the durable record, or just now.
   const alreadySigned = !!data?.signedCurrent;
   const effectiveSignedAt = signedAt ?? (alreadySigned ? data?.signedAt ?? null : null);
   const canSign = data?.canSign !== false;
+  // W5.1 — render the agreement body as SANITIZED HTML (not raw pre-wrap text).
+  // On the signed/final view the DRAFT watermark is stripped (final:true).
+  const agreementHtml = renderAgreementHtml(agreementText, { final: !!effectiveSignedAt });
 
   return (
     <PartnerShell title="Partner Agreement" tier={me.tier} subRole={me.subRole} partnerName={me.identity.name}>
@@ -152,7 +173,7 @@ export default function PartnerAgreementSign() {
                   available); it is never rewritten here. */}
               <article
                 data-testid="partner-agreement-text"
-                className="mb-3 max-h-80 overflow-y-auto whitespace-pre-wrap"
+                className="mb-3 max-h-80 overflow-y-auto agreement-body"
                 style={{
                   fontFamily: "var(--cv-font-body)",
                   fontSize: "var(--cv-text-sm)",
@@ -164,9 +185,9 @@ export default function PartnerAgreementSign() {
                   padding: "var(--cv-space-6)",
                   boxShadow: "var(--cv-shadow-sm)",
                 }}
-              >
-                {agreementText}
-              </article>
+                /* W5.1 — sanitized HTML (escape-first + allow-list; see safeAgreementHtml.ts). */
+                dangerouslySetInnerHTML={{ __html: agreementHtml }}
+              />
 
               {/* GROUP E E5 — "View full agreement document" link. */}
               <div className="mb-3">
@@ -195,6 +216,21 @@ export default function PartnerAgreementSign() {
               {effectiveSignedAt ? (
                 <div className="rounded-md border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900" data-testid="partner-agreement-signed">
                   Agreement <span className="font-medium">{displayAgreementVersion(data?.signedVersion ?? version)}</span> signed on {formatDate(effectiveSignedAt)}.
+                  {/* W5.1 — FINAL-DOC SLOT: link to the counsel-executed copy when available. */}
+                  {finalDocUrl && (
+                    <div className="mt-2">
+                      <a
+                        href={finalDocUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="underline"
+                        style={{ color: "var(--cv-color-primary)" }}
+                        data-testid="link-agreement-final-doc"
+                      >
+                        View executed agreement document
+                      </a>
+                    </div>
+                  )}
                 </div>
               ) : !canSign ? (
                 <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900" data-testid="partner-agreement-cannot-sign">

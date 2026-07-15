@@ -35,8 +35,11 @@ import { getUserContext } from "./lib/userContext";
 import { requireCollectiveMember } from "./lib/requireCollectiveMember";
 import {
   deriveMaIntelFromProfile,
+  readMaReadinessNarrative,
   type DerivedMaIntel,
 } from "./lib/maProfileSource";
+import { buildMaParityEnvelope } from "./lib/maIntelParity"; /* W7 — unified redacted/no-data envelope */
+import { getCompanyPrivacy } from "./lib/maAuthzGate";
 import {
   decideMaAccess,
   parseMaPrivacy,
@@ -494,6 +497,117 @@ export function registerCollectiveMaIntelRoutes(app: Express): void {
           res.json(viewDashboardCard(scope.pipelineScope));
           return;
       }
+    },
+  );
+
+  /* -------------------------------------------------------------------------
+   * W7 — Collective single-company M&A intelligence detail (PARITY with the
+   * investor endpoint /api/investor/ma/intelligence/:companyId).
+   *
+   * Same SHARED source (deriveMaIntelFromProfile) + SHARED gate (decideMaAccess)
+   * + SHARED parity envelope (buildMaParityEnvelope) so the member and investor
+   * surfaces show IDENTICAL data for the same company, differing only in
+   * rendering.
+   *
+   * ANTI-ENUMERATION (v25.36) preserved: a company the caller cannot see at all
+   * (access NONE) returns the SAME opaque 404 as a non-existent company, so
+   * chapter membership cannot be probed. The redacted/no-data distinction is
+   * only ever exposed for companies the caller is already entitled to see.
+   * ---------------------------------------------------------------------- */
+  app.get(
+    "/api/collective/ma-intel/:companyId",
+    requireCollectiveMember,
+    async (req: Request, res: Response) => {
+      const companyId = String(req.params.companyId ?? "");
+      const ctx = await getUserContext(req);
+      const userId = ctx?.userId;
+      if (!userId) {
+        res.status(401).json({ ok: false, error: "missing_identity" });
+        return;
+      }
+      const isAdmin = ctx?.isAdmin === true || isDbAdmin(userId);
+
+      const decision = decideMaAccess({
+        companyId,
+        userId,
+        isAdminFromCtx: isAdmin,
+        privacy: getCompanyPrivacy(companyId),
+        chapter: authzCompanyChapter(companyId),
+        userChapters: new Set(chapterIdsForUser(userId)),
+      });
+
+      // NONE — opaque 404 (anti-enumeration: indistinguishable from not-found).
+      if (decision.level === "NONE") {
+        res.status(404).json({ ok: false, error: "not_found" });
+        return;
+      }
+
+      const intel = deriveMaIntelFromProfile(companyId);
+
+      // In scope, but the company has no stored M&A data yet — explicit no-data
+      // envelope (200 so the surface can render the friendly “nothing yet” state,
+      // consistent with the DSC composite’s 200-null contract).
+      if (!intel) {
+        res.json({
+          ok: true,
+          companyId,
+          ...buildMaParityEnvelope(
+            { level: decision.level, canSeeNarrative: decision.canSeeNarrative, canSeeBuyers: decision.canSeeBuyers },
+            false,
+          ),
+        });
+        return;
+      }
+
+      // AGGREGATE — anonymized scores + sector + buyer COUNT only.
+      if (decision.level === "AGGREGATE") {
+        res.json({
+          ok: true,
+          companyId,
+          maScore: intel.maScore,
+          acquirerFitScore: intel.acquirerFitScore,
+          intentSignal: intel.intentSignal,
+          productMarketFit: intel.productMarketFit,
+          technologyDifferentiation: intel.technologyDifferentiation,
+          customerConcentration: intel.customerConcentration,
+          growthRate: intel.growthRate,
+          marketShare: intel.marketShare,
+          managementTeamStrength: intel.managementTeamStrength,
+          strategicBuyerCount: intel.topBuyer ? 1 : 0,
+          ...buildMaParityEnvelope({ level: "AGGREGATE", canSeeNarrative: false, canSeeBuyers: false }, true),
+        });
+        return;
+      }
+
+      // FULL / DETAIL — full body; narrative + buyers gated per decision.
+      const narrative = decision.canSeeNarrative ? readMaReadinessNarrative(companyId) : null;
+      const body: Record<string, unknown> = {
+        ok: true,
+        companyId,
+        maScore: intel.maScore,
+        acquirerFitScore: intel.acquirerFitScore,
+        intentSignal: intel.intentSignal,
+        productMarketFit: intel.productMarketFit,
+        technologyDifferentiation: intel.technologyDifferentiation,
+        customerConcentration: intel.customerConcentration,
+        growthRate: intel.growthRate,
+        marketShare: intel.marketShare,
+        managementTeamStrength: intel.managementTeamStrength,
+        strategicPriorities: intel.strategicPriorities,
+        transactionInterests: intel.transactionInterests,
+        topStrategicBuyers: decision.canSeeBuyers && intel.topBuyer ? [intel.topBuyer] : [],
+        comparableExits: intel.comparableExits ?? [],
+        revenueMultipleRange: intel.revenueMultipleRange ?? { low: 0, high: 0 },
+      };
+      if (decision.canSeeNarrative) body.maReadinessNarrative = narrative ?? "";
+      Object.assign(
+        body,
+        buildMaParityEnvelope(
+          { level: decision.level, canSeeNarrative: decision.canSeeNarrative, canSeeBuyers: decision.canSeeBuyers },
+          true,
+        ),
+      );
+      res.json(body);
     },
   );
 }

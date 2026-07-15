@@ -78,7 +78,7 @@ export default function CollectivePaymentSchedules() {
   if (feeKindFilter !== "__all__") qs.set("feeKind", feeKindFilter);
   qs.set("includeExpired", "false");
 
-  const { data, isLoading } = useQuery<{ ok: boolean; schedules: ScheduleRow[]; total: number }>({
+  const { data, isLoading, isError, refetch, isFetching } = useQuery<{ ok: boolean; schedules: ScheduleRow[]; total: number }>({
     queryKey: ["/api/admin/collective-payments/schedules", feeKindFilter],
     queryFn: async () => (await apiRequest("GET", `/api/admin/collective-payments/schedules?${qs.toString()}`)).json(),
     retry: false,
@@ -123,6 +123,11 @@ export default function CollectivePaymentSchedules() {
 
   const expireMut = useMutation({
     mutationFn: async (id: string) => {
+      // W5.2 — confirm before the destructive expire (this removes a live fee
+      // schedule row from the resolver catalogue). Cancelling is a no-op.
+      if (typeof window !== "undefined" && !window.confirm("Expire this fee schedule? It will no longer apply to members. This cannot be undone.")) {
+        throw new Error("cancelled");
+      }
       const r = await apiRequest("DELETE", `/api/admin/collective-payments/schedules/${id}`);
       const j = await r.json();
       if (!j.ok) throw new Error(j.error || "expire_failed");
@@ -131,14 +136,21 @@ export default function CollectivePaymentSchedules() {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/collective-payments/schedules", feeKindFilter] });
       toast({ title: "Schedule expired" });
     },
-    onError: (e: any) => toast({ title: "Action failed", description: e?.message, variant: "destructive" }),
+    onError: (e: any) => {
+      if (e?.message === "cancelled") return; // user declined the confirm — silent no-op
+      toast({ title: "Action failed", description: e?.message, variant: "destructive" });
+    },
   });
 
   const rows = data?.schedules ?? [];
 
   return (
     <>
-      <PageHeader title="Collective Payment Schedules" description="Admin-configurable Collective fee catalogue. Platform defaults apply to all members; per-tier rows override them; per-member rows take highest precedence. Quote-only — no charges are made automatically." />
+      <PageHeader
+        title="Collective Payment Schedules"
+        breadcrumbs={[{ href: "/admin/dashboard", label: "Admin" }, { label: "Collective Payment Schedules" }]}
+        description="Admin-configurable Collective fee catalogue. Platform defaults apply to all members; per-tier rows override them; per-member rows take highest precedence. Quote-only — no charges are made automatically."
+      />
       <PageBody>
         <div className="flex flex-wrap items-center gap-3 mb-4">
           <Select value={feeKindFilter} onValueChange={setFeeKindFilter}>
@@ -214,6 +226,13 @@ export default function CollectivePaymentSchedules() {
           <CardContent>
             {isLoading ? (
               <p className="text-sm text-muted-foreground" data-testid="text-cps-loading">Loading catalogue…</p>
+            ) : isError || (data && !data.ok) ? (
+              <div className="flex flex-col items-start gap-2" data-testid="error-cps">
+                <p className="text-sm text-rose-600">Couldn’t load the fee catalogue.</p>
+                <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching} data-testid="button-retry-cps">
+                  {isFetching ? "Retrying…" : "Retry"}
+                </Button>
+              </div>
             ) : rows.length === 0 ? (
               <p className="text-sm text-muted-foreground" data-testid="empty-cps">No active schedules for this filter. Use “New schedule” to add one — the seeded $0 platform defaults keep the resolver from failing on a fresh deploy.</p>
             ) : (

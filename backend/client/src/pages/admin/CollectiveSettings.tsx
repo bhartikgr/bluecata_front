@@ -3,8 +3,10 @@
  *
  * Reads GET /api/admin/collective-settings and merge-patches via PUT on save.
  * Nothing is hardcoded — the form hydrates from the persisted settings row and
- * writes back through the canonical admin route. Mounted at both
- * /admin/collective/settings and /admin/collective-settings.
+ * writes back through the canonical admin route. Mounted at the canonical
+ * /admin/collective/settings; the legacy alias /admin/collective-settings
+ * redirects there (W5.2 de-duplication). The backend API path
+ * /api/admin/collective-settings is unchanged.
  */
 import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";

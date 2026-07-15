@@ -132,6 +132,8 @@ import AdminPartners from "@/pages/admin/Partners";
 import AdminPartnerFeeSchedules from "@/pages/admin/PartnerFeeSchedules";
 import AdminApplicationFee from "@/pages/admin/AdminApplicationFee"; /* v25.39 */
 import AdminPlatformFees from "@/pages/admin/AdminPlatformFees"; /* v25.45.4 L-2 — DB-driven Platform Fees admin (foundation for v25.46) */
+import CollectiveSubscriptions from "@/pages/admin/CollectiveSubscriptions"; /* W4 — Collective dynamic subscription-package admin CRUD */
+import PartnerResponders from "@/pages/admin/PartnerResponders"; /* W6 — Ask-an-Expert partner-responder registry */
 import AdminCommissionRates from "@/pages/admin/AdminCommissionRates"; /* v25.39 */
 import AdminPartnerPL from "@/pages/admin/PartnerPL";
 /* v25.34 Collective Payment Model — admin pages (DB-driven). */
@@ -741,6 +743,12 @@ function AppRouter() {
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminApplicationFee /></RequireAuth>}
         </Route>
         {/* v25.45.4 L-2 — DB-driven Platform Fees admin (foundation for v25.46). */}
+        <Route path="/admin/collective-subscriptions">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><CollectiveSubscriptions /></RequireAuth>}
+        </Route>
+        <Route path="/admin/partner-responders">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><PartnerResponders /></RequireAuth>}
+        </Route>
         <Route path="/admin/platform-fees">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminPlatformFees /></RequireAuth>}
         </Route>
@@ -870,9 +878,14 @@ function AppRouter() {
         <Route path="/admin/collective/waitlist">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminCollectiveWaitlist /></RequireAuth>}
         </Route>
-        {/* v25.47 APD-031 — second canonical path for Collective Settings. */}
+        {/* W5.2 — de-duplicate admin Collective Settings. The hierarchical
+           /admin/collective/settings (line ~871) is the CANONICAL route — it matches the
+           established /admin/collective/* namespace used by members, waitlist, applications,
+           etc., and is the path the admin nav (AppShell) links to. The former hyphenated
+           alias /admin/collective-settings now 301-style redirects to it (single source of
+           truth for the URL; the backend API path /api/admin/collective-settings is unchanged). */}
         <Route path="/admin/collective-settings">
-          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminCollectiveSettings /></RequireAuth>}
+          {() => <Redirect to="/admin/collective/settings" />}
         </Route>
         {/* v25.47 APD-022 — DB-driven Pulse index watchlist CRUD. */}
         <Route path="/admin/pulse-symbols">

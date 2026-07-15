@@ -116,6 +116,19 @@ const NAV_GROUPS: NavGroup[] = [
       { href: "/collective/dsc/prep", label: "Transaction Prep Tracker", icon: ClipboardList, "data-testid": "nav-collective-dsc-prep" },
     ],
   },
+  /* W6 — COMMUNITY group. Surfaces first-class member community routes that
+   * previously had NO nav entry (notably Ask-an-Expert, which existed at
+   * /collective/ask-expert but was orphaned). No route is dropped; this only
+   * adds visibility. Ask-an-Expert also hosts the W6 "connect a partner"
+   * responder flow. */
+  {
+    title: "COMMUNITY",
+    items: [
+      { href: "/collective/ask-expert", label: "Ask an Expert", icon: MessageSquare, "data-testid": "nav-collective-ask-expert" },
+      { href: "/collective/posts", label: "Posts", icon: Newspaper, "data-testid": "nav-collective-posts" },
+      { href: "/collective/presentations", label: "Presentations", icon: FileText, "data-testid": "nav-collective-presentations" },
+    ],
+  },
   /* v19 Phase A — Events Calendar + Leaderboard. Placed in their own
    * group so they get dedicated visibility without disrupting existing
    * nav ordering. */

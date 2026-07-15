@@ -36,6 +36,7 @@ import { DEMO_SEED_ENABLED } from "./lib/demoGate";
  * privacy tiers as /api/collective/ma-intel. */
 import { getUserContext } from "./lib/userContext";
 import { decideMaAccess, type MaAccessDecision } from "./lib/maAuthzGate";
+import { buildMaParityEnvelope } from "./lib/maIntelParity"; /* W7 — unified redacted/no-data envelope */
 import {
   deriveMaIntelFromProfile,
   readMaReadinessNarrative,
@@ -249,7 +250,6 @@ export function buildMaAggregateResponse(
 ): Record<string, unknown> {
   return {
     companyId,
-    accessLevel: "AGGREGATE",
     maScore: intel.maScore,
     acquirerFitScore: intel.acquirerFitScore,
     intentSignal: intel.intentSignal,
@@ -260,6 +260,9 @@ export function buildMaAggregateResponse(
     marketShare: intel.marketShare,
     managementTeamStrength: intel.managementTeamStrength,
     strategicBuyerCount: intel.topBuyer ? 1 : 0,
+    /* W7 — parity envelope: AGGREGATE always means data EXISTS but is redacted.
+       The envelope also supplies accessLevel: "AGGREGATE" (single source). */
+    ...buildMaParityEnvelope({ level: "AGGREGATE", canSeeNarrative: false, canSeeBuyers: false }, true),
   };
 }
 
@@ -297,6 +300,9 @@ export function buildMaFullBody(
   if (decision.canSeeNarrative) {
     body.maReadinessNarrative = narrative ?? "";
   }
+  /* W7 — parity envelope (additive): tells the UI whether anything is withheld
+     at this FULL/DETAIL tier (narrative/buyers), uniform across surfaces. */
+  Object.assign(body, buildMaParityEnvelope(decision, true));
   return body;
 }
 
@@ -340,8 +346,15 @@ export function registerMaIntelligenceRoutes(app: Express): void {
 
     const intel = deriveMaIntelFromProfile(companyId);
     if (!intel) {
-      // Company exists in scope policy-wise but has no stored Step 4 data.
-      res.status(404).json({ ok: false, error: "ma_intel_not_available" });
+      // Company is in scope (the caller may look) but has NO stored Step 4 data.
+      // W7 parity: return the explicit no-data envelope so the UI can distinguish
+      // "nothing entered yet" from "withheld from you". Kept at 404 for the
+      // existing investor contract; the envelope makes the reason unambiguous.
+      res.status(404).json({
+        ok: false,
+        error: "ma_intel_not_available",
+        ...buildMaParityEnvelope({ level: decision.level, canSeeNarrative: decision.canSeeNarrative, canSeeBuyers: decision.canSeeBuyers }, false),
+      });
       return;
     }
 

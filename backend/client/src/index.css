@@ -10,7 +10,13 @@
    Additive `--cv-*` namespace consumed only by the new v25.46 primitives.
    Must precede @tailwind per CSS @import ordering rules. */
 @import "./styles/capavate-tokens.css";
-/* v25.50.0 Phase 1 — partner-workspace re-skin, scoped under [data-product="partner"]. */
+/* W8 (2026-07-14) — SHARED Collective + Consortium Partner reskin, scoped under
+   BOTH [data-product="collective"] AND [data-product="partner"] so the two
+   surfaces render identically (capavate.com marketing look). This supersedes the
+   partner-only theme; partner-theme.css below is retained (import kept last) only
+   for any partner-specific overrides and is now effectively a no-op superset
+   member of the shared theme. */
+@import "./styles/collective-theme.css";
 @import "./styles/partner-theme.css";
 
 @tailwind base;

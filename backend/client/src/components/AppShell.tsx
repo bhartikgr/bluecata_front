@@ -7,7 +7,7 @@ import {
   Activity, Settings, Send, Inbox, Target, UserCircle, MessageSquare, FileSignature,
   Sparkles, Bell, Search, Menu, X, ChevronDown, LogOut,
   ShieldCheck, Calculator, History, SlidersHorizontal, Building,
-  GitCompareArrows, BarChart3, Mail, Network, DollarSign, RefreshCw, Database,
+  GitCompareArrows, BarChart3, Mail, Network, DollarSign, RefreshCw, Database, Handshake,
   Rss, HelpCircle, Globe, CreditCard,
 } from "lucide-react";
 import { CapavateLogo } from "./CapavateLogo";
@@ -227,6 +227,8 @@ const adminNav: NavGroup[] = [
          catalogue and Collective P&L (DB-driven via /api/admin/collective-payments/*). */
       { href: "/admin/collective-payment-schedules", label: "Collective Payment Schedules", icon: DollarSign },
       { href: "/admin/collective-payment-pl", label: "Collective P&L", icon: BarChart3 },
+      /* W4 — DB-driven Collective subscription-package authoring (dynamic member tiers). */
+      { href: "/admin/collective-subscriptions", label: "Collective Subscriptions", icon: DollarSign },
     ],
   },
   {
@@ -240,6 +242,8 @@ const adminNav: NavGroup[] = [
       /* v25.39 — DB-driven per-tier commission-rate editor. */
       { href: "/admin/commission-rates", label: "Commission Rates", icon: DollarSign },
       { href: "/admin/partner-pl", label: "Partner P&L", icon: BarChart3 },
+      /* W6 — Ask-an-Expert partner-responder registry. */
+      { href: "/admin/partner-responders", label: "Partner Responders", icon: Handshake },
     ],
   },
   {

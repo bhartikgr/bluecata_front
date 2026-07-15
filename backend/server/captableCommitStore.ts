@@ -97,6 +97,14 @@ export type LedgerEntry = {
    */
   holderFirstName?: string | null;
   holderLastName?: string | null;
+  /* W-SAFE (2026-07-14) -- instrument classification + unpriced (SAFE/note)
+     economic terms. 'priced' (default) rows leave the *unpriced fields null and
+     their hash body is byte-identical to the pre-W-SAFE ledger. 'unpriced' rows
+     carry principalAmount/valuationCap/discountPct, which ARE part of the hash. */
+  instrumentClass?: CommitInstrumentClass;
+  principalAmount?: string | null;
+  valuationCap?: string | null;
+  discountPct?: string | null;
 };
 
 export const TRANSITIONS: Record<CommitState, CommitState[]> = {
@@ -185,6 +193,11 @@ function rowToLedgerEntry(r: any): LedgerEntry {
     // v25.51 name-split — additive holder metadata (never hashed).
     holderFirstName: r.holderFirstName ?? null,
     holderLastName: r.holderLastName ?? null,
+    // W-SAFE — instrument class + unpriced terms (surfaced for cap-table render).
+    instrumentClass: (r.instrumentClass ?? "priced") as CommitInstrumentClass,
+    principalAmount: r.principalAmount ?? null,
+    valuationCap: r.valuationCap ?? null,
+    discountPct: r.discountPct ?? null,
   };
 }
 
@@ -516,7 +529,80 @@ export function isValidShares(s: unknown): s is string {
    making any drift visible in the immutable ledger. */
 import Decimal from "decimal.js"; /* v25.19 Lane 2 NH1 — precise decimal math */
 import { getRoundById as _getRound } from "./roundsStore";
-export function reconcile(input: { invitationId: string; amount: string; currency: string; shares: string; roundId?: string }): { primary: string; ref: string; match: boolean } {
+
+/* W-SAFE (2026-07-14) -- instrument classification for the commit path.
+   The immutable ledger was share-based only; SAFE/convertible-note rounds are
+   UNPRICED (pricePerShare null) so priced share-derivation was skipped, shares
+   stayed "0", and commit failed invalid_shares (Avi AVI-4). We classify a round
+   into 'priced' | 'unpriced':
+     - preferred/common  -> priced (uses round.pricePerShare)
+     - warrant/option*   -> priced VIA strikePrice (strike is the effective pps)
+     - safe / convertible / note -> unpriced (principal-dollar position; no shares)
+   Unpriced commits store shares="0" LEGITIMATELY plus principalAmount and the
+   SAFE economic terms (valuationCap, discountPct); those three plus
+   instrumentClass enter the commit hash body so the ledger cryptographically
+   commits the position's substance for clean conversion math + audit later. */
+export type CommitInstrumentClass = "priced" | "unpriced";
+export interface CommitClassification {
+  instrumentClass: CommitInstrumentClass;
+  /* effective price-per-share for the PRICED path (real pps, or a warrant's
+     strikePrice). null when unpriced. */
+  effectivePps: number | null;
+  valuationCap: string | null;
+  discountPct: string | null;
+}
+function _decStrOrNull(v: unknown): string | null {
+  if (v === undefined || v === null || v === "") return null;
+  const s = String(v);
+  return AMOUNT_RE.test(s) ? s : null;
+}
+export function classifyRoundCommit(roundId?: string): CommitClassification {
+  const fallback: CommitClassification = { instrumentClass: "priced", effectivePps: null, valuationCap: null, discountPct: null };
+  if (!roundId) return fallback;
+  let round: ReturnType<typeof _getRound> | null = null;
+  try { round = _getRound(String(roundId)); } catch { round = null; }
+  if (!round) return fallback;
+  const instrument = String((round as { instrument?: unknown }).instrument ?? "").toLowerCase();
+  const pps = (round as { pricePerShare?: number | null }).pricePerShare ?? null;
+  const strikeRaw = (round as Record<string, unknown>).strikePrice;
+  const strike = typeof strikeRaw === "number" ? strikeRaw : (typeof strikeRaw === "string" && AMOUNT_RE.test(strikeRaw) ? Number(strikeRaw) : null);
+  const valuationCap = _decStrOrNull((round as Record<string, unknown>).valuationCap);
+  const discountPct = _decStrOrNull((round as Record<string, unknown>).discount ?? (round as Record<string, unknown>).discountPct);
+  const isUnpriced = /safe|convertible|note/.test(instrument);
+  const isWarrantLike = /warrant|option/.test(instrument);
+  if (isUnpriced) {
+    return { instrumentClass: "unpriced", effectivePps: null, valuationCap, discountPct };
+  }
+  if (isWarrantLike) {
+    /* AS.1: warrants/options are PRICED via strikePrice. Fall back to pps if a
+       strike is absent (defensive), else treat as priced with the strike. */
+    const eff = (strike && strike > 0) ? strike : ((pps && pps > 0) ? pps : null);
+    return { instrumentClass: "priced", effectivePps: eff, valuationCap, discountPct };
+  }
+  /* preferred/common (or anything else): priced via pps. */
+  return { instrumentClass: "priced", effectivePps: (pps && pps > 0) ? pps : null, valuationCap, discountPct };
+}
+
+export function reconcile(input: { invitationId: string; amount: string; currency: string; shares: string; roundId?: string; instrumentClass?: CommitInstrumentClass; principalAmount?: string | null }): { primary: string; ref: string; match: boolean } {
+  /* W-SAFE: UNPRICED (SAFE/note) reconcile on PRINCIPAL, not shares. There are
+     no shares pre-conversion; the independent second computation verifies that
+     the committed principalAmount equals the funded amount (drift detection on
+     the dollar principal). shares is legitimately "0" for unpriced. This branch
+     is only entered when the caller passes instrumentClass:"unpriced"; the
+     priced path below is byte-identical to the pre-W-SAFE behaviour. */
+  if (input.instrumentClass === "unpriced") {
+    const principal = String(input.principalAmount ?? input.amount);
+    const refP = String(input.amount);
+    let matchP = isValidAmount(input.amount) && isValidAmount(principal);
+    if (matchP) {
+      try {
+        matchP = new Decimal(principal).equals(new Decimal(input.amount));
+      } catch {
+        matchP = false;
+      }
+    }
+    return { primary: principal, ref: refP, match: matchP };
+  }
   // Primary derivation — the supplied shares.
   const primary = String(input.shares);
   let ref = primary;
@@ -549,8 +635,17 @@ export type CommitResult =
 function buildCommitBody(seq: number, ts: string, args: {
   invitationId: string; roundId: string; companyId: string; investorId: string;
   amount: string; currency: string; shares: string;
+  /* W-SAFE: OPTIONAL unpriced-instrument fields. For PRICED commits these are
+     omitted entirely so the serialized body -- and therefore the hash -- is
+     BYTE-IDENTICAL to the pre-W-SAFE ledger (existing chains keep verifying).
+     For UNPRICED commits they are appended so the immutable ledger commits the
+     SAFE's economic substance (class + principal + cap + discount). */
+  instrumentClass?: CommitInstrumentClass;
+  principalAmount?: string | null;
+  valuationCap?: string | null;
+  discountPct?: string | null;
 }): string {
-  return JSON.stringify({
+  const body: Record<string, unknown> = {
     seq,
     ts,
     invitationId: args.invitationId,
@@ -561,7 +656,15 @@ function buildCommitBody(seq: number, ts: string, args: {
     currency: args.currency,
     shares: args.shares,
     state: "committed",
-  });
+  };
+  // Only unpriced rows extend the hashed body; priced rows stay byte-identical.
+  if (args.instrumentClass === "unpriced") {
+    body.instrumentClass = "unpriced";
+    body.principalAmount = String(args.principalAmount ?? args.amount);
+    body.valuationCap = args.valuationCap ?? null;
+    body.discountPct = args.discountPct ?? null;
+  }
+  return JSON.stringify(body);
 }
 
 export function commitFunded(args: {
@@ -587,11 +690,26 @@ export function commitFunded(args: {
     return { ok: false, error: `compliance_hold:${tenantForHold}` };
   }
   if (!isValidAmount(args.amount)) return { ok: false, error: "invalid_amount" };
-  if (!isValidShares(args.shares)) return { ok: false, error: "invalid_shares" };
+  /* W-SAFE: classify the round. PRICED (preferred/common/warrant-via-strike)
+     keeps the strict positive-shares gate below (byte-identical behaviour).
+     UNPRICED (SAFE/convertible note) has NO shares pre-conversion, so shares is
+     legitimately "0"; we skip the shares gate and instead require a valid
+     principal amount and reconcile on principal. */
+  const _cls = classifyRoundCommit(args.roundId);
+  const _isUnpriced = _cls.instrumentClass === "unpriced";
+  const _principalAmount = _isUnpriced ? args.amount : null;
+  if (!_isUnpriced) {
+    if (!isValidShares(args.shares)) return { ok: false, error: "invalid_shares" };
+  } else {
+    /* Unpriced: shares MUST be "0" (or absent) -- a positive share count on an
+       unpriced instrument is a caller error we surface rather than silently keep. */
+    if (args.shares && args.shares !== "0") return { ok: false, error: "unexpected_shares_on_unpriced" };
+  }
   const currency = (args.currency ?? "USD").toUpperCase();
   if (!/^[A-Z]{3}$/.test(currency)) return { ok: false, error: "invalid_currency" };
-  /* v25.19 Lane 2 NC3 — pass roundId for real independent reconciliation. */
-  const rec = reconcile({ invitationId: args.invitationId, amount: args.amount, currency, shares: args.shares, roundId: args.roundId });
+  /* v25.19 Lane 2 NC3 — pass roundId for real independent reconciliation.
+     W-SAFE threads instrumentClass + principal so unpriced reconciles on $. */
+  const rec = reconcile({ invitationId: args.invitationId, amount: args.amount, currency, shares: args.shares, roundId: args.roundId, instrumentClass: _cls.instrumentClass, principalAmount: _principalAmount });
   if (!rec.match) return { ok: false, error: "reconcile_mismatch" };
 
   // v25.51 name-split — normalise optional holder metadata (never hashed).
@@ -626,6 +744,11 @@ export function commitFunded(args: {
         amount: args.amount,
         currency,
         shares: args.shares,
+        // W-SAFE: only unpriced rows pass these -> only they extend the hash body.
+        instrumentClass: _cls.instrumentClass,
+        principalAmount: _principalAmount,
+        valuationCap: _isUnpriced ? _cls.valuationCap : null,
+        discountPct: _isUnpriced ? _cls.discountPct : null,
       });
       const hash = createHash("sha256").update(`${prevHash}|${body}`).digest("hex").slice(0, 24);
 
@@ -656,6 +779,12 @@ export function commitFunded(args: {
           // v25.51 name-split — additive metadata, NOT part of `hash` above.
           holderFirstName,
           holderLastName,
+          // W-SAFE — instrument-class + SAFE terms; for unpriced these ARE hashed
+          // (via buildCommitBody). Priced rows store the 'priced' default only.
+          instrumentClass: _cls.instrumentClass,
+          principalAmount: _principalAmount,
+          valuationCap: _isUnpriced ? _cls.valuationCap : null,
+          discountPct: _isUnpriced ? _cls.discountPct : null,
           deletedAt: null,
         })
         .run();
@@ -679,6 +808,11 @@ export function commitFunded(args: {
         complianceHold: false,
         holderFirstName,
         holderLastName,
+        // W-SAFE — mirror the persisted instrument fields onto the returned entry.
+        instrumentClass: _cls.instrumentClass,
+        principalAmount: _principalAmount,
+        valuationCap: _isUnpriced ? _cls.valuationCap : null,
+        discountPct: _isUnpriced ? _cls.discountPct : null,
       };
     });
   } catch (err) {
@@ -700,6 +834,13 @@ export function verifyChain(): { ok: boolean; brokenAt?: number } {
       invitationId: e.invitationId, roundId: e.roundId,
       companyId: e.companyId, investorId: e.investorId,
       amount: e.amount, currency: e.currency, shares: e.shares,
+      // W-SAFE: pass the persisted instrument fields so an unpriced row's body
+      // (which INCLUDES them) reproduces its exact stored hash. Priced rows have
+      // instrumentClass 'priced' -> buildCommitBody omits them -> byte-identical.
+      instrumentClass: e.instrumentClass,
+      principalAmount: e.principalAmount,
+      valuationCap: e.valuationCap,
+      discountPct: e.discountPct,
     });
     const expected = createHash("sha256").update(`${prev}|${body}`).digest("hex").slice(0, 24);
     if (expected !== e.hash) return { ok: false, brokenAt: i };
@@ -979,11 +1120,21 @@ export function registerCaptableCommitRoutes(app: Express): void {
           // Formula: shares = floor(amount_in_currency_units / pricePerShare)
           // pricePerShare is real (e.g. 0.20). amount is a decimal string (e.g.
           // "50000"). We use BigInt arithmetic on cent-units to avoid FP loss.
+          /* W-SAFE: classify each candidate. UNPRICED (SAFE/note) commits carry
+             NO shares pre-conversion -- skip the priced derivation + the
+             isValidShares gate entirely, keep shares="0", and reconcile on the
+             principal. PRICED (preferred/common/warrant-via-strike) keeps the
+             exact pre-W-SAFE derivation below. Warrants classify as priced with
+             effectivePps = strikePrice, so they derive shares like any priced row. */
+          const _clsB = classifyRoundCommit(e.roundId);
+          const _isUnpricedB = _clsB.instrumentClass === "unpriced";
           let effectiveShares = e.shares;
-          if (!isValidShares(effectiveShares)) {
+          if (!_isUnpricedB && !isValidShares(effectiveShares)) {
             try {
               const round = getRoundById(e.roundId);
-              const pps = round?.pricePerShare;
+              // W-SAFE: warrants are priced via strikePrice -> use the classified
+              // effectivePps (real pps for equity, strike for warrants).
+              const pps = _clsB.effectivePps ?? round?.pricePerShare;
               if (pps && pps > 0) {
                 // Convert both to cent-units (multiply by 1,000,000 to retain
                 // 6 decimal places on pricePerShare), divide, then floor.
@@ -1017,14 +1168,24 @@ export function registerCaptableCommitRoutes(app: Express): void {
               log.warn(`[commit-funded-batch] share derivation failed for ${e.invitationId}:`, (deriveErr as Error).message);
             }
           }
-          if (!isValidShares(effectiveShares)) {
+          if (_isUnpricedB) {
+            /* Unpriced: shares stays "0" legitimately. Guard against a stray
+               positive share count on an unpriced instrument (caller error). */
+            if (effectiveShares && effectiveShares !== "0") {
+              abortBox.push({ invitationId: e.invitationId, error: "unexpected_shares_on_unpriced" });
+              throw new Error("batch_abort");
+            }
+            effectiveShares = "0";
+          } else if (!isValidShares(effectiveShares)) {
             abortBox.push({ invitationId: e.invitationId, error: "invalid_shares" });
             throw new Error("batch_abort");
           }
           // Use the derived shares from this point forward
           e = { ...e, shares: effectiveShares };
-          /* v25.19 Lane 2 NC3 — pass roundId for real independent reconciliation. */
-          const rec = reconcile({ invitationId: e.invitationId, amount: e.amount, currency: e.currency, shares: e.shares, roundId: e.roundId });
+          const _principalB = _isUnpricedB ? e.amount : null;
+          /* v25.19 Lane 2 NC3 — pass roundId for real independent reconciliation.
+             W-SAFE: unpriced reconciles on principal via instrumentClass. */
+          const rec = reconcile({ invitationId: e.invitationId, amount: e.amount, currency: e.currency, shares: e.shares, roundId: e.roundId, instrumentClass: _clsB.instrumentClass, principalAmount: _principalB });
           if (!rec.match) {
             abortBox.push({ invitationId: e.invitationId, error: "reconcile_mismatch" });
             throw new Error("batch_abort");
@@ -1038,6 +1199,11 @@ export function registerCaptableCommitRoutes(app: Express): void {
             amount: e.amount,
             currency: e.currency,
             shares: e.shares,
+            // W-SAFE: only unpriced rows extend the hashed body.
+            instrumentClass: _clsB.instrumentClass,
+            principalAmount: _principalB,
+            valuationCap: _isUnpricedB ? _clsB.valuationCap : null,
+            discountPct: _isUnpricedB ? _clsB.discountPct : null,
           });
           const hash = createHash("sha256").update(`${prevHash}|${body}`).digest("hex").slice(0, 24);
           const id = `ccm_${createHash("sha256").update(e.invitationId).digest("hex").slice(0, 16)}`;
@@ -1062,6 +1228,11 @@ export function registerCaptableCommitRoutes(app: Express): void {
               reconcileRef: rec.ref,
               reconcileMatch: rec.match,
               complianceHold: false,
+              // W-SAFE — instrument-class + SAFE terms (hashed for unpriced).
+              instrumentClass: _clsB.instrumentClass,
+              principalAmount: _principalB,
+              valuationCap: _isUnpricedB ? _clsB.valuationCap : null,
+              discountPct: _isUnpricedB ? _clsB.discountPct : null,
               deletedAt: null,
             })
             .run();
@@ -1082,6 +1253,11 @@ export function registerCaptableCommitRoutes(app: Express): void {
             hash,
             reconcile: rec,
             complianceHold: false,
+            // W-SAFE — mirror instrument fields onto the returned committed entry.
+            instrumentClass: _clsB.instrumentClass,
+            principalAmount: _principalB,
+            valuationCap: _isUnpricedB ? _clsB.valuationCap : null,
+            discountPct: _isUnpricedB ? _clsB.discountPct : null,
           });
 
           prevHash = hash;

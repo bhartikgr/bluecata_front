@@ -178,6 +178,8 @@ import { registerAdminCollectiveRoutes } from "./adminCollectiveRoutes";
 import { registerAdminCollectiveFeeRoutes } from "./adminCollectiveFeeRoutes"; /* v25.39 — admin write endpoints for fee/commission config */
 import { registerAdminPlatformFeesRoutes } from "./adminPlatformFeesRoutes"; /* v25.45.4 L-2 — DB-backed Platform Fees admin (foundation for v25.46) */
 import { registerAdminFeeTierRoutes } from "./adminFeeTierRoutes"; /* v25.46.1 — multi-section fee admin: collective member-subscription + consortium subscription tiers + SPV deployment flat fee */
+import { registerCollectiveSubscriptionAdminRoutes } from "./collectiveSubscriptionAdminRoutes"; /* W4 — Collective dynamic subscription-package admin CRUD */
+import { configureCollectiveSubscriptionConfigStore } from "./collectiveSubscriptionConfigStore"; /* W4 */
 import { registerV2546Routes } from "./v2546Routes"; /* v25.46 — 6-track release: messages, network posts, pulse SSE, markets quote, press */
 import { registerPulseSymbolRoutes } from "./pulseSymbolRoutes"; /* v25.47 APD-022 — DB-driven Pulse symbol registry */
 import { registerPostModerationRoutes } from "./postModerationRoutes"; /* v25.47 APD-023 — network post moderation */
@@ -206,6 +208,8 @@ import { getRoundById as roundsGetById } from "./roundsStore";
 import { registerMaInitiativesRoutes } from "./lib/maInitiativesStore";
 import { registerBulkInvitationsRoutes } from "./lib/bulkInvitationsRoutes";
 import { registerExpertQARoutes } from "./expertQAStore";
+import { registerPartnerResponderRoutes } from "./partnerResponderStore"; /* W6 — Ask-an-Expert partner-responder / connect backend */
+import { registerCaptableSnapshotsRoutes } from "./captableSnapshotsStore"; /* W-CT — read-only pending/previous cap-table snapshots */
 import { registerChapterAnnouncementRoutes } from "./chapterAnnouncementsStore";
 import { registerChapterResourceRoutes } from "./chapterResourcesStore";
 import { registerLeaderboardRoutes } from "./chapterLeaderboardStore";
@@ -915,6 +919,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   registerAdminCollectiveFeeRoutes(app);
   registerAdminPlatformFeesRoutes(app); /* v25.45.4 L-2 — /api/admin/platform-fees read+update */
   registerAdminFeeTierRoutes(app); /* v25.46.1 — /api/admin/collective/member-subscription-tiers + /api/admin/consortium/subscription-tiers + /api/admin/consortium/spv-deployment-fee */
+  /* W4 — Collective dynamic subscription-package admin CRUD (10 routes under
+     /api/admin/collective-subscriptions). Wire audit/bridge to the admin audit log. */
+  try {
+    configureCollectiveSubscriptionConfigStore({
+      audit: (evt) => { try { appendAdminAudit(evt.actor, evt.entity, evt.kind, { text: evt.text, ...(evt.meta && typeof evt.meta === "object" ? evt.meta as Record<string, unknown> : {}) }); } catch { /* non-fatal */ } },
+    });
+  } catch { /* audit wiring is best-effort */ }
+  registerCollectiveSubscriptionAdminRoutes(app);
   registerV2546Routes(app); /* v25.46 — 6-track release endpoints (messages, network posts, pulse, markets, press) */
   registerPulseSymbolRoutes(app); /* v25.47 APD-022 — DB-driven Pulse symbol registry */
   registerPostModerationRoutes(app); /* v25.47 APD-023 — network post moderation */
@@ -977,6 +989,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
    * and are gated by COLLECTIVE_ENABLED + requireAuth + requireCollectiveMember
    * + inline isChapterMember/isChapterAdmin checks. */
   registerExpertQARoutes(app);
+  registerPartnerResponderRoutes(app); /* W6 — member connect + partner inbox + admin responder registry */
 
   /* ------------ v19 Phase A — Announcements, Resources Library, Leaderboard.
    * All four secondary surfaces live under /api/collective/{announcements,
@@ -1574,8 +1587,67 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!ctx.isAdmin && !isFounder && !isInvestorInCompany) {
       return res.status(403).json({ ok: false, error: "not_authorized" });
     }
-    res.json(securities.filter(s => s.companyId === cid));
+    const baseSecurities = securities.filter(s => s.companyId === cid);
+    /* W-SAFE (2026-07-14) — ledger->display bridge for UNPRICED positions.
+       The commit ledger and the demo `securities` array are decoupled by design
+       (the money core intentionally does NOT write `securities`). SAFE/note
+       positions now committed via W-SAFE would otherwise never appear in the
+       cap-table "SAFEs + Notes outstanding" card. Read-only + additive: project
+       committed UNPRICED ledger rows into the ApiSecurity shape and append them,
+       de-duped against any base row already representing the same invitation.
+       Priced ledger rows are untouched here (they flow through the existing
+       securities/engine path exactly as before). No sacred file is modified. */
+    try {
+      const committed = captableMembersForCompany(String(cid)).filter(
+        (e: any) => (e.instrumentClass ?? "priced") === "unpriced",
+      );
+      const seenIds = new Set(baseSecurities.map((s: any) => s.id));
+      for (const e of committed as any[]) {
+        const secId = `ccm_sec_${e.invitationId}`;
+        if (seenIds.has(secId)) continue;
+        const principal = Number(e.principalAmount ?? e.amount ?? 0);
+        const cap = e.valuationCap != null ? Number(e.valuationCap) : null;
+        const disc = e.discountPct != null ? Number(e.discountPct) : null;
+        const holderName = (e.holderFirstName || e.holderLastName)
+          ? `${e.holderFirstName ?? ""} ${e.holderLastName ?? ""}`.trim()
+          : (e.investorId ?? "Investor");
+        // Instrument label from the round: convertible notes render as "note",
+        // SAFEs as "safe" (the client card filters instrument === "safe" || "note").
+        let instrument = "safe";
+        try {
+          const rnd = roundsStoreGetById(String(e.roundId ?? ""));
+          const inst = String((rnd as any)?.instrument ?? "").toLowerCase();
+          if (/note|convertible/.test(inst)) instrument = "note";
+        } catch { /* default safe */ }
+        baseSecurities.push({
+          id: secId,
+          companyId: String(cid),
+          holderName,
+          holderType: "investor",
+          instrument,
+          series: null,
+          shares: 0,
+          pricePerShare: null,
+          investmentAmount: Number.isFinite(principal) ? principal : 0,
+          cap: cap != null && Number.isFinite(cap) ? cap : null,
+          discount: disc != null && Number.isFinite(disc) ? disc : null,
+          issuedAt: e.ts ?? null,
+          roundId: e.roundId ?? null,
+          investorId: e.investorId ?? null,
+          accruedInterest: 0,
+        } as any);
+      }
+    } catch (bridgeErr) {
+      // Fail-open to base securities: a bridge failure must never break the
+      // existing cap-table read (priced positions still render).
+    }
+    res.json(baseSecurities);
   });
+
+  /* W-CT (2026-07-14) — read-only pending/previous cap-table snapshots.
+     Reuses the same in-memory demo `securities` reader + commit-store readers;
+     performs ZERO writes (sacred money core untouched, sha 32ba97cbcdf97750). */
+  registerCaptableSnapshotsRoutes(app, () => securities);
 
   // PATCH v3: Filter rounds by companyId (required for founder surface); coerce pricePerShare to number.
   // v13 (Avi's Issue 3): also merges DB-hydrated rounds (from roundsStore)
