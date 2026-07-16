@@ -183,6 +183,7 @@ export default function PartnerLogin() {
   return (
     <AuthShell
       title="Partner sign-in"
+      productLabel="Consortium Partner"
       subtitle="Consortium partner workspace. Manage your portfolio of founders and investors."
       footer={
         <div className="space-y-2 text-xs">

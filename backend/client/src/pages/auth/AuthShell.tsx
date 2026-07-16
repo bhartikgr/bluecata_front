@@ -34,8 +34,11 @@ const DEFAULT_TAGLINE =
 const DEFAULT_SUBLINE =
   "Activate the network already inside your ownership structure.";
 
-export function AuthShell({ title, subtitle, children, footer, tagline, subline }: {
+export function AuthShell({ title, subtitle, children, footer, tagline, subline, productLabel }: {
   title: string; subtitle?: string; children: ReactNode; footer?: ReactNode;
+  /** W-LOGO — optional product name rendered UNDER the logo (e.g. "Consortium
+   *  Partner"). Only set by portals that want it; other portals stay unchanged. */
+  productLabel?: string;
   /** v25.43 F4/F5/F7 — brand-panel headline copy. Defaults to founder copy. */
   tagline?: string;
   /** v25.43 F4/F5/F7 — brand-panel sub-headline copy. Defaults to founder copy. */
@@ -52,11 +55,19 @@ export function AuthShell({ title, subtitle, children, footer, tagline, subline 
         className="relative hidden lg:flex bg-[#041e41] text-white p-10 flex-col overflow-hidden"
         data-testid="auth-shell-brand-panel"
       >
-        {/* Logo */}
-        <Link href="/" className="relative z-10 flex items-center gap-2">
+        {/* Logo (+ optional product label underneath — W-LOGO) */}
+        <Link href="/" className="relative z-10 inline-flex flex-col items-start gap-1">
           <span className="inline-flex items-center bg-white rounded-md px-2.5 py-1.5 shadow-sm">
             <CapavateLogo className="h-7 w-auto" />
           </span>
+          {productLabel && (
+            <span
+              className="text-xs font-semibold tracking-wide text-white/85"
+              data-testid="auth-shell-product-label"
+            >
+              {productLabel}
+            </span>
+          )}
         </Link>
 
         {/* Tagline + subline. v25.43 F4/F5/F7 — copy is driven by the
@@ -83,8 +94,17 @@ export function AuthShell({ title, subtitle, children, footer, tagline, subline 
       {/* Right: Form */}
       <div className="flex items-center justify-center p-6 lg:p-10 bg-background">
         <div className="w-full max-w-md">
-          <Link href="/" className="lg:hidden flex items-center gap-2 text-foreground mb-8">
+          <Link href="/" className="lg:hidden inline-flex flex-col items-start gap-1 text-foreground mb-8">
             <CapavateLogo className="h-7 w-auto" />
+            {productLabel && (
+              <span
+                className="text-xs font-semibold tracking-wide"
+                style={{ color: "var(--cv-color-navy)" }}
+                data-testid="auth-shell-product-label-mobile"
+              >
+                {productLabel}
+              </span>
+            )}
           </Link>
           {/* v25.43 R4-1 — capavate.com brand: the form heading uses the
              Instrument Serif display family (font-serif), larger/confident

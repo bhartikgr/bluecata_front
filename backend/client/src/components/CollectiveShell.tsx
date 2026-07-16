@@ -34,6 +34,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient"; /* v16 Fix 6 */
 import { ChapterSelector } from "@/components/ChapterSelector"; /* v17 Phase A — chapter scope dropdown in topbar */
 import { MarketTicker } from "@/components/feeds/MarketTicker"; /* v25.43 R3-4 — persistent live ticker strip */
 import { CollectiveMemberGate } from "@/components/CollectiveMemberGate"; /* v25.48.2 MF7 (Q9) — member gate on the common shell */
+import { CapavateLogo } from "@/components/CapavateLogo"; /* W-LOGO — real Capavate wordmark in the shell brand block */
 
 /* ============================================================
  * v25.41 Bug-1 — Consortium Partner vs Collective separation
@@ -314,30 +315,20 @@ function CollectiveSidebar({ onClose }: { onClose?: () => void }) {
         className="flex items-center justify-between px-4 py-4"
         style={{ borderBottom: "1px solid #E8E4E0" }}
       >
-        <div className="flex items-center gap-2">
-          <div
-            className="w-7 h-7 rounded-md flex items-center justify-center text-white text-xs font-bold"
-            /* v25.41 Bug-2 / v25.43 R3-2 — partner-only sessions use the
-               capavate.com navy (#041e41); Collective sessions use the
-               capavate.com brand red (#cc0001), re-skinned from the old plum
-               (#8E2A4E) to match the live site. */
-            style={{ backgroundColor: partnerOnly ? "var(--cv-color-navy)" : "var(--cv-color-primary)" }}
+        {/* W-LOGO (Ozan) — use the REAL Capavate logo with the product name
+            written UNDERNEATH it, replacing the old "C" tile + inline
+            CONSORTIUM/COLLECTIVE badge. Partner-only sessions read
+            "Consortium Partner"; Collective/combined sessions read "Collective".
+            The logo asset already contains the Capavate wordmark. */}
+        <div className="flex flex-col items-start gap-0.5" data-testid="brand-block">
+          <CapavateLogo className="h-6 w-auto" />
+          <span
+            className="text-[11px] font-semibold tracking-wide"
+            style={{ color: partnerOnly ? "var(--cv-color-navy)" : "var(--cv-color-primary)" }}
+            data-testid="brand-product-label"
           >
-            C
-          </div>
-          <div>
-            <span className="text-sm font-semibold" style={{ color: "#1A1A2E" }}>
-              Capavate
-            </span>
-            <span
-              className="text-xs font-medium ml-1 px-1.5 py-0.5 rounded"
-              style={{ backgroundColor: partnerOnly ? "var(--cv-color-navy)" : "var(--cv-color-primary)", color: "#fff", fontSize: "9px" }}
-              data-testid="brand-chip"
-            >
-              {/* v25.41 Bug-1 — partner-only sessions are branded CONSORTIUM. */}
-              {partnerOnly ? "CONSORTIUM" : "COLLECTIVE"}
-            </span>
-          </div>
+            {partnerOnly ? "Consortium Partner" : "Collective"}
+          </span>
         </div>
         {onClose && (
           <button

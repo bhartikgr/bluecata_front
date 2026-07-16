@@ -350,6 +350,14 @@ export default function RoundNew() {
  type: form.type,
  instrument: form.instrument,
  name: form.name || undefined,
+ // W-AVI43 Issue 1 fix: the wizard captured Step 3 open/close dates in
+ // form.openDate/form.closeDate and validated them client-side, but they were
+ // never included in this create payload — so the server always received an
+ // empty openDate and rejected with OPEN_DATE_REQUIRED (Avi's report). Send the
+ // trimmed date strings; the server (POST /api/rounds) enforces both are present
+ // and that close >= open, and persists them via the non-sacred roundsStore.
+ openDate: (form.openDate ?? "").trim(),
+ closeDate: (form.closeDate ?? "").trim(),
  // Decimal-as-string values — preserved end-to-end at 38-digit precision.
  // v25.51 8a: only send preMoney/targetAmount when the instrument actually
  // uses them. For a common priced round Step 2 renders no inputs for these, so

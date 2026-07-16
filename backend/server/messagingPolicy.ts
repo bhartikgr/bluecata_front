@@ -106,6 +106,46 @@ export function resolveDmRole(userId: string): DmRole {
       /* contacts table optional — continue */
     }
 
+    // 4. W-AVI43 Issue 2 — cap-table holder identity (READ-ONLY from the durable
+    //    `captable_commits` ledger). A founder can place an investor on the cap
+    //    table BEFORE that investor registers a login, so there is no auth_users
+    //    row yet and steps 1–3 return 'unknown'. But the founder legitimately
+    //    owns that relationship, and the LOCKED matrix already allows
+    //    founder↔investor DMs. Treat any committed cap-table holder as an
+    //    'investor' so the DM is permitted (was failing closed as 'unresolved').
+    //    This is a pure READ of the sacred ledger — no writes (Sacred Tier 3 #30).
+    try {
+      const holderRow = db
+        .prepare(
+          `SELECT 1 AS hit FROM captable_commits
+            WHERE investor_id = ?
+            LIMIT 1`,
+        )
+        .get(uid) as { hit?: number } | undefined;
+      if (holderRow?.hit) return "investor";
+    } catch {
+      /* captable_commits absent in some test contexts — continue */
+    }
+
+    // 5. W-AVI43 Issue 2 — founder CRM investor contact (by id OR email). A
+    //    founder can DM anyone in their investor CRM even before that person
+    //    registers; such contacts live in `founder_crm_contacts` keyed by a
+    //    stable investorId and an email. Resolve them as 'investor' so the
+    //    founder↔investor matrix entry applies. When the investor later
+    //    registers with the same email, step 1 (auth_users) takes precedence.
+    try {
+      const crmRow = db
+        .prepare(
+          `SELECT 1 AS hit FROM founder_crm_contacts
+            WHERE investor_id = ? OR lower(email) = lower(?)
+            LIMIT 1`,
+        )
+        .get(uid, uid) as { hit?: number } | undefined;
+      if (crmRow?.hit) return "investor";
+    } catch {
+      /* founder_crm_contacts absent in some test contexts — continue */
+    }
+
     return "unknown";
   } catch {
     // Fail-closed: unresolved identity → unknown role.
