@@ -16,9 +16,40 @@ import {
   getCollectiveSettings,
   getPublicCollectiveSettings,
   updateCollectiveSettings,
+  getMaskedMarketDataApiKeys,
+  setMarketDataApiKey,
   type CollectiveSettings,
 } from "./collectiveAdminSettingsStore";
-import { isVentureProviderId, setProvider } from "./ventureMarketsStore"; /* GROUP E (1e/E2) */
+import {
+  isVentureProviderId,
+  setProvider,
+  getActiveProvider,
+  VENTURE_PROVIDER_IDS,
+  VENTURE_PROVIDER_META,
+} from "./ventureMarketsStore"; /* GROUP E (1e/E2) + W-V44 FIX K */
+
+/**
+ * W-V44 FIX K — build the client-safe integrations payload. NEVER includes raw
+ * API keys: keys are masked ("•••• last4") and each provider carries a
+ * `configured` boolean so the admin UI can show status without the secret.
+ */
+function buildIntegrationsPayload() {
+  const masked = getMaskedMarketDataApiKeys();
+  const active = getActiveProvider();
+  const providers = VENTURE_PROVIDER_IDS.map((id) => {
+    const meta = VENTURE_PROVIDER_META[id];
+    return {
+      id,
+      label: meta.label,
+      requiresKey: meta.requiresKey,
+      docsUrl: meta.docsUrl,
+      blurb: meta.blurb,
+      configured: Boolean(masked[id]),
+      maskedKey: masked[id] ?? "",
+    };
+  });
+  return { active, providers };
+}
 
 function actorOf(req: Request): string {
   const ctx = (req as Request & {
@@ -30,7 +61,10 @@ function actorOf(req: Request): string {
 export function registerCollectiveAdminSettingsRoutes(app: Express): void {
   app.get("/api/admin/collective-settings", requireAdmin, (_req: Request, res: Response) => {
     try {
-      return res.json({ ok: true, settings: getCollectiveSettings() });
+      // W-V44 FIX K — never leak raw market-data API keys to the client. Replace
+      // the secret map with the masked view ("•••• last4") before returning.
+      const settings = { ...getCollectiveSettings(), marketDataApiKeys: getMaskedMarketDataApiKeys() };
+      return res.json({ ok: true, settings });
     } catch (err) {
       log.error("[collectiveAdminSettingsRoutes.get] failed:", (err as Error).message);
       return res
@@ -66,7 +100,9 @@ export function registerCollectiveAdminSettingsRoutes(app: Express): void {
     let saved: CollectiveSettings;
     try {
       saved = updateCollectiveSettings(patch);
-      // GROUP E — apply the provider swap live (env still wins at read time).
+      // GROUP E / W-V44 FIX K (Option A) — apply the provider swap live. The
+      // admin selection is the single source of truth (env no longer overrides
+      // at read time; it only seeds a fresh DB).
       if (patch.ventureProvider && isVentureProviderId(saved.ventureProvider)) {
         setProvider(saved.ventureProvider);
       }
@@ -86,7 +122,54 @@ export function registerCollectiveAdminSettingsRoutes(app: Express): void {
         (auditErr as Error).message,
       );
     }
-    return res.json({ ok: true, settings: saved });
+    // W-V44 FIX K (H1 leak fix) — the PUT fires on every admin provider switch
+    // (AdminIntegrations.tsx). NEVER return the raw marketDataApiKeys map here;
+    // mask it exactly like the GET so secrets never reach the browser.
+    const safeSaved = { ...saved, marketDataApiKeys: getMaskedMarketDataApiKeys() };
+    return res.json({ ok: true, settings: safeSaved });
+  });
+
+  // W-V44 FIX K — market-data integrations: provider list + masked keys + active.
+  app.get("/api/admin/market-data-integrations", requireAdmin, (_req: Request, res: Response) => {
+    try {
+      return res.json({ ok: true, ...buildIntegrationsPayload() });
+    } catch (err) {
+      log.error("[marketDataIntegrations.get] failed:", (err as Error).message);
+      return res
+        .status(500)
+        .json({ ok: false, error: "read_failed", message: sanitizeErrorMessage(err) });
+    }
+  });
+
+  // W-V44 FIX K — set/clear a provider's API key (empty string clears it). Never
+  // echoes the raw key back; returns the refreshed masked payload.
+  app.post("/api/admin/market-data-integrations/key", requireAdmin, (req: Request, res: Response) => {
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    if (!isVentureProviderId(b.provider)) {
+      return res.status(400).json({ ok: false, error: "provider is not a known provider id" });
+    }
+    if (typeof b.apiKey !== "string") {
+      return res.status(400).json({ ok: false, error: "apiKey must be a string" });
+    }
+    try {
+      setMarketDataApiKey(b.provider, b.apiKey);
+    } catch (err) {
+      log.error("[marketDataIntegrations.key] failed:", (err as Error).message);
+      return res
+        .status(500)
+        .json({ ok: false, error: "update_failed", message: sanitizeErrorMessage(err) });
+    }
+    try {
+      appendAdminAudit(
+        actorOf(req),
+        `market_data_integration:${b.provider}`,
+        b.apiKey.trim().length > 0 ? "market_data_api_key_set" : "market_data_api_key_cleared",
+        { provider: b.provider }, // NEVER log the key itself
+      );
+    } catch (auditErr) {
+      log.warn("[marketDataIntegrations.key] audit append failed (non-fatal):", (auditErr as Error).message);
+    }
+    return res.json({ ok: true, ...buildIntegrationsPayload() });
   });
 
   app.get("/api/collective/public-settings", (_req: Request, res: Response) => {

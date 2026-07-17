@@ -125,6 +125,8 @@ import AdminRegionsExtensions from "@/pages/admin/RegionsExtensions";
 import AdminRegionExtensionDetail from "@/pages/admin/RegionExtensionDetail";
 import AdminAuditLog from "@/pages/admin/AuditLog";
 import AuditChainVerifyPage from "@/pages/admin/AuditChainVerifyPage"; /* v19 Phase C */
+import AdminIntegrations from "@/pages/admin/AdminIntegrations"; /* W-V44 FIX K — market-data integrations */
+import { CapavateFeesHub, CollectiveFeesHub, PartnerFeesHub } from "@/pages/admin/FeeHub"; /* W-V44 — consolidated fee hubs */
 import AdminReconciliation from "@/pages/admin/Reconciliation";
 import AdminPayments from "@/pages/admin/Payments"; /* v25.32 P1h */
 /* v25.33 Consortium Partner Payment Model — admin surfaces (DB-driven). */
@@ -827,6 +829,21 @@ function AppRouter() {
         {/* v19 Phase C — Hash-chain audit verification UI */}
         <Route path="/admin/audit-chain-verify">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AuditChainVerifyPage /></RequireAuth>}
+        </Route>
+        {/* W-V44 FIX K — market-data provider Integrations (DB-driven, admin-config). */}
+        <Route path="/admin/integrations">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminIntegrations /></RequireAuth>}
+        </Route>
+        {/* W-V44 CONSOLIDATION — 3 canonical fee hubs (additive nav layer; the
+            underlying fee pages keep their own routes + full functionality). */}
+        <Route path="/admin/capavate-fees">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><CapavateFeesHub /></RequireAuth>}
+        </Route>
+        <Route path="/admin/collective-fees">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><CollectiveFeesHub /></RequireAuth>}
+        </Route>
+        <Route path="/admin/partner-fees-hub">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><PartnerFeesHub /></RequireAuth>}
         </Route>
         {/* Wave B FIX 11 (A-BUG-002) — documented alias path used by the v19
             admin runbook + QA scripts. Both routes render the same page. */}

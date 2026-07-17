@@ -239,6 +239,42 @@ export const TIER_SEAT_LIMITS: Record<PartnerTier, number> = {
   nexus: 9999,
   founding_member: 9999,
 };
+
+/**
+ * W-V44 FIX R3 — resolve a partner's EFFECTIVE seat limit.
+ *
+ * Mirrors the price model (tier base + optional per-partner override). Seats
+ * remain bundled into the tier (there is NO per-seat pricing); this only lets
+ * an admin grant an individual partner a different seat cap without changing
+ * their tier or price. Precedence:
+ *   1. per-partner override  (contacts.arrangement_json -> { "seatLimit": n })
+ *   2. tier default          (TIER_SEAT_LIMITS[tier])
+ *
+ * The override is read from the per-partner `arrangement_json` blob (the same
+ * non-price arrangement column that holds quota + rev-share — seat limit is an
+ * arrangement concern, NOT a price, so it does NOT go in fee_override_json).
+ * A `seatLimit` integer key is used; no schema change is needed. A non-integer
+ * / <0 override is ignored (falls back to the tier default). We accept the raw
+ * json to keep this module free of a DB dependency; callers pass
+ * contacts.arrangement_json (string | null).
+ */
+export function resolveEffectiveSeatLimit(
+  tier: PartnerTier,
+  arrangementJson: string | null | undefined,
+): { seatLimit: number; source: "override" | "tier" } {
+  const tierLimit = TIER_SEAT_LIMITS[tier];
+  if (!arrangementJson) return { seatLimit: tierLimit, source: "tier" };
+  try {
+    const parsed = JSON.parse(arrangementJson) as Record<string, unknown>;
+    const raw = parsed?.seatLimit;
+    if (typeof raw === "number" && Number.isInteger(raw) && raw >= 0) {
+      return { seatLimit: raw, source: "override" };
+    }
+  } catch {
+    // Malformed override json must not break seat resolution.
+  }
+  return { seatLimit: tierLimit, source: "tier" };
+}
 export type PartnerType =
   | "angel_network"
   | "accelerator"

@@ -12,6 +12,7 @@
  */
 import { rawDb } from "../db/connection";
 import type { PartnerTier } from "../adminContactsStoreShim";
+import { resolveEffectiveSeatLimit } from "../adminContactsStore"; /* W-V44 FIX R3 */
 
 /** fee_kind enum — mirrors partner_fee_schedules.fee_kind semantics. */
 export type FeeKind =
@@ -248,4 +249,22 @@ export function resolveCommissionRate(partnerId: string, tier: PartnerTier): Res
   }
   const tierRate = getTierCommissionRate(tier);
   return { rate: tierRate.rate, via: tierRate.source === "db" ? "db" : "default" };
+}
+
+/**
+ * W-V44 FIX R3 — resolve a partner's EFFECTIVE seat limit from the DB.
+ * Reads the per-partner arrangement_json (the non-price arrangement blob that
+ * also holds quota + rev-share) and delegates to resolveEffectiveSeatLimit for
+ * precedence (override -> tier). DB-driven, no in-memory state. Never throws.
+ */
+export function resolvePartnerSeatLimit(
+  partnerId: string,
+  tier: PartnerTier,
+): { seatLimit: number; source: "override" | "tier" } {
+  const row = rawDb()
+    .prepare(
+      `SELECT arrangement_json FROM contacts WHERE id = ? AND kind = 'consortium_partner' AND deleted_at IS NULL`,
+    )
+    .get(partnerId) as { arrangement_json: string | null } | undefined;
+  return resolveEffectiveSeatLimit(tier, row?.arrangement_json ?? null);
 }

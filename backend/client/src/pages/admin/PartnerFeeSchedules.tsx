@@ -137,7 +137,7 @@ export default function PartnerFeeSchedules() {
 
   return (
     <>
-      <PageHeader title="Partner Fee Schedules" description="Admin-configurable consortium-partner fee catalogue. Platform defaults (tier = —) apply to all partners; per-tier rows override them. SPV deployment fees use stepped size bands." />
+      <PageHeader title="Partner Fee Schedules" description="Optional OVERRIDES for consortium-partner fees. The BASE subscription price is set per tier on 'Partner Subscription Tiers' (Consortium Partners → Commission & tier pricing) and is what the public /consortium/pricing page advertises AND charges. Rows here only OVERRIDE that base for specific tiers or (via a partner's detail page) individual partners — e.g. to grant a partner an individual discount. Precedence: per-partner override → per-tier default → platform default (tier = —). If no override exists, the tier base price applies. SPV deployment fees use stepped size bands." />
       <PageBody>
         <div className="flex flex-wrap items-center gap-3 mb-4">
           <Select value={feeKindFilter} onValueChange={setFeeKindFilter}>

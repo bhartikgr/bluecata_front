@@ -19,6 +19,7 @@ import type { Request, Response, NextFunction } from "express";
 import { getUserContext } from "./userContext";
 import { partnerTeamStore, partnerInvitationStore } from "../partnerWorkspaceStore";
 import { getById as getContactById, TIER_RANK, TIER_SEAT_LIMITS, type PartnerTier, type PartnerSubRole } from "../adminContactsStoreShim";
+import { resolvePartnerSeatLimit } from "./partnerFeeResolver"; /* W-V44 FIX R3 */
 
 export interface PartnerContext {
   userId: string;
@@ -201,7 +202,10 @@ export function assertTierSeats(partnerId: string): void {
   const tier: PartnerTier = (partner.tier as PartnerTier) ?? "catalyst";
   const active = partnerTeamStore.countActiveSeats(partnerId);
   const pending = partnerInvitationStore.countPendingByPartner(partnerId);
-  if (active + pending >= TIER_SEAT_LIMITS[tier]) {
+  // W-V44 FIX R3 — enforce the EFFECTIVE seat limit (per-partner override, else
+  // tier default) so an admin-granted individual seat allowance is honoured.
+  const { seatLimit } = resolvePartnerSeatLimit(partnerId, tier);
+  if (active + pending >= seatLimit) {
     throw new Error("PARTNER_TIER_SEAT_LIMIT_REACHED");
   }
 }

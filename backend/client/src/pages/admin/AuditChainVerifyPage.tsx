@@ -75,6 +75,49 @@ export default function AuditChainVerifyPage(): JSX.Element {
   const [history, setHistory] = useState<HistoryRow[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  // W-V44 (banner) — audit-chain-health incident state + resolve control.
+  interface HealthRow { key: string; status: string; detail: string | null; updatedAt: string | null; }
+  const [health, setHealth] = useState<{ rows: HealthRow[]; incident: boolean } | null>(null);
+  const [resolvingKey, setResolvingKey] = useState<string | null>(null);
+  const [resolveMsg, setResolveMsg] = useState<string | null>(null);
+
+  const loadHealth = async () => {
+    try {
+      const data = await getJson<{ ok: boolean; rows: HealthRow[]; incident: boolean }>("/api/admin/audit-chain-health");
+      setHealth({ rows: data.rows ?? [], incident: !!data.incident });
+    } catch (err) {
+      // Non-fatal: leave health null (card hidden) but surface in console.
+      setHealth(null);
+    }
+  };
+  useEffect(() => { void loadHealth(); }, []);
+
+  const resolveIncident = async (key: string) => {
+    setResolvingKey(key);
+    setResolveMsg(null);
+    try {
+      const r = await fetch("/api/admin/audit-chain-health/resolve", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key, note: "Resolved from Audit Chain Verify page after re-verification." }),
+      });
+      const j = await r.json();
+      if (r.ok && j.cleared) {
+        setResolveMsg(`Incident “${key}” resolved — the chain re-verified clean (${j.totalLinks} links). The P0 banner will clear.`);
+        await loadHealth();
+      } else if (r.status === 409) {
+        setResolveMsg(`Could not resolve “${key}”: ${j.message ?? "the audit chain is not clean."} The incident stays until the break is investigated.`);
+      } else {
+        setResolveMsg(`Could not resolve “${key}”: ${j.error ?? j.message ?? "unknown error"}.`);
+      }
+    } catch (err) {
+      setResolveMsg(`Could not resolve “${key}”: ${(err as Error).message}`);
+    } finally {
+      setResolvingKey(null);
+    }
+  };
+
   // Bootstrap: load supported tables.
   useEffect(() => {
     let cancelled = false;
@@ -204,6 +247,59 @@ export default function AuditChainVerifyPage(): JSX.Element {
     <>
       <PageHeader title="Hash-chain audit verification" />
       <PageBody>
+        {/* W-V44 (banner) — audit-chain-health incidents + admin resolve control.
+            This is what drives the red P0 banner. Resolving an incident RE-VERIFIES
+            the chain and only clears it if genuinely clean (DB-driven, honest). */}
+        {health && (
+          <Card className="mb-4 border-2" style={{ borderColor: health.incident ? "#cc0001" : "#16a34a" }}>
+            <CardContent className="p-6 space-y-3">
+              <div className="flex items-center gap-2">
+                {health.incident
+                  ? <AlertTriangle className="h-5 w-5 text-red-600" />
+                  : <ShieldCheck className="h-5 w-5 text-emerald-600" />}
+                <h2 className="font-semibold">Audit chain health {health.incident ? "— incident(s) open" : "— all clear"}</h2>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                This panel drives the platform-wide red P0 banner. An incident row here means a
+                tenant&rsquo;s hash-chain health was flagged. &ldquo;Resolve incident&rdquo; re-verifies that
+                tenant&rsquo;s chain live and clears the incident ONLY if it is genuinely clean — a real
+                break is never hidden. Clearing the last open incident removes the banner everywhere.
+              </p>
+              {health.rows.length === 0 && (
+                <p className="text-sm text-muted-foreground" data-testid="health-empty">No audit-chain-health rows on file.</p>
+              )}
+              {health.rows.map((h) => {
+                const isIncident = String(h.status).toLowerCase() !== "ok";
+                return (
+                  <div key={h.key} className="flex items-start justify-between gap-3 rounded border p-3" data-testid={`health-row-${h.key}`}>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <Badge variant={isIncident ? "destructive" : "secondary"}>{h.status}</Badge>
+                        <span className="font-mono text-sm">{h.key}</span>
+                      </div>
+                      {h.detail && <p className="mt-1 text-xs text-muted-foreground break-words">{h.detail}</p>}
+                      {h.updatedAt && <p className="mt-0.5 text-[11px] text-muted-foreground">Updated {h.updatedAt}</p>}
+                    </div>
+                    {isIncident && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={resolvingKey === h.key}
+                        onClick={() => resolveIncident(h.key)}
+                        data-testid={`resolve-${h.key}`}
+                      >
+                        {resolvingKey === h.key ? "Verifying…" : "Resolve incident"}
+                      </Button>
+                    )}
+                  </div>
+                );
+              })}
+              {resolveMsg && (
+                <div className="text-sm rounded border border-border bg-muted/40 p-2" data-testid="resolve-msg">{resolveMsg}</div>
+              )}
+            </CardContent>
+          </Card>
+        )}
         <Card>
           <CardContent className="p-6 space-y-4">
             <div className="flex items-center gap-2">

@@ -582,11 +582,28 @@ export function createSubscriptionForNewCompany(
    * with annualAmountMinor=0 and status=pending_payment. The Subscribe page
    * will show the empty-state UI and the founder cannot complete checkout
    * until an admin publishes the tier. */
-  const price = PLAN_PRICES[plan] ?? { annualMinor: 0, currency: "USD", label: String(plan) };
+  // W-V44 FIX N3 (revised per deciding review B1) — distinguish a genuinely
+  // CONFIGURED free tier from a MISSING/unconfigured price. PLAN_PRICES[plan]
+  // returns undefined when no admin tier is configured; the `?? {annualMinor:0}`
+  // fallback below is a "not configured" sentinel, NOT a real free plan. We must
+  // NOT auto-activate an unconfigured priced plan just because its fallback
+  // amount is 0 (that would let e.g. an unconfigured founder_pro go active).
+  const configuredPrice = PLAN_PRICES[plan]; // undefined = no admin tier configured
+  const price = configuredPrice ?? { annualMinor: 0, currency: "USD", label: String(plan) };
   const renewsOn = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const trialEndsOn = wantsTrial
     ? new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
     : undefined;
+  // A plan is treated as FREE (→ immediately `active`, nothing to pay) ONLY when
+  // a tier was actually configured AND its amount is 0. An unconfigured plan
+  // (configuredPrice === undefined) keeps the pending_payment empty-state
+  // contract from lines above. Trials always take precedence as `trialing`.
+  const isConfiguredFreePlan = configuredPrice !== undefined && (configuredPrice.annualMinor ?? 0) === 0;
+  const initialStatus: SubscriptionStatus = wantsTrial
+    ? "trialing"
+    : isConfiguredFreePlan
+      ? "active"
+      : "pending_payment";
   const prev = (() => {
     // Chain tip: last record in store
     const all = Array.from(store.values());
@@ -595,7 +612,7 @@ export function createSubscriptionForNewCompany(
 
   const body = {
     companyId,
-    status: (wantsTrial ? "trialing" : "pending_payment") as SubscriptionStatus,
+    status: initialStatus,
     plan,
     annualAmountMinor: price.annualMinor,
     currency: price.currency,

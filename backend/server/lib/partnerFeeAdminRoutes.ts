@@ -18,6 +18,7 @@ import { sanitizeErrorMessage } from "./sanitize"; /* v25.33 — scrub raw err.m
  * partner-attributed companies and materialise idempotent partner_billing_entries
  * rows (settled via the EXISTING mark-paid endpoint). Auto-trigger deferred. */
 import { listRevShareCandidates, materializeRevShareEntries } from "./partnerRevShare";
+import { resolveEffectiveSeatLimit, TIER_SEAT_LIMITS, type PartnerTier } from "../adminContactsStore"; /* W-V44 FIX R3 */
 
 const FEE_KINDS = new Set([
   "subscription_monthly",
@@ -163,6 +164,15 @@ export function registerPartnerFeeAdminRoutes(app: Express): void {
       if (rev && rev.enabled === true) {
         if (!Number.isInteger(rev.fixedAmountMinor) || (rev.fixedAmountMinor as number) < 0) {
           return res.status(400).json({ ok: false, error: "revShare.fixedAmountMinor must be a non-negative integer (minor units)" });
+        }
+      }
+      // W-V44 FIX R3 — optional per-partner seat-limit override lives in the
+      // arrangement blob (seats are an arrangement concern, not a price). When
+      // present it must be a non-negative integer. Absent/null = use tier default.
+      const seatRaw = (b.arrangementJson as { seatLimit?: unknown }).seatLimit;
+      if (seatRaw !== undefined && seatRaw !== null) {
+        if (!Number.isInteger(seatRaw) || (seatRaw as number) < 0) {
+          return res.status(400).json({ ok: false, error: "seatLimit must be a non-negative integer (or null to use the tier default)" });
         }
       }
       try { arrangementJson = JSON.stringify(b.arrangementJson); }
@@ -397,14 +407,25 @@ export function registerPartnerFeeAdminRoutes(app: Express): void {
   app.get("/api/admin/partners/:partnerId/fee-override", (req: Request, res: Response) => {
     const partnerId = req.params.partnerId;
     const row = rawDb()
-      .prepare(`SELECT fee_override_json, commission_override_pct, arrangement_json FROM contacts WHERE id = ? AND kind = 'consortium_partner' AND deleted_at IS NULL`)
-      .get(partnerId) as { fee_override_json: string | null; commission_override_pct: number | null; arrangement_json: string | null } | undefined;
+      .prepare(`SELECT fee_override_json, commission_override_pct, arrangement_json, metadata_json FROM contacts WHERE id = ? AND kind = 'consortium_partner' AND deleted_at IS NULL`)
+      .get(partnerId) as { fee_override_json: string | null; commission_override_pct: number | null; arrangement_json: string | null; metadata_json: string | null } | undefined;
     if (!row) return res.status(404).json({ ok: false, error: "partner_not_found" });
     let feeOverride: unknown = null;
     if (row.fee_override_json) { try { feeOverride = JSON.parse(row.fee_override_json); } catch { feeOverride = null; } }
     // GROUP C (C4) — surface the per-partner arrangement for the consolidated editor.
     let arrangement: unknown = null;
     if (row.arrangement_json) { try { arrangement = JSON.parse(row.arrangement_json); } catch { arrangement = null; } }
-    res.json({ ok: true, feeOverride, commissionOverridePct: row.commission_override_pct, arrangement });
+    // W-V44 FIX R3 — surface the effective seat limit so the admin can see the
+    // tier default, any per-partner override, and which one is in effect.
+    let tier: PartnerTier = "catalyst";
+    try { tier = ((JSON.parse(row.metadata_json || "{}") as { tier?: PartnerTier }).tier) ?? "catalyst"; } catch { /* default */ }
+    const seat = resolveEffectiveSeatLimit(tier, row.arrangement_json);
+    const seats = {
+      tier,
+      tierDefault: TIER_SEAT_LIMITS[tier],
+      effective: seat.seatLimit,
+      source: seat.source,
+    };
+    res.json({ ok: true, feeOverride, commissionOverridePct: row.commission_override_pct, arrangement, seats });
   });
 }

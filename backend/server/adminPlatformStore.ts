@@ -423,6 +423,49 @@ export function getAuditChainHealth(): { rows: AuditChainHealthRow[]; incident: 
 }
 
 /**
+ * W-V44 (banner) — admin RESOLVE control for an audit-chain-health incident.
+ * DB-driven, no in-memory state. Honest by design: it does NOT blindly clear
+ * the banner. It flips the row to `ok` ONLY when `verified` is true (the caller
+ * has just re-run the real chain verification and it passed). If verification
+ * did NOT pass, the row is left as an incident (we never hide a real break).
+ * Returns the refreshed health snapshot.
+ *
+ * @param key       the audit_chain_health.key to resolve (e.g. tenant_admin_capavate)
+ * @param verified  true only if a fresh chain verification passed cleanly
+ * @param note      short admin note stored in `detail` for the audit trail
+ */
+export function resolveAuditChainHealth(
+  key: string,
+  verified: boolean,
+  note: string,
+): { ok: boolean; cleared: boolean; rows: AuditChainHealthRow[]; incident: boolean } {
+  if (!verified) {
+    // Refuse to clear — the chain did not verify clean. Keep the incident.
+    const snap = getAuditChainHealth();
+    return { ok: false, cleared: false, ...snap };
+  }
+  try {
+    rawDb()
+      .prepare(
+        `UPDATE audit_chain_health SET status = 'ok', detail = ?, updated_at = ? WHERE key = ?`,
+      )
+      .run(
+        note && note.trim().length > 0
+          ? `Resolved by admin: ${note.trim()}`
+          : "Resolved by admin after clean re-verification.",
+        new Date().toISOString(),
+        key,
+      );
+  } catch (err) {
+    log.error("[resolveAuditChainHealth] update failed:", (err as Error).message);
+    const snap = getAuditChainHealth();
+    return { ok: false, cleared: false, ...snap };
+  }
+  const snap = getAuditChainHealth();
+  return { ok: true, cleared: true, ...snap };
+}
+
+/**
  * Append a new audit entry. Tenant-scoped, hash-chained, DB-backed.
  *
  * Signature is backward-compatible: existing 4-arg callers (actor, entity,
@@ -1161,6 +1204,67 @@ export function registerAdminPlatformRoutes(app: Express): void {
       return res.json({ ok: true, ...getAuditChainHealth() });
     } catch (err) {
       log.error({ route: "admin.audit-chain-health", message: (err as Error).message });
+      return res.status(503).json({ ok: false, error: "db_unavailable" });
+    }
+  });
+
+  /* W-V44 (banner) — admin RESOLVE control for an audit-chain-health incident.
+   * DB-driven + honest: it RE-VERIFIES the tenant's hash chain live and clears
+   * the incident ONLY when the chain is genuinely clean. A real break is never
+   * hidden (returns 409 with the broken link index). Clearing the last incident
+   * makes the P0 banner disappear because getAuditChainHealth().incident flips
+   * to false. Router-level requireAdmin (routes.ts) gates this. */
+  app.post("/api/admin/audit-chain-health/resolve", (req: Request, res: Response) => {
+    const key = String((req.body ?? {}).key ?? "").trim();
+    const note = String((req.body ?? {}).note ?? "").trim();
+    if (!key) return res.status(400).json({ ok: false, error: "key_required" });
+    // W-V44 (H2 fix) — the audit_chain_health.key IS the audit-log tenant id
+    // verbatim (the platform's tenant ids themselves use the `tenant_...` form,
+    // e.g. `tenant_admin_capavate`, `tenant_platform`). DO NOT strip a `tenant_`
+    // prefix — doing so would verify a DIFFERENT (often empty) tenant chain,
+    // which could return broken=-1 and falsely clear a genuinely broken chain.
+    // Verify the EXACT key so a real break always takes the 409 path.
+    const tenantId = key;
+    try {
+      const db = rawDb();
+      const rows = db.prepare(
+        `SELECT id, action, target, created_at AS ts, payload_json AS "payloadJson", prev_hash AS "priorHash", hash FROM audit_log WHERE tenant_id = ? AND deleted_at IS NULL ORDER BY created_at ASC, id ASC`
+      ).all(tenantId) as Array<{ id: string; action: string; target: string; ts: string; payloadJson: string | null; priorHash: string; hash: string }>;
+      let prior = "0".repeat(64);
+      let broken = -1;
+      for (let i = 0; i < rows.length; i++) {
+        const a = rows[i];
+        if (a.priorHash !== prior) { broken = i; break; }
+        const expected = sha256(`${prior}|${a.id}|${a.action}|${a.target}|${a.ts}|${a.payloadJson ?? "{}"}`);
+        if (a.hash !== expected) { broken = i; break; }
+        prior = a.hash;
+      }
+      const verified = broken === -1;
+      const result = resolveAuditChainHealth(key, verified, note);
+      if (!result.cleared) {
+        // Chain still broken — refuse to clear, surface where.
+        return res.status(409).json({
+          ok: false,
+          error: "chain_not_clean",
+          message: `Cannot resolve: the audit chain for ${tenantId} did not verify clean (broken at link ${broken} of ${rows.length}). Investigate before resolving.`,
+          brokenAt: broken,
+          totalLinks: rows.length,
+          rows: result.rows,
+          incident: result.incident,
+        });
+      }
+      try {
+        const actorId = (req as Request & { userContext?: { userId?: string } }).userContext?.userId ?? "system:admin";
+        appendAdminAudit(
+          actorId,
+          `audit_chain_health:${key}`,
+          "audit_chain_health.resolved",
+          { key, tenantId, totalLinks: rows.length, note },
+        );
+      } catch { /* non-fatal */ }
+      return res.json({ ok: true, cleared: true, totalLinks: rows.length, rows: result.rows, incident: result.incident });
+    } catch (err) {
+      log.error("[admin.audit-chain-health/resolve] failed:", (err as Error).message);
       return res.status(503).json({ ok: false, error: "db_unavailable" });
     }
   });

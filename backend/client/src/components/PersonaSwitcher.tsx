@@ -63,7 +63,12 @@ interface PersonaDef {
 export const PERSONA_OPTIONS: readonly PersonaDef[] = [
   {
     id: "capavate",
-    label: "Capavate",
+    // W-V44 FIX A: disambiguate the multi-role switcher. This persona IS the
+    // founder app (href=/founder/dashboard) and is only offered when the account
+    // owns >=1 company; label it "Capavate (Founder)" so a dual-role user
+    // (investor + founder) knows "Switch to Capavate" opens their FOUNDER
+    // workspace, not a generic surface. No behavior change — label only.
+    label: "Capavate (Founder)",
     portalKey: "founder",
     href: "/founder/dashboard",
     icon: Building2,

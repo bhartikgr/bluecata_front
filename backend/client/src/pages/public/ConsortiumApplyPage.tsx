@@ -112,6 +112,19 @@ interface SubmitResponse {
   emailFallback?: string;
 }
 
+/**
+ * W-V44 FIX E (Ozan 1b) — normalize a user-entered website so a BARE domain is
+ * accepted without requiring the user to type http:// or https://. Returns null
+ * for an empty value; otherwise prefixes https:// when no scheme is present.
+ * Keeps an existing http:// or https:// as-is.
+ */
+function normalizeWebsite(raw: string): string | null {
+  const v = (raw ?? "").trim();
+  if (!v) return null;
+  if (/^https?:\/\//i.test(v)) return v;
+  return `https://${v}`;
+}
+
 export default function ConsortiumApplyPage() {
   const [organizationName, setOrganizationName] = useState("");
   const [contactFirstName, setContactFirstName] = useState("");
@@ -162,7 +175,7 @@ export default function ConsortiumApplyPage() {
           contactPhone: contactPhone.trim()
             ? `${phoneCountryCode} ${contactPhone.trim()}`
             : null,
-          website: website || null,
+          website: normalizeWebsite(website),
           jurisdiction,
           partnerType,
           aumRange,
@@ -189,59 +202,48 @@ export default function ConsortiumApplyPage() {
     // the applicant up-front so they aren't left wondering — the application
     // row was still saved durably and an admin can resend.
     const emailSent = result.emailSent !== false; // default true when omitted
+    // W-V44 FIX G (Ozan 1d): market-ready confirmation page. Redesigned into the
+    // canonical design system (PageHeader + AppCard), welcoming copy, and the raw
+    // internal Application ID block + "/api/public/consortium/apply/.../status"
+    // developer line REMOVED (not relevant to the end user). Email-delivery state
+    // and every data-testid are preserved (no behavior dropped).
     return (
-      <div style={{ maxWidth: 640, margin: "60px auto", padding: 24 }}>
-        <h1 style={{ fontSize: 28, fontWeight: 600 }}>Application received</h1>
-        <p style={{ marginTop: 16 }} data-testid="text-apply-confirmation">
-          Thanks for your interest in joining the Capavate Consortium. Your
-          application has been received and will be reviewed by our team.
-        </p>
-        {emailSent ? (
-          <p
-            style={{ marginTop: 12, color: "#155724" }}
-            data-testid="text-apply-email-sent"
-          >
-            We've sent a confirmation email to your inbox.
-          </p>
-        ) : (
-          <div
-            style={{
-              marginTop: 12,
-              padding: 12,
-              background: "#fff3cd",
-              border: "1px solid #ffeeba",
-              color: "#856404",
-              borderRadius: 6,
-            }}
-            role="alert"
-            data-testid="text-apply-email-failed"
-          >
-            We couldn't send the confirmation email right now. If you don't
-            receive one within 5 minutes, ask an admin to resend it from the
-            Consortium Applications console.
+      <div className="mx-auto w-full max-w-2xl px-4 py-12">
+        <PageHeader
+          title="Application received"
+          subtitle="Thanks for applying to the Capavate Consortium."
+        />
+        <AppCard className="mt-6">
+          <div className="space-y-4 p-6">
+            <p className="text-base text-foreground" data-testid="text-apply-confirmation">
+              Your application has been received and our team will review it
+              shortly. We typically respond within a few business days.
+            </p>
+            {emailSent ? (
+              <p
+                className="rounded-md bg-emerald-50 px-4 py-3 text-sm text-emerald-800"
+                data-testid="text-apply-email-sent"
+              >
+                We&rsquo;ve sent a confirmation email to your inbox with what to expect next.
+              </p>
+            ) : (
+              <div
+                className="rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-800"
+                role="alert"
+                data-testid="text-apply-email-failed"
+              >
+                We couldn&rsquo;t send the confirmation email right now. If you don&rsquo;t
+                receive one within a few minutes, our team will still have your
+                application on file &mdash; we&rsquo;ll be in touch.
+              </div>
+            )}
+            <p className="text-sm text-muted-foreground">
+              Once approved, you&rsquo;ll receive a secure link to set up your
+              Consortium Partner workspace. No further action is needed from you
+              right now.
+            </p>
           </div>
-        )}
-        <div
-          style={{
-            marginTop: 24,
-            background: "#f6f7f9",
-            padding: 16,
-            borderRadius: 8,
-            fontFamily: "monospace",
-            fontSize: 14,
-          }}
-        >
-          Application ID: <strong>{result.applicationId}</strong>
-          <br />
-          Status: <strong>{result.status}</strong>
-        </div>
-        <p style={{ marginTop: 16, color: "#555" }}>
-          You can check the status at any time via
-          <code style={{ marginLeft: 6 }}>
-            /api/public/consortium/apply/{result.applicationId}/status
-          </code>
-          .
-        </p>
+        </AppCard>
       </div>
     );
   }
@@ -308,12 +310,19 @@ export default function ConsortiumApplyPage() {
             />
           </div>
         </Field>
+        {/* W-V44 FIX E (Ozan 1b): was type="url" which forced native HTML5
+            validation to reject a bare domain like "google.com" (required an
+            explicit http:// or https://). Use a plain text input and NORMALIZE
+            the value on submit (see normalizeWebsite) so a bare domain is
+            accepted and auto-prefixed with https://. */}
         <Field label="Website">
           <input
-            type="url"
+            type="text"
+            inputMode="url"
             value={website}
             onChange={(e) => setWebsite(e.target.value)}
-            placeholder="https://"
+            placeholder="yourcompany.com"
+            data-testid="input-consortium-website"
           />
         </Field>
         <Field label="Jurisdiction" required>

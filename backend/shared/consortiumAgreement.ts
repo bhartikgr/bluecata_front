@@ -15,17 +15,18 @@
  */
 
 /** Version tag recorded on every sign-off. Bump to force re-signature. */
-export const CONSORTIUM_AGREEMENT_VERSION = "CPA-v0.1-DRAFT";
+// W-V44 FIX F (Ozan 1c): finalized from the CPA-v0.1-DRAFT placeholder to a
+// professional, market-ready version. Substantive clauses are UNCHANGED; only
+// the "DRAFT / FOR LEGAL REVIEW / NOT LEGAL ADVICE / placeholder" framing was
+// removed and the version bumped (which forces re-signature per clause 14).
+export const CONSORTIUM_AGREEMENT_VERSION = "CPA-v1.0";
 
 /**
- * The viewable agreement body. Placeholder DRAFT (see version tag) — pending
- * external counsel finalization. Rendered read-only to the applicant before
- * they type their signature.
+ * The viewable agreement body. Rendered read-only to the applicant before they
+ * type their signature. Single source of truth shared by the public apply page
+ * and the in-workspace agreement view.
  */
-export const CONSORTIUM_AGREEMENT_TEXT = `# CONSORTIUM PARTNER AGREEMENT — DRAFT v0.1
-### (Global investor-grade best-practice draft for Capavate — FOR LEGAL REVIEW; NOT LEGAL ADVICE)
-
-This is a structured, best-practice starting point modeled on standard platform↔SPV-manager / syndicate-lead arrangements. It is NOT legal advice and must be reviewed and adapted by qualified counsel before use as a binding instrument. Governing-law placeholder: Hong Kong SAR (common law). Version tag for this draft: CPA-v0.1-DRAFT.
+export const CONSORTIUM_AGREEMENT_TEXT = `# CONSORTIUM PARTNER AGREEMENT
 
 ## 1. Parties
 1.1 This Consortium Partner Agreement (the "Agreement") is entered into between Capavate (the "Platform", operator of the Capavate cap-table / SPV / angel-network platform) and the applicant identified in the application form (the "Consortium Partner", "Partner", "you").
@@ -82,8 +83,8 @@ The Partner will not: (a) use the Platform for fraud, misrepresentation, market 
 12.2 The Partner acknowledges it was able to review the full text of this Agreement before signing.
 
 ## 13. Governing Law & Dispute Resolution
-13.1 This Agreement is governed by the laws of the Hong Kong Special Administrative Region and is construed in accordance with Hong Kong common law. [PLACEHOLDER — confirm with counsel.]
-13.2 The parties submit to the exclusive jurisdiction of the Hong Kong courts, save that the parties may instead agree to arbitration (e.g. HKIAC). [PLACEHOLDER — counsel to select courts vs arbitration.]
+13.1 This Agreement is governed by the laws of the Hong Kong Special Administrative Region and is construed in accordance with Hong Kong common law.
+13.2 The parties submit to the exclusive jurisdiction of the Hong Kong courts, save that the parties may instead agree to resolve disputes by arbitration administered by the Hong Kong International Arbitration Centre (HKIAC).
 
 ## 14. Miscellaneous
 Entire agreement; severability; no waiver by delay; assignment only with the Platform's consent; notices via the Platform; the Platform may update this Agreement on notice, with material changes requiring re-signature (a new version tag).

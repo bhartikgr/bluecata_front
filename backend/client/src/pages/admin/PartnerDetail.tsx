@@ -41,8 +41,16 @@ interface FeeOverrideResp {
     subscriptionModel?: string | null;
     quota?: { metric?: string; threshold?: number; period?: string; enforcement?: string } | null;
     revShare?: { enabled?: boolean; fixedAmountMinor?: number; currency?: string; appliesTo?: string; source?: string } | null;
+    seatLimit?: number | null; /* W-V44 FIX R3 — per-partner seat override */
     notes?: string | null;
   } | null;
+  /* W-V44 FIX R3 — resolved seat info (tier default + effective + source). */
+  seats?: {
+    tier: string;
+    tierDefault: number;
+    effective: number;
+    source: "override" | "tier";
+  };
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────
@@ -188,6 +196,8 @@ export default function AdminPartnerDetail() {
     revShareEnabled: false,
     revShareFixedMinor: "",
     revShareCurrency: "USD",
+    seatOverrideEnabled: false, /* W-V44 FIX R3 */
+    seatLimit: "", /* W-V44 FIX R3 — blank = use tier default */
     notes: "",
   });
   const [arrSeeded, setArrSeeded] = useState(false);
@@ -215,6 +225,9 @@ export default function AdminPartnerDetail() {
       revShareEnabled: rev?.enabled === true,
       revShareFixedMinor: typeof rev?.fixedAmountMinor === "number" ? String(rev.fixedAmountMinor) : "",
       revShareCurrency: rev?.currency ?? "USD",
+      // W-V44 FIX R3 — seed the seat override from the arrangement (override wins).
+      seatOverrideEnabled: d.seats?.source === "override",
+      seatLimit: d.seats?.source === "override" ? String(d.seats.effective) : "",
       notes: d.arrangement?.notes ?? "",
     });
     setArrSeeded(true);
@@ -263,6 +276,14 @@ export default function AdminPartnerDetail() {
           appliesTo: "portfolio_company_paid",
           source: "capavate",
         },
+        // W-V44 FIX R3 — per-partner seat override. Enabled+value = override;
+        // disabled = null (fall back to the tier default seat limit).
+        seatLimit: (() => {
+          if (!arr.seatOverrideEnabled) return null;
+          const n = parseInt(arr.seatLimit, 10);
+          if (!Number.isInteger(n) || n < 0) throw new Error("Seat limit override must be a non-negative integer");
+          return n;
+        })(),
         notes: arr.notes.trim() || null,
       };
       const r = await apiRequest("PUT", `/api/admin/partners/${partnerId}/fee-override`, body);
@@ -353,9 +374,13 @@ export default function AdminPartnerDetail() {
               <h3 className="font-semibold text-sm">Arrangement (plan / deal engine)</h3>
             </div>
             <p className="text-xs text-muted-foreground mb-4">
-              Per-partner price supersedes the tier on this partner's OWN checkout (the public
-              pricing page stays tier-based). Quota is report-only. Rev-share is a fixed amount
-              credited when a portfolio company pays Capavate.
+              This is where you grant THIS partner an INDIVIDUAL price (e.g. a discount). The
+              general BASE price comes from the partner's tier on “Partner Subscription Tiers”
+              (that same tier price is what the public /consortium/pricing page advertises and
+              charges). A custom monthly price set here supersedes the tier for this partner's
+              OWN checkout only — the public pricing page stays tier-based. Leave “Custom monthly
+              price” unchecked to use the tier base price. Quota is report-only. Rev-share is a
+              fixed amount credited when a portfolio company pays Capavate.
             </p>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {/* Price override */}
@@ -459,6 +484,45 @@ export default function AdminPartnerDetail() {
                   value={arr.revShareFixedMinor}
                   onChange={(e) => setArr((a) => ({ ...a, revShareFixedMinor: e.target.value }))}
                   placeholder="minor units, e.g. 25000"
+                />
+              </div>
+              {/* W-V44 FIX R3 — Seat limit (tier default + optional per-partner override). */}
+              <div className="space-y-1 lg:col-span-2 rounded-md border border-border/60 p-3">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs font-semibold">Team seat limit</Label>
+                  <span className="text-xs text-muted-foreground" data-testid="text-seat-effective">
+                    Effective: <strong>{feeOverrideQ.data?.seats?.effective ?? "—"}</strong>
+                    {feeOverrideQ.data?.seats ? (
+                      feeOverrideQ.data.seats.source === "override"
+                        ? " (custom override)"
+                        : ` (from ${feeOverrideQ.data.seats.tier} tier default: ${feeOverrideQ.data.seats.tierDefault})`
+                    ) : ""}
+                  </span>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Seats are the number of team-member logins this partner may have. The BASE limit
+                  comes from their tier ({feeOverrideQ.data?.seats?.tier ?? "—"} → {feeOverrideQ.data?.seats?.tierDefault ?? "—"}).
+                  Tick below to grant THIS partner an individual seat allowance (e.g. extra seats) without
+                  changing their tier or price. Untick to revert to the tier default.
+                </p>
+                <label className="flex items-center gap-2 text-xs mt-1">
+                  <input
+                    type="checkbox"
+                    checked={arr.seatOverrideEnabled}
+                    onChange={(e) => setArr((a) => ({ ...a, seatOverrideEnabled: e.target.checked }))}
+                    data-testid="checkbox-seat-override"
+                  />
+                  Custom seat limit
+                </label>
+                <Input
+                  type="number"
+                  min={0}
+                  disabled={!arr.seatOverrideEnabled}
+                  value={arr.seatLimit}
+                  onChange={(e) => setArr((a) => ({ ...a, seatLimit: e.target.value }))}
+                  placeholder={`tier default (${feeOverrideQ.data?.seats?.tierDefault ?? "—"})`}
+                  data-testid="input-seat-limit"
+                  className="w-40"
                 />
               </div>
               {/* Notes */}

@@ -8,7 +8,7 @@ import {
   Sparkles, Bell, Search, Menu, X, ChevronDown, LogOut,
   ShieldCheck, Calculator, History, SlidersHorizontal, Building,
   GitCompareArrows, BarChart3, Mail, Network, DollarSign, RefreshCw, Database, Handshake,
-  Rss, HelpCircle, Globe, CreditCard,
+  Rss, HelpCircle, Globe, CreditCard, Plug,
 } from "lucide-react";
 import { CapavateLogo } from "./CapavateLogo";
 import { CompanySwitcher } from "@/components/CompanySwitcher";
@@ -197,11 +197,16 @@ const adminNav: NavGroup[] = [
       { href: "/admin/lifecycle-policies", label: "Lifecycle Policies", icon: SlidersHorizontal },
       { href: "/admin/audit-log", label: "Audit Log", icon: History },
       { href: "/admin/audit-chain-verify", label: "Audit Chain Verify", icon: ShieldCheck },
+      /* W-V44 FIX K — market-data provider Integrations (DB-driven, admin-config). */
+      { href: "/admin/integrations", label: "Integrations", icon: Plug },
     ],
   },
   {
     title: "Capavate",
     items: [
+      /* W-V44 CONSOLIDATION — canonical Capavate fee hub (groups Pricing & Billing,
+         Pricing Models, Payments with descriptions). Underlying pages remain below. */
+      { href: "/admin/capavate-fees", label: "Capavate Fees", icon: DollarSign },
       { href: "/admin/companies", label: "Companies", icon: Building },
       { href: "/admin/investors", label: "Investors", icon: Users },
       { href: "/admin/formulas", label: "Formula Registry", icon: Calculator },
@@ -215,6 +220,9 @@ const adminNav: NavGroup[] = [
   {
     title: "Collective",
     items: [
+      /* W-V44 CONSOLIDATION — canonical Collective fee hub (groups Application Fee,
+         Platform Fees, Subscriptions, Payment Schedules, P&L). Pages remain below. */
+      { href: "/admin/collective-fees", label: "Collective Fees", icon: DollarSign },
       { href: "/admin/collective/applications", label: "Collective Applications", icon: Inbox },
       { href: "/admin/collective/waitlist", label: "Collective Waitlist", icon: History },
       { href: "/admin/collective/members", label: "Collective Members", icon: Users },
@@ -234,6 +242,9 @@ const adminNav: NavGroup[] = [
   {
     title: "Consortium Partners",
     items: [
+      /* W-V44 CONSOLIDATION — canonical Partner fee hub (groups Partner Fee Schedules,
+         Commission Rates & tier pricing, Partner P&L). Underlying pages remain below. */
+      { href: "/admin/partner-fees-hub", label: "Partner Fees (Hub)", icon: DollarSign },
       { href: "/admin/consortium-applications", label: "Consortium Applications", icon: FileSignature },
       /* v25.33 Consortium Partner Payment Model — admin surfaces for partner roster,
          fee catalogue, and partner P&L (all DB-driven via /api/admin/*). */

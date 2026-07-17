@@ -844,7 +844,14 @@ export default function Settings() {
                 <CardHeader className="pb-3"><CardTitle className="text-base flex items-center gap-2"><Receipt className="h-4 w-4" /> Current plan</CardTitle></CardHeader>
                 <CardContent className="space-y-1">
                   <div className="text-lg font-semibold" data-testid="text-current-plan">
-                    {subscription?.planLabel ?? subscription?.plan ?? "No active subscription"}
+                    {/* W-V44 FIX N2 — never show a raw slug. Prefer the server
+                        planLabel; if only the slug is available, humanize it the
+                        SAME way the Subscribe page does (founder_free -> Founder Free)
+                        so both founder surfaces show identical formatting. */}
+                    {subscription?.planLabel
+                      ?? (subscription?.plan
+                        ? subscription.plan.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+                        : "No active subscription")}
                   </div>
                   {subscription?.status && (
                     <Badge variant={subscription.status === "active" ? "default" : "secondary"} data-testid="badge-subscription-status">{subscription.status}</Badge>

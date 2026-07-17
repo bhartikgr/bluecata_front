@@ -18,7 +18,8 @@ import type { Express, Request, Response } from "express";
 import { requireCollectiveMember } from "./lib/requireCollectiveMember";
 import { getOecdBaseline, type VentureMarketBaselineRecord } from "./lib/ventureMarketProviders/oecdBaseline";
 import { getStooqVentureMarkets } from "./lib/ventureMarketProviders/stooq";
-import { getCollectiveSettings } from "./collectiveAdminSettingsStore";
+import { getLiveIndexVentureMarkets } from "./lib/ventureMarketProviders/liveIndexProviders"; /* W-V44 FIX K */
+import { getCollectiveSettings, getMarketDataApiKey } from "./collectiveAdminSettingsStore"; /* getMarketDataApiKey: W-V44 FIX K */
 import type { VentureMetricType } from "../client/src/data/ventureMarketRegistry";
 import { log } from "./lib/logger";
 
@@ -27,7 +28,9 @@ export type VentureProviderId =
   | "stooq" /* GROUP E (1e/E2) — free global index feed, default provider */
   | "official_exchange_scrape"
   | "alpha_vantage"
-  | "finnhub";
+  | "finnhub"
+  | "polygon" /* W-V44 FIX K — Polygon.io (key-gated live adapter) */
+  | "twelve_data"; /* W-V44 FIX K — Twelve Data (key-gated live adapter) */
 
 /** All accepted provider ids (for admin/env validation). */
 export const VENTURE_PROVIDER_IDS: VentureProviderId[] = [
@@ -36,7 +39,70 @@ export const VENTURE_PROVIDER_IDS: VentureProviderId[] = [
   "official_exchange_scrape",
   "alpha_vantage",
   "finnhub",
+  "polygon",
+  "twelve_data",
 ];
+
+/**
+ * W-V44 FIX K — providers that require an admin-configured API key to operate.
+ * When one of these is the active provider but no key is set, the resolver
+ * transparently falls back to the free stooq/OECD baseline (never errors).
+ */
+export const KEY_GATED_PROVIDER_IDS: VentureProviderId[] = [
+  "alpha_vantage",
+  "finnhub",
+  "polygon",
+  "twelve_data",
+];
+
+/** Human-readable provider metadata for the admin Integrations UI. */
+export const VENTURE_PROVIDER_META: Record<
+  VentureProviderId,
+  { label: string; requiresKey: boolean; docsUrl: string; blurb: string }
+> = {
+  oecd_baseline: {
+    label: "OECD Baseline (built-in)",
+    requiresKey: false,
+    docsUrl: "https://data.oecd.org",
+    blurb: "Always-available synchronous baseline. No key required; used as the ultimate fallback.",
+  },
+  stooq: {
+    label: "Stooq (free, default)",
+    requiresKey: false,
+    docsUrl: "https://stooq.com",
+    blurb: "Free global index feed. Default provider; no API key required.",
+  },
+  official_exchange_scrape: {
+    label: "Official Exchange (built-in)",
+    requiresKey: false,
+    docsUrl: "",
+    blurb: "Reserved built-in provider hook. No key required.",
+  },
+  alpha_vantage: {
+    label: "Alpha Vantage",
+    requiresKey: true,
+    docsUrl: "https://www.alphavantage.co/support/#api-key",
+    blurb: "Global equities/indices. Free tier ~25 req/day; premium keys lift the limit.",
+  },
+  finnhub: {
+    label: "Finnhub",
+    requiresKey: true,
+    docsUrl: "https://finnhub.io/dashboard",
+    blurb: "Real-time global market data. Free tier ~60 req/min with an API key.",
+  },
+  polygon: {
+    label: "Polygon.io",
+    requiresKey: true,
+    docsUrl: "https://polygon.io/dashboard/api-keys",
+    blurb: "US + global market data. Requires an API key; generous paid tiers.",
+  },
+  twelve_data: {
+    label: "Twelve Data",
+    requiresKey: true,
+    docsUrl: "https://twelvedata.com/account/api-keys",
+    blurb: "Global stocks, forex, indices. Free tier ~800 req/day with an API key.",
+  },
+};
 
 export function isVentureProviderId(v: unknown): v is VentureProviderId {
   return typeof v === "string" && (VENTURE_PROVIDER_IDS as string[]).includes(v);
@@ -75,13 +141,15 @@ export function setProvider(provider: VentureProviderId): void {
 }
 
 /**
- * Effective provider precedence: env override (VENTURE_MARKET_PROVIDER) wins,
- * else the in-memory provider (default stooq). The admin route persists its
- * choice to collective settings AND calls setProvider so it takes effect live.
+ * W-V44 FIX K (Option A) — the ADMIN PANEL is the single source of truth.
+ * Effective provider = the DB-persisted admin selection (mirrored live into the
+ * in-memory `activeProvider`, re-hydrated from collective settings on boot).
+ * The VENTURE_MARKET_PROVIDER env var is NO LONGER an override — it is used only
+ * as the initial default when seeding a fresh (empty) database (see
+ * collectiveAdminSettingsStore.defaultVentureProvider). This guarantees the
+ * admin choice always wins and can never be silently overridden by deploy env.
  */
 export function getActiveProvider(): VentureProviderId {
-  const envRaw = process.env.VENTURE_MARKET_PROVIDER;
-  if (isVentureProviderId(envRaw)) return envRaw;
   return activeProvider;
 }
 
@@ -195,6 +263,27 @@ export async function resolveVentureMarkets(): Promise<VentureMarketsResponse> {
       response = buildResponse(records, "index_level");
     } else if (provider === "oecd_baseline") {
       response = buildOecdResponse();
+    } else if (
+      // W-V44 FIX K — live key-gated providers. Read the DB-configured key; if
+      // it's missing, transparently FALL BACK to the free stooq feed so the
+      // widget never errors or blanks out. When a key IS present, use the real
+      // live adapter (per-symbol fail-closed to null inside the adapter).
+      provider === "polygon" ||
+      provider === "twelve_data" ||
+      provider === "finnhub" ||
+      provider === "alpha_vantage"
+    ) {
+      const key = getMarketDataApiKey(provider);
+      if (!key) {
+        log.warn(
+          `[ventureMarketsStore] ${provider} selected but no API key configured; falling back to stooq`,
+        );
+        const records = await getStooqVentureMarkets();
+        response = buildResponse(records, "index_level");
+      } else {
+        const records = await getLiveIndexVentureMarkets(provider);
+        response = buildResponse(records, "index_level");
+      }
     } else {
       response = providerNotConfigured();
     }
@@ -213,13 +302,15 @@ export function _invalidateVentureMarketsCache(): void {
 }
 
 export function registerVentureMarketsRoutes(app: Express): void {
-  // GROUP E — initialise the live provider from persisted collective settings
-  // (best-effort; env still wins in getActiveProvider, default stays stooq).
+  // W-V44 FIX K (Option A) — hydrate the live provider from the DB-persisted
+  // admin selection on boot. The admin panel is the single source of truth
+  // (getActiveProvider no longer honours an env override); env only seeds the
+  // initial default on a fresh DB via collectiveAdminSettingsStore.
   try {
     const persisted = getCollectiveSettings().ventureProvider;
     if (isVentureProviderId(persisted)) setProvider(persisted);
   } catch {
-    // DB not ready / settings absent — keep the default provider.
+    // DB not ready / settings absent — keep the default provider (stooq).
   }
 
   // requireAuth (member or partner) — uses requireCollectiveMember which also

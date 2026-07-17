@@ -622,7 +622,13 @@ export const INSTRUMENTS = [
     label: "Preferred Shares (Priced Round)",
     description: "NVCA-style priced equity with liquidation preference. Standard for Series A+.",
     suggestedFor: ["series_a", "series_b", "series_c"],
-    fields: ["preMoney", "targetAmount", "pricePerShare", "liqPrefMultiple", "participating", "capParticipation", "antiDilution"],
+    // W-V44 FIX B (Avi #1): the server REQUIRES sharesAuthorized > 0 for a priced
+    // `preferred` round (routes.ts priced-round guard, deliberately fail-closed as
+    // cap-table/money code), but this field set omitted it — so the wizard rendered
+    // no "Shares authorized" input and every preferred round failed with
+    // "Shares outstanding/authorized must be greater than 0 for a priced round."
+    // Add sharesAuthorized so the input appears (mirrors the `common` field set).
+    fields: ["preMoney", "targetAmount", "pricePerShare", "sharesAuthorized", "liqPrefMultiple", "participating", "capParticipation", "antiDilution"],
   },
   {
     value: "safe_post",

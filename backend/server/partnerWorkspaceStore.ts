@@ -38,6 +38,7 @@ import { pAll } from "./db/portable"; /* Wave H Track A — Postgres compatibili
 import { partnerDealPromotions as partnerDealPromotionsTable } from "@shared/schema";
 import { DEFAULT_CHAPTER_ID, DEFAULT_CHAPTER_TENANT_ID } from "./lib/chapterDefaults";
 import { log } from "./lib/logger";
+import { resolvePartnerSeatLimit } from "./lib/partnerFeeResolver"; /* W-V44 FIX R3 */
 /* v25.23 NC-D / NH-K / NH-L — strict (fail-closed) persistence for the money
  * and identity surfaces. Default `persistEntry` semantics elsewhere remain
  * unchanged (Lane G preservation). */
@@ -170,6 +171,27 @@ export const ALL_PIPELINE_STAGES: PipelineStage[] = [
   "funded",
   "committed",
 ];
+
+/**
+ * W-V44 FIX R1 — map a possibly-legacy stage value to its canonical stage.
+ * Mirrors migration 0088 (which remaps rows AT REST). Any deal row whose `stage`
+ * is still a legacy value (sourcing/sourced/qualifying/committee/closed_*) — e.g.
+ * inserted before the migration or via a path that skipped canonicalization —
+ * must NOT be silently dropped from dashboard/pipeline aggregations. This
+ * read-time normalizer guarantees every deal lands in a canonical bucket.
+ */
+const LEGACY_STAGE_REMAP: Record<string, PipelineStage> = {
+  sourcing: "invited",
+  sourced: "invited",
+  qualifying: "viewed",
+  committee: "soft_circle",
+  closed_won: "funded",
+  closed_lost: "invited",
+};
+export function canonicalizeStage(stage: string): PipelineStage {
+  if ((ALL_PIPELINE_STAGES as string[]).includes(stage)) return stage as PipelineStage;
+  return LEGACY_STAGE_REMAP[stage] ?? "invited";
+}
 
 export interface PartnerPipelineDeal {
   id: string;
@@ -2192,7 +2214,10 @@ export function partnerDashboardSnapshot(partnerId: string): {
   const byStage: Record<PipelineStage, number> = {
     invited: 0, viewed: 0, soft_circle: 0, signed: 0, funded: 0, committed: 0,
   };
-  for (const d of pl) { if (byStage[d.stage] !== undefined) byStage[d.stage] += 1; }
+  // W-V44 FIX R1: canonicalize each deal's stage so a legacy value (e.g.
+  // "sourcing") is counted (as "invited") instead of silently dropped — the
+  // dashboard pipeline total must equal the number of real pipeline rows.
+  for (const d of pl) { byStage[canonicalizeStage(d.stage)] += 1; }
 
   const topDeals = [...pl]
     .filter((d) => d.stage !== "committed")
@@ -2208,7 +2233,9 @@ export function partnerDashboardSnapshot(partnerId: string): {
 
   const activeSeats = partnerTeamStore.countActiveSeats(partnerId);
   const pendingInvitations = partnerInvitationStore.countPendingByPartner(partnerId);
-  const seatLimit = TIER_SEAT_LIMITS[tier];
+  // W-V44 FIX R3 — surface the EFFECTIVE seat limit (per-partner override, else
+  // tier default) so the partner dashboard and admin agree on the real cap.
+  const { seatLimit } = resolvePartnerSeatLimit(partnerId, tier);
 
   return {
     portfolio: {

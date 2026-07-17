@@ -79,10 +79,16 @@ export default function PartnerSignup() {
                 investor seats, deal pipeline, and SPV/fund administration.
               </span>
             </li>
+            {/* W-V44 FIX D (Ozan 1a): pricing is DYNAMIC — determined in the admin
+                backend from SPV costs + fixed fees, not a static tier list. Keep
+                this copy general (no hardcoded tier names/prices) while still
+                encouraging registration. Exact plan + pricing are shown to the
+                partner after approval, sourced from the admin-configured backend. */}
             <li className="flex items-start gap-2">
               <CheckCircle2 className="h-4 w-4 text-emerald-600 mt-0.5 shrink-0" />
               <span>
-                <span className="font-medium text-foreground">Tiered seat plans</span> — Catalyst, Builder, Amplifier, Nexus, and Founding Member.
+                <span className="font-medium text-foreground">Flexible partner plans</span> — seat-based
+                access with pricing tailored to your syndicate, confirmed when your application is approved.
               </span>
             </li>
             <li className="flex items-start gap-2">

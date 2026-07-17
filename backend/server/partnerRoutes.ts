@@ -1215,11 +1215,21 @@ export function registerPartnerRoutes(app: Express): void {
     const members = rawMembers.map((m) => {
       const idn = identityById.get(m.userId);
       const contact = contactMap.get(m.userId);
+      // W-V44 FIX N8 — an ACTIVE member should never display the "Pending member"
+      // placeholder (that label wrongly implies a not-yet-active seat and is
+      // confusing next to the real managing partner). When the resolver could
+      // not find a name/email (idn.resolved === false) for an ACTIVE member,
+      // show a neutral "Team member" label instead; non-active unresolved seats
+      // keep the resolver's status-appropriate placeholder.
+      const resolvedName =
+        idn && !idn.resolved && m.status === "active"
+          ? "Team member"
+          : (idn?.name ?? "Pending member");
       return {
         ...m,
         /* v25.56 GROUP-D — never null; resolver already guarantees a non-raw
            name, so a missing identity gets a stable placeholder not null. */
-        name: idn?.name ?? "Pending member",
+        name: resolvedName,
         email: idn?.email ?? null,
         mobile: contact?.mobile ?? null,
         contactEmail: contact?.contactEmail ?? null,

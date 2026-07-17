@@ -243,7 +243,7 @@ type Subscription = {
 
 /* v25.50 Phase 7 (9a) — the standalone /subscribe page was deleted; its
    tier-quote + checkout flow is merged here into the Subscription tab. */
-type SubscribeQuote = { tier: string; cycle: string; amountMinor: number; currency: string; checkoutPath: string };
+type SubscribeQuote = { tier: string; cycle: string; amountMinor: number; currency: string; checkoutPath: string; computedVia?: string };
 
 function SubscriptionTab({ ready }: { ready: boolean }) {
   const { data, isLoading, isError, error } = useQuery<{ subscription: Subscription }>({
@@ -292,14 +292,18 @@ function SubscriptionTab({ ready }: { ready: boolean }) {
         </AppCard>
       ) : (
         <PartnerEmptyState
-          title="No active subscription"
-          description="Consortium partners are not billed a subscription by default. Use the tier quote below to see your resolved price and start checkout."
+          title="You're not subscribed yet"
+          description="You don't have an active subscription on file, so nothing is being billed right now. The quote below shows the price for your tier — that's what you'd pay if you start a subscription. Choose a billing cycle, get your quote, and check out when you're ready."
         />
       )}
 
       {/* Merged tier-quote + checkout flow (9a). */}
       <AppCard className="p-6 max-w-xl" data-testid="partner-subscribe-quote">
         <div className="text-xs uppercase tracking-wide text-[var(--cv-color-text-muted)]">Subscription tier quote</div>
+        <div className="mt-1 text-xs text-[var(--cv-color-text-muted)]">
+          This is your tier's price (including any individual discount applied to your account). It is a
+          quote only — you are not charged until you complete checkout.
+        </div>
         <div className="mt-3 flex items-center gap-2">
           <select
             data-testid="subscribe-cycle"
@@ -319,17 +323,40 @@ function SubscriptionTab({ ready }: { ready: boolean }) {
             {quoteMut.error instanceof Error ? quoteMut.error.message : "Could not resolve a price for this tier."}
           </div>
         )}
-        {quote && (
-          <div className="mt-3 text-sm" data-testid="subscribe-quote-result">
-            <div className="font-mono text-lg text-[var(--cv-color-navy)]">
-              {formatMinor(quote.amountMinor, quote.currency)} / {quote.cycle}
+        {/* W-V44 FIX N7 (revised per deciding review B2) — a quote can resolve
+            without throwing yet carry no usable amount (no price configured for
+            the chosen cycle), which previously rendered NOTHING (silent failure).
+            BUT an explicit per-partner $0 override is a LEGITIMATE quote (the
+            server returns computedVia === "partner_override" with amountMinor 0),
+            so $0 must render a real quote + checkout, NOT the "no price" warning.
+            A valid quote = a numeric amount >= 0 (>0, OR exactly 0 via override). */}
+        {(() => {
+          if (!quote) return null;
+          const amt = quote.amountMinor;
+          const isNumeric = typeof amt === "number" && Number.isFinite(amt);
+          const isExplicitFreeOverride =
+            isNumeric && amt === 0 && quote.computedVia === "partner_override";
+          const isValidQuote = isNumeric && (amt > 0 || isExplicitFreeOverride);
+          if (isValidQuote) {
+            return (
+              <div className="mt-3 text-sm" data-testid="subscribe-quote-result">
+                <div className="font-mono text-lg text-[var(--cv-color-navy)]">
+                  {formatMinor(amt, quote.currency)} / {quote.cycle}
+                </div>
+                <div className="mt-1 text-xs text-[var(--cv-color-text-muted)]">Tier: {quote.tier}</div>
+                <a href={quote.checkoutPath} data-testid="subscribe-checkout-link">
+                  <Button size="sm" className="mt-3">Proceed to checkout</Button>
+                </a>
+              </div>
+            );
+          }
+          return (
+            <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900" data-testid="subscribe-quote-none">
+              No {cycle} price is currently configured for your tier. Try the other billing
+              cycle, or contact your Capavate administrator to set this tier&rsquo;s {cycle} price.
             </div>
-            <div className="mt-1 text-xs text-[var(--cv-color-text-muted)]">Tier: {quote.tier}</div>
-            <a href={quote.checkoutPath} data-testid="subscribe-checkout-link">
-              <Button size="sm" className="mt-3">Proceed to checkout</Button>
-            </a>
-          </div>
-        )}
+          );
+        })()}
       </AppCard>
     </div>
   );
