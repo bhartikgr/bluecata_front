@@ -46,6 +46,7 @@ import { apiRequest, ApiError } from "@/lib/queryClient";
 import InvestmentHistoryPanel from "@/components/investor/InvestmentHistoryPanel";
 import CoSoftCircleBox from "@/components/investor/CoSoftCircleBox";
 import FounderQABox from "@/components/investor/FounderQABox";
+import { CapTableInterim } from "@/components/founder/CapTableInterim"; /* W-CAP — read-only interim (pro-forma) view for investors */
 import { useRealtimeSync } from "@/lib/realtimeSync";
 
 type RoundTerms = {
@@ -681,6 +682,13 @@ export default function InvitationDetail() {
       </Card>
        );
       })()}
+
+      {/* W-CAP (2026-07-17) — Interim (pro-forma) view, READ-ONLY for investors
+          (no commit CTAs — commit/wire-fund are founder-only). Additive; never
+          blended into committed ownership. */}
+      {companyId && (
+       <CapTableInterim companyId={companyId} readOnly />
+      )}
      </TabsContent>
 
      {/* TAB 3 — INVESTMENT TERMS */}

@@ -1,4 +1,5 @@
 import { asArray } from "@/lib/safeArray";
+import { isActiveLiveRoundState } from "@shared/schema";
 /**
  * Sprint 18 — Founder Apply-to-Collective.
  *
@@ -138,10 +139,8 @@ export default function FounderApplyToCollective() {
   // at least one active/live funding round before submission. The server enforces
   // this (founderCollectiveApplyStore → hasActiveOrLiveRound); the client mirrors
   // it so the founder sees an actionable empty-state instead of a 409 toast.
-  const ACTIVE_LIVE_ROUND_STATES = useMemo(
-    () => new Set(["active", "live", "open", "signing_open", "soft_circle_open"]),
-    []
-  );
+  // W-INVEST BUG C — use the shared canonical active-round predicate so this
+  // gate can never drift from the backend ACTIVE_LIVE_ROUND_STATES set.
   const roundsQ = useQuery<Array<{ id: string; state?: string; status?: string }>>({
     queryKey: ["/api/rounds", companyId],
     queryFn: async () => (await apiRequest("GET", `/api/rounds?companyId=${companyId}`)).json(),
@@ -149,9 +148,9 @@ export default function FounderApplyToCollective() {
   });
   const hasActiveRound = useMemo(
     () => asArray<{ state?: string; status?: string }>(roundsQ.data).some(
-      (r) => ACTIVE_LIVE_ROUND_STATES.has(String(r.state ?? r.status ?? "").toLowerCase())
+      (r) => isActiveLiveRoundState(r.state ?? r.status)
     ),
-    [roundsQ.data, ACTIVE_LIVE_ROUND_STATES]
+    [roundsQ.data]
   );
   // v25.48.2 Q4b — distinguish "no rounds at all" from "rounds exist but none
   // are active". The empty-state copy + CTA differ: with zero rounds we tell

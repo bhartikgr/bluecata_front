@@ -558,6 +558,26 @@ export function applyDecisionAction(rec: DecisionRecord, patch: YourDecisionPatc
     if (!patch.softCircleType) return { ok: false, error: "missing_soft_circle_type" };
   }
 
+  // BUG A fix (LOCKED = auto-advance, keep the strict machine): a NEW round
+  // invitation starts at `pending`, but `soft_circle` and `accept` both require a
+  // prior `viewed` state (pending→soft_circled and pending→accepted are
+  // intentionally NOT in YOUR_DECISION_TRANSITIONS). The canonical decision UI
+  // fires a `view` on load, but the legacy shortcut endpoints
+  // (`POST /api/investor/invitations/:id/{soft-circle,accept}`, routes.ts ~L5067)
+  // call applyDecisionAction directly with no prior view, so a repeat investor
+  // hit a spurious `forbidden_transition:pending->soft_circled` (and, via the
+  // accept shortcut, `pending->accepted`). Auto-record the implicit view
+  // transition (pending→viewed, valid + audited) first, then fall through to the
+  // normal viewed→{soft_circled,accepted} path. The transition map stays strict.
+  if ((patch.action === "soft_circle" || patch.action === "accept") && rec.state === "pending") {
+    const viewFrom = rec.state;
+    const viewErr = validateTransition(viewFrom, "viewed");
+    if (viewErr) return { ok: false, error: viewErr };
+    rec.state = "viewed";
+    if (!rec.viewedAt) rec.viewedAt = new Date().toISOString();
+    rec.history.push({ ts: new Date().toISOString(), from: viewFrom, to: "viewed", action: "view" });
+  }
+
   const from = rec.state;
   const err = validateTransition(from, target);
   if (err) return { ok: false, error: err };

@@ -51,8 +51,10 @@ type Round = {
  scenarios?: ScenarioRow[] | null;
  termSheetUrl?: string | null;
 };
-type Invitation = { id: string; investorEmail: string; investorName: string; state: string; sentAt: string; viewedAt: string | null; expiresAt: string; resentAt?: string | null };
-type SoftCircle = { id: string; investorName: string; amount: number; status: string; createdAt: string };
+// W-INVEST BUG B — `active` is an additive, server-computed flag: the investor
+// is committed/funded on this round OR already in the company committed cap table.
+type Invitation = { id: string; investorEmail: string; investorName: string; state: string; sentAt: string; viewedAt: string | null; expiresAt: string; resentAt?: string | null; active?: boolean };
+type SoftCircle = { id: string; investorName: string; amount: number; status: string; createdAt: string; active?: boolean };
 // v24.3 — wire-transfer instructions published by the founder per round.
 type WireInstructions = {
  roundId: string;
@@ -549,7 +551,16 @@ export default function RoundDetail() {
  <div className="text-xs text-muted-foreground">{i.investorEmail}</div>
  </td>
  {/* v25.55 5b — a resent (still "sent") invite shows a teal "resent" chip. */}
- <td className="px-3 py-3"><StateBadge state={i.state === "sent" && i.resentAt ? "resent" : i.state} /></td>
+ {/* W-INVEST BUG B — additive "Active" badge next to the existing StateBadge when
+     the investor is committed/funded on this round OR in the company committed cap table. */}
+ <td className="px-3 py-3">
+   <div className="inline-flex items-center gap-1.5">
+     <StateBadge state={i.state === "sent" && i.resentAt ? "resent" : i.state} />
+     {i.active && (
+       <Badge variant="outline" className="gap-1 bg-emerald-500/10 border-emerald-500/40 text-emerald-700 text-[10px]" data-testid={`badge-inv-active-${i.id}`}>Active</Badge>
+     )}
+   </div>
+ </td>
  {/* W3 Shadie 6a — show BOTH the absolute date AND the relative "Xd ago" in
      the Sent and Expires columns (previously Sent was relative-only and
      Expires absolute-only). Absolute on top, relative muted below. */}
@@ -644,7 +655,15 @@ export default function RoundDetail() {
  <td className="px-6 py-3 font-medium">{s.investorName}</td>
  <td className="px-3 py-3 text-right font-mono tabular-nums">{fmtUSD(s.amount)}</td>
  <td className="px-3 py-3 text-muted-foreground">{fmtDate(s.createdAt)}</td>
- <td className="px-3 py-3"><StateBadge state={s.status} /></td>
+ {/* W-INVEST BUG B — additive "Active" badge next to the existing StateBadge. */}
+ <td className="px-3 py-3">
+   <div className="inline-flex items-center gap-1.5">
+     <StateBadge state={s.status} />
+     {s.active && (
+       <Badge variant="outline" className="gap-1 bg-emerald-500/10 border-emerald-500/40 text-emerald-700 text-[10px]" data-testid={`badge-sc-active-${s.id}`}>Active</Badge>
+     )}
+   </div>
+ </td>
  <td className="px-6 py-3 text-right">
  <div className="inline-flex gap-1">
  {/* v25.48.3 Q-F2 — the founder-facing "confirm investor onto cap table"

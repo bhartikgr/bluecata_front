@@ -1,4 +1,5 @@
 import { asArray } from "@/lib/safeArray";
+import { isActiveLiveRoundState } from "@shared/schema";
 /**
  * Sprint 11 Phase 2 — Founder Dashboard v2 rebuild.
  *
@@ -233,7 +234,10 @@ export default function FounderDashboard() {
   const maAll = useQuery<MaInitiative[]>({ queryKey: ["/api/investor/ma/initiatives"] });
 
   const companyRounds = useMemo(() => asArray(rounds.data).filter(r => r.companyId === companyId), [rounds.data, companyId]);
-  const activeRound = companyRounds.find(r => r.state === "soft_circle_open" || r.state === "signing_open");
+  // W-INVEST BUG C — align with the backend ACTIVE_LIVE_ROUND_STATES (5 states:
+  // active/live/open/signing_open/soft_circle_open) via the shared helper so the
+  // founder dashboard no longer shows "No active round" when a round is active.
+  const activeRound = companyRounds.find(r => isActiveLiveRoundState(r.state));
   const totalRaised = companyRounds.reduce((s, r) => s + r.raisedAmount, 0);
   const totalTarget = companyRounds.reduce((s, r) => s + r.targetAmount, 0);
 

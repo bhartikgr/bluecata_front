@@ -203,8 +203,17 @@ import {
   streamCapTablePdf,
   type CapTableEntry,
 } from "./lib/pdfGenerators";
-import { listMembersForCompany as captableMembersForCompany } from "./captableCommitStore";
+import {
+  listMembersForCompany as captableMembersForCompany,
+  /* W-CAP (2026-07-17) — read-only reuse of the SACRED ledger's exported helpers
+     for the priced display bridge + interim view. These are IMPORTS ONLY; the
+     sacred captableCommitStore.ts is NOT modified (no new exports added). */
+  classifyRoundCommit as captableClassifyRoundCommit,
+  isValidShares as captableIsValidShares,
+  getFundedQueue as captableGetFundedQueue,
+} from "./captableCommitStore";
 import { getRoundById as roundsGetById } from "./roundsStore";
+import { isInvitationActive, isSoftCircleActive } from "./lib/rosterActive"; /* W-INVEST BUG B — pure roster "Active" predicate */
 import { registerMaInitiativesRoutes } from "./lib/maInitiativesStore";
 import { registerBulkInvitationsRoutes } from "./lib/bulkInvitationsRoutes";
 import { registerExpertQARoutes } from "./expertQAStore";
@@ -1641,7 +1650,179 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       // Fail-open to base securities: a bridge failure must never break the
       // existing cap-table read (priced positions still render).
     }
+    /* W-CAP (2026-07-17) — priced ledger->display bridge (companion to the
+       W-SAFE unpriced bridge above). Additive, read-only, fail-open. Sacred
+       ledger NOT modified. Committed PRICED/equity positions were never
+       projected into the `securities` display model, so a fully-committed
+       priced investment showed an empty cap table on both founder + investor
+       surfaces (root cause: CAPAVATE_CAPTABLE_DISPLAY_FIX_REPORT.md §2). Here
+       we project committed PRICED ledger rows into the ApiSecurity shape,
+       deriving shares with the SAME decimal.js/BigInt cent-unit method used by
+       captableCommitStore commit-funded-batch. De-duped against base rows AND
+       against the unpriced projection via a shared seenIds set. */
+    try {
+      const seenIds = new Set(baseSecurities.map((s: any) => s.id));
+      const priced = captableMembersForCompany(String(cid)).filter(
+        (e: any) => (e.instrumentClass ?? "priced") !== "unpriced",
+      );
+      for (const e of priced as any[]) {
+        const secId = `ccm_pxsec_${e.invitationId}`;
+        // Skip if the base securities OR the unpriced projection already
+        // represents this invitation (the unpriced block uses `ccm_sec_`).
+        if (seenIds.has(secId) || seenIds.has(`ccm_sec_${e.invitationId}`)) continue;
+        seenIds.add(secId);
+        const principal = Number(e.amount ?? e.principalAmount ?? 0);
+        // Effective price-per-share: classify the round (real pps for equity,
+        // strike for warrants) with a defensive fallback to the round's pps.
+        let pps: number | null = null;
+        try {
+          const cls = captableClassifyRoundCommit(e.roundId);
+          pps = cls.effectivePps ?? (roundsGetById(String(e.roundId ?? ""))?.pricePerShare ?? null);
+        } catch { pps = null; }
+        // Shares: prefer the ledger's own valid share count; else derive
+        // floor(amount / pps) via the cent-unit decimal.js/BigInt method.
+        let shares = 0;
+        try {
+          if (captableIsValidShares(e.shares)) {
+            shares = Number(e.shares);
+          } else if (pps && pps > 0 && Number.isFinite(principal) && principal > 0) {
+            const amtMicro = BigInt(new Decimal(String(principal)).times(1_000_000).toFixed(0));
+            const ppsMicro = BigInt(new Decimal(pps).times(1_000_000).toFixed(0));
+            if (ppsMicro > BigInt(0)) {
+              const derived = (amtMicro * BigInt("1000000")) / (ppsMicro * BigInt("1000000"));
+              if (derived > BigInt(0)) shares = Number(derived);
+            }
+          }
+        } catch { shares = 0; }
+        const holderName = (e.holderFirstName || e.holderLastName)
+          ? `${e.holderFirstName ?? ""} ${e.holderLastName ?? ""}`.trim()
+          : (e.investorId ?? "Investor");
+        // Instrument + series from the round: preferred for priced equity
+        // rounds; common as a defensive fallback.
+        let instrument = "preferred";
+        let series: string | null = null;
+        try {
+          const rnd = roundsGetById(String(e.roundId ?? ""));
+          const inst = String((rnd as any)?.instrument ?? "").toLowerCase();
+          if (/common/.test(inst)) instrument = "common";
+          else if (/warrant/.test(inst)) instrument = "warrant";
+          else if (/option/.test(inst)) instrument = "option";
+          else if (/preferred|equity|priced|seed|series/.test(inst)) instrument = "preferred";
+          series = (rnd as any)?.series ?? (rnd as any)?.name ?? null;
+        } catch { /* defaults */ }
+        baseSecurities.push({
+          id: secId,
+          companyId: String(cid),
+          holderName,
+          holderType: "investor",
+          instrument,
+          series,
+          shares,
+          pricePerShare: pps != null && Number.isFinite(pps) ? pps : null,
+          investmentAmount: Number.isFinite(principal) ? principal : 0,
+          cap: null,
+          discount: null,
+          issuedAt: e.ts ?? null,
+          roundId: e.roundId ?? null,
+          investorId: e.investorId ?? null,
+          accruedInterest: 0,
+        } as any);
+      }
+    } catch (pricedBridgeErr) {
+      // Fail-open: a priced-bridge failure must never break the cap-table read.
+    }
     res.json(baseSecurities);
+  });
+
+  /* W-CAP (2026-07-17) — read-only INTERIM (pro-forma) cap-table endpoint.
+     Returns committed + funded-queue + confirmed soft-circle positions as
+     THREE separately-typed arrays with per-kind subtotals. The three kinds are
+     NEVER blended into one total: committed ownership stays committed-only. All
+     reads from existing stores; ZERO writes; sacred money core untouched. Same
+     ownership guard as the securities endpoint (founder of company OR investor
+     in company OR admin). Fail-open to empty arrays. */
+  app.get("/api/companies/:id/captable/interim", requireAuth, (req, res) => {
+    const cid = req.params.id;
+    const ctx = req.userContext ?? getUserContext(req);
+    if (!ctx?.isAuthed) return res.status(401).json({ ok: false, error: "missing_identity" });
+    const isFounder = ctx.founder.companies.some((c) => c.companyId === cid);
+    const isInvestorInCompany = ctx.investor.capTablePositions.some((p) => p.companyId === cid)
+      || ctx.investor.invitedRounds.some((i) => i.companyId === cid);
+    if (!ctx.isAdmin && !isFounder && !isInvestorInCompany) {
+      return res.status(403).json({ ok: false, error: "not_authorized" });
+    }
+    type InterimKind = "committed" | "funded" | "soft_circle";
+    type InterimRow = { investorId: string; holderName: string; roundId: string; amount: number; currency: string; shares: number; kind: InterimKind; invitationId?: string | null; softCircleId?: string | null; status?: string | null };
+    // Shared share-derivation: prefer a valid ledger share count; else derive
+    // floor(amount / effectivePps) via the cent-unit decimal.js/BigInt method.
+    const deriveShares = (amount: number, sharesStr: unknown, roundId?: string): number => {
+      try {
+        if (captableIsValidShares(sharesStr)) return Number(sharesStr);
+        let pps: number | null = null;
+        try {
+          const cls = captableClassifyRoundCommit(roundId);
+          pps = cls.effectivePps ?? (roundsGetById(String(roundId ?? ""))?.pricePerShare ?? null);
+        } catch { pps = null; }
+        if (pps && pps > 0 && Number.isFinite(amount) && amount > 0) {
+          const amtMicro = BigInt(new Decimal(String(amount)).times(1_000_000).toFixed(0));
+          const ppsMicro = BigInt(new Decimal(pps).times(1_000_000).toFixed(0));
+          if (ppsMicro > BigInt(0)) {
+            const derived = (amtMicro * BigInt("1000000")) / (ppsMicro * BigInt("1000000"));
+            if (derived > BigInt(0)) return Number(derived);
+          }
+        }
+      } catch { /* fall through */ }
+      return 0;
+    };
+    const committed: InterimRow[] = [];
+    const funded: InterimRow[] = [];
+    const soft_circle: InterimRow[] = [];
+    try {
+      for (const e of captableMembersForCompany(String(cid)) as any[]) {
+        const amount = Number(e.amount ?? e.principalAmount ?? 0);
+        const holderName = (e.holderFirstName || e.holderLastName)
+          ? `${e.holderFirstName ?? ""} ${e.holderLastName ?? ""}`.trim()
+          : (e.investorId ?? "Investor");
+        committed.push({
+          investorId: e.investorId ?? "", holderName, roundId: e.roundId ?? "",
+          amount: Number.isFinite(amount) ? amount : 0, currency: e.currency ?? "USD",
+          shares: deriveShares(amount, e.shares, e.roundId), kind: "committed",
+          invitationId: e.invitationId ?? null,
+        });
+      }
+    } catch { /* fail-open */ }
+    try {
+      for (const e of captableGetFundedQueue().filter((e: any) => e.companyId === cid) as any[]) {
+        const amount = Number(e.amount ?? 0);
+        funded.push({
+          investorId: e.investorId ?? "", holderName: e.investorId ?? "Investor",
+          roundId: e.roundId ?? "", amount: Number.isFinite(amount) ? amount : 0,
+          currency: e.currency ?? "USD", shares: deriveShares(amount, e.shares, e.roundId),
+          kind: "funded", invitationId: e.invitationId ?? null,
+        });
+      }
+    } catch { /* fail-open */ }
+    try {
+      for (const s of softCircleListForCompany(String(cid)).filter((s: any) => s.status === "confirmed") as any[]) {
+        const amount = Number(s.amount ?? 0);
+        soft_circle.push({
+          investorId: s.investorUserId ?? "", holderName: s.investorName ?? (s.investorUserId ?? "Investor"),
+          roundId: s.roundId ?? "", amount: Number.isFinite(amount) ? amount : 0,
+          currency: s.currency ?? "USD", shares: deriveShares(amount, undefined, s.roundId),
+          kind: "soft_circle", softCircleId: s.id ?? null, status: s.status ?? null,
+        });
+      }
+    } catch { /* fail-open */ }
+    const subtotal = (rows: InterimRow[]) => ({
+      count: rows.length,
+      amount: rows.reduce((a, r) => a + (Number.isFinite(r.amount) ? r.amount : 0), 0),
+      shares: rows.reduce((a, r) => a + (Number.isFinite(r.shares) ? r.shares : 0), 0),
+    });
+    res.json({
+      companyId: String(cid),
+      committed, funded, soft_circle,
+      subtotals: { committed: subtotal(committed), funded: subtotal(funded), soft_circle: subtotal(soft_circle) },
+    });
   });
 
   /* W-CT (2026-07-14) — read-only pending/previous cap-table snapshots.
@@ -1844,6 +2025,30 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ ok: true, round: { ...persisted, company: companies.find(c => c.id === persisted.companyId)?.name }, eventType: "round.terms_updated" });
   });
 
+  /* W-INVEST BUG B (2026-07-17) — "Active" investor roster flag. Additive,
+     read-only, DB-driven. An investor is "Active" on the founder roster when
+     they are committed/funded on THIS round OR already hold a committed position
+     in the company's cap table (from a prior round). We derive both facts from
+     the SACRED committed ledger (captableMembersForCompany → state==="committed")
+     which is only READ here. Returns identity sets keyed by the two join keys
+     available on the roster rows: investorId and invitationId. */
+  function committedActivitySetsForRound(roundId: string): {
+    committedInvestorIds: Set<string>;
+    committedInvitationIds: Set<string>;
+  } {
+    const committedInvestorIds = new Set<string>();
+    const committedInvitationIds = new Set<string>();
+    try {
+      const cid = companyIdForRound(roundId);
+      if (!cid) return { committedInvestorIds, committedInvitationIds };
+      for (const e of captableMembersForCompany(String(cid)) as any[]) {
+        if (e?.investorId) committedInvestorIds.add(String(e.investorId));
+        if (e?.invitationId) committedInvitationIds.add(String(e.invitationId));
+      }
+    } catch { /* fail-open: no ledger read → no upgraded badges, existing badges intact */ }
+    return { committedInvestorIds, committedInvitationIds };
+  }
+
   app.get("/api/rounds/:id/invitations", requireAuth, (req, res) => {
     // B2 (v24.0) — only the round's founder (or admin) may list its invitations.
     const check = requireFounderOwnsRound(req, res);
@@ -1854,7 +2059,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const live = roundInvitationsListForRound(rid);
     const seed = roundInvitations.filter(i => i.roundId === rid);
     const liveIds = new Set(live.map((i) => i.id));
-    res.json([...seed.filter((i) => !liveIds.has(i.id)), ...live]);
+    const merged = [...seed.filter((i) => !liveIds.has(i.id)), ...live];
+    // W-INVEST BUG B — attach additive `active` flag (committed on this round OR
+    // in the company committed cap table). Never mutates existing fields.
+    const sets = committedActivitySetsForRound(rid);
+    res.json(merged.map((i: any) => ({ ...i, active: isInvitationActive(i, sets) })));
   });
   app.get("/api/rounds/:id/soft-circles", requireAuth, (req, res) => {
     // B3 (v24.0) — only the round's founder (or admin) may list its soft-circles.
@@ -1865,7 +2074,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const live = softCircleListForRound(rid);
     const seed = softCircles.filter(s => s.roundId === rid);
     const liveIds = new Set(live.map((s) => s.id));
-    res.json([...seed.filter((s) => !liveIds.has(s.id)), ...live]);
+    const merged = [...seed.filter((s) => !liveIds.has(s.id)), ...live];
+    // W-INVEST BUG B — attach additive `active` flag. A soft-circle is Active when
+    // it is committed/wired on this round, or the investor is committed on this
+    // round / in the company committed cap table. Never mutates existing fields.
+    const sets = committedActivitySetsForRound(rid);
+    res.json(merged.map((s: any) => ({ ...s, active: isSoftCircleActive(s, sets) })));
   });
 
   /* ====================================================================

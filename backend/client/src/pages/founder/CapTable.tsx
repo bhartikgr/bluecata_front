@@ -30,6 +30,7 @@ import { useLocation } from "wouter"; /* v25.48.3 Q-F1 — redirect "Add securit
 import { HelpTip } from "@/components/HelpTip";
 import { currencySymbol } from "@/lib/currency";
 import CapTableSnapshots from "@/components/founder/CapTableSnapshots"; /* W-CT — projected + previous snapshots */
+import { CapTableInterim } from "@/components/founder/CapTableInterim"; /* W-CAP — interim (pro-forma) additive view */
 import type { ApiRound } from "@/lib/types";
 import type { CompanyProfile } from "@/lib/profile/types";
 import { useEffect } from "react";
@@ -40,6 +41,7 @@ import { useQuery as _useQuery } from "@tanstack/react-query";
 import { resolveCoMemberLabel } from "@/lib/privacy/visibility";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { MemberValueIntelligenceBox } from "@/components/MemberValueIntelligenceBox";
+import { isPhantomHolderRow } from "@/lib/captable/phantomHolder"; /* W-CAP LW-1 — phantom holder suppression */
 /* v25.45.4 3c (APD-013) — useEntitlement/evaluate import removed; they were only
    used to gate the now-removed Anti-Dilution control. */
 
@@ -103,6 +105,10 @@ export default function CapTable() {
  const [, setLocation] = useLocation(); /* v25.48.3 Q-F1 — route "Add security" to Rounds */
  const [asOf, setAsOf] = useState<string>(new Date().toISOString().slice(0, 10));
  const [groupView, setGroupView] = useState(true);
+ /* W-CAP (2026-07-17) — Committed (default) / Interim (pro-forma) toggle. Additive:
+    "committed" preserves the EXISTING view unchanged; "interim" mounts the additive
+    pro-forma projection alongside. No existing tile/chart/panel is removed. */
+ const [captableMode, setCaptableMode] = useState<"committed" | "interim">("committed");
  /* v25.48.3 Q-F1 — cap table is view-only; the inline add-security dialog is no
     longer reachable (both entry points route to /founder/rounds). State kept as
     a permanently-false const so the dead dialog code below never mounts. */
@@ -153,7 +159,11 @@ export default function CapTable() {
  ) ?? securitiesAsOf?.find((s) => s.holderName === r.holderName);
  const round = rounds.data?.find((rd) => rd.id === orig?.roundId);
  return { ...r, orig, round };
- });
+ })
+ /* W-CAP LW-1 (2026-07-17) — suppress the phantom demo "Other" holder (see
+    isPhantomHolderRow). Real holders (any name, or any shares/invested) always
+    render; the intelligence panel consumes this same filtered list. */
+ .filter((r) => !isPhantomHolderRow(r));
  }, [rows, securitiesAsOf, rounds.data]);
 
  const totals = useMemo(() => {
@@ -325,6 +335,20 @@ export default function CapTable() {
  <img src={CAPAVATE_LOGO_URL} alt="Capavate" style={{ height: 28, width: "auto" }} />
  <div className="text-xs text-muted-foreground">Cap table snapshot · {new Date().toISOString().slice(0, 10)}</div>
  </div>
+ {/* W-CAP (2026-07-17) — Committed / Interim (pro-forma) toggle. Additive; committed is default. */}
+ <div className="mb-4 print:hidden">
+ <Tabs value={captableMode} onValueChange={(v) => setCaptableMode(v as "committed" | "interim")}>
+ <TabsList data-testid="captable-mode-toggle">
+ <TabsTrigger value="committed" data-testid="tab-captable-committed">Committed</TabsTrigger>
+ <TabsTrigger value="interim" data-testid="tab-captable-interim">Interim (pro-forma)</TabsTrigger>
+ </TabsList>
+ </Tabs>
+ </div>
+
+ {captableMode === "interim" ? (
+ <CapTableInterim companyId={companyId} />
+ ) : (
+ <>
  {/* As-of selector + region */}
  <Card className="mb-4">
  <CardContent className="p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
@@ -605,6 +629,8 @@ export default function CapTable() {
  </div>
  </div>
  </div>
+ </>
+ )}
  </PageBody>
 
  {/* v25.45.4 3c (APD-013) — Anti-dilution simulator dialog removed. */}

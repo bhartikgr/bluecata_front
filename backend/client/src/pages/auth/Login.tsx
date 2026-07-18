@@ -138,9 +138,17 @@ export default function Login() {
       }
     },
     staleTime: 0,
+    gcTime: 0,
     retry: false,
   });
   useEffect(() => {
+    // W-CAP LW-2 (2026-07-17) — only auto-redirect on a probe that COMPLETED
+    // after this mount. A stale/cached /api/auth/me from a prior (now logged-out)
+    // session must never silently re-authenticate the login page; requiring a
+    // fresh post-mount fetch guarantees we branch on the server's current
+    // session state, so an explicit visit to /login always shows the form when
+    // the session is truly gone.
+    if (!meProbe.isFetchedAfterMount) return;
     const me = meProbe.data;
     if (!me?.isAuthed) return;
     // v25.52 Track 0.3 — the explicit-login handler (handleSubmit) owns routing
@@ -177,7 +185,7 @@ export default function Login() {
     if (me.hasPaidPlan) { navigate("/onboarding"); return; }
     navigate("/company-profile?onboarding=1");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [meProbe.data, roleChoice]);
+  }, [meProbe.data, meProbe.isFetchedAfterMount, roleChoice]);
   const initialPortal: Portal = rawPortal === "investor" ? "investor" : "founder";
   const demoMode = query.get("demo") === "1";
 

@@ -431,7 +431,11 @@ export default function InvestorSettings() {
                   // in), then redirect to login via a full-page navigation so
                   // the new request picks up the cleared Set-Cookie.
                   await apiRequest("POST", "/api/auth/logout").catch(() => {});
-                  await queryClient.resetQueries();
+                  // W-CAP LW-2 (2026-07-17) — fully clear client auth/identity
+                  // cache on logout so the login page cannot silently re-auth
+                  // from a stale /api/auth/me entry.
+                  await queryClient.cancelQueries();
+                  queryClient.clear();
                   window.location.href = "/login";
                 }}
               >

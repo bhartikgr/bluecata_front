@@ -698,6 +698,28 @@ export const INVITATION_STATES = [
   "revoked",
 ] as const;
 
+/**
+ * W-INVEST BUG C — canonical "active/live funding round" state set, shared by
+ * the backend (server/roundsStore.ts ACTIVE_LIVE_ROUND_STATES) AND the frontend
+ * dashboards so the two can never drift again. A round in any of these states is
+ * considered active/live; draft + terminal states (closed/funded/cancelled) are
+ * NOT. Kept in @shared so FE and BE consume ONE source of truth.
+ */
+export const ACTIVE_LIVE_ROUND_STATES_LIST = [
+  "active",
+  "live",
+  "open",
+  "signing_open",
+  "soft_circle_open",
+] as const;
+
+/** True when a round state string (any case) is an active/live funding round. */
+export function isActiveLiveRoundState(state: string | null | undefined): boolean {
+  return (ACTIVE_LIVE_ROUND_STATES_LIST as readonly string[]).includes(
+    String(state ?? "").toLowerCase(),
+  );
+}
+
 export const DATAROOM_CATEGORIES = [
   { value: "mgmt", label: "Management Team" },
   { value: "product", label: "Product" },

@@ -28,7 +28,7 @@
 import { randomBytes } from "node:crypto";
 import { and, eq, isNull, desc } from "drizzle-orm";
 import { getDb, rawDb } from "./db/connection"; /* v25.45.4 L-3 — rawDb added for DB-direct active-round check */
-import { rounds as roundsTable } from "../shared/schema";
+import { rounds as roundsTable, ACTIVE_LIVE_ROUND_STATES_LIST } from "../shared/schema";
 import { appendAdminAudit } from "./adminPlatformStore";
 import { log } from "./lib/logger";
 import { emitMutation } from "./lib/eventBus";
@@ -359,13 +359,9 @@ export function listRounds(): Round[] {
  * round vocabulary expresses an active/live round through these open/in-flight
  * states. Terminal states (closed/funded/cancelled) and 'draft' do NOT qualify.
  */
-export const ACTIVE_LIVE_ROUND_STATES = new Set<string>([
-  "active",
-  "live",
-  "open",
-  "signing_open",
-  "soft_circle_open",
-]);
+// W-INVEST BUG C — built from the canonical @shared list so the FE dashboards
+// and this BE gate consume ONE source of truth (no 2-vs-5-state drift).
+export const ACTIVE_LIVE_ROUND_STATES = new Set<string>(ACTIVE_LIVE_ROUND_STATES_LIST);
 
 /**
  * v25.45.4 L-3 — DB-DIRECT check for whether a company has at least one round in

@@ -555,7 +555,12 @@ function Header({ onMobileMenu }: { onMobileMenu: () => void }) {
               try {
                 await apiRequest("POST", "/api/auth/logout");
               } catch { /* non-fatal */ }
-              await queryClient.resetQueries();
+              // W-CAP LW-2 (2026-07-17) — fully drop ALL client auth/identity
+              // cache on logout (not just reset): cancel in-flight queries and
+              // clear the cache so a subsequently-visited login page cannot
+              // silently re-authenticate from a stale /api/auth/me entry.
+              await queryClient.cancelQueries();
+              queryClient.clear();
               window.location.href = "/login";
             }}
           >
