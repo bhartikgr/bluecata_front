@@ -262,8 +262,21 @@ export default function PartnerAgreementSign() {
                     disabled={signMut.isPending || !accepted || !signatureName.trim()}
                     data-testid="button-sign-agreement"
                   >
-                    Sign agreement
+                    {signMut.isPending ? "Signing…" : "Sign agreement"}
                   </Button>
+                  {/* O5 (W-FIX1d, 2026-07-19) — the signature must NEVER fail
+                   * silently. The toast can be missed (or dismissed); surface an
+                   * inline, persistent error banner too, and keep the checkbox +
+                   * typed name intact so the partner can retry without re-entry. */}
+                  {signMut.isError && (
+                    <div
+                      role="alert"
+                      className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800"
+                      data-testid="partner-agreement-error"
+                    >
+                      {(signMut.error as Error)?.message || "Could not record your signature. Please try again."}
+                    </div>
+                  )}
                 </div>
               )}
             </>

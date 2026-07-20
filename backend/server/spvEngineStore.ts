@@ -34,6 +34,17 @@ import { getCompanyProfile } from "./companyProfileStore";
 import { hasActiveOrLiveRound, getRoundsForCompany, ACTIVE_LIVE_ROUND_STATES } from "./roundsStore";
 import { chargeOrIdempotent } from "./paymentStore";
 import {
+  computeFundsConfirmation,
+  computeCapitalAccounts,
+  computeCloseSummary,
+  computeDistributionSplit,
+  canReopenClose,
+  type FundsConfirmation,
+  type CapitalAccountRow,
+  type CloseSummary,
+  type DistributionSplit,
+} from "./lib/spvOfflineOps";
+import {
   SPV_DEFAULT_SCOPE,
   isSpvCarryBasis,
   isSpvJurisdiction,
@@ -1348,6 +1359,139 @@ export const spvEngineStore = {
   listDistributions(partnerId: string, spvId: string): SpvDistributionDTO[] {
     if (!this.getSpv(partnerId, spvId)) return [];
     return (distributionsBySpv.get(spvId) ?? []).slice();
+  },
+
+  /* ================================================================== *
+   *  W-FIX1e — SPV offline-first core (SPV-CORE-1/2/3).
+   *
+   *  These are DB-driven, additive, and NEVER move money or block. The
+   *  authoritative money seat for an LP is ALWAYS the sacred commitFunded
+   *  ledger line written at the lp-commit route; nothing here duplicates or
+   *  bypasses it. Funds-confirmation metadata is persisted DURABLY inside the
+   *  SPV `terms` JSON (write-through via persistSpv), not held in RAM.
+   * ================================================================== */
+
+  /** SPV-CORE-1 — record an OFFLINE LP wire confirmation. A mismatch (received
+   *  ≠ committed) is surfaced as an EDUCATIONAL flag and NEVER blocks: the LP's
+   *  authoritative seat remains whatever commitFunded recorded. Returns the
+   *  reconciliation so the caller can show the GP the delta. */
+  confirmFundsReceived(
+    partnerId: string,
+    spvId: string,
+    investorId: string,
+    receivedMinor: number,
+    reference: string | null | undefined,
+    actor: string,
+  ): FundsConfirmation {
+    const s = this.getSpv(partnerId, spvId);
+    if (!s) throw new Error("SPV_NOT_FOUND");
+    if (!investorId) throw new Error("INVESTOR_ID_REQUIRED");
+    const sub = (subsBySpv.get(spvId) ?? []).find((x) => x.investorId === investorId && x.status !== "withdrawn");
+    const expectedMinor = sub ? sub.commitmentMinor : 0;
+    const conf = computeFundsConfirmation(expectedMinor, receivedMinor, reference ?? undefined);
+    // Persist durably in terms._fundsConfirmations (never blocks the money path).
+    const terms = { ...(s.terms ?? {}) } as Record<string, unknown>;
+    const bag = { ...((terms._fundsConfirmations as Record<string, unknown>) ?? {}) };
+    bag[investorId] = {
+      receivedMinor: conf.receivedMinor,
+      expectedMinor: conf.expectedMinor,
+      deltaMinor: conf.deltaMinor,
+      status: conf.status,
+      reference: conf.reference,
+      confirmedAt: nowIso(),
+    };
+    terms._fundsConfirmations = bag;
+    this.updateSpv(partnerId, spvId, { terms }, actor);
+    emit("spv.funds_confirmed", spvId, { partnerId, spvId, investorId, status: conf.status, mismatch: conf.mismatch });
+    return conf;
+  },
+
+  /** SPV-CORE-1 — the durable confirmed-received amounts keyed by investor. */
+  confirmedByInvestor(partnerId: string, spvId: string): Record<string, number> {
+    const s = this.getSpv(partnerId, spvId);
+    if (!s) return {};
+    const bag = ((s.terms ?? {}) as Record<string, unknown>)._fundsConfirmations as
+      | Record<string, { receivedMinor?: number }>
+      | undefined;
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(bag ?? {})) out[k] = Number(v?.receivedMinor ?? 0) || 0;
+    return out;
+  },
+
+  /** SPV-CORE-2 — minimal per-LP capital accounts (D10): committed on the
+   *  register, confirmed-received (offline), and net distributed to date. */
+  capitalAccounts(partnerId: string, spvId: string): CapitalAccountRow[] {
+    if (!this.getSpv(partnerId, spvId)) return [];
+    const register = this.committedRegister(partnerId, spvId).map((r) => ({
+      investorId: r.investorId,
+      commitmentMinor: r.commitmentMinor,
+    }));
+    return computeCapitalAccounts(register, this.confirmedByInvestor(partnerId, spvId), this.listDistributions(partnerId, spvId));
+  },
+
+  /** SPV-CORE-2 — OFFLINE distribution preview (return of capital + carry, with
+   *  the OPTIONAL preferred-return / GP-catch-up tiers engaging only when a
+   *  hurdle is set). This is a planning affordance; it does NOT persist or move
+   *  money — recordDistribution remains the single, unchanged money path. */
+  previewDistributionSplit(
+    partnerId: string,
+    spvId: string,
+    input: { grossProceedsMinor: number; hurdleRatePct?: number | null; gpCatchUpPct?: number | null },
+  ): DistributionSplit {
+    const s = this.getSpv(partnerId, spvId);
+    if (!s) throw new Error("SPV_NOT_FOUND");
+    const contributedMinor = this.committedRegister(partnerId, spvId).reduce((a, r) => a + r.commitmentMinor, 0);
+    const mgmt = this.effectiveFee(spvId, "management");
+    const plat = this.effectiveFee(spvId, "platform");
+    const gpCarryPct = mgmt && mgmt.feeType !== "fixed" ? (mgmt.carryPct ?? 0) : 0;
+    const platCarryPct = plat && plat.feeType !== "fixed" ? (plat.carryPct ?? 0) : 0;
+    return computeDistributionSplit({
+      grossProceedsMinor: input.grossProceedsMinor,
+      contributedMinor,
+      carryPct: gpCarryPct + platCarryPct,
+      hurdleRatePct: input.hurdleRatePct ?? null,
+      gpCatchUpPct: input.gpCatchUpPct ?? null,
+    });
+  },
+
+  /** SPV-CORE-3 — close summary. Under-target NEVER blocks; the summary carries
+   *  the one-click "set target = raised" suggestion. */
+  closeSummary(partnerId: string, spvId: string): CloseSummary {
+    const s = this.getSpv(partnerId, spvId);
+    if (!s) throw new Error("SPV_NOT_FOUND");
+    const subs = (subsBySpv.get(spvId) ?? []).map((x) => ({ status: x.status, commitmentMinor: x.commitmentMinor }));
+    return computeCloseSummary(subs, s.targetRaiseMinor);
+  },
+
+  /** SPV-CORE-3 — close to new LPs. Under-target proceeds anyway (never blocks);
+   *  when `setTargetToRaised` is set, the target is lowered to the confirmed
+   *  amount so the record is honest. Stamps status=closed + closeDate. */
+  closeToNewLps(
+    partnerId: string,
+    spvId: string,
+    actor: string,
+    opts?: { setTargetToRaised?: boolean; closeDate?: string },
+  ): { spv: SpvDTO; summary: CloseSummary } {
+    const s = this.getSpv(partnerId, spvId);
+    if (!s) throw new Error("SPV_NOT_FOUND");
+    const summary = this.closeSummary(partnerId, spvId);
+    const patch: Partial<SpvDTO> = { status: "closed", closeDate: opts?.closeDate ?? nowIso() };
+    if (opts?.setTargetToRaised) patch.targetRaiseMinor = summary.suggestedTargetMinor;
+    const spv = this.updateSpv(partnerId, spvId, patch, actor);
+    emit("spv.closed_to_new_lps", spvId, { partnerId, spvId, underTarget: summary.underTarget, confirmedMinor: summary.confirmedMinor });
+    return { spv, summary };
+  },
+
+  /** SPV-CORE-3 — reopen a closed SPV for a later (rolling) close, allowed only
+   *  within `windowDays` of the recorded close date. Fail-closed once elapsed. */
+  reopenForRollingClose(partnerId: string, spvId: string, windowDays: number, actor: string): SpvDTO {
+    const s = this.getSpv(partnerId, spvId);
+    if (!s) throw new Error("SPV_NOT_FOUND");
+    const gate = canReopenClose(s.status, s.closeDate, windowDays);
+    if (!gate.allowed) throw new Error(gate.reason === "not_closed" ? "SPV_NOT_CLOSED" : "ROLLING_CLOSE_WINDOW_ELAPSED");
+    const spv = this.updateSpv(partnerId, spvId, { status: "open" }, actor);
+    emit("spv.reopened_rolling_close", spvId, { partnerId, spvId, reason: gate.reason });
+    return spv;
   },
 
   /* ---- Documents (fs storage keys, authenticated streaming) ---- */

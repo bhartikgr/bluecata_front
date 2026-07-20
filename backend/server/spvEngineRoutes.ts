@@ -179,6 +179,11 @@ export function registerSpvEngineRoutes(app: Express): void {
       distributions: spvEngineStore.listDistributions(pid, spv.id),
       documents: spvEngineStore.listDocuments(pid, spv.id),
       register: spvEngineStore.investorRegister(pid, spv.id),
+      // W-FIX1f — surface the built-but-hidden capabilities in the tabbed detail:
+      // secondary transfers, minimal capital accounts (D10), and the close summary.
+      transfers: spvEngineStore.listTransfers(pid, spv.id),
+      capitalAccounts: spvEngineStore.capitalAccounts(pid, spv.id),
+      closeSummary: spvEngineStore.closeSummary(pid, spv.id),
     });
   });
 
@@ -385,6 +390,77 @@ export function registerSpvEngineRoutes(app: Express): void {
   app.post("/api/partner/me/spv/:spvId/distributions", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
     try {
       res.status(201).json({ distribution: spvEngineStore.recordDistribution(req.partnerContext!.partnerId, String(req.params.spvId), req.body ?? {}, req.partnerContext!.userId) });
+    } catch (e) { err(res, e); }
+  });
+
+  /* ── W-FIX1e SPV offline core (SPV-CORE-1/2/3) ─────────────────────────────
+     Offline-first GP actions. NONE of these move money or block: the LP's
+     authoritative seat is the sacred commitFunded ledger line (written at the
+     lp-commit route). A funds mismatch is an EDUCATIONAL flag; an under-target
+     close proceeds anyway; a rolling reopen is gated only by the close window. */
+
+  // SPV-CORE-1 — record an offline LP wire confirmation (mismatch never blocks).
+  app.post("/api/partner/me/spv/:spvId/subscriptions/:investorId/confirm-funds", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
+    try {
+      const b = req.body ?? {};
+      const conf = spvEngineStore.confirmFundsReceived(
+        req.partnerContext!.partnerId,
+        String(req.params.spvId),
+        String(req.params.investorId),
+        Number(b.receivedMinor),
+        typeof b.reference === "string" ? b.reference : null,
+        req.partnerContext!.userId,
+      );
+      res.status(201).json({ confirmation: conf });
+    } catch (e) { err(res, e); }
+  });
+
+  // SPV-CORE-2 — minimal per-LP capital accounts (committed / confirmed / distributed).
+  app.get("/api/partner/me/spv/:spvId/capital-accounts", requirePartnerAuth, (req: Request, res: Response) => {
+    try {
+      res.json({ rows: spvEngineStore.capitalAccounts(req.partnerContext!.partnerId, String(req.params.spvId)) });
+    } catch (e) { err(res, e); }
+  });
+
+  // SPV-CORE-2 — OFFLINE distribution preview (does NOT persist or move money).
+  app.post("/api/partner/me/spv/:spvId/distributions/preview", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
+    try {
+      const b = req.body ?? {};
+      const split = spvEngineStore.previewDistributionSplit(req.partnerContext!.partnerId, String(req.params.spvId), {
+        grossProceedsMinor: Number(b.grossProceedsMinor),
+        hurdleRatePct: b.hurdleRatePct ?? null,
+        gpCatchUpPct: b.gpCatchUpPct ?? null,
+      });
+      res.json({ split });
+    } catch (e) { err(res, e); }
+  });
+
+  // SPV-CORE-3 — close summary (under-target flagged, never blocks).
+  app.get("/api/partner/me/spv/:spvId/close-summary", requirePartnerAuth, (req: Request, res: Response) => {
+    try {
+      res.json({ summary: spvEngineStore.closeSummary(req.partnerContext!.partnerId, String(req.params.spvId)) });
+    } catch (e) { err(res, e); }
+  });
+
+  // SPV-CORE-3 — close to new LPs (proceeds even under target; optional set-target=raised).
+  app.post("/api/partner/me/spv/:spvId/close", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
+    try {
+      const b = req.body ?? {};
+      const out = spvEngineStore.closeToNewLps(req.partnerContext!.partnerId, String(req.params.spvId), req.partnerContext!.userId, {
+        setTargetToRaised: b.setTargetToRaised === true,
+        closeDate: typeof b.closeDate === "string" ? b.closeDate : undefined,
+      });
+      res.json(out);
+    } catch (e) { err(res, e); }
+  });
+
+  // SPV-CORE-3 — reopen for a rolling close (gated by the close window).
+  app.post("/api/partner/me/spv/:spvId/reopen", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
+    try {
+      const b = req.body ?? {};
+      const windowDays = Number.isFinite(Number(b.windowDays)) ? Number(b.windowDays) : 30;
+      const spv = spvEngineStore.reopenForRollingClose(req.partnerContext!.partnerId, String(req.params.spvId), windowDays, req.partnerContext!.userId);
+      res.json({ spv });
     } catch (e) { err(res, e); }
   });
 

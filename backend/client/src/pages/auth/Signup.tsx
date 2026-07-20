@@ -317,6 +317,25 @@ export default function Signup() {
         </div>
       }
     >
+      {/* O1 (W-FIX1d, 2026-07-19) — the homepage "Sign In → For Founders" item
+       * lands here (its href lives in the byte-locked sacred Header3.jsx, so the
+       * fix is applied on this non-sacred page): make the sign-in path
+       * unmistakable at the TOP of the founder account page, not just the
+       * easy-to-miss footer link. */}
+      <div
+        className="mb-4 flex items-center justify-between gap-3 rounded-md border border-[#cc0001]/20 bg-[#cc0001]/5 px-3 py-2.5 text-sm"
+        data-testid="banner-founder-signin"
+      >
+        <span className="text-foreground">Already have a founder account?</span>
+        <Link
+          href="/auth/login?portal=founder"
+          className="shrink-0 font-semibold text-[#cc0001] hover:underline"
+          data-testid="link-founder-signin-top"
+        >
+          Sign in →
+        </Link>
+      </div>
+
       <form onSubmit={handleSubmit} className="space-y-4" data-testid="form-signup" autoComplete="on">
         <div>
           <Label htmlFor="firstName" className="flex items-center gap-1.5">

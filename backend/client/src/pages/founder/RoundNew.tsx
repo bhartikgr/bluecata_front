@@ -279,6 +279,17 @@ export default function RoundNew() {
  const [termsheetChoice, setTermsheetChoice] = useState<"generate" | "upload" | "skip">("skip");
  // Sprint 11 D4 — Warrants/ESOP attach to a parent round (no own term sheet)
  const [attachToRound, setAttachToRound] = useState<string>("");
+ // A4 (W-FIX1c) — optional warrant + option-pool ADD-ONS that run in PARALLEL
+ // with a priced/unpriced round. Warrants/ESOP are no longer a mutually-exclusive
+ // category: within a priced/unpriced round the founder can also attach warrants
+ // and/or an option pool, which chain-create as parentRoundId-attached
+ // warrant/option_pool rounds via the SAME /api/rounds endpoint on success — so
+ // they appear in the cap table alongside the priced holders. The standalone
+ // Warrants category is preserved (no silent-drop).
+ const [addonWarrant, setAddonWarrant] = useState(false);
+ const [addonWarrantDraft, setAddonWarrantDraft] = useState({ sharesAuthorized: "", strikePrice: "", expiryYears: "10" });
+ const [addonPool, setAddonPool] = useState(false);
+ const [addonPoolDraft, setAddonPoolDraft] = useState({ poolSize: "" });
  const [form, setForm] = useState<FormShape>(defaultForm);
  // v23.9 C1 — when the founder manually edits the auto-derived price per share,
  // this flag stops the auto-sync effect from clobbering their value. Reset
@@ -429,6 +440,40 @@ export default function RoundNew() {
  /* non-fatal: round exists; investors can be added from the round page */
  }
  }
+ // A4 (W-FIX1c) — chain-create the optional parallel warrant / option-pool
+ // issuances attached to the just-created parent round. Reuses the SAME
+ // /api/rounds endpoint + the existing parentRoundId cap-table ledger chain, so
+ // warrants/ESOP coexist with the priced/unpriced round rather than replacing
+ // it. Only runs for a non-warrant parent flow; failures are non-fatal (the
+ // parent round already exists and add-ons can be created from the round page).
+ let addonCreated = 0;
+ const parentIsWarrantFlow = form.instrument === "warrant" || form.instrument === "option_pool";
+ if (!parentIsWarrantFlow) {
+ const addonPayloads: Record<string, unknown>[] = [];
+ if (addonWarrant && /^\d+$/.test(addonWarrantDraft.sharesAuthorized.trim()) && /^\d+(\.\d+)?$/.test(addonWarrantDraft.strikePrice.trim())) {
+ addonPayloads.push({
+ companyId, type: form.type, instrument: "warrant",
+ name: `${form.name || "Round"} — Warrants`,
+ openDate: (form.openDate ?? "").trim(), closeDate: (form.closeDate ?? "").trim(),
+ strikePrice: addonWarrantDraft.strikePrice.trim(),
+ expiryYears: (addonWarrantDraft.expiryYears || "10").trim(),
+ sharesAuthorized: addonWarrantDraft.sharesAuthorized.trim(),
+ region: form.region, termsheetChoice: "skip", parentRoundId: data.id,
+ });
+ }
+ if (addonPool && /^\d+$/.test(addonPoolDraft.poolSize.trim())) {
+ addonPayloads.push({
+ companyId, type: form.type, instrument: "option_pool",
+ name: `${form.name || "Round"} — Option Pool`,
+ openDate: (form.openDate ?? "").trim(), closeDate: (form.closeDate ?? "").trim(),
+ poolSize: addonPoolDraft.poolSize.trim(), sharesAuthorized: addonPoolDraft.poolSize.trim(),
+ region: form.region, termsheetChoice: "skip", parentRoundId: data.id,
+ });
+ }
+ for (const p of addonPayloads) {
+ try { await apiRequest("POST", "/api/rounds", p); addonCreated += 1; } catch { /* non-fatal */ }
+ }
+ }
  const invited = inviteSummary?.invited ?? 0;
  const noEmail = inviteSummary?.skippedNoEmail ?? 0;
  const failed = inviteSummary?.inviteErrors?.length ?? 0;
@@ -441,6 +486,7 @@ export default function RoundNew() {
  if (invited > 0) parts.push(`${invited} investor${invited === 1 ? "" : "s"} invited by email.`);
  if (noEmail > 0) parts.push(`${noEmail} added without an email (no invite sent).`);
  if (failed > 0) parts.push(`${failed} invitation${failed === 1 ? "" : "s"} could not be sent.`);
+ if (addonCreated > 0) parts.push(`${addonCreated} warrant/option-pool issuance${addonCreated === 1 ? "" : "s"} attached to this round.`);
  toast({
   title: isUploadPath ? "Almost done — upload your term sheet" : "Round created",
   description: isUploadPath
@@ -849,7 +895,18 @@ export default function RoundNew() {
  >
  <TabsList className="grid w-full grid-cols-3" data-testid="round-category-tabs">
  {ROUND_CATEGORIES.map(cat => (
- <TabsTrigger key={cat.value} value={cat.value} data-testid={`round-category-${cat.value}`}>
+ <TabsTrigger
+ key={cat.value}
+ value={cat.value}
+ // A3/O7 — Radix's controlled `onValueChange` can miss the very first
+ // pointer interaction (the platform-wide first-click no-op), leaving the
+ // derived `roundCategory` stuck on its initial value. An explicit
+ // idempotent onClick guarantees the category switch registers on the first
+ // click; setRoundCategory early-returns if already in-category, so calling
+ // it alongside onValueChange is harmless.
+ onClick={() => setRoundCategory(cat.value)}
+ data-testid={`round-category-${cat.value}`}
+ >
  {cat.label}
  </TabsTrigger>
  ))}
@@ -1289,6 +1346,42 @@ export default function RoundNew() {
  </SelectContent>
  </Select>
  {attachToRound && <p className="text-xs text-muted-foreground">Captable ledger will chain this issuance under {attachToRound}.</p>}
+ </div>
+ )}
+
+ {/* A4 (W-FIX1c) — optional warrants / option-pool that run IN PARALLEL with
+ this priced/unpriced round. They attach to this round and appear in the cap
+ table alongside the priced holders — they do NOT replace the round. The
+ standalone Warrants category remains available for a warrant-only raise. */}
+ {(form.instrument !== "warrant" && form.instrument !== "option_pool") && (
+ <div className="pt-4 mt-4 border-t border-border space-y-3" data-testid="addon-warrants-section">
+ <div className="flex items-center gap-2 font-medium">
+ Add warrants / option pool (optional)
+ <HelpTip>A <strong>warrant</strong> is a right to buy shares at a fixed strike price within an expiry window. An <strong>option pool (ESOP)</strong> reserves shares for employees. Both can run alongside this round — they attach to it and show up in the cap table together, so you don't need a separate raise for them.</HelpTip>
+ </div>
+ <label className="flex items-start gap-2 text-sm">
+ <input type="checkbox" className="mt-1" checked={addonWarrant} onChange={e => setAddonWarrant(e.target.checked)} data-testid="addon-warrant-toggle" />
+ <span>Attach warrants to this round</span>
+ </label>
+ {addonWarrant && (
+ <div className="grid md:grid-cols-3 gap-3 pl-6" data-testid="addon-warrant-fields">
+ <div><Label className="text-xs">Warrant shares</Label><Input type="number" className="mt-1 font-mono" value={addonWarrantDraft.sharesAuthorized} onChange={e => setAddonWarrantDraft(d => ({ ...d, sharesAuthorized: e.target.value }))} data-testid="addon-warrant-shares" /></div>
+ <div><Label className="text-xs">Strike price (USD)</Label><Input type="number" step="0.01" className="mt-1 font-mono" value={addonWarrantDraft.strikePrice} onChange={e => setAddonWarrantDraft(d => ({ ...d, strikePrice: e.target.value }))} data-testid="addon-warrant-strike" /></div>
+ <div><Label className="text-xs">Expiry (years)</Label><Input type="number" className="mt-1 font-mono" value={addonWarrantDraft.expiryYears} onChange={e => setAddonWarrantDraft(d => ({ ...d, expiryYears: e.target.value }))} data-testid="addon-warrant-expiry" /></div>
+ </div>
+ )}
+ <label className="flex items-start gap-2 text-sm">
+ <input type="checkbox" className="mt-1" checked={addonPool} onChange={e => setAddonPool(e.target.checked)} data-testid="addon-pool-toggle" />
+ <span>Add / top up an option pool (ESOP)</span>
+ </label>
+ {addonPool && (
+ <div className="grid md:grid-cols-3 gap-3 pl-6" data-testid="addon-pool-fields">
+ <div><Label className="text-xs">Pool size (shares)</Label><Input type="number" className="mt-1 font-mono" value={addonPoolDraft.poolSize} onChange={e => setAddonPoolDraft(d => ({ ...d, poolSize: e.target.value }))} data-testid="addon-pool-size" /></div>
+ </div>
+ )}
+ {(addonWarrant || addonPool) && (
+ <p className="text-[11px] text-muted-foreground">These issuances are created together with the round and chained to it in the cap-table ledger.</p>
+ )}
  </div>
  )}
 

@@ -142,7 +142,7 @@ function ProfileCompletionCard({ companyId }: { companyId: string }) {
 }
 
 type Round = { id: string; companyId: string; name: string; type: string; state: string; targetAmount: number; raisedAmount: number; closeDate: string };
-type Activity = { id: string; ts: string; actor: string; action: string; target: string };
+type Activity = { id: string; ts: string; actor: string; action: string; target: string; actorLabel?: string; targetLabel?: string };
 type MeShape = { isAuthed?: boolean; userId?: string | null; identity?: { name?: string | null; displayName?: string | null } | null; name?: string | null };
 
 /**
@@ -433,7 +433,7 @@ export default function FounderDashboard() {
                   <li key={`bento-${a.id}`} className="flex items-start gap-2 text-xs" data-testid={`bento-activity-${a.id}`}>
                     <div className="mt-1 h-1.5 w-1.5 rounded-full bg-[hsl(0_100%_40%)] shrink-0" />
                     <div className="flex-1 min-w-0 truncate">
-                      <span className="font-medium">{formatActorDashboard(a.actor, selfId, selfName)}</span> <span className="text-muted-foreground">{a.action}</span> <span className="font-medium">{a.target}</span>
+                      <span className="font-medium">{(selfId && a.actor === selfId) ? (selfName ?? "You") : (a.actorLabel || formatActorDashboard(a.actor, selfId, selfName))}</span> <span className="text-muted-foreground">{a.action}</span> <span className="font-medium">{a.targetLabel || a.target}</span>
                     </div>
                     <span className="text-[11px] text-muted-foreground shrink-0"><Clock className="inline h-3 w-3 mr-0.5" />{timeAgo(a.ts)}</span>
                   </li>
@@ -695,7 +695,7 @@ export default function FounderDashboard() {
                 <li key={a.id} className="px-3 py-2.5 flex items-start gap-3 text-sm" data-testid={`row-activity-${a.id}`}>
                   <div className="mt-1 h-1.5 w-1.5 rounded-full bg-[hsl(0_100%_40%)]" />
                   <div className="flex-1 min-w-0">
-                    <div><span className="font-medium">{formatActorDashboard(a.actor, selfId, selfName)}</span> <span className="text-muted-foreground">{a.action}</span> <span className="font-medium">{a.target}</span></div>
+                    <div><span className="font-medium">{(selfId && a.actor === selfId) ? (selfName ?? "You") : (a.actorLabel || formatActorDashboard(a.actor, selfId, selfName))}</span> <span className="text-muted-foreground">{a.action}</span> <span className="font-medium">{a.targetLabel || a.target}</span></div>
                     <div className="text-[11px] text-muted-foreground"><Clock className="inline h-3 w-3 mr-1" />{timeAgo(a.ts)}</div>
                   </div>
                 </li>

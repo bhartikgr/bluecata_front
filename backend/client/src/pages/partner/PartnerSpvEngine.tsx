@@ -21,6 +21,7 @@ import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useRequirePartnerRole } from "@/lib/partner/useRequirePartnerRole";
 import { PartnerShell, PartnerEmptyState } from "@/components/partner/PartnerShell";
+import { SpvDetailTabs, type SpvDetail } from "@/components/partner/SpvDetailTabs"; /* W-FIX1f SPV-UI-1 */
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -629,8 +630,18 @@ export default function PartnerSpvEngine() {
               </div>
 
               {selectedId === s.id && detail.data && (
-                <div className="mt-3 border-t pt-3 text-sm space-y-2" data-testid={`spv-detail-${s.id}`}>
-                  <SpvDetailBlock detail={detail.data} currency={s.currency} />
+                <div className="mt-3 border-t pt-3 text-sm space-y-2" data-testid={`spv-detail-${s.id}`} onClick={(e) => e.stopPropagation()}>
+                  {/* W-FIX1f SPV-UI-1 — tabbed detail exposing every engine capability. */}
+                  <SpvDetailTabs
+                    spvId={s.id}
+                    detail={detail.data as unknown as SpvDetail}
+                    currency={s.currency}
+                    canWrite={canWrite}
+                    onChanged={() => {
+                      qc.invalidateQueries({ queryKey: ["/api/partner/me/spv", s.id] });
+                      qc.invalidateQueries({ queryKey: ["/api/partner/me/spv"] });
+                    }}
+                  />
                 </div>
               )}
             </Card>
@@ -651,50 +662,3 @@ function ReviewRow({ label, value, onEdit }: { label: string; value: string; onE
   );
 }
 
-function SpvDetailBlock({ detail, currency }: { detail: Record<string, unknown>; currency: string }) {
-  const register = (detail.register as Array<{ investorId: string; commitmentMinor: number; ownershipPct: number }>) ?? [];
-  const fees = (detail.fees as Array<{ layer: string; feeType: string; carryPct: number | null; fixedAmountMinor: number | null }>) ?? [];
-  const deployments = (detail.deployments as Array<{ companyId: string; amountMinor: number; status: string }>) ?? [];
-  const distributions = (detail.distributions as Array<{ event: string; grossProceedsMinor: number; gpCarryMinor: number; platformCarryMinor: number }>) ?? [];
-  const raised = register.reduce((a, r) => a + r.commitmentMinor, 0);
-  return (
-    <div className="grid grid-cols-2 gap-3">
-      <div data-testid="spv-detail-raise">
-        <div className="font-medium">Raise progress</div>
-        <div className="font-mono">{fmt(raised, currency)}</div>
-      </div>
-      <div data-testid="spv-detail-fees">
-        <div className="font-medium">Fees</div>
-        {fees.length === 0 ? <div className="text-xs text-[var(--cv-color-text-faint)]">none</div> : fees.map((f, i) => (
-          <div key={i} className="text-xs">{f.layer}: {f.feeType}{f.carryPct != null ? ` ${(f.carryPct * 100).toFixed(0)}%` : ""}{f.fixedAmountMinor ? ` ${fmt(f.fixedAmountMinor, currency)}` : ""}</div>
-        ))}
-      </div>
-      <div data-testid="spv-detail-lpvisibility">
-        <div className="font-medium">LP co-investor visibility</div>
-        <div className="text-xs">
-          {((detail.spv as { lpVisibility?: string } | undefined)?.lpVisibility ?? "own_only") === "co_investors"
-            ? "On — investors can see each other (transparent club deal)"
-            : "Off — each investor sees only their own position"}
-        </div>
-      </div>
-      <div data-testid="spv-detail-roster">
-        <div className="font-medium">LP roster</div>
-        {register.length === 0 ? <div className="text-xs text-[var(--cv-color-text-faint)]">no LPs yet</div> : register.map((r) => (
-          <div key={r.investorId} className="text-xs">{r.investorId}: {fmt(r.commitmentMinor, currency)} ({(r.ownershipPct * 100).toFixed(1)}%)</div>
-        ))}
-      </div>
-      <div data-testid="spv-detail-deployments">
-        <div className="font-medium">Deployments</div>
-        {deployments.length === 0 ? <div className="text-xs text-[var(--cv-color-text-faint)]">none</div> : deployments.map((d, i) => (
-          <div key={i} className="text-xs">{d.companyId}: {fmt(d.amountMinor, currency)} · {d.status}</div>
-        ))}
-      </div>
-      <div data-testid="spv-detail-distributions" className="col-span-2">
-        <div className="font-medium">Distributions</div>
-        {distributions.length === 0 ? <div className="text-xs text-[var(--cv-color-text-faint)]">none</div> : distributions.map((d, i) => (
-          <div key={i} className="text-xs">{d.event}: gross {fmt(d.grossProceedsMinor, currency)} · GP carry {fmt(d.gpCarryMinor, currency)} · platform carry {fmt(d.platformCarryMinor, currency)}</div>
-        ))}
-      </div>
-    </div>
-  );
-}

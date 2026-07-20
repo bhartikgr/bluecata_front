@@ -503,6 +503,16 @@ export default function Login() {
               </div>
             </div>
           )}
+          {/* O6 (W-FIX1d, 2026-07-19) — the public tabs are Founder + Investor
+           * only, so Consortium Partners had no signposted entry and were forced
+           * onto the Investor tab. Surface a clear partner sign-in path to the
+           * dedicated /partner/login page. */}
+          <div className="text-xs border-t border-border/50 pt-3 text-muted-foreground" data-testid="partner-login-affordance">
+            Consortium Partner?{" "}
+            <Link href="/partner/login" className="text-[#cc0001] hover:underline font-medium" data-testid="link-partner-login">
+              Sign in to the partner portal
+            </Link>
+          </div>
         </div>
       }
     >

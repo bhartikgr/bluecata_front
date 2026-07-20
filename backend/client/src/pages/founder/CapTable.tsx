@@ -86,6 +86,108 @@ const HOLDER_GROUPS: { label: string; types: string[]; key: string; tone: string
  * R200 §7 — display preferences are non-sensitive UI state only. */
 let SESSION_VIEW: View = "fully_diluted";
 
+/* W-FIX1c A5 (2026-07-19) — warrant EXERCISE affordance. A grant counts in
+ * fully-diluted but had no way to actually ISSUE shares. This panel drives the
+ * additive `/api/companies/:id/warrants/exercise` endpoint (preview → confirm);
+ * all issuance flows through the SACRED commitFunded money path server-side. */
+type ExerciseWarrant = { id?: string; holderName?: string; roundId?: string | null; investorId?: string | null; strike?: number | null; fmv?: number | null; shares?: number | null };
+type ExercisePreview = { sharesIssued: string; cashPaid: string; ppsBasis: string; ledgerAmount: string };
+
+function WarrantExercisePanel({ companyId, warrant, sym, onDone }: { companyId: string; warrant: ExerciseWarrant; sym: string; onDone: () => void }) {
+ const { toast } = useToast();
+ const [open, setOpen] = useState(false);
+ const [mode, setMode] = useState<"cash" | "cashless" | "expire">("cash");
+ const [qty, setQty] = useState<string>(String(warrant.shares ?? ""));
+ const [fmv, setFmv] = useState<string>(warrant.fmv != null ? String(warrant.fmv) : "");
+ const [preview, setPreview] = useState<ExercisePreview | null>(null);
+
+ const disabledConfirm = !warrant.roundId || !warrant.investorId || (mode !== "expire" && (!qty || Number(qty) <= 0)) || (mode === "cashless" && (!fmv || Number(fmv) <= 0));
+
+ async function post(body: Record<string, unknown>) {
+  return (await apiRequest("POST", `/api/companies/${encodeURIComponent(companyId)}/warrants/exercise`, body)).json();
+ }
+ const previewM = useMutation({
+  mutationFn: () => post({ roundId: warrant.roundId, investorId: warrant.investorId, quantity: qty, mode, fmv: fmv || undefined, preview: true }),
+  onSuccess: (d: ExercisePreview) => setPreview(d),
+  onError: () => toast({ variant: "destructive", title: "Preview failed", description: "Could not compute the exercise. Check the strike/FMV inputs." }),
+ });
+ const confirmM = useMutation({
+  mutationFn: () => post({ roundId: warrant.roundId, investorId: warrant.investorId, quantity: qty, mode, fmv: fmv || undefined }),
+  onSuccess: (d: { sharesIssued?: string; expired?: boolean }) => {
+   toast({
+    title: mode === "expire" ? "Warrant expired" : "Warrant exercised",
+    description: mode === "expire" ? "No shares were issued." : `${fmtNum(Number(d?.sharesIssued ?? 0))} shares issued into the cap table.`,
+   });
+   setOpen(false); setPreview(null); onDone();
+  },
+  onError: (e: unknown) => {
+   const msg = (e as { message?: string })?.message || "The exercise could not be recorded.";
+   toast({ variant: "destructive", title: "Exercise failed", description: msg });
+  },
+ });
+
+ return (
+  <>
+   <Button size="sm" variant="outline" className="h-6 px-2 text-[10px]" data-testid={`warrant-exercise-open-${warrant.id ?? "x"}`} onClick={() => { setOpen(true); setPreview(null); }}>Exercise</Button>
+   <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) setPreview(null); }}>
+    <DialogContent className="max-w-md">
+     <DialogHeader><DialogTitle>Exercise warrant — {warrant.holderName ?? "Holder"}</DialogTitle></DialogHeader>
+     <div className="space-y-3 text-xs">
+      <div className="rounded-md border border-border/60 bg-secondary/30 p-2.5 space-y-1 text-muted-foreground">
+       <p><span className="font-medium text-foreground">Cash exercise</span> — the holder pays <span className="font-mono">strike × quantity</span> and receives that many shares.</p>
+       <p><span className="font-medium text-foreground">Cashless (net) exercise</span> — the holder pays nothing; they receive the NET shares <span className="font-mono">floor(qty × (FMV − strike) / FMV)</span>, surrendering the rest to cover the strike.</p>
+       <p><span className="font-medium text-foreground">Expiry</span> — an unexercised warrant lapses and issues no shares.</p>
+      </div>
+      <div className="grid grid-cols-2 gap-2 items-end">
+       <div>
+        <Label className="text-[11px]">Mode</Label>
+        <Select value={mode} onValueChange={(v) => { setMode(v as typeof mode); setPreview(null); }}>
+         <SelectTrigger className="h-8 text-xs" data-testid="warrant-exercise-mode"><SelectValue /></SelectTrigger>
+         <SelectContent>
+          <SelectItem value="cash">Cash exercise</SelectItem>
+          <SelectItem value="cashless">Cashless (net)</SelectItem>
+          <SelectItem value="expire">Expire (no shares)</SelectItem>
+         </SelectContent>
+        </Select>
+       </div>
+       {mode !== "expire" && (
+        <div>
+         <Label className="text-[11px]">Quantity</Label>
+         <Input className="h-8 text-xs" type="number" min={0} value={qty} onChange={(e) => { setQty(e.target.value); setPreview(null); }} data-testid="warrant-exercise-qty" />
+        </div>
+       )}
+       {mode === "cashless" && (
+        <div className="col-span-2">
+         <Label className="text-[11px]">Fair market value / share (FMV)</Label>
+         <Input className="h-8 text-xs" type="number" min={0} step="0.01" value={fmv} onChange={(e) => { setFmv(e.target.value); setPreview(null); }} data-testid="warrant-exercise-fmv" />
+        </div>
+       )}
+      </div>
+      {(!warrant.roundId || !warrant.investorId) && (
+       <p className="text-[11px] text-destructive">This warrant is missing a round or holder reference and cannot be exercised.</p>
+      )}
+      {preview && (
+       <div className="rounded-md border border-border/60 p-2.5 grid grid-cols-2 gap-x-3 gap-y-0.5 text-muted-foreground" data-testid="warrant-exercise-preview">
+        <span>Shares to issue</span><span className="font-mono text-right text-foreground">{fmtNum(Number(preview.sharesIssued))}</span>
+        <span>Cash paid</span><span className="font-mono text-right">{sym}{Number(preview.cashPaid).toLocaleString()}</span>
+        <span>Ledger amount</span><span className="font-mono text-right">{sym}{Number(preview.ledgerAmount).toLocaleString()}</span>
+       </div>
+      )}
+     </div>
+     <DialogFooter className="gap-2">
+      {mode !== "expire" && (
+       <Button variant="outline" size="sm" disabled={disabledConfirm || previewM.isPending} onClick={() => previewM.mutate()} data-testid="warrant-exercise-preview-btn">Preview</Button>
+      )}
+      <Button size="sm" className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] text-white" disabled={disabledConfirm || confirmM.isPending} onClick={() => confirmM.mutate()} data-testid="warrant-exercise-confirm-btn">
+       {mode === "expire" ? "Record expiry" : "Confirm exercise"}
+      </Button>
+     </DialogFooter>
+    </DialogContent>
+   </Dialog>
+  </>
+ );
+}
+
 export default function CapTable() {
  const [view, setViewState] = useState<View>(SESSION_VIEW);
  const setView = (v: View) => { SESSION_VIEW = v; setViewState(v); };
@@ -469,7 +571,7 @@ export default function CapTable() {
  const intrinsic = w.fmv != null && w.strike != null ? Math.max(0, (w.fmv - w.strike) * (w.shares ?? 0)) : null;
  return (
  <div key={w.id} className="border-b border-border/60 pb-1.5 last:border-0">
- <div className="flex justify-between"><span className="font-medium">{w.holderName}</span><Badge variant="outline" className="text-[10px]">{fmtNum(w.shares)} sh</Badge></div>
+ <div className="flex justify-between items-center gap-2"><span className="font-medium">{w.holderName}</span><div className="flex items-center gap-1.5"><Badge variant="outline" className="text-[10px]">{fmtNum(w.shares)} sh</Badge>{companyId && <WarrantExercisePanel companyId={companyId} warrant={w} sym={sym} onDone={() => { queryClient.invalidateQueries({ queryKey: ["/api/companies", companyId, "securities"] }); queryClient.invalidateQueries({ queryKey: ["/api/companies", companyId, "cap-table"] }); }} />}</div></div>
  <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-muted-foreground">
  <span>Strike</span><span className="font-mono text-right">{sym}{w.strike?.toFixed(2) ?? "—"}</span>
  <span>FMV</span><span className="font-mono text-right">{sym}{w.fmv?.toFixed(2) ?? "—"}</span>

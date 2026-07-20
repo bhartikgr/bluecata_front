@@ -213,6 +213,11 @@ import {
   getFundedQueue as captableGetFundedQueue,
 } from "./captableCommitStore";
 import { getRoundById as roundsGetById } from "./roundsStore";
+/* W-FIX1a (A1/A2) — cap-table DISPLAY resolver (read-only; sacred files only CALLED). */
+import { resolveHolderDisplay, resolveRoundName, computeOwnershipPct } from "./lib/captableDisplayResolver";
+import { exerciseWarrant, computeExercise, type ExerciseMode } from "./lib/warrantExercise";
+/* W-FIX1a (A2) — central activity/entity label resolver (read-only). */
+import { resolveActorLabel, resolveEntityLabel } from "./lib/activityLabelResolver";
 import { isInvitationActive, isSoftCircleActive } from "./lib/rosterActive"; /* W-INVEST BUG B — pure roster "Active" predicate */
 import { registerMaInitiativesRoutes } from "./lib/maInitiativesStore";
 import { registerBulkInvitationsRoutes } from "./lib/bulkInvitationsRoutes";
@@ -1617,9 +1622,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const principal = Number(e.principalAmount ?? e.amount ?? 0);
         const cap = e.valuationCap != null ? Number(e.valuationCap) : null;
         const disc = e.discountPct != null ? Number(e.discountPct) : null;
-        const holderName = (e.holderFirstName || e.holderLastName)
-          ? `${e.holderFirstName ?? ""} ${e.holderLastName ?? ""}`.trim()
-          : (e.investorId ?? "Investor");
+        // W-FIX1a A1 — resolve friendly name + email; never leak raw u_… id.
+        const disp = resolveHolderDisplay(e.investorId, e.holderFirstName, e.holderLastName);
+        const holderName = disp.name;
         // Instrument label from the round: convertible notes render as "note",
         // SAFEs as "safe" (the client card filters instrument === "safe" || "note").
         let instrument = "safe";
@@ -1642,6 +1647,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           discount: disc != null && Number.isFinite(disc) ? disc : null,
           issuedAt: e.ts ?? null,
           roundId: e.roundId ?? null,
+          roundName: resolveRoundName(e.roundId), // W-FIX1a A1
+          holderEmail: disp.email,                // W-FIX1a A1
           investorId: e.investorId ?? null,
           accruedInterest: 0,
         } as any);
@@ -1694,9 +1701,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             }
           }
         } catch { shares = 0; }
-        const holderName = (e.holderFirstName || e.holderLastName)
-          ? `${e.holderFirstName ?? ""} ${e.holderLastName ?? ""}`.trim()
-          : (e.investorId ?? "Investor");
+        // W-FIX1a A1 — resolve friendly name + email; never leak raw u_… id.
+        const disp = resolveHolderDisplay(e.investorId, e.holderFirstName, e.holderLastName);
+        const holderName = disp.name;
         // Instrument + series from the round: preferred for priced equity
         // rounds; common as a defensive fallback.
         let instrument = "preferred";
@@ -1724,6 +1731,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           discount: null,
           issuedAt: e.ts ?? null,
           roundId: e.roundId ?? null,
+          roundName: series ?? resolveRoundName(e.roundId), // W-FIX1a A1
+          holderEmail: disp.email,                          // W-FIX1a A1
           investorId: e.investorId ?? null,
           accruedInterest: 0,
         } as any);
@@ -1752,7 +1761,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(403).json({ ok: false, error: "not_authorized" });
     }
     type InterimKind = "committed" | "funded" | "soft_circle";
-    type InterimRow = { investorId: string; holderName: string; roundId: string; amount: number; currency: string; shares: number; kind: InterimKind; invitationId?: string | null; softCircleId?: string | null; status?: string | null };
+    type InterimRow = { investorId: string; holderName: string; holderEmail?: string; roundId: string; roundName?: string; amount: number; currency: string; shares: number; ownershipPct?: number | null; kind: InterimKind; invitationId?: string | null; softCircleId?: string | null; status?: string | null };
     // Shared share-derivation: prefer a valid ledger share count; else derive
     // floor(amount / effectivePps) via the cent-unit decimal.js/BigInt method.
     const deriveShares = (amount: number, sharesStr: unknown, roundId?: string): number => {
@@ -1780,23 +1789,30 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       for (const e of captableMembersForCompany(String(cid)) as any[]) {
         const amount = Number(e.amount ?? e.principalAmount ?? 0);
-        const holderName = (e.holderFirstName || e.holderLastName)
-          ? `${e.holderFirstName ?? ""} ${e.holderLastName ?? ""}`.trim()
-          : (e.investorId ?? "Investor");
+        // W-FIX1a A1 — resolve friendly name + email + round NAME; never raw id.
+        const disp = resolveHolderDisplay(e.investorId, e.holderFirstName, e.holderLastName);
         committed.push({
-          investorId: e.investorId ?? "", holderName, roundId: e.roundId ?? "",
+          investorId: e.investorId ?? "", holderName: disp.name, holderEmail: disp.email,
+          roundId: e.roundId ?? "", roundName: resolveRoundName(e.roundId),
           amount: Number.isFinite(amount) ? amount : 0, currency: e.currency ?? "USD",
           shares: deriveShares(amount, e.shares, e.roundId), kind: "committed",
           invitationId: e.invitationId ?? null,
         });
       }
     } catch { /* fail-open */ }
+    // W-FIX1a A1 — committed ownership %: holder committed shares ÷ total committed shares.
+    try {
+      const totalCommittedShares = committed.reduce((a, r) => a + (Number.isFinite(r.shares) ? r.shares : 0), 0);
+      for (const r of committed) r.ownershipPct = computeOwnershipPct(r.shares, totalCommittedShares);
+    } catch { /* fail-open */ }
     try {
       for (const e of captableGetFundedQueue().filter((e: any) => e.companyId === cid) as any[]) {
         const amount = Number(e.amount ?? 0);
+        const disp = resolveHolderDisplay(e.investorId, e.holderFirstName, e.holderLastName);
         funded.push({
-          investorId: e.investorId ?? "", holderName: e.investorId ?? "Investor",
-          roundId: e.roundId ?? "", amount: Number.isFinite(amount) ? amount : 0,
+          investorId: e.investorId ?? "", holderName: disp.name, holderEmail: disp.email,
+          roundId: e.roundId ?? "", roundName: resolveRoundName(e.roundId),
+          amount: Number.isFinite(amount) ? amount : 0,
           currency: e.currency ?? "USD", shares: deriveShares(amount, e.shares, e.roundId),
           kind: "funded", invitationId: e.invitationId ?? null,
         });
@@ -1805,9 +1821,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       for (const s of softCircleListForCompany(String(cid)).filter((s: any) => s.status === "confirmed") as any[]) {
         const amount = Number(s.amount ?? 0);
+        // Prefer the soft-circle's stored investorName; else resolve from id.
+        const disp = resolveHolderDisplay(s.investorUserId, undefined, undefined);
+        const holderName = (s.investorName && String(s.investorName).trim()) ? String(s.investorName).trim() : disp.name;
         soft_circle.push({
-          investorId: s.investorUserId ?? "", holderName: s.investorName ?? (s.investorUserId ?? "Investor"),
-          roundId: s.roundId ?? "", amount: Number.isFinite(amount) ? amount : 0,
+          investorId: s.investorUserId ?? "", holderName, holderEmail: disp.email,
+          roundId: s.roundId ?? "", roundName: resolveRoundName(s.roundId),
+          amount: Number.isFinite(amount) ? amount : 0,
           currency: s.currency ?? "USD", shares: deriveShares(amount, undefined, s.roundId),
           kind: "soft_circle", softCircleId: s.id ?? null, status: s.status ?? null,
         });
@@ -2330,8 +2350,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const isDemoMaya = ctx.isAdmin || /^maya\s/i.test(String(callerName));
     const legacySeedVisible = isDemoMaya ? activity : [];
     const merged = [...visible, ...legacySeedVisible].sort((a, b) => (b.ts ?? "").localeCompare(a.ts ?? ""));
+    // W-FIX1a A2 — enrich each row with resolved actor/target LABELS so the
+    // Dashboard/Activity feed never renders a raw u_…/company:co_…/rnd_… id.
+    // Additive: original `actor`/`target` fields are preserved.
+    const enriched = merged.map((a: any) => ({
+      ...a,
+      actorLabel: resolveActorLabel(a.actor),
+      targetLabel: resolveEntityLabel(a.target),
+    }));
     // B-V13-6 fix
-    res.json(merged);
+    res.json(enriched);
   };
   app.get("/api/activity", requireAuth, activityLogHandler);
   /* v25.10 M7 — alias used by Welcome.tsx. */
@@ -3585,6 +3613,48 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // event, not a round event.
     emitMutation({ aggregate: "company", id, change: "update" });
     res.json({ ok: true, security: sec });
+  });
+
+  // W-FIX1c A5 — warrant EXERCISE lifecycle. Converts a granted warrant into
+  // issued shares through the SACRED commitFunded money path (cash or cashless),
+  // or records an expiry (no shares). Read-preview via ?preview=1 returns the
+  // computed share/cash math WITHOUT touching the ledger, so the FE can show the
+  // educational breakdown before the founder confirms. Additive; no parallel
+  // money path; the exercise commit is the durable record.
+  app.post("/api/companies/:id/warrants/exercise", requireAuth, (req, res) => {
+    const id = paramStr(req.params.id);
+    const check = tenantRequireFounderOwnsCompany(req, res, id);
+    if (!check.ok) return;
+    if (assertWorkspaceNotArchived(req, res, id)) return;
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const mode = String(b.mode ?? "") as ExerciseMode;
+    if (mode !== "cash" && mode !== "cashless" && mode !== "expire") {
+      return res.status(400).json({ ok: false, error: "invalid_mode" });
+    }
+    const roundId = String(b.roundId ?? "").trim();
+    const investorId = String(b.investorId ?? "").trim();
+    if (!roundId || !investorId) return res.status(400).json({ ok: false, error: "missing_round_or_investor" });
+
+    const input = {
+      companyId: id,
+      roundId,
+      investorId,
+      quantity: (b.quantity as string | number) ?? "0",
+      mode,
+      fmv: (b.fmv as string | number | null) ?? null,
+      strikePrice: (b.strikePrice as string | number | null) ?? null,
+      invitationId: b.invitationId ? String(b.invitationId) : undefined,
+    };
+
+    // Preview: pure computation, no ledger write.
+    if (b.preview === true || b.preview === "1") {
+      return res.json({ ok: true, preview: true, ...computeExercise(input) });
+    }
+
+    const result = exerciseWarrant(input);
+    if (!result.ok) return res.status(422).json({ ok: false, error: result.error });
+    emitMutation({ aggregate: "company", id, change: "update" });
+    return res.json(result);
   });
 
   // Auth me PATCH — reads userId from session or x-user-id header; no hard auth gate

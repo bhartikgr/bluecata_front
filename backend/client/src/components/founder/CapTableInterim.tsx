@@ -26,10 +26,13 @@ type InterimKind = "committed" | "funded" | "soft_circle";
 type InterimRow = {
   investorId: string;
   holderName: string;
+  holderEmail?: string;          // W-FIX1a A1
   roundId: string;
+  roundName?: string;            // W-FIX1a A1 — friendly round name
   amount: number;
   currency: string;
   shares: number;
+  ownershipPct?: number | null;  // W-FIX1a A1 — committed basis
   kind: InterimKind;
   invitationId?: string | null;
   softCircleId?: string | null;
@@ -225,13 +228,14 @@ function InterimSection({
                 <th className="text-left font-medium px-2 py-2">Round</th>
                 <th className="text-right font-medium px-2 py-2">Amount</th>
                 <th className="text-right font-medium px-2 py-2">Shares</th>
+                <th className="text-right font-medium px-2 py-2">Own %</th>
                 <th className="text-left font-medium px-2 py-2">Status</th>
                 {rowAction && <th className="text-right font-medium px-4 py-2">Action</th>}
               </tr>
             </thead>
             <tbody>
               {rows.length === 0 ? (
-                <tr><td colSpan={rowAction ? 6 : 5} className="px-4 py-6 text-center text-muted-foreground">No {meta.label.toLowerCase()} positions.</td></tr>
+                <tr><td colSpan={rowAction ? 7 : 6} className="px-4 py-6 text-center text-muted-foreground">No {meta.label.toLowerCase()} positions.</td></tr>
               ) : (
                 rows.map((r, i) => (
                   <tr key={`${kind}-${r.invitationId ?? r.softCircleId ?? r.investorId}-${i}`} className="border-b border-border/60 hover:bg-secondary/40" data-testid={`interim-row-${kind}-${i}`}>
@@ -240,10 +244,14 @@ function InterimSection({
                         <span className={`h-2 w-2 rounded-full ${meta.dot}`} aria-hidden />
                         {r.holderName}
                       </div>
+                      {r.holderEmail ? (
+                        <div className="text-[10px] text-muted-foreground ml-3.5" data-testid={`interim-email-${kind}-${i}`}>{r.holderEmail}</div>
+                      ) : null}
                     </td>
-                    <td className="px-2 py-2.5 text-muted-foreground truncate max-w-[140px]">{r.roundId || "—"}</td>
+                    <td className="px-2 py-2.5 text-muted-foreground truncate max-w-[140px]" data-testid={`interim-round-${kind}-${i}`}>{r.roundName || "—"}</td>
                     <td className="px-2 py-2.5 text-right font-mono tabular-nums">{fmtMoney(r.amount, r.currency)}</td>
-                    <td className="px-2 py-2.5 text-right font-mono tabular-nums">{r.shares ? fmtNum(r.shares) : "—"}</td>
+                    <td className="px-2 py-2.5 text-right font-mono tabular-nums">{r.shares ? fmtNum(r.shares) : "pending"}</td>
+                    <td className="px-2 py-2.5 text-right font-mono tabular-nums" data-testid={`interim-own-${kind}-${i}`}>{r.ownershipPct != null ? `${r.ownershipPct.toFixed(2)}%` : "—"}</td>
                     <td className="px-2 py-2.5">
                       <Badge variant="outline" className={`text-[10px] ${meta.badgeClass}`}>{meta.label}</Badge>
                     </td>
@@ -256,7 +264,7 @@ function InterimSection({
                   <td className="px-4 py-2.5" colSpan={2}>Subtotal · {subtotal.count} position{subtotal.count === 1 ? "" : "s"}</td>
                   <td className="px-2 py-2.5 text-right font-mono tabular-nums">{fmtMoney(subtotal.amount, rows[0]?.currency ?? "USD")}</td>
                   <td className="px-2 py-2.5 text-right font-mono tabular-nums">{subtotal.shares ? fmtNum(subtotal.shares) : "—"}</td>
-                  <td colSpan={rowAction ? 2 : 1} />
+                  <td colSpan={rowAction ? 3 : 2} />
                 </tr>
               )}
             </tbody>

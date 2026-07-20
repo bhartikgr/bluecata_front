@@ -111,6 +111,10 @@ export function MessagesPage({ role, hideHeader = false }: { role: "founder" | "
  const [search, setSearch] = useState("");
  const [draft, setDraft] = useState("");
  const [replyTo, setReplyTo] = useState<MessageView | null>(null);
+ // W-FIX1b A7 — channels the server has told us the caller may NOT message
+ // (DM policy 403). We surface a clear reason + disable Send instead of the
+ // previous silent no-op. Keyed by channelId → human-readable reason.
+ const [blockedChannels, setBlockedChannels] = useState<Record<string, string>>({});
  const [attachDialog, setAttachDialog] = useState(false);
  const [attachment, setAttachment] = useState<{ fileId: string; name: string } | null>(null);
  const { toast } = useToast();
@@ -123,6 +127,9 @@ export function MessagesPage({ role, hideHeader = false }: { role: "founder" | "
  const searchShortcutHint = isMac ? "⌘K" : "Ctrl K";
  // v25.13 NH4 — guard against duplicate DM-start POSTs across location changes.
  const dmStartedForRef = useRef<string | null>(null);
+ // W-FIX1b O2 — the last `initialChannel` we auto-applied, so we honour a
+ // deep-link once but never override a subsequent manual thread selection.
+ const appliedInitialRef = useRef<string | null>(null);
  useEffect(() => {
   const onKey = (e: KeyboardEvent) => {
    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
@@ -166,8 +173,18 @@ export function MessagesPage({ role, hideHeader = false }: { role: "founder" | "
           setActiveId(data.channelId);
         }
       })
-      .catch(() => {
-        toast({ title: "Could not open DM", description: "Failed to start a direct message with this contact.", variant: "destructive" });
+      .catch((err: any) => {
+        // W-FIX1b A7 — clear reason for a policy block, not a generic failure.
+        const status = err?.status as number | undefined;
+        const code = err?.code as string | undefined;
+        const isDmBlock = status === 403 || code === "CANNOT_DM_RECIPIENT" || code === "not_authorized";
+        toast({
+          title: isDmBlock ? "You can't message this person yet" : "Could not open DM",
+          description: isDmBlock
+            ? "Direct messages open once you share a cap table. You can message investors on a company's cap table you're part of."
+            : "Failed to start a direct message with this contact.",
+          variant: "destructive",
+        });
       });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location]);
@@ -184,13 +201,17 @@ export function MessagesPage({ role, hideHeader = false }: { role: "founder" | "
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location]);
 
-  // Pick initial channel. If `?thread=` or `?channel=` is supplied we ALWAYS
-  // honour it on (re)mount even if `activeId` was already set — the dashboard
-  // preview-row click should always re-select the requested thread.
+  // Pick initial channel. If `?thread=` or `?channel=` is supplied we honour it
+  // ONCE per distinct value — the dashboard preview-row click deep-links to a
+  // thread. W-FIX1b O2 — previously this effect re-applied `initialChannel` on
+  // EVERY activeId change, so clicking a different thread in the list was
+  // immediately reset back to the URL's thread (conversation switching appeared
+  // broken). We now apply a given `initialChannel` only once, letting later
+  // user clicks (setActiveId) stick.
   useEffect(() => {
     if (!channels.data || channels.data.length === 0) return;
     const list = channels.data.filter((c) => c.kind !== "network" && c.kind !== "company_followers");
-    if (initialChannel) {
+    if (initialChannel && appliedInitialRef.current !== initialChannel) {
       // B2 — support synthetic shorthand `cap_table` + companyId in the query.
       // Resolve to the actual cap-table channel for the given company.
       let resolved: ChannelView | undefined;
@@ -210,11 +231,15 @@ export function MessagesPage({ role, hideHeader = false }: { role: "founder" | "
         resolved = list.find((c) => c.id === initialChannel);
       }
       const wanted = resolved;
-      if (wanted && wanted.id !== activeId) {
-        setActiveId(wanted.id);
-        setTimeout(() => {
-          document.querySelector('[data-testid="pane-messages"]')?.scrollIntoView({ behavior: "smooth", block: "start" });
-        }, 50);
+      if (wanted) {
+        // Mark this initialChannel as applied so later user clicks aren't reset.
+        appliedInitialRef.current = initialChannel;
+        if (wanted.id !== activeId) {
+          setActiveId(wanted.id);
+          setTimeout(() => {
+            document.querySelector('[data-testid="pane-messages"]')?.scrollIntoView({ behavior: "smooth", block: "start" });
+          }, 50);
+        }
         return;
       }
     }
@@ -320,7 +345,20 @@ export function MessagesPage({ role, hideHeader = false }: { role: "founder" | "
    // Rollback and restore draft.
    if (ctx?.prev) queryClient.setQueryData(["/api/comms/channels", activeId], ctx.prev);
    if (ctx?.savedDraft) setDraft(ctx.savedDraft);
-   toast({ title: "Send failed", description: e.message, variant: "destructive" });
+   // W-FIX1b A7 — never fail silently on a DM permission block. Detect the
+   // policy 403 (CANNOT_DM_RECIPIENT / not-authorized) and show a clear,
+   // specific reason, and mark this channel blocked so Send is disabled with
+   // a tooltip going forward.
+   const status = (e as any)?.status as number | undefined;
+   const code = (e as any)?.code as string | undefined;
+   const isDmBlock = status === 403 || code === "CANNOT_DM_RECIPIENT" || code === "not_authorized";
+   if (isDmBlock) {
+     const reason = "Messaging opens once you share a cap table. You can message investors on a company's cap table you're part of.";
+     if (activeId) setBlockedChannels((m) => ({ ...m, [activeId]: reason }));
+     toast({ title: "Message not sent", description: reason, variant: "destructive" });
+   } else {
+     toast({ title: "Send failed", description: e.message, variant: "destructive" });
+   }
  },
  });
 
@@ -604,6 +642,12 @@ export function MessagesPage({ role, hideHeader = false }: { role: "founder" | "
  )}
  {/* Composer */}
  <div className="p-3 border-t border-border space-y-2">
+ {activeId && blockedChannels[activeId] && (
+ <div className="flex items-start gap-2 px-2 py-1.5 rounded bg-amber-50 border border-amber-200 text-[11px] text-amber-900" data-testid="composer-blocked-banner">
+ <Lock className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+ <span>{blockedChannels[activeId]}</span>
+ </div>
+ )}
  {replyTo && (
  <div className="text-[11px] flex items-center gap-2 px-2 py-1.5 rounded bg-muted">
  <CornerDownRight className="h-3 w-3" />
@@ -615,14 +659,15 @@ export function MessagesPage({ role, hideHeader = false }: { role: "founder" | "
  <Textarea
  value={draft}
  onChange={(e) => { setDraft(e.target.value); sendTyping(); }}
- placeholder={`Message ${active.displayTitle}...`}
+ placeholder={activeId && blockedChannels[activeId] ? "Messaging opens once you share a cap table" : `Message ${active.displayTitle}...`}
  rows={2}
+ disabled={!!(activeId && blockedChannels[activeId])}
  className="resize-none"
  data-testid="input-message"
  onKeyDown={(e) => {
  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
  e.preventDefault();
- if (draft.trim()) sendMessage.mutate();
+ if (draft.trim() && !(activeId && blockedChannels[activeId])) sendMessage.mutate();
  }
  }}
  />
@@ -637,7 +682,8 @@ export function MessagesPage({ role, hideHeader = false }: { role: "founder" | "
  <Button
  size="sm"
  onClick={() => sendMessage.mutate()}
- disabled={!draft.trim() || sendMessage.isPending}
+ disabled={!draft.trim() || sendMessage.isPending || !!(activeId && blockedChannels[activeId])}
+ title={activeId && blockedChannels[activeId] ? blockedChannels[activeId] : undefined}
  className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
  data-testid="button-send"
  >

@@ -67,6 +67,9 @@ import { canDM } from "./messagingPolicy";
 // user has no saved row, in which case we keep the legacy resolveDisplayIdentity
 // behavior (backward-compatible — no retroactive masking).
 import { resolveDisplayName, readUserPrivacyRaw } from "./lib/userPrivacyResolver";
+/* W-FIX1a A2 — DB-backed name resolver used to sanitize any residual raw id/email
+   that the viewer-aware resolver may pass through (never leak u_…/company:…). */
+import { resolveDisplayName as resolveDbDisplayName } from "./lib/displayNameResolver";
 import { areCoMembersOnAnyCapTable } from "./lib/capTableMembership";
 // 1d — Consortium Partner author-label fallback (non-sacred): screen name →
 // registered/company name → "Consortium Partner". Keeps a partner author from
@@ -888,9 +891,23 @@ function resolveIdentity(
     if (policyName === "Private Investor") {
       return { ...resolved, displayName: policyName, isAnonymous: true };
     }
-    return { ...resolved, displayName: policyName, isAnonymous: false };
+    return { ...resolved, displayName: sanitizeCommsName(policyName, authorUserId), isAnonymous: false };
   }
-  return resolved;
+  return { ...resolved, displayName: sanitizeCommsName(resolved.displayName, authorUserId) };
+}
+
+/* W-FIX1a A2 — never surface a raw u_…/company:… id or bare email as a display
+   name on the messaging surface. If the resolved label still looks like a raw
+   id, fall back to the DB-backed resolver, then to a safe generic. */
+function sanitizeCommsName(name: string | null | undefined, subjectUserId: string): string {
+  const looksUnsafe = (s: string | null | undefined): boolean =>
+    !s || /^(u_|usr_|co_|cmp_|rnd_)/i.test(String(s).trim()) || String(s).trim().length === 0;
+  if (!looksUnsafe(name)) return String(name);
+  try {
+    const r = resolveDbDisplayName(subjectUserId);
+    if (r?.name && !looksUnsafe(r.name)) return r.name;
+  } catch { /* fall through */ }
+  return COMMS_USERS[subjectUserId] ? "Collective member" : "Invited contact";
 }
 
 /**
