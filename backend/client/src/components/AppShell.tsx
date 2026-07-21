@@ -505,6 +505,28 @@ function Header({ onMobileMenu }: { onMobileMenu: () => void }) {
   const [, navigate] = useLocation();
   const { role } = useRole();
 
+  // W-FIX2 F6 — hardened Sign out. Previously the logout ran inside the Radix
+  // DropdownMenuItem `onSelect` async callback; Radix closes the menu (and can
+  // unmount the handler) mid-await, so the final `window.location.href` redirect
+  // sometimes never landed → the user stayed authenticated. We now run the whole
+  // sequence in a stable, component-level handler so it completes regardless of
+  // the menu-close lifecycle: POST /logout → cancel+clear the query cache →
+  // hard redirect to /login (cookie cleared server-side, cache cleared client-side).
+  const handleSignOut = useCallback(async () => {
+    try {
+      await apiRequest("POST", "/api/auth/logout");
+    } catch {
+      /* non-fatal — the server also clears the cookie on the next auth probe */
+    }
+    try {
+      await queryClient.cancelQueries();
+      queryClient.clear();
+    } catch {
+      /* cache clear best-effort */
+    }
+    window.location.href = "/login";
+  }, []);
+
   return (
     <header className="sticky top-0 z-40 h-14 bg-[hsl(219_45%_20%)] border-b border-[hsl(219_40%_28%)] flex items-center px-4 gap-3" data-testid="header-app">
       <button onClick={onMobileMenu} className="md:hidden p-2 -ml-2 rounded text-white/90 hover:bg-white/10" aria-label="Open menu">
@@ -525,15 +547,24 @@ function Header({ onMobileMenu }: { onMobileMenu: () => void }) {
       {/* v25.45.4 H-2 — wired global search (was a dead input) */}
       <GlobalSearch />
 
-      <FounderCompanySwitcherSlot />
-      <CapCollectiveToggle />
-      <RoleSwitch />
+      {/* W-FIX2 F6 — workspace/role switcher group: kept as its OWN clearly
+          separated control cluster (owner decision: two distinct header controls). */}
+      <div className="flex items-center gap-2" data-testid="header-switcher-group">
+        <FounderCompanySwitcherSlot />
+        <CapCollectiveToggle />
+        <RoleSwitch />
+      </div>
 
       <NotificationBell />
 
+      {/* W-FIX2 F6 — account/avatar menu: de-collided from the switcher group
+          with a left divider, extra spacing, and a raised z-index so the avatar
+          always opens THIS account menu (not the adjacent workspace-switcher).
+          Distinct, non-overlapping hit target. */}
+      <div className="relative z-50 ml-1 pl-2 border-l border-white/15" data-testid="header-account-group">
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <button data-testid="button-user-menu" className="rounded-full hover:ring-2 hover:ring-white/20">
+          <button data-testid="button-user-menu" aria-label="Account menu" className="rounded-full p-0.5 hover:ring-2 hover:ring-white/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/40">
             <Avatar className="h-8 w-8">
               <AvatarFallback className="bg-[hsl(0_100%_40%)] text-white text-xs font-semibold" data-testid="avatar-user-initials">
               <AvatarInitials />
@@ -541,33 +572,27 @@ function Header({ onMobileMenu }: { onMobileMenu: () => void }) {
             </Avatar>
           </button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-56">
+        <DropdownMenuContent align="end" className="w-56 z-50">
           <UserMenuLabel />
           <DropdownMenuSeparator />
           <DropdownMenuItem onSelect={() => navigate(role === "investor" ? "/investor/settings" : "/founder/settings")}>
             <Settings className="h-4 w-4 mr-2" /> Settings
           </DropdownMenuItem>
           <DropdownMenuItem
-            onSelect={async () => {
-              // BUG-004 fix: call logout endpoint to clear server-side session +
-              // cookies before navigating. Failure is non-fatal (cookie still
-              // cleared by the server on next auth probe).
-              try {
-                await apiRequest("POST", "/api/auth/logout");
-              } catch { /* non-fatal */ }
-              // W-CAP LW-2 (2026-07-17) — fully drop ALL client auth/identity
-              // cache on logout (not just reset): cancel in-flight queries and
-              // clear the cache so a subsequently-visited login page cannot
-              // silently re-authenticate from a stale /api/auth/me entry.
-              await queryClient.cancelQueries();
-              queryClient.clear();
-              window.location.href = "/login";
+            data-testid="menuitem-sign-out"
+            onSelect={(e) => {
+              // W-FIX2 F6 — prevent Radix's default close-on-select so the async
+              // logout is not interrupted by the menu unmounting; run the stable
+              // component-level handler instead (see handleSignOut).
+              e.preventDefault();
+              void handleSignOut();
             }}
           >
             <LogOut className="h-4 w-4 mr-2" /> Sign out
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+      </div>
     </header>
   );
 }

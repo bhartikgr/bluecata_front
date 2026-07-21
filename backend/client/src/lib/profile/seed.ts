@@ -160,5 +160,6 @@ export const SEED_INVESTOR_PROFILE: InvestorProfile = {
     visibleToCoMembers: true,        // fixture: opted in to make co-member visibility testable
     visibleToCollectiveNetwork: false,
     screenNameSet: true,
+    allowDms: true,                  // W-FIX2 F2 — default ON
   },
 };

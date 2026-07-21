@@ -369,6 +369,14 @@ export async function createInvitation(args: CreateInvitationArgs): Promise<Crea
   const investorEmail = normalizeEmail(args.investorEmail);
   if (!investorEmail) throw new Error("invalid_email");
   if (!args.roundId) throw new Error("missing_round_id");
+  // W-FIX2 F1 (write path) — if the caller omitted companyId, derive it from the
+  // round so a persisted invitation is NEVER null-companyId (the root cause of
+  // the empty investor cap-table + dataroom). Additive: existing callers that
+  // pass companyId are unaffected.
+  if (!args.companyId) {
+    const derived = getRoundById(args.roundId)?.companyId;
+    if (derived) args = { ...args, companyId: derived };
+  }
   if (!args.companyId) throw new Error("missing_company_id");
 
   // v25.53 6a — block a duplicate ACTIVE invitation for the same

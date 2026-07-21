@@ -27,8 +27,9 @@ describe("v23.4.9 Phase 1 — share price is derived & read-only for priced roun
   it("computes a derived price-per-share for priced instruments", () => {
     expect(ROUND_NEW).toMatch(/isPricedInstrument/);
     expect(ROUND_NEW).toMatch(/derivedPricePerShare/);
-    // Derivation is pre-money divided by shares (auto-calc based on the value).
-    expect(ROUND_NEW).toMatch(/pre\s*\/\s*shares/);
+    // W-FIX2 F5 — derivation is pre-money divided by the fully-diluted pre-money
+    // share count (pool-inclusive); the plain pre/shares case is FD = shares.
+    expect(ROUND_NEW).toMatch(/pre\s*\/\s*fdPreMoneyShares/);
   });
 
   it("defaults the price-per-share input to the derived value and read-only, with an opt-in manual override (v23.9 C1 / BUG-038)", () => {

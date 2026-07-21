@@ -15,7 +15,7 @@
  * round-trips `terms_json`, so no schema churn is required.
  */
 import { useState } from "react";
-import { formatMinor as formatMinorLib } from "@/lib/currency";
+import { formatMinor as formatMinorLib, toMinor } from "@/lib/currency";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -78,6 +78,16 @@ interface WizardState {
   mgmtFixedMinor: string;
   mgmtCarryPct: string;
   feeCurrency: string;           // 3g — fixed/hybrid fee currency
+  // D2 — optional mandate refinements (engine already supports these). All blank
+  // by default and never required; sent only when provided.
+  geography: string;             // comma-separated regions → mandate.geography[]
+  stage: string;                 // comma-separated stages → mandate.stage[]
+  checkMinMajor: string;         // optional min check (major units) → checkMinMinor
+  checkMaxMajor: string;         // optional max check (major units) → checkMaxMinor
+  targetCompanyId: string;       // SPV-BUG-4 — optional target company link (NO allocation)
+  // D3 — optional waterfall inputs (blank default; feed the optional tiers).
+  hurdleRatePct: string;         // optional preferred-return hurdle %
+  gpCommitMajor: string;         // optional GP commitment (major units)
   termsDocRef: string;           // 3m — optional terms doc link/ref
   closeDate: string;
   // 1c — launch sign-off (typed full legal name + explicit attestation ack).
@@ -86,6 +96,15 @@ interface WizardState {
 }
 
 const OTHER = "__other__";
+
+/** D2 — split an optional comma/newline list into a trimmed, de-duped array. */
+function splitList(raw: string): string[] {
+  return Array.from(
+    new Set(
+      raw.split(/[,\n]/).map((s) => s.trim()).filter(Boolean),
+    ),
+  );
+}
 
 /**
  * 1c — the versioned launch attestation text shown to the signer. Must match
@@ -137,6 +156,8 @@ const EMPTY_WIZARD: WizardState = {
   targetRaiseMinor: "0", minCheckMinor: "0", capMinor: "0", currency: "USD",
   mandateMode: "deal_specific", mandateDescription: "", sectors: [], subSector: "",
   mgmtFeeType: "carry", mgmtFixedMinor: "0", mgmtCarryPct: "20", feeCurrency: "USD",
+  geography: "", stage: "", checkMinMajor: "", checkMaxMajor: "", targetCompanyId: "",
+  hurdleRatePct: "", gpCommitMajor: "",
   termsDocRef: "", closeDate: "",
   signoffLegalName: "", signoffAccepted: false,
 };
@@ -197,14 +218,26 @@ export default function PartnerSpvEngine() {
         jurisdictionOther: w.jurisdictionCountry === OTHER ? w.jurisdictionOther.trim() : null,
         legalEntityStructure: legalEntityStructure || null,
         termsDocRef: w.termsDocRef.trim() || null,
+        // D3 — optional waterfall inputs persisted additively in the terms blob
+        // (null when blank). hurdleRatePct feeds the optional distribution tiers;
+        // gpCommitMinor records the GP's own commitment.
+        hurdleRatePct: w.hurdleRatePct.trim() ? Number(w.hurdleRatePct) : null,
+        gpCommitMinor: w.gpCommitMajor.trim() ? toMinor(parseFloat(w.gpCommitMajor) || 0, w.currency) : null,
       };
       const spvRes = await apiRequest("POST", "/api/partner/me/spv", {
         name: w.name, jurisdiction: w.jurisdiction, spvType: w.spvType,
         carryBasis: w.carryBasis, distributionScope: w.distributionScope,
         lpVisibility: w.lpVisibility,
-        targetRaiseMinor: parseInt(w.targetRaiseMinor || "0", 10),
-        minCheckMinor: parseInt(w.minCheckMinor || "0", 10),
-        capMinor: parseInt(w.capMinor || "0", 10),
+        // SPV-BUG-4 (D2) — optional target-company LINK with NO allocation amount.
+        // Sent only when the GP chose one; the engine stores it on the SPV.
+        targetCompanyId: w.targetCompanyId.trim() || null,
+        // W-FIX2 SPV-BUG-1 — the wizard fields hold entered DOLLARS (major units);
+        // convert to MINOR units on write (currency-aware ×10^exp, e.g. ×100 for
+        // USD) so a $500,000 target is stored as 50,000,000 minor and displays as
+        // $500,000.00 (was stored raw → displayed 100x low as $5,000.00).
+        targetRaiseMinor: toMinor(parseFloat(w.targetRaiseMinor || "0") || 0, w.currency),
+        minCheckMinor: toMinor(parseFloat(w.minCheckMinor || "0") || 0, w.currency),
+        capMinor: toMinor(parseFloat(w.capMinor || "0") || 0, w.currency),
         currency: w.currency, closeDate: w.closeDate || null, status: "open",
         terms,
         // 1c — launch sign-off recorded server-side before the SPV is created.
@@ -215,6 +248,11 @@ export default function PartnerSpvEngine() {
       await apiRequest("PUT", `/api/partner/me/spv/${spv.id}/mandate`, {
         mode: w.mandateMode,
         sector: w.sectors,
+        // D2 — optional mandate refinements; empty arrays / nulls when blank.
+        geography: splitList(w.geography),
+        stage: splitList(w.stage),
+        checkMinMinor: w.checkMinMajor.trim() ? toMinor(parseFloat(w.checkMinMajor) || 0, w.currency) : null,
+        checkMaxMinor: w.checkMaxMajor.trim() ? toMinor(parseFloat(w.checkMaxMajor) || 0, w.currency) : null,
         ruleTree: w.sectors.length
           ? { op: "and", rules: [{ field: "sector", op: "in", value: w.sectors }] }
           : { op: "and", rules: [{ field: "company_id", op: "in", value: [] }] },
@@ -222,7 +260,7 @@ export default function PartnerSpvEngine() {
       if (w.mgmtFeeType) {
         await apiRequest("POST", `/api/partner/me/spv/${spv.id}/fees`, {
           layer: "management", feeType: w.mgmtFeeType,
-          fixedAmountMinor: w.mgmtFeeType !== "carry" ? parseInt(w.mgmtFixedMinor || "0", 10) : undefined,
+          fixedAmountMinor: w.mgmtFeeType !== "carry" ? toMinor(parseFloat(w.mgmtFixedMinor || "0") || 0, w.feeCurrency) : undefined,
           carryPct: w.mgmtFeeType !== "fixed" ? Number(w.mgmtCarryPct) / 100 : undefined,
           // 3g — fixed/hybrid fees carry their own currency selection.
           currency: w.mgmtFeeType !== "carry" ? w.feeCurrency : undefined,
@@ -263,12 +301,23 @@ export default function PartnerSpvEngine() {
   const canAdvance = (): boolean => {
     if (step === 0) return !!w.name.trim() && !!w.jurisdiction && jurisdictionCountryValid;
     if (step === 1) return !!w.mandateMode && !!w.mandateDescription.trim(); // 3e mandatory
-    if (step === 2) return !!w.mgmtFeeType;
-    if (step === 3) return !!w.carryBasis && !!w.distributionScope; // 3o carry basis moved here
+    if (step === 2) return !!w.mgmtFeeType && !!w.carryBasis; // S1 — carry basis co-located on Fees
+    if (step === 3) return !!w.distributionScope;
     return true;
   };
   const toggleSector = (s: string) =>
     setW((prev) => ({ ...prev, sectors: prev.sectors.includes(s) ? prev.sectors.filter((x) => x !== s) : [...prev.sectors, s] }));
+  // SPV-BUG-2 — switching the fee type must RESET the now-irrelevant dependent
+  // fields to valid defaults. Previously the raw setW left stale values from the
+  // other branch (e.g. an empty carry% after picking "fixed"), which failed the
+  // step-2 submit guards and left Next disabled with no visible reason.
+  const onFeeTypeChange = (feeType: string) =>
+    setW((prev) => ({
+      ...prev,
+      mgmtFeeType: feeType,
+      mgmtFixedMinor: feeType === "carry" ? "0" : (prev.mgmtFixedMinor || "0"),
+      mgmtCarryPct: feeType === "fixed" ? "0" : (prev.mgmtCarryPct || "20"),
+    }));
 
   const amountLabel = (base: string) => `${base} (${w.currency})`;
   const juruDisplay = w.jurisdictionCountry === OTHER ? (w.jurisdictionOther || "Other") : w.jurisdictionCountry;
@@ -426,6 +475,26 @@ export default function PartnerSpvEngine() {
                 </div>
               </div>
               <div><Label>Sub-sector (optional)</Label><Input data-testid="spv-w-subsector" value={w.subSector} onChange={(e) => setW({ ...w, subSector: e.target.value })} placeholder="e.g. embedded payments" /></div>
+
+              {/* D2 — OPTIONAL mandate refinements the engine already supports.
+                  All blank by default and never required; comma-separate multiple
+                  values. They narrow which companies can ever match (fail-closed). */}
+              <div className="grid grid-cols-2 gap-3" data-testid="spv-w-mandate-optional">
+                <div><Label>Geography (optional)</Label><Input data-testid="spv-w-geography" value={w.geography} onChange={(e) => setW({ ...w, geography: e.target.value })} placeholder="e.g. United States, EU" /></div>
+                <div><Label>Stage (optional)</Label><Input data-testid="spv-w-stage" value={w.stage} onChange={(e) => setW({ ...w, stage: e.target.value })} placeholder="e.g. seed, series_a" /></div>
+                <div><Label>{amountLabel("Min check")} (optional)</Label><Input data-testid="spv-w-checkmin" type="number" value={w.checkMinMajor} onChange={(e) => setW({ ...w, checkMinMajor: e.target.value })} placeholder="e.g. 25000" /></div>
+                <div><Label>{amountLabel("Max check")} (optional)</Label><Input data-testid="spv-w-checkmax" type="number" value={w.checkMaxMajor} onChange={(e) => setW({ ...w, checkMaxMajor: e.target.value })} placeholder="e.g. 250000" /></div>
+              </div>
+
+              {/* SPV-BUG-4 (D2) — OPTIONAL target-company link. Links a company to
+                  the vehicle WITHOUT any allocation amount (deployment/allocation is
+                  a separate, deliberate money-path step on the Deployments tab). */}
+              <div>
+                <Label>Target company (optional)</Label>
+                <Input data-testid="spv-w-target-company" value={w.targetCompanyId} onChange={(e) => setW({ ...w, targetCompanyId: e.target.value })} placeholder="Company id to link (no allocation committed)" />
+                <div className="text-[10px] text-[var(--cv-color-text-faint)]">Links a target company to this SPV for reference only — no capital is allocated or committed here.</div>
+              </div>
+
               <p className="text-xs text-[var(--cv-color-text-muted)]">Only active, paid Capavate companies with a valid M&amp;A profile and an open round can ever match — eligibility is fail-closed.</p>
             </div>
           )}
@@ -434,7 +503,7 @@ export default function PartnerSpvEngine() {
             <div className="space-y-3" data-testid="spv-wizard-step-2">
               <div>
                 <Label>Management fee type</Label>
-                <select data-testid="spv-w-feetype" className="w-full border rounded h-9 px-2" value={w.mgmtFeeType} onChange={(e) => setW({ ...w, mgmtFeeType: e.target.value })}>
+                <select data-testid="spv-w-feetype" className="w-full border rounded h-9 px-2" value={w.mgmtFeeType} onChange={(e) => onFeeTypeChange(e.target.value)}>
                   <option value="carry">Carry only</option><option value="fixed">Fixed only</option><option value="hybrid">Hybrid</option>
                 </select>
               </div>
@@ -452,7 +521,46 @@ export default function PartnerSpvEngine() {
                 </div>
               )}
               {w.mgmtFeeType !== "fixed" && <div><Label>Carry %</Label><Input data-testid="spv-w-carrypct" type="number" value={w.mgmtCarryPct} onChange={(e) => setW({ ...w, mgmtCarryPct: e.target.value })} /></div>}
-              <p className="text-xs text-[var(--cv-color-text-muted)]">The platform fee layer is set by Capavate and is read-only to you.</p>
+
+              {/* S1 — carry BASIS co-located beside carry % (moved off the Terms
+                  step). Still required; the Next gate keys off it here now. */}
+              <div>
+                <Label>Carry basis — choose one (required)</Label>
+                <div className="space-y-2 mt-1">
+                  {SPV_CARRY_BASES.map((cb) => (
+                    <label key={cb} className="flex gap-2 items-start p-2 border rounded cursor-pointer" data-testid={`spv-w-carrybasis-${cb}`} style={{ borderColor: w.carryBasis === cb ? NAVY : undefined }}>
+                      <input type="radio" name="carryBasis" checked={w.carryBasis === cb} onChange={() => setW({ ...w, carryBasis: cb })} />
+                      <span><span className="font-medium">{cb === "per_deployment" ? "Per deployment" : "Whole SPV"}</span><br /><span className="text-xs text-[var(--cv-color-text-muted)]">{SPV_CARRY_BASIS_HELP[cb]}</span></span>
+                    </label>
+                  ))}
+                </div>
+                {!w.carryBasis && (
+                  <div className="text-xs text-rose-600 mt-1" data-testid="spv-w-carrybasis-error">
+                    Choose a carry basis to continue.
+                  </div>
+                )}
+              </div>
+
+              {/* D3 — OPTIONAL waterfall inputs (blank by default, never required).
+                  A hurdle (preferred return) and the GP's own commitment feed the
+                  optional tiered distribution waterfall shown in the detail. */}
+              <div className="grid grid-cols-2 gap-3" data-testid="spv-w-waterfall">
+                <div>
+                  <Label>Hurdle % (optional)</Label>
+                  <Input data-testid="spv-w-hurdle" type="number" value={w.hurdleRatePct} onChange={(e) => setW({ ...w, hurdleRatePct: e.target.value })} placeholder="e.g. 8" />
+                  <div className="text-[10px] text-[var(--cv-color-text-faint)]">Preferred return LPs receive before GP carry. Leave blank for a simple return-of-capital-then-carry waterfall.</div>
+                </div>
+                <div>
+                  <Label>{amountLabel("GP commitment")} (optional)</Label>
+                  <Input data-testid="spv-w-gpcommit" type="number" value={w.gpCommitMajor} onChange={(e) => setW({ ...w, gpCommitMajor: e.target.value })} placeholder="e.g. 50000" />
+                  <div className="text-[10px] text-[var(--cv-color-text-faint)]">How much the GP invests alongside LPs (skin in the game). Optional.</div>
+                </div>
+              </div>
+
+              {/* SPV-BUG-5 (D3) — platform fee is DB-driven & read-only to the GP.
+                  The exact % appears on the SPV's Fees tab once Capavate applies it
+                  (pulled live from config, never hardcoded here). */}
+              <p className="text-xs text-[var(--cv-color-text-muted)]" data-testid="spv-w-platform-fee-note">The platform fee layer is set by Capavate and is read-only to you. Its exact percentage is shown on this SPV's Fees tab once applied.</p>
             </div>
           )}
 
@@ -493,24 +601,7 @@ export default function PartnerSpvEngine() {
                   <div className="text-xs text-[var(--cv-color-text-muted)]">Off = each investor sees only their own position. On = a transparent club deal where LPs see each other's names &amp; commitments. The founder never sees the investor list either way.</div>
                 </div>
               </div>
-              {/* 3o — carry basis moved into Terms, fuller descriptions */}
-              <div>
-                <Label>Carry basis — choose one (required)</Label>
-                <div className="space-y-2 mt-1">
-                  {SPV_CARRY_BASES.map((cb) => (
-                    <label key={cb} className="flex gap-2 items-start p-2 border rounded cursor-pointer" data-testid={`spv-w-carrybasis-${cb}`} style={{ borderColor: w.carryBasis === cb ? NAVY : undefined }}>
-                      <input type="radio" name="carryBasis" checked={w.carryBasis === cb} onChange={() => setW({ ...w, carryBasis: cb })} />
-                      <span><span className="font-medium">{cb === "per_deployment" ? "Per deployment" : "Whole SPV"}</span><br /><span className="text-xs text-[var(--cv-color-text-muted)]">{SPV_CARRY_BASIS_HELP[cb]}</span></span>
-                    </label>
-                  ))}
-                </div>
-                {/* W2-E — inline error so the user knows WHY Next/Launch is disabled */}
-                {!w.carryBasis && (
-                  <div className="text-xs text-rose-600 mt-1" data-testid="spv-w-carrybasis-error">
-                    Choose a carry basis to continue.
-                  </div>
-                )}
-              </div>
+              {/* S1 — carry basis moved to the Fees step (co-located with carry %). */}
               {/* 3m — optional terms document link/ref */}
               <div><Label>Terms document link (optional)</Label><Input data-testid="spv-w-terms-doc" value={w.termsDocRef} onChange={(e) => setW({ ...w, termsDocRef: e.target.value })} placeholder="https://… or a stored document reference" /></div>
             </div>
@@ -530,13 +621,21 @@ export default function PartnerSpvEngine() {
               {w.subSector && <ReviewRow label="Sub-sector" value={w.subSector} onEdit={() => setStep(1)} />}
               <ReviewRow
                 label="Management fee"
-                value={w.mgmtFeeType === "carry" ? `Carry ${w.mgmtCarryPct}%` : w.mgmtFeeType === "fixed" ? `${fmt(parseInt(w.mgmtFixedMinor || "0", 10), w.feeCurrency)} fixed` : `${fmt(parseInt(w.mgmtFixedMinor || "0", 10), w.feeCurrency)} + ${w.mgmtCarryPct}% carry`}
+                value={w.mgmtFeeType === "carry" ? `Carry ${w.mgmtCarryPct}%` : w.mgmtFeeType === "fixed" ? `${fmt(toMinor(parseFloat(w.mgmtFixedMinor || "0") || 0, w.feeCurrency), w.feeCurrency)} fixed` : `${fmt(toMinor(parseFloat(w.mgmtFixedMinor || "0") || 0, w.feeCurrency), w.feeCurrency)} + ${w.mgmtCarryPct}% carry`}
                 onEdit={() => setStep(2)}
               />
-              <ReviewRow label="Target raise" value={fmt(parseInt(w.targetRaiseMinor || "0", 10), w.currency)} onEdit={() => setStep(3)} />
+              <ReviewRow label="Target raise" value={fmt(toMinor(parseFloat(w.targetRaiseMinor || "0") || 0, w.currency), w.currency)} onEdit={() => setStep(3)} />
               <ReviewRow label="Distribution scope" value={SPV_DISTRIBUTION_SCOPE_WIZARD_OPTIONS.find((o) => o.value === w.distributionScope)?.label ?? w.distributionScope} onEdit={() => setStep(3)} />
               <ReviewRow label="Co-investor visibility" value={w.lpVisibility === "co_investors" ? "On (club deal)" : "Off (own only)"} onEdit={() => setStep(3)} />
-              <ReviewRow label="Carry basis" value={w.carryBasis ? (w.carryBasis === "per_deployment" ? "Per deployment" : "Whole SPV") : "— (required)"} onEdit={() => setStep(3)} />
+              <ReviewRow label="Carry basis" value={w.carryBasis ? (w.carryBasis === "per_deployment" ? "Per deployment" : "Whole SPV") : "— (required)"} onEdit={() => setStep(2)} />
+              {w.targetCompanyId.trim() && <ReviewRow label="Target company" value={w.targetCompanyId.trim()} onEdit={() => setStep(1)} />}
+              {(w.hurdleRatePct.trim() || w.gpCommitMajor.trim()) && (
+                <ReviewRow
+                  label="Waterfall"
+                  value={[w.hurdleRatePct.trim() ? `${w.hurdleRatePct}% hurdle` : null, w.gpCommitMajor.trim() ? `${fmt(toMinor(parseFloat(w.gpCommitMajor) || 0, w.currency), w.currency)} GP commit` : null].filter(Boolean).join(" · ")}
+                  onEdit={() => setStep(2)}
+                />
+              )}
               {w.termsDocRef && <ReviewRow label="Terms doc" value={w.termsDocRef} onEdit={() => setStep(3)} />}
               {/* B2 — per-SPV-type helper note (Syndicate, Rolling Fund) */}
               {SPV_TYPE_REVIEW_NOTE[w.spvType] && (
@@ -544,7 +643,7 @@ export default function PartnerSpvEngine() {
                   {SPV_TYPE_REVIEW_NOTE[w.spvType]}
                 </div>
               )}
-              {!w.carryBasis && <div className="text-xs text-rose-600">Choose a carry basis in the Terms step before launching.</div>}
+              {!w.carryBasis && <div className="text-xs text-rose-600">Choose a carry basis in the Fees step before launching.</div>}
 
               {/* 1c — full launch sign-off: typed legal name + attestation ack +
                   timestamp, recorded durably server-side before the SPV is
@@ -604,7 +703,25 @@ export default function PartnerSpvEngine() {
       {spvs.length > 0 && (
         <div className="space-y-2 mt-4" data-testid="spv-engine-list">
           {spvs.map((s) => (
-            <Card key={s.id} className="p-3 cursor-pointer hover:bg-[var(--cv-color-surface-2)]" data-testid={`spv-row-${s.id}`} onClick={() => setSelectedId(s.id === selectedId ? null : s.id)}>
+            <Card
+              key={s.id}
+              className="p-3 cursor-pointer hover:bg-[var(--cv-color-surface-2)]"
+              data-testid={`spv-row-${s.id}`}
+              /* SPV-BUG-3 (F4 family) — the card was a bare <div> onClick, so a
+                 plain first click was dropped (needed a raw pointer sequence).
+                 Real button semantics (role + tabIndex + keyboard) make a single
+                 normal click — and Enter/Space — open the detail reliably. */
+              role="button"
+              tabIndex={0}
+              aria-expanded={selectedId === s.id}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setSelectedId(s.id === selectedId ? null : s.id);
+                }
+              }}
+              onClick={() => setSelectedId(s.id === selectedId ? null : s.id)}
+            >
               <div className="flex justify-between items-center">
                 <div>
                   <div className="font-medium">{s.name} {s.migratedFrom && <span className="text-[10px] px-1 rounded" style={{ background: "rgba(4,30,65,0.1)", color: NAVY }}>migrated</span>}</div>

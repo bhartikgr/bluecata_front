@@ -134,6 +134,8 @@ import { registerBridgeRuntimeRoutes } from "./lib/bridgeRuntime";
 import { registerBridgeOutboundGuard } from "./lib/bridgeOutboundGuard"; /* v25.48.2 Q1 — neutralize legacy outbound bridge in prod */
 import { registerSyncDashboardRoutes } from "./lib/syncDashboard";
 import { registerMigrationRoutes } from "./lib/migrationRunner";
+import { backfillAllowDms } from "./lib/allowDmsBackfill"; /* W-FIX2 F2 — reversible allowDms default-ON backfill */
+import { migrateSpvBug1 } from "./lib/spvBug1Migration"; /* W-FIX2 SPV-BUG-1 — reversible ×10^exp correction */
 // Sprint 14 — universal hash chain + new stores
 import { registerHashChainVerifyRoute } from "./lib/hashChain";
 import { registerIntroRequestRoutes } from "./introRequestStore";
@@ -785,6 +787,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     return next();
   });
   registerMigrationRoutes(app);
+
+  /* W-FIX2a — admin-triggered, idempotent, reversible data-migrations (under the
+   * blanket /api/admin requireAdmin guard). Additive: these ADD endpoints, never
+   * remove any. Both up-runs are safe to re-run (idempotent) and return their
+   * before→after change ledger so ops can audit / reverse. No sacred file edited. */
+  app.post("/api/admin/migration/wfix2/allow-dms", (_req: import("express").Request, res: import("express").Response) => {
+    const result = backfillAllowDms();
+    res.json({ ok: true, migration: "wfix2_allow_dms", ...result });
+  });
+  app.post("/api/admin/migration/wfix2/spv-bug1", (req: import("express").Request, res: import("express").Response) => {
+    const ceilingRaw = (req.body && (req.body as Record<string, unknown>).suspectMajorCeiling);
+    const suspectMajorCeiling = typeof ceilingRaw === "number" && Number.isFinite(ceilingRaw) ? ceilingRaw : undefined;
+    const result = migrateSpvBug1({ suspectMajorCeiling });
+    res.json({ ok: true, migration: "wfix2_spv_bug1", ...result });
+  });
+
   registerNotificationsRoutes(app);
   registerEmailRoutes(app);
   registerAdminPlatformRoutes(app);
@@ -2439,11 +2457,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
     const allRounds = roundsStoreList();
     const round = allRounds.find(r => r.id === modern.roundId);
+    // W-FIX2 F1 — backfill a null invitation companyId from the round record so
+    // the investor cap-table (/securities) and dataroom (/dataroom) URLs are
+    // never built with an empty id (which silently suppressed both requests).
+    const resolvedCompanyId = modern.companyId ?? round?.companyId ?? "";
     return res.json({
       ...modern,
+      companyId: resolvedCompanyId,
       company: {
-        id: modern.companyId ?? "",
-        name: getCompanyNameById(modern.companyId ?? "") ?? modern.companyId ?? "",
+        id: resolvedCompanyId,
+        name: getCompanyNameById(resolvedCompanyId) ?? resolvedCompanyId ?? "",
         sector: "",
       },
       round: {
@@ -2593,6 +2616,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         screenNameSet: false,
         visibleToCoMembers: false,
         visibleToCollectiveNetwork: false,
+        allowDms: true,
       },
       invitedCompanies: ctx.investor?.invitedRounds?.map(r => r.companyId) ?? [],
     });

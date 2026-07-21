@@ -79,6 +79,17 @@ export interface SpvDetail {
   transfers?: Transfer[];
   capitalAccounts?: CapitalAccount[];
   closeSummary?: CloseSummary;
+  // D3/SPV-BUG-5 — DB-driven effective fee summary. Carry %s are fractions
+  // (0.2 = 20%); platformCarryPct is the admin-set platform layer (read-only).
+  feeSummary?: {
+    commitmentMinor: number;
+    managementFeeMinor: number;
+    platformFeeMinor: number;
+    netDeployedMinor: number;
+    currency: string;
+    managementCarryPct: number | null;
+    platformCarryPct: number | null;
+  } | null;
 }
 
 const CHECK_ITEM = "flex items-start gap-2 text-xs py-1";
@@ -192,9 +203,16 @@ export function SpvDetailTabs({
               </div>
             ))
           )}
-          {/* S5 — platform fee transparency note. */}
-          {!fees.some((f) => f.layer === "platform") && (
-            <div className="text-[10px] text-[var(--cv-color-text-faint)]">The platform fee layer is set by Capavate and shown here when applied.</div>
+          {/* D3/SPV-BUG-5 — platform carry % read-only, pulled live from the
+              admin-set fee config (DB-driven, never hardcoded). Shown wherever
+              carry appears; falls back to the transparency note when unset. */}
+          {detail.feeSummary?.platformCarryPct != null ? (
+            <div className="mt-1 text-xs" data-testid="spv-detail-platform-carry">
+              <span className="font-medium">Platform carry:</span> {(detail.feeSummary.platformCarryPct * 100).toFixed(1)}%
+              <span className="text-[10px] text-[var(--cv-color-text-faint)]"> (set by Capavate — read-only to you)</span>
+            </div>
+          ) : (
+            <div className="text-[10px] text-[var(--cv-color-text-faint)]" data-testid="spv-detail-platform-carry-note">The platform fee layer is set by Capavate and shown here when applied.</div>
           )}
         </div>
       </TabsContent>
@@ -239,6 +257,22 @@ export function SpvDetailTabs({
       {/* ── Deployments ──────────────────────────────────────────────────── */}
       <TabsContent value="deployments">
         <Edu testid="spv-edu-deploying">{SPV_EDU.deploying}</Edu>
+
+        {/* D2 — the OPTIONAL target company linked at creation. This is a
+            reference link only: it never carries an allocation amount and
+            never blocks activation (an SPV can launch with no target). */}
+        <div className="mb-3 rounded-md border p-2 text-xs" data-testid="spv-detail-target-company">
+          {spv.targetCompanyId ? (
+            <>
+              <span className="font-medium">Target company: </span>
+              <span data-testid="spv-detail-target-company-id">{spv.targetCompanyId}</span>
+              <div className="text-[10px] text-[var(--cv-color-text-faint)] mt-0.5">Linked for reference — no allocation is committed until you deploy below.</div>
+            </>
+          ) : (
+            <span className="text-[var(--cv-color-text-faint)]">No target company linked — optional, you can deploy into any eligible company below.</span>
+          )}
+        </div>
+
         <div data-testid="spv-detail-deployments" className="text-sm space-y-1">
           {deployments.length === 0 ? (
             <div className="text-xs text-[var(--cv-color-text-faint)]">none</div>
@@ -248,6 +282,20 @@ export function SpvDetailTabs({
             ))
           )}
         </div>
+
+        {/* D2 — Deploy affordance. Deploying commits a real allocation (amount
+            required, fail-closed eligibility) so it is a deliberate, separate
+            step from linking a target — it never happens automatically. */}
+        {canWrite && (
+          <div className="mt-3 border-t pt-3" data-testid="spv-deploy-affordance">
+            <Button size="sm" variant="outline" disabled data-testid="spv-deploy-action" title="Deploy capital into a company">
+              Deploy capital
+            </Button>
+            <div className="text-[10px] text-[var(--cv-color-text-faint)] mt-1">
+              Deploying links a company <span className="font-medium">and</span> commits an allocation amount (eligibility is checked and fails closed). Linking a target company above does not move any money.
+            </div>
+          </div>
+        )}
       </TabsContent>
 
       {/* ── Distributions + offline preview (SPV-CORE-2) ─────────────────── */}

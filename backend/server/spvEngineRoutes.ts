@@ -174,6 +174,10 @@ export function registerSpvEngineRoutes(app: Express): void {
       spv,
       mandate: spvEngineStore.getMandate(pid, spv.id),
       fees: spvEngineStore.listFees(pid, spv.id),
+      // D3/SPV-BUG-5 — the effective management + platform carry %, pulled live
+      // from the fee config (DB-driven, admin-set for the platform layer) so the
+      // GP sees the real platform-fee % read-only wherever carry is shown.
+      feeSummary: spvEngineStore.feeBreakdown(spv.id, 0, spv.currency),
       subscriptions: spvEngineStore.listSubscriptions(pid, spv.id),
       deployments: spvEngineStore.listDeployments(pid, spv.id),
       distributions: spvEngineStore.listDistributions(pid, spv.id),

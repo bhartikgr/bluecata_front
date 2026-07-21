@@ -153,6 +153,36 @@ export function resolveDmRole(userId: string): DmRole {
   }
 }
 
+/**
+ * W-FIX2 F2 — does the recipient investor allow inbound DMs?
+ *
+ * Reads the durable investor-profile row (`profilestore_investor_profile`,
+ * written by the SACRED profileStore — READ-ONLY here, no writes, no import of
+ * the sacred module) and returns `visibility.allowDms`. Default ON: a missing
+ * row, missing field, or any DB/parse error → `true` (owner decision: cap-table
+ * members allow DMs by default; live-data safe — no destructive migration
+ * required). Only an explicit `allowDms === false` blocks.
+ */
+export function recipientAllowsDms(recipientId: string): boolean {
+  if (!isValidId(recipientId)) return true;
+  try {
+    const db: any = rawDb();
+    const row = db
+      .prepare(
+        `SELECT profile_json FROM profilestore_investor_profile
+          WHERE investor_id = ? AND deleted_at IS NULL LIMIT 1`,
+      )
+      .get(recipientId.trim()) as { profile_json?: string } | undefined;
+    if (!row?.profile_json) return true;
+    const parsed = JSON.parse(row.profile_json) as {
+      visibility?: { allowDms?: boolean };
+    };
+    return parsed?.visibility?.allowDms !== false;
+  } catch {
+    return true;
+  }
+}
+
 function normalizeRole(raw: unknown): DmRole {
   if (typeof raw !== "string") return "unknown";
   const r = raw.trim().toLowerCase();
@@ -199,6 +229,15 @@ export function canDM(
   // Admins may always DM (platform operators); treated as a known counterparty.
   if (senderRole === "admin" || recipientRole === "admin") {
     return { allowed: true, privacyMode: "real" };
+  }
+
+  // ── W-FIX2 F2 — recipient DM opt-out ──────────────────────────────────────
+  // In ADDITION to the co-member / chapter rules below, an investor recipient
+  // who has turned OFF "Allow direct messages" blocks inbound DMs. Default ON
+  // (see recipientAllowsDms), so this only fires on an explicit opt-out and
+  // NEVER fails silently — the caller surfaces `reason: "recipient_dms_off"`.
+  if (recipientRole === "investor" && !recipientAllowsDms(recipient)) {
+    return { allowed: false, reason: "recipient_dms_off", privacyMode: "alias" };
   }
 
   // ── Investor ↔ Investor (Mode A) ──────────────────────────────────────────

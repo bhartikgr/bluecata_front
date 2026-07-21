@@ -315,6 +315,13 @@ export interface InvestorVisibility {
   visibleToCollectiveNetwork: boolean;
   /** Derived: was a screen name set? (driven by InvestorRole.screenName !== null && !=='') */
   screenNameSet: boolean;
+  /**
+   * W-FIX2 F2 — allow inbound direct messages. Default ON for cap-table members
+   * (owner decision); the investor can turn it off. Wired into messagingPolicy:
+   * a DM is permitted only when the recipient's allowDms is true (in addition to
+   * the existing co-member / chapter rules).
+   */
+  allowDms: boolean;
 }
 
 export interface InvestorProfile {
@@ -593,6 +600,13 @@ export const investorVisibilitySchema = z.object({
   visibleToCoMembers: z.boolean(),
   visibleToCollectiveNetwork: z.boolean(),
   screenNameSet: z.boolean(),
+  /**
+   * W-FIX2 F2 — allow inbound DMs. `.default(true)` = ON for cap-table members
+   * (owner decision) AND makes existing stored profiles that predate this field
+   * parse as ON without a destructive migration. Auto-flows into the derived
+   * `investorPrivacyPatchSchema` (partial) so the PATCH path stops stripping it.
+   */
+  allowDms: z.boolean().default(true),
 });
 
 export const investorProfileSchema = z.object({

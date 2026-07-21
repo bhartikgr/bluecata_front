@@ -101,6 +101,8 @@ export function makeEmptyInvestorProfile(
       visibleToCoMembers: false,
       visibleToCollectiveNetwork: false,
       screenNameSet: false,
+      // W-FIX2 F2 — default ON (owner decision); investor can turn it off.
+      allowDms: true,
     },
   };
 }

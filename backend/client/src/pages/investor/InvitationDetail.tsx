@@ -71,6 +71,8 @@ type Inv = {
  // v25.25 Avi-8 — priced rounds sometimes leave price_per_share NULL when
  // sharesAuthorized isn't filled. Allow null so callers must guard.
  pricePerShare: number | null;
+ // W-FIX2 F1 — projected by the invitation-detail handler (round instrument).
+ instrument?: string;
 };
 type Sec = { id: string; holderName: string; holderType: string; instrument: string; series: string | null; shares: number; investmentAmount: number | null };
 type DR = { id: string; category: string; name: string; sizeBytes: number; uploadedAt: string };
@@ -401,6 +403,29 @@ export default function InvitationDetail() {
   ? asArray(sec.data).map(x => ({ ...x, ownership: (x.shares / totalShares) * 100 }))
   : [];
 
+ // W-FIX2 F1 (owner decision) — surface the investor's OWN pending/accepted
+ // position as a clearly-labelled row so the cap-table tab is never blank after
+ // accepting an invitation (even pre-commit). Distinct from committed holders;
+ // does NOT alter the founder view. Shown for any progressed-but-uncommitted
+ // state (accepted/viewed/soft_circled) and while pending.
+ const myCapState =
+   decisionRecord.data?.record?.state ?? inv.data?.state ?? "pending";
+ const showMyPendingRow =
+   !!inv.data &&
+   ["pending", "viewed", "accepted", "soft_circled"].includes(myCapState);
+ const myPendingPos = showMyPendingRow
+  ? computeIllustrativePosition(
+      amountTouched ? amount : "",
+      inv.data.minTicket,
+      inv.data.pricePerShare,
+      inv.data.postMoney,
+    )
+  : null;
+ // W-FIX2 F1 — never silent-empty: distinguish "genuinely empty" from a failed
+ // /securities or /dataroom fetch (or an unresolved companyId).
+ const capTableUnavailable = !companyId || sec.isError;
+ const dataroomUnavailable = !companyId || dr.isError;
+
  // B6: check if investor has soft-circled (from local term-sheet store OR decision record)
  const hasSoftCircled =
    (mySig && !mySig.withdrawn) ||
@@ -606,6 +631,14 @@ export default function InvitationDetail() {
      {/* TAB 2 — CAP TABLE */}
      <TabsContent value="captable" className="space-y-5">
       <TabIntro>See who else is on the cap table and what they own.</TabIntro>
+      {capTableUnavailable && (
+       <div
+        data-testid="note-captable-unavailable"
+        className="rounded-md border border-amber-300/60 bg-amber-50 dark:bg-amber-950/30 px-4 py-3 text-sm text-amber-800 dark:text-amber-200"
+       >
+        Cap table temporarily unavailable — we couldn't load the shared holders right now. Your own position is still shown below. Please refresh shortly.
+       </div>
+      )}
       <Card>
        <CardHeader className="pb-3 flex flex-row items-center justify-between space-y-0">
         <div>
@@ -641,6 +674,19 @@ export default function InvitationDetail() {
             <td className="py-2.5 text-right font-mono tabular-nums">{fmtPct(r.ownership, 2)}</td>
            </tr>
           ))}
+          {/* W-FIX2 F1 (owner decision) — the investor's own pending/accepted row,
+              so the tab is never blank after accepting. Distinct styling + label. */}
+          {myPendingPos && (
+           <tr key="__my_pending__" data-testid="row-my-pending-position" className="border-b border-dashed border-primary/40 bg-primary/5">
+            <td className="py-2.5">
+             <div className="font-medium">You</div>
+             <div className="text-xs text-primary capitalize" data-testid="text-my-pending-state">{myCapState === "soft_circled" ? "Soft-circled (pending)" : `${myCapState} — not yet committed`}</div>
+            </td>
+            <td className="py-2.5 capitalize">{i.instrument ?? "preferred"}</td>
+            <td className="py-2.5 text-right font-mono tabular-nums">{myPendingPos.shares ? fmtNum(myPendingPos.shares) : NOT_PROVIDED}</td>
+            <td className="py-2.5 text-right font-mono tabular-nums">{myPendingPos.ownershipPct != null ? fmtPct(myPendingPos.ownershipPct, 2) : NOT_PROVIDED}</td>
+           </tr>
+          )}
          </tbody>
         </table>
        </CardContent>
@@ -774,6 +820,14 @@ export default function InvitationDetail() {
      {/* TAB 4 — DATA ROOM */}
      <TabsContent value="dataroom" className="space-y-5">
       <TabIntro>Sensitive documents the founder is sharing for diligence. Every view is logged.</TabIntro>
+      {dataroomUnavailable && (
+       <div
+        data-testid="note-dataroom-unavailable"
+        className="rounded-md border border-amber-300/60 bg-amber-50 dark:bg-amber-950/30 px-4 py-3 text-sm text-amber-800 dark:text-amber-200"
+       >
+        Documents temporarily unavailable — we couldn't load the data room right now. Please refresh shortly.
+       </div>
+      )}
       <Card>
        <CardHeader className="pb-3 flex flex-row items-center justify-between space-y-0">
         <div>

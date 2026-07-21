@@ -141,6 +141,15 @@ export function PostsFeed({
  const r = await apiRequest("GET", `/api/comms/posts?${params.toString()}`);
  return r.json();
  },
+ // W-FIX2 F3 — the feed showed empty on first mount until a post/refresh.
+ // Two causes: (1) the shared 30s staleTime could serve a stale empty/errored
+ // cache entry for this key (e.g. seeded by a dashboard-widget instance)
+ // without refetching; (2) a failed first fetch fell through to the "No posts
+ // yet" empty state. Force a fresh fetch on every mount so the live feed is
+ // never served a stale empty cache; the error branch below (never silent)
+ // handles a genuine failure distinctly from a genuinely-empty result.
+ staleTime: 0,
+ refetchOnMount: "always",
  });
  const me = useQuery<{ id: string; legalName: string }>({ queryKey: ["/api/comms/me"] });
  // Sprint 20 Wave 2 — check if investor is on any cap table to show cap_table option
@@ -478,8 +487,19 @@ export function PostsFeed({
 
  {/* Feed */}
  {posts.isLoading && <Skeleton className="h-32 w-full" />}
- {!posts.isLoading && asArray(posts.data).length === 0 && (
- <div className="text-sm text-muted-foreground py-6 text-center">
+ {/* W-FIX2 F3 — a fetch FAILURE must never masquerade as "No posts yet"
+     (silent-drop). Surface the error + a retry so an empty render only ever
+     means a genuinely-empty successful result. */}
+ {posts.isError && (
+ <div className="text-sm text-destructive py-6 text-center" data-testid="posts-load-error">
+ Couldn’t load posts.{" "}
+ <button type="button" className="underline" onClick={() => posts.refetch()} data-testid="button-posts-retry">
+ Retry
+ </button>
+ </div>
+ )}
+ {posts.isSuccess && asArray(posts.data).length === 0 && (
+ <div className="text-sm text-muted-foreground py-6 text-center" data-testid="posts-empty">
  No posts yet. Start a conversation.
  </div>
  )}

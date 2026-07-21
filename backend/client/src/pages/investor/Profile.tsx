@@ -552,21 +552,22 @@ function Step1Contact({
             />
           </div>
 
+          {/* W-FIX2 F2 — restyled to match the two Switch controls above (was a
+              bare unstyled checkbox). `allowDms` now persists via the schema fix
+              in types.ts (previously stripped by safeParse → silent revert). */}
           <div className="flex items-start justify-between gap-3 rounded-md border border-border/60 bg-background p-3">
-            <label className="flex items-start gap-2.5 cursor-pointer flex-1">
-              <Checkbox
-                checked={!!(visibility as any).allowDms}
-                onCheckedChange={(v) => onVisibility({ ...visibility, ...(({ allowDms: v === true }) as any) })}
-                data-testid="checkbox-allow-dms"
-              />
-              <div>
-                <div className="text-sm font-medium">Allow direct messages</div>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  Enable inbound DMs from cap-table co-members and Collective chapter members per
-                  the visibility settings above.
-                </p>
-              </div>
-            </label>
+            <div>
+              <div className="text-sm font-medium">Allow direct messages</div>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Enable inbound DMs from cap-table co-members and Collective chapter members per
+                the visibility settings above. Default ON for cap-table members.
+              </p>
+            </div>
+            <Switch
+              checked={visibility.allowDms}
+              onCheckedChange={(v) => onVisibility({ ...visibility, allowDms: v })}
+              data-testid="switch-allow-dms"
+            />
           </div>
         </div>
       </div>

@@ -137,9 +137,17 @@ export default function Rounds() {
         description="Foundation through Series C, each with its own state machine, terms, and soft-circle book."
         breadcrumbs={[{ href: "/founder/dashboard", label: "Workspace" }, { label: "Rounds" }]}
         actions={
-          <Link href="/founder/rounds/new">
-            <Button className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] text-white" data-testid="button-new-round"><Plus className="h-4 w-4 mr-2" /> New round</Button>
-          </Link>
+          // F4 — a real single <button> that navigates via setLocation. The old
+          // <Link><Button/></Link> rendered a <button> nested inside an <a>
+          // (invalid interactive nesting), the shared cause of the primary-action
+          // "first click no-ops" symptom. A real button acts on the first click.
+          <Button
+            className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] text-white"
+            data-testid="button-new-round"
+            onClick={() => setLocation("/founder/rounds/new")}
+          >
+            <Plus className="h-4 w-4 mr-2" /> New round
+          </Button>
         }
       />
       <PageBody>

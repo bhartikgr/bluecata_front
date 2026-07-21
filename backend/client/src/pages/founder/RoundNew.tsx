@@ -608,14 +608,31 @@ export default function RoundNew() {
  // is set at conversion); Warrants use an explicit strikePrice that stays
  // editable. So this read-only derivation applies ONLY to priced rounds.
  const isPricedInstrument = form.instrument === "preferred" || form.instrument === "common";
+ // W-FIX2 F5 — investor-grade PPS: pre-money ÷ fully-diluted PRE-MONEY shares
+ // INCLUDING the option-pool top-up (the "pool shuffle"). When the founder
+ // attaches an option pool to this priced round (addonPool below), a pre-money
+ // pool of p% grosses the FD denominator up to existingFD / (1 − p) — the pool
+ // is carved out of the pre-money, diluting founders before new money lands,
+ // which correctly LOWERS the price per share. With no pool it reduces to the
+ // plain pre-money ÷ FD-shares. The engine remains source-of-truth on commit.
+ const poolTopUpPct = (() => {
+ if (!addonPool) return 0;
+ const p = Number(addonPoolDraft.poolSize);
+ if (!isFinite(p) || p <= 0 || p >= 100) return 0;
+ return p / 100;
+ })();
+ const fdPreMoneyShares = (() => {
+ const shares = Number(form.sharesAuthorized);
+ if (!isFinite(shares) || shares <= 0) return 0;
+ return poolTopUpPct > 0 ? shares / (1 - poolTopUpPct) : shares;
+ })();
  const derivedPricePerShare = (() => {
  const pre = Number(form.preMoney);
- const shares = Number(form.sharesAuthorized);
  if (!isPricedInstrument) return "";
- if (!isFinite(pre) || !isFinite(shares) || shares <= 0 || pre <= 0) return "";
+ if (!isFinite(pre) || pre <= 0 || fdPreMoneyShares <= 0) return "";
  // Keep full precision as a string; the engine re-derives at 38-digit
  // precision on commit. Trim trailing zeros for display cleanliness.
- const v = pre / shares;
+ const v = pre / fdPreMoneyShares;
  return Number.isInteger(v) ? String(v) : String(parseFloat(v.toFixed(6)));
  })();
 
@@ -1007,8 +1024,9 @@ export default function RoundNew() {
  data-testid="input-pps"
  />
  <div className="flex items-center justify-between mt-1">
- <p className="text-[11px] text-muted-foreground font-mono">
- PPS = pre_money_valuation ÷ fully_diluted_shares_pre_money
+ <p className="text-[11px] text-muted-foreground font-mono" data-testid="pps-formula">
+ PPS = pre_money ÷ FD_pre_money_shares{poolTopUpPct > 0 ? " (incl. option-pool top-up)" : ""}
+ {fdPreMoneyShares > 0 ? ` — FD = ${Math.round(fdPreMoneyShares).toLocaleString()}` : ""}
  </p>
  <button
  type="button"
