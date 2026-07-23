@@ -188,11 +188,11 @@ export default function PostDetail({ role }: { role: "founder" | "investor" }) {
       <h1 className="sr-only">{pageTitle}</h1>
       <div className="flex items-center gap-2 text-xs text-muted-foreground mb-3">
         {/* Sprint 19 G — role-aware nav: investor gets /investor/network-posts if available, else dashboard. */}
-        <Link href={role === "founder" ? "/founder/network-posts" : "/investor/network-posts"}>
-          <Button variant="ghost" size="sm" className="-ml-2 h-7 text-xs" data-testid="link-back-network-posts">
+        <Button variant="ghost" size="sm" className="-ml-2 h-7 text-xs" data-testid="link-back-network-posts" asChild>
+          <Link href={role === "founder" ? "/founder/network-posts" : "/investor/network-posts"}>
             <ArrowLeft className="h-3.5 w-3.5 mr-1" /> Network Posts
-          </Button>
-        </Link>
+          </Link>
+        </Button>
         <span className="text-muted-foreground/60">/</span>
         <span className="truncate max-w-xs">{pageTitle}</span>
       </div>

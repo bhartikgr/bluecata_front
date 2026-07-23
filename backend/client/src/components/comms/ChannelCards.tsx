@@ -84,12 +84,12 @@ export function CapTableChannelCard({
  <li className="text-xs text-muted-foreground italic">No messages yet.</li>
  )}
  </ul>
+ <Button variant="outline" size="sm" className="w-full" data-testid="button-open-cap-table-channel" asChild>
  <Link href={`${basePath}?channel=${encodeURIComponent(ch.id)}`}>
- <Button variant="outline" size="sm" className="w-full" data-testid="button-open-cap-table-channel">
  <MessageCircle className="h-3.5 w-3.5 mr-2" /> Open channel
  <ArrowUpRight className="h-3 w-3 ml-1" />
- </Button>
  </Link>
+ </Button>
  </CardContent>
  </Card>
  );
@@ -144,12 +144,12 @@ export function SoftCircleChannelCard({
  <li className="text-xs text-muted-foreground italic">No messages yet.</li>
  )}
  </ul>
+ <Button variant="outline" size="sm" className="w-full" data-testid="button-open-soft-circle-channel" asChild>
  <Link href={`${basePath}?channel=${encodeURIComponent(ch.id)}`}>
- <Button variant="outline" size="sm" className="w-full" data-testid="button-open-soft-circle-channel">
  <MessageCircle className="h-3.5 w-3.5 mr-2" /> Open channel
  <ArrowUpRight className="h-3 w-3 ml-1" />
- </Button>
  </Link>
+ </Button>
  </CardContent>
  </Card>
  );

@@ -184,16 +184,17 @@ export default function InvestorSettings() {
             </CardHeader>
             <CardContent className="text-sm text-muted-foreground flex items-center justify-between gap-4">
               <p>Your name, email, avatar and bio visible to founders.</p>
-              <Link href="/investor/profile">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="shrink-0"
-                  data-testid="button-edit-displayName"
-                >
+              <Button
+                variant="outline"
+                size="sm"
+                className="shrink-0"
+                data-testid="button-edit-displayName"
+                asChild
+              >
+                <Link href="/investor/profile">
                   Edit in profile
-                </Button>
-              </Link>
+                </Link>
+              </Button>
             </CardContent>
           </Card>
 
@@ -344,16 +345,17 @@ export default function InvestorSettings() {
             <CardContent className="text-sm text-muted-foreground flex items-center justify-between gap-4">
               <p>Control your screen name and co-member visibility on cap tables.</p>
               {/* DEF-015: link to profile page where privacy is merged */}
-              <Link href="/investor/profile?step=1">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="shrink-0"
-                  data-testid="button-edit-privacy"
-                >
+              <Button
+                variant="outline"
+                size="sm"
+                className="shrink-0"
+                data-testid="button-edit-privacy"
+                asChild
+              >
+                <Link href="/investor/profile?step=1">
                   Open in profile
-                </Button>
-              </Link>
+                </Link>
+              </Button>
             </CardContent>
           </Card>
 

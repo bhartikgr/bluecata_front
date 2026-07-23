@@ -35,15 +35,14 @@ function GlossaryLink() {
   const { role } = useRole();
   const href = role === "investor" ? "/investor/glossary" : "/founder/glossary";
   return (
-    <Link href={href}>
-      <button
-        aria-label="Open glossary"
-        title="Open glossary"
-        className="h-8 w-8 inline-flex items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-        data-testid="button-open-glossary"
-      >
-        <HelpCircle className="h-4 w-4" />
-      </button>
+    <Link
+      href={href}
+      aria-label="Open glossary"
+      title="Open glossary"
+      className="h-8 w-8 inline-flex items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+      data-testid="button-open-glossary"
+    >
+      <HelpCircle className="h-4 w-4" />
     </Link>
   );
 }

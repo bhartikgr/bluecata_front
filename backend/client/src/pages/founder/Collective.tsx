@@ -61,28 +61,30 @@ export default function Collective() {
               join the Collective &mdash; they apply to <strong>present</strong> to its members.
             </p>
             <div className="flex flex-col sm:flex-row gap-3 mt-6">
-              <Link href="/founder/apply-to-collective">
-                <Button
-                  className="bg-white text-[hsl(219_45%_20%)] hover:bg-white/90 h-11 px-6"
-                  data-testid="button-apply-to-present"
-                >
+              <Button
+                className="bg-white text-[hsl(219_45%_20%)] hover:bg-white/90 h-11 px-6"
+                data-testid="button-apply-to-present"
+                asChild
+              >
+                <Link href="/founder/apply-to-collective">
                   Learn about applying to present <ArrowUpRight className="h-4 w-4 ml-2" />
-                </Button>
-              </Link>
+                </Link>
+              </Button>
               {/* v24.4 BUG 050 — link to the internal membership route instead of
                   an external capavate.com page that can 404 independently of the
                   SPA. /collective/membership exists in App.tsx and navigates
                   within the SPA. */}
-              <Link href="/collective/membership" className="inline-flex">
-                <Button
-                  variant="outline"
-                  className="bg-transparent border-white/40 text-white hover:bg-white/10 hover:text-white h-11 px-6"
-                  data-testid="button-membership-info"
-                >
+              <Button
+                variant="outline"
+                className="bg-transparent border-white/40 text-white hover:bg-white/10 hover:text-white h-11 px-6"
+                data-testid="button-membership-info"
+                asChild
+              >
+                <Link href="/collective/membership" className="inline-flex">
                   About Collective membership (for investors){" "}
                   <ArrowUpRight className="h-4 w-4 ml-2" />
-                </Button>
-              </Link>
+                </Link>
+              </Button>
             </div>
           </div>
         </Card>
@@ -166,19 +168,20 @@ export default function Collective() {
               </div>
             </div>
             <div className="flex flex-wrap gap-3 mt-4">
-              <Link href="/founder/apply-to-collective">
-                <Button
-                  className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
-                  data-testid="button-go-apply"
-                >
+              <Button
+                className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
+                data-testid="button-go-apply"
+                asChild
+              >
+                <Link href="/founder/apply-to-collective">
                   Apply to present
-                </Button>
-              </Link>
-              <Link href="/founder/dashboard">
-                <Button variant="outline" data-testid="button-back-dashboard">
+                </Link>
+              </Button>
+              <Button variant="outline" data-testid="button-back-dashboard" asChild>
+                <Link href="/founder/dashboard">
                   Back to workspace
-                </Button>
-              </Link>
+                </Link>
+              </Button>
             </div>
           </CardContent>
         </Card>

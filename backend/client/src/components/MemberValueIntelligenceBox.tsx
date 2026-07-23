@@ -119,16 +119,16 @@ export function MemberValueIntelligenceBox({ rows }: { rows: Holder[] }) {
                   </div>
                 </div>
                 <div className="flex items-center gap-1.5 pt-1">
-                  <Link href={`/founder/messages?to=${encodeURIComponent(h.holderId ?? h.holderName)}`} className="flex-1">
-                    <Button size="sm" variant="outline" className="w-full h-7 text-[11px]" data-testid={`button-dm-${i}`}>
+                  <Button size="sm" variant="outline" className="w-full h-7 text-[11px] flex-1" data-testid={`button-dm-${i}`} asChild>
+                    <Link href={`/founder/messages?to=${encodeURIComponent(h.holderId ?? h.holderName)}`}>
                       <MessageSquare className="h-3 w-3 mr-1" /> DM
-                    </Button>
-                  </Link>
-                  <Link href={`/founder/network-posts?compose=1&audience=${encodeURIComponent(h.holderId ?? h.holderName)}`} className="flex-1">
-                    <Button size="sm" variant="outline" className="w-full h-7 text-[11px]" data-testid={`button-post-${i}`}>
+                    </Link>
+                  </Button>
+                  <Button size="sm" variant="outline" className="w-full h-7 text-[11px] flex-1" data-testid={`button-post-${i}`} asChild>
+                    <Link href={`/founder/network-posts?compose=1&audience=${encodeURIComponent(h.holderId ?? h.holderName)}`}>
                       <Send className="h-3 w-3 mr-1" /> Post
-                    </Button>
-                  </Link>
+                    </Link>
+                  </Button>
                 </div>
               </div>
             );

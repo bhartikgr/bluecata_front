@@ -124,12 +124,12 @@ function ProfileCompletionCard({ companyId }: { companyId: string }) {
         </div>
 
         <div className="mt-4 flex items-center gap-3">
-          <Link href="/founder/profile/wizard">
-            <Button size="sm" data-testid="button-complete-profile">
+          <Button size="sm" data-testid="button-complete-profile" asChild>
+            <Link href="/founder/profile/wizard">
               {pct < 100 ? "Complete profile" : "Review profile"}
               <ArrowUpRight className="h-3.5 w-3.5 ml-1" />
-            </Button>
-          </Link>
+            </Link>
+          </Button>
           <span className="text-xs text-muted-foreground" data-testid="text-boost-hint">
             {isBoost
               ? "Your profile is highly visible to Collective investors."
@@ -337,8 +337,8 @@ export default function FounderDashboard() {
         actions={
           <>
             <GlossaryLink />
-            <Link href="/founder/rounds/new"><Button variant="outline" data-testid="button-new-round"><Briefcase className="h-4 w-4 mr-2" /> New round</Button></Link>
-            <Link href="/founder/reports/new"><Button className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-new-report"><FileText className="h-4 w-4 mr-2" /> Send investor update</Button></Link>
+            <Button variant="outline" data-testid="button-new-round" asChild><Link href="/founder/rounds/new"><Briefcase className="h-4 w-4 mr-2" /> New round</Link></Button>
+            <Button className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-new-report" asChild><Link href="/founder/reports/new"><FileText className="h-4 w-4 mr-2" /> Send investor update</Link></Button>
           </>
         }
       />
@@ -449,9 +449,9 @@ export default function FounderDashboard() {
               <CardTitle className="text-sm">Quick actions</CardTitle>
             </CardHeader>
             <CardContent className="flex flex-wrap gap-2">
-              <Link href="/founder/rounds/new"><Button size="sm" variant="outline" data-testid="bento-action-new-round"><Briefcase className="h-3.5 w-3.5 mr-1.5" /> New round</Button></Link>
-              <Link href="/founder/reports/new"><Button size="sm" variant="outline" data-testid="bento-action-new-report"><FileText className="h-3.5 w-3.5 mr-1.5" /> Investor update</Button></Link>
-              <Link href="/founder/dataroom"><Button size="sm" variant="outline" data-testid="bento-action-dataroom"><FolderOpen className="h-3.5 w-3.5 mr-1.5" /> Dataroom</Button></Link>
+              <Button size="sm" variant="outline" data-testid="bento-action-new-round" asChild><Link href="/founder/rounds/new"><Briefcase className="h-3.5 w-3.5 mr-1.5" /> New round</Link></Button>
+              <Button size="sm" variant="outline" data-testid="bento-action-new-report" asChild><Link href="/founder/reports/new"><FileText className="h-3.5 w-3.5 mr-1.5" /> Investor update</Link></Button>
+              <Button size="sm" variant="outline" data-testid="bento-action-dataroom" asChild><Link href="/founder/dataroom"><FolderOpen className="h-3.5 w-3.5 mr-1.5" /> Dataroom</Link></Button>
             </CardContent>
           </Card>
         </div>
@@ -623,7 +623,7 @@ export default function FounderDashboard() {
                       <span className="text-xs font-mono">{fmtPct(readRate.pct * 100, 0)}</span>
                     </div>
                     <div className="text-xs text-muted-foreground mt-1">{readRate.opened} of {readRate.sent} opened</div>
-                    <Link href="/founder/reports"><Button size="sm" variant="outline" className="w-full mt-3" data-testid="button-view-reports">View reports <ArrowUpRight className="h-3.5 w-3.5 ml-1" /></Button></Link>
+                    <Button size="sm" variant="outline" className="w-full mt-3" data-testid="button-view-reports" asChild><Link href="/founder/reports">View reports <ArrowUpRight className="h-3.5 w-3.5 ml-1" /></Link></Button>
                   </>
                 ) : <Skeleton className="h-16 w-full" />}
               </CardContent>
@@ -669,9 +669,9 @@ export default function FounderDashboard() {
                 <span>Close target: {activeRound.closeDate}</span>
               </div>
               <div className="mt-4">
-                <Link href={`/founder/rounds/${activeRound.id}`}>
-                  <Button variant="outline" data-testid="button-view-round">View round detail <ArrowUpRight className="h-4 w-4 ml-2" /></Button>
-                </Link>
+                <Button variant="outline" data-testid="button-view-round" asChild>
+                  <Link href={`/founder/rounds/${activeRound.id}`}>View round detail <ArrowUpRight className="h-4 w-4 ml-2" /></Link>
+                </Button>
               </div>
             </CardContent>
           </Card>
@@ -681,7 +681,7 @@ export default function FounderDashboard() {
         <Card data-testid="card-activity-preview">
           <CardHeader className="pb-3 flex flex-row items-center justify-between">
             <CardTitle className="text-base flex items-center gap-2"><ActivityIcon className="h-4 w-4" /> Activity log</CardTitle>
-            <Link href="/founder/activity"><Button size="sm" variant="ghost" data-testid="button-view-activity">View all <ArrowUpRight className="h-3.5 w-3.5 ml-1" /></Button></Link>
+            <Button size="sm" variant="ghost" data-testid="button-view-activity" asChild><Link href="/founder/activity">View all <ArrowUpRight className="h-3.5 w-3.5 ml-1" /></Link></Button>
           </CardHeader>
           <CardContent>
             <ul className="divide-y divide-border -mx-3">

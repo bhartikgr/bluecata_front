@@ -120,14 +120,15 @@ function CollectiveMarketing() {
       </div>
 
       <div className="flex flex-col items-center gap-3">
-        <Link href={applyHref}>
-          <Button
-            className="bg-[#cc0001] hover:bg-[#a30001] text-white gap-2"
-            data-testid="button-collective-apply"
-          >
+        <Button
+          className="bg-[#cc0001] hover:bg-[#a30001] text-white gap-2"
+          data-testid="button-collective-apply"
+          asChild
+        >
+          <Link href={applyHref}>
             Apply to the Collective <ArrowRight className="h-4 w-4" />
-          </Button>
-        </Link>
+          </Link>
+        </Button>
         <p className="text-xs text-muted-foreground">
           Already applied? Your access unlocks automatically once your membership is approved.
         </p>

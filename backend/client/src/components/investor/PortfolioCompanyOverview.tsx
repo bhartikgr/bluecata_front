@@ -736,12 +736,12 @@ export function PortfolioCompanyOverview({
             </Tooltip>
           </TooltipProvider>
 
-          <Link href={`/investor/companies/${position.companyId}`}>
-            <Button variant="outline" data-testid="button-view-company-detail">
+          <Button variant="outline" data-testid="button-view-company-detail" asChild>
+            <Link href={`/investor/companies/${position.companyId}`}>
               View company detail{" "}
               <ArrowUpRight className="w-4 h-4 ml-1" />
-            </Button>
-          </Link>
+            </Link>
+          </Button>
         </div>
       </div>
 

@@ -565,7 +565,7 @@ export default function TermSheet() {
  actions={
  <>
  <GlossaryLink />
- <Link href={`/founder/rounds/${id}`}><Button variant="ghost" data-testid="button-back-round"><ArrowLeft className="h-4 w-4 mr-2" />Back to round</Button></Link>
+ <Button variant="ghost" data-testid="button-back-round" asChild><Link href={`/founder/rounds/${id}`}><ArrowLeft className="h-4 w-4 mr-2" />Back to round</Link></Button>
  {stored && (
  <Button variant="outline" onClick={handleExportPdf} data-testid="button-export-termsheet-pdf">
  <Printer className="h-4 w-4 mr-2" /> Export PDF

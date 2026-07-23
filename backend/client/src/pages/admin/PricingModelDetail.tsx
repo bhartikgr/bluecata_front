@@ -228,11 +228,11 @@ export default function PricingModelDetail() {
         subtitle={`${draft.productLine} · v${draft.version} · ${draft.slug}`}
         actions={
           <div className="flex items-center gap-2">
-            <Link href="/admin/pricing-models">
-              <Button variant="outline" size="sm" data-testid="button-back">
+            <Button variant="outline" size="sm" data-testid="button-back" asChild>
+              <Link href="/admin/pricing-models">
                 <ArrowLeft className="h-4 w-4 mr-1" /> All models
-              </Button>
-            </Link>
+              </Link>
+            </Button>
             <Button variant="outline" size="sm" onClick={() => cloneMut.mutate()} data-testid="button-clone">
               <Copy className="h-4 w-4 mr-1" /> Clone
             </Button>

@@ -761,11 +761,11 @@ export default function InvestorCRM() {
             >
               <Megaphone className="w-4 h-4 mr-1" /> Broadcast
             </Button>
-            <Link href="/investor/crm/new">
-              <Button className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-add-contact">
+            <Button className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-add-contact" asChild>
+              <Link href="/investor/crm/new">
                 <UserPlus className="w-4 h-4 mr-1" /> Add contact
-              </Button>
-            </Link>
+              </Link>
+            </Button>
           </div>
         }
       />
@@ -847,11 +847,11 @@ export default function InvestorCRM() {
                   Start building your investor network.
                 </div>
               </div>
-              <Link href="/investor/crm/new">
-                <Button className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-empty-add">
+              <Button className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-empty-add" asChild>
+                <Link href="/investor/crm/new">
                   <UserPlus className="w-4 h-4 mr-1" /> Add contact
-                </Button>
-              </Link>
+                </Link>
+              </Button>
             </CardContent>
           </Card>
         ) : (

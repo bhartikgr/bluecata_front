@@ -132,9 +132,9 @@ export default function Company() {
  The active company in your session no longer matches your
  available companies. Pick a company to view its profile.
  </div>
- <Link href="/select-company">
- <Button data-testid="button-pick-company">Select a company</Button>
- </Link>
+ <Button data-testid="button-pick-company" asChild>
+ <Link href="/select-company">Select a company</Link>
+ </Button>
  </CardContent>
  </Card>
  </PageBody>
@@ -186,9 +186,9 @@ export default function Company() {
  You don’t have an active company yet. Create one from the Welcome
  flow or the company switcher to start the profile wizard.
  </div>
- <Link href="/founder/welcome">
- <Button>Go to Welcome</Button>
- </Link>
+ <Button asChild>
+ <Link href="/founder/welcome">Go to Welcome</Link>
+ </Button>
  </CardContent>
  </Card>
  </PageBody>
@@ -472,11 +472,11 @@ function CompanyWizard({
  </div>
  </DialogContent>
  </Dialog>
+ <Button variant="ghost" size="sm" data-testid="link-view-as-investor-full" asChild>
  <Link href={`/founder/companies/${profile.id}`}>
- <Button variant="ghost" size="sm" data-testid="link-view-as-investor-full">
  Full page <Eye className="h-3.5 w-3.5 ml-1.5" />
- </Button>
  </Link>
+ </Button>
  <CollectiveDeepLink entity="company" id={profile.id} label="View in Collective Deal Room" />
  <Badge variant="outline" data-testid="badge-region">
  Region: {legal.region}

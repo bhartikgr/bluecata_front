@@ -52,6 +52,8 @@ export interface SpvBug1MigrationResult {
   scanned: number;
   skipped: number;
   suspectMajorCeiling: number;
+  /** True when the run computed + emitted artifacts but wrote NO rows. */
+  dryRun?: boolean;
 }
 
 export interface SpvBug1Options {
@@ -62,6 +64,16 @@ export interface SpvBug1Options {
   suspectMajorCeiling?: number;
   /** When set, write the three artifacts + the corrected-SPV markdown here. */
   artifactDir?: string;
+  /** When true, compute every before→after and emit artifacts, but execute NO
+   *  UPDATE. The returned result carries `dryRun:true` and its `changes` list is
+   *  exactly what a real run WOULD write. Detection/scaling math is unchanged. */
+  dryRun?: boolean;
+  /** SPV ids to explicitly EXCLUDE. Any scanned row whose id is on this list is
+   *  skipped (and the skip is logged) before detection runs. */
+  denyList?: string[];
+  /** When non-empty, ONLY these SPV ids are eligible; every scanned row not on
+   *  the list is skipped (and the skip is logged) before detection runs. */
+  allowList?: string[];
 }
 
 const SPV_AMOUNT_FIELDS = ["target_raise_minor", "min_check_minor", "cap_minor"] as const;
@@ -76,6 +88,9 @@ function scalable(v: unknown): v is number {
  */
 export function migrateSpvBug1(opts: SpvBug1Options = {}): SpvBug1MigrationResult {
   const suspectMajorCeiling = opts.suspectMajorCeiling ?? 10_000;
+  const dryRun = opts.dryRun === true;
+  const denySet = new Set(opts.denyList ?? []);
+  const allowSet = (opts.allowList && opts.allowList.length) ? new Set(opts.allowList) : null;
   const changes: SpvBug1FieldChange[] = [];
   const changedSpvIds: string[] = [];
   let scanned = 0;
@@ -84,7 +99,7 @@ export function migrateSpvBug1(opts: SpvBug1Options = {}): SpvBug1MigrationResul
   try {
     db = rawDb();
   } catch {
-    return { changedSpvIds, changes, scanned, skipped, suspectMajorCeiling };
+    return { changedSpvIds, changes, scanned, skipped, suspectMajorCeiling, dryRun };
   }
 
   let spvRows: any[] = [];
@@ -96,11 +111,22 @@ export function migrateSpvBug1(opts: SpvBug1Options = {}): SpvBug1MigrationResul
       )
       .all() as any[];
   } catch {
-    return { changedSpvIds, changes, scanned, skipped, suspectMajorCeiling };
+    return { changedSpvIds, changes, scanned, skipped, suspectMajorCeiling, dryRun };
   }
 
   for (const row of spvRows) {
     scanned++;
+    // List gating runs BEFORE detection so the detection heuristic is untouched.
+    if (denySet.has(row.id)) {
+      log.info?.(`[spvBug1] skip ${row.id}: on denyList`);
+      skipped++;
+      continue;
+    }
+    if (allowSet && !allowSet.has(row.id)) {
+      log.info?.(`[spvBug1] skip ${row.id}: not on allowList`);
+      skipped++;
+      continue;
+    }
     const currency = row.currency || "USD";
     const exp = currencyExponent(currency);
     const factor = Math.pow(10, exp);
@@ -142,12 +168,14 @@ export function migrateSpvBug1(opts: SpvBug1Options = {}): SpvBug1MigrationResul
       skipped++;
       continue;
     }
-    try {
-      db.prepare(`UPDATE spv SET ${setClauses.join(", ")} WHERE id = ?`).run(...setValues, row.id);
-    } catch (err) {
-      log.warn?.("[spvBug1] up failed for spv", row.id, (err as Error).message);
-      skipped++;
-      continue;
+    if (!dryRun) {
+      try {
+        db.prepare(`UPDATE spv SET ${setClauses.join(", ")} WHERE id = ?`).run(...setValues, row.id);
+      } catch (err) {
+        log.warn?.("[spvBug1] up failed for spv", row.id, (err as Error).message);
+        skipped++;
+        continue;
+      }
     }
 
     // Correct the same SPV's fixed fee amounts (co-written by the same wizard).
@@ -162,7 +190,9 @@ export function migrateSpvBug1(opts: SpvBug1Options = {}): SpvBug1MigrationResul
         const feeFactor = Math.pow(10, currencyExponent(feeCurrency));
         if (feeFactor <= 1) continue;
         const after = Math.round(before * feeFactor);
-        db.prepare(`UPDATE spv_fee SET fixed_amount_minor = ? WHERE id = ?`).run(after, fr.id);
+        if (!dryRun) {
+          db.prepare(`UPDATE spv_fee SET fixed_amount_minor = ? WHERE id = ?`).run(after, fr.id);
+        }
         spvChanges.push({
           table: "spv_fee", rowId: fr.id, spvId: row.id, field: "fixed_amount_minor",
           currency: feeCurrency, factor: feeFactor, before, after,
@@ -182,11 +212,13 @@ export function migrateSpvBug1(opts: SpvBug1Options = {}): SpvBug1MigrationResul
   }
 
   log.info?.(
-    `[spvBug1] up: corrected ${changedSpvIds.length} SPV(s), ${changes.length} field(s); scanned ${scanned}, skipped ${skipped}`,
+    `[spvBug1] up${dryRun ? " (DRY-RUN, no writes)" : ""}: ` +
+      `${dryRun ? "would correct" : "corrected"} ${changedSpvIds.length} SPV(s), ` +
+      `${changes.length} field(s); scanned ${scanned}, skipped ${skipped}`,
   );
 
   const result: SpvBug1MigrationResult = {
-    changedSpvIds, changes, scanned, skipped, suspectMajorCeiling,
+    changedSpvIds, changes, scanned, skipped, suspectMajorCeiling, dryRun,
   };
   if (opts.artifactDir) {
     try {

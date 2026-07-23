@@ -14,6 +14,7 @@ import Decimal from "decimal.js"; // v25.51 8a — exact PPS×shares target deri
 import { createHash, randomBytes } from "node:crypto";
 import path from "node:path";
 import { readFileSync } from "node:fs";
+import { execSync } from "node:child_process";
 import {
   companies,
   securities,
@@ -154,6 +155,8 @@ import { registerPartnerConsortiumRoutes } from "./partnerConsortiumRoutes";
 // v25.49 Phase-3A — separate Partner Clients CRM (durable stages + activity).
 import { registerPartnerClientCrmRoutes } from "./partnerClientCrmRoutes";
 import { registerSpvEngineRoutes } from "./spvEngineRoutes";
+import { registerMfcrmRoutes } from "./managedFounderRoutes";
+import { registerMfcrmPersonaRoutes } from "./managedFounderPersonaRoutes";
 import { registerPartnerPortfolioCompanyRoutes } from "./partnerPortfolioCompanyRoutes"; /* Wave B1 — Add Portfolio Company */
 import { registerCompanyAttributionRoutes } from "./companyAttributionRoutes"; /* Wave B1 addendum — read-only "Led by" attribution */
 import { seedTestPartnerSandbox } from "./partnerWorkspaceStore";
@@ -797,10 +800,35 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ ok: true, migration: "wfix2_allow_dms", ...result });
   });
   app.post("/api/admin/migration/wfix2/spv-bug1", (req: import("express").Request, res: import("express").Response) => {
-    const ceilingRaw = (req.body && (req.body as Record<string, unknown>).suspectMajorCeiling);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const ceilingRaw = body.suspectMajorCeiling;
     const suspectMajorCeiling = typeof ceilingRaw === "number" && Number.isFinite(ceilingRaw) ? ceilingRaw : undefined;
-    const result = migrateSpvBug1({ suspectMajorCeiling });
-    res.json({ ok: true, migration: "wfix2_spv_bug1", ...result });
+    // W-FIX4 item 3 — SAFE BY DEFAULT: this endpoint dry-runs unless the caller
+    // explicitly opts into writes with { commit: true }. Every invocation emits
+    // artifacts (up.json / down.json / corrected.md) so ops can review before
+    // committing and reverse afterward.
+    const dryRun = body.commit !== true;
+    const asStringList = (v: unknown): string[] | undefined =>
+      Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : undefined;
+    const denyList = asStringList(body.denyList);
+    const allowList = asStringList(body.allowList);
+    const artifactDir = path.join(
+      process.cwd(),
+      "artifacts",
+      "wfix2-spv-bug1",
+      new Date().toISOString().replace(/[:.]/g, "-"),
+    );
+    const result = migrateSpvBug1({ suspectMajorCeiling, dryRun, denyList, allowList, artifactDir });
+    res.json({
+      ok: true,
+      migration: "wfix2_spv_bug1",
+      ...result,
+      committed: !dryRun,
+      dryRun,
+      changed: result.changedSpvIds.length,
+      artifactDir,
+      correctedMdPath: path.join(artifactDir, "spv_bug1_corrected.md"),
+    });
   });
 
   registerNotificationsRoutes(app);
@@ -876,6 +904,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // client activity timeline). Distinct /api/partner/me/client-crm* paths;
   // shadows nothing. Registered after legacy partnerRoutes.
   registerPartnerClientCrmRoutes(app);
+  // W-MFCRM — Managed Founder CRM engine + persona routes. Distinct
+  // /api/partner/me/mfcrm* and /api/admin/mfcrm* paths; shadows nothing.
+  // Registered after the /api/admin requireAdmin mount guard (L469) so the
+  // admin capability-profile routes are guarded; partner routes carry their
+  // own requirePartnerAuth + attribution (404) + capability gates.
+  registerMfcrmRoutes(app);
+  registerMfcrmPersonaRoutes(app);
   // v25.49 Phase-4 — canonical SPV Engine (one store, three contexts + admin).
   // Distinct /api/partner/me/spv*, /api/collective/spvs, /api/capavate/spvs,
   // /api/admin/consortium-spv* paths; shadows nothing.
@@ -1207,12 +1242,28 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     log.error({ route: "health.version", errorType: "version_unresolved", message: "FAILED to resolve version — APP_VERSION env unset and package.json not found" });
     return "unknown";
   })();
+  // Server-side build marker. Prefer explicit env (deploy-injected), else derive
+  // from git at boot. Never fail boot if git is unavailable — degrade to "unknown".
+  const buildSha = (() => {
+    if (process.env.BUILD_SHA) return process.env.BUILD_SHA;
+    if (process.env.GIT_SHA) return process.env.GIT_SHA;
+    try {
+      return execSync("git rev-parse --short HEAD", { stdio: ["ignore", "pipe", "ignore"] })
+        .toString()
+        .trim() || "unknown";
+    } catch {
+      return "unknown";
+    }
+  })();
+  const buildTime = process.env.BUILD_TIME || new Date(SERVER_START).toISOString();
   app.get("/api/healthz", (_req, res) => {
     const dbOk = (() => { try { getDb(); return true; } catch { return false; } })();
     const bridgeOutboxBacklog = getOutbox().filter(e => e.status === "queued" || e.status === "delivering").length;
     res.json({
       ok: true,
       version,
+      buildSha,
+      buildTime,
       uptimeSec: Math.floor((Date.now() - SERVER_START) / 1000),
       dbConnected: dbOk,
       bridgeOutboxBacklog,
@@ -2412,15 +2463,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const rawInvs = roundInvitationsListForEmail(email);
     const allRounds = roundsStoreList();
     const enriched = rawInvs.map((inv) => {
-      const company = (_allCompanies as Array<{ id: string; name: string }>).find(c => c.id === inv.companyId);
-      // Also check real company store (production companies not in demo seed)
-      const resolvedCompanyName = company?.name ?? getCompanyNameById(inv.companyId ?? "");
       const round = allRounds.find(r => r.id === inv.roundId);
+      // W-FIX3 F1b — mirror the DETAIL handler (see below, ~L2463): backfill a
+      // null invitation companyId from the round record so the LIST response
+      // never emits companyId:null / company.id:"" for an invitation whose
+      // round carries a companyId. Non-null companyId short-circuits → identical
+      // to prior behavior. A genuinely company-less row stays "".
+      const resolvedCompanyId = inv.companyId ?? round?.companyId ?? "";
+      const company = (_allCompanies as Array<{ id: string; name: string }>).find(c => c.id === resolvedCompanyId);
+      // Also check real company store (production companies not in demo seed)
+      const resolvedCompanyName = company?.name ?? getCompanyNameById(resolvedCompanyId);
       return {
         ...inv,
+        companyId: resolvedCompanyId,
         company: {
-          id: inv.companyId ?? "",
-          name: resolvedCompanyName ?? inv.companyId ?? "",
+          id: resolvedCompanyId,
+          name: resolvedCompanyName ?? resolvedCompanyId ?? "",
           sector: "",
         },
         round: {

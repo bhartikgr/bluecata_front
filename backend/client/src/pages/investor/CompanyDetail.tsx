@@ -172,20 +172,21 @@ export default function InvestorCompanyDetail({
     You need to be a cap-table member of this company to view the full company detail.
    </p>
    <div className="flex flex-col sm:flex-row gap-3 justify-center">
-    <Link href="/investor/invitations">
-     <Button variant="outline" data-testid="button-back-invitations">
+    <Button variant="outline" data-testid="button-back-invitations" asChild>
+     <Link href="/investor/invitations">
       <ArrowLeft className="h-4 w-4 mr-2" /> Back to invitations
-     </Button>
-    </Link>
-    {founderQ.data?.userId ? (
-     <Link href={`/investor/messages?targetUserId=${encodeURIComponent(founderQ.data.userId)}`}>
-      <Button
-       className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
-       data-testid="button-request-access"
-      >
-       <MessageSquare className="h-4 w-4 mr-2" /> Request access
-      </Button>
      </Link>
+    </Button>
+    {founderQ.data?.userId ? (
+     <Button
+      className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white"
+      data-testid="button-request-access"
+      asChild
+     >
+      <Link href={`/investor/messages?targetUserId=${encodeURIComponent(founderQ.data.userId)}`}>
+       <MessageSquare className="h-4 w-4 mr-2" /> Request access
+      </Link>
+     </Button>
     ) : (
      <a href="mailto:support@capavate.com">
       <Button
@@ -207,8 +208,8 @@ export default function InvestorCompanyDetail({
  breadcrumbs={[{ href: "/investor/dashboard", label: "Workspace" }, { href: "/investor/portfolio", label: "Portfolio" }, { label: c?.name ?? id }]}
  actions={
  <div className="flex gap-2">
- <Link href="/investor/portfolio"><Button variant="ghost" data-testid="button-back"><ArrowLeft className="h-4 w-4 mr-2" /> Portfolio</Button></Link>
- {myInv && <Link href={`/investor/invitations/${myInv.id}`}><Button variant="outline" data-testid="button-open-invitation"><Inbox className="h-4 w-4 mr-2" />Open invitation</Button></Link>}
+ <Button variant="ghost" data-testid="button-back" asChild><Link href="/investor/portfolio"><ArrowLeft className="h-4 w-4 mr-2" /> Portfolio</Link></Button>
+ {myInv && <Button variant="outline" data-testid="button-open-invitation" asChild><Link href={`/investor/invitations/${myInv.id}`}><Inbox className="h-4 w-4 mr-2" />Open invitation</Link></Button>}
  {/* Patch v4: only render deep link when we have a real company id. */}
  {id ? <CollectiveDeepLink entity="company" id={id} label="View Collective Profile" /> : null}
  </div>
@@ -959,11 +960,11 @@ function CapTableMessagesPanel({
  )}
  </p>
  </div>
+ <Button size="sm" data-testid="button-open-cap-table-thread" asChild>
  <Link href={open}>
- <Button size="sm" data-testid="button-open-cap-table-thread">
  <MessageSquare className="h-3.5 w-3.5 mr-2" /> Open in Messages
- </Button>
  </Link>
+ </Button>
  </CardHeader>
  <CardContent>
  {msgs.length === 0 ? (

@@ -562,6 +562,14 @@ function Step1Contact({
                 Enable inbound DMs from cap-table co-members and Collective chapter members per
                 the visibility settings above. Default ON for cap-table members.
               </p>
+              {/* W-FIX3 item 4 — DM eligibility educational copy only (no logic change).
+                  Clarifies that this toggle gates eligibility, not delivery: a sender must
+                  ALSO share a cap table or Collective chapter with you. */}
+              <p className="text-xs text-muted-foreground mt-1.5">
+                Who this lets reach you: only people who already share a cap table with you, or a
+                Collective chapter you've opted into above — never the open network. Turning this
+                off stops new inbound DMs; existing threads stay in your inbox.
+              </p>
             </div>
             <Switch
               checked={visibility.allowDms}

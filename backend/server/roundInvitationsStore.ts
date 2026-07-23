@@ -726,6 +726,33 @@ export function redeemInvitation(args: RedeemInvitationArgs): RedeemInvitationRe
   row.redeemedByUserId = args.redeemedByUserId;
   row.updatedAt = now;
 
+  // W-FIX3 2a (redeem self-heal) — if a legacy invitation persisted a NULL
+  // companyId, resolve it from the round and backfill it now that the invite is
+  // accepted, so the accepted row is never company-less (the root cause of the
+  // empty investor cap-table / dataroom). Purely ADDITIVE: only fires when
+  // companyId is null; an existing non-null value is never overwritten. Runs
+  // AFTER the money/token-critical redeem commit and is fully guarded, so it can
+  // never affect redeem success/failure. Uses raw SQL because the durable
+  // `company_id` column is not modelled on the drizzle invitations table.
+  if (!row.companyId) {
+    const derived = getRoundById(row.roundId)?.companyId ?? null;
+    if (derived) {
+      try {
+        rawDb()
+          .prepare(
+            "UPDATE round_invitations SET company_id = ?, updated_at = ? WHERE id = ? AND (company_id IS NULL OR company_id = '')",
+          )
+          .run(derived, now, row.id);
+        row.companyId = derived;
+      } catch (err) {
+        log.warn(
+          "[roundInvitationsStore.redeemInvitation] companyId self-heal skipped:",
+          (err as Error).message,
+        );
+      }
+    }
+  }
+
   emitMutation({
     aggregate: "invitation",
     id: row.id,

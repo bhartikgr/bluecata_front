@@ -148,7 +148,12 @@ function hydrateComplianceHolds(): void {
     for (const r of rows) {
       tenantComplianceHolds.set(r.tenant_id, { heldAt: r.held_at, heldBy: r.held_by, reason: r.reason ?? undefined });
     }
-  } catch { /* sandbox / postgres — best effort */ }
+  } catch (err) {
+    // W-FIX4 item 9-N1 — observability-only: surface the best-effort miss so a
+    // silently-empty compliance-hold cache is auditable. Control flow, the
+    // in-memory map, and every money outcome are UNCHANGED (still swallowed).
+    log.warn("[captableCommitStore.hydrateComplianceHolds] best-effort hydrate skipped:", (err as Error).message);
+  }
 }
 
 /**
@@ -1046,7 +1051,13 @@ export function registerCaptableCommitRoutes(app: Express): void {
       // v24.4.2 Bug H — was incorrectly updating to "confirmed" (NO-OP since status
       // was already "confirmed"). Changed to "wired" so the UI row transitions to
       // wired and the "Mark wire funded" button disappears.
-      try { updateSoftCircleStatus(scId, "wired"); } catch { /* best-effort */ }
+      try { updateSoftCircleStatus(scId, "wired"); } catch (err) {
+        // W-FIX4 item 9-N1 — observability-only: the funded-queue row is already
+        // the source of truth (enqueued above), so a failed UI status advance
+        // stays non-fatal. We only emit a warning; control flow, the response,
+        // and every money outcome are UNCHANGED.
+        log.warn(`[captableCommitStore.wire-funded] soft-circle status advance to "wired" failed for ${scId}:`, (err as Error).message);
+      }
 
       BridgeOutbound.capTableMutated(companyId, { roundId: sc.roundId, txCount: 0, ledgerSeq: -1, hash: "wire_funded_enqueued" });
       return res.status(200).json({ ok: true, entry });

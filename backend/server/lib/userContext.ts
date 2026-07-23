@@ -121,6 +121,7 @@ function getDbUserRole(userId: string, email?: string): string | null {
 export type InvestorState =
   | "NONE"
   | "INVITED_ONLY"
+  | "INVITED_PRIVATE_ROUND"
   | "ON_CAP_TABLE"
   | "ON_CAP_TABLE_COLLECTIVE_ACTIVE"
   | "ON_CAP_TABLE_COLLECTIVE_LAPSED";
@@ -341,13 +342,26 @@ function buildInvitedRounds(persona: PersonaSeed): InvitedRound[] {
   if ((!runtimeInvs || runtimeInvs.length === 0) && persona.email) {
     try {
       const rows = listInvitationsByEmail(persona.email);
+      // W-FIX3 Bug#4 Option B (owner-authorized additive edit) — resolve a null
+      // invitation companyId from the round it was addressed to, so a legacy
+      // null-companyId invite still enters the investor's entitlement set (the
+      // same round→company chain the DETAIL handler already trusts). Non-null
+      // companyId short-circuits (?? never calls getRoundById → identical to
+      // prior behavior); a missing round / null round.companyId resolves falsy
+      // and the row is still dropped (no over-inclusion, no isolation change).
       const usable = rows
-        .filter((r) => !!r.companyId && (r.state === "pending" || r.state === "sent" || r.state === "viewed" || r.state === "accepted"))
-        .map((r) => ({
-          invitationId: r.id,
-          roundId: r.roundId,
-          companyId: r.companyId as string,
-        }));
+        .filter((r) => {
+          const resolvedCompanyId = r.companyId ?? getRoundById(r.roundId)?.companyId;
+          return !!resolvedCompanyId && (r.state === "pending" || r.state === "sent" || r.state === "viewed" || r.state === "accepted");
+        })
+        .map((r) => {
+          const resolvedCompanyId = r.companyId ?? getRoundById(r.roundId)?.companyId;
+          return {
+            invitationId: r.id,
+            roundId: r.roundId,
+            companyId: resolvedCompanyId as string,
+          };
+        });
       if (usable.length > 0) {
         RUNTIME_INVITATIONS[persona.userId] = usable;
         runtimeInvs = usable;
@@ -417,12 +431,16 @@ export function computeInvestorState(args: {
   invitedRounds: InvitedRound[];
   capTablePositions: CapTablePosition[];
   collectiveStatus: CollectiveStatus;
+  // W-MFCRM RF-1 (additive, behavior-preserving): when true AND the investor is
+  // not yet on a cap table, distinguishes a private-round invite from a generic
+  // invite. Defaulted/absent for every existing caller → identical behaviour.
+  hasPrivateRoundInvite?: boolean;
 }): InvestorState {
   if (!args.isInvestor) return "NONE";
   const hasCapTable = args.capTablePositions.length > 0;
   const hasInvites = args.invitedRounds.length > 0;
   if (!hasCapTable && !hasInvites) return "NONE";
-  if (!hasCapTable) return "INVITED_ONLY";
+  if (!hasCapTable) return args.hasPrivateRoundInvite ? "INVITED_PRIVATE_ROUND" : "INVITED_ONLY";
   if (args.collectiveStatus === "active") return "ON_CAP_TABLE_COLLECTIVE_ACTIVE";
   if (args.collectiveStatus === "lapsed") return "ON_CAP_TABLE_COLLECTIVE_LAPSED";
   return "ON_CAP_TABLE";
@@ -860,13 +878,24 @@ export function getUserContextForId(userId: string): UserContext {
           const existingInvs = RUNTIME_INVITATIONS[userId] ?? [];
           if (existingInvs.length === 0 && isInvestor) {
             const rows = listInvitationsByEmail(cred.email);
+            // W-FIX3 Bug#4 Option B (owner-authorized additive edit) — identical
+            // resolve as the buildInvitedRounds site above: backfill a null
+            // invitation companyId from its round so a legacy null-companyId
+            // invite still hydrates into the investor's entitlement set. Non-null
+            // short-circuits (identical prior behavior); unresolved → still dropped.
             const usable = rows
-              .filter((r) => !!r.companyId && (r.state === "pending" || r.state === "sent" || r.state === "viewed" || r.state === "accepted"))
-              .map((r) => ({
-                invitationId: r.id,
-                roundId: r.roundId,
-                companyId: r.companyId as string,
-              }));
+              .filter((r) => {
+                const resolvedCompanyId = r.companyId ?? getRoundById(r.roundId)?.companyId;
+                return !!resolvedCompanyId && (r.state === "pending" || r.state === "sent" || r.state === "viewed" || r.state === "accepted");
+              })
+              .map((r) => {
+                const resolvedCompanyId = r.companyId ?? getRoundById(r.roundId)?.companyId;
+                return {
+                  invitationId: r.id,
+                  roundId: r.roundId,
+                  companyId: resolvedCompanyId as string,
+                };
+              });
             if (usable.length > 0) {
               RUNTIME_INVITATIONS[userId] = usable;
             }

@@ -123,9 +123,9 @@ export default function AdminFormulas() {
  </td>
  <td className="px-3 py-3 text-xs text-muted-foreground max-w-xs truncate">{f.citation.source}</td>
  <td className="px-3 py-3">
- <Link href={`/admin/formulas/${encodeURIComponent(key)}`}>
- <Button variant="ghost" size="icon" data-testid={`button-edit-${f.id}-${f.region}`}><ExternalLink className="h-4 w-4" /></Button>
- </Link>
+ <Button variant="ghost" size="icon" data-testid={`button-edit-${f.id}-${f.region}`} asChild>
+ <Link href={`/admin/formulas/${encodeURIComponent(key)}`}><ExternalLink className="h-4 w-4" /></Link>
+ </Button>
  </td>
  </tr>
  );

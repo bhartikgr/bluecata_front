@@ -514,11 +514,11 @@ export default function AdminNotificationComposer() {
           { label: isEditMode ? "Edit" : "New" },
         ]}
         actions={
-          <Link href="/admin/notifications">
-            <Button variant="ghost" size="sm" className="gap-2" data-testid="button-back">
+          <Button variant="ghost" size="sm" className="gap-2" data-testid="button-back" asChild>
+            <Link href="/admin/notifications">
               <ArrowLeft className="h-4 w-4" /> Back
-            </Button>
-          </Link>
+            </Link>
+          </Button>
         }
       />
 

@@ -170,6 +170,9 @@ const PARTNER_WORKSPACE_GROUPS: NavGroup[] = [
     title: "OVERVIEW",
     items: [
       { href: "/collective/partner/dashboard", label: "Dashboard", icon: LayoutDashboard, "data-testid": "nav-partner-dashboard" },
+      /* W-MFCRM — Managed Founders engine (engagements + 3 CRM-layer drill-down).
+         Additive entry; nothing existing was renamed/moved/removed. */
+      { href: "/collective/partner/managed-founders", label: "Managed Founders", icon: Handshake, "data-testid": "nav-partner-managed-founders" },
     ],
   },
   {
@@ -239,23 +242,22 @@ function NavLink({ item }: { item: NavItem }) {
     (item.href !== "/collective/dashboard" && location.startsWith(item.href));
 
   return (
-    <Link href={item.href}>
-      <button
-        data-testid={item["data-testid"]}
-        className={[
-          "w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors",
-          /* v25.43 R3-2 — sidebar active/hover re-skinned from the old plum
-             (#8E2A4E) to the capavate.com brand red (#cc0001) at a soft 8%
-             tint, matching the live site's nav treatment. */
-          isActive
-            ? "bg-[rgba(204,0,1,0.08)] text-[var(--cv-color-primary)]"
-            : "text-[var(--cv-color-text-secondary)] hover:bg-[rgba(204,0,1,0.08)] hover:text-[var(--cv-color-primary)]",
-        ].join(" ")}
-        style={{ textDecoration: "none" }}
-      >
-        <item.icon className="h-4 w-4 shrink-0" />
-        <span>{item.label}</span>
-      </button>
+    <Link
+      href={item.href}
+      data-testid={item["data-testid"]}
+      className={[
+        "w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors",
+        /* v25.43 R3-2 — sidebar active/hover re-skinned from the old plum
+           (#8E2A4E) to the capavate.com brand red (#cc0001) at a soft 8%
+           tint, matching the live site's nav treatment. */
+        isActive
+          ? "bg-[rgba(204,0,1,0.08)] text-[var(--cv-color-primary)]"
+          : "text-[var(--cv-color-text-secondary)] hover:bg-[rgba(204,0,1,0.08)] hover:text-[var(--cv-color-primary)]",
+      ].join(" ")}
+      style={{ textDecoration: "none" }}
+    >
+      <item.icon className="h-4 w-4 shrink-0" />
+      <span>{item.label}</span>
     </Link>
   );
 }

@@ -300,11 +300,11 @@ export default function AdminPricingModels() {
                   <span>{m.trial ? "trial" : "no trial"}</span>
                 </div>
                 <div className="flex gap-2">
-                  <Link href={`/admin/pricing-models/${m.id}`}>
-                    <Button size="sm" variant="default" className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid={`button-edit-${m.id}`}>
+                  <Button size="sm" variant="default" className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid={`button-edit-${m.id}`} asChild>
+                    <Link href={`/admin/pricing-models/${m.id}`}>
                       <Eye className="h-3.5 w-3.5 mr-1.5" />Open
-                    </Button>
-                  </Link>
+                    </Link>
+                  </Button>
                   <Button size="sm" variant="outline" onClick={() => cloneMut.mutate(m.id)} disabled={cloneMut.isPending} data-testid={`button-clone-${m.id}`}>
                     <Copy className="h-3.5 w-3.5 mr-1.5" />Clone
                   </Button>

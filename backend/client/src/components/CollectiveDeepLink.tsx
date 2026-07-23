@@ -43,19 +43,40 @@ export function CollectiveDeepLink({ entity, id, label, variant = "outline", siz
 
   const href = `/collective/preview?entity=${encodeURIComponent(entity)}&id=${encodeURIComponent(id)}`;
 
-  return (
-    <Link href={href}>
+  const inner = (
+    <>
+      <ExternalLink className="h-3.5 w-3.5 mr-1" />
+      {text}
+    </>
+  );
+
+  // When not eligible the control must stay non-navigable, so render a disabled
+  // Button (anchors ignore `disabled`). When eligible, render the Button as the
+  // Link itself (asChild) so we don't nest a <button> inside an <a>.
+  if (!eligible) {
+    return (
       <Button
         variant={variant}
         size={size}
-        disabled={!eligible}
+        disabled
         data-testid={`link-collective-${entity}-${id}`}
-        title={eligible ? "Open in Collective" : "Not yet synced to Collective"}
+        title="Not yet synced to Collective"
       >
-        <ExternalLink className="h-3.5 w-3.5 mr-1" />
-        {text}
+        {inner}
       </Button>
-    </Link>
+    );
+  }
+
+  return (
+    <Button
+      variant={variant}
+      size={size}
+      data-testid={`link-collective-${entity}-${id}`}
+      title="Open in Collective"
+      asChild
+    >
+      <Link href={href}>{inner}</Link>
+    </Button>
   );
 }
 

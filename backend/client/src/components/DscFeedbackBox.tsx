@@ -30,16 +30,16 @@ export function DscFeedbackBox({ companyDscState }: Props) {
           </p>
         </div>
         <div className="flex gap-2 flex-wrap">
-          <Link href="/founder/apply-to-collective">
-            <Button size="sm" variant="outline" data-testid="button-dsc-apply">
+          <Button size="sm" variant="outline" data-testid="button-dsc-apply" asChild>
+            <Link href="/founder/apply-to-collective">
               <ShieldCheck className="h-3.5 w-3.5 mr-1.5" /> Apply to Collective
-            </Button>
-          </Link>
-          <Link href="/founder/crm?context=intro-broker">
-            <Button size="sm" className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-dsc-promote">
+            </Link>
+          </Button>
+          <Button size="sm" className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-dsc-promote" asChild>
+            <Link href="/founder/crm?context=intro-broker">
               <Users className="h-3.5 w-3.5 mr-1.5" /> Have a cap-table member promote you
-            </Button>
-          </Link>
+            </Link>
+          </Button>
         </div>
       </CardContent>
     </Card>

@@ -64,16 +64,17 @@ export function ArchivedWorkspaceBanner() {
           editing — anytime before {fmtDate(data.archiveRetentionUntil)}.
         </span>
       </div>
-      <Link href="/founder/subscribe?reactivate=1">
-        <Button
-          size="sm"
-          variant="outline"
-          className="bg-white text-[#cc0001] hover:bg-white/90 border-white shrink-0"
-          data-testid="button-reactivate-workspace"
-        >
+      <Button
+        size="sm"
+        variant="outline"
+        className="bg-white text-[#cc0001] hover:bg-white/90 border-white shrink-0"
+        data-testid="button-reactivate-workspace"
+        asChild
+      >
+        <Link href="/founder/subscribe?reactivate=1">
           Reactivate Workspace
-        </Button>
-      </Link>
+        </Link>
+      </Button>
     </div>
   );
 }

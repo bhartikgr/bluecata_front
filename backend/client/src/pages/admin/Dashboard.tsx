@@ -31,6 +31,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { HelpTip } from "@/components/HelpTip";
 import { AdminPageIntro } from "@/components/AdminPageIntro";
+import { BuildVersionMarker } from "@/components/BuildVersionMarker";
 import { apiRequest } from "@/lib/queryClient";
 
 // v25.42h round-2 — the backend now returns `null` (never a fabricated number)
@@ -489,6 +490,8 @@ export default function AdminDashboard() {
             ))}
           </ul>
         </Card>
+
+        <BuildVersionMarker />
       </PageBody>
     </>
   );

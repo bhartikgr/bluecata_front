@@ -327,12 +327,12 @@ export default function AdminPartnerDetail() {
         title={partnerQ.isPending ? "Loading partner…" : name}
         description={partner?.email ?? ""}
         actions={
-          <Link href="/admin/consortium-applications">
-            <Button variant="outline" size="sm">
+          <Button variant="outline" size="sm" asChild>
+            <Link href="/admin/consortium-applications">
               <ArrowLeft className="h-4 w-4 mr-1" />
               Back to Partners
-            </Button>
-          </Link>
+            </Link>
+          </Button>
         }
       />
       <PageBody>

@@ -373,9 +373,9 @@ function CompanyRowComponent({
            `${activityDays}d ago`}
         </td>
         <td className="px-3 py-3">
-          <Link href={`/admin/companies/${c.id}`}>
-            <Button variant="ghost" size="icon" data-testid={`button-open-${c.id}`}><ExternalLink className="h-4 w-4" /></Button>
-          </Link>
+          <Button variant="ghost" size="icon" data-testid={`button-open-${c.id}`} asChild>
+            <Link href={`/admin/companies/${c.id}`}><ExternalLink className="h-4 w-4" /></Link>
+          </Button>
         </td>
       </tr>
       {isExpanded && (

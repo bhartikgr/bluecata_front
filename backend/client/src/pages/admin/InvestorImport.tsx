@@ -219,12 +219,12 @@ export default function AdminInvestorImport() {
           { label: "Bulk Import" },
         ]}
         actions={
-          <Link href="/admin/investors">
-            <Button variant="outline" size="sm" className="gap-1.5" data-testid="btn-back-to-contacts">
+          <Button variant="outline" size="sm" className="gap-1.5" data-testid="btn-back-to-contacts" asChild>
+            <Link href="/admin/investors">
               <ArrowLeft className="h-3.5 w-3.5" />
               Back to contacts
-            </Button>
-          </Link>
+            </Link>
+          </Button>
         }
       />
 
@@ -529,9 +529,9 @@ export default function AdminInvestorImport() {
                 <Button onClick={reset} variant="outline" data-testid="btn-import-another">
                   Import another file
                 </Button>
-                <Link href="/admin/investors">
-                  <Button data-testid="btn-view-contacts">View contacts</Button>
-                </Link>
+                <Button data-testid="btn-view-contacts" asChild>
+                  <Link href="/admin/investors">View contacts</Link>
+                </Button>
               </div>
             </>
           )}

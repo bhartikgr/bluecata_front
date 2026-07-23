@@ -288,12 +288,12 @@ export default function Signup() {
             Investors join Capavate by invitation only. Ask the founder to send you an invitation, or open the link from your invitation email.
           </p>
           <div className="flex flex-col gap-2 mt-4">
-            <Link href="/auth/login?portal=investor" data-testid="link-investor-login">
-              <Button className="w-full">Sign in as investor</Button>
-            </Link>
-            <Link href="/onboarding" data-testid="link-onboarding">
-              <Button variant="outline" className="w-full">Learn about Capavate</Button>
-            </Link>
+            <Button className="w-full" asChild>
+              <Link href="/auth/login?portal=investor" data-testid="link-investor-login">Sign in as investor</Link>
+            </Button>
+            <Button variant="outline" className="w-full" asChild>
+              <Link href="/onboarding" data-testid="link-onboarding">Learn about Capavate</Link>
+            </Button>
           </div>
         </div>
       </AuthShell>

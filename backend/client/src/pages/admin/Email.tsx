@@ -167,11 +167,11 @@ function CampaignsTab() {
             ))}
           </SelectContent>
         </Select>
-        <Link href="/admin/email/new">
-          <Button size="sm" data-testid="button-new-email-campaign">
+        <Button size="sm" data-testid="button-new-email-campaign" asChild>
+          <Link href="/admin/email/new">
             <Plus className="h-3.5 w-3.5 mr-1" /> New email campaign
-          </Button>
-        </Link>
+          </Link>
+        </Button>
       </div>
 
       {/* Table */}
@@ -203,12 +203,12 @@ function CampaignsTab() {
                 <td className="px-3 py-2">{c.actualSentCount}</td>
                 <td className="px-3 py-2 text-muted-foreground">{fmtDate(c.updatedAt)}</td>
                 <td className="px-3 py-2">
-                  <Link href={`/admin/email/${c.id}`}>
-                    <Button size="sm" variant="ghost" className="h-6 px-2 text-[10px]"
-                      data-testid={`button-edit-campaign-${c.id}`}>
+                  <Button size="sm" variant="ghost" className="h-6 px-2 text-[10px]"
+                      data-testid={`button-edit-campaign-${c.id}`} asChild>
+                    <Link href={`/admin/email/${c.id}`}>
                       Edit
-                    </Button>
-                  </Link>
+                    </Link>
+                  </Button>
                 </td>
               </tr>
             ))}
@@ -727,11 +727,11 @@ export default function AdminEmail() {
         title="Email System"
         description="Production email campaigns · 15 system templates · SMTP transport · delivery analytics."
         actions={
-          <Link href="/admin/email/new">
-            <Button size="sm" data-testid="button-new-email-campaign-header">
+          <Button size="sm" data-testid="button-new-email-campaign-header" asChild>
+            <Link href="/admin/email/new">
               <Plus className="h-3.5 w-3.5 mr-1" /> New campaign
-            </Button>
-          </Link>
+            </Link>
+          </Button>
         }
       />
       <PageBody>

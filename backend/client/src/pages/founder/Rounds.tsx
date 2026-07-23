@@ -138,7 +138,7 @@ export default function Rounds() {
         breadcrumbs={[{ href: "/founder/dashboard", label: "Workspace" }, { label: "Rounds" }]}
         actions={
           // F4 — a real single <button> that navigates via setLocation. The old
-          // <Link><Button/></Link> rendered a <button> nested inside an <a>
+          // Link-wrapping-Button form rendered a button nested inside an anchor
           // (invalid interactive nesting), the shared cause of the primary-action
           // "first click no-ops" symptom. A real button acts on the first click.
           <Button
@@ -219,9 +219,9 @@ export default function Rounds() {
                         </div>
                       </div>
                       <div className="flex flex-col gap-2 md:w-48">
-                        <Link href={`/founder/rounds/${r.id}`}>
-                          <Button className="w-full" variant="outline" data-testid={`button-open-${r.id}`}>Open <ArrowRight className="h-4 w-4 ml-2" /></Button>
-                        </Link>
+                        <Button className="w-full" variant="outline" data-testid={`button-open-${r.id}`} asChild>
+                          <Link href={`/founder/rounds/${r.id}`}>Open <ArrowRight className="h-4 w-4 ml-2" /></Link>
+                        </Button>
                         {isArchived ? (
                           // Archived rounds are inert: no edit; only un-archive.
                           <Button

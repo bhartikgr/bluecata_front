@@ -59,12 +59,12 @@ export function MnaReadinessCard({ companyId }: { companyId: string }) {
               Get a DSC review by applying to Collective. The Deal Sourcing Committee will score your company across the 30-field intelligence model.
             </div>
           </div>
-          <Link href="/founder/apply-to-collective">
-            <Button size="sm" data-testid="button-mna-apply">
+          <Button size="sm" data-testid="button-mna-apply" asChild>
+            <Link href="/founder/apply-to-collective">
               Apply for DSC review
               <ArrowUpRight className="h-3.5 w-3.5 ml-1" />
-            </Button>
-          </Link>
+            </Link>
+          </Button>
         </CardContent>
       </Card>
     );
@@ -83,12 +83,12 @@ export function MnaReadinessCard({ companyId }: { companyId: string }) {
           <CardTitle className="text-base">M&amp;A Readiness</CardTitle>
           <p className="text-xs text-muted-foreground mt-0.5">30-day trend across all 5 dimensions</p>
         </div>
-        <Link href="/founder/company?step=ma">
-          <Button size="sm" variant="ghost" data-testid="button-mna-detail">
+        <Button size="sm" variant="ghost" data-testid="button-mna-detail" asChild>
+          <Link href="/founder/company?step=ma">
             View detail
             <ArrowUpRight className="h-3 w-3 ml-1" />
-          </Button>
-        </Link>
+          </Link>
+        </Button>
       </CardHeader>
       <CardContent>
         <div className="flex items-center gap-6 flex-wrap">

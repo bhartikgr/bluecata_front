@@ -189,7 +189,12 @@ export function computeCaptableSnapshots(
     try {
       const rnd = getRoundById(rid);
       roundName = (rnd as any)?.name ?? (rnd as any)?.roundName ?? null;
-    } catch { /* name best-effort */ }
+    } catch (err) {
+      // W-FIX4 item 9-N1 — observability-only: name resolution stays best-effort
+      // (roundName falls back to null). Emit a warning so the miss is auditable;
+      // control flow and the snapshot response are UNCHANGED.
+      log.warn(`[captableSnapshotsStore.previous] round name resolution failed for ${rid}:`, (err as Error).message);
+    }
     // committedAt = latest commit ts in that round.
     const tsList = committed
       .filter((e) => String(e.roundId ?? "") === rid)

@@ -116,11 +116,11 @@ export function PortfolioStandingPanel() {
             Funded cap-table holdings — the single source of truth (SPINE-0).
           </p>
         </div>
-        <Link href="/investor/portfolio">
-          <Button size="sm" variant="outline" data-testid="spine-portfolio-view-all">
+        <Button size="sm" variant="outline" data-testid="spine-portfolio-view-all" asChild>
+          <Link href="/investor/portfolio">
             View portfolio <ArrowRight className="h-3.5 w-3.5 ml-1.5" />
-          </Button>
-        </Link>
+          </Link>
+        </Button>
       </CardHeader>
       <CardContent>
         {!hasFunded ? (
@@ -279,11 +279,11 @@ export function InvitationsSummaryPanel() {
             Counts match the Invitations page exactly (shared SPINE-0).
           </p>
         </div>
-        <Link href="/investor/invitations">
-          <Button size="sm" variant="outline" data-testid="spine-invitations-view-all">
+        <Button size="sm" variant="outline" data-testid="spine-invitations-view-all" asChild>
+          <Link href="/investor/invitations">
             Open invitations <ArrowRight className="h-3.5 w-3.5 ml-1.5" />
-          </Button>
-        </Link>
+          </Link>
+        </Button>
       </CardHeader>
       <CardContent>
         <div className="grid grid-cols-2 gap-3">
@@ -326,11 +326,11 @@ export function ChannelsSummaryPanel() {
             discussion channel; a funded holding unlocks the cap-table channel.
           </p>
         </div>
-        <Link href="/investor/messages">
-          <Button size="sm" variant="outline" data-testid="spine-channels-view-all">
+        <Button size="sm" variant="outline" data-testid="spine-channels-view-all" asChild>
+          <Link href="/investor/messages">
             Open messages <ArrowRight className="h-3.5 w-3.5 ml-1.5" />
-          </Button>
-        </Link>
+          </Link>
+        </Button>
       </CardHeader>
       <CardContent>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

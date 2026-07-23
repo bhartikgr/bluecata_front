@@ -229,18 +229,18 @@ export default function Redeem() {
           </div>
         )}
         <div className="mt-6 flex flex-col gap-2">
-          <Link href="/" data-testid="link-redeem-back-home">
-            <Button variant="outline" className="w-full">Back to home</Button>
-          </Link>
+          <Button variant="outline" className="w-full" asChild>
+            <Link href="/" data-testid="link-redeem-back-home">Back to home</Link>
+          </Button>
           {errorState.kind === "already_redeemed" && (
-            <Link href="/auth/login?portal=investor" data-testid="link-redeem-signin">
-              <Button className="w-full">Sign in instead</Button>
-            </Link>
+            <Button className="w-full" asChild>
+              <Link href="/auth/login?portal=investor" data-testid="link-redeem-signin">Sign in instead</Link>
+            </Button>
           )}
           {errorState.kind === "expired" && (
-            <Link href="/auth/forgot" data-testid="link-redeem-request-new">
-              <Button className="w-full">Request a new link</Button>
-            </Link>
+            <Button className="w-full" asChild>
+              <Link href="/auth/forgot" data-testid="link-redeem-request-new">Request a new link</Link>
+            </Button>
           )}
         </div>
       </AuthShell>

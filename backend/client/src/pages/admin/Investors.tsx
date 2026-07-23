@@ -703,17 +703,18 @@ export default function AdminInvestors() {
         breadcrumbs={[{ label: "Admin" }, { label: "Contacts CRM" }]}
         actions={
           <div className="flex gap-2">
-            <Link href="/admin/investors/import">
-              <Button
-                size="sm"
-                variant="outline"
-                className="gap-1.5"
-                data-testid="btn-bulk-import"
-              >
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1.5"
+              data-testid="btn-bulk-import"
+              asChild
+            >
+              <Link href="/admin/investors/import">
                 <Upload className="h-3.5 w-3.5" />
                 Bulk import
-              </Button>
-            </Link>
+              </Link>
+            </Button>
             <Button
               size="sm"
               className="gap-1.5"

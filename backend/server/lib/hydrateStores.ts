@@ -92,6 +92,13 @@ import { hydratePartnerWorkspaceStoreV241 as realHydratePartnerWorkspaceV241 } f
 // v25.49 Phase-3A — separate Partner Clients CRM (durable stages + activity).
 import { hydratePartnerClientCrmStore as realHydratePartnerClientCrm } from "../partnerClientCrmStore";
 import { hydrateSpvEngineStore as realHydrateSpvEngine } from "../spvEngineStore";
+// W-MFCRM — Managed Founder CRM engine + persona projections. Applies the 12
+// additive mf_* tables (idempotent) then rebuilds the RAM projections. Runs
+// after the partner + SPV engine stores so partner context is warm.
+import { hydrateManagedFounderStore as realHydrateManagedFounder } from "../managedFounderStore";
+import { hydrateMfcrmAngelStore as realHydrateMfcrmAngel } from "../mfcrmAngelStore";
+import { hydrateMfcrmAcctStore as realHydrateMfcrmAcct } from "../mfcrmAcctStore";
+import { hydrateMfcrmLawStore as realHydrateMfcrmLaw } from "../mfcrmLawStore";
 /* v25.9 — new hydrate functions for the 7 previously-stub-only stores.
  * Avi: "Most of the records are being saved in memory instead of the DB." */
 import { hydrateNotificationsStore as realHydrateNotifications } from "../notificationsStore";
@@ -274,6 +281,12 @@ const HYDRATE_ORDER: Array<{ name: string; fn: () => Promise<void> }> = [
   // (so partnerSpvStore/partnerFundsStore are warm for the one-time idempotent
   // legacy migration backfill that runs at the tail of hydrateSpvEngineStore).
   { name: "spvEngineStore (v25.49)", fn: realHydrateSpvEngine },
+  // W-MFCRM — Managed Founder CRM. Applies the 12 additive mf_* tables then
+  // rebuilds RAM projections; persona stores ensure their own additive tables.
+  { name: "managedFounderStore (W-MFCRM)", fn: realHydrateManagedFounder },
+  { name: "mfcrmAngelStore (W-MFCRM)", fn: async () => { realHydrateMfcrmAngel(); } },
+  { name: "mfcrmAcctStore (W-MFCRM)",  fn: async () => { realHydrateMfcrmAcct(); } },
+  { name: "mfcrmLawStore (W-MFCRM)",   fn: async () => { realHydrateMfcrmLaw(); } },
   /* v25.9 — seven previously-stub-only stores now hydrate from DB.
    * Position them near the end so all prerequisites (companies, rounds,
    * cap table) are already in memory. */

@@ -872,9 +872,9 @@ export default function Settings() {
                   ) : (
                     <div className="text-sm text-muted-foreground" data-testid="empty-payment-method-top">No payment method on file.</div>
                   )}
-                  <Link href="/founder/billing">
-                    <Button variant="outline" size="sm" className="mt-3" data-testid="button-connect-billing">Manage <ArrowRight className="h-3.5 w-3.5 ml-1.5" /></Button>
-                  </Link>
+                  <Button variant="outline" size="sm" className="mt-3" data-testid="button-connect-billing" asChild>
+                    <Link href="/founder/billing">Manage <ArrowRight className="h-3.5 w-3.5 ml-1.5" /></Link>
+                  </Button>
                 </CardContent>
               </Card>
               <Card data-testid="card-billing-pending-request">
@@ -945,9 +945,9 @@ export default function Settings() {
                   <div className="text-sm text-muted-foreground" data-testid="empty-payment-method">
                     No payment method on file. Add one in Billing &amp; Plans.
                   </div>
-                  <Link href="/founder/billing">
-                    <Button variant="outline" className="w-full" data-testid="button-update-card">Manage payment method</Button>
-                  </Link>
+                  <Button variant="outline" className="w-full" data-testid="button-update-card" asChild>
+                    <Link href="/founder/billing">Manage payment method</Link>
+                  </Button>
                 </CardContent>
               </Card>
             </div>

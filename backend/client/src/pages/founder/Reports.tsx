@@ -73,7 +73,7 @@ export default function Reports() {
         title="Investor reports"
         description="Templates, scheduling, recipient targeting, read receipts, and per-section comments."
         breadcrumbs={[{ href: "/founder/dashboard", label: "Workspace" }, { label: "Reports" }]}
-        actions={<Link href="/founder/reports/new"><Button className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-new-report"><Plus className="h-4 w-4 mr-2" /> New report</Button></Link>}
+        actions={<Button className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-new-report" asChild><Link href="/founder/reports/new"><Plus className="h-4 w-4 mr-2" /> New report</Link></Button>}
       />
       <PageBody>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">

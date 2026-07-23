@@ -169,12 +169,12 @@ export function MessagesWidget({ basePath, title }: {
  </ul>
  <div className="pt-2">
  {/* Sprint 20 Wave 2 — use ?sort=recent (defect 53) */}
+ <Button variant="outline" size="sm" className="w-full" data-testid="button-view-all-messages" asChild>
  <Link href={`${basePath}?sort=recent`}>
- <Button variant="outline" size="sm" className="w-full" data-testid="button-view-all-messages">
  <Users2 className="h-3.5 w-3.5 mr-2" /> View all messages
  <ArrowUpRight className="h-3 w-3 ml-1" />
- </Button>
  </Link>
+ </Button>
  </div>
  </CardContent>
  </Card>

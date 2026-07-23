@@ -68,6 +68,8 @@ import PartnerAddPortfolioCompany from "@/pages/partner/PartnerAddPortfolioCompa
    routes were trimmed in v25.50.0). W2-D — new Private Portfolio page. */
 import PartnerClients from "@/pages/partner/PartnerClients";
 import PartnerClientDetail from "@/pages/partner/PartnerClientDetail";
+/* W-MFCRM — Managed Founders page (additive; DB-driven via /api/partner/me/mfcrm*). */
+import PartnerManagedFounders from "@/pages/partner/PartnerManagedFounders";
 import PartnerPortfolio from "@/pages/partner/PartnerPortfolio";
 import PartnerContacts from "@/pages/partner/PartnerContacts";
 import PartnerTeam from "@/pages/partner/PartnerTeam";
@@ -1076,6 +1078,14 @@ function AppRouter() {
          * requirePartnerAuth resolves partnerId from the session. */}
         <Route path="/collective/partner/dashboard">
           {() => <RequireAuth><CollectiveShell><PartnerDashboard /></CollectiveShell></RequireAuth>}
+        </Route>
+        {/* W-MFCRM — Managed Founders (engagements + 3 CRM-layer drill-down tabs).
+            Additive route; shadows nothing. Detail path before list so `:id` resolves. */}
+        <Route path="/collective/partner/managed-founders/:id">
+          {() => <RequireAuth><CollectiveShell><PartnerManagedFounders /></CollectiveShell></RequireAuth>}
+        </Route>
+        <Route path="/collective/partner/managed-founders">
+          {() => <RequireAuth><CollectiveShell><PartnerManagedFounders /></CollectiveShell></RequireAuth>}
         </Route>
         {/* W2-A — Clients CRM restored (routes re-added; server read endpoints
             rebuilt from the preserved attribution store). Detail route is

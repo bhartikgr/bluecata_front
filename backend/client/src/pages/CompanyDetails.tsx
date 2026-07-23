@@ -559,9 +559,9 @@ function CompanyDetailsView({
  {data.dataroom.length} files across {new Set(data.dataroom.map(f => f.category)).size} categories
  </div>
  {/* Sprint 20 Wave 2 — role-based dataroom routing (defect 55) */}
- <Link href={viewerRole === "investor" ? `/investor/companies/${data.id}?tab=dataroom` : "/founder/dataroom"}>
- <Button variant="outline" size="sm" className="text-xs" data-testid="button-open-dataroom">Open dataroom</Button>
- </Link>
+ <Button variant="outline" size="sm" className="text-xs" data-testid="button-open-dataroom" asChild>
+ <Link href={viewerRole === "investor" ? `/investor/companies/${data.id}?tab=dataroom` : "/founder/dataroom"}>Open dataroom</Link>
+ </Button>
  </SectionCard>
  )}
 
@@ -590,12 +590,12 @@ function CompanyDetailsView({
  <div className="text-xs text-muted-foreground mb-2" data-testid="text-termsheet-info">Available · last updated {data.termSheet.lastUpdated}</div>
  {engineAttribution && <div className="text-[10px] text-muted-foreground mb-2 italic">Generated using {engineAttribution.replace("Computed by ", "")} template.</div>}
  {/* Sprint 20 Wave 2 — role-based termsheet routing (defect 56) */}
+ <Button variant="outline" size="sm" className="text-xs" data-testid="button-open-termsheet" asChild>
  <Link href={viewerRole === "investor"
  ? `/investor/companies/${data.id}?tab=your-decision`
  : (data.rounds && data.rounds[0] ? `/founder/rounds/${data.rounds[0].id}/termsheet` : "#")
- }>
- <Button variant="outline" size="sm" className="text-xs" data-testid="button-open-termsheet">Open term sheet</Button>
- </Link>
+ }>Open term sheet</Link>
+ </Button>
  </SectionCard>
  )}
 

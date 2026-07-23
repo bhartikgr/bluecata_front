@@ -111,11 +111,11 @@ export default function InvestorDashboard() {
         description="Portfolio analytics, M&A intelligence, round activity, and the companies that have invited you onto their cap table."
         actions={
           <div className="flex gap-2">
-            <Link href="/investor/crm">
-              <Button variant="outline" data-testid="button-go-crm"><Building2 className="h-4 w-4 mr-2" /> CRM</Button>
-            </Link>
-            <Link href="/investor/invitations">
-              <Button className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-invitations">
+            <Button variant="outline" data-testid="button-go-crm" asChild>
+              <Link href="/investor/crm"><Building2 className="h-4 w-4 mr-2" /> CRM</Link>
+            </Button>
+            <Button className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-invitations" asChild>
+              <Link href="/investor/invitations">
                 <Inbox className="h-4 w-4 mr-2" /> Invitations
                 {pendingCount > 0 && (
                   <span
@@ -125,8 +125,8 @@ export default function InvestorDashboard() {
                     {pendingCount}
                   </span>
                 )}
-              </Button>
-            </Link>
+              </Link>
+            </Button>
           </div>
         }
       />
@@ -147,11 +147,11 @@ export default function InvestorDashboard() {
                 Renew to re-enable the Capavate ↔ Collective toggle and Collective deal-room access. Cap-table access on Capavate is unaffected.
               </div>
             </div>
-            <Link href="/investor/apply-to-collective">
-              <Button size="sm" variant="outline" className="shrink-0" data-testid="button-renew-collective">
+            <Button size="sm" variant="outline" className="shrink-0" data-testid="button-renew-collective" asChild>
+              <Link href="/investor/apply-to-collective">
                 Renew membership
-              </Button>
-            </Link>
+              </Link>
+            </Button>
           </div>
         )}
 
@@ -174,7 +174,7 @@ export default function InvestorDashboard() {
                 <div className="text-sm text-muted-foreground mt-0.5">{a ? `MOIC ${a.moic.toFixed(2)}x · IRR ${a.irr.toFixed(1)}%` : "Loading analytics…"}</div>
               </div>
               <div className="flex items-center gap-2">
-                <Link href="/investor/portfolio"><Button size="sm" variant="outline" data-testid="bento-action-portfolio"><Briefcase className="h-3.5 w-3.5 mr-1.5" /> View portfolio</Button></Link>
+                <Button size="sm" variant="outline" data-testid="bento-action-portfolio" asChild><Link href="/investor/portfolio"><Briefcase className="h-3.5 w-3.5 mr-1.5" /> View portfolio</Link></Button>
               </div>
             </CardContent>
           </Card>
@@ -254,9 +254,9 @@ export default function InvestorDashboard() {
               <CardTitle className="text-sm">Quick actions</CardTitle>
             </CardHeader>
             <CardContent className="flex flex-wrap gap-2">
-              <Link href="/investor/invitations"><Button size="sm" variant="outline" data-testid="bento-action-invitations"><Inbox className="h-3.5 w-3.5 mr-1.5" /> Invitations{pendingCount > 0 && <span data-testid="badge-pending-invitations-bento" className="ml-1.5 inline-flex items-center justify-center min-w-[1.125rem] h-4 px-1 rounded-full text-[10px] font-semibold bg-[hsl(0_100%_40%)] text-white">{pendingCount}</span>}</Button></Link>
-              <Link href="/investor/crm"><Button size="sm" variant="outline" data-testid="bento-action-crm"><Building2 className="h-3.5 w-3.5 mr-1.5" /> CRM</Button></Link>
-              <Link href="/investor/profile"><Button size="sm" variant="outline" data-testid="bento-action-profile"><Sparkles className="h-3.5 w-3.5 mr-1.5" /> Update profile</Button></Link>
+              <Button size="sm" variant="outline" data-testid="bento-action-invitations" asChild><Link href="/investor/invitations"><Inbox className="h-3.5 w-3.5 mr-1.5" /> Invitations{pendingCount > 0 && <span data-testid="badge-pending-invitations-bento" className="ml-1.5 inline-flex items-center justify-center min-w-[1.125rem] h-4 px-1 rounded-full text-[10px] font-semibold bg-[hsl(0_100%_40%)] text-white">{pendingCount}</span>}</Link></Button>
+              <Button size="sm" variant="outline" data-testid="bento-action-crm" asChild><Link href="/investor/crm"><Building2 className="h-3.5 w-3.5 mr-1.5" /> CRM</Link></Button>
+              <Button size="sm" variant="outline" data-testid="bento-action-profile" asChild><Link href="/investor/profile"><Sparkles className="h-3.5 w-3.5 mr-1.5" /> Update profile</Link></Button>
             </CardContent>
           </Card>
         </div>

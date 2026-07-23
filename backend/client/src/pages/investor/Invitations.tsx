@@ -285,14 +285,14 @@ function InvitationCard({ inv: i }: { inv: Inv }) {
               grow to fit (h-auto + vertical padding), shrink the text a touch,
               and keep the icon from pushing the text off-canvas. */}
           <div className="md:w-60 flex flex-col gap-2 shrink-0">
-            <Link href={`/investor/invitations/${i.id}`}>
-              <Button className="w-full h-auto min-h-9 py-2 whitespace-normal text-center text-sm leading-snug bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid={`button-open-${i.id}`}>
+            <Button className="w-full h-auto min-h-9 py-2 whitespace-normal text-center text-sm leading-snug bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid={`button-open-${i.id}`} asChild>
+              <Link href={`/investor/invitations/${i.id}`}>
                 <span className="inline-flex items-center justify-center gap-1.5">Review Deal and Soft-Circle <ArrowRight className="h-4 w-4 shrink-0" /></span>
-              </Button>
-            </Link>
-            <Link href={`/investor/invitations/${i.id}?tab=decision`}>
-              <Button variant="outline" className="w-full" data-testid={`button-decide-${i.id}`}>Decline</Button>
-            </Link>
+              </Link>
+            </Button>
+            <Button variant="outline" className="w-full" data-testid={`button-decide-${i.id}`} asChild>
+              <Link href={`/investor/invitations/${i.id}?tab=decision`}>Decline</Link>
+            </Button>
           </div>
         </div>
       </CardContent>

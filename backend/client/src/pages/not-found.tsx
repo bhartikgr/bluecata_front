@@ -61,12 +61,12 @@ export default function NotFound() {
           </p>
 
           <div className="mt-6">
-            <Link href={home.href}>
-              <Button data-testid="button-404-home" className="gap-2">
+            <Button data-testid="button-404-home" className="gap-2" asChild>
+              <Link href={home.href}>
                 <Compass className="h-4 w-4" />
                 {home.label}
-              </Button>
-            </Link>
+              </Link>
+            </Button>
           </div>
         </CardContent>
       </Card>

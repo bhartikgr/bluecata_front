@@ -130,11 +130,11 @@ export default function AdminNotifications() {
         description="Author, target, schedule, and monitor platform notification campaigns."
         breadcrumbs={[{ label: "Admin" }, { label: "Notifications" }]}
         actions={
-          <Link href="/admin/notifications/new">
-            <Button size="sm" className="gap-2" data-testid="button-new-campaign">
+          <Button size="sm" className="gap-2" data-testid="button-new-campaign" asChild>
+            <Link href="/admin/notifications/new">
               <Plus className="h-4 w-4" /> New campaign
-            </Button>
-          </Link>
+            </Link>
+          </Button>
         }
       />
       <PageBody>
@@ -275,9 +275,9 @@ export default function AdminNotifications() {
                         )}
                       </TableCell>
                       <TableCell>
-                        <Link href={`/admin/notifications/${c.id}`}>
-                          <Button variant="ghost" size="sm" data-testid={`button-edit-${c.id}`}>Edit</Button>
-                        </Link>
+                        <Button variant="ghost" size="sm" data-testid={`button-edit-${c.id}`} asChild>
+                          <Link href={`/admin/notifications/${c.id}`}>Edit</Link>
+                        </Button>
                       </TableCell>
                     </TableRow>
                   ))}

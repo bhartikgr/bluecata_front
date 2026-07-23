@@ -388,9 +388,7 @@ export default function FounderInvestorCRM() {
                 </DialogFooter>
               </DialogContent>
             </Dialog>
-            <Link href="/founder/crm/new">
-              <Button className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] text-white" data-testid="button-add-investor"><Plus className="h-4 w-4 mr-2" /> Add investor</Button>
-            </Link>
+            <Button className="bg-[hsl(219_45%_20%)] hover:bg-[hsl(219_45%_15%)] text-white" data-testid="button-add-investor" asChild><Link href="/founder/crm/new"><Plus className="h-4 w-4 mr-2" /> Add investor</Link></Button>
           </div>
         }
       />
@@ -555,13 +553,9 @@ export default function FounderInvestorCRM() {
                     </Select>
                     <div className="flex gap-1">
                       <Button size="sm" variant="outline" className="flex-1" onClick={() => setEditing(c)} data-testid={`button-edit-notes-${c.id}`}>Notes</Button>
-                      <Link href={`/founder/messages?contactId=${c.investorId}`}>
-                        <Button size="sm" variant="ghost" data-testid={`button-message-${c.id}`}><MessageSquare className="h-3.5 w-3.5" /></Button>
-                      </Link>
+                      <Button size="sm" variant="ghost" data-testid={`button-message-${c.id}`} asChild><Link href={`/founder/messages?contactId=${c.investorId}`}><MessageSquare className="h-3.5 w-3.5" /></Link></Button>
                       {/* Sprint 19 I — wire Mail button to navigate to messages?contactId */}
-                      <Link href={`/founder/messages?contactId=${c.investorId}`}>
-                        <Button size="sm" variant="ghost" data-testid={`button-mail-${c.id}`}><Mail className="h-3.5 w-3.5" /></Button>
-                      </Link>
+                      <Button size="sm" variant="ghost" data-testid={`button-mail-${c.id}`} asChild><Link href={`/founder/messages?contactId=${c.investorId}`}><Mail className="h-3.5 w-3.5" /></Link></Button>
                       <Button
                         size="sm"
                         variant="ghost"

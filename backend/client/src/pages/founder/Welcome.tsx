@@ -340,21 +340,21 @@ export default function FounderWelcome() {
             <CardTitle className="text-sm font-semibold">Quick actions</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
-            <Link href="/founder/rounds/new">
-              <Button size="sm" variant="outline" className="w-full justify-start" data-testid="quick-create-round">
+            <Button size="sm" variant="outline" className="w-full justify-start" data-testid="quick-create-round" asChild>
+              <Link href="/founder/rounds/new">
                 <Plus className="h-3.5 w-3.5 mr-2" /> Create round
-              </Button>
-            </Link>
-            <Link href="/founder/crm">
-              <Button size="sm" variant="outline" className="w-full justify-start" data-testid="quick-invite-investor">
+              </Link>
+            </Button>
+            <Button size="sm" variant="outline" className="w-full justify-start" data-testid="quick-invite-investor" asChild>
+              <Link href="/founder/crm">
                 <Send className="h-3.5 w-3.5 mr-2" /> Invite investor
-              </Button>
-            </Link>
-            <Link href="/founder/dataroom">
-              <Button size="sm" variant="outline" className="w-full justify-start" data-testid="quick-upload-doc">
+              </Link>
+            </Button>
+            <Button size="sm" variant="outline" className="w-full justify-start" data-testid="quick-upload-doc" asChild>
+              <Link href="/founder/dataroom">
                 <Upload className="h-3.5 w-3.5 mr-2" /> Upload document
-              </Button>
-            </Link>
+              </Link>
+            </Button>
           </CardContent>
         </Card>
 

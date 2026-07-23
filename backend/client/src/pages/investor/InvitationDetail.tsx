@@ -457,9 +457,9 @@ export default function InvitationDetail() {
      <>
       {/* COS-6 (Wave 4): duplicate text-link glossary removed here; PageHeader
           renders the shared icon glossary control (button-open-glossary). */}
-      <Link href="/investor/invitations">
-       <Button variant="ghost" data-testid="button-back"><ArrowLeft className="h-4 w-4 mr-2" /> All invitations</Button>
-      </Link>
+      <Button variant="ghost" data-testid="button-back" asChild>
+       <Link href="/investor/invitations"><ArrowLeft className="h-4 w-4 mr-2" /> All invitations</Link>
+      </Button>
      </>
     }
    />
@@ -478,11 +478,11 @@ export default function InvitationDetail() {
        self-declaration. Soft-circling is unaffected, but funding is blocked until
        your declaration is on file.
       </p>
-      <Link href="/investor/accreditation">
-       <Button size="sm" data-testid="button-goto-accreditation">
+      <Button size="sm" data-testid="button-goto-accreditation" asChild>
+       <Link href="/investor/accreditation">
         <ShieldCheck className="h-4 w-4 mr-2" /> Complete accreditation
-       </Button>
-      </Link>
+       </Link>
+      </Button>
      </div>
     )}
     {/* Header strip */}

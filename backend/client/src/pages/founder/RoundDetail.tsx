@@ -417,7 +417,7 @@ export default function RoundDetail() {
  actions={
  <>
  <GlossaryLink />
- <Link href="/founder/rounds"><Button variant="ghost" data-testid="button-back"><ArrowLeft className="h-4 w-4 mr-2" /> All rounds</Button></Link>
+ <Button variant="ghost" data-testid="button-back" asChild><Link href="/founder/rounds"><ArrowLeft className="h-4 w-4 mr-2" /> All rounds</Link></Button>
  <Button variant="outline" onClick={() => setBulkOpen(true)} data-testid="button-bulk-invite"><Upload className="h-4 w-4 mr-2" /> Bulk CSV</Button>
  <Button variant="outline" onClick={() => setBackfillOpen(true)} data-testid="button-backfill-investor"><Users className="h-4 w-4 mr-2" /> Record existing investors</Button>
  <Button onClick={() => setInviteOpen(true)} className="bg-[hsl(0_100%_40%)] hover:bg-[hsl(0_100%_32%)] text-white" data-testid="button-invite"><Send className="h-4 w-4 mr-2" /> Invite investor</Button>
@@ -646,7 +646,7 @@ export default function RoundDetail() {
  <tr>
  <td colSpan={5} className="px-6 py-10 text-center" data-testid="empty-softcircles">
  <div className="text-sm text-muted-foreground italic">Soft-circles will appear here when investors commit.</div>
- <Link href="/founder/crm"><Button size="sm" variant="outline" className="mt-3" data-testid="button-empty-crm">Open investor CRM <ArrowRight className="h-3.5 w-3.5 ml-1" /></Button></Link>
+ <Button size="sm" variant="outline" className="mt-3" data-testid="button-empty-crm" asChild><Link href="/founder/crm">Open investor CRM <ArrowRight className="h-3.5 w-3.5 ml-1" /></Link></Button>
  </td>
  </tr>
  )}

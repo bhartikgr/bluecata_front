@@ -8,6 +8,7 @@
     "dev:windows": "set NODE_ENV=development && tsx server/index.ts",
     "dev:ps": "$env:NODE_ENV='development'; tsx server/index.ts",
     "guard": "tsx scripts/silent-drop-guard/guard.ts",
+    "lint:no-button-in-link": "eslint --config eslint.config.js \"client/src/**/*.tsx\"",
     "guard:test": "vitest run --config scripts/silent-drop-guard/vitest.guard.config.ts",
     "build": "tsx script/build.ts",
     "start": "NODE_ENV=production node dist/index.cjs",

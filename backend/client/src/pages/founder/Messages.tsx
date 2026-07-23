@@ -127,40 +127,40 @@ export default function Messages() {
                 routes to the cap-table CHANNEL inside Messages (per spec) rather
                 than the cap-table sheet at /founder/captable. The latter remains
                 accessible from the dashboard cap-table card. */}
-            <Link href={`/founder/messages?channel=cap_table&companyId=${encodeURIComponent(companyId)}`}>
-              <Button size="sm" variant="outline" className="h-7 text-xs" data-testid="link-captable">
+            <Button size="sm" variant="outline" className="h-7 text-xs" data-testid="link-captable" asChild>
+              <Link href={`/founder/messages?channel=cap_table&companyId=${encodeURIComponent(companyId)}`}>
                 <Users className="h-3 w-3 mr-1" /> Cap-table channel ({investedHolders.length} holders)
                 <ExternalLink className="h-3 w-3 ml-1 opacity-60" />
-              </Button>
-            </Link>
-            <Link href="/founder/captable">
-              <Button size="sm" variant="ghost" className="h-7 text-xs" data-testid="link-captable-sheet">
+              </Link>
+            </Button>
+            <Button size="sm" variant="ghost" className="h-7 text-xs" data-testid="link-captable-sheet" asChild>
+              <Link href="/founder/captable">
                 <ExternalLink className="h-3 w-3 mr-1" /> Open cap-table sheet
-              </Button>
-            </Link>
+              </Link>
+            </Button>
 
-            <Link href="/founder/crm">
-              <Button size="sm" variant="outline" className="h-7 text-xs" data-testid="link-crm">
+            <Button size="sm" variant="outline" className="h-7 text-xs" data-testid="link-crm" asChild>
+              <Link href="/founder/crm">
                 <BarChart3 className="h-3 w-3 mr-1" /> CRM ({crmQ.data?.length ?? 0})
                 <ExternalLink className="h-3 w-3 ml-1 opacity-60" />
-              </Button>
-            </Link>
+              </Link>
+            </Button>
 
-            <Link href="/founder/dataroom">
-              <Button size="sm" variant="outline" className="h-7 text-xs" data-testid="link-dataroom">
+            <Button size="sm" variant="outline" className="h-7 text-xs" data-testid="link-dataroom" asChild>
+              <Link href="/founder/dataroom">
                 <FileBox className="h-3 w-3 mr-1" /> Dataroom
                 <ExternalLink className="h-3 w-3 ml-1 opacity-60" />
-              </Button>
-            </Link>
+              </Link>
+            </Button>
 
             {activeRounds.map(r => (
-              <Link key={r.id} href={`/founder/rounds/${r.id}`}>
-                <Button size="sm" variant="outline" className="h-7 text-xs" data-testid={`link-round-${r.id}`}>
+              <Button key={r.id} size="sm" variant="outline" className="h-7 text-xs" data-testid={`link-round-${r.id}`} asChild>
+                <Link href={`/founder/rounds/${r.id}`}>
                   <Badge variant="outline" className="h-4 mr-1 px-1 text-[9px] border-[hsl(0_100%_40%)] text-[hsl(0_100%_40%)]">{r.state}</Badge>
                   {r.name}
                   <ExternalLink className="h-3 w-3 ml-1 opacity-60" />
-                </Button>
-              </Link>
+                </Link>
+              </Button>
             ))}
           </div>
 
