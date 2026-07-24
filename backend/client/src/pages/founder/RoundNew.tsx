@@ -412,6 +412,10 @@ export default function RoundNew() {
  // server-side (they land in the Invitations table AND get emailed), so we
  // surface the invitation summary instead of silently swallowing.
  let inviteSummary: { invited?: number; skippedNoEmail?: number; inviteErrors?: Array<{ email: string; error: string }> } | null = null;
+ // W-AVI64 FIX 1 — track a TOTAL failure of the picks PATCH so we don't
+ // silently swallow it. If the request itself throws, the investors were
+ // neither recorded nor invited; the founder must be told (not left guessing).
+ let picksPatchFailed = false;
  if (selectedShareholders.length > 0) {
  try {
  const r = await apiRequest("PATCH", `/api/founder/rounds/${data.id}/initial-shareholders`, {
@@ -437,7 +441,10 @@ export default function RoundNew() {
  });
  inviteSummary = await r.json().catch(() => null);
  } catch {
- /* non-fatal: round exists; investors can be added from the round page */
+ /* non-fatal: round exists; investors can be added from the round page.
+    W-AVI64 FIX 1 — but flag it so the toast tells the founder the picks
+    were not recorded/invited rather than silently swallowing. */
+ picksPatchFailed = true;
  }
  }
  // A4 (W-FIX1c) — chain-create the optional parallel warrant / option-pool
@@ -486,13 +493,16 @@ export default function RoundNew() {
  if (invited > 0) parts.push(`${invited} investor${invited === 1 ? "" : "s"} invited by email.`);
  if (noEmail > 0) parts.push(`${noEmail} added without an email (no invite sent).`);
  if (failed > 0) parts.push(`${failed} invitation${failed === 1 ? "" : "s"} could not be sent.`);
+ // W-AVI64 FIX 1 — surface a TOTAL picks-PATCH failure so the founder knows
+ // the selected investors were not added/invited (add them from the round page).
+ if (picksPatchFailed) parts.push(`Your selected investors could not be saved to the round — add them from the round page.`);
  if (addonCreated > 0) parts.push(`${addonCreated} warrant/option-pool issuance${addonCreated === 1 ? "" : "s"} attached to this round.`);
  toast({
   title: isUploadPath ? "Almost done — upload your term sheet" : "Round created",
   description: isUploadPath
    ? `Once your term sheet is uploaded, the round will be created.${parts.length > 1 ? " " + parts.slice(1).join(" ") : ""}`
    : parts.join(" "),
-  variant: failed > 0 ? "destructive" : undefined,
+  variant: (failed > 0 || picksPatchFailed) ? "destructive" : undefined,
  });
  // Shadie V6 7a — respect the Step-5 term-sheet choice. "upload" routes
  // straight to the term-sheet page WITH ?action=upload so it lands directly on
@@ -1189,17 +1199,27 @@ export default function RoundNew() {
  )}
  {(crmQ.data ?? []).map((c) => {
  const already = selectedShareholders.some((s) => s.source === "crm" && s.crmContactId === c.id);
+ // W-AVI64 FIX 1 — a CRM contact with no email on file cannot be invited
+ // (the server needs an email to create the round_invitation). Rather than
+ // silently adding an un-invitable row that never reaches the investor, we
+ // block "+ Add" and tell the founder why, so they can add an email first.
+ const crmEmail = (c.email ?? "").trim();
+ const hasEmail = crmEmail.length > 0;
  return (
  <div key={c.id} className="flex items-center justify-between px-3 py-2 text-sm" data-testid={`crm-row-${c.id}`}>
  <div className="min-w-0">
  <div className="font-medium truncate">{c.name}</div>
  <div className="text-xs text-muted-foreground truncate">{c.firmName ?? "—"} · {c.email ?? "no email"}{c.stage ? ` · ${String(c.stage).replace("_", " ")}` : ""}</div>
+ {!hasEmail && (
+ <div className="text-[11px] text-amber-600 mt-0.5" data-testid={`crm-no-email-hint-${c.id}`}>no email on file — add one to invite</div>
+ )}
  </div>
  <Button
  size="sm"
  variant={already ? "ghost" : "outline"}
- disabled={already}
- onClick={() => setSelectedShareholders((prev) => [...prev, { name: c.name, email: c.email ?? "", checkSize: "", source: "crm", crmContactId: c.id }])}
+ disabled={already || !hasEmail}
+ title={!hasEmail ? "This CRM contact has no email on file — add one to invite them." : undefined}
+ onClick={() => setSelectedShareholders((prev) => [...prev, { name: c.name, email: crmEmail, checkSize: "", source: "crm", crmContactId: c.id }])}
  data-testid={`button-add-crm-${c.id}`}
  >{already ? "Added" : "+ Add"}</Button>
  </div>

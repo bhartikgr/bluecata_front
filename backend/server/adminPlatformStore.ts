@@ -1078,9 +1078,41 @@ const billingMetrics = {
 
 /* ------------ Telemetry power (event browser + funnel + cohort) ------------ */
 function telemetryEvents() {
+  type TelRow = { id: string; ts: string; eventType: string; actor: string; entity: string; payload: Record<string, unknown> };
+  /* W-AVI64 FIX 5 — the Event Explorer (and funnel/cohort/CSV, all of which
+   * call this helper) previously read a SYNTHETIC 60-row seed keyed off
+   * ALL_OUTBOUND_EVENT_TYPES. That store is disjoint from the DB-backed
+   * `telemetry_events` table that the LIVE activity feed reads via
+   * getRecentEvents(). So real soft_circle_submitted / captable_commit events
+   * shown in the dashboard feed never appeared in the Explorer (0-of-0). Read
+   * the SAME durable store the live feed uses and map it to this helper's row
+   * shape. Fall back to the synthetic seed ONLY when the real store is empty
+   * (sandbox / fresh boot) so existing behavior with no events is preserved and
+   * nothing double-counts. */
+  try {
+    const real = getRecentEvents(5_000);
+    if (Array.isArray(real) && real.length > 0) {
+      return real.map((e): TelRow => {
+        const payload = (e.payload && typeof e.payload === "object" ? e.payload : {}) as Record<string, unknown>;
+        const entity =
+          (typeof payload.companyId === "string" && payload.companyId) ||
+          e.aggregateId ||
+          "";
+        return {
+          id: e.eventId,
+          ts: e.occurredAt,
+          eventType: e.eventType,
+          actor: e.actor?.userId ?? "u_unknown",
+          entity: String(entity),
+          payload,
+        };
+      });
+    }
+  } catch { /* fall through to synthetic seed below */ }
+
   // Synthesize from existing seed; reuse event types from the bridge.
   const types = ALL_OUTBOUND_EVENT_TYPES;
-  const out: Array<{ id: string; ts: string; eventType: string; actor: string; entity: string; payload: Record<string, unknown> }> = [];
+  const out: TelRow[] = [];
   for (let i = 0; i < 60; i++) {
     out.push({
       id: `tel_${i}`,

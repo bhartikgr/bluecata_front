@@ -322,30 +322,147 @@ interface DmCandidate {
 }
 
 /**
- * Enumerate plausible DM counterparties for the viewer from DURABLE identity
- * tables (auth_users — the canonical registry). canDM() then filters this set
- * down to the LOCKED-permitted recipients; this function only widens the pool.
- * Read-only, fail-soft to [] so the inbox degrades gracefully.
+ * W-AVI64 FIX 2 — RELATIONSHIP-SCOPED DM candidate enumeration.
+ *
+ * Root cause of "No eligible contacts" from the investor side: this function
+ * used to return a flat `SELECT id,email,name FROM auth_users LIMIT 200` scan.
+ * canDM() fails CLOSED unless it can prove a real relationship, so an investor
+ * viewing an arbitrary auth_users slice never reliably included the founder who
+ * invited them → every candidate was denied → empty inbox. (Founder→investor
+ * happened to work only because the founder's own CRM contacts landed in the
+ * flat slice.)
+ *
+ * Fix: UNION the viewer's REAL counterparties on top of the existing auth_users
+ * base set (union, not replace — nothing that worked before breaks), then still
+ * pass every candidate through canDM() at the call site (fail-closed gate is
+ * unchanged; we only widen the pool). Counterparties resolved:
+ *   - companies the viewer is tied to (as a founder member, as an invited
+ *     investor by email, as a cap-table committer, or as a founder-CRM contact)
+ *   - for each such company: the founder owner user(s), the invited investors
+ *     (email→auth_users), and cap-table co-party investors
+ *   - the invited_by_user_id directly recorded on the viewer's invitations
+ * Dedup by userId; cap at 500. Read-only, fail-soft per-query so a missing
+ * table or column degrades gracefully instead of emptying the inbox.
  */
 function listDmCandidates(viewerId: string): DmCandidate[] {
-  try {
-    const db: any = rawDb();
-    const rows: any[] = db
-      .prepare(
-        `SELECT id, email, name FROM auth_users
-          WHERE id != ? AND COALESCE(status, 'active') != 'disabled'
-          ORDER BY COALESCE(name, email) ASC
-          LIMIT 200`,
-      )
-      .all(viewerId);
-    return rows.map((r) => ({
-      userId: String(r.id),
-      legalName: typeof r.name === "string" ? r.name : undefined,
-    }));
-  } catch (err) {
-    log.warn("[v25.46] listDmCandidates failed:", (err as Error).message);
-    return [];
+  const db: any = (() => {
+    try { return rawDb(); } catch { return null; }
+  })();
+  if (!db) return [];
+
+  const byId = new Map<string, DmCandidate>();
+  const add = (id: unknown, name?: unknown): void => {
+    const uid = typeof id === "string" ? id.trim() : "";
+    if (!uid || uid === viewerId) return;
+    if (byId.size >= 500 && !byId.has(uid)) return;
+    const existing = byId.get(uid);
+    const legalName = typeof name === "string" && name.trim() ? name.trim() : existing?.legalName;
+    byId.set(uid, { userId: uid, legalName });
+  };
+  const safeAll = (sql: string, ...params: unknown[]): any[] => {
+    try { return db.prepare(sql).all(...params) as any[]; } catch { return []; }
+  };
+
+  // Resolve the viewer's canonical email so we can match email-keyed rows
+  // (round_invitations / founder_crm_contacts store the counterparty email,
+  // not a userId, for not-yet-registered investors).
+  let viewerEmail = "";
+  {
+    const row = safeAll(`SELECT email FROM auth_users WHERE id = ? LIMIT 1`, viewerId)[0];
+    viewerEmail = typeof row?.email === "string" ? row.email.trim().toLowerCase() : "";
   }
+
+  // ── 1. Base set (existing behavior; union, not replace). ──
+  for (const r of safeAll(
+    `SELECT id, email, name FROM auth_users
+       WHERE id != ? AND COALESCE(status, 'active') != 'disabled'
+       ORDER BY COALESCE(name, email) ASC
+       LIMIT 200`,
+    viewerId,
+  )) {
+    add(r.id, r.name);
+  }
+
+  // ── 2. Companies the viewer is related to (any of four relationships). ──
+  const companyIds = new Set<string>();
+  const noteCompany = (rows: any[], key = "company_id"): void => {
+    for (const r of rows) {
+      const cid = typeof r?.[key] === "string" ? r[key].trim() : "";
+      if (cid) companyIds.add(cid);
+    }
+  };
+  // 2a. viewer is a founder/member of the company.
+  noteCompany(safeAll(
+    `SELECT DISTINCT company_id FROM company_members
+       WHERE user_id = ? AND COALESCE(is_active, 1) = 1 AND deleted_at IS NULL`,
+    viewerId,
+  ));
+  // 2b. viewer was invited to a round (email-keyed) → owning company.
+  if (viewerEmail) {
+    noteCompany(safeAll(
+      `SELECT DISTINCT company_id FROM round_invitations
+         WHERE lower(trim(investor_email)) = ? AND deleted_at IS NULL`,
+      viewerEmail,
+    ));
+    // Also directly capture the inviter recorded on the invitation.
+    for (const r of safeAll(
+      `SELECT DISTINCT invited_by_user_id FROM round_invitations
+         WHERE lower(trim(investor_email)) = ? AND deleted_at IS NULL`,
+      viewerEmail,
+    )) {
+      add(r.invited_by_user_id);
+    }
+  }
+  // 2c. viewer is a cap-table committer → the company they committed to.
+  noteCompany(safeAll(
+    `SELECT DISTINCT company_id FROM captable_commits
+       WHERE investor_id = ? AND deleted_at IS NULL`,
+    viewerId,
+  ));
+  // 2d. viewer is referenced by a founder-CRM contact (by id or email).
+  noteCompany(safeAll(
+    `SELECT DISTINCT company_id FROM founder_crm_contacts
+       WHERE (investor_id = ? OR lower(trim(email)) = ?) AND deleted_at IS NULL`,
+    viewerId,
+    viewerEmail,
+  ));
+
+  // ── 3. For each related company, pull the real counterparties. ──
+  for (const cid of companyIds) {
+    if (byId.size >= 500) break;
+    // 3a. founder owner user(s).
+    for (const r of safeAll(
+      `SELECT cm.user_id AS user_id, au.name AS name
+         FROM company_members cm
+         LEFT JOIN auth_users au ON au.id = cm.user_id
+        WHERE cm.company_id = ? AND cm.role IN ('founder','co_founder')
+          AND COALESCE(cm.is_active, 1) = 1 AND cm.deleted_at IS NULL`,
+      cid,
+    )) {
+      add(r.user_id, r.name);
+    }
+    // 3b. invited investors on this company's rounds → resolve email→auth_users
+    // so a registered investor gets a stable userId canDM can evaluate.
+    for (const r of safeAll(
+      `SELECT au.id AS user_id, au.name AS name
+         FROM round_invitations ri
+         JOIN auth_users au ON lower(trim(au.email)) = lower(trim(ri.investor_email))
+        WHERE ri.company_id = ? AND ri.deleted_at IS NULL`,
+      cid,
+    )) {
+      add(r.user_id, r.name);
+    }
+    // 3c. cap-table co-party investors on this company.
+    for (const r of safeAll(
+      `SELECT DISTINCT investor_id FROM captable_commits
+         WHERE company_id = ? AND deleted_at IS NULL`,
+      cid,
+    )) {
+      add(r.investor_id);
+    }
+  }
+
+  return Array.from(byId.values()).slice(0, 500);
 }
 
 export default registerV2546Routes;

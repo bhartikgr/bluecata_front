@@ -31,6 +31,16 @@ import {
 } from "./captableCommitStore";
 import { updateSubscription } from "./subscriptionsStore";
 import { log } from "./lib/logger";
+/* W-AVI64 FIX 4 — search must read the SAME sources the admin Companies /
+   Investors pages read, or it finds nothing even for a live company (e.g.
+   "Neou"). getAllCompaniesFromDb() is the DB-authoritative company reader used
+   by /api/admin/companies[/full]; listAllInvitations() + listActive (collective
+   members) are what /api/admin/investors derives investors from. We UNION these
+   onto the existing raw-SQL queries (union, not replace) so nothing that
+   already matched breaks. Read-only. */
+import { getAllCompaniesFromDb } from "./multiCompanyStore";
+import { listAllInvitations } from "./roundInvitationsStore";
+import { listActive as listActiveCollectiveMembers } from "./collectiveMembershipStore";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -273,6 +283,84 @@ export function registerAdminV25Routes(app: Express): void {
           )
         LIMIT 10
       `).all(like, like) as Array<Record<string, unknown>>;
+
+      /* W-AVI64 FIX 4 — union in the DB-authoritative company reader (the same
+         source the admin Companies page uses) so a company that exists in the
+         `companies` table but has no company_members/users join row (or is only
+         visible via getAllCompaniesFromDb's cross-tenant read) still matches by
+         name / legal name. Dedup by company id; raw-SQL rows win when both. */
+      const founderIds = new Set(founders.map((f) => String(f.id)));
+      const qLower = q.toLowerCase();
+      try {
+        for (const c of getAllCompaniesFromDb()) {
+          if (founders.length >= 25) break;
+          const id = String(c.companyId);
+          if (founderIds.has(id)) continue;
+          const name = (c.companyName ?? "").toLowerCase();
+          const legal = (c.legalName ?? "").toLowerCase();
+          if (!name.includes(qLower) && !legal.includes(qLower)) continue;
+          founders.push({
+            id,
+            company_name: c.companyName ?? "",
+            email: null,
+            contact_name: null,
+            sector: (c as { sector?: string }).sector ?? null,
+            stage: (c as { stage?: string }).stage ?? null,
+          });
+          founderIds.add(id);
+        }
+      } catch (e) {
+        log.warn("[adminV25Store.search] company-store union skipped:", (e as Error).message);
+      }
+
+      /* W-AVI64 FIX 4 — union in the invitation/collective-derived investors
+         (the same source /api/admin/investors uses). The old query only saw
+         rows in `users` with role='investor'; live investors are largely
+         invited (round_invitations) or collective members and were invisible to
+         search. Dedup by lowercased email, falling back to userId. */
+      const investorKeys = new Set(
+        investors.map((i) => String((i.email as string | null) ?? i.id ?? "").toLowerCase()),
+      );
+      try {
+        for (const inv of listAllInvitations()) {
+          if (investors.length >= 25) break;
+          const email = (inv.investorEmail ?? "").toLowerCase();
+          const name = (inv.investorName ?? "").toLowerCase();
+          if (!email.includes(qLower) && !name.includes(qLower)) continue;
+          const key = email || String(inv.redeemedByUserId ?? inv.id).toLowerCase();
+          if (investorKeys.has(key)) continue;
+          const redeemed = inv.state === "accepted" || inv.redeemedAt != null;
+          investors.push({
+            id: inv.redeemedByUserId ?? `inv_${inv.id}`,
+            name: inv.investorName || inv.investorEmail || "Investor",
+            email: inv.investorEmail ?? null,
+            role: "investor",
+            status: redeemed ? "active" : "invited",
+          });
+          investorKeys.add(key);
+        }
+      } catch (e) {
+        log.warn("[adminV25Store.search] investor-invitation union skipped:", (e as Error).message);
+      }
+      try {
+        for (const m of listActiveCollectiveMembers()) {
+          if (investors.length >= 25) break;
+          const uid = String(m.userId ?? "");
+          const key = uid.toLowerCase();
+          if (!key.includes(qLower)) continue;
+          if (investorKeys.has(key)) continue;
+          investors.push({
+            id: uid,
+            name: uid,
+            email: null,
+            role: "investor",
+            status: "active",
+          });
+          investorKeys.add(key);
+        }
+      } catch (e) {
+        log.warn("[adminV25Store.search] collective-member union skipped:", (e as Error).message);
+      }
 
       const actor = actorId(req);
       appendAdminAudit(actor, "search", "admin.search", { q, founders: founders.length, investors: investors.length, partners: partners.length, collective_members: collective_members.length });

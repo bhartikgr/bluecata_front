@@ -39,6 +39,11 @@ import type { Express, Request, Response } from "express";
 import { getUserContext } from "./userContext";
 import { appendAdminAudit } from "../adminPlatformStore";
 import { log } from "./logger";
+/* W-AVI64 FIX 1 — resolve a CRM pick's email from the authoritative
+   founder_crm_contacts table when the client sent no email, so a CRM investor
+   who has an email on file still gets a round invitation (no silent
+   skippedNoEmail). Read-only; same DB handle used across this tree. */
+import { rawDb } from "../db/connection";
 /* v25.51 5a — static ESM import (no cycle: founderCrmStore's dep closure never
    reaches this file). Replaces the broken runtime require("../founderCrmStore")
    so the manual-investor → founder-CRM upsert-and-link actually runs. */
@@ -148,6 +153,28 @@ function companyForRound(roundId: string): string | null {
   }
 }
 
+/**
+ * W-AVI64 FIX 1 — best-effort lookup of a CRM contact's email from the
+ * authoritative founder_crm_contacts table (company-scoped). Returns a trimmed
+ * email string, or null when the contact has none / cannot be read. Never
+ * throws — a lookup failure must not fail the shareholder save or invite loop.
+ */
+function lookupCrmContactEmail(companyId: string, crmContactId: string): string | null {
+  if (!companyId || !crmContactId) return null;
+  try {
+    const driver = rawDb() as unknown as { prepare?: (sql: string) => { get: (...a: unknown[]) => unknown } };
+    if (!driver || typeof driver.prepare !== "function") return null;
+    const row = driver
+      .prepare(`SELECT email FROM founder_crm_contacts WHERE id = ? AND company_id = ? AND deleted_at IS NULL LIMIT 1`)
+      .get(crmContactId, companyId) as { email?: string | null } | undefined;
+    const email = (row?.email ?? "").trim();
+    return email ? email : null;
+  } catch (err) {
+    log.warn("[roundInitialShareholdersStore] CRM email lookup failed:", (err as Error).message);
+    return null;
+  }
+}
+
 function normaliseDecimalString(v: unknown): string | null {
   if (typeof v !== "string") return null;
   const trimmed = v.trim();
@@ -252,6 +279,16 @@ export function registerRoundInitialShareholdersRoutes(app: Express): void {
     let skippedNoEmail = 0;
     let skippedDuplicate = 0;
     const inviteErrors: Array<{ email: string; error: string }> = [];
+    /* W-AVI64 FIX 1 — per-pick result array so the client can show the founder
+     * exactly what happened to each investor they picked (invited / duplicate /
+     * no-email / error), instead of the founder guessing. */
+    const inviteResults: Array<{
+      name: string;
+      email: string | null;
+      crmContactId: string | null;
+      status: "invited" | "duplicate" | "no_email" | "error";
+      error?: string;
+    }> = [];
     // Lazy import to avoid a static circular import (matches this file's
     // existing lazy-require pattern for the sacred roundsStore boundary).
     // Guarded: if the module can't be loaded (e.g. an isolated test harness
@@ -275,12 +312,26 @@ export function registerRoundInitialShareholdersRoutes(app: Express): void {
     }
     if (companyId && createInvitation) {
       for (const row of normalised) {
-        if (!row.email) { skippedNoEmail++; continue; }
+        /* W-AVI64 FIX 1 — if a CRM pick arrived without an email but carries a
+         * crmContactId, resolve the email from founder_crm_contacts before
+         * deciding it is un-invitable. This is the root-cause fix: the client
+         * sent email:"" for a CRM contact, so the invitation was silently
+         * skipped even though the contact HAD an email on file. */
+        let inviteEmail = row.email;
+        if (!inviteEmail && row.crmContactId) {
+          const resolved = lookupCrmContactEmail(companyId, row.crmContactId);
+          if (resolved) inviteEmail = resolved;
+        }
+        if (!inviteEmail) {
+          skippedNoEmail++;
+          inviteResults.push({ name: row.name, email: null, crmContactId: row.crmContactId ?? null, status: "no_email" });
+          continue;
+        }
         try {
           await createInvitation({
             roundId,
             companyId,
-            investorEmail: row.email,
+            investorEmail: inviteEmail,
             investorName: row.name,
             investorFirstName: row.firstName,
             investorLastName: row.lastName,
@@ -294,13 +345,19 @@ export function registerRoundInitialShareholdersRoutes(app: Express): void {
             tenantId: tenantForCompany(companyId),
           });
           invited++;
+          inviteResults.push({ name: row.name, email: inviteEmail, crmContactId: row.crmContactId ?? null, status: "invited" });
         } catch (err) {
           const msg = (err as Error).message ?? "invite_failed";
           // An already-active invitation for this (round, email) is a benign,
           // idempotent skip — the investor is already on the round + notified.
-          if (msg === "duplicate_invitation") { skippedDuplicate++; continue; }
-          inviteErrors.push({ email: row.email, error: msg });
-          log.warn("[roundInitialShareholdersStore] invitation issue failed:", row.email, msg);
+          if (msg === "duplicate_invitation") {
+            skippedDuplicate++;
+            inviteResults.push({ name: row.name, email: inviteEmail, crmContactId: row.crmContactId ?? null, status: "duplicate" });
+            continue;
+          }
+          inviteErrors.push({ email: inviteEmail, error: msg });
+          inviteResults.push({ name: row.name, email: inviteEmail, crmContactId: row.crmContactId ?? null, status: "error", error: msg });
+          log.warn("[roundInitialShareholdersStore] invitation issue failed:", inviteEmail, msg);
         }
       }
     }
@@ -332,6 +389,9 @@ export function registerRoundInitialShareholdersRoutes(app: Express): void {
       skippedNoEmail,
       skippedDuplicate,
       inviteErrors,
+      // W-AVI64 FIX 1 — per-pick outcome so the founder sees exactly which
+      // investors were invited vs. skipped (no email) vs. failed.
+      inviteResults,
     });
   });
 

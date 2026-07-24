@@ -42,10 +42,40 @@ export function isPlaceholderSecret(secret: string | undefined | null): boolean 
   return /your.?strong.?secret|changeme|placeholder|todo|example/i.test(s);
 }
 
+/**
+ * W-AVI64 FIX 3 — env-name ALIAS fallback (additive, backward-compatible).
+ *
+ * The live production `.env` ships the receiver under `BRIDGE_OUTBOUND_URL` +
+ * `BRIDGE_INBOUND_HMAC_SECRET`, while this guard (and the Sacred
+ * `bridgeRuntime.ts`) historically read only the canonical
+ * `COLLECTIVE_WEBHOOK_URL` / `COLLECTIVE_WEBHOOK_SECRET`. With the canonical
+ * names unset, `hasRealReceiver()` returned false → the worker never started →
+ * the outbox never drained (561 queued, 0 delivered).
+ *
+ * Fix: accept the alias env names as fallbacks so the existing live `.env`
+ * works WITHOUT renaming vars on the server. The canonical names still take
+ * precedence when present. NOTE: the Sacred `bridgeRuntime.ts` reads the
+ * canonical names DIRECTLY for actual delivery, so the deploy MUST still export
+ * `COLLECTIVE_WEBHOOK_URL` / `COLLECTIVE_WEBHOOK_SECRET` for live sends — see
+ * DEPLOY_FOR_AVI.md / .env.example / CAPAVATE_LIVE_ENVIRONMENT.md.
+ */
+export function resolveReceiverUrl(): string {
+  return (process.env.COLLECTIVE_WEBHOOK_URL || process.env.BRIDGE_OUTBOUND_URL || "").trim();
+}
+
+export function resolveReceiverSecret(): string {
+  return (
+    process.env.COLLECTIVE_WEBHOOK_SECRET ||
+    process.env.BRIDGE_OUTBOUND_HMAC_SECRET ||
+    process.env.BRIDGE_INBOUND_HMAC_SECRET ||
+    ""
+  ).trim();
+}
+
 /** True when a COMPLETE real external receiver is configured (real URL + real, non-placeholder secret). */
 export function hasRealReceiver(): boolean {
-  const url = (process.env.COLLECTIVE_WEBHOOK_URL || "").trim();
-  const secret = (process.env.COLLECTIVE_WEBHOOK_SECRET || "").trim();
+  const url = resolveReceiverUrl();
+  const secret = resolveReceiverSecret();
   return Boolean(url) && !isPlaceholderSecret(secret);
 }
 
@@ -64,7 +94,7 @@ export function maySendOutboundBridge(): boolean {
 function outboundBlockedReason(): string | null {
   if (!isBridgeEnabled()) return bridgeDisabledReason();
   if (!hasRealReceiver()) {
-    return "no real receiver configured (COLLECTIVE_WEBHOOK_URL missing or COLLECTIVE_WEBHOOK_SECRET missing/placeholder)";
+    return "no real receiver configured (COLLECTIVE_WEBHOOK_URL/BRIDGE_OUTBOUND_URL missing or COLLECTIVE_WEBHOOK_SECRET/BRIDGE_*_HMAC_SECRET missing/placeholder)";
   }
   return null;
 }

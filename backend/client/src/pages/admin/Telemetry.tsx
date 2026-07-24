@@ -302,7 +302,7 @@ function Funnel({ f }: { f: ReturnType<typeof funnelDropoff> }) {
  <div className="h-full bg-[hsl(0_100%_40%)] transition-all" style={{ width: `${(s.value / max) * 100}%` }} />
  <div className="absolute inset-0 flex items-center px-3 text-xs font-medium">
  <span className="font-mono tabular-nums">{s.value.toLocaleString()}</span>
- {i > 0 && <span className="ml-2 text-muted-foreground">{(s.rate * 100).toFixed(0)}% conv.</span>}
+ {i > 0 && <span className="ml-2 text-muted-foreground">{Math.min(100, Math.max(0, s.rate * 100)).toFixed(0)}% conv.</span>}
  </div>
  </div>
  </div>

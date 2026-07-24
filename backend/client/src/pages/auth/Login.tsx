@@ -90,6 +90,12 @@ export default function Login() {
   const { setRole } = useRole();
   const query = useMemo(readHashQuery, []);
   const rawPortal = (query.get("portal") ?? "founder").toLowerCase();
+  // W-AVI64 FIX 6 — did the visitor EXPLICITLY request a portal (e.g. they
+  // arrived via /investor/login → ?portal=investor, or /partner/login)? An
+  // explicit portal intent means "show me THIS portal's sign-in", so an active
+  // session for a DIFFERENT role (notably an admin session) must NOT silently
+  // bounce them to that other role's dashboard.
+  const hasExplicitPortalIntent = query.has("portal");
   // If a stale URL or email link asks for portal=admin, redirect
   // to the dedicated /admin/login page. Public login is founder + investor only.
   useEffect(() => {
@@ -164,7 +170,17 @@ export default function Login() {
       return;
     }
     // Admins never enter through the public login page.
-    if (me.isAdmin) { navigate("/admin/dashboard"); return; }
+    // W-AVI64 FIX 6 — but if the visitor EXPLICITLY asked for a specific portal
+    // (arrived via /investor/login, /partner/login, or an explicit ?portal=),
+    // stand down and show the login form so they can re-authenticate into the
+    // requested portal, instead of silently bouncing the active admin session
+    // to /admin/dashboard. The no-explicit-intent case (bare /login) keeps the
+    // prior behavior so "already an admin → your dashboard" still works.
+    if (me.isAdmin) {
+      if (hasExplicitPortalIntent) return;
+      navigate("/admin/dashboard");
+      return;
+    }
     const companyCount = me.founder?.companies?.length ?? 0;
     const isInvestor = me.investor?.state !== undefined && me.investor.state !== "NONE";
     // FIX 1b — honour an explicit investor portal intent BEFORE any founder
