@@ -334,22 +334,26 @@ export function resolveRoundName(roundId: string): string {
 function buildInvitedRounds(persona: PersonaSeed): InvitedRound[] {
   // Defect 83: runtime-registered (redeemed) users get their seeded invitation records
   let runtimeInvs = RUNTIME_INVITATIONS[persona.userId];
-  /* v25.28.1 — if the in-memory cache is empty but persona has an email,
-     hydrate from the durable roundInvitations table. This closes the
-     restart-loss-of-invitations gap that Phase B left partially open
-     (the prior Phase B hydration only fired during persona synthesis,
-     not for RUNTIME_PERSONAS-cached personas that survive in-process). */
-  if ((!runtimeInvs || runtimeInvs.length === 0) && persona.email) {
+  /* W-AVI65 (owner-authorized additive sacred edit) — supersedes the v25.28.1
+     "hydrate only when the cache is empty" gate, which caused a stale-cache bug:
+     once RUNTIME_INVITATIONS[userId] held ANY row, a newly DB-persisted
+     invitation (a round the investor was just added to) was never picked up until
+     the process restarted or a fresh context was built — Avi's "already on the
+     platform, new round invisible" report. The DB (roundInvitations) is the
+     source of truth; RUNTIME_INVITATIONS is only a write-through projection. So
+     we now UNION the durable rows into the cache on EVERY call, deduped by
+     invitationId. This only ever ADDS missing rounds — it never removes an
+     existing entry — so it is additive and behavior-preserving for the rounds a
+     user already saw, while closing the stale-cache gap. Fail-closed: any DB
+     error falls through to whatever is already cached (legacy behavior). */
+  if (persona.email) {
     try {
       const rows = listInvitationsByEmail(persona.email);
-      // W-FIX3 Bug#4 Option B (owner-authorized additive edit) — resolve a null
-      // invitation companyId from the round it was addressed to, so a legacy
-      // null-companyId invite still enters the investor's entitlement set (the
-      // same round→company chain the DETAIL handler already trusts). Non-null
-      // companyId short-circuits (?? never calls getRoundById → identical to
-      // prior behavior); a missing round / null round.companyId resolves falsy
-      // and the row is still dropped (no over-inclusion, no isolation change).
-      const usable = rows
+      // Resolve a null invitation companyId from the round it was addressed to
+      // (same round→company chain the DETAIL handler trusts). Non-null short-
+      // circuits; unresolved companyId → row dropped (no over-inclusion, no
+      // isolation change).
+      const dbUsable = rows
         .filter((r) => {
           const resolvedCompanyId = r.companyId ?? getRoundById(r.roundId)?.companyId;
           return !!resolvedCompanyId && (r.state === "pending" || r.state === "sent" || r.state === "viewed" || r.state === "accepted");
@@ -362,12 +366,18 @@ function buildInvitedRounds(persona: PersonaSeed): InvitedRound[] {
             companyId: resolvedCompanyId as string,
           };
         });
-      if (usable.length > 0) {
-        RUNTIME_INVITATIONS[persona.userId] = usable;
-        runtimeInvs = usable;
+      if (dbUsable.length > 0) {
+        // UNION with the existing cache, deduped by invitationId (cache entries
+        // win on collision so nothing already-shown is mutated).
+        const byId = new Map<string, { invitationId: string; roundId: string; companyId: string }>();
+        for (const d of dbUsable) byId.set(d.invitationId, d);
+        for (const existing of runtimeInvs ?? []) byId.set(existing.invitationId, existing);
+        const merged = Array.from(byId.values());
+        RUNTIME_INVITATIONS[persona.userId] = merged;
+        runtimeInvs = merged;
       }
     } catch {
-      // Non-fatal — fall through to the legacy path.
+      // Non-fatal — fall through to whatever is already cached (legacy behavior).
     }
   }
   if (runtimeInvs && runtimeInvs.length > 0) {
@@ -876,14 +886,19 @@ export function getUserContextForId(userId: string): UserContext {
          * still shows their invited rounds. */
         try {
           const existingInvs = RUNTIME_INVITATIONS[userId] ?? [];
-          if (existingInvs.length === 0 && isInvestor) {
+          // W-AVI65 (owner-authorized additive sacred edit) — supersedes the
+          // "existingInvs.length === 0 && isInvestor" gate. That gate skipped DB
+          // hydration once the cache held any row AND skipped any user the DB had
+          // not yet role-tagged as investor at this point in synthesis, so a
+          // just-invited user could miss a new round until restart. The DB is the
+          // source of truth; we now UNION durable rows into the cache on every
+          // synthesis, deduped by invitationId (existing cache entries win). The
+          // isInvestor tag is no longer a gate — an invitation addressed to this
+          // email is itself the entitlement, and unresolved/other-state rows are
+          // still dropped, so there is no over-inclusion or isolation change.
+          {
             const rows = listInvitationsByEmail(cred.email);
-            // W-FIX3 Bug#4 Option B (owner-authorized additive edit) — identical
-            // resolve as the buildInvitedRounds site above: backfill a null
-            // invitation companyId from its round so a legacy null-companyId
-            // invite still hydrates into the investor's entitlement set. Non-null
-            // short-circuits (identical prior behavior); unresolved → still dropped.
-            const usable = rows
+            const dbUsable = rows
               .filter((r) => {
                 const resolvedCompanyId = r.companyId ?? getRoundById(r.roundId)?.companyId;
                 return !!resolvedCompanyId && (r.state === "pending" || r.state === "sent" || r.state === "viewed" || r.state === "accepted");
@@ -896,8 +911,11 @@ export function getUserContextForId(userId: string): UserContext {
                   companyId: resolvedCompanyId as string,
                 };
               });
-            if (usable.length > 0) {
-              RUNTIME_INVITATIONS[userId] = usable;
+            if (dbUsable.length > 0) {
+              const byId = new Map<string, { invitationId: string; roundId: string; companyId: string }>();
+              for (const d of dbUsable) byId.set(d.invitationId, d);
+              for (const existing of existingInvs) byId.set(existing.invitationId, existing);
+              RUNTIME_INVITATIONS[userId] = Array.from(byId.values());
             }
           }
         } catch (invErr) {

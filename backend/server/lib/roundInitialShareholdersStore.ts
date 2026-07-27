@@ -114,43 +114,149 @@ function persistRoundInitialShareholders(roundId: string): void {
   } catch { /* non-fatal */ }
 }
 
-/**
- * v25.11 NM3 — ownership check: confirm caller's founder companies
- * include the round's owning company. We resolve company via roundsStore
- * lazily (require so we don't import the sacred path at module top).
- */
-function callerOwnsRound(ctx: { userId?: string; founder?: { companies?: Array<{ companyId: string }> } }, roundId: string): boolean {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const rs = require("../roundsStore");
-    const round = typeof rs.getRoundById === "function" ? rs.getRoundById(roundId) : null;
-    const companyId: string | undefined = round?.companyId;
-    if (!companyId) return false;
-    const companies = ctx?.founder?.companies ?? [];
-    return Array.isArray(companies) && companies.some((c) => c?.companyId === companyId);
-  } catch {
-    return false;
-  }
-}
-
 function tenantForCompany(companyId: string): string {
   return `tenant_co_${companyId}`;
 }
 
 /**
- * v25.51 5a — resolve the round's owning companyId via the SACRED roundsStore
- * (read-only). Lazy require keeps us off the sacred import graph at module top
- * (mirrors callerOwnsRound). Returns null when the round is unknown.
+ * W-AVI65 FIX 1 — DB-DIRECT round→company resolution.
+ *
+ * ROOT CAUSE (confirmed LIVE by network capture): PATCH
+ * /api/founder/rounds/:roundId/initial-shareholders returned
+ * 403 {"ok":false,"error":"not_round_owner"} for a founder who demonstrably
+ * owns the round (POST /api/rounds/:id/invitations on the SAME founder + round
+ * + company returned 200). The old `callerOwnsRound` / `companyForRound`
+ * resolved the round through a LAZY `require("../roundsStore")` (the
+ * createRequire shim above). In the PRODUCTION BUNDLE (dist/index.cjs) that
+ * specifier does not resolve, so `round` was null → companyId undefined →
+ * ownership false → 403 on every call. The working POST path uses a STATIC
+ * import (routes.ts:99/220 `getRoundById as roundsStoreGetById`).
+ *
+ * Two independent failure modes are fixed by going DB-direct:
+ *   1. bundle module-resolution failure (the observed live 403), and
+ *   2. `roundsStore.getRoundById` reads the in-memory `ROUNDS_BY_ID` cache
+ *      (roundsStore.ts:340), so under PM2 cluster mode a round created by one
+ *      worker is invisible to another worker → the same spurious 403.
+ *
+ * We therefore read `rounds.company_id` straight from SQLite with the exact
+ * convention already used inside roundsStore itself for DB-direct round reads
+ * (roundsStore.ts:375 / :418), via the `rawDb` handle this file already imports
+ * STATICALLY at the top (so it cannot fail to resolve in the bundle).
+ *
+ * Returns a TRI-STATE so callers can distinguish "the round genuinely has no
+ * row" from "the read failed" — the difference matters for fail-closed
+ * ownership (see resolveRoundOwnership).
  */
-function companyForRound(roundId: string): string | null {
+type RoundCompanyLookup =
+  // `exists` distinguishes "the round id is genuinely absent from the table"
+  // (exists:false → truly unowned, body.companyId may be trusted if owned) from
+  // "the round exists but resolved to no usable company / was soft-deleted"
+  // (exists:true, companyId:null → do NOT trust body.companyId; fail-closed).
+  | { ok: true; companyId: string | null; exists?: boolean }
+  | { ok: false; companyId: null };
+
+function roundCompanyIdFromDb(roundId: string): RoundCompanyLookup {
+  if (!roundId) return { ok: true, companyId: null };
+  try {
+    const driver = rawDb() as unknown as { prepare?: (sql: string) => { get: (...a: unknown[]) => unknown } };
+    if (!driver || typeof driver.prepare !== "function") return { ok: false, companyId: null };
+    // W-AVI65 REVISE (Opus blocker) — resolve the owning company REGARDLESS of
+    // deleted_at, so a SOFT-DELETED round of another tenant is NOT mistaken for
+    // a nonexistent (unowned) round. If we filtered `deleted_at IS NULL`, a
+    // tenant-A round that was soft-deleted would return no row → the caller's
+    // body.companyId branch could let tenant B write shareholder rows against
+    // tenant A's round id. We MUST surface the real owner so the ownership gate
+    // denies it. `alive` is returned for callers that still care about state.
+    const row = driver
+      .prepare(`SELECT company_id, deleted_at FROM rounds WHERE id = ? LIMIT 1`)
+      .get(roundId) as { company_id?: string | null; deleted_at?: string | null } | undefined;
+    if (!row) {
+      // Genuinely no such round id in the table (any state) — truly unowned.
+      return { ok: true, companyId: null, exists: false };
+    }
+    const companyId = (row.company_id ?? "").trim();
+    return { ok: true, companyId: companyId ? companyId : null, exists: true };
+  } catch (err) {
+    log.warn("[roundInitialShareholdersStore] round→company DB lookup failed:", (err as Error).message);
+    return { ok: false, companyId: null };
+  }
+}
+
+/**
+ * Legacy in-memory accessor, kept ONLY as a secondary source for test harnesses
+ * and seed rounds that exist in the roundsStore cache but not in the `rounds`
+ * table. Mirrors routes.ts:3067's canonical-seed fallback. Never authoritative:
+ * `roundCompanyIdFromDb` is consulted FIRST and this is best-effort on top.
+ */
+function roundCompanyIdFromStoreCache(roundId: string): string | null {
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const rs = require("../roundsStore");
     const round = typeof rs.getRoundById === "function" ? rs.getRoundById(roundId) : null;
-    return typeof round?.companyId === "string" ? round.companyId : null;
+    return typeof round?.companyId === "string" && round.companyId ? round.companyId : null;
   } catch {
     return null;
   }
+}
+
+/**
+ * v25.51 5a — resolve the round's owning companyId (read-only). W-AVI65 FIX 1:
+ * DB-direct first (bundle-safe + cluster-safe), in-memory cache second.
+ * Returns null when the round is unknown to BOTH sources.
+ */
+function companyForRound(roundId: string): string | null {
+  const db = roundCompanyIdFromDb(roundId);
+  if (db.ok && db.companyId) return db.companyId;
+  return roundCompanyIdFromStoreCache(roundId);
+}
+
+/**
+ * v25.11 NM3 / W-AVI65 FIX 1 — ownership check: the caller's founder companies
+ * must include the round's owning company.
+ *
+ * FAIL-CLOSED contract (no cross-tenant write is possible):
+ *   - Round's company resolved (DB or cache) → ownership is EXACTLY
+ *     `resolvedCompanyId ∈ ctx.founder.companies`. A client-supplied
+ *     `body.companyId` can never override or widen this.
+ *   - Round resolved to NO row anywhere (a brand-new wizard round that has not
+ *     landed in `rounds` yet) → we accept `body.companyId` ONLY IF the founder
+ *     owns that company. The round belongs to no tenant, so this cannot reach
+ *     another tenant's data, and the founder is still confined to their own
+ *     company.
+ *   - The DB read FAILED (not "no row") → we do NOT trust `body.companyId` at
+ *     all, because the round might really belong to another tenant and we have
+ *     no proof either way. Ownership is denied unless the cache proves it.
+ *
+ * `effectiveCompanyId` is the company the rest of the handler must use (CRM
+ * upsert, invitations, audit) so it is always an OWNED company id.
+ */
+function resolveRoundOwnership(
+  ctx: { isAdmin?: boolean; userId?: string; founder?: { companies?: Array<{ companyId: string }> } },
+  roundId: string,
+  bodyCompanyId: string | null,
+): { owns: boolean; effectiveCompanyId: string | null } {
+  const companies = Array.isArray(ctx?.founder?.companies) ? ctx.founder!.companies! : [];
+  const ownsCompany = (companyId: string | null): boolean =>
+    !!companyId && companies.some((c) => c?.companyId === companyId);
+
+  const db = roundCompanyIdFromDb(roundId);
+  const cached = roundCompanyIdFromStoreCache(roundId);
+  const resolved = (db.ok ? db.companyId : null) ?? cached;
+
+  if (resolved) {
+    return { owns: ownsCompany(resolved), effectiveCompanyId: resolved };
+  }
+  // W-AVI65 REVISE (Opus blocker) — the round resolved to NO usable company.
+  // Only trust the client's body.companyId for a round that GENUINELY does not
+  // exist yet (a brand-new wizard round not persisted). If the id EXISTS in the
+  // table (e.g. a soft-deleted round of ANOTHER tenant) we must NOT trust
+  // body.companyId — that would let tenant B write against tenant A's round id.
+  // Also require the store-cache to have no record of it (belt-and-suspenders).
+  const genuinelyAbsent = db.ok && db.exists === false && cached === null;
+  if (genuinelyAbsent && ownsCompany(bodyCompanyId)) {
+    return { owns: true, effectiveCompanyId: bodyCompanyId };
+  }
+  return { owns: false, effectiveCompanyId: null };
 }
 
 /**
@@ -189,15 +295,23 @@ export function registerRoundInitialShareholdersRoutes(app: Express): void {
     const roundId = String(req.params.roundId ?? "");
     if (!roundId) return res.status(400).json({ ok: false, error: "missing_round_id" });
 
+    const body = req.body ?? {};
+    const bodyCompanyId = typeof body.companyId === "string" && body.companyId.trim()
+      ? body.companyId.trim()
+      : null;
+
     /* v25.11 NM3 — round ownership gate. Previously any authenticated user
      * could overwrite any round's initial shareholders. Now we verify the
      * caller's founder companies include the round's owning company. Admin
-     * still bypasses. */
-    if (!ctx.isAdmin && !callerOwnsRound(ctx, roundId)) {
+     * still bypasses.
+     * W-AVI65 FIX 1 — ownership no longer depends on the bundle-fragile lazy
+     * require("../roundsStore"); it resolves the round's company DB-direct and
+     * fails closed. See resolveRoundOwnership for the full contract. */
+    const ownership = resolveRoundOwnership(ctx, roundId, bodyCompanyId);
+    if (!ctx.isAdmin && !ownership.owns) {
       return res.status(403).json({ ok: false, error: "not_round_owner" });
     }
 
-    const body = req.body ?? {};
     const incoming = Array.isArray(body.shareholders) ? body.shareholders : [];
     if (incoming.length > 500) {
       return res.status(400).json({ ok: false, error: "TOO_MANY_SHAREHOLDERS", limit: 500 });
@@ -238,7 +352,12 @@ export function registerRoundInitialShareholdersRoutes(app: Express): void {
      * `source:"crm"` rows are assumed already linked (they carry crmContactId)
      * — we never create a new CRM row for them here. Cap-table is untouched.
      * Best-effort: a CRM write failure must not fail the shareholder save. */
-    const companyId = companyForRound(roundId) ?? (typeof body.companyId === "string" ? body.companyId : null);
+    /* W-AVI65 FIX 1 — use the company id the ownership gate actually validated,
+     * so every downstream write (CRM upsert-link, round invitations, audit) is
+     * confined to a company this caller owns. For an admin (who bypasses the
+     * gate) fall back to the resolved round company, then the supplied one. */
+    const companyId = ownership.effectiveCompanyId
+      ?? (ctx.isAdmin ? (companyForRound(roundId) ?? bodyCompanyId) : null);
     if (companyId) {
       try {
         for (const row of normalised) {
@@ -365,14 +484,18 @@ export function registerRoundInitialShareholdersRoutes(app: Express): void {
     // Best-effort audit append. We don't have a companyId here directly, so
     // the audit row is keyed off the roundId. (The sacred roundsStore owns
     // the round→company map; we deliberately do NOT import it.)
-    if (typeof body.companyId === "string" && body.companyId) {
+    /* W-AVI65 FIX 1 — audit against the VALIDATED company id (which resolves
+     * DB-direct) rather than only the client-supplied one, so the audit row is
+     * still written when the wizard omits companyId from the body. */
+    const auditCompanyId = companyId ?? bodyCompanyId;
+    if (auditCompanyId) {
       try {
         appendAdminAudit(
           ctx.userId ?? "u_unknown",
           `round:${roundId}`,
           "round.initial_shareholders.set",
           { roundId, count: normalised.length, source_breakdown: { crm: normalised.filter((s) => s.source === "crm").length, manual: normalised.filter((s) => s.source === "manual").length } },
-          tenantForCompany(String(body.companyId)),
+          tenantForCompany(auditCompanyId),
         );
       } catch (err) {
         log.warn("[roundInitialShareholdersStore] audit append failed:", (err as Error).message);
@@ -400,6 +523,15 @@ export function registerRoundInitialShareholdersRoutes(app: Express): void {
     if (!ctx.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
     const roundId = String(req.params.roundId ?? "");
     if (!roundId) return res.status(400).json({ ok: false, error: "missing_round_id" });
+    /* W-AVI65 FIX 1 (isolation) — this READ previously had NO ownership gate, so
+     * any authenticated user could enumerate another tenant's picked initial
+     * shareholders (names + emails) by guessing a roundId. It now uses the same
+     * fail-closed gate as the PATCH twin. There is no client caller of this GET
+     * (grep: client/src has none), so nothing is silently dropped. */
+    const ownership = resolveRoundOwnership(ctx, roundId, null);
+    if (!ctx.isAdmin && !ownership.owns) {
+      return res.status(403).json({ ok: false, error: "not_round_owner" });
+    }
     const shareholders = store.get(roundId) ?? [];
     return res.json({ ok: true, roundId, shareholders });
   });

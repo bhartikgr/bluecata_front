@@ -60,12 +60,22 @@ describe("v23.4.13 A.2 — select-invite-expiry wired into sendInviteMut", () =>
 
   it("inviteExpiry state is declared", () => {
     expect(ROUND_DETAIL_SRC).toMatch(/inviteExpiry.*useState/);
-    expect(ROUND_DETAIL_SRC).toContain('"30"');
+    // W-SHADIE 3a reconciliation: this previously asserted a bare `"30"` was
+    // present anywhere in the file, which was satisfied by the option list and
+    // said nothing about the default. The dialog default is now 7 — assert it
+    // tied to the state declaration so the assertion is meaningful.
+    expect(ROUND_DETAIL_SRC).toContain('const [inviteExpiry, setInviteExpiry] = useState("7")');
   });
 
   it("select-invite-expiry element is wired to inviteExpiry state", () => {
     expect(ROUND_DETAIL_SRC).toContain('value={inviteExpiry}');
-    expect(ROUND_DETAIL_SRC).toContain('onChange={e => setInviteExpiry(e.target.value)}');
+    // W-SHADIE 3a reconciliation: this assertion was ALREADY RED on the
+    // baseline before this wave. A later wave made the handler multi-statement
+    // (it also clears the cached preview) but never updated the assertion. The
+    // handler is correct; the assertion was stale. Matched loosely on the
+    // setInviteExpiry call so a future statement added to the same handler
+    // does not turn this red again.
+    expect(ROUND_DETAIL_SRC).toMatch(/onChange=\{e => \{ setInviteExpiry\(e\.target\.value\);/);
   });
 
   it("sendInviteMut includes expiryDays in request body", () => {
@@ -81,7 +91,8 @@ describe("v23.4.13 A.2 — select-invite-expiry wired into sendInviteMut", () =>
   });
 
   it("inviteExpiry is reset in onSuccess handler", () => {
-    expect(ROUND_DETAIL_SRC).toContain("setInviteExpiry(\"30\")");
+    // W-SHADIE 3a: the post-send reset now restores the 7-day default.
+    expect(ROUND_DETAIL_SRC).toContain("setInviteExpiry(\"7\")");
   });
 });
 

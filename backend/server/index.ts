@@ -428,28 +428,37 @@ app.use((req, res, next) => {
        * NOT start the drain loop at all, so no 501 storm and no DLQ pileup. The
        * Sacred bridgeRuntime.ts is untouched. BRIDGE_WORKER_ENABLED=false still
        * disables the worker independently (horizontal-scaling contract). */
+      /* W-AVI65 FIX 4 — HYDRATION IS HOISTED OUT OF THE OUTBOUND GATE.
+       * Both hydrators below used to live INSIDE the
+       * `maySendOutboundBridge()` branch, so whenever outbound was disabled or
+       * misconfigured (no URL / placeholder secret — the live state) the durable
+       * maps and the bridge_outbox were never rehydrated on boot. That is an
+       * INBOUND concern: /api/bridge/inbound dispatches into those maps
+       * regardless of whether this node is allowed to SEND. Restoring durable
+       * state is read-only and idempotent, so it is safe unconditionally. */
+      /* v25.4 — hydrate queued envelopes from bridge_outbox so queued events
+       * survive restart (also needed for inbound/ops visibility). */
+      try {
+        hydrateBridgeStore();
+      } catch (err) {
+        log(`bridge hydrate failed (non-fatal): ${(err as Error).message}`, "bridge-worker");
+      }
+      /* v25.21 Lane D NC-001 fix — hydrate every registered durableMap
+       * (DSC scores, M&A intelligence, KYC decisions, membership renewals,
+       * partner status, social signals, member decisions, round
+       * participants, company tier) from `sync_inbox_state` BEFORE any
+       * inbound bridge event is dispatched. Before this fix the maps were
+       * RAM-only and lost every restart. */
+      try {
+        // Lazy require so a circular import (durableMap → db → …) can't
+        // break boot ordering.
+        const { hydrateDurableMaps } = require("./durableMap");
+        hydrateDurableMaps();
+      } catch (err) {
+        log(`durable-map hydrate failed (non-fatal): ${(err as Error).message}`, "bridge-worker");
+      }
+
       if (process.env.BRIDGE_WORKER_ENABLED !== "false" && maySendOutboundBridge()) {
-        /* v25.4 — hydrate queued envelopes from bridge_outbox before the
-         * drain worker starts, so queued events survive restart. */
-        try {
-          hydrateBridgeStore();
-        } catch (err) {
-          log(`bridge hydrate failed (non-fatal): ${(err as Error).message}`, "bridge-worker");
-        }
-        /* v25.21 Lane D NC-001 fix — hydrate every registered durableMap
-         * (DSC scores, M&A intelligence, KYC decisions, membership renewals,
-         * partner status, social signals, member decisions, round
-         * participants, company tier) from `sync_inbox_state` BEFORE the
-         * bridge drain worker starts dispatching inbound events. Before this
-         * fix the maps were RAM-only and lost every restart. */
-        try {
-          // Lazy require so a circular import (durableMap → db → …) can't
-          // break boot ordering.
-          const { hydrateDurableMaps } = require("./durableMap");
-          hydrateDurableMaps();
-        } catch (err) {
-          log(`durable-map hydrate failed (non-fatal): ${(err as Error).message}`, "bridge-worker");
-        }
         startBridgeWorker();
       } else if (!isBridgeEnabled()) {
         log(`legacy outbound bridge DISABLED (HIGH-8): ${bridgeDisabledReason()} — drain worker not started, no 501/DLQ`, "bridge-worker");

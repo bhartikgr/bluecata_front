@@ -1,0 +1,14 @@
+-- 0115_partner_client_crm_lead.sql
+-- w-partner (2026-07-25) — designated partner-member lead on the client CRM.
+--
+-- Additive, nullable, no FK. SQLite has no ADD COLUMN IF NOT EXISTS; per the
+-- convention documented in migrations/0110_collective_membership_captable_exempt.sql:7-9
+-- this relies on the runner swallowing the duplicate-column error
+-- (migrate.ts:203-210 sqlite, :229-235 postgres).
+--
+-- Self-heal lives in BOTH halves in server/db/connection.ts: the column is in
+-- the CREATE TABLE partner_client_crm literal (fresh DBs) AND in the guarded
+-- applyV12AdditiveAlters array (already-deployed DBs). CREATE TABLE IF NOT
+-- EXISTS is a no-op on an existing DB, so the literal alone would leave every
+-- deployed DB on the 5-column table and the CRM hydrator's SELECT would fail.
+ALTER TABLE partner_client_crm ADD COLUMN lead_user_id TEXT;

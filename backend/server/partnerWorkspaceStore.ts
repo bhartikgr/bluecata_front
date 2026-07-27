@@ -140,7 +140,11 @@ export interface PartnerAttribution {
   companyId: string;
   attributedAt: string;
   attributedBy: string;
-  attributionSource: "admin_manual" | "referral_code" | "partner_claim";
+  /* w-partner F1 — "partner_portfolio" tags an attribution created by the
+   * partner's own Add-Portfolio-Company flow (as opposed to an admin grant or a
+   * referral approval). Declared ONCE, server-side; there is no DB enum beyond
+   * the 0114 CHECK and no exhaustive switch/Record over it. */
+  attributionSource: "admin_manual" | "referral_code" | "partner_claim" | "partner_portfolio";
   revokedAt: string | null;
   revokedBy: string | null;
   notes: string | null;
@@ -726,11 +730,60 @@ export function hydratePartnerWorkspaceShimStore(): number {
       }
     }
 
-    const attrRows = (hydrateEntries("partnerAttributions") as Array<[string, PartnerAttribution]>) ?? [];
+    /* w-partner F1 — attributions read from the TYPED table first. A typed-read
+     * failure (or an absent table on a half-migrated DB) falls back to kv so
+     * visibility is never lost mid-transition. The path used is logged. */
+    let attrRows: Array<[string, PartnerAttribution]> = [];
+    let attrPath = "kv";
+    try {
+      const typed = readTypedAttributions();
+      // w-partner CODE-REVIEW B1: `[]` is truthy, so `if (typed)` would treat an
+      // EMPTY typed table (e.g. a half-migrated DB where the backfill has not yet
+      // populated it) as authoritative and DISCARD the populated kv fallback,
+      // silently zeroing the projection that three authorization gates read. Only
+      // adopt the typed path when it actually returned rows; otherwise fall through
+      // to kv so visibility is never lost mid-transition.
+      if (typed && typed.length > 0) {
+        attrRows = typed;
+        attrPath = "typed";
+      }
+    } catch (err) {
+      log.warn("[partnerWorkspaceStore] typed attribution read failed; falling back to kv:", (err as Error).message);
+    }
+    if (attrPath === "kv") {
+      attrRows = (hydrateEntries("partnerAttributions") as Array<[string, PartnerAttribution]>) ?? [];
+    }
+    log.info?.(`[partnerWorkspaceStore] hydrating ${attrRows.length} attribution(s) via the ${attrPath} path`);
     for (const [id, row] of attrRows) {
       if (typeof id !== "string" || !row) continue;
       if (!attributions.find((a) => a.id === id)) {
         attributions.push(row);
+        n += 1;
+      }
+    }
+
+    /* R-c — hydrate the revision chain. Nothing read partnerAttributionsHistory
+     * back before this wave, so verifyChain was vacuously {ok:true,length:0}
+     * after every restart. Typed first, kv second. */
+    let revRows: Array<[string, PartnerAttribution]> | null = null;
+    try {
+      revRows = readTypedAttributionRevisions();
+    } catch (err) {
+      log.warn("[partnerWorkspaceStore] typed revision read failed; falling back to kv:", (err as Error).message);
+    }
+    // w-partner CODE-REVIEW B3: same `[]`-is-truthy trap as B1, and here it is the
+    // NORMAL upgrade path — 0114 creates partner_attribution_revisions empty and the
+    // backfill writes no revision rows, so readTypedAttributionRevisions() returns []
+    // on first boot. Fall back to the kv history when the typed chain is absent OR
+    // empty, otherwise verifyChain stays vacuously {ok:true,length:0} for every
+    // pre-existing attribution (R-c unmet).
+    if (!revRows || revRows.length === 0) {
+      revRows = (hydrateEntries("partnerAttributionsHistory") as Array<[string, PartnerAttribution]>) ?? [];
+    }
+    for (const [, row] of revRows) {
+      if (!row || !row.id) continue;
+      if (!attributionsHistory.find((h) => h.id === row.id && h.version === row.version)) {
+        attributionsHistory.push(row);
         n += 1;
       }
     }
@@ -1329,7 +1382,214 @@ export const partnerInvitationStore = {
 
 /* ============================================================
  * Attributions (hash-chained)
+ *
+ * w-partner F1 — attributions are now canonical in the TYPED
+ * `partner_attributions` table (migration 0114) with a companion
+ * `partner_attribution_revisions` chain. The in-memory arrays are a
+ * rebuildable projection, and the legacy best-effort kv_partnerAttributions
+ * dual-write is deliberately RETAINED as the rollback safety net for this wave
+ * (the prior build reads kv, so a rollback loses no attribution). Removing the
+ * dual-write is a named follow-on wave, not this one.
  * ============================================================ */
+
+export const ATTRIBUTION_SOURCES: readonly PartnerAttribution["attributionSource"][] = [
+  "admin_manual",
+  "referral_code",
+  "partner_claim",
+  "partner_portfolio",
+];
+
+/** Type guard for the attribution_source union (also the 0114 CHECK set). */
+export function isAttributionSource(v: unknown): v is PartnerAttribution["attributionSource"] {
+  return typeof v === "string" && (ATTRIBUTION_SOURCES as readonly string[]).includes(v);
+}
+
+/** Whether a table exists — a PROBE, never a caught "no such table". */
+function sqliteTableExists(name: string): boolean {
+  try {
+    const db: any = rawDb();
+    const r = db
+      .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=? LIMIT 1`)
+      .get(name) as { name?: string } | undefined;
+    return !!r?.name;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Durable write of one attribution + its revision-chain link. Throws on
+ * failure so callers can fail closed (template: consortiumLinkStore.ts:43-60).
+ */
+function writeTypedAttribution(a: PartnerAttribution, recordedBy: string): void {
+  const db: any = rawDb();
+  db.prepare(
+    `INSERT INTO partner_attributions
+       (id, partner_id, company_id, attributed_at, attributed_by, attribution_source,
+        revoked_at, revoked_by, notes, version, prev_revision_hash, revision_hash,
+        updated_at, updated_by, is_seed)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       revoked_at = excluded.revoked_at,
+       revoked_by = excluded.revoked_by,
+       notes = excluded.notes,
+       version = excluded.version,
+       prev_revision_hash = excluded.prev_revision_hash,
+       revision_hash = excluded.revision_hash,
+       updated_at = excluded.updated_at,
+       updated_by = excluded.updated_by`,
+  ).run(
+    a.id, a.partnerId, a.companyId, a.attributedAt, a.attributedBy, a.attributionSource,
+    a.revokedAt ?? null, a.revokedBy ?? null, a.notes ?? null, a.version,
+    a.prevRevisionHash ?? null, a.revisionHash ?? null,
+    a.updatedAt, a.updatedBy ?? null, a.isSeed ? 1 : 0,
+  );
+  db.prepare(
+    `INSERT INTO partner_attribution_revisions
+       (id, attribution_id, partner_id, company_id, version, prev_revision_hash,
+        revision_hash, payload_json, recorded_at, recorded_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO NOTHING`,
+  ).run(
+    `${a.id}::v${a.version}`, a.id, a.partnerId, a.companyId, a.version,
+    a.prevRevisionHash ?? null, a.revisionHash, JSON.stringify(a),
+    a.updatedAt, recordedBy ?? null,
+  );
+}
+
+/** Map one partner_attributions row back into the in-memory shape. */
+function rowToAttribution(r: Record<string, any>): PartnerAttribution {
+  return {
+    id: String(r.id),
+    partnerId: String(r.partner_id),
+    companyId: String(r.company_id),
+    attributedAt: String(r.attributed_at),
+    attributedBy: r.attributed_by ?? "",
+    attributionSource: isAttributionSource(r.attribution_source)
+      ? r.attribution_source
+      : "admin_manual",
+    revokedAt: r.revoked_at ?? null,
+    revokedBy: r.revoked_by ?? null,
+    notes: r.notes ?? null,
+    version: Number(r.version ?? 1),
+    prevRevisionHash: r.prev_revision_hash ?? "",
+    revisionHash: r.revision_hash ?? "",
+    updatedAt: String(r.updated_at ?? r.attributed_at),
+    updatedBy: r.updated_by ?? "",
+    isSeed: !!r.is_seed,
+  };
+}
+
+/**
+ * Typed-table read for the hydrator. Returns null — NOT [] — when the table is
+ * absent, so the caller can tell "nothing persisted yet" from "read this path
+ * failed, use kv". Throws are left to the caller, which falls back to kv.
+ */
+function readTypedAttributions(): Array<[string, PartnerAttribution]> | null {
+  if (!sqliteTableExists("partner_attributions")) return null;
+  const db: any = rawDb();
+  const rows = db
+    .prepare(`SELECT * FROM partner_attributions ORDER BY attributed_at ASC, id ASC`)
+    .all() as Array<Record<string, any>>;
+  return rows.map((r) => [String(r.id), rowToAttribution(r)]);
+}
+
+/**
+ * R-c — the revision chain, rehydrated from payload_json so verifyChain is no
+ * longer vacuous after a restart. Null when the table is absent (kv fallback).
+ */
+function readTypedAttributionRevisions(): Array<[string, PartnerAttribution]> | null {
+  if (!sqliteTableExists("partner_attribution_revisions")) return null;
+  const db: any = rawDb();
+  const rows = db
+    .prepare(
+      `SELECT id, payload_json FROM partner_attribution_revisions
+        ORDER BY attribution_id ASC, version ASC`,
+    )
+    .all() as Array<{ id: string; payload_json: string }>;
+  const out: Array<[string, PartnerAttribution]> = [];
+  for (const r of rows) {
+    try {
+      out.push([String(r.id), JSON.parse(r.payload_json) as PartnerAttribution]);
+    } catch {
+      /* A single unparseable payload must not cost us the whole chain. */
+      log.warn(`[partnerWorkspaceStore] unparseable attribution revision payload ${r.id} — skipped`);
+    }
+  }
+  return out;
+}
+
+/**
+ * Idempotent kv -> typed backfill. NEVER throws and never blocks boot.
+ *
+ * Registered in HYDRATE_ORDER immediately BEFORE partnerWorkspaceShimStore so
+ * the typed table is populated before the hydrator reads it. An unrecognised
+ * historical attributionSource is COERCED to "admin_manual" (logged with the
+ * row id) rather than rejected — losing a revenue-bearing historical
+ * attribution, or aborting on the 0114 CHECK, are both unacceptable.
+ */
+export function backfillPartnerAttributionsFromKv():
+  { scanned: number; inserted: number; coerced: number; skipped: number } {
+  const result = { scanned: 0, inserted: 0, coerced: 0, skipped: 0 };
+  try {
+    // Probe both tables. Absent typed table = self-heal/migration has not run;
+    // absent kv table = fresh DB or CI. Either way there is nothing to do, and
+    // we must NOT let hydrateEntries lazily create an empty kv table.
+    if (!sqliteTableExists("partner_attributions")) return result;
+    if (!sqliteTableExists("kv_partnerAttributions")) return result;
+
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { hydrateEntries } = require("./lib/storePersistenceShim");
+    const rows = (hydrateEntries("partnerAttributions") as Array<[string, PartnerAttribution]>) ?? [];
+    const db: any = rawDb();
+    const stmt = db.prepare(
+      `INSERT INTO partner_attributions
+         (id, partner_id, company_id, attributed_at, attributed_by, attribution_source,
+          revoked_at, revoked_by, notes, version, prev_revision_hash, revision_hash,
+          updated_at, updated_by, is_seed)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO NOTHING`,
+    );
+    for (const [id, row] of rows) {
+      result.scanned += 1;
+      if (typeof id !== "string" || !row || !row.partnerId || !row.companyId) {
+        result.skipped += 1;
+        continue;
+      }
+      let source = row.attributionSource as unknown;
+      if (!isAttributionSource(source)) {
+        log.warn(
+          `[partnerWorkspaceStore.backfill] attribution ${id} has unrecognised attributionSource ${JSON.stringify(source)} — coercing to admin_manual`,
+        );
+        source = "admin_manual";
+        result.coerced += 1;
+      }
+      try {
+        const res = stmt.run(
+          id, row.partnerId, row.companyId,
+          row.attributedAt ?? row.updatedAt ?? new Date().toISOString(),
+          row.attributedBy ?? null, source,
+          row.revokedAt ?? null, row.revokedBy ?? null, row.notes ?? null,
+          row.version ?? 1, row.prevRevisionHash ?? null, row.revisionHash ?? null,
+          row.updatedAt ?? row.attributedAt ?? new Date().toISOString(),
+          row.updatedBy ?? null, row.isSeed ? 1 : 0,
+        );
+        if ((res?.changes ?? 0) > 0) result.inserted += 1;
+      } catch (err) {
+        result.skipped += 1;
+        log.warn(`[partnerWorkspaceStore.backfill] attribution ${id} insert failed: ${(err as Error).message}`);
+      }
+    }
+    log.info?.(
+      `[partnerWorkspaceStore.backfill] partner_attributions scanned=${result.scanned} inserted=${result.inserted} coerced=${result.coerced} skipped=${result.skipped}`,
+    );
+    return result;
+  } catch (err) {
+    // ANY failure degrades to the kv path; boot must not be blocked.
+    log.error("[partnerWorkspaceStore.backfill] failed (non-fatal, kv path retained):", (err as Error).message);
+    return result;
+  }
+}
 
 export const partnerAttributionStore = {
   create(
@@ -1338,6 +1598,11 @@ export const partnerAttributionStore = {
     attributedBy: string,
     source: PartnerAttribution["attributionSource"] = "admin_manual",
     notes: string | null = null,
+    /* w-partner F1 — trailing options so the three existing positional callers
+     * are unchanged. `strict` makes the typed write fail-closed: on failure the
+     * just-pushed RAM row + history entry are removed and the error rethrows,
+     * so the projection can never claim an attribution the DB does not hold. */
+    opts: { strict?: boolean } = {},
   ): PartnerAttribution {
     requirePid(partnerId);
     if (!companyId) throw new Error("COMPANY_ID_REQUIRED");
@@ -1363,9 +1628,26 @@ export const partnerAttributionStore = {
       isSeed: false,
     };
     base.revisionHash = computeRevisionHash(base as unknown as Record<string, unknown>);
+    const historyLen = attributionsHistory.length;
     attributions.push(base);
     pushHistory(attributionsHistory, "partnerAttributionsHistory", { ...base });
-    /* v25.12 NM-9 — persist attribution via kv shim so admin attributions survive restart. */
+    /* w-partner F1 — typed table is canonical. */
+    try {
+      writeTypedAttribution(base, attributedBy);
+    } catch (err) {
+      if (opts.strict) {
+        const idx = attributions.indexOf(base);
+        if (idx >= 0) attributions.splice(idx, 1);
+        attributionsHistory.length = historyLen;
+        throw new Error(
+          `ATTRIBUTION_PERSIST_FAILED: ${partnerId}/${companyId}: ${(err as Error).message}`,
+        );
+      }
+      log.warn("[partnerWorkspaceStore] typed attribution write failed (non-strict):", (err as Error).message);
+    }
+    /* v25.12 NM-9 — persist attribution via kv shim so admin attributions survive restart.
+     * w-partner C9 — LOCKED: this dual-write is the rollback safety net for the
+     * typed cutover (the prior build reads kv). Do NOT remove it in this wave. */
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const { persistEntry } = require("./lib/storePersistenceShim");
@@ -1376,7 +1658,14 @@ export const partnerAttributionStore = {
     return base;
   },
 
-  revoke(partnerId: string, companyId: string, revokedBy: string): PartnerAttribution {
+  revoke(
+    partnerId: string,
+    companyId: string,
+    revokedBy: string,
+    /* w-partner F1/C8 — revoke mutates the existing object IN PLACE, so its
+     * fail-closed rollback is a pre-mutation SNAPSHOT RESTORE, not a pop. */
+    opts: { strict?: boolean } = {},
+  ): PartnerAttribution {
     requirePid(partnerId);
     const a = attributions.find((a) => a.partnerId === partnerId && a.companyId === companyId && !a.revokedAt);
     if (!a) throw new Error("ATTRIBUTION_NOT_FOUND");
@@ -1392,9 +1681,27 @@ export const partnerAttributionStore = {
       updatedBy: revokedBy,
     };
     next.revisionHash = computeRevisionHash(next as unknown as Record<string, unknown>);
+    const before = { ...a };
+    const historyLen = attributionsHistory.length;
     Object.assign(a, next);
     pushHistory(attributionsHistory, "partnerAttributionsHistory", { ...next });
-    /* v25.12 NM-9 — persist revoke transition. */
+    /* w-partner F1 — typed table is canonical. */
+    try {
+      writeTypedAttribution(a, revokedBy);
+    } catch (err) {
+      if (opts.strict) {
+        // Restore revokedAt/revokedBy/version/prevRevisionHash/revisionHash/
+        // updatedAt/updatedBy — the row must still read as ACTIVE.
+        Object.assign(a, before);
+        attributionsHistory.length = historyLen;
+        throw new Error(
+          `ATTRIBUTION_REVOKE_PERSIST_FAILED: ${partnerId}/${companyId}: ${(err as Error).message}`,
+        );
+      }
+      log.warn("[partnerWorkspaceStore] typed attribution revoke write failed (non-strict):", (err as Error).message);
+    }
+    /* v25.12 NM-9 — persist revoke transition.
+     * w-partner C9 — kv dual-write LOCKED (rollback safety net). */
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const { persistEntry } = require("./lib/storePersistenceShim");

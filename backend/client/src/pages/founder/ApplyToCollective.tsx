@@ -725,7 +725,7 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
             {/* v25.45.4 M-8 — Airwallex is the active payment provider (was Stripe). */}
             <p className="text-xs text-amber-800 mb-2">In production, payment is processed via Airwallex before the application enters the queue. Demo mode does not charge.</p>
             <label className="flex items-start gap-2 text-xs text-amber-900 cursor-pointer">
-              <Checkbox checked={feeAcknowledged} onCheckedChange={(v) => setFeeAcknowledged(v === true)} data-testid="checkbox-fee-ack" />
+              <Checkbox checked={feeAcknowledged} onCheckedChange={(v) => setFeeAcknowledged(v === true)} className="h-5 w-5 border-2 border-slate-500 bg-white data-[state=checked]:border-primary" data-testid="checkbox-fee-ack" />
               I understand this is a non-refundable application fee and that submission does not guarantee an invitation.
             </label>
           </div>
@@ -735,7 +735,7 @@ function PathB({ companyId, applications, meId }: { companyId: string; applicati
               live round they are applying with. */}
           <div className="rounded-md border border-blue-200 bg-blue-50 p-3 text-sm">
             <label className="flex items-start gap-2 text-xs text-blue-900 cursor-pointer">
-              <Checkbox checked={openToRefinement} onCheckedChange={(v) => setOpenToRefinement(v === true)} data-testid="checkbox-open-to-refinement" />
+              <Checkbox checked={openToRefinement} onCheckedChange={(v) => setOpenToRefinement(v === true)} className="h-5 w-5 border-2 border-slate-500 bg-white data-[state=checked]:border-primary" data-testid="checkbox-open-to-refinement" />
               <span>I'm open to having Collective members help refine and solidify this round (terms, structure, syndicate). This is shared with the Collective as part of my application.</span>
             </label>
           </div>

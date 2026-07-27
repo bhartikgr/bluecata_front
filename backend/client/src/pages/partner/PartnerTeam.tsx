@@ -51,7 +51,10 @@ type TeamMember = {
 
 export default function PartnerTeam() {
   const role = useRequirePartnerRole();
-  const q = useQuery<{ members: TeamMember[]; invitations: Array<{ id: string; invitedEmail: string; subRole: string; title?: string | null; expiresAt: string; redeemedAt: string | null }>; meta?: { duplicateSeatCount?: number } }>({
+  /* w-partner F-new3 — `seatLimit` is the EFFECTIVE cap resolved server-side
+     (per-partner override, else tier default). Optional so an older/cached
+     response simply falls back to the previous count-only banner. */
+  const q = useQuery<{ members: TeamMember[]; invitations: Array<{ id: string; invitedEmail: string; subRole: string; title?: string | null; expiresAt: string; redeemedAt: string | null }>; seatLimit?: number; meta?: { duplicateSeatCount?: number } }>({
     queryKey: ["/api/partner/me/team"],
     enabled: role.ready,
     queryFn: async () => (await apiRequest("GET", "/api/partner/me/team")).json(),
@@ -160,6 +163,11 @@ export default function PartnerTeam() {
   const selfUserId = role.identity.identity.userId;
   const activeCount = (q.data?.members ?? []).filter((m) => m.status === "active").length;
   const pendingCount = (q.data?.invitations ?? []).filter((i) => !i.redeemedAt).length;
+  /* w-partner F-new3 — 9999 is the nexus/founding_member sentinel for "no cap"
+     (adminContactsStore.ts:235 TIER_SEAT_LIMITS); rendering the digits would
+     read as a real limit. */
+  const seatLimit = q.data?.seatLimit;
+  const seatLimitLabel = seatLimit === 9999 ? "Unlimited" : String(seatLimit);
   /* v25.23 NL-U — count active managing_partners in the rendered list. The
      destructive controls on the SOLE managing_partner must be disabled so the
      workspace is never orphaned (mirrors server FINDING-08 LAST_MANAGING_PARTNER
@@ -172,8 +180,16 @@ export default function PartnerTeam() {
 
   return (
     <PartnerShell title="Team" tier={role.identity.tier} subRole={role.identity.subRole} partnerName={role.identity.identity.name}>
+      {/* w-partner F-new3 — show the cap the server actually enforces so a
+          partner sees how close they are BEFORE the invite 403 fires (that toast
+          is preserved; this only supplements it). The limit is never derived
+          client-side: it comes from the team response, so a per-partner seat
+          override is honoured. When it is absent we keep the old count-only
+          copy rather than guessing a cap. */}
       <div className="mb-4 text-sm text-[var(--cv-color-text-secondary)]" data-testid="seat-banner">
-        {activeCount} active seats + {pendingCount} pending invitations
+        {seatLimit === undefined
+          ? `${activeCount} active seats + ${pendingCount} pending invitations`
+          : `${activeCount} of ${seatLimitLabel} seats · ${pendingCount} pending`}
       </div>
       {/* W3.5 — admin-only note when duplicate historical seats were collapsed
           server-side; the roster below always shows one row per member. */}

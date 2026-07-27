@@ -15,7 +15,7 @@
 import type { Express, Request, Response } from "express";
 import { requirePartnerAuth, assertSubRole } from "./lib/requirePartnerAuth";
 import { requireSignedAgreement } from "./lib/requireSignedAgreement";
-import { partnerAttributionStore } from "./partnerWorkspaceStore";
+import { partnerAttributionStore, partnerTeamStore } from "./partnerWorkspaceStore";
 import { partnerClientCrmStore } from "./partnerClientCrmStore";
 import { PARTNER_CLIENT_STAGES, isPartnerClientStage } from "../shared/crmStages";
 
@@ -31,6 +31,7 @@ export function registerPartnerClientCrmRoutes(app: Express): void {
     const pid = req.partnerContext!.partnerId;
     res.json({
       stages: partnerClientCrmStore.listStages(pid),
+      leads: partnerClientCrmStore.listLeads(pid),
       vocabulary: PARTNER_CLIENT_STAGES,
     });
   });
@@ -45,6 +46,7 @@ export function registerPartnerClientCrmRoutes(app: Express): void {
     res.json({
       companyId,
       stage: partnerClientCrmStore.getStage(pid, companyId),
+      leadUserId: partnerClientCrmStore.getLead(pid, companyId),
       vocabulary: PARTNER_CLIENT_STAGES,
       activity: partnerClientCrmStore.listActivity(pid, companyId),
     });
@@ -72,6 +74,48 @@ export function registerPartnerClientCrmRoutes(app: Express): void {
       res.json({
         companyId,
         stage: row.stage,
+        leadUserId: row.leadUserId,
+        activity: partnerClientCrmStore.listActivity(pid, companyId),
+      });
+    },
+  );
+
+  /* w-partner F3 — assign (or clear) the designated partner-team lead for one
+   * attributed company. Same write-gate as the stage transition minus `bd`:
+   * choosing who owns a client is a managing_partner/associate decision.
+   * The lead must be an ACTIVE member of THIS partner's team — listByPartner
+   * already filters on status === "active", so a removed/suspended member and a
+   * member of another workspace are both rejected by the same check. */
+  app.patch(
+    "/api/partner/me/client-crm/:companyId/lead",
+    requirePartnerAuth,
+    assertSubRole("managing_partner", "associate"),
+    requireSignedAgreement,
+    (req: Request, res: Response) => {
+      const pid = req.partnerContext!.partnerId;
+      const actor = req.partnerContext!.userId;
+      const companyId = String(req.params.companyId);
+      const raw = (req.body ?? {}).leadUserId;
+      if (raw !== null && typeof raw !== "string") {
+        return res.status(400).json({ error: "LEAD_USER_ID_REQUIRED" });
+      }
+      const leadUserId = typeof raw === "string" && raw.trim() ? raw.trim() : null;
+      if (!isAttributed(pid, companyId)) {
+        return res.status(404).json({ error: "CLIENT_NOT_FOUND_OR_NOT_ATTRIBUTED" });
+      }
+      if (leadUserId !== null) {
+        const isActiveMember = partnerTeamStore
+          .listByPartner(pid)
+          .some((m) => m.userId === leadUserId);
+        if (!isActiveMember) {
+          return res.status(400).json({ error: "LEAD_NOT_ACTIVE_MEMBER" });
+        }
+      }
+      const row = partnerClientCrmStore.setLead(pid, companyId, leadUserId, actor);
+      res.json({
+        companyId,
+        stage: row.stage,
+        leadUserId: row.leadUserId,
         activity: partnerClientCrmStore.listActivity(pid, companyId),
       });
     },

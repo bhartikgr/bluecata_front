@@ -28,7 +28,10 @@ import { appendAdminAudit } from "./adminPlatformStore";
 import { log } from "./lib/logger";
 
 export interface SearchHit {
-  kind: "round" | "contact" | "file";
+  /* W-AVI65 FIX 3 — "company" added so a founder can find their OWN companies
+     from the header box (previously only rounds/contacts/files were searchable,
+     so typing a company name returned "No matches"). */
+  kind: "round" | "contact" | "file" | "company";
   id: string;
   title: string;
   subtitle: string;
@@ -97,6 +100,38 @@ export function searchFounderWorkspace(companyIds: string[], rawQuery: string): 
     log.warn("[founderSearch] contacts search failed:", (err as Error).message);
   }
 
+  // ---- 4. Companies (W-AVI65 FIX 3) ---------------------------------------
+  /* The header box advertises itself as a workspace search but had no company
+     surface at all, so a founder typing their own company/workspace name got
+     "No matches". STRICTLY tenant-scoped: `id IN (companyIds)` where companyIds
+     comes from getCompaniesForFounder(userId) — a founder can never match
+     another tenant's company. Matches BOTH `name` and `legal_name` because the
+     live workspace label ("<Founder>'s Workspace") is PERSISTED into
+     companies.name / companies.legal_name (paymentGatewayAdapter.ts:623-624),
+     which is exactly the string admins/founders see and type. */
+  try {
+    const rows: any[] = rawDb()
+      .prepare(
+        `SELECT id, name, legal_name, sector, stage FROM companies
+          WHERE id IN (${placeholders})
+            AND deleted_at IS NULL
+            AND (name LIKE ? ESCAPE '\\' OR legal_name LIKE ? ESCAPE '\\')
+          ORDER BY name LIMIT ?`,
+      )
+      .all(...companyIds, term, term, MAX_PER_SURFACE);
+    for (const c of rows) {
+      hits.push({
+        kind: "company",
+        id: c.id,
+        title: c.name ?? c.legal_name ?? "(unnamed company)",
+        subtitle: [c.sector, c.stage].filter(Boolean).join(" · ") || "Workspace",
+        href: `/founder/companies/${c.id}`,
+      });
+    }
+  } catch (err) {
+    log.warn("[founderSearch] companies search failed:", (err as Error).message);
+  }
+
   // ---- 3. Dataroom files --------------------------------------------------
   // The founder dataroom store persists to `dataroom_files` (company_id column).
   try {
@@ -135,7 +170,7 @@ export function registerFounderSearchRoutes(app: Express): void {
     const q = typeof req.query.q === "string" ? req.query.q : "";
     if (!q.trim()) {
       // Empty-state: valid response with zero results (not an error).
-      return res.json({ ok: true, query: "", results: [], counts: { round: 0, contact: 0, file: 0 } });
+      return res.json({ ok: true, query: "", results: [], counts: { round: 0, contact: 0, file: 0, company: 0 } });
     }
 
     const companyIds = getCompaniesForFounder(userId).map((c) => c.companyId);
@@ -144,6 +179,8 @@ export function registerFounderSearchRoutes(app: Express): void {
       round: results.filter((r) => r.kind === "round").length,
       contact: results.filter((r) => r.kind === "contact").length,
       file: results.filter((r) => r.kind === "file").length,
+      // W-AVI65 FIX 3 — additive count for the new company surface.
+      company: results.filter((r) => r.kind === "company").length,
     };
 
     // Tier 7 — emit an audit row recording the query and result counts.

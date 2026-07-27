@@ -7,12 +7,59 @@
  * (first + last both required), and a detail drawer showing the read-only,
  * partner-scoped cross-module connections (SPV LP, cap-table, portfolio,
  * Collective, client). All writes are signed-agreement-gated server-side.
+ *
+ * w-partner F6 — the detail pane is no longer read-only. PATCH
+ * /api/partner/me/crm/contacts/:id already existed (partnerWorkspaceV19Store.ts:2045,
+ * crmMeUpdateSchema) but had no UI, so a contact could be created and starred
+ * but never corrected. FOLLOW-ON (no server change needed, UI not built here):
+ * the per-contact notes endpoint (partnerWorkspaceV19Store.ts:2116) and the
+ * task endpoints (:2133, :2156) are still unwired — noted, not removed.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PartnerShell, PartnerEmptyState } from "@/components/partner/PartnerShell";
 import { useRequirePartnerRole } from "@/lib/partner/useRequirePartnerRole";
 import { apiRequest } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
+
+/* w-partner F6 — the editable subset of crmMeUpdateSchema, mapped to the
+   snake_case keys the server validates. Only CHANGED keys are sent, so an
+   untouched field can never be overwritten and a partially-valid form cannot
+   400 the whole record (the F2-b failure mode). */
+// w-partner CODE-REVIEW M2: `required` fields reject the empty string in
+// crmMeUpdateSchema (first_name/last_name .min(1), email .email()). Clearing one
+// would 400 the whole PATCH with an opaque message — the exact F2-b failure mode.
+// We mark them so the client blocks the clear with a named error instead, and we
+// also surface the server's field-level `details` if a 400 slips through.
+const EDITABLE_FIELDS = [
+  { key: "first_name", label: "First name", required: true, from: (c: CrmContact) => c.firstName ?? "" },
+  { key: "last_name", label: "Last name", required: true, from: (c: CrmContact) => c.lastName ?? "" },
+  { key: "email", label: "Email", required: true, from: (c: CrmContact) => c.email ?? "" },
+  { key: "role", label: "Role", required: false, from: (c: CrmContact) => c.role ?? "" },
+  { key: "org", label: "Organization", required: false, from: (c: CrmContact) => c.org ?? "" },
+  { key: "stage", label: "Stage", required: false, from: (c: CrmContact) => c.stage ?? "" },
+  { key: "notes", label: "Notes", required: false, from: (c: CrmContact) => c.notes ?? "" },
+] as const;
+
+/** Render a server INVALID_BODY 400's field-level issues, mirroring the portfolio
+ *  dialog's describeSaveError so a rejected contact edit names the offending field
+ *  rather than showing an opaque message (M2). */
+function describeContactSaveError(e: Error): string {
+  // apiRequest throws ApiError with the parsed body on `.payload` (queryClient.ts);
+  // e.message is a human sentence, NOT JSON — so read the payload, mirroring
+  // PartnerPortfolioProfileDialog.describeSaveError. The contact route answers a 400
+  // as { error:"INVALID_BODY", details: zodError.flatten() } → { fieldErrors }.
+  const payload = (e as { payload?: unknown }).payload;
+  const flat = (payload as { details?: { fieldErrors?: Record<string, string[]> } } | undefined)
+    ?.details?.fieldErrors;
+  if (flat && typeof flat === "object") {
+    const parts = Object.entries(flat)
+      .filter(([, v]) => Array.isArray(v) && v.length > 0)
+      .map(([k, v]) => `${k}: ${v[0]}`);
+    if (parts.length > 0) return parts.join("; ");
+  }
+  return e.message;
+}
 
 interface CrmNote { id: string; body: string; createdAt: string; authorId: string | null }
 interface CrmTask {
@@ -61,6 +108,7 @@ function money(minor: number): string {
 export default function PartnerContacts() {
   const role = useRequirePartnerRole();
   const qc = useQueryClient();
+  const { toast } = useToast();
   const [search, setSearch] = useState("");
   const [starredOnly, setStarredOnly] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -104,6 +152,57 @@ export default function PartnerContacts() {
     onError: (err: any) => {
       setCreateError(err?.message ?? "Could not create contact.");
     },
+  });
+
+  /* w-partner F6 — edit buffer, re-seeded whenever a different contact loads.
+     `baseline` is what the server last returned; the diff against it is what
+     gets PATCHed. */
+  const [edit, setEdit] = useState<Record<string, string>>({});
+  const [baseline, setBaseline] = useState<Record<string, string>>({});
+  const detailContact = detailQ.data?.contact;
+  useEffect(() => {
+    if (!detailContact) return;
+    const seed: Record<string, string> = {};
+    for (const f of EDITABLE_FIELDS) seed[f.key] = f.from(detailContact);
+    setEdit(seed);
+    setBaseline(seed);
+  }, [detailContact]);
+
+  const changedKeys = useMemo(
+    () => EDITABLE_FIELDS.filter((f) => (edit[f.key] ?? "") !== (baseline[f.key] ?? "")).map((f) => f.key),
+    [edit, baseline],
+  );
+
+  const updateMut = useMutation({
+    mutationFn: async () => {
+      // M2: block clearing a required field client-side with a named error rather
+      // than letting the empty string 400 the whole PATCH opaquely.
+      const cleared = changedKeys.filter((k) => {
+        const meta = EDITABLE_FIELDS.find((f) => f.key === k);
+        return meta?.required && !(edit[k] ?? "").trim();
+      });
+      if (cleared.length > 0) {
+        const labels = cleared
+          .map((k) => EDITABLE_FIELDS.find((f) => f.key === k)?.label ?? k)
+          .join(", ");
+        throw new Error(`${labels} cannot be empty`);
+      }
+      const patch: Record<string, string | null> = {};
+      for (const k of changedKeys) {
+        const v = (edit[k] ?? "").trim();
+        // `stage` is the only nullable field in the schema; clearing it means
+        // null, whereas clearing a plain string field means the empty string.
+        patch[k] = k === "stage" && !v ? null : v;
+      }
+      return (await apiRequest("PATCH", `/api/partner/me/crm/contacts/${selectedId}`, patch)).json();
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/partner/me/crm/contacts"] });
+      if (selectedId) qc.invalidateQueries({ queryKey: ["/api/partner/me/crm/contacts", selectedId] });
+      toast({ title: "Contact updated" });
+    },
+    onError: (e: Error) =>
+      toast({ variant: "destructive", title: "Could not update contact", description: describeContactSaveError(e) }),
   });
 
   const starMut = useMutation({
@@ -323,6 +422,35 @@ export default function PartnerContacts() {
                   data-testid="contacts-detail-close"
                 >
                   ✕
+                </button>
+              </div>
+
+              {/* w-partner F6 — editable fields with an EXPLICIT Save. Nothing
+                  autosaves, and only changed keys are sent. */}
+              <div className="space-y-2 border-t pt-3" data-testid="contacts-edit">
+                <div className="text-xs font-medium uppercase tracking-wide text-[var(--cv-color-text-faint)]">
+                  Edit contact
+                </div>
+                {EDITABLE_FIELDS.map((f) => (
+                  <label key={f.key} className="block">
+                    <span className="text-xs text-[var(--cv-color-text-muted)]">{f.label}</span>
+                    <input
+                      value={edit[f.key] ?? ""}
+                      onChange={(e) => setEdit((prev) => ({ ...prev, [f.key]: e.target.value }))}
+                      className="mt-0.5 w-full rounded-md border border-[var(--cv-color-border)] px-2 py-1 text-sm"
+                      data-testid={`contacts-edit-${f.key}`}
+                    />
+                  </label>
+                ))}
+                <button
+                  type="button"
+                  disabled={changedKeys.length === 0 || updateMut.isPending}
+                  onClick={() => updateMut.mutate()}
+                  className="rounded-md px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+                  style={{ background: "var(--cv-accent, #1a1a2e)" }}
+                  data-testid="contacts-edit-save"
+                >
+                  {updateMut.isPending ? "Saving…" : "Save changes"}
                 </button>
               </div>
 

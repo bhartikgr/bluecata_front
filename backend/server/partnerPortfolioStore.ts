@@ -178,10 +178,56 @@ export function upsertPortfolioProfile(
   }
 }
 
+/** Field-level validation issue, shaped for the PATCH 400 response. */
+export interface PortfolioPatchIssue {
+  path: string;
+  message: string;
+}
+
+export type PortfolioPatchResult =
+  | { ok: true; data: CompanyProfilePatch }
+  | { ok: false; issues: PortfolioPatchIssue[] };
+
+/**
+ * w-partner F2-b — normalize a scheme-less companyWebsiteUrl before validation.
+ * `capavate.com` fails z.string().url() and previously 400'd the ENTIRE patch,
+ * discarding all four sections. Prefixing https:// here makes the fix hold
+ * whether or not the client normalized first. "" stays "" (schema allows it).
+ */
+function normalizePortfolioPatch(body: unknown): unknown {
+  if (!body || typeof body !== "object") return body;
+  const b = body as Record<string, unknown>;
+  const contact = b.contact;
+  if (!contact || typeof contact !== "object") return body;
+  const c = contact as Record<string, unknown>;
+  const url = c.companyWebsiteUrl;
+  if (typeof url !== "string") return body;
+  const trimmed = url.trim();
+  if (!trimmed || /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed)) return body;
+  return { ...b, contact: { ...c, companyWebsiteUrl: `https://${trimmed}` } };
+}
+
+/**
+ * Validate a raw request body as a CompanyProfilePatch, returning FIELD-LEVEL
+ * issues on failure so the caller can name the offending field instead of
+ * discarding the whole patch with an opaque 400.
+ */
+export function parsePortfolioPatchDetailed(body: unknown): PortfolioPatchResult {
+  const parsed = companyProfilePatchSchema.safeParse(normalizePortfolioPatch(body));
+  if (parsed.success) return { ok: true, data: parsed.data };
+  return {
+    ok: false,
+    issues: parsed.error.issues.map((i) => ({
+      path: i.path.join("."),
+      message: i.message,
+    })),
+  };
+}
+
 /** Validate a raw request body as a CompanyProfilePatch. Returns null on failure. */
 export function parsePortfolioPatch(body: unknown): CompanyProfilePatch | null {
-  const parsed = companyProfilePatchSchema.safeParse(body);
-  return parsed.success ? parsed.data : null;
+  const parsed = parsePortfolioPatchDetailed(body);
+  return parsed.ok ? parsed.data : null;
 }
 
 /** Soft-delete a partner's private profile for a company. */

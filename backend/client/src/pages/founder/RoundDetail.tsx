@@ -126,7 +126,7 @@ export default function RoundDetail() {
  const [inviteSource, setInviteSource] = useState<"crm" | "new">("crm");
  const [inviteCrmId, setInviteCrmId] = useState("");
  // select-invite-expiry fix v23.4.13
- const [inviteExpiry, setInviteExpiry] = useState("30");
+ const [inviteExpiry, setInviteExpiry] = useState("7");
  const [revokeId, setRevokeId] = useState<string | null>(null);
  const [confirmSoftId, setConfirmSoftId] = useState<string | null>(null);
  // v25.55 Q3 — "Record existing investors" backfill form.
@@ -186,7 +186,7 @@ export default function RoundDetail() {
      }
      queryClient.invalidateQueries({ queryKey: [`/api/rounds/${id}/invitations`] });
      emitMutationLocal("invitation", `inv-${Date.now()}`, "create");
-     setInviteOpen(false); setInviteName(""); setInviteFirstName(""); setInviteLastName(""); setInviteEmail(""); setInviteNote(""); setInviteCompany(""); setInviteStageFocus(""); setInviteMarketSize(""); setInviteExpiry("30"); setInvitePreviewHtml(null);
+     setInviteOpen(false); setInviteName(""); setInviteFirstName(""); setInviteLastName(""); setInviteEmail(""); setInviteNote(""); setInviteCompany(""); setInviteStageFocus(""); setInviteMarketSize(""); setInviteExpiry("7"); setInvitePreviewHtml(null);
    },
    // v25.55 8a — a duplicate active invite is a friendly conflict, not a
    // failure. Give it a clear title instead of the generic "Failed to send".
@@ -529,6 +529,8 @@ export default function RoundDetail() {
  <th className="text-left font-medium px-6 py-2.5">Investor</th>
  <th className="text-left font-medium px-3 py-2.5">State</th>
  <th className="text-left font-medium px-3 py-2.5">Sent</th>
+ {/* W-SHADIE 4a — Resent gets its own dated column between Sent and Viewed. */}
+ <th className="text-left font-medium px-3 py-2.5">Resent</th>
  <th className="text-left font-medium px-3 py-2.5">Viewed</th>
  <th className="text-left font-medium px-3 py-2.5">Expires</th>
  <th className="text-right font-medium px-6 py-2.5">Actions</th>
@@ -537,7 +539,7 @@ export default function RoundDetail() {
  <tbody>
  {asArray(invs.data).length === 0 && (
  <tr>
- <td colSpan={6} className="px-6 py-10 text-center" data-testid="empty-invitations">
+ <td colSpan={7} className="px-6 py-10 text-center" data-testid="empty-invitations">
  <div className="text-sm text-muted-foreground italic">No investors invited yet.</div>
  <div className="text-xs text-muted-foreground mt-1">Use the <strong>Invite investor</strong> or <strong>Bulk CSV</strong> buttons in the round header above to start.</div>
  <Button size="sm" variant="outline" className="mt-3" onClick={() => setInviteOpen(true)} data-testid="button-empty-invite"><Send className="h-3.5 w-3.5 mr-1" /> Invite an investor</Button>
@@ -567,7 +569,11 @@ export default function RoundDetail() {
  <td className="px-3 py-3 text-muted-foreground" data-testid={`inv-sent-${i.id}`}>
   {i.sentAt ? (<div className="leading-tight"><div>{fmtDate(i.sentAt)}</div><div className="text-xs text-muted-foreground/70">{timeAgo(i.sentAt)}</div></div>) : "—"}
  </td>
- <td className="px-3 py-3 text-muted-foreground">{i.viewedAt ? (<div className="leading-tight"><div>{fmtDate(i.viewedAt)}</div><div className="text-xs text-muted-foreground/70">{timeAgo(i.viewedAt)}</div></div>) : "—"}</td>
+ {/* W-SHADIE 4a — Resent date, same absolute-over-relative pattern as Sent. */}
+ <td className="px-3 py-3 text-muted-foreground" data-testid={`inv-resent-${i.id}`}>
+  {i.resentAt ? (<div className="leading-tight"><div>{fmtDate(i.resentAt)}</div><div className="text-xs text-muted-foreground/70">{timeAgo(i.resentAt)}</div></div>) : "—"}
+ </td>
+ <td className="px-3 py-3 text-muted-foreground" data-testid={`inv-viewed-${i.id}`}>{i.viewedAt ? (<div className="leading-tight"><div>{fmtDate(i.viewedAt)}</div><div className="text-xs text-muted-foreground/70">{timeAgo(i.viewedAt)}</div></div>) : "—"}</td>
  <td className="px-3 py-3 text-muted-foreground" data-testid={`inv-expires-${i.id}`}>
   {i.expiresAt ? (<div className="leading-tight"><div>{fmtDate(i.expiresAt)}</div><div className="text-xs text-muted-foreground/70">{timeAgo(i.expiresAt)}</div></div>) : "—"}
  </td>
@@ -578,9 +584,13 @@ export default function RoundDetail() {
      extend-expiry, and revoke are all disabled (no re-notifying a revoked
      investor). Expiry extend is also disabled for accepted (Ozan: revoked
      AND accepted). */}
- <Button size="sm" variant="ghost" onClick={() => resendMut.mutate(i.id)} disabled={resendMut.isPending || i.state === "accepted" || i.state === "revoked"} data-testid={`button-resend-${i.id}`}><Repeat className="h-3.5 w-3.5" /></Button>
- <Button size="sm" variant="ghost" onClick={() => extendExpiryMut.mutate(i.id)} disabled={extendExpiryMut.isPending || i.state === "revoked" || i.state === "accepted"} data-testid={`button-expiry-${i.id}`}><Calendar className="h-3.5 w-3.5" /></Button>
- <Button size="sm" variant="ghost" onClick={() => setRevokeId(i.id)} disabled={i.state === "revoked"} className="text-destructive hover:text-destructive" data-testid={`button-revoke-${i.id}`}><Ban className="h-3.5 w-3.5" /></Button>
+ {/* W-SHADIE 5a — icon THEN visible label, so the founder can tell the
+     three actions apart without hovering. Disabled logic and data-testids
+     are unchanged; the testid stays `button-expiry-` despite the "Extend"
+     label (renaming it would break existing selectors). */}
+ <Button size="sm" variant="ghost" onClick={() => resendMut.mutate(i.id)} disabled={resendMut.isPending || i.state === "accepted" || i.state === "revoked"} aria-label="Resend invitation" data-testid={`button-resend-${i.id}`}><Repeat className="h-3.5 w-3.5 mr-1" />Resend</Button>
+ <Button size="sm" variant="ghost" onClick={() => extendExpiryMut.mutate(i.id)} disabled={extendExpiryMut.isPending || i.state === "revoked" || i.state === "accepted"} aria-label="Extend invitation expiry" data-testid={`button-expiry-${i.id}`}><Calendar className="h-3.5 w-3.5 mr-1" />Extend</Button>
+ <Button size="sm" variant="ghost" onClick={() => setRevokeId(i.id)} disabled={i.state === "revoked"} className="text-destructive hover:text-destructive" aria-label="Revoke invitation" data-testid={`button-revoke-${i.id}`}><Ban className="h-3.5 w-3.5 mr-1" />Revoke</Button>
  </div>
  </td>
  </tr>
@@ -942,7 +952,10 @@ export default function RoundDetail() {
  </div>
  <div><Label>Expires in</Label>
  <select className="mt-1 w-full h-9 px-3 rounded-md border border-input bg-background text-sm" data-testid="select-invite-expiry" value={inviteExpiry} onChange={e => { setInviteExpiry(e.target.value); setInvitePreviewHtml(null); }}>
- <option value="14">14 days</option><option value="30">30 days</option><option value="60">60 days</option><option value="never">Never</option>
+ {/* W-SHADIE 3a — 7 days is the default and the first option; the literal
+     values mirror INVITE_EXPIRY_OPTIONS (native <select> idiom, so the list
+     is written out rather than mapped). "Never" is retained. */}
+ <option value="7">7 days</option><option value="14">14 days</option><option value="30">30 days</option><option value="60">60 days</option><option value="90">90 days</option><option value="never">Never</option>
  </select>
  </div>
  </div>
@@ -969,7 +982,7 @@ export default function RoundDetail() {
  <DialogContent>
  <DialogHeader><DialogTitle>Bulk invite via CSV</DialogTitle></DialogHeader>
  <div className="space-y-3 text-sm">
- <p className="text-muted-foreground">Upload a CSV with columns <code className="bg-secondary px-1.5 py-0.5 rounded text-xs">name,email,note</code>. Each row creates a pending invitation with the round's default 30-day expiry.</p>
+ <p className="text-muted-foreground">Upload a CSV with columns <code className="bg-secondary px-1.5 py-0.5 rounded text-xs">name,email,note</code>. Each row creates a pending invitation with the round's default 7-day expiry.</p>
  <input
  type="file"
  accept=".csv,text/csv"

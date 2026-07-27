@@ -38,6 +38,8 @@ import {
   partnerTeamContactStore,
   partnerInvitationStore,
   partnerAttributionStore,
+  ATTRIBUTION_SOURCES,
+  isAttributionSource,
   partnerPipelineStore,
   partnerPipelineActivityStore,
   partnerNotesStore,
@@ -60,6 +62,10 @@ import { recordSignoff, linkSignoffToSpv } from "./spvLaunchSignoffStore"; /* 1c
 import { hashPassword } from "./lib/auth"; /* v25.49.3 R1 — partner-role auth_users seed hash */
 import { storeCredential, lookupByUserId } from "./userCredentialsStore"; /* v25.49.3 R1 — durable bcrypt credential + hydration probe */
 import { rawDb } from "./db/connection";
+import { log } from "./lib/logger"; /* w-partner F7 — non-fatal mirror warnings */
+/* w-partner F-new3 — the SAME resolver the seat gate enforces with
+   (requirePartnerAuth.ts:207), so the banner can never disagree with the 403. */
+import { resolvePartnerSeatLimit } from "./lib/partnerFeeResolver";
 import { setSessionCookie } from "./lib/sessionCookie";
 import { getCompanyRecordById } from "./multiCompanyStore";
 import { getCompanyProfile } from "./companyProfileStore"; /* v25.15 NM5 — real snapshot data */
@@ -68,9 +74,10 @@ import {
   getPortfolioCompany,
   listPortfolioCompanies,
   upsertPortfolioProfile,
-  parsePortfolioPatch,
+  parsePortfolioPatchDetailed,
   archivePortfolioCompany,
 } from "./partnerPortfolioStore"; /* v25.50.0 Phase 3 — Private Portfolio company profiles */
+import { PORTFOLIO_PROFILE_WRITE_ROLES } from "../shared/partnerRoles"; /* w-partner F-new2 — shared server/client write-role constant */
 import { linkConsortiumPartner, unlinkConsortiumPartner, getConsortiumPartnerId } from "./consortiumLinkStore";
 import { upsertInvestorContactFromPartner, removeInvestorContactForPartner } from "./founderCrmStore";
 import { spvEngineStore } from "./spvEngineStore"; /* Ozan #4 — legacy SPV routes shim THROUGH the canonical engine so no SPV is ever created outside it */
@@ -258,6 +265,10 @@ export function registerPartnerRoutes(app: Express): void {
         crmRemoved = removeInvestorContactForPartner(companyId, prevPartnerId).removed;
       } catch { /* non-fatal */ }
       try {
+        /* w-partner F1(g) — deliberately NON-strict. The link is already
+           severed by this point; a durable-write failure must not abort the
+           unlink and strand the company in a half-unlinked state. The kv
+           dual-write still records the revocation. */
         partnerAttributionStore.revoke(prevPartnerId, companyId, actor);
         attributionRevoked = true;
       } catch (e) {
@@ -535,6 +546,12 @@ export function registerPartnerRoutes(app: Express): void {
   app.post("/api/admin/partners/:id/attributions", requireAdmin, (req: Request, res: Response) => {
     const { companyId, source, notes } = req.body ?? {};
     if (!isString(companyId)) return badRequest(res, "companyId required");
+    /* w-partner F1(i) — the 0114 CHECK now rejects off-union sources at the DB
+       layer, which would surface as an opaque 500. Validate here so the caller
+       gets a 400 naming the allowed values. */
+    if (source !== undefined && source !== null && !isAttributionSource(source)) {
+      return badRequest(res, `source must be one of: ${ATTRIBUTION_SOURCES.join(", ")}`);
+    }
     const actor = String((req.userContext?.userId) ?? ""); /* v14 */ if (!actor) return res.status(401).json({ error: "missing_identity" });
     const partnerId = String(req.params.id);
     const a = partnerAttributionStore.create(partnerId, companyId, actor, source ?? "admin_manual", notes ?? null);
@@ -567,7 +584,11 @@ export function registerPartnerRoutes(app: Express): void {
     const partnerId = String(req.params.id);
     const companyId = String(req.params.companyId);
     try {
-      const a = partnerAttributionStore.revoke(partnerId, companyId, actor);
+      /* w-partner F1(g) — STRICT. This is the deliberate admin revoke; unlike
+         the unlink path there is no already-severed link to strand, so a
+         durable-write failure must fail closed rather than leave the caller
+         believing a revocation was recorded. */
+      const a = partnerAttributionStore.revoke(partnerId, companyId, actor, { strict: true });
       // v25.14 NM2 — notify the partner's managing_partner team members
       // about revocation as well.
       try {
@@ -589,7 +610,14 @@ export function registerPartnerRoutes(app: Express): void {
         }
       } catch { /* notification optional */ }
       res.json({ attribution: a });
-    } catch {
+    } catch (e) {
+      /* w-partner F1(g) — a strict persist failure is NOT a missing row;
+         reporting it as 404 would tell the admin the attribution never
+         existed while it is in fact still live. */
+      const msg = (e as Error).message ?? "";
+      if (msg.startsWith("ATTRIBUTION_REVOKE_PERSIST_FAILED")) {
+        return res.status(500).json({ error: "ATTRIBUTION_REVOKE_FAILED" });
+      }
       res.status(404).json({ error: "ATTRIBUTION_NOT_FOUND" });
     }
   });
@@ -665,6 +693,9 @@ export function registerPartnerRoutes(app: Express): void {
       .map((a) => ({
         id: a.id,
         companyId: a.companyId,
+        /* w-partner F1(d) — the list rendered raw company ids because the
+           name was never joined in. Additive field; the id stays. */
+        companyName: getCompanyRecordById(a.companyId)?.companyName ?? null,
         attributionSource: a.attributionSource,
         attributedAt: a.attributedAt,
       }));
@@ -798,7 +829,10 @@ export function registerPartnerRoutes(app: Express): void {
   app.patch(
     "/api/partner/me/portfolio/:companyId",
     requirePartnerAuth,
-    assertSubRole("managing_partner", "associate"),
+    // w-partner F-new2 — `bd` can already CREATE a portfolio company
+    // (partnerPortfolioCompanyRoutes.ts:39); the shared constant keeps the
+    // server guard and the client canEdit predicate from re-diverging.
+    assertSubRole(...PORTFOLIO_PROFILE_WRITE_ROLES),
     requireSignedAgreement,
     (req: Request, res: Response) => {
       const ctx = req.partnerContext!;
@@ -807,8 +841,14 @@ export function registerPartnerRoutes(app: Express): void {
       if (!partnerCanAccessCompanyPortfolio(ctx.partnerId, companyId)) {
         return res.status(404).json({ error: "PORTFOLIO_COMPANY_NOT_FOUND" });
       }
-      const patch = parsePortfolioPatch(req.body ?? {});
-      if (!patch) return badRequest(res, "invalid company profile patch");
+      // w-partner F2-b — surface FIELD-LEVEL issues. A single bad value (e.g. a
+      // free-text industry) previously 400'd the whole patch and silently
+      // discarded all four sections with no indication of the offending field.
+      const parsed = parsePortfolioPatchDetailed(req.body ?? {});
+      if (!parsed.ok) {
+        return res.status(400).json({ error: "INVALID_PROFILE_PATCH", details: parsed.issues });
+      }
+      const patch = parsed.data;
       try {
         const saved = upsertPortfolioProfile(ctx.partnerId, companyId, patch, ctx.userId);
         res.json({ companyId, profile: saved.profile, updatedAt: saved.updatedAt });
@@ -1240,7 +1280,12 @@ export function registerPartnerRoutes(app: Express): void {
         title: contact?.positionNote ?? null,
       };
     });
-    res.json({ members, invitations, meta: { duplicateSeatCount, duplicateSeatIdsByUserId } });
+    /* w-partner F-new3 — the EFFECTIVE seat cap (per-partner override, else tier
+       default). Resolved server-side from the same function the invite gate
+       enforces with so the banner can never disagree with the 403; the client
+       must not carry its own copy of TIER_SEAT_LIMITS. */
+    const { seatLimit } = resolvePartnerSeatLimit(pid, req.partnerContext!.tier);
+    res.json({ members, invitations, seatLimit, meta: { duplicateSeatCount, duplicateSeatIdsByUserId } });
   });
 
   /* v25.50 Phase 7 (7c) — edit a team member's partner-local contact info.
@@ -1436,6 +1481,28 @@ export function registerPartnerRoutes(app: Express): void {
       }
       try {
         const s = partnerWorkspaceSettingsStore.patch(ctx.partnerId, patch, ctx.userId, { whiteLabelAllowed });
+        /* w-partner F7 — mirror the workspace displayName onto the partner's
+           contact record so admin/directory surfaces stop showing the stale
+           name after a partner renames their workspace. NON-FATAL: the settings
+           save has already succeeded and is the user's actual intent; a mirror
+           failure must not turn a saved setting into an error response.
+           displayName ONLY — legal_name is a legal identifier and is NEVER
+           derived from a self-service display field. */
+        if ("displayName" in patch) {
+          try {
+            updateContact(
+              ctx.partnerId,
+              { displayName: patch.displayName },
+              ctx.userId,
+              "partner.display_name.mirrored",
+            );
+          } catch (mirrorErr) {
+            log.warn(
+              `[partnerRoutes] displayName mirror to contact ${ctx.partnerId} failed (non-fatal):`,
+              (mirrorErr as Error).message,
+            );
+          }
+        }
         res.json({ settings: s });
       } catch (e) {
         res.status(403).json({ error: (e as Error).message });

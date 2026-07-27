@@ -1300,6 +1300,44 @@ function applyV2538PricingConfigSchema(db: any) {
     `CREATE INDEX IF NOT EXISTS idx_pcr_partner_status ON partner_connect_requests(partner_id, status);`,
     `CREATE INDEX IF NOT EXISTS idx_pcr_requester ON partner_connect_requests(requester_user_id);`,
     `CREATE UNIQUE INDEX IF NOT EXISTS uq_pcr_question_partner ON partner_connect_requests(question_id, partner_id);`,
+    // --- w-partner F1 (migration 0114): typed partner attributions + revision chain ---
+    // Promotes attributions out of the schemaless kv_partnerAttributions blob.
+    // Additive + idempotent. The kv->typed backfill is a guarded TypeScript boot
+    // step (backfillPartnerAttributionsFromKv), never SQL — see 0114's header.
+    `CREATE TABLE IF NOT EXISTS partner_attributions (
+      id TEXT PRIMARY KEY NOT NULL,
+      partner_id TEXT NOT NULL,
+      company_id TEXT NOT NULL,
+      attributed_at TEXT NOT NULL,
+      attributed_by TEXT,
+      attribution_source TEXT NOT NULL
+        CHECK (attribution_source IN ('admin_manual', 'referral_code', 'partner_claim', 'partner_portfolio')),
+      revoked_at TEXT,
+      revoked_by TEXT,
+      notes TEXT,
+      version INTEGER NOT NULL DEFAULT 1,
+      prev_revision_hash TEXT,
+      revision_hash TEXT,
+      updated_at TEXT NOT NULL,
+      updated_by TEXT,
+      is_seed INTEGER NOT NULL DEFAULT 0
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_pattr_partner ON partner_attributions(partner_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_pattr_partner_company ON partner_attributions(partner_id, company_id);`,
+    `CREATE TABLE IF NOT EXISTS partner_attribution_revisions (
+      id TEXT PRIMARY KEY NOT NULL,
+      attribution_id TEXT NOT NULL,
+      partner_id TEXT NOT NULL,
+      company_id TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      prev_revision_hash TEXT,
+      revision_hash TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      recorded_at TEXT NOT NULL,
+      recorded_by TEXT
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_pattr_rev_attribution ON partner_attribution_revisions(attribution_id, version);`,
+    `CREATE INDEX IF NOT EXISTS idx_pattr_rev_partner ON partner_attribution_revisions(partner_id);`,
   ];
   try {
     const tx = db.transaction(() => { for (const sql of stmts) db.exec(sql); });
@@ -1534,6 +1572,13 @@ function applyV12AdditiveAlters(db: any) {
     ["captable_commits", "ALTER TABLE captable_commits ADD COLUMN valuation_cap TEXT"],
     ["captable_commits", "ALTER TABLE captable_commits ADD COLUMN discount_pct TEXT"],
     ["funded_queue", "ALTER TABLE funded_queue ADD COLUMN instrument_class TEXT NOT NULL DEFAULT 'priced'"],
+    // ---- w-partner (2026-07-25) — migration 0115: designated partner-member
+    // lead on the client CRM. The CREATE TABLE IF NOT EXISTS literal for
+    // partner_client_crm is a no-op on an already-deployed DB, so without THIS
+    // half the column never lands there and hydratePartnerClientCrmStore's
+    // SELECT throws — which it swallows non-fatally, leaving every partner's
+    // CRM stage projection silently EMPTY after boot.
+    ["partner_client_crm", "ALTER TABLE partner_client_crm ADD COLUMN lead_user_id TEXT"],
   ];
   for (const [table, sql] of alters) {
     try {
@@ -3613,12 +3658,17 @@ function buildCreateTableStatements(): string[] {
     // migrations/0083). partner_client_crm holds the durable CRM stage per
     // (partner_id, company_id); partner_client_activity is an append-only
     // client-scoped timeline. Both partner-scoped / fail-closed at the store.
+    // w-partner (0115) — lead_user_id is the designated partner-team member for
+    // this client. This literal only covers FRESH DBs; the guarded ADD COLUMN in
+    // applyV12AdditiveAlters covers already-deployed ones (CREATE TABLE IF NOT
+    // EXISTS is a no-op there).
     `CREATE TABLE IF NOT EXISTS partner_client_crm (
-      partner_id  TEXT NOT NULL,
-      company_id  TEXT NOT NULL,
-      stage       TEXT NOT NULL,
-      updated_at  TEXT NOT NULL,
-      updated_by  TEXT,
+      partner_id   TEXT NOT NULL,
+      company_id   TEXT NOT NULL,
+      stage        TEXT NOT NULL,
+      updated_at   TEXT NOT NULL,
+      updated_by   TEXT,
+      lead_user_id TEXT,
       PRIMARY KEY (partner_id, company_id)
     );`,
     `CREATE INDEX IF NOT EXISTS idx_partner_client_crm_partner ON partner_client_crm(partner_id);`,

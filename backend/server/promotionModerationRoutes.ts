@@ -37,6 +37,7 @@ import {
   type PartnerDealModerationStatus,
 } from "./partnerWorkspaceStore";
 import { DEFAULT_CHAPTER_ID } from "./lib/chapterDefaults";
+import { ensurePromotionDirectoryListing } from "./collectiveInterestStore";
 import { publish as ssePublish } from "./lib/sseHub";
 import { appendAdminAudit } from "./adminPlatformStore";
 import { emitNotification, type NotificationKind } from "./notificationsStore";
@@ -222,6 +223,32 @@ export function registerPromotionModerationRoutes(app: Express): void {
           actor,
           notes,
         );
+        /* w-partner F9-B — a promotion reaching status 'live' did not enrol the
+           company in the collective directory, so an approved, live-promoted
+           company stayed invisible there. NON-FATAL (matching
+           adminCollectiveRoutes.ts:383): the directory is a derived view and
+           must never block moderation. The helper has a no-overwrite guard, so
+           a company already listed via the founder-application flow keeps its
+           richer row. */
+        if (updated.status === "live" && updated.companyId) {
+          try {
+            // w-partner CODE-REVIEW M1: file the directory row under the PROMOTION's
+            // own chapter, not the global default. They coincide today (creation
+            // stamps DEFAULT_CHAPTER_ID) but the no-overwrite guard makes a wrong
+            // chapter permanent the moment a non-default chapter exists.
+            ensurePromotionDirectoryListing(
+              updated.companyId,
+              updated.id,
+              updated.chapterId ?? DEFAULT_CHAPTER_ID,
+            );
+          } catch (e) {
+            log.warn(
+              `[promotion.moderation.${action}] directory enrolment failed (non-fatal):`,
+              (e as Error).message,
+            );
+          }
+        }
+
         // Cross-cutting admin audit (in addition to the store-side audit row).
         try {
           appendAdminAudit(

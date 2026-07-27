@@ -201,7 +201,16 @@ export function registerAdminV25Routes(app: Express): void {
   app.get("/api/admin/search", requireAdmin, (req: Request, res: Response) => {
     const q = String(req.query.q ?? "").trim();
     if (!q || q.length < 1) {
-      return res.json({ founders: [], investors: [], partners: [], collective_members: [] });
+      /* W-AVI65 FIX 3 — include the flat `results` shape the header search
+         renders, so the empty-query case is a valid empty result set rather than
+         a response the client reads as `undefined`. */
+      return res.json({
+        ok: true,
+        query: "",
+        founders: [], investors: [], partners: [], collective_members: [],
+        results: [],
+        counts: { company: 0, investor: 0, partner: 0, member: 0 },
+      });
     }
     const like = `%${q}%`;
 
@@ -366,7 +375,79 @@ export function registerAdminV25Routes(app: Express): void {
       appendAdminAudit(actor, "search", "admin.search", { q, founders: founders.length, investors: investors.length, partners: partners.length, collective_members: collective_members.length });
       BridgeOutbound.auditLogAppended("admin", { eventType: "admin.search", q, counts: { founders: founders.length, investors: investors.length, partners: partners.length, collective_members: collective_members.length } });
 
-      return res.json({ founders, investors, partners, collective_members });
+      /* W-AVI65 FIX 3 — flat `results[]` projection.
+         The live header search box (client/src/components/AppShell.tsx
+         GlobalSearch) renders `results[]` rows of
+         { kind, id, title, subtitle, href } — the shape /api/founder/search
+         returns. This endpoint only ever returned the four typed buckets, which
+         is why wiring the admin box here required a shape adapter. We now emit
+         `results` ALONGSIDE the original four keys (purely additive: every
+         existing consumer of founders/investors/partners/collective_members is
+         untouched), so the admin box can render admin-wide hits directly.
+         Company hits carry kind "company" and deep-link to the admin company
+         detail route (/admin/companies/:id, App.tsx:708). */
+      const results: Array<{ kind: string; id: string; title: string; subtitle: string; href: string }> = [];
+      for (const f of founders) {
+        const title = String(f.company_name ?? f.contact_name ?? f.id ?? "").trim();
+        if (!title) continue;
+        results.push({
+          kind: "company",
+          id: String(f.id ?? ""),
+          title,
+          subtitle: [f.contact_name, f.email, f.sector, f.stage].filter(Boolean).map(String).join(" · ") || "Company",
+          href: `/admin/companies/${String(f.id ?? "")}`,
+        });
+      }
+      for (const i of investors) {
+        const title = String(i.name ?? i.email ?? i.id ?? "").trim();
+        if (!title) continue;
+        results.push({
+          kind: "investor",
+          id: String(i.id ?? ""),
+          title,
+          subtitle: [i.email, i.status ?? i.role].filter(Boolean).map(String).join(" · ") || "Investor",
+          href: `/admin/investors`,
+        });
+      }
+      for (const p of partners) {
+        const title = String(p.org_name ?? p.contact_name ?? p.id ?? "").trim();
+        if (!title) continue;
+        results.push({
+          kind: "partner",
+          id: String(p.id ?? ""),
+          title,
+          subtitle: [p.contact_name, p.contact_email, p.status].filter(Boolean).map(String).join(" · ") || "Partner",
+          href: `/admin/partners`,
+        });
+      }
+      for (const m of collective_members) {
+        const title = String(m.name ?? m.email ?? m.user_id ?? "").trim();
+        if (!title) continue;
+        results.push({
+          kind: "member",
+          id: String(m.user_id ?? ""),
+          title,
+          subtitle: [m.email, m.tier, m.status].filter(Boolean).map(String).join(" · ") || "Collective member",
+          // /admin/collective is NOT a route; the members list is (App.tsx:891).
+          href: `/admin/collective/members`,
+        });
+      }
+
+      return res.json({
+        ok: true,
+        query: q,
+        founders,
+        investors,
+        partners,
+        collective_members,
+        results,
+        counts: {
+          company: founders.length,
+          investor: investors.length,
+          partner: partners.length,
+          member: collective_members.length,
+        },
+      });
     } catch (err) {
       log.error("[adminV25Store.search] error:", (err as Error).message);
       return res.status(500).json({ ok: false, error: "SEARCH_FAILED", message: (err as Error).message });

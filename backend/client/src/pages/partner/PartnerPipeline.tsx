@@ -21,6 +21,7 @@ import { Badge } from "@/components/ui/badge";
 import { PartnerEmptyState } from "@/components/partner/PartnerShell";
 import { AppCard } from "@/components/ui/app-card";
 import { PartnerPortfolioProfileDialog } from "@/components/partner/PartnerPortfolioProfileDialog";
+import { canWritePortfolioProfile } from "@shared/partnerRoles"; /* w-partner F-new2 — one source of truth with the server guard */
 import {
   PARTNER_PIPELINE_STAGES,
   PARTNER_PIPELINE_STAGE_LABELS,
@@ -103,6 +104,9 @@ export default function PartnerPipeline() {
   const canWithdrawPromotion = role.identity?.subRole === "managing_partner";
   // Stage advancement is gated identically to the PATCH endpoint (managing_partner|associate).
   const canAdvance = canPromote;
+  // w-partner F-new2 — the portfolio-profile editor reads the SAME constant the
+  // server guard uses, so the client predicate can never re-diverge from it.
+  const canEditPortfolioProfile = canWritePortfolioProfile(role.identity?.subRole);
 
   // v25.50.0 Phase 2 (2c-b) — advance a deal to ANY stage (skipping allowed;
   // server validates membership-in-set, not adjacency).
@@ -407,14 +411,29 @@ export default function PartnerPipeline() {
                               // the server gate). Associates see a read-only status
                               // badge instead of a destructive control they can't use.
                               canWithdrawPromotion ? (
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  className="h-6 text-[10px] px-2"
-                                  data-testid={`make-private-btn-${d.id}`}
-                                  disabled={withdrawMut.isPending}
-                                  onClick={() => withdrawMut.mutate({ promotionId: collectivePromo.id })}
-                                >Make Private</Button>
+                                /* w-partner F8 — the managing_partner branch showed
+                                   "Make Private" with NO state, so a managing partner
+                                   could not tell an approved promotion from one still
+                                   awaiting chapter-admin review. The already-computed
+                                   `underReview` now renders as a badge ALONGSIDE the
+                                   withdraw control (which is deliberately NOT gated on
+                                   `live` — withdrawing a pending promotion is exactly
+                                   what a partner needs to be able to do). */
+                                <>
+                                  {underReview && (
+                                    <Badge variant="outline" className="text-[10px] py-0" data-testid={`promo-under-review-mp-${d.id}`}>
+                                      In review
+                                    </Badge>
+                                  )}
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-6 text-[10px] px-2"
+                                    data-testid={`make-private-btn-${d.id}`}
+                                    disabled={withdrawMut.isPending}
+                                    onClick={() => withdrawMut.mutate({ promotionId: collectivePromo.id })}
+                                  >Make Private</Button>
+                                </>
                               ) : (
                                 <Badge variant="outline" className="text-[10px] py-0" data-testid={`collective-status-${d.id}`}>
                                   {underReview ? "In review" : "In Collective"}
@@ -673,7 +692,7 @@ export default function PartnerPipeline() {
         <PartnerPortfolioProfileDialog
           companyId={profileDeal.companyId}
           companyName={profileDeal.dealName}
-          canEdit={!!canPromote}
+          canEdit={canEditPortfolioProfile}
           open={!!profileDeal}
           onOpenChange={(o) => { if (!o) setProfileDeal(null); }}
         />

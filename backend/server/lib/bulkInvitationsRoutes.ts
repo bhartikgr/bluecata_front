@@ -104,7 +104,8 @@ export function registerBulkInvitationsRoutes(app: Express): void {
       );
       const tenantId = `tenant_co_${owner.companyId}`;
       const now = new Date().toISOString();
-      const expiry = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
+      // W-SHADIE 3a — bulk CSV aligned to the platform-wide 7-day invite default.
+      const expiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
       const noteText = body.message ? String(body.message).slice(0, 1000) : null;
 
       // v25.20 Lane 1 NM fix: stage validation + token generation first, then
@@ -228,12 +229,12 @@ export function registerBulkInvitationsRoutes(app: Express): void {
               `<p>You've been invited to participate in <strong>${e(roundName)}</strong> at <strong>${e(companyName)}</strong>.</p>` +
               `<p><a href="${e(link)}">Click here to view the invitation</a></p>` +
               (noteText ? `<p>Note from the founder: ${e(noteText)}</p>` : "") +
-              `<p>This invitation expires in 14 days.</p>`,
+              `<p>This invitation expires in 7 days.</p>`,
             text:
               `You've been invited to participate in ${roundName} at ${companyName} on Capavate.\n` +
               `View it here: ${link}\n` +
               (noteText ? `Note: ${noteText}\n` : "") +
-              `This invitation expires in 14 days.`,
+              `This invitation expires in 7 days.`,
           });
         } catch (mailErr) {
           log.warn(

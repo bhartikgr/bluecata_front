@@ -267,6 +267,53 @@ export function upsertDirectoryListing(
   }
 }
 
+/**
+ * w-partner F9-B — a promotion going LIVE never enrolled the company in the
+ * collective directory, so a live-promoted company was invisible in the
+ * directory unless it separately went through the founder-application approve
+ * path. This is the promotion-side companion to upsertDirectoryListing.
+ *
+ * NO-OVERWRITE GUARD: unlike upsertDirectoryListing this NEVER modifies an
+ * existing row. A company already in the directory got there through the
+ * founder-application flow with its own application_id / chapter / stage /
+ * sector; clobbering those with promotion-derived values would silently
+ * downgrade richer data. Existing row => "exists", untouched.
+ *
+ * Throws on DB failure; the caller wraps it non-fatally (matching
+ * adminCollectiveRoutes.ts:383) so moderation is never blocked.
+ */
+export function ensurePromotionDirectoryListing(
+  companyId: string,
+  promotionId: string,
+  chapterId: string | null,
+  opts?: { stage?: string | null; sector?: string | null },
+): "created" | "exists" {
+  const db: any = rawDb();
+  const existing = db
+    .prepare(`SELECT id FROM collective_directory_listings WHERE company_id = ? LIMIT 1`)
+    .get(companyId) as { id?: string } | undefined;
+  if (existing?.id) {
+    log.info(`[directoryListings] company ${companyId} already listed — promotion ${promotionId} left it untouched`);
+    return "exists";
+  }
+  const id = `cdl_${randomBytes(8).toString("hex")}`;
+  db.prepare(
+    `INSERT INTO collective_directory_listings
+       (id, company_id, application_id, chapter, stage, sector, listed_at, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'listed')`,
+  ).run(
+    id,
+    companyId,
+    `promo_${promotionId}`,
+    chapterId ?? null,
+    opts?.stage ?? null,
+    opts?.sector ?? null,
+    new Date().toISOString(),
+  );
+  log.info(`[directoryListings] Enrolled company ${companyId} from live promotion ${promotionId}`);
+  return "created";
+}
+
 /** Called when admin REJECTS a founder application. Removes listing. */
 export function removeDirectoryListing(companyId: string): void {
   try {

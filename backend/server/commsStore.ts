@@ -71,6 +71,9 @@ import { resolveDisplayName, readUserPrivacyRaw } from "./lib/userPrivacyResolve
    that the viewer-aware resolver may pass through (never leak u_…/company:…). */
 import { resolveDisplayName as resolveDbDisplayName } from "./lib/displayNameResolver";
 import { areCoMembersOnAnyCapTable } from "./lib/capTableMembership";
+/* W-AVI65 FIX 2 — widened DM-only co-membership predicate (founder↔investor).
+   It calls the SACRED areCoMembersOnAnyCapTable internally, unchanged. */
+import { areDmCoMembers } from "./lib/dmCoMembership";
 // 1d — Consortium Partner author-label fallback (non-sacred): screen name →
 // registered/company name → "Consortium Partner". Keeps a partner author from
 // rendering as a raw u_redeemed_… id in the Posts feed.
@@ -852,6 +855,10 @@ function resolveIdentity(
   viewerUserId: string,
   authorUserId: string,
   founderUserId?: string,
+  /* W-AVI65 FIX 2 — set for DIRECT MESSAGE surfaces so co-membership is computed
+     with the widened founder↔investor predicate (see areDmCoMembers). Absent =
+     unchanged legacy behavior (investor↔investor ledger rule only). */
+  opts?: { dm?: boolean },
 ): ReturnType<typeof resolveDisplayIdentity> {
   const v = viewerOf(viewerUserId);
   const a = COMMS_USERS[authorUserId] ?? {
@@ -883,9 +890,23 @@ function resolveIdentity(
   //   - explicit opt-out (visibleToCoMembers:false) → "Private Investor" / screen
   //     name, EVEN between co-members (explicit opt-out wins).
   if (authorUserId && authorUserId !== viewerUserId && authorUserId !== founderUserId) {
-    const isCoMember = areCoMembersOnAnyCapTable(authorUserId, viewerUserId);
+    /* W-AVI65 FIX 2 — for DM surfaces use the widened caller-side predicate so a
+       FOUNDER on a shared cap table qualifies as a co-member. The SACRED
+       investor↔investor rule is still one of its disjuncts (called unchanged),
+       so this can only ever ADD true cases, never remove them. Non-DM surfaces
+       keep the exact legacy predicate. Co-membership is still proven only from
+       durable rows — never from "a DM exists". */
+    const isCoMember = opts?.dm === true
+      ? areDmCoMembers(authorUserId, viewerUserId)
+      : areCoMembersOnAnyCapTable(authorUserId, viewerUserId);
+    /* COMMS_USERS is EMPTY in production (see its declaration), so `a.legalName`
+       degrades to the raw u_… id. Resolve the real name from the DB-backed
+       resolver instead; if it cannot be resolved, keep the raw id so the
+       resolver's / sanitizeCommsName's existing generic fallbacks apply (a raw
+       id is never surfaced). */
+    const legalName = COMMS_USERS[authorUserId] ? a.legalName : dbLegalNameFor(authorUserId, a.legalName);
     const policyName = resolveDisplayName(authorUserId, viewerUserId, "message", {
-      legalName: a.legalName,
+      legalName,
       isCoMember,
     });
     if (policyName === "Private Investor") {
@@ -896,12 +917,41 @@ function resolveIdentity(
   return { ...resolved, displayName: sanitizeCommsName(resolved.displayName, authorUserId) };
 }
 
+/* W-AVI65 FIX 2 — resolve a real legal name for a user that is absent from the
+   (production-empty) COMMS_USERS map, so the privacy resolver receives a human
+   name rather than a raw u_… id. Returns `fallback` unchanged when nothing
+   better is resolvable OR the resolver only produced its own placeholder, so
+   downstream sanitizeCommsName()/resolver fallbacks stay in charge. Never
+   throws. */
+function dbLegalNameFor(userId: string, fallback: string): string {
+  try {
+    const r = resolveDbDisplayName(userId);
+    // W-AVI65 REVISE (Gemini blocker) — displayNameResolver returns the user's
+    // EMAIL as `.name` with resolved:true when no legal/display name exists
+    // (displayNameResolver.ts:107). Rejecting only /^u_/ let that email become
+    // the DM displayTitle — a NEW identity leak (the pre-fix raw u_ id was
+    // masked). Reject an email (contains '@') and any raw id prefix, matching
+    // the "NEVER returns an email" contract of resolveCommsDisplayName below.
+    const nm = r?.name?.trim();
+    if (r?.resolved && nm && !nm.includes("@") && !/^(u_|usr_|co_|cmp_|rnd_)/i.test(nm)) {
+      return r.name;
+    }
+  } catch { /* fall through to the caller's fallback */ }
+  return fallback;
+}
+
 /* W-FIX1a A2 — never surface a raw u_…/company:… id or bare email as a display
    name on the messaging surface. If the resolved label still looks like a raw
    id, fall back to the DB-backed resolver, then to a safe generic. */
 function sanitizeCommsName(name: string | null | undefined, subjectUserId: string): string {
+  // W-AVI65 REVISE R2 (Gemini blocker) — also reject an EMAIL ('@'). FIX 2's
+  // co-membership widening routes founder↔investor pairs past the resolver's
+  // "Private Investor" early return into THIS backstop, where resolveDbDisplayName
+  // can return the user's email as `.name`. Without the '@' guard that email
+  // would become the DM displayTitle. Mirrors the sibling guard in
+  // resolveCommsDisplayName (which already tests '@').
   const looksUnsafe = (s: string | null | undefined): boolean =>
-    !s || /^(u_|usr_|co_|cmp_|rnd_)/i.test(String(s).trim()) || String(s).trim().length === 0;
+    !s || String(s).includes("@") || /^(u_|usr_|co_|cmp_|rnd_)/i.test(String(s).trim()) || String(s).trim().length === 0;
   if (!looksUnsafe(name)) return String(name);
   try {
     const r = resolveDbDisplayName(subjectUserId);
@@ -1233,7 +1283,8 @@ function projectChannel(channel: Channel, viewerUserId: string): ChannelView {
   if (channel.kind === "dm") {
     const otherId = channel.participantUserIds.find((id) => id !== viewerUserId);
     if (otherId) {
-      const r = resolveIdentity(viewerUserId, otherId, founderUserId);
+      // W-AVI65 FIX 2 — DM surface: use the widened co-membership predicate.
+      const r = resolveIdentity(viewerUserId, otherId, founderUserId, { dm: true });
       displayTitle = r.displayName;
       displaySubtitle = "Direct message";
     }
@@ -1249,7 +1300,9 @@ function projectChannel(channel: Channel, viewerUserId: string): ChannelView {
   }
   let lastView: ChannelView["lastMessage"];
   if (last) {
-    const r = resolveIdentity(viewerUserId, last.authorUserId, founderUserId);
+    const r = resolveIdentity(viewerUserId, last.authorUserId, founderUserId, {
+      dm: channel.kind === "dm",
+    });
     lastView = {
       id: last.id,
       preview: last.body.length > 100 ? last.body.slice(0, 99) + "…" : last.body,
@@ -1296,7 +1349,9 @@ function projectChannel(channel: Channel, viewerUserId: string): ChannelView {
 
 function projectMessage(msg: Message, channel: Channel | undefined, viewerUserId: string): MessageView {
   const founderUserId = channel?.metadata?.founderUserId as string | undefined;
-  const r = resolveIdentity(viewerUserId, msg.authorUserId, founderUserId);
+  const r = resolveIdentity(viewerUserId, msg.authorUserId, founderUserId, {
+    dm: channel?.kind === "dm",
+  });
   const author = COMMS_USERS[msg.authorUserId];
   const roleBadge = author?.roles.includes("founder") ? "Founder"
     : author?.roles.includes("soft_circler") ? "Soft-circler"

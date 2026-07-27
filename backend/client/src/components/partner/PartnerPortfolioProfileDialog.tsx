@@ -16,6 +16,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { INDUSTRY_OPTIONS } from "@/lib/profile/data/enums";
 import { useToast } from "@/hooks/use-toast";
 
 type Section = Record<string, unknown>;
@@ -39,9 +47,32 @@ const STEPS = [
   { key: 4, label: "M&A" },
 ] as const;
 
+/* Radix SelectItem forbids an empty value, so "cleared" rides a sentinel that
+   the change handler maps back to null (industryEnum accepts null, not ""). */
+const INDUSTRY_NONE = "__none__";
+
 const TX_STATUS = [
   "not_pursuing", "exploring", "outbound", "inbound", "active_negotiation",
 ] as const;
+
+/**
+ * w-partner F2-b — name the offending field(s). The server now answers a bad
+ * patch with { error:"INVALID_PROFILE_PATCH", details:[{path,message}] }; the
+ * generic message alone left the user with no idea which field was rejected.
+ */
+function describeSaveError(e: Error): string {
+  const payload = (e as { payload?: unknown }).payload;
+  const details = (payload as { details?: unknown } | undefined)?.details;
+  if (Array.isArray(details) && details.length > 0) {
+    return details
+      .map((d) => {
+        const { path, message } = d as { path?: string; message?: string };
+        return path ? `${path}: ${message ?? "invalid"}` : String(message ?? "invalid");
+      })
+      .join("; ");
+  }
+  return e.message;
+}
 
 export function PartnerPortfolioProfileDialog({
   companyId,
@@ -91,10 +122,13 @@ export function PartnerPortfolioProfileDialog({
       queryClient.invalidateQueries({ queryKey: ["/api/partner/me/portfolio"] });
       onOpenChange(false);
     },
-    onError: (e: Error) => toast({ variant: "destructive", title: "Could not save profile", description: e.message }),
+    onError: (e: Error) =>
+      toast({ variant: "destructive", title: "Could not save profile", description: describeSaveError(e) }),
   });
 
   const str = (s: Section, k: string): string => (typeof s[k] === "string" ? (s[k] as string) : "");
+  const maTransactionStatus =
+    str((ma.readiness as Section) ?? {}, "transactionStatus") || "not_pursuing";
   const setField = (
     setter: (fn: (prev: Section) => Section) => void,
     k: string,
@@ -132,7 +166,28 @@ export function PartnerPortfolioProfileDialog({
               <>
                 <Input disabled={!canEdit} placeholder="Company name" value={str(contact, "companyName")} onChange={setField(setContact, "companyName")} data-testid="pf-contact-name" />
                 <Input disabled={!canEdit} placeholder="Company email" value={str(contact, "companyEmail")} onChange={setField(setContact, "companyEmail")} data-testid="pf-contact-email" />
-                <Input disabled={!canEdit} placeholder="Industry" value={str(contact, "industry")} onChange={setField(setContact, "industry")} data-testid="pf-contact-industry" />
+                {/* w-partner F2-b — Industry is the INDUSTRY_OPTIONS enum, not free text.
+                    A typed string failed industryEnum and 400'd the ENTIRE patch,
+                    silently discarding all four sections. Pattern copied from the
+                    unpinned NewCompanyDialog.tsx. Clearing writes null (industryEnum
+                    is .nullable() and rejects ""). */}
+                <Select
+                  value={str(contact, "industry") || INDUSTRY_NONE}
+                  onValueChange={(v) =>
+                    setContact((prev) => ({ ...prev, industry: v === INDUSTRY_NONE ? null : v }))
+                  }
+                  disabled={!canEdit}
+                >
+                  <SelectTrigger data-testid="pf-contact-industry">
+                    <SelectValue placeholder="Industry" />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-72">
+                    <SelectItem value={INDUSTRY_NONE}>— No industry —</SelectItem>
+                    {INDUSTRY_OPTIONS.map((o) => (
+                      <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
                 <Input disabled={!canEdit} placeholder="Website / URL" value={str(contact, "companyWebsiteUrl")} onChange={setField(setContact, "companyWebsiteUrl")} data-testid="pf-contact-website" />
                 <Textarea disabled={!canEdit} placeholder="One-sentence headliner" rows={2} value={str(contact, "oneSentenceHeadliner")} onChange={setField(setContact, "oneSentenceHeadliner")} data-testid="pf-contact-headliner" />
               </>
@@ -157,11 +212,22 @@ export function PartnerPortfolioProfileDialog({
             {step === 4 && (
               <>
                 <label className="text-xs font-medium">M&amp;A transaction status</label>
+                {/* w-partner F2-b — transactionStatus lives at ma.readiness.transactionStatus
+                    (companyMaSchema:502). A top-level ma.transactionStatus is an unknown
+                    key, which zod STRIPS: the field appeared to save and never persisted. */}
                 <select
                   disabled={!canEdit}
                   className="w-full text-sm border rounded px-2 py-1 bg-white"
-                  value={str(ma, "transactionStatus") || "not_pursuing"}
-                  onChange={setField(setMa, "transactionStatus")}
+                  value={maTransactionStatus}
+                  onChange={(e) =>
+                    setMa((prev) => ({
+                      ...prev,
+                      readiness: {
+                        ...((prev.readiness as Record<string, unknown>) ?? {}),
+                        transactionStatus: e.target.value,
+                      },
+                    }))
+                  }
                   data-testid="pf-ma-status"
                 >
                   {TX_STATUS.map((t) => <option key={t} value={t}>{t.replace(/_/g, " ")}</option>)}

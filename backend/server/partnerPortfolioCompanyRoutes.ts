@@ -30,7 +30,8 @@ import { requireSignedAgreement } from "./lib/requireSignedAgreement";
 import { addCompanyForFounder, rollbackFounderCompany, type FounderCompanyMembership } from "./multiCompanyStore";
 import { createSubscriptionForNewCompany, updateSubscription } from "./subscriptionsStore";
 import { linkConsortiumPartner, unlinkConsortiumPartner } from "./consortiumLinkStore";
-import { partnerPipelineStore } from "./partnerWorkspaceStore";
+import { partnerPipelineStore, partnerAttributionStore } from "./partnerWorkspaceStore";
+import { upsertPortfolioProfile } from "./partnerPortfolioStore";
 import { rawDb } from "./db/connection";
 import { log } from "./lib/logger";
 
@@ -162,6 +163,28 @@ export function registerPartnerPortfolioCompanyRoutes(app: Express): void {
         return res.status(500).json({ error: "ATTRIBUTION_LINK_FAILED" });
       }
 
+      // 3b) Record the ATTRIBUTION ROW. Step 3 only writes the company->partner
+      //    link; the partner's Clients list, attribution reporting and every
+      //    revenue-bearing downstream read come from partnerAttributionStore,
+      //    which the portfolio flow never populated. STRICT + fail-closed for
+      //    the same reason as step 3: an unattributed portfolio company is
+      //    worse than no company. Rollback unwinds the link, then the company.
+      try {
+        partnerAttributionStore.create(
+          ctx.partnerId,
+          companyId,
+          ctx.userId,
+          "partner_portfolio",
+          null,
+          { strict: true },
+        );
+      } catch (err) {
+        log.error("[partnerPortfolioCompanyRoutes] attribution create failed — rolling back link + company:", (err as Error).message);
+        try { unlinkConsortiumPartner(companyId); } catch { /* best-effort */ }
+        rollbackFounderCompany(ownerUserId, companyId);
+        return res.status(500).json({ error: "ATTRIBUTION_CREATE_FAILED" });
+      }
+
       // 4) Issue the founder OWNER invitation (same founder_team_invitations
       //    schema + /auth/redeem token as the founder-team flow) so the founder
       //    claims their account by email and finishes the canonical profile
@@ -187,6 +210,9 @@ export function registerPartnerPortfolioCompanyRoutes(app: Express): void {
         inviteToken = token; // returned ONCE so the partner can send the claim link
       } catch (err) {
         log.error("[partnerPortfolioCompanyRoutes] founder owner-invite failed \u2014 rolling back company + attribution:", (err as Error).message);
+        /* w-partner F1 \u2014 step 3b now also wrote an attribution ROW; unwind it
+           too or the rolled-back company leaves an orphan attribution. */
+        try { partnerAttributionStore.revoke(ctx.partnerId, companyId, ctx.userId); } catch { /* best-effort */ }
         try { unlinkConsortiumPartner(companyId); } catch { /* best-effort */ }
         rollbackFounderCompany(ownerUserId, companyId);
         return res.status(500).json({ error: "FOUNDER_INVITE_FAILED" });
@@ -205,6 +231,17 @@ export function registerPartnerPortfolioCompanyRoutes(app: Express): void {
         );
       } catch (err) {
         log.warn("[partnerPortfolioCompanyRoutes] pipeline link failed (continuing \u2014 company/attribution/invite are durable):", (err as Error).message);
+      }
+
+      // 5b) w-partner F1-b \u2014 seed the private portfolio profile so the editor
+      //    opens pre-filled instead of blank. NON-FATAL and deliberately seeds
+      //    ONLY companyName: `sector` is free text on this route but `industry`
+      //    is the INDUSTRY_OPTIONS enum, so copying it across would write a
+      //    value that companyProfilePatchSchema later rejects on save.
+      try {
+        upsertPortfolioProfile(ctx.partnerId, companyId, { contact: { companyName } }, ctx.userId);
+      } catch (err) {
+        log.warn("[partnerPortfolioCompanyRoutes] portfolio profile seed failed (continuing):", (err as Error).message);
       }
 
       res.status(201).json({

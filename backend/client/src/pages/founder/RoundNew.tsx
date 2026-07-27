@@ -21,6 +21,7 @@ import { ROUND_TYPES, INSTRUMENTS, ANTI_DILUTION_VARIANTS, ESOP_TIMING, type Ins
 import { ArrowLeft, ArrowRight, Check, Sparkles, Info } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { emit } from "@/lib/sprint3";
+import { INVITE_EXPIRY_OPTIONS, DEFAULT_INVITE_EXPIRY_DAYS } from "@/lib/inviteExpiry";
 import { GlossaryLink } from "@/components/Glossary";
 import { HelpTip, LabelWithTip, LearnMore } from "@/components/HelpTip";
 import RoundCarryForwardPanel from "@/components/RoundCarryForwardPanel";
@@ -302,9 +303,9 @@ export default function RoundNew() {
  // Wave C3 (Shadie 2a) — optional personal note added to the standard invitation
  // email for this manually-added investor (only the message; not the terms).
  // W3 Shadie 3a — manual-investor draft now also carries stageFocus (optional)
- // and expiryDays (invite window; default 14). expiryDays is a string in the
+ // and expiryDays (invite window; default 7). expiryDays is a string in the
  // draft for the <select>, coerced to a number on add.
- const [manualDraft, setManualDraft] = useState<{ firstName: string; lastName: string; company: string; email: string; checkSize: string; note: string; stageFocus: string; expiryDays: string }>({ firstName: "", lastName: "", company: "", email: "", checkSize: "", note: "", stageFocus: "", expiryDays: "14" });
+ const [manualDraft, setManualDraft] = useState<{ firstName: string; lastName: string; company: string; email: string; checkSize: string; note: string; stageFocus: string; expiryDays: string }>({ firstName: "", lastName: "", company: "", email: "", checkSize: "", note: "", stageFocus: "", expiryDays: String(DEFAULT_INVITE_EXPIRY_DAYS) });
  // Exact-HTML preview of the invitation email for the manual dialog.
  const [manualPreviewHtml, setManualPreviewHtml] = useState<string | null>(null);
  // Wave C3 (Shadie 7a) — round-name uniqueness hint. When the typed name
@@ -434,7 +435,13 @@ export default function RoundNew() {
  note: s.note ?? null,
  // W3 Shadie 3a — carry stage focus + invite expiry into the invitation.
  stageFocus: s.stageFocus ?? null,
- expiryDays: s.expiryDays ?? null,
+ // W-SHADIE 3a (F-1) — CRM-picked contacts carry no per-row expiryDays, so
+ // this previously sent null → server ?? 14 → CRM invites got 14 days while
+ // manual invites got the new 7-day default (a 7-vs-14 split WITHIN the same
+ // wizard). Default to the shared client default so ALL Step-4 picks are
+ // consistently 7 days. Manual picks already set s.expiryDays, so this only
+ // changes the CRM-pick path.
+ expiryDays: s.expiryDays ?? DEFAULT_INVITE_EXPIRY_DAYS,
  source: s.source,
  crmContactId: s.crmContactId ?? null,
  })),
@@ -1294,7 +1301,7 @@ export default function RoundNew() {
  <Select value={manualDraft.expiryDays} onValueChange={(v) => setManualDraft({ ...manualDraft, expiryDays: v })}>
  <SelectTrigger className="mt-1" data-testid="select-manual-expiry"><SelectValue /></SelectTrigger>
  <SelectContent>
- {[7, 14, 30, 60, 90].map((d) => (
+ {INVITE_EXPIRY_OPTIONS.map((d) => (
  <SelectItem key={d} value={String(d)}>{d} days</SelectItem>
  ))}
  </SelectContent>
@@ -1302,7 +1309,7 @@ export default function RoundNew() {
  {/* Show BOTH the number of days AND the actual calendar date (Ozan). */}
  <p className="text-[11px] text-muted-foreground mt-1" data-testid="manual-expiry-hint">
  {(() => {
- const d = Number(manualDraft.expiryDays) || 14;
+ const d = Number(manualDraft.expiryDays) || DEFAULT_INVITE_EXPIRY_DAYS;
  const dt = new Date(Date.now() + d * 24 * 60 * 60 * 1000);
  const cal = dt.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
  return `${d} days · expires ${cal}`;
@@ -1318,6 +1325,10 @@ export default function RoundNew() {
  investorName: `${manualDraft.firstName} ${manualDraft.lastName}`.trim() || undefined,
  roundName: form.name || undefined,
  note: manualDraft.note || undefined,
+ // W-SHADIE 3a (decider follow-up) — forward the selected expiry so the
+ // preview shows the SAME "expires in N days" the real email will use.
+ // Previously omitted → preview always said 14 regardless of the dropdown.
+ expiryDays: Number(manualDraft.expiryDays) || DEFAULT_INVITE_EXPIRY_DAYS,
  });
  const j = await res.json().catch(() => null);
  setManualPreviewHtml(j?.preview?.html ?? "");
@@ -1340,8 +1351,8 @@ export default function RoundNew() {
  onClick={() => {
  const first = manualDraft.firstName.trim();
  const last = manualDraft.lastName.trim();
- setSelectedShareholders((prev) => [...prev, { name: `${first} ${last}`.trim(), firstName: first, lastName: last, company: manualDraft.company.trim(), email: manualDraft.email.trim(), checkSize: manualDraft.checkSize.trim(), note: manualDraft.note.trim() || null, stageFocus: manualDraft.stageFocus.trim() || null, expiryDays: Number(manualDraft.expiryDays) || 14, source: "manual" }]);
- setManualDraft({ firstName: "", lastName: "", company: "", email: "", checkSize: "", note: "", stageFocus: "", expiryDays: "14" });
+ setSelectedShareholders((prev) => [...prev, { name: `${first} ${last}`.trim(), firstName: first, lastName: last, company: manualDraft.company.trim(), email: manualDraft.email.trim(), checkSize: manualDraft.checkSize.trim(), note: manualDraft.note.trim() || null, stageFocus: manualDraft.stageFocus.trim() || null, expiryDays: Number(manualDraft.expiryDays) || DEFAULT_INVITE_EXPIRY_DAYS, source: "manual" }]);
+ setManualDraft({ firstName: "", lastName: "", company: "", email: "", checkSize: "", note: "", stageFocus: "", expiryDays: String(DEFAULT_INVITE_EXPIRY_DAYS) });
  setManualPreviewHtml(null);
  setManualOpen(false);
  }}

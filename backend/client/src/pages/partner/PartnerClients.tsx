@@ -11,7 +11,7 @@ import {
   type PartnerClientStage,
 } from "@shared/crmStages";
 
-interface ClientRow { id: string; companyId: string; attributionSource: string; attributedAt: string }
+interface ClientRow { id: string; companyId: string; companyName?: string | null; attributionSource: string; attributedAt: string }
 
 /* v25.49 Phase-3A — small brand-navy stage badge. Uses the capavate.com scoped
  * tokens (navy text on a faint navy tint) applied by the partner subtree. */
@@ -54,6 +54,7 @@ export default function PartnerClients() {
       const matchesSearch =
         !needle ||
         c.companyId.toLowerCase().includes(needle) ||
+        (c.companyName ?? "").toLowerCase().includes(needle) ||
         (c.attributionSource ?? "").toLowerCase().includes(needle);
       const matchesStage = stageFilter === "all" || stageOf(c.companyId) === stageFilter;
       return matchesSearch && matchesStage;
@@ -131,7 +132,9 @@ export default function PartnerClients() {
               )}
               {filtered.map((c) => (
                 <tr key={c.id} className="border-t" data-testid={`client-row-${c.id}`}>
-                  <td className="p-3 font-medium">{c.companyId}</td>
+                  {/* w-partner F1(d) — prefer the joined name; the id remains
+                      the fallback so a company with no record still renders. */}
+                  <td className="p-3 font-medium">{c.companyName || c.companyId}</td>
                   <td className="p-3"><StageBadge stage={stageOf(c.companyId)} /></td>
                   <td className="p-3 text-[var(--cv-color-text-muted)]">{c.attributionSource}</td>
                   {/* v25.16 NM5 — guard null attributedAt to avoid "Invalid Date". */}

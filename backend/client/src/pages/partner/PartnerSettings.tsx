@@ -10,6 +10,8 @@ import { useRequirePartnerRole } from "@/lib/partner/useRequirePartnerRole";
 import { PartnerShell } from "@/components/partner/PartnerShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+/* w-partner F5-real — free-text bio field. */
+import { Textarea } from "@/components/ui/textarea";
 import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 /* v25.12 NH11 — toast settings save failures in addition to the inline error
@@ -37,6 +39,13 @@ type Settings = {
   city?: string;
   country?: string;
   regionCode?: string;
+  /* w-partner F5-real — bio + public contact details. No server change: the
+     settings PATCH gates only the four white-label keys and spreads everything
+     else into the schemaless settings blob (partnerRoutes.ts:1430-1439).
+     `bio` is free text and is rendered as TEXT only — never as HTML. */
+  bio?: string;
+  contactEmail?: string;
+  contactPhone?: string;
   preferredPayoutCurrency?: string;
   branding?: { logoUrl?: string; primaryColor?: string };
   notifications?: { weeklyDigest?: boolean; newClientAlert?: boolean };
@@ -172,6 +181,40 @@ export default function PartnerSettings() {
               data-testid="partner-settings-website"
               placeholder="https://…"
             />
+          </div>
+          {/* w-partner F5-real — bio + public contact details. Rendered through
+              React's text interpolation (auto-escaped); never dangerouslySetInnerHTML. */}
+          <div>
+            <Label>Bio</Label>
+            <Textarea
+              value={settings.bio ?? ""}
+              onChange={(e) => setForm({ ...form, bio: e.target.value })}
+              disabled={!canWrite}
+              rows={4}
+              data-testid="partner-settings-bio"
+              placeholder="A short description of your firm…"
+            />
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <Label>Contact Email</Label>
+              <Input
+                value={settings.contactEmail ?? ""}
+                onChange={(e) => setForm({ ...form, contactEmail: e.target.value })}
+                disabled={!canWrite}
+                data-testid="partner-settings-contact-email"
+                placeholder="hello@example.com"
+              />
+            </div>
+            <div>
+              <Label>Contact Phone</Label>
+              <Input
+                value={settings.contactPhone ?? ""}
+                onChange={(e) => setForm({ ...form, contactPhone: e.target.value })}
+                disabled={!canWrite}
+                data-testid="partner-settings-contact-phone"
+              />
+            </div>
           </div>
           <div>
             <Label>Address</Label>

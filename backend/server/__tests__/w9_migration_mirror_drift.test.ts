@@ -93,9 +93,15 @@ describe("W9.1 migration mirror / drift check", () => {
     expect(modernDups).toEqual([]);
   });
 
-  it("the highest canonical migration id is the documented latest (0113, W6)", () => {
+  it("the highest canonical migration id is the documented latest (0115, w-partner part 2)", () => {
     const maxId = Math.max(...canon.map((f) => idOf(f) ?? -1));
-    // W9 adds no migration; the ledger tip stays at 0113 (next free id = 0114).
-    expect(maxId).toBe(113);
+    // W9 added no migration and left the tip at 0113. The w-partner wave adds
+    // two: 0114_partner_attributions.sql (typed attributions + revision chain,
+    // part 1) and 0115_partner_client_crm_lead.sql (designated client lead,
+    // part 2). The ledger tip is now 0115 and the next free id is 0116.
+    //
+    // BUILD_STRATEGY_W_PARTNER.md:81 requires this pin to move "in the same
+    // commit as 0115 so no intermediate commit is red" — that is this commit.
+    expect(maxId).toBe(115);
   });
 });

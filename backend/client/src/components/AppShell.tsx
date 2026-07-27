@@ -422,12 +422,24 @@ function FounderCompanySwitcherSlot() {
  * Founder-scoped (the endpoint scopes to owned companies); shows a results
  * dropdown with rounds / contacts / files, an empty-state when nothing matches,
  * and navigates to the hit's href on click. Debounced; min 2 chars.
+ *
+ * W-AVI65 FIX 3 — role-aware endpoint. /api/founder/search scopes to
+ * getCompaniesForFounder(userId), which is EMPTY for an admin, so an admin
+ * searching any real company label always got "No matches". Admins now hit
+ * /api/admin/search (requireAdmin, platform-wide union of companies + invited
+ * investors + partners + collective members). isAdmin comes from
+ * useEntitlement() → /api/auth/me (authoritative), NOT useRole(), which is
+ * local UI state that defaults to "founder". Both endpoints return the same
+ * results[] { kind, id, title, subtitle, href } shape, so the render is shared.
  */
 function GlobalSearch() {
   const [, navigate] = useLocation();
   const [q, setQ] = useState("");
   const [debounced, setDebounced] = useState("");
   const [open, setOpen] = useState(false);
+  const { data: entCtx } = useEntitlement();
+  const isAdmin = entCtx?.isAdmin === true;
+  const searchPath = isAdmin ? "/api/admin/search" : "/api/founder/search";
 
   useEffect(() => {
     const t = setTimeout(() => setDebounced(q.trim()), 250);
@@ -436,8 +448,8 @@ function GlobalSearch() {
 
   const enabled = debounced.length >= 2;
   const searchQ = useQuery<{ ok: boolean; results: Array<{ kind: string; id: string; title: string; subtitle: string; href: string }> }>({
-    queryKey: ["/api/founder/search", debounced],
-    queryFn: async () => (await apiRequest("GET", `/api/founder/search?q=${encodeURIComponent(debounced)}`)).json(),
+    queryKey: [searchPath, debounced],
+    queryFn: async () => (await apiRequest("GET", `${searchPath}?q=${encodeURIComponent(debounced)}`)).json(),
     enabled,
   });
   const results = enabled ? (searchQ.data?.results ?? []) : [];

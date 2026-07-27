@@ -34,6 +34,8 @@ export interface PartnerClientCrmRow {
   stage: PartnerClientStage;
   updatedAt: string;
   updatedBy: string | null;
+  /** w-partner (0115) — designated partner-team member owning this client. */
+  leadUserId: string | null;
 }
 
 export interface PartnerClientActivity {
@@ -64,16 +66,60 @@ function requirePid(partnerId: string): void {
 function persistCrm(row: PartnerClientCrmRow): void {
   try {
     rawDb().prepare(
-      `INSERT INTO partner_client_crm (partner_id, company_id, stage, updated_at, updated_by)
-       VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO partner_client_crm (partner_id, company_id, stage, updated_at, updated_by, lead_user_id)
+       VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(partner_id, company_id) DO UPDATE SET
          stage = excluded.stage,
          updated_at = excluded.updated_at,
          updated_by = excluded.updated_by`,
-    ).run(row.partnerId, row.companyId, row.stage, row.updatedAt, row.updatedBy ?? null);
+    ).run(
+      row.partnerId, row.companyId, row.stage, row.updatedAt,
+      row.updatedBy ?? null, row.leadUserId ?? null,
+    );
   } catch (err) {
     log.warn("[partnerClientCrmStore] crm write-through failed:", (err as Error).message);
     throw new Error(`STRICT_PERSIST_FAILED: partner_client_crm.${row.partnerId}/${row.companyId}: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * w-partner F3 — lead_user_id is deliberately ABSENT from persistCrm's
+ * ON CONFLICT SET list: `excluded` derives from the row the caller built, and
+ * setStage builds a row from the stage transition alone. Listing it there would
+ * NULL the lead on every stage change. The INSERT column list DOES carry it so
+ * a row created by setLead is born with its lead; changing the lead on an
+ * EXISTING row goes through this targeted UPDATE instead.
+ */
+function persistLead(row: PartnerClientCrmRow): void {
+  try {
+    rawDb().prepare(
+      `UPDATE partner_client_crm
+          SET lead_user_id = ?, updated_at = ?, updated_by = ?
+        WHERE partner_id = ? AND company_id = ?`,
+    ).run(row.leadUserId ?? null, row.updatedAt, row.updatedBy ?? null, row.partnerId, row.companyId);
+  } catch (err) {
+    log.warn("[partnerClientCrmStore] lead write-through failed:", (err as Error).message);
+    throw new Error(`STRICT_PERSIST_FAILED: partner_client_crm.lead.${row.partnerId}/${row.companyId}: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * w-partner CODE-REVIEW B2 (second half) — read the DURABLE stage straight from
+ * the DB. `setLead` must not derive `stage` from the RAM projection: on a cold or
+ * degraded boot RAM can be empty while the DB row holds a real, advanced stage,
+ * and `persistCrm`'s ON CONFLICT overwrites `stage = excluded.stage`. Building the
+ * row from a DB read means assigning a lead can never silently reset a client's
+ * stage back to the default. Returns null when the company has no row yet.
+ */
+function readStageFromDb(partnerId: string, companyId: string): PartnerClientStage | null {
+  try {
+    const r = rawDb()
+      .prepare(`SELECT stage FROM partner_client_crm WHERE partner_id = ? AND company_id = ?`)
+      .get(partnerId, companyId) as { stage?: string } | undefined;
+    return (r?.stage as PartnerClientStage) ?? null;
+  } catch (err) {
+    log.warn("[partnerClientCrmStore] stage read-back failed:", (err as Error).message);
+    return null;
   }
 }
 
@@ -114,9 +160,20 @@ export const partnerClientCrmStore = {
     requirePid(partnerId);
     if (!companyId) throw new Error("COMPANY_ID_REQUIRED");
     if (!isPartnerClientStage(stage)) throw new Error("INVALID_STAGE");
-    const prev = crmByKey.get(key(partnerId, companyId))?.stage ?? null;
+    const existing = crmByKey.get(key(partnerId, companyId));
+    const prev = existing?.stage ?? null;
     const now = new Date().toISOString();
-    const row: PartnerClientCrmRow = { partnerId, companyId, stage, updatedAt: now, updatedBy: actor ?? null };
+    // CARRY FORWARD: this row REPLACES the cached projection wholesale below, so
+    // omitting leadUserId here would drop the designated lead from memory on
+    // every stage change even though the DB column is untouched.
+    const row: PartnerClientCrmRow = {
+      partnerId,
+      companyId,
+      stage,
+      updatedAt: now,
+      updatedBy: actor ?? null,
+      leadUserId: existing?.leadUserId ?? null,
+    };
     persistCrm(row);
     crmByKey.set(key(partnerId, companyId), row);
     if (prev !== stage) {
@@ -125,6 +182,78 @@ export const partnerClientCrmStore = {
         body: prev ? `Stage: ${prev} → ${stage}` : `Stage set to ${stage}`,
         actorUserId: actor ?? null,
         meta: { from: prev, to: stage },
+      });
+    }
+    return row;
+  },
+
+  /** Designated partner-team lead for one attributed company (null if unset). */
+  getLead(partnerId: string, companyId: string): string | null {
+    requirePid(partnerId);
+    return crmByKey.get(key(partnerId, companyId))?.leadUserId ?? null;
+  },
+
+  /** Lead map for every company this partner has ever staged or assigned. */
+  listLeads(partnerId: string): Record<string, string> {
+    requirePid(partnerId);
+    const out: Record<string, string> = {};
+    for (const row of Array.from(crmByKey.values())) {
+      if (row.partnerId === partnerId && row.leadUserId) out[row.companyId] = row.leadUserId;
+    }
+    return out;
+  },
+
+  /**
+   * Assign (or clear, with null) the designated lead. Creates the CRM row at
+   * the default stage if this company has never been staged, so assigning a
+   * lead does not require a prior stage transition. Records a lead_assigned
+   * activity when the value actually moves.
+   */
+  setLead(
+    partnerId: string,
+    companyId: string,
+    leadUserId: string | null,
+    actor: string,
+  ): PartnerClientCrmRow {
+    requirePid(partnerId);
+    if (!companyId) throw new Error("COMPANY_ID_REQUIRED");
+    const existing = crmByKey.get(key(partnerId, companyId));
+    const prev = existing?.leadUserId ?? null;
+    const next = leadUserId ?? null;
+    const now = new Date().toISOString();
+    // B2 (second half): resolve the stage from RAM if present, else from the DB,
+    // and only fall back to the default when NEITHER has a row. This prevents a
+    // cold-projection lead assignment from resetting the client's durable stage
+    // via persistCrm's `stage = excluded.stage` ON CONFLICT clause.
+    const resolvedStage =
+      existing?.stage ?? readStageFromDb(partnerId, companyId) ?? PARTNER_CLIENT_DEFAULT_STAGE;
+    const row: PartnerClientCrmRow = {
+      partnerId,
+      companyId,
+      stage: resolvedStage,
+      updatedAt: now,
+      updatedBy: actor ?? null,
+      leadUserId: next,
+    };
+    // persistCrm creates the row (its INSERT carries lead_user_id) or refreshes
+    // stage/updated_* on an existing one; persistLead then moves the lead column
+    // itself, which persistCrm's ON CONFLICT deliberately leaves alone.
+    persistCrm(row);
+    // w-partner CODE-REVIEW B2: `existing` is read from the RAM projection, but the
+    // lead column is a DB question. On a cold/degraded boot RAM can be empty while the
+    // DB row exists; guarding persistLead on `existing` then (a) never moves the
+    // lead_user_id column (persistCrm's ON CONFLICT deliberately leaves it alone), and
+    // (b) worse, persistCrm's INSERT-or-conflict path resets the durable `stage` to the
+    // default because `existing?.stage` was undefined. Always persist the lead: on the
+    // freshly-inserted path persistLead simply rewrites the same value (harmless).
+    persistLead(row);
+    crmByKey.set(key(partnerId, companyId), row);
+    if (prev !== next) {
+      this.addActivity(partnerId, companyId, {
+        activityType: "lead_assigned",
+        body: next ? `Lead assigned to ${next}` : "Lead cleared",
+        actorUserId: actor ?? null,
+        meta: { from: prev, to: next },
       });
     }
     return row;
@@ -163,26 +292,39 @@ export const partnerClientCrmStore = {
   },
 };
 
-/** Rebuild the in-memory projections from the durable tables on boot. */
+/**
+ * Rebuild the in-memory projections from the durable tables on boot.
+ *
+ * CLEAR-AFTER-SUCCESSFUL-READ: each projection is built into a temp map and the
+ * live cache is only cleared and swapped once its SELECT has returned. The
+ * catch below is non-fatal by design, so clearing first meant any SELECT
+ * failure — e.g. a missing lead_user_id column on a DB that got the CREATE
+ * TABLE self-heal but not the ADD COLUMN one — completed boot with an EMPTY
+ * cache, silently wiping every partner's CRM projection. Now a failed read
+ * leaves the previous projection in place instead of destroying it.
+ */
 export async function hydratePartnerClientCrmStore(): Promise<void> {
   const db = rawDb();
   try {
-    crmByKey.clear();
+    const nextCrm = new Map<string, PartnerClientCrmRow>();
     const crmRows = db.prepare(
-      `SELECT partner_id, company_id, stage, updated_at, updated_by FROM partner_client_crm`,
-    ).all() as Array<{ partner_id: string; company_id: string; stage: string; updated_at: string; updated_by: string | null }>;
+      `SELECT partner_id, company_id, stage, updated_at, updated_by, lead_user_id FROM partner_client_crm`,
+    ).all() as Array<{ partner_id: string; company_id: string; stage: string; updated_at: string; updated_by: string | null; lead_user_id: string | null }>;
     for (const r of crmRows) {
       if (!isPartnerClientStage(r.stage)) continue; // defensive: skip unknown vocab
-      crmByKey.set(key(r.partner_id, r.company_id), {
+      nextCrm.set(key(r.partner_id, r.company_id), {
         partnerId: r.partner_id,
         companyId: r.company_id,
         stage: r.stage,
         updatedAt: r.updated_at,
         updatedBy: r.updated_by,
+        leadUserId: r.lead_user_id ?? null,
       });
     }
+    crmByKey.clear(); // only reached once the read above succeeded
+    for (const [k, v] of Array.from(nextCrm)) crmByKey.set(k, v);
 
-    activityById.clear();
+    const nextActivity = new Map<string, PartnerClientActivity>();
     const actRows = db.prepare(
       `SELECT id, partner_id, company_id, activity_type, body, actor_user_id, occurred_at, meta_json FROM partner_client_activity`,
     ).all() as Array<{
@@ -194,7 +336,7 @@ export async function hydratePartnerClientCrmStore(): Promise<void> {
       if (r.meta_json) {
         try { meta = JSON.parse(r.meta_json) as Record<string, unknown>; } catch { meta = null; }
       }
-      activityById.set(r.id, {
+      nextActivity.set(r.id, {
         id: r.id,
         partnerId: r.partner_id,
         companyId: r.company_id,
@@ -205,6 +347,8 @@ export async function hydratePartnerClientCrmStore(): Promise<void> {
         meta,
       });
     }
+    activityById.clear(); // only reached once the read above succeeded
+    for (const [k, v] of Array.from(nextActivity)) activityById.set(k, v);
     log.info?.(`[partnerClientCrmStore] hydrated ${crmByKey.size} stage row(s), ${activityById.size} activity row(s)`);
   } catch (err) {
     log.warn("[partnerClientCrmStore] hydrate failed (non-fatal):", (err as Error).message);

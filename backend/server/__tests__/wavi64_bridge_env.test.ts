@@ -12,6 +12,12 @@
  * bridgeOutboundGuard: the canonical names still win when present, the legacy
  * aliases are honoured when they are not, and placeholder secrets are always
  * rejected so a bogus HMAC key can never be treated as a real receiver.
+ *
+ * W-AVI65 FIX 4 — the canonical URL fixtures below used to be
+ * `https://collective.capavate.com/api/bridge/inbox`, a host that DOES NOT
+ * EXIST. The live receiver is the self-loop `https://capavate.com/api/bridge/inbound`.
+ * Updated so no test enshrines the dead hostname. See wavi65_bridge_env.test.ts
+ * for the self-loop equal-secrets contract.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
@@ -50,9 +56,9 @@ afterEach(() => {
 
 describe("W-AVI64 FIX 3: receiver URL alias fallback", () => {
   it("prefers the canonical COLLECTIVE_WEBHOOK_URL when present", () => {
-    process.env.COLLECTIVE_WEBHOOK_URL = "https://collective.capavate.com/api/bridge/inbox";
+    process.env.COLLECTIVE_WEBHOOK_URL = "https://capavate.com/api/bridge/inbound";
     process.env.BRIDGE_OUTBOUND_URL = "https://legacy.example/inbox";
-    expect(resolveReceiverUrl()).toBe("https://collective.capavate.com/api/bridge/inbox");
+    expect(resolveReceiverUrl()).toBe("https://capavate.com/api/bridge/inbound");
   });
 
   it("falls back to the legacy BRIDGE_OUTBOUND_URL when the canonical is unset", () => {
@@ -101,7 +107,7 @@ describe("W-AVI64 FIX 3: placeholder secrets are never a real receiver", () => {
   });
 
   it("maySendOutboundBridge is true only when BRIDGE_ENABLED=1 AND the receiver is complete", () => {
-    process.env.COLLECTIVE_WEBHOOK_URL = "https://collective.capavate.com/api/bridge/inbox";
+    process.env.COLLECTIVE_WEBHOOK_URL = "https://capavate.com/api/bridge/inbound";
     process.env.COLLECTIVE_WEBHOOK_SECRET = "a-genuine-shared-secret-9f2c";
 
     process.env.BRIDGE_ENABLED = "0";

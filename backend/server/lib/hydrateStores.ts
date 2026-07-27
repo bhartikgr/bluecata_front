@@ -132,7 +132,10 @@ import { hydrateSprint20Wave2Stores as realHydrateSprint20Wave2 } from "../sprin
 import { hydrateRoundInitialShareholders as realHydrateRoundInitialShareholders } from "./roundInitialShareholdersStore";
 /* v25.12 NM-7/NM-9 — hydrate partner pipeline + funds + attributions via the
  * kv shim layer so each survives restart. */
-import { hydratePartnerWorkspaceShimStore as realHydratePartnerWorkspaceShim } from "../partnerWorkspaceStore";
+import {
+  hydratePartnerWorkspaceShimStore as realHydratePartnerWorkspaceShim,
+  backfillPartnerAttributionsFromKv as realBackfillPartnerAttributions,
+} from "../partnerWorkspaceStore";
 import { log } from "./logger";
 
 /* v25.9 — the legacy STUB list. Items here that gained a REAL hydrate fn
@@ -405,6 +408,19 @@ const HYDRATE_ORDER: Array<{ name: string; fn: () => Promise<void> }> = [
     fn: async () => {
       const n = realHydrateRoundInitialShareholders();
       if (n > 0) log.info({ route: "hydrate.roundInitialShareholdersStore", count: n });
+    },
+  },
+  /* w-partner F1 — kv -> typed partner_attributions backfill. MUST run
+   * immediately before partnerWorkspaceShimStore, which now reads the typed
+   * table first. Never throws; on any failure the hydrator's kv fallback
+   * still serves the pre-wave data. */
+  {
+    name: "partnerAttributionsBackfill",
+    fn: async () => {
+      const r = realBackfillPartnerAttributions();
+      if (r.inserted > 0 || r.coerced > 0 || r.skipped > 0) {
+        log.info({ route: "hydrate.partnerAttributionsBackfill", ...r });
+      }
     },
   },
   /* v25.12 NM-7 / NM-9 — partner pipeline + funds + attributions kv-shim. */

@@ -33,8 +33,21 @@ interface CrmActivity {
 interface CrmData {
   companyId: string;
   stage: PartnerClientStage;
+  /** w-partner F3 — designated partner-team member owning this client. */
+  leadUserId: string | null;
   activity: CrmActivity[];
 }
+interface TeamMember {
+  userId: string;
+  name: string;
+  email: string | null;
+  subRole: string;
+}
+
+/* w-partner F3 — assigning the lead is a managing_partner/associate decision,
+   matching the server guard on PATCH …/client-crm/:companyId/lead. */
+const LEAD_ASSIGN_ROLES = ["managing_partner", "associate"];
+const LEAD_NONE = "__none__";
 
 export default function PartnerClientDetail() {
   const role = useRequirePartnerRole();
@@ -65,6 +78,22 @@ export default function PartnerClientDetail() {
     onError: (e: Error) => toast({ variant: "destructive", title: "Could not update stage", description: e.message }),
   });
 
+  /* w-partner F3 — roster for the lead picker. The server rejects anyone who is
+     not an ACTIVE member of this partner, and this endpoint already returns
+     exactly that set, so the options and the validation agree. */
+  const teamQ = useQuery<{ members: TeamMember[] }>({
+    queryKey: ["/api/partner/me/team"],
+    enabled: role.ready,
+    queryFn: async () => (await apiRequest("GET", "/api/partner/me/team")).json(),
+  });
+
+  const setLead = useMutation({
+    mutationFn: async (leadUserId: string | null) =>
+      (await apiRequest("PATCH", `/api/partner/me/client-crm/${id}/lead`, { leadUserId })).json(),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/partner/me/client-crm", id] }),
+    onError: (e: Error) => toast({ variant: "destructive", title: "Could not assign lead", description: e.message }),
+  });
+
   const addNote = useMutation({
     mutationFn: async (body: string) =>
       (await apiRequest("POST", `/api/partner/me/client-crm/${id}/activity`, { body })).json(),
@@ -77,7 +106,10 @@ export default function PartnerClientDetail() {
 
   if (!role.ready || !role.identity) return null;
   const canWrite = role.identity.subRole !== "viewer";
+  const canAssignLead = LEAD_ASSIGN_ROLES.includes(role.identity.subRole);
   const stage = crmQ.data?.stage ?? PARTNER_CLIENT_DEFAULT_STAGE;
+  const leadUserId = crmQ.data?.leadUserId ?? null;
+  const teamMembers = teamQ.data?.members ?? [];
   const activity = crmQ.data?.activity ?? [];
   const snapshot = q.data?.snapshot;
   /* v25.49 Phase-3A — honest cap-table state. The partner surface has no
@@ -136,6 +168,38 @@ export default function PartnerClientDetail() {
               </div>
               {!canWrite && (
                 <div className="text-xs text-[var(--cv-color-text-muted)] mt-2">Your role has read-only access to the CRM stage.</div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* w-partner F3 — designated lead. Additive card; the stage control
+             above is unchanged. */}
+          <Card data-testid="client-crm-lead">
+            <CardHeader><CardTitle className="text-sm">Designated lead</CardTitle></CardHeader>
+            <CardContent>
+              <div className="flex items-center gap-2">
+                <select
+                  value={leadUserId ?? LEAD_NONE}
+                  disabled={!canAssignLead || setLead.isPending || teamQ.isLoading}
+                  onChange={(e) =>
+                    setLead.mutate(e.target.value === LEAD_NONE ? null : e.target.value)
+                  }
+                  className="rounded-md border border-[var(--cv-color-border)] px-3 py-2 text-sm disabled:opacity-60"
+                  data-testid="client-crm-lead-select"
+                >
+                  <option value={LEAD_NONE}>— No lead assigned —</option>
+                  {teamMembers.map((m) => (
+                    <option key={m.userId} value={m.userId}>
+                      {m.name}{m.email ? ` (${m.email})` : ""}
+                    </option>
+                  ))}
+                </select>
+                {setLead.isPending && <span className="text-xs text-[var(--cv-color-text-muted)]">Saving…</span>}
+              </div>
+              {!canAssignLead && (
+                <div className="text-xs text-[var(--cv-color-text-muted)] mt-2" data-testid="client-crm-lead-readonly">
+                  Only a managing partner or associate can assign the client lead.
+                </div>
               )}
             </CardContent>
           </Card>
