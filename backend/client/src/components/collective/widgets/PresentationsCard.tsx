@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Presentation } from "lucide-react";
 import { useActiveChapter } from "./useActiveChapter";
+import { collectiveWidgetErrorText } from "@/lib/collectiveGateError";
 
 interface Meeting {
   date: string;
@@ -54,7 +55,7 @@ export function PresentationsCard() {
           </div>
         ) : q.error ? (
           <div className="text-sm text-red-700" data-testid="widget-presentations-error">
-            Couldn't load presentations.
+            {collectiveWidgetErrorText(q.error, 'Couldn\'t load presentations.')}
           </div>
         ) : meetings.length === 0 ? (
           <div className="text-center py-6 text-slate-500" data-testid="widget-presentations-empty">

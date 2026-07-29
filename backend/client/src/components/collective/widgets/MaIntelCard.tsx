@@ -11,6 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Handshake } from "lucide-react";
+import { collectiveWidgetErrorText } from "@/lib/collectiveGateError";
 
 interface DashboardCard {
   asOfDate: string;
@@ -56,7 +57,7 @@ export function MaIntelCard() {
           <Skeleton className="h-24 w-full" data-testid="widget-ma-intel-loading" />
         ) : q.error ? (
           <div className="text-sm text-red-700" data-testid="widget-ma-intel-error">
-            Couldn't load M&amp;A intelligence.
+            {collectiveWidgetErrorText(q.error, 'Couldn\'t load M&A intelligence.')}
           </div>
         ) : empty ? (
           <div className="text-center py-6 text-slate-500" data-testid="widget-ma-intel-empty">

@@ -43,9 +43,20 @@ export interface DurableMapOptions {
 
 export interface DurableMap<K, V> {
   get(key: K): V | undefined;
-  set(key: K, value: V): void;
+  /**
+   * W2B B2 — returns `true` when the value reached SQLite, `false` when the
+   * write-through failed and this map is degraded to memory-only for that key.
+   *
+   * It used to return void, so a caller had no way to tell a durable write from
+   * a write that had already been logged-and-swallowed — the caller believed the
+   * value would survive a restart when it would not. The in-memory fallback is
+   * deliberately KEPT (an inbound bridge dispatch must not throw on a live
+   * path); the point is to stop the silence, not to start failing.
+   */
+  set(key: K, value: V): boolean;
   has(key: K): boolean;
-  delete(key: K): void;
+  /** W2B B2 — `false` when the durable delete failed (memory-only removal). */
+  delete(key: K): boolean;
   entries(): IterableIterator<[K, V]>;
   keys(): IterableIterator<K>;
   values(): IterableIterator<V>;
@@ -66,6 +77,28 @@ interface RegisteredMap {
 const registeredMaps: RegisteredMap[] = [];
 
 /**
+ * W2B B2 — process-wide durability health for every durableMap. Monotonic
+ * counters so an operator can see that state has been degrading to RAM-only
+ * even when no single request was in a position to report it.
+ */
+const durableMapHealth = { writeFailures: 0, deleteFailures: 0, lastError: null as string | null };
+
+export function getDurableMapHealth(): {
+  writeFailures: number;
+  deleteFailures: number;
+  lastError: string | null;
+} {
+  return { ...durableMapHealth };
+}
+
+/** Test helper — reset the health counters between cases. */
+export function _resetDurableMapHealthForTests(): void {
+  durableMapHealth.writeFailures = 0;
+  durableMapHealth.deleteFailures = 0;
+  durableMapHealth.lastError = null;
+}
+
+/**
  * Creates a DurableMap.
  * @param namespace - unique namespace for DB key disambiguation
  */
@@ -81,8 +114,13 @@ export function durableMap<V>(namespace: string, _opts: DurableMapOptions = {}):
   /* v25.21 Lane D NC-001 fix — real write-through to sync_inbox_state.
    * Best-effort: a DB hiccup degrades to memory-only for this one call
    * (and is loudly logged) rather than aborting the inbound bridge
-   * dispatch. The next set() will retry the upsert. */
-  function writeThrough(key: string, value: V): void {
+   * dispatch. The next set() will retry the upsert.
+   *
+   * W2B B2 — now REPORTS the outcome. The log line alone was not actionable:
+   * nothing in the request path could tell that the value it had just "durably"
+   * stored was RAM-only, so a restart lost cross-product bridge state with no
+   * signal anywhere above the logger. */
+  function writeThrough(key: string, value: V): boolean {
     try {
       const db: any = rawDb();
       db.prepare(
@@ -92,23 +130,31 @@ export function durableMap<V>(namespace: string, _opts: DurableMapOptions = {}):
              value_json = excluded.value_json,
              updated_at = excluded.updated_at`,
       ).run(dbKey(key), JSON.stringify(value), new Date().toISOString());
+      return true;
     } catch (err) {
+      durableMapHealth.writeFailures += 1;
+      durableMapHealth.lastError = `${namespace}: ${(err as Error).message}`;
       log.warn(
         `[durable-map] ${namespace}: write-through failed for key=${dbKey(key)} (memory only):`,
         (err as Error).message,
       );
+      return false;
     }
   }
 
-  function deleteThrough(key: string): void {
+  function deleteThrough(key: string): boolean {
     try {
       const db: any = rawDb();
       db.prepare(`DELETE FROM sync_inbox_state WHERE key = ?`).run(dbKey(key));
+      return true;
     } catch (err) {
+      durableMapHealth.deleteFailures += 1;
+      durableMapHealth.lastError = `${namespace}: ${(err as Error).message}`;
       log.warn(
         `[durable-map] ${namespace}: delete-through failed for key=${dbKey(key)} (memory only):`,
         (err as Error).message,
       );
+      return false;
     }
   }
 
@@ -116,16 +162,16 @@ export function durableMap<V>(namespace: string, _opts: DurableMapOptions = {}):
     get(key: string): V | undefined {
       return inner.get(key);
     },
-    set(key: string, value: V): void {
+    set(key: string, value: V): boolean {
       inner.set(key, value);
-      writeThrough(key, value);
+      return writeThrough(key, value);
     },
     has(key: string): boolean {
       return inner.has(key);
     },
-    delete(key: string): void {
+    delete(key: string): boolean {
       inner.delete(key);
-      deleteThrough(key);
+      return deleteThrough(key);
     },
     entries(): IterableIterator<[string, V]> {
       return inner.entries();

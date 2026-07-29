@@ -136,7 +136,26 @@ describe("W-AVI64 FIX 2: invited investor sees the inviting founder in DM recipi
   });
 
   it("still fail-closed: an anonymous caller gets 401 (canDM is not weakened)", async () => {
-    const recips = await call("GET", "/api/messages/recipients");
-    expect(recips.status).toBe(401);
+    // TRIAGE (c) ENVIRONMENTAL. `vitest.config.ts` pins NODE_ENV=test, and
+    // userContext.resolvePersonaIdWithFallback (:518-531) then maps a
+    // header-less request onto demo persona `u_aisha_patel` so the sandbox can
+    // be browsed without logging in. That persona is fully authed, so
+    // requireAuth admitted it and the handler answered 200 with that persona's
+    // own recipient list — the anonymous path was never actually exercised.
+    // Production disables the fallback via NODE_ENV=production OR
+    // DISABLE_DEV_BYPASS=1 (:523-525), where this route does return 401.
+    //
+    // Setting the same switch production uses makes this test assert the
+    // PRODUCTION contract. The assertion itself is unchanged (still 401); only
+    // the environment is corrected. Scoped to this test — the sibling test
+    // needs the x-user-id header, which resolvePersonaId (:485) also gates on
+    // `!bypassDisabled`, so setting it file-wide would break that test.
+    process.env.DISABLE_DEV_BYPASS = "1";
+    try {
+      const recips = await call("GET", "/api/messages/recipients");
+      expect(recips.status).toBe(401);
+    } finally {
+      delete process.env.DISABLE_DEV_BYPASS;
+    }
   });
 });

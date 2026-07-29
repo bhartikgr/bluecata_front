@@ -9,6 +9,7 @@ import { apiRequest } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Globe2 } from "lucide-react";
+import { collectiveWidgetErrorText } from "@/lib/collectiveGateError";
 
 interface MemberRow {
   id: string;
@@ -53,7 +54,7 @@ export function RegionalChaptersBarList() {
           </div>
         ) : error ? (
           <div className="text-sm text-red-700" data-testid="widget-regional-error">
-            Couldn't load regional breakdown.
+            {collectiveWidgetErrorText(error, 'Couldn\'t load regional breakdown.')}
           </div>
         ) : rows.length === 0 ? (
           <div className="text-center py-6 text-slate-500" data-testid="widget-regional-empty">

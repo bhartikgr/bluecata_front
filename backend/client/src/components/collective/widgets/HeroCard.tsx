@@ -9,6 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Sparkles } from "lucide-react";
 import { useMe, meDisplayName } from "./useMe";
 import { useActiveChapter } from "./useActiveChapter";
+import { collectiveWidgetErrorText } from "@/lib/collectiveGateError";
 
 function statusBadgeClass(status?: string | null) {
   if (status === "active") return "bg-emerald-100 text-emerald-700";
@@ -31,7 +32,7 @@ export function HeroCard() {
           </div>
         ) : error ? (
           <div className="text-sm text-red-700" data-testid="widget-hero-error">
-            Couldn't load your profile. Please refresh.
+            {collectiveWidgetErrorText(error, 'Couldn\'t load your profile. Please refresh.')}
           </div>
         ) : (
           <div className="flex items-start justify-between gap-4" data-testid="widget-hero-content">

@@ -12,6 +12,12 @@
  *
  * Last-admin safeguard: demoting the only remaining admin of a chapter
  * returns 409 to prevent locking a chapter out of admin-only flows.
+ *
+ * SHARED RULE (Stage-D blocker fix B2): the last-admin DECISION is taken by
+ * `chapterHasOtherActiveAdmin()` in `server/lib/chapterGovernanceRules.ts`
+ * (RULE_LAST_ADMIN), which is the SAME predicate the chapter-membership writer
+ * uses for revoke. The two surfaces therefore cannot drift. It throws on a read
+ * failure so this route fails closed (409) rather than demoting blindly.
  */
 
 import type { Express, Request, Response } from "express";
@@ -22,6 +28,10 @@ import { chapterMemberships, chapters as chaptersTable } from "@shared/schema";
 import { requireAdmin } from "./lib/authMiddleware";
 import { requireCollectiveEnabled } from "./lib/featureFlags";
 import { appendAdminAudit } from "./adminPlatformStore";
+import {
+  RULE_LAST_ADMIN,
+  chapterHasOtherActiveAdmin,
+} from "./lib/chapterGovernanceRules";
 import { log } from "./lib/logger";
 import { publish as ssePublish } from "./lib/sseHub"; /* v25.13 NM5 */
 import { emitBridgeEvent } from "./bridgeStore"; /* v25.13 NM5 */
@@ -286,15 +296,33 @@ export function registerChapterAdminRoutes(app: Express): void {
         res.json({ ok: true, idempotent: true, membership: existing });
         return;
       }
-      // Last-admin safeguard — count the active admins of this chapter
-      // and refuse to demote the only remaining one.
-      const admins = listChapterAdmins(chapterId);
-      if (admins.length <= 1) {
+      // Last-admin safeguard — SHARED RULE_LAST_ADMIN (see header). Refuse to
+      // demote the only remaining active admin, and refuse if the roster cannot
+      // be read at all (fail closed).
+      let hasOtherAdmin: boolean;
+      try {
+        hasOtherAdmin = chapterHasOtherActiveAdmin(chapterId, userId);
+      } catch (err) {
+        log.error(
+          "[DELETE chapter admins] admin roster read failed:",
+          (err as Error).message,
+        );
         res.status(409).json({
           ok: false,
           error: "last_admin",
+          rule: RULE_LAST_ADMIN,
+          message:
+            "Cannot verify the chapter's remaining admins; refusing to demote.",
+        });
+        return;
+      }
+      if (!hasOtherAdmin) {
+        res.status(409).json({
+          ok: false,
+          error: "last_admin",
+          rule: RULE_LAST_ADMIN,
           message: "Cannot demote the last chapter admin.",
-          remaining: admins.length,
+          remaining: listChapterAdmins(chapterId).length,
         });
         return;
       }

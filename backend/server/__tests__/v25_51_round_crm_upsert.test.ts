@@ -253,6 +253,23 @@ describe("v25.51 Phase 3 (5a) — REAL PATCH route creates + links founder CRM c
   });
 
   it("a source:crm row that already carries crmContactId creates NO new CRM contact", async () => {
+    // The case name presupposes a contact that ALREADY exists — seed it, so the
+    // payload carries a real crmContactId instead of a dangling one. (The
+    // original bare `length === 0` assertion only held while round-invite
+    // issuance was dead: a live invitation legitimately auto-seeds a CRM lead
+    // via roundInvitationsStore → upsertCrmContactForInvitation, L-010
+    // v23.4.13. Counting *all* contacts therefore measured invite issuance,
+    // not the round→CRM upsert this case is about.)
+    const seeded = upsertFromRound({
+      companyId: ROUTE_COMPANY,
+      firstName: "Already",
+      lastName: "Linked",
+      email: "linked@existing.vc",
+    });
+    expect(seeded!.created).toBe(true);
+    const before = listContactsForCompany(ROUTE_COMPANY);
+    expect(before.length).toBe(1);
+
     const r = await patchShareholders(ROUND, {
       companyId: ROUTE_COMPANY,
       shareholders: [
@@ -262,12 +279,15 @@ describe("v25.51 Phase 3 (5a) — REAL PATCH route creates + links founder CRM c
           lastName: "Linked",
           email: "linked@existing.vc",
           source: "crm",
-          crmContactId: "crm_preexisting_1",
+          crmContactId: seeded!.id,
         },
       ],
     });
     expect(r.status).toBe(200);
-    // crm-source rows are assumed already linked → no new contact minted.
-    expect(listContactsForCompany(ROUTE_COMPANY).length).toBe(0);
+    // crm-source rows are assumed already linked → no NEW contact minted, and
+    // the pre-existing row is linked in place rather than replaced.
+    const after = listContactsForCompany(ROUTE_COMPANY);
+    expect(after.length).toBe(1);
+    expect(after[0].id).toBe(seeded!.id);
   });
 });

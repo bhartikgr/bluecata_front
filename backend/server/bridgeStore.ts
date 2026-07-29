@@ -190,6 +190,14 @@ function persistOutboxUpdate(entry: OutboxEntry): void {
  * envelope from DB and rehydrates the runtime outbox so the drain worker can
  * resume delivery. Idempotent: if the outbox already has the entry (e.g. a
  * second hydrate call) we skip.
+ *
+ * W-COLLECTIVE Wave 1 (v5 §A.2) — `archived` MUST be restored too. Eight admin
+ * surfaces (admin outbox, verify-chain, DLQ, bridge stats, adminPlatformStore,
+ * syncDashboard overview, healthz backlog, bridge history) read the in-memory
+ * outbox. Omitting `archived` here would make all 578 historical envelopes
+ * vanish on the next restart — a D1 silent drop — and would make the sacred
+ * hashChainOk() vacuously true over an empty set. Archived rows stay visibly
+ * distinguishable because `status` is carried through verbatim.
  */
 export function hydrateBridgeStore(): void {
   try {
@@ -199,7 +207,7 @@ export function hydrateBridgeStore(): void {
         `SELECT id, event_type, aggregate_id, aggregate_kind, envelope_json, hmac,
                 status, attempts, next_retry_at, enqueued_at, delivered_at, last_error
            FROM bridge_outbox
-          WHERE status IN ('queued','delivering')
+          WHERE status IN ('queued','delivering','archived')
           ORDER BY enqueued_at ASC`,
       )
       .all() as any[];
@@ -442,7 +450,15 @@ export interface BridgeEnvelope {
   schemaVersion: "1.0";
 }
 
-export type DeliveryStatus = "queued" | "delivering" | "delivered" | "dead_letter";
+/* W-COLLECTIVE Wave 1 (v5 §A.1) — `archived` is a terminal, non-deliverable
+   status for historical envelopes addressed to a peer that does not exist. It
+   is NOT a delivery: `deliveredAt` stays null and `receivedAck` stays false.
+   Archived rows are hydrated on boot (v5 §A.2), skipped by the drain worker
+   (§A.3) and can never be purged by clearBridgeOutbox (§A.5). */
+export type DeliveryStatus = "queued" | "delivering" | "delivered" | "dead_letter" | "archived";
+
+/** Statuses clearBridgeOutbox() may never delete, whatever it is asked for. */
+export const NON_PURGEABLE_STATUSES: readonly DeliveryStatus[] = ["archived"];
 
 export interface OutboxEntry {
   envelope: BridgeEnvelope;
@@ -656,7 +672,10 @@ export async function drainOutbox(deliver: (env: BridgeEnvelope, hmac: string) =
   let deadLettered = 0;
   const now = Date.now();
   for (const e of outbox) {
-    if (e.status === "delivered" || e.status === "dead_letter") continue;
+    // W-COLLECTIVE Wave 1 (v5 §A.3) — `archived` is terminal and MUST never be
+    // delivered later. Without this an archived envelope would be picked up by
+    // the next drain tick and shipped to the peer.
+    if (e.status === "delivered" || e.status === "dead_letter" || e.status === "archived") continue;
     if (e.nextRetryAt > now) continue;
     e.status = "delivering";
     e.attempts += 1;
@@ -746,9 +765,15 @@ export function clearBridgeOutbox(opts?: { includeQueued?: boolean }): {
   statusesCleared: DeliveryStatus[];
 } {
   const includeQueued = opts?.includeQueued === true;
-  const targets: DeliveryStatus[] = includeQueued
-    ? ["dead_letter", "queued", "delivering"]
-    : ["dead_letter"];
+  // W-COLLECTIVE Wave 1 (v5 §A.5) — this primitive IS reachable
+  // (POST /api/admin/bridge/dlq/clear), so v4 §0a.5's "unreachable" claim was
+  // wrong. `archived` is filtered out unconditionally so archived history can
+  // never be deleted, even if this target list is widened later.
+  const targets: DeliveryStatus[] = (
+    includeQueued
+      ? (["dead_letter", "queued", "delivering"] as DeliveryStatus[])
+      : (["dead_letter"] as DeliveryStatus[])
+  ).filter((s) => !NON_PURGEABLE_STATUSES.includes(s));
   const targetSet = new Set<string>(targets);
 
   let cleared = 0;
@@ -764,9 +789,15 @@ export function clearBridgeOutbox(opts?: { includeQueued?: boolean }): {
   try {
     const db: any = rawDb();
     const placeholders = targets.map(() => "?").join(",");
-    db.prepare(`DELETE FROM bridge_outbox WHERE status IN (${placeholders})`).run(
-      ...targets,
-    );
+    // The trailing NOT IN is redundant against `targets` (already filtered) and
+    // deliberately so: it makes the archived-history guarantee hold at the SQL
+    // layer too, not only in the JS target list. (v5 §A.5)
+    const keepPlaceholders = NON_PURGEABLE_STATUSES.map(() => "?").join(",");
+    db.prepare(
+      `DELETE FROM bridge_outbox
+        WHERE status IN (${placeholders})
+          AND status NOT IN (${keepPlaceholders})`,
+    ).run(...targets, ...NON_PURGEABLE_STATUSES);
   } catch (err) {
     log.warn(
       `[bridgeStore.clearBridgeOutbox] DB purge failed: ${(err as Error).message}`,
@@ -774,6 +805,245 @@ export function clearBridgeOutbox(opts?: { includeQueued?: boolean }): {
   }
 
   return { cleared, remaining: outbox.length, statusesCleared: targets };
+}
+
+/**
+ * Statuses an archive pass may transition to `archived`.
+ *
+ * W-COLLECTIVE Wave 1 review fix B8 — `dead_letter` was previously in this list
+ * and that was an undisclosed D1 silent drop. The `archived` bucket cannot
+ * express what a row's status USED to be, and three live surfaces derive the
+ * dead-letter signal from the in-memory status alone:
+ *   • `GET /api/admin/bridge/outbox` → `deadLettered`
+ *   • `adminPlatformStore.ts` → `queues.deadLetter`
+ *   • `lib/syncDashboard.ts` → `dlq[]`
+ * Archiving a `dead_letter` row therefore drove all three to 0 irrecoverably,
+ * hiding a real delivery-failure signal from operators.
+ *
+ * DECISION (of the two remedies the review offered): EXCLUDE `dead_letter`
+ * from archiving, rather than add an `archived_from_status` column. Rationale —
+ * archiving exists to guarantee the historical backlog can never be delivered
+ * if `BRIDGE_ENABLED` flips to 1, and `dead_letter` rows are ALREADY
+ * undeliverable: `drainOutbox` skips them unconditionally (see the terminal
+ * status guard in the drain loop), exactly as it skips `delivered` and
+ * `archived`. So excluding them removes NO protection and costs NO capability,
+ * while a new column would mean a schema change on a live payments database for
+ * no behavioural gain. Consequence: `deadLettered` / `queues.deadLetter` /
+ * `dlq[]` are provably unaffected by an archive pass, because the rows are
+ * never read, never mutated and never counted as eligible.
+ */
+const ARCHIVABLE_STATUSES: readonly DeliveryStatus[] = [
+  "queued",
+  "delivering",
+];
+
+export interface ArchiveOutboxResult {
+  dryRun: boolean;
+  reason: string;
+  /** Envelopes that would be / were transitioned. */
+  eligible: number;
+  archived: number;
+  /** Already `archived` before this pass — proves idempotency. */
+  alreadyArchived: number;
+  /** Untouched because terminal-delivered. */
+  skippedDelivered: number;
+  /**
+   * Untouched because dead-lettered (B8). Reported so the operator can SEE that
+   * the DLQ signal was deliberately preserved rather than silently zeroed.
+   */
+  skippedDeadLettered: number;
+  total: number;
+  byStatusBefore: Record<string, number>;
+  byStatusAfter: Record<string, number>;
+  eventIds: string[];
+  /**
+   * Rows the DB-wide `UPDATE` transitioned (B6). This is NOT the same number as
+   * `archived`: hydration only restores `('queued','delivering','archived')`, so
+   * a row that failed to parse — or that was written by another process since
+   * this one booted — exists in `bridge_outbox` but not in `outbox`. Before B6
+   * the archive was memory-scoped only, so those rows stayed `queued` in the
+   * database forever and WOULD have been delivered if `BRIDGE_ENABLED` flipped.
+   */
+  dbArchived: number;
+  /** Rows the DB-wide `UPDATE` would transition, computed on a dry run. */
+  dbEligible: number;
+  /** Set when the DB pass could not run; the memory pass still reports above. */
+  dbError: string | null;
+}
+
+function tallyStatuses(): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const e of outbox) out[e.status] = (out[e.status] ?? 0) + 1;
+  return out;
+}
+
+/**
+ * W-COLLECTIVE Wave 1 (v4 §1.6 as corrected by v5 §A) — ARCHIVE the historical
+ * outbound backlog.
+ *
+ * These envelopes are addressed to `COLLECTIVE_WEBHOOK_URL`, a peer that does
+ * not exist; the durable local write already happened at emit time, so nothing
+ * local depends on them (v4 §0a.2-0a.4). Archiving is safe for the audit chain
+ * because the hash body is `priorHash|eventId|eventType|aggregateId|occurredAt`
+ * and excludes `status`, `deliveredAt` and `attempts` (§0a.5).
+ *
+ * Guarantees:
+ *   • NO `DELETE` — rows stay in `bridge_outbox` and in every admin surface.
+ *   • NO `emit()` — the chain tip is not advanced, so no new links are minted.
+ *   • NOT presented as delivery — `deliveredAt` stays null, `receivedAck` false.
+ *   • NO inbound dispatch.
+ *   • Idempotent — a second pass archives 0 and reports `alreadyArchived`.
+ *   • Dry-run first — callers must opt in to mutation with `dryRun:false`.
+ *   • `delivered` envelopes are never touched.
+ *   • `dead_letter` envelopes are never touched (review fix B8 — see
+ *     `ARCHIVABLE_STATUSES`; the DLQ signal must stay derivable).
+ *   • The hash body (`priorHash|eventId|eventType|aggregateId|occurredAt`) and
+ *     `envelope_json` / `hmac` are never written, so the chain stays verifiable.
+ *   • `lastError` is PRESERVED, never clobbered (review fix B7).
+ *   • The transition is applied DB-wide, not just to the hydrated copies
+ *     (review fix B6).
+ */
+export function archiveBridgeOutbox(opts: {
+  reason: string;
+  dryRun?: boolean;
+}): ArchiveOutboxResult {
+  const dryRun = opts.dryRun !== false;
+  const reason = (opts.reason ?? "").trim() || "unspecified";
+  const byStatusBefore = tallyStatuses();
+
+  const targets = outbox.filter((e) => ARCHIVABLE_STATUSES.includes(e.status));
+  const alreadyArchived = outbox.filter((e) => e.status === "archived").length;
+  const skippedDelivered = outbox.filter((e) => e.status === "delivered").length;
+  const skippedDeadLettered = outbox.filter((e) => e.status === "dead_letter").length;
+  const eventIds = targets.map((e) => e.envelope.eventId);
+
+  let archived = 0;
+  if (!dryRun) {
+    for (const e of targets) {
+      const priorStatus = e.status;
+      e.status = "archived";
+      // Deliberately NOT setting deliveredAt / receivedAck: an archive is not a
+      // delivery.
+      //
+      // B7 — `lastError` used to be OVERWRITTEN with `archived: ${reason}`,
+      // destroying the delivery-failure diagnostic that is often the only
+      // record of WHY a row was still queued. It is now preserved verbatim
+      // after the ` | prior: ` marker. `bridge_outbox` has no reason column and
+      // Wave 1 adds no schema change, so the archive annotation shares this
+      // column — but it appends, it does not clobber.
+      //
+      // B8 — the annotation also carries `from=<pre-archive status>` so the
+      // pre-archive status remains derivable from the durable row even though
+      // `status` itself is now `archived`.
+      e.lastError = composeArchiveNote(priorStatus, reason, e.lastError);
+      // Park the retry clock far enough forward that even a status regression
+      // cannot make the drain worker pick this up on the same tick.
+      e.nextRetryAt = Number.MAX_SAFE_INTEGER;
+      persistOutboxUpdate(e);
+      archived++;
+    }
+  }
+
+  const db = archiveBridgeOutboxInDb(reason, dryRun);
+
+  return {
+    dryRun,
+    reason,
+    eligible: targets.length,
+    archived,
+    alreadyArchived,
+    skippedDelivered,
+    skippedDeadLettered,
+    total: outbox.length,
+    byStatusBefore,
+    byStatusAfter: tallyStatuses(),
+    eventIds,
+    dbArchived: db.archived,
+    dbEligible: db.eligible,
+    dbError: db.error,
+  };
+}
+
+/** The durable archive annotation. Shared by the memory and SQL passes. */
+function composeArchiveNote(
+  priorStatus: string,
+  reason: string,
+  priorError: string | null | undefined,
+): string {
+  const head = `archived[from=${priorStatus}]: ${reason}`;
+  return priorError ? `${head} | prior: ${priorError}` : head;
+}
+
+/**
+ * W-COLLECTIVE Wave 1 review fix B6 — apply the archive DB-wide.
+ *
+ * The archive was previously memory-scoped: it walked `outbox` and wrote each
+ * hydrated entry back with `persistOutboxUpdate`. But `hydrateBridgeStore` only
+ * restores `('queued','delivering','archived')` and SKIPS any row whose
+ * `envelope_json` fails to parse, so a malformed-but-`queued` row — or one
+ * written by another process after this one booted — was never in `outbox` and
+ * so never archived. It stayed `queued` in `bridge_outbox` forever and WOULD be
+ * picked up and delivered the moment `BRIDGE_ENABLED` flipped to 1. That is the
+ * exact failure the archive exists to prevent.
+ *
+ * One parameterised statement, no `DELETE`, no `emit()`. It writes only
+ * `status`, `next_retry_at` and `last_error`; `envelope_json`, `hmac`,
+ * `delivered_at`, `attempts`, `enqueued_at` and every hash-body field are
+ * untouched, so `hashChainOk()` and `verify-chain` are unaffected.
+ *
+ * Idempotent by construction: the `WHERE` clause only matches
+ * `ARCHIVABLE_STATUSES`, and an already-archived row is `archived`, so a second
+ * pass matches 0 rows and cannot double-append to `last_error`.
+ *
+ * In SQLite every `SET` expression is evaluated against the PRE-update row, so
+ * `status` and `last_error` on the right-hand side are the old values — that is
+ * what lets one statement record both the pre-archive status (B8) and the prior
+ * diagnostic (B7) per row without a read-modify-write round trip.
+ */
+function archiveBridgeOutboxInDb(
+  reason: string,
+  dryRun: boolean,
+): { eligible: number; archived: number; error: string | null } {
+  const placeholders = ARCHIVABLE_STATUSES.map(() => "?").join(",");
+  try {
+    const db: any = rawDb();
+    const eligible = Number(
+      db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM bridge_outbox WHERE status IN (${placeholders})`,
+        )
+        .get(...ARCHIVABLE_STATUSES)?.n ?? 0,
+    );
+    if (dryRun) return { eligible, archived: 0, error: null };
+
+    const info = db
+      .prepare(
+        `UPDATE bridge_outbox
+            SET status        = 'archived',
+                next_retry_at = ?,
+                last_error    = 'archived[from=' || status || ']: ' || ?
+                                || CASE
+                                     WHEN last_error IS NOT NULL AND last_error <> ''
+                                     THEN ' | prior: ' || last_error
+                                     ELSE ''
+                                   END
+          WHERE status IN (${placeholders})`,
+      )
+      .run(Number.MAX_SAFE_INTEGER, reason, ...ARCHIVABLE_STATUSES);
+    const archived = Number(info?.changes ?? 0);
+    if (archived > 0) {
+      log.info(
+        `[bridgeStore.archive] DB pass archived ${archived} row(s) in bridge_outbox (reason: ${reason})`,
+      );
+    }
+    return { eligible, archived, error: null };
+  } catch (err) {
+    const msg = (err as Error).message ?? String(err);
+    // Warn-only: the in-memory pass has already succeeded and the caller sees
+    // `dbError`. A DB outage must not make the admin endpoint 500.
+    log.warn(`[bridgeStore.archive] DB pass failed: ${msg}`);
+    return { eligible: 0, archived: 0, error: msg };
+  }
 }
 
 export function getInbox(): BridgeEnvelope[] {
@@ -980,6 +1250,9 @@ export function registerBridgeRoutes(app: Express): void {
       delivered: outbox.filter(e => e.status === "delivered").length,
       queued: outbox.filter(e => e.status === "queued").length,
       deadLettered: outbox.filter(e => e.status === "dead_letter").length,
+      // W-COLLECTIVE Wave 1 (v5 §A.2) — additive; `total` and `entries` already
+      // include archived envelopes, this just names the bucket.
+      archived: outbox.filter(e => e.status === "archived").length,
       eventTypes: ALL_OUTBOUND_EVENT_TYPES,
       entries: outbox.slice(-100).map(e => ({
         eventId: e.envelope.eventId,
@@ -1054,6 +1327,58 @@ export function registerBridgeRoutes(app: Express): void {
       req.body?.includeQueued === true;
     const out = clearBridgeOutbox({ includeQueued });
     res.json({ ok: true, ...out });
+  });
+
+  /* W-COLLECTIVE Wave 1 (v4 §1.6 / v5 §A) — ARCHIVE the historical outbound
+     backlog. Admin-gated, DRY-RUN BY DEFAULT (must pass ?apply=1 or
+     {"apply":true} to mutate), idempotent, audited with an explicit reason.
+     Never DELETEs, never emits, never presents an archive as a delivery. */
+  app.post("/api/admin/bridge/archive", requireAdmin, async (req: Request, res: Response) => {
+    const apply =
+      req.query.apply === "1" ||
+      req.query.apply === "true" ||
+      req.body?.apply === true;
+    const reason =
+      (typeof req.body?.reason === "string" && req.body.reason.trim()) ||
+      (typeof req.query.reason === "string" && req.query.reason.trim()) ||
+      "collective bridge peer does not exist; backlog retired without delivery";
+
+    const result = archiveBridgeOutbox({ reason, dryRun: !apply });
+
+    if (apply) {
+      try {
+        // Dynamic import: adminPlatformStore imports getOutbox() from this
+        // module, so a static import would close an import cycle.
+        const { appendAdminAudit } = await import("./adminPlatformStore");
+        appendAdminAudit(
+          (req as any).userContext?.userId ?? "u_admin",
+          "bridge_outbox",
+          "bridge.outbox.archived",
+          {
+            reason: result.reason,
+            archived: result.archived,
+            alreadyArchived: result.alreadyArchived,
+            skippedDelivered: result.skippedDelivered,
+            /* Review fix B8 — record that the DLQ was deliberately preserved. */
+            skippedDeadLettered: result.skippedDeadLettered,
+            /* Review fix B6 — the DB-wide pass is reported separately from the
+               in-memory one; they can legitimately differ. */
+            dbArchived: result.dbArchived,
+            dbEligible: result.dbEligible,
+            dbError: result.dbError,
+            total: result.total,
+            eventIds: result.eventIds.slice(0, 50),
+            eventIdCount: result.eventIds.length,
+          },
+        );
+      } catch (err) {
+        log.warn(
+          `[bridgeStore.archive] audit append failed: ${(err as Error).message}`,
+        );
+      }
+    }
+
+    res.json({ ok: true, ...result });
   });
 
   // Emit a custom envelope (admin-only test action)

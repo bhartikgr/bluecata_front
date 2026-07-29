@@ -53,6 +53,42 @@ export interface InboundResult {
   handler: string;
   eventId: string;
   reason?: string;
+  /**
+   * W2B B2 — the durableMap keys whose write-through did NOT reach SQLite.
+   * Present only when at least one write degraded to memory-only, i.e. the
+   * mutation WAS applied in RAM but will NOT survive a restart. Previously
+   * durableMap.set() returned void and swallowed the error, so this handler
+   * reported `applied: true` for state it had in fact failed to persist.
+   */
+  degradedKeys?: string[];
+}
+
+/**
+ * W2B B2 — act on the write-through outcome instead of discarding it.
+ * Collects the keys that failed so the caller learns the apply was RAM-only.
+ */
+function setDurable<T>(
+  map: { set(key: string, value: T): boolean },
+  key: string,
+  value: T,
+  degraded: string[],
+): void {
+  if (!map.set(key, value)) degraded.push(key);
+}
+
+function inboundResult(
+  handler: string,
+  eventId: string,
+  degraded: string[],
+): InboundResult {
+  if (degraded.length === 0) return { applied: true, handler, eventId };
+  return {
+    applied: true,
+    handler,
+    eventId,
+    reason: "durable_write_degraded",
+    degradedKeys: degraded,
+  };
 }
 
 /**
@@ -60,6 +96,7 @@ export interface InboundResult {
  */
 export function dispatchInbound(env: BridgeEnvelope): InboundResult {
   const handler = String(env.eventType);
+  const degraded: string[] = [];
   switch (env.eventType) {
     case "dsc.scores": {
       const p = env.payload as { dscScore?: number; dscRecommendation?: string; reviewerIds?: string[] };

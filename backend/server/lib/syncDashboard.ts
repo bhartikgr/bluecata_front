@@ -125,6 +125,10 @@ export function registerSyncDashboardRoutes(app: Express): void {
       outboundTotal: out.length,
       outboundDelivered: out.filter(e => e.status === "delivered").length,
       outboundQueued: out.filter(e => e.status === "queued" || e.status === "delivering").length,
+      /* W-COLLECTIVE Wave 1 (v5 §A.2) — additive. `outboundTotal` already counts
+         archived envelopes; naming the bucket stops them reading as an
+         unexplained gap between total and delivered+queued+dlq. */
+      outboundArchived: out.filter(e => e.status === "archived").length,
       dlq: dlq.map(e => ({
         eventId: e.envelope.eventId,
         eventType: e.envelope.eventType,

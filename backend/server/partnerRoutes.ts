@@ -186,6 +186,52 @@ export function registerPartnerRoutes(app: Express): void {
     res.json({ partners: list, total: list.length });
   });
 
+  /* ------------------------------------------------------------------
+   * W-COLLECTIVE Wave 1 (v4 §1.4 / v5 §F) — admin-visible duplicate-seat report.
+   *
+   * A historical duplicate ACTIVE `partner_team_members` row for the same human
+   * consumes a paid seat and makes the partner workspace show "2 seats" for one
+   * person. `dedupeActiveTeamMembers()` has been able to DETECT this since W3.5
+   * but nothing surfaced it, so the only way to find one was to be told by the
+   * partner. This lists every affected organisation from the DURABLE roster so
+   * an operator can work the list.
+   *
+   * READ-ONLY by design. It deliberately does NOT offer a merge/delete action:
+   * collapsing a seat is a billing-visible change and the runbook
+   * (docs/RUNBOOK_partner_seats.md) requires it be done deliberately, per
+   * organisation, with the partner informed.
+   *
+   * MUST stay registered ABOVE `/api/admin/partners/:id`, or that route would
+   * match "seat-report" as a partner id and 404.
+   * ------------------------------------------------------------------ */
+  app.get("/api/admin/partners/seat-report", requireAdmin, (_req: Request, res: Response) => {
+    const partners = getAllContacts().filter((c) => c.kind === "consortium_partner");
+    const rows = partners.map((p) => {
+      const report = partnerTeamStore.seatReport(p.id);
+      const { seatLimit } = resolvePartnerSeatLimit(p.id, (p.tier as PartnerTier) ?? "catalyst");
+      return {
+        partnerId: p.id,
+        tier: p.tier ?? null,
+        seatLimit,
+        activeSeats: report.activeSeats,
+        distinctSeatUsers: report.distinctSeatUsers,
+        duplicateSeatCount: report.duplicateSeatCount,
+        duplicateSeatIdsByUserId: report.duplicateSeatIdsByUserId,
+        seatCountSource: report.source,
+        overLimit: report.activeSeats > seatLimit,
+      };
+    });
+    const affected = rows.filter((r) => r.duplicateSeatCount > 0);
+    res.json({
+      partners: rows,
+      total: rows.length,
+      affected,
+      affectedTotal: affected.length,
+      duplicateSeatTotal: affected.reduce((s, r) => s + r.duplicateSeatCount, 0),
+      runbook: "docs/RUNBOOK_partner_seats.md",
+    });
+  });
+
   app.get("/api/admin/partners/:id", requireAdmin, (req: Request, res: Response) => {
     const c = getAllContacts().find((x) => x.id === String(req.params.id) && x.kind === "consortium_partner");
     if (!c) return res.status(404).json({ error: "PARTNER_NOT_FOUND" });
@@ -1242,8 +1288,20 @@ export function registerPartnerRoutes(app: Express): void {
     // (partnerId, userId) before identity/contact enrichment. Never drops
     // data: duplicateSeatCount + duplicateSeatIdsByUserId are reported in
     // `meta` so operators/cleanup tooling can see exactly what was hidden.
+    /* W-COLLECTIVE Wave 1 (v4 §1.4 / v5 §F) — resolve identities BEFORE the
+       collapse and hand the store an `emailByUserId` map, so two seat rows that
+       are two userIds for the SAME human (the `u_834e8cd5998b` LIVE merge) show
+       as one member instead of two. `listByPartner()` is still passed UNCHANGED
+       and un-deduplicated — it backs F3 authz, promotion moderation and
+       notification fan-out, and must never be collapsed at source. The collapse
+       is DISPLAY-only; `countActiveSeats()` still counts rows. */
+    const activeRoster = partnerTeamStore.listByPartner(pid);
+    const rosterIdentityById = resolveDisplayNames(activeRoster.map((m) => m.userId));
+    const emailByUserId = new Map<string, string | null>(
+      activeRoster.map((m) => [m.userId, rosterIdentityById.get(m.userId)?.email ?? null]),
+    );
     const { members: rawMembers, duplicateSeatCount, duplicateSeatIdsByUserId } =
-      partnerTeamStore.dedupeActiveTeamMembers(partnerTeamStore.listByPartner(pid));
+      partnerTeamStore.dedupeActiveTeamMembers(activeRoster, { emailByUserId });
     const contactMap = partnerTeamContactStore.listByPartner(pid);
     const memberIds = rawMembers.map((m) => m.userId);
     /* W2-G — resolve identities through the shared displayNameResolver instead

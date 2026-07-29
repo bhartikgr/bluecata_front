@@ -36,6 +36,10 @@ import { seedDemoData } from "./lib/seedDemoData";
 import { getDb } from "./db/connection";
 import { log as structuredLog } from "./lib/logger";
 import { getAirwallexMode } from "./lib/paymentGatewayResolver"; // v25.52 Track 4.4 — Airwallex fail-closed boot guard (static ESM import; no runtime require shim)
+// W-COLLECTIVE Wave 1 — boot self-checks (v4 §0a.8 and §1.5). Both are
+// warn-only: they must be loud, but must never abort a live boot.
+import { checkCollectiveLazyRequires } from "./collectiveAppStore";
+import { reportBridgeEnv } from "./lib/bridgeEnvAssert";
 
 const app = express();
 const httpServer = createServer(app);
@@ -392,6 +396,50 @@ app.use((req, res, next) => {
     }
     structuredLog.info(
       "[boot] Airwallex boot guard passed — production payment mode = " + resolvedMode + " (real network).",
+    );
+  }
+
+  // W-COLLECTIVE Wave 1 (v4 §0a.8) — dependency-contract self-check.
+  // `collectiveAppStore` consumed three modules through a `require()` wrapper
+  // whose failures were swallowed, so a wrong path disabled a Collective
+  // capability silently for four waves. They are static imports now; this check
+  // asserts each binding still exposes the members the call sites invoke, so a
+  // future rename fails LOUDLY at boot. Warn-only by design: a broken binding
+  // must be visible, but must never brick a live boot.
+  try {
+    const lazyCheck = checkCollectiveLazyRequires();
+    if (!lazyCheck.ok) {
+      structuredLog.error(
+        "[boot] collectiveAppStore dependency self-check FAILED — a Collective " +
+          "capability is silently disabled. Failures: " +
+          JSON.stringify(lazyCheck.failures),
+      );
+    } else {
+      structuredLog.info(
+        `[boot] collectiveAppStore dependency self-check passed (${lazyCheck.checked} bindings).`,
+      );
+    }
+  } catch (err) {
+    structuredLog.error(
+      "[boot] collectiveAppStore dependency self-check THREW (non-fatal): " +
+        ((err as Error)?.message ?? String(err)),
+    );
+  }
+
+  // W-COLLECTIVE Wave 1 (v4 §1.5) — bridge env report at boot.
+  // The bridge was misconfigured for months while the platform reported itself
+  // healthy, because nothing inspected the config until someone polled
+  // /api/healthz. Warn-only, never throws, never exits.
+  try {
+    const bridgeEnv = reportBridgeEnv(structuredLog);
+    structuredLog.info(
+      `[boot] bridge env report — ok=${bridgeEnv.ok} enabled=${bridgeEnv.enabled} ` +
+        `outboundConfigured=${bridgeEnv.outboundConfigured} findings=${bridgeEnv.findings.length}`,
+    );
+  } catch (err) {
+    structuredLog.error(
+      "[boot] bridge env report THREW (non-fatal): " +
+        ((err as Error)?.message ?? String(err)),
     );
   }
 

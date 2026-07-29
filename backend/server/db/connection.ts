@@ -1579,6 +1579,31 @@ function applyV12AdditiveAlters(db: any) {
     // SELECT throws — which it swallows non-fatally, leaving every partner's
     // CRM stage projection silently EMPTY after boot.
     ["partner_client_crm", "ALTER TABLE partner_client_crm ADD COLUMN lead_user_id TEXT"],
+    // ---- w-collective Wave 2 Stage A (2026-07-28) — migrations 0117/0118/0120.
+    // Every CREATE TABLE IF NOT EXISTS literal above is a NO-OP on an
+    // already-deployed database, so each of these columns needs this second half
+    // or it never lands there. That matters concretely because shared/schema.ts
+    // now DECLARES these columns: without the ALTERs, drizzle emits them in its
+    // select list and hydrateNetworkPostsStore / any users read raises
+    // "no such column" on a deployed DB.
+    //
+    // 0117 — comms_channels anchors. `kind` is in both the canonical and the
+    // pre-0117 runtime shape, so that one is an expected swallowed duplicate on
+    // every real DB; it is kept only to repair a hypothetical pre-canonical
+    // table. Added nullable — SQLite cannot ADD NOT NULL without a default, and
+    // inventing a default kind would mislabel existing channels.
+    ["comms_channels", "ALTER TABLE comms_channels ADD COLUMN company_id TEXT"],
+    ["comms_channels", "ALTER TABLE comms_channels ADD COLUMN round_id TEXT"],
+    ["comms_channels", "ALTER TABLE comms_channels ADD COLUMN chapter_id TEXT"],
+    ["comms_channels", "ALTER TABLE comms_channels ADD COLUMN kind TEXT"],
+    // 0118 — network_posts scope. NO DEFAULT, deliberately: NULL means "no scope
+    // was set" and the read side must treat that as the SAFE (author-only) case.
+    ["network_posts", "ALTER TABLE network_posts ADD COLUMN scope TEXT"],
+    ["network_posts", "ALTER TABLE network_posts ADD COLUMN company_id TEXT"],
+    ["network_posts", "ALTER TABLE network_posts ADD COLUMN chapter_id TEXT"],
+    // 0120 — optional self-entered investor profile location. Founders derive
+    // theirs from companies.hq at read time; it is not duplicated onto users.
+    ["users", "ALTER TABLE users ADD COLUMN location TEXT"],
   ];
   for (const [table, sql] of alters) {
     try {
@@ -1632,6 +1657,12 @@ function applyV12AdditiveAlters(db: any) {
     "CREATE INDEX IF NOT EXISTS idx_reports_tenant ON reports(tenant_id)",
     "CREATE INDEX IF NOT EXISTS idx_network_posts_tenant ON network_posts(tenant_id, created_at)",
     "CREATE INDEX IF NOT EXISTS idx_network_posts_author ON network_posts(author_user_id)",
+    // w-collective Wave 2 Stage A — migration 0118. Placed in THIS array (not
+    // next to the CREATE literal) because the columns they index are added by
+    // the guarded ALTERs above, which run earlier in this same function.
+    "CREATE INDEX IF NOT EXISTS idx_network_posts_scope ON network_posts(scope, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_network_posts_company ON network_posts(company_id)",
+    "CREATE INDEX IF NOT EXISTS idx_network_posts_chapter ON network_posts(chapter_id)",
     // v17 Phase A — chapter scoping indices.
     "CREATE INDEX IF NOT EXISTS idx_chapters_tenant ON chapters(tenant_id)",
     "CREATE INDEX IF NOT EXISTS idx_chapters_status ON chapters(status)",
@@ -1870,7 +1901,11 @@ function buildProductionTableStatements(): string[] {
       role TEXT NOT NULL,
       avatar_url TEXT,
       is_demo INTEGER NOT NULL DEFAULT 0,
-      deleted_at TEXT
+      deleted_at TEXT,
+      -- w-collective Wave 2 Stage A (migration 0120) — optional self-entered
+      -- investor profile location. Founders derive theirs from companies.hq at
+      -- read time; it is not duplicated here.
+      location TEXT
     );`,
     `CREATE TABLE IF NOT EXISTS user_prefs (
       user_id TEXT PRIMARY KEY NOT NULL,
@@ -2376,7 +2411,13 @@ function buildProductionTableStatements(): string[] {
       parent_post_id TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT,
-      deleted_at TEXT
+      deleted_at TEXT,
+      -- w-collective Wave 2 Stage A (migration 0118) — re-scopable posts. NO
+      -- DEFAULT on scope, deliberately: an unset scope is NULL and the read side
+      -- must treat NULL as the SAFE (author-only) case. Do not add a default.
+      scope TEXT,
+      company_id TEXT,
+      chapter_id TEXT
     );`,
     // v15 P0-4..P0-8 — founder invitations: real persisted invitations with
     // sha256-hashed tokens, 14-day expiry, single-use redeem. The base table
@@ -4142,6 +4183,148 @@ function buildCreateTableStatements(): string[] {
     );`,
     `CREATE INDEX IF NOT EXISTS idx_comms_messages_channel ON comms_messages(channel_id, created_at);`,
     `CREATE INDEX IF NOT EXISTS idx_comms_messages_author ON comms_messages(author_user_id);`,
+    /* ---- w-collective Wave 2 Stage A (2026-07-28) ------------------------
+     * migration 0117 — comms_channels was NEVER migration-managed: it existed
+     * only as lazy runtime DDL in commsStore.persistChannel, created on the
+     * first channel write, so on a DB where no channel had been persisted the
+     * table was absent and hydrateCommsStore's SELECT failed. This literal is
+     * the canonical shape (persistChannel now emits the same one) plus the
+     * durable company/round/chapter anchors. The guarded ADD COLUMN half lives
+     * in applyV12AdditiveAlters — required, because on a DB whose
+     * comms_channels was already built by the OLD runtime DDL this
+     * CREATE TABLE IF NOT EXISTS is a no-op and the anchors would never land. */
+    `CREATE TABLE IF NOT EXISTS comms_channels (
+      id                        TEXT PRIMARY KEY NOT NULL,
+      kind                      TEXT NOT NULL,
+      participant_user_ids_json TEXT NOT NULL,
+      created_at                TEXT NOT NULL,
+      metadata_json             TEXT,
+      deleted_at                TEXT,
+      company_id                TEXT,
+      round_id                  TEXT,
+      chapter_id                TEXT
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_comms_channels_company ON comms_channels(company_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_comms_channels_round ON comms_channels(round_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_comms_channels_chapter ON comms_channels(chapter_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_comms_channels_kind ON comms_channels(kind);`,
+    /* migration 0116 — durable per-USER company follow relation. Followers were
+     * in-memory demo seed arrays (commsStore.ts:489), empty in production, and
+     * POST /api/comms/posts/:id/follow wrote the followed company onto the POST
+     * object, so "who follows this company" was unanswerable and every follow
+     * died on restart. Uniqueness is on the pair for all time (not partial on
+     * deleted_at), so unfollow is a soft delete and re-follow is an upsert. */
+    `CREATE TABLE IF NOT EXISTS company_followers (
+      id          TEXT PRIMARY KEY NOT NULL,
+      tenant_id   TEXT,
+      user_id     TEXT NOT NULL,
+      company_id  TEXT NOT NULL,
+      created_at  TEXT NOT NULL,
+      updated_at  TEXT,
+      deleted_at  TEXT
+    );`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS uq_company_followers_user_company ON company_followers(user_id, company_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_company_followers_user ON company_followers(user_id, deleted_at);`,
+    `CREATE INDEX IF NOT EXISTS idx_company_followers_company ON company_followers(company_id, deleted_at);`,
+    /* migration 0119 — durable per-user post engagement. restorePostFromDb
+     * (commsStore.ts:2616-2619) resets likedByUserIds/commentCount/comments/
+     * shareCount to empty on hydrate because there was nowhere to read them
+     * from, so every restart wiped all engagement. The aggregate
+     * network_posts.likes / .comments columns are KEPT (no silent drops). */
+    `CREATE TABLE IF NOT EXISTS network_post_likes (
+      post_id    TEXT NOT NULL,
+      user_id    TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (post_id, user_id)
+    );`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS uq_network_post_likes_post_user ON network_post_likes(post_id, user_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_network_post_likes_post ON network_post_likes(post_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_network_post_likes_user ON network_post_likes(user_id);`,
+    `CREATE TABLE IF NOT EXISTS network_post_comments (
+      id             TEXT PRIMARY KEY NOT NULL,
+      post_id        TEXT NOT NULL,
+      author_user_id TEXT NOT NULL,
+      body           TEXT NOT NULL,
+      created_at     TEXT NOT NULL,
+      deleted_at     TEXT
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_network_post_comments_post ON network_post_comments(post_id, created_at);`,
+    `CREATE INDEX IF NOT EXISTS idx_network_post_comments_author ON network_post_comments(author_user_id);`,
+    /* Shares are an append-only event log — deliberately NOT unique per pair. */
+    `CREATE TABLE IF NOT EXISTS network_post_shares (
+      id         TEXT PRIMARY KEY NOT NULL,
+      post_id    TEXT NOT NULL,
+      user_id    TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_network_post_shares_post ON network_post_shares(post_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_network_post_shares_user ON network_post_shares(user_id);`,
+    /* migration 0118 bookkeeping — the marker + undo journal for the one-time
+     * legacy scope backfill. SCHEMA ONLY here: the backfill itself is
+     * deliberately NOT replicated into this boot-time self-heal, because
+     * applyInlineMigrations runs on every process start (including every
+     * :memory: test worker) and must never mutate row data. The backfill
+     * belongs to the migration runner, which runs once per deploy. */
+    `CREATE TABLE IF NOT EXISTS migration_backfill_markers (
+      marker        TEXT PRIMARY KEY NOT NULL,
+      applied_at    TEXT NOT NULL,
+      rows_affected INTEGER,
+      notes         TEXT
+    );`,
+    `CREATE TABLE IF NOT EXISTS network_post_scope_backfill (
+      post_id          TEXT NOT NULL,
+      migration_id     TEXT NOT NULL,
+      prior_scope      TEXT,
+      prior_company_id TEXT,
+      prior_chapter_id TEXT,
+      new_scope        TEXT NOT NULL,
+      backfilled_at    TEXT NOT NULL,
+      PRIMARY KEY (post_id, migration_id)
+    );`,
+    /* w-collective Wave 2 Stage B — durable drain for the two 500-item comms
+     * ring buffers in server/commsStore.ts. `appendAudit` builds a
+     * hash-chained envelope (prev_hash → hash) and `emitOutbox` carries that
+     * chain on every event; both buffers used to `splice()` their oldest
+     * entries away at 500, so a burst silently amputated the head of a
+     * forensic chain. The drain persists the overflow HERE before evicting.
+     *
+     * Deliberately NOT `audit_log`: that table is walked as ONE global chain by
+     * server/lib/auditChainVerifier.ts (CATALOG entry "audit_log", linkage
+     * check at auditChainVerifier.ts:588), so interleaving a second
+     * independently-seeded chain into it would make the verifier report a
+     * break. Deliberately NOT `telemetry_events` either: that feeds the admin
+     * activity feed and KPI counters (server/activityDeriver.ts:176,
+     * server/adminPlatformStore.ts:1923), so comms rows would pollute a
+     * user-visible surface.
+     *
+     * Self-heal only, no migration file (same precedent as telemetry_events
+     * above, which has no file in migrations/ either). Stage B is under a
+     * no-new-migrations rule and this runs on every connection open. */
+    `CREATE TABLE IF NOT EXISTS comms_audit_log (
+      id           TEXT PRIMARY KEY NOT NULL,
+      ts           TEXT NOT NULL,
+      event_type   TEXT NOT NULL,
+      actor_id     TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      prev_hash    TEXT NOT NULL,
+      hash         TEXT NOT NULL,
+      drained_at   TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_comms_audit_log_ts ON comms_audit_log(ts);`,
+    `CREATE TABLE IF NOT EXISTS comms_outbox_events (
+      event_id         TEXT PRIMARY KEY NOT NULL,
+      event_type       TEXT NOT NULL,
+      occurred_at      TEXT NOT NULL,
+      actor_user_id    TEXT NOT NULL,
+      actor_ip         TEXT,
+      actor_user_agent TEXT,
+      payload_json     TEXT NOT NULL,
+      prior_hash       TEXT NOT NULL,
+      hash             TEXT NOT NULL,
+      schema_version   TEXT NOT NULL,
+      drained_at       TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_comms_outbox_events_occurred ON comms_outbox_events(occurred_at);`,
     /* v25.21 Lane D NC-001 fix — durable key-value store for cross-product
      * inbound bridge state (DSC scores, M&A intelligence, KYC decisions,
      * membership renewals, etc.). Defined in shared/schema.ts as

@@ -13,6 +13,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { CalendarDays } from "lucide-react";
 import { useActiveChapter } from "./useActiveChapter";
 import { isEventAnnouncement, stripEventPrefix } from "./eventClassifier";
+import { collectiveWidgetErrorText } from "@/lib/collectiveGateError";
 
 interface EventRow {
   id: string;
@@ -95,7 +96,7 @@ export function UpcomingMeetingsCard() {
           </div>
         ) : error ? (
           <div className="text-sm text-red-700" data-testid="widget-upcoming-error">
-            Couldn't load upcoming meetings.
+            {collectiveWidgetErrorText(error, 'Couldn\'t load upcoming meetings.')}
           </div>
         ) : upcoming.length === 0 && fallbackEvents.length === 0 ? (
           <div className="text-center py-6 text-slate-500" data-testid="widget-upcoming-empty">

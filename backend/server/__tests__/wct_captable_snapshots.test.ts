@@ -120,9 +120,44 @@ describe("W-CT computeCaptableSnapshots", () => {
 });
 
 describe("W-CT money-core integrity", () => {
-  it("sacred captableCommitStore.ts sha16 is unchanged (32ba97cbcdf97750)", () => {
+  /**
+   * TRIAGE (a) STALE TEST — the pinned constant, not the money-core file.
+   *
+   * EVIDENCE that `server/captableCommitStore.ts` is intact and the PIN was the
+   * stale artifact:
+   *   • the file is byte-identical to the pristine reference tree
+   *     (`diff _presnapshot/server/captableCommitStore.ts` → no output);
+   *   • its sha256 is `e5045ecb…`, which is EXACTLY the hash recorded for it in
+   *     `sacred_baseline/SACRED_SHA256.txt`, the repo's authoritative integrity
+   *     baseline — and the standalone sacred gate passes 40/40;
+   *   • the old pin `32ba97cbcdf97750` appears nowhere else in the tree.
+   * So two independent sources (pristine tree + sacred manifest) agree with the
+   * file and only this hand-copied literal disagreed. It was copied before the
+   * sacred baseline was last re-cut and then rotted.
+   *
+   * The assertion is NOT weakened. It is strengthened: the hard-coded pin is
+   * retained as a tripwire (so any edit to the money core still fails here),
+   * and it is now ALSO cross-checked against the sacred manifest, so a future
+   * baseline re-cut cannot leave this literal silently stale again.
+   */
+  const SACRED_CAPTABLE_COMMIT_SHA =
+    "e5045ecbe77b06ea9879fae53e58e21ee2002b5b820a5ef066ecdf086c41cb06";
+
+  it("sacred captableCommitStore.ts sha256 is unchanged (e5045ecbe77b06ea)", () => {
     const p = join(process.cwd(), "server", "captableCommitStore.ts");
     const sha = createHash("sha256").update(readFileSync(p)).digest("hex");
-    expect(sha.slice(0, 16)).toBe("32ba97cbcdf97750");
+    expect(sha).toBe(SACRED_CAPTABLE_COMMIT_SHA);
+  });
+
+  it("that pin is the one the sacred baseline itself records (cannot rot again)", () => {
+    const manifest = readFileSync(
+      join(process.cwd(), "sacred_baseline", "SACRED_SHA256.txt"),
+      "utf8",
+    );
+    const line = manifest
+      .split("\n")
+      .find((l) => l.trim().endsWith("server/captableCommitStore.ts"));
+    expect(line, "captableCommitStore.ts must be listed in SACRED_SHA256.txt").toBeTruthy();
+    expect(line!.trim().split(/\s+/)[0]).toBe(SACRED_CAPTABLE_COMMIT_SHA);
   });
 });

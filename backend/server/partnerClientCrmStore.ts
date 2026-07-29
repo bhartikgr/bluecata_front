@@ -22,11 +22,30 @@
 import { randomUUID } from "crypto";
 import { rawDb } from "./db/connection";
 import { log } from "./lib/logger";
+import { resolveDisplayName } from "./lib/displayNameResolver"; /* W-COLLECTIVE Wave 1 (v4 §1.3) — never render a raw u_… id in an activity body */
 import {
   PARTNER_CLIENT_DEFAULT_STAGE,
   isPartnerClientStage,
   type PartnerClientStage,
 } from "../shared/crmStages";
+
+/**
+ * W-COLLECTIVE Wave 1 (v4 §1.3) — resolve a partner-team userId to a label that
+ * is safe to embed in an activity body. `displayNameResolver` already guarantees
+ * it never returns a raw `u_…` id; the regex below is a belt-and-braces check so
+ * a future change there cannot reintroduce the leak here.
+ *
+ * Fail-safe: on any resolution failure returns a neutral label, NEVER the raw id.
+ */
+function resolveLeadLabel(userId: string): string {
+  try {
+    const name = String(resolveDisplayName(userId)?.name ?? "").trim();
+    if (name && !/^u_[A-Za-z0-9_]*$/.test(name)) return name;
+  } catch (err) {
+    log.warn("[partnerClientCrmStore] lead name resolution failed:", (err as Error).message);
+  }
+  return "a team member";
+}
 
 export interface PartnerClientCrmRow {
   partnerId: string;
@@ -249,9 +268,15 @@ export const partnerClientCrmStore = {
     persistLead(row);
     crmByKey.set(key(partnerId, companyId), row);
     if (prev !== next) {
+      /* W-COLLECTIVE Wave 1 (v4 §1.3) — the body was `Lead assigned to ${next}`,
+         i.e. a raw `u_…` platform id rendered into the client timeline that
+         partner staff read. `resolveDisplayName` is guaranteed never to return a
+         raw id (it degrades to "Pending member"). `meta.from` / `meta.to` keep
+         the RAW ids — they are the machine-readable record every downstream
+         consumer joins on, and rewriting them would be a silent data change. */
       this.addActivity(partnerId, companyId, {
         activityType: "lead_assigned",
-        body: next ? `Lead assigned to ${next}` : "Lead cleared",
+        body: next ? `Lead assigned to ${resolveLeadLabel(next)}` : "Lead cleared",
         actorUserId: actor ?? null,
         meta: { from: prev, to: next },
       });

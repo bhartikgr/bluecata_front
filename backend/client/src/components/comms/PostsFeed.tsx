@@ -78,6 +78,10 @@ type PostView = {
  comments: Array<{ id: string; userId: string; body: string; createdAt: string; authorLabel?: string }>;
  shareCount: number;
  followingCompanyIds?: string[];
+ /* Stage D (D1) — per-viewer follow state from durable `company_followers`. */
+ viewerIsFollowingCompany?: boolean;
+ authorCompanyId?: string;
+ companyFollowerCount?: number;
  authorLabel: string;
  authorRoleBadge: string;
  authorLocation: string;
@@ -740,7 +744,17 @@ function PostCard({
  onClick={onFollow}
  data-testid={`button-follow-${post.id}`}
  >
- {(post.followingCompanyIds?.length ?? 0) > 0 ? "Following ✓" : "+ Follow"}
+ {/* W-COLLECTIVE Wave 2 Stage D (D1) — PER-VIEWER follow state.
+ `post.followingCompanyIds` used to be written on the POST by
+ `POST /api/comms/posts/:id/follow`, so as soon as ONE investor
+ followed, this button read "Following ✓" for EVERY viewer. The
+ server now derives `viewerIsFollowingCompany` for the requesting
+ viewer from the durable `company_followers` rows. The old
+ expression is kept as the fallback so an older/cached payload
+ that lacks the new field still renders exactly as before. */}
+ {(post.viewerIsFollowingCompany ?? (post.followingCompanyIds?.length ?? 0) > 0)
+ ? "Following ✓"
+ : "+ Follow"}
  </Button>
  )}
  </div>

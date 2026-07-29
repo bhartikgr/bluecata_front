@@ -39,6 +39,11 @@ import type { Express, Request, Response } from "express";
 import { getUserContext } from "./userContext";
 import { appendAdminAudit } from "../adminPlatformStore";
 import { log } from "./logger";
+/* W-COLLECTIVE sweep — STATIC imports. These two were lazy `require()` calls
+   under the `createRequire` shim above, which cannot be bundled by esbuild and
+   therefore always threw in `dist/index.cjs`, silently defeating this store's
+   own "survive deploys" guarantee. BFS proves no import cycle. */
+import { hydrateEntries, persistEntry } from "./storePersistenceShim";
 /* W-AVI64 FIX 1 — resolve a CRM pick's email from the authoritative
    founder_crm_contacts table when the client sent no email, so a CRM investor
    who has an email on file still gets a round invitation (no silent
@@ -48,6 +53,18 @@ import { rawDb } from "../db/connection";
    reaches this file). Replaces the broken runtime require("../founderCrmStore")
    so the manual-investor → founder-CRM upsert-and-link actually runs. */
 import { upsertFromRound } from "../founderCrmStore";
+/* OWNWAVE TRIAGE (b) — static ESM import, same remedy as the v25.51 5a
+   founderCrmStore conversion above and for the same reason.
+   This was a runtime `require("../roundInvitationsStore")` via the createRequire
+   shim. That shim resolves relative to `import.meta.url`, which `script/build.ts`
+   DEFINES to `dist/index.cjs` (build.ts:77-84) — so in the production bundle the
+   specifier resolved to `<root>/roundInvitationsStore`, which does not exist.
+   The MODULE_NOT_FOUND landed in the try/catch below, which logged a warning and
+   skipped invite issuance entirely: initial shareholders were recorded but NO
+   round invitation was ever created and no email sent. Verified safe: this
+   module's 60-module static closure never reaches routes.ts, hydrateStores.ts or
+   this file, so no import cycle is introduced. */
+import { createInvitation } from "../roundInvitationsStore";
 
 export type InitialShareholderSource = "crm" | "manual";
 
@@ -92,8 +109,15 @@ export function listInitialShareholders(roundId: string): readonly InitialShareh
 export function hydrateRoundInitialShareholders(): number {
   let n = 0;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { hydrateEntries } = require("./storePersistenceShim");
+    /* W-COLLECTIVE sweep — was `require("./storePersistenceShim")` under the
+       `createRequire` shim above. That shim makes `require` a LOCAL binding, so
+       esbuild cannot inline it; in `dist/index.cjs` it resolved against `dist/`,
+       threw MODULE_NOT_FOUND, and was swallowed by the `catch` below. The
+       docblock above promises these lists "survive deploys" — in production they
+       did NOT: hydrate silently restored nothing and persist silently wrote
+       nothing, so round initial shareholders were memory-only and lost on every
+       restart. Static import verified acyclic (BFS: storePersistenceShim reaches
+       5 modules, none of them this one). */
     const rows = hydrateEntries("roundInitialShareholders") as Array<[string, InitialShareholder[]]>;
     if (Array.isArray(rows)) {
       for (const [roundId, arr] of rows) {
@@ -108,10 +132,16 @@ export function hydrateRoundInitialShareholders(): number {
 
 function persistRoundInitialShareholders(roundId: string): void {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { persistEntry } = require("./storePersistenceShim");
+    /* W-COLLECTIVE sweep — static import; see hydrate above for why the lazy
+       require could never work in the production bundle. */
     persistEntry("roundInitialShareholders", roundId, store.get(roundId) ?? []);
-  } catch { /* non-fatal */ }
+  } catch (err) {
+    /* Still non-fatal (a durability best-effort must not fail a user write), but
+       no longer SILENT — silence is what hid this for multiple waves. */
+    log.warn(
+      `[roundInitialShareholders] persist failed for ${roundId}: ${(err as Error).message}`,
+    );
+  }
 }
 
 function tenantForCompany(companyId: string): string {
@@ -408,28 +438,7 @@ export function registerRoundInitialShareholdersRoutes(app: Express): void {
       status: "invited" | "duplicate" | "no_email" | "error";
       error?: string;
     }> = [];
-    // Lazy import to avoid a static circular import (matches this file's
-    // existing lazy-require pattern for the sacred roundsStore boundary).
-    // Guarded: if the module can't be loaded (e.g. an isolated test harness
-    // that can't parse the .ts), we skip invite issuance without failing the
-    // shareholder save that already persisted.
-    let createInvitation:
-      | ((a: {
-          roundId: string; companyId: string; investorEmail: string;
-          investorName?: string | null; investorFirstName?: string | null;
-          investorLastName?: string | null; investorCompany?: string | null;
-          note?: string | null;
-          stageFocus?: string | null;
-          expiryDays?: number;
-          invitedByUserId: string; tenantId?: string | null;
-        }) => Promise<unknown>)
-      | null = null;
-    try {
-      createInvitation = require("../roundInvitationsStore").createInvitation ?? null;
-    } catch (err) {
-      log.warn("[roundInitialShareholdersStore] could not load roundInvitationsStore for invite issuance:", (err as Error).message);
-    }
-    if (companyId && createInvitation) {
+    if (companyId) {
       for (const row of normalised) {
         /* W-AVI64 FIX 1 — if a CRM pick arrived without an email but carries a
          * crmContactId, resolve the email from founder_crm_contacts before

@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from "recharts";
 import { BarChart3 } from "lucide-react";
+import { collectiveWidgetErrorText } from "@/lib/collectiveGateError";
 
 interface PipelineResponse {
   counts?: Record<string, number>;
@@ -63,7 +64,7 @@ export function VettingPipelineDonut() {
           <Skeleton className="h-48 w-full" data-testid="widget-pipeline-loading" />
         ) : error ? (
           <div className="text-sm text-red-700" data-testid="widget-pipeline-error">
-            Couldn't load the vetting pipeline.
+            {collectiveWidgetErrorText(error, 'Couldn\'t load the vetting pipeline.')}
           </div>
         ) : total === 0 ? (
           <div className="text-center py-10 text-slate-500" data-testid="widget-pipeline-empty">

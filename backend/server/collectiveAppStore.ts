@@ -36,7 +36,9 @@ import {
 import { emitSync } from "./sprint10Telemetry";
 import { getMembership } from "./membershipStore";
 import { requireCollectiveEnabled } from "./lib/featureFlags"; /* v16 Fix 6 */
-import { getDb } from "./db/connection"; /* v17 Phase B */
+import { getDb, rawDb } from "./db/connection"; /* v17 Phase B; rawDb static — W-COLLECTIVE Wave 1 */
+import * as collectiveMembershipModule from "./collectiveMembershipStore"; /* W-COLLECTIVE Wave 1 — was an inert lazy require */
+import { partnerTeamStore } from "./partnerWorkspaceStore"; /* W-COLLECTIVE Wave 1 — was require("./partnerTeamStore"), a module that never existed */
 import { pAll } from "./db/portable"; /* Wave H Track A — Postgres compatibility */
 import { DEFAULT_CHAPTER_ID, DEFAULT_CHAPTER_TENANT_ID } from "./lib/chapterDefaults";
 import { log } from "./lib/logger";
@@ -56,6 +58,189 @@ import { isActive as isCollectiveMemberActive } from "./collectiveMembershipStor
 // a signature. Sign fields are read from req.body directly because the zod
 // collectiveApplicationSchema strips unknown keys from parsed.data.
 import { recordAccreditationDeclaration } from "./investorComplianceRoutes";
+// W-COLLECTIVE Wave 1 — the shared access decision contract (v5 §C + v6 §2).
+// Static import is safe: collectiveAccessDecision does not import this module.
+import {
+  resolveCollectiveAccessDecision,
+  COLLECTIVE_DENIAL_MESSAGES,
+  type CollectiveAccessDecision,
+} from "./lib/collectiveAccessDecision";
+
+/**
+ * W-COLLECTIVE Wave 1 (v4 §1.1) — every lazy `require()` in this file is inside
+ * a `try { … } catch { /* non-fatal *\/ }`, so a WRONG MODULE PATH is
+ * indistinguishable from a legitimately-absent optional dependency: it fails
+ * silently, forever. `require("./partnerTeamStore")` — a module that never
+ * existed — survived four waves that way and permanently pinned
+ * `isPartnerOnly` to false.
+ *
+ * W-COLLECTIVE Wave 1 — RESOLVED. The three former lazy-require targets are now
+ * STATIC imports (see the import block above). Rationale, verified rather than
+ * assumed:
+ *
+ *   1. The lazy form could NEVER work in production. `npm start` runs
+ *      `node dist/index.cjs`; esbuild leaves the dynamic path strings intact in
+ *      the CJS bundle, so `createRequire` resolves them relative to `dist/`,
+ *      which contains only `index.cjs` and `public/`. All three requires threw
+ *      into swallowing catches on every production request. Under `tsx` (dev)
+ *      they resolve, which is why this survived four waves undetected.
+ *      Consequence in production: `isPartnerOnly` was permanently false, the
+ *      `collectiveMembershipStore.isActive` signal was lost, and `rawDb` access
+ *      here was dead — which is why `gate-state` and `requireCollectiveMember`
+ *      (static imports, unaffected) disagreed ONLY in production.
+ *   2. The "import cycle" this was working around DOES NOT EXIST. A BFS over the
+ *      real import graph from each target back to this module finds no path:
+ *      db/connection (4 modules reachable), collectiveMembershipStore (6),
+ *      partnerWorkspaceStore (63). None reach collectiveAppStore.
+ *
+ * `requireLazy` is retained as the loud-failure wrapper for any FUTURE lazy
+ * require added to this file, so the next one cannot fail silently. The boot
+ * self-check below now validates the STATIC bindings instead, preserving the
+ * startup guarantee.
+ */
+function requireLazy(modulePath: string): any {
+  try {
+    return require(modulePath);
+  } catch (err) {
+    log.error(
+      `[collectiveAppStore] LAZY REQUIRE FAILED for "${modulePath}": ${(err as Error).message}`,
+    );
+    throw err;
+  }
+}
+
+/**
+ * Every lazy-require target in this file, with the export each call site reads
+ * and (where it is a function) the member it invokes. The boot self-check below
+ * asserts each one resolves to the expected shape and logs LOUDLY if not, so the
+ * next broken path is caught at startup instead of silently disabling a feature.
+ */
+const LAZY_REQUIRE_CONTRACT: ReadonlyArray<{
+  modulePath: string;
+  namedExport?: string;
+  members: readonly string[];
+}> = [];
+
+/**
+ * The three dependencies this file consumes, now STATICALLY imported. The boot
+ * self-check asserts each resolved binding exposes the members the call sites
+ * actually invoke, so a future rename or refactor fails loudly at startup
+ * instead of silently disabling a Collective capability.
+ */
+const STATIC_DEP_CONTRACT: ReadonlyArray<{
+  modulePath: string;
+  namedExport?: string;
+  members: readonly string[];
+  resolve: () => unknown;
+}> = [
+  { modulePath: "./db/connection", members: ["rawDb"], resolve: () => ({ rawDb }) },
+  {
+    modulePath: "./collectiveMembershipStore",
+    members: ["isActive", "get"],
+    resolve: () => collectiveMembershipModule,
+  },
+  {
+    modulePath: "./partnerWorkspaceStore",
+    namedExport: "partnerTeamStore",
+    members: ["findByUserId"],
+    resolve: () => partnerTeamStore,
+  },
+];
+
+export interface LazyRequireCheckResult {
+  ok: boolean;
+  checked: number;
+  failures: Array<{ modulePath: string; namedExport?: string; detail: string }>;
+}
+
+/**
+ * Boot self-check for this file's dependency contract. Reports rather than
+ * throws — a broken binding must be loud, but must not brick a live boot.
+ *
+ * W-COLLECTIVE Wave 1: this now validates the STATIC bindings
+ * (`STATIC_DEP_CONTRACT`) as well as any future lazy require
+ * (`LAZY_REQUIRE_CONTRACT`, currently empty). Validating static bindings is what
+ * makes the production failure mode detectable: the previous version only ever
+ * exercised `require()`, which succeeds under tsx and fails in the CJS bundle,
+ * so a green dev self-check told us nothing about production.
+ */
+export function checkCollectiveLazyRequires(): LazyRequireCheckResult {
+  const failures: LazyRequireCheckResult["failures"] = [];
+  for (const spec of STATIC_DEP_CONTRACT) {
+    let target: any;
+    try {
+      target = spec.resolve();
+    } catch (err) {
+      failures.push({
+        modulePath: spec.modulePath,
+        namedExport: spec.namedExport,
+        detail: `static binding did not resolve: ${(err as Error).message}`,
+      });
+      continue;
+    }
+    if (!target) {
+      failures.push({
+        modulePath: spec.modulePath,
+        namedExport: spec.namedExport,
+        detail: `static binding "${spec.namedExport ?? spec.modulePath}" is missing`,
+      });
+      continue;
+    }
+    for (const member of spec.members) {
+      if (typeof target[member] !== "function") {
+        failures.push({
+          modulePath: spec.modulePath,
+          namedExport: spec.namedExport,
+          detail: `member "${member}" is not a function (got ${typeof target[member]})`,
+        });
+      }
+    }
+  }
+  for (const spec of LAZY_REQUIRE_CONTRACT) {
+    let mod: any;
+    try {
+      mod = require(spec.modulePath);
+    } catch (err) {
+      failures.push({
+        modulePath: spec.modulePath,
+        namedExport: spec.namedExport,
+        detail: `module did not resolve: ${(err as Error).message}`,
+      });
+      continue;
+    }
+    const target = spec.namedExport ? mod?.[spec.namedExport] : mod;
+    if (!target) {
+      failures.push({
+        modulePath: spec.modulePath,
+        namedExport: spec.namedExport,
+        detail: `export "${spec.namedExport}" is missing`,
+      });
+      continue;
+    }
+    for (const member of spec.members) {
+      if (typeof target[member] !== "function") {
+        failures.push({
+          modulePath: spec.modulePath,
+          namedExport: spec.namedExport,
+          detail: `member "${member}" is not a function (got ${typeof target[member]})`,
+        });
+      }
+    }
+  }
+  if (failures.length > 0) {
+    for (const f of failures) {
+      log.error(
+        `[collectiveAppStore] DEPENDENCY CONTRACT BROKEN — ${f.modulePath}` +
+          `${f.namedExport ? `.${f.namedExport}` : ""}: ${f.detail}`,
+      );
+    }
+  }
+  return {
+    ok: failures.length === 0,
+    checked: STATIC_DEP_CONTRACT.length + LAZY_REQUIRE_CONTRACT.length,
+    failures,
+  };
+}
 
 type StoredApplication = CollectiveApplication & {
   id: string;
@@ -303,9 +488,10 @@ export function isEligibleForCollective(userId?: string): EligibilityResult {
     }
     // Founder-of-company check: query company_members for an active role.
     try {
-      // Lazy-load rawDb to avoid circular import at module-init time.
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { rawDb } = require("./db/connection");
+      // W-COLLECTIVE Wave 1: `rawDb` is now a STATIC import. The former lazy
+      // require resolved under tsx but threw in the production CJS bundle, so
+      // this whole block was dead in production. No import cycle exists
+      // (verified by BFS: db/connection reaches 4 modules, none of them this one).
       const adb = rawDb();
       const cmRow = adb.prepare(
         `SELECT cm.company_id, cm.role, c.id
@@ -377,9 +563,9 @@ export function registerCollectiveAppRoutes(app: Express): void {
     let collectiveStatus: "active" | "none" = "none";
     if (userId) {
       try {
-        // Lazy require so we don't introduce a circular import.
-        const membership = require("./collectiveMembershipStore");
-        if (membership.isActive(userId)) collectiveStatus = "active";
+        // W-COLLECTIVE Wave 1: STATIC import. The lazy require was inert in
+        // production, silently dropping the active-membership signal here.
+        if (collectiveMembershipModule.isActive(userId)) collectiveStatus = "active";
       } catch { /* non-fatal */ }
     }
     res.json({ ...elig, collectiveStatus });
@@ -404,18 +590,34 @@ export function registerCollectiveAppRoutes(app: Express): void {
     let isMember = isAdmin;
     let capTableExempt = false;
     try {
-      const membership = require("./collectiveMembershipStore");
-      if (membership.isActive(userId)) isMember = true;
-      capTableExempt = membership.get(userId)?.capTableExempt === true;
+      // W-COLLECTIVE Wave 1: STATIC import. Previously inert in production,
+      // which is a direct cause of gate-state disagreeing with the server's
+      // requireCollectiveMember (which has always used static imports).
+      if (collectiveMembershipModule.isActive(userId)) isMember = true;
+      capTableExempt = collectiveMembershipModule.get(userId)?.capTableExempt === true;
     } catch { /* non-fatal — degrade to ctx below */ }
     if (!isMember && ctx?.collective?.status === "active") isMember = true;
 
     // Partner-only session detection (mirrors the server gate's redirect hint).
+    // W-COLLECTIVE Wave 1 (v4 §1.1 / §0a.8) — this used to
+    // `require("./partnerTeamStore")`, a module that has never existed. The
+    // require threw on every call, the catch swallowed it, and `isPartnerOnly`
+    // was therefore ALWAYS false: a partner-only session got the generic
+    // "not a member" marketing panel with no route to their own workspace.
+    // The real export is `partnerTeamStore` from `./partnerWorkspaceStore`
+    // (see requireCollectiveMember.ts, which imports exactly that).
+    // The claimed import cycle DOES NOT EXIST: a BFS from partnerWorkspaceStore
+    // reaches 63 modules and none of them is collectiveAppStore. The lazy form
+    // also could never work in the production CJS bundle. Both the path and the
+    // laziness are therefore corrected — this is now a STATIC import.
     let isPartnerOnly = false;
     try {
-      const partnerTeam = require("./partnerTeamStore");
-      isPartnerOnly = !isMember && !!partnerTeam.findByUserId(userId);
-    } catch { /* non-fatal */ }
+      isPartnerOnly = !isMember && !!partnerTeamStore.findByUserId(userId);
+    } catch (err) {
+      log.warn(
+        `[collective.gate-state] partner-only probe failed: ${(err as Error).message}`,
+      );
+    }
 
     // Accreditation status — fail CLOSED for the gate (treat read error as
     // "none" so the client shows the blocker rather than admitting silently).
@@ -435,6 +637,32 @@ export function registerCollectiveAppRoutes(app: Express): void {
       "accreditation_declaration_indemnity",
     ]);
 
+    /* W-COLLECTIVE Wave 1 (v4 §1.1 / v5 §C / v6 §2) — the SHARED access decision.
+       Before this, gate-state reported only membership + accreditation, so a user
+       denied by the server gate's billing/deactivation override or by its
+       cap-table sub-check was shown a mounted dashboard that then sprayed 403s.
+       The decision is resolved from the SESSION subject only — never from a
+       client-supplied `?userId=` (which is why this is not wired into
+       /api/collective/eligibility, whose admin override would leak another
+       user's billing state).
+       Fail-safe: if the decision resolver itself throws we report reason
+       "unknown", which the client renders as the EXISTING retry card. It is
+       never allowed to synthesise `allow:true`. */
+    let accessDecision: CollectiveAccessDecision = { allow: false, reason: "unknown" };
+    try {
+      accessDecision = resolveCollectiveAccessDecision({
+        userId,
+        isAuthed: ctx?.isAuthed === true,
+        isAdmin,
+        collective: ctx?.collective,
+      });
+    } catch (err) {
+      log.warn(
+        `[collective.gate-state] access decision failed: ${(err as Error).message}`,
+      );
+    }
+    const denialReason = accessDecision.allow ? null : accessDecision.reason;
+
     return res.json({
       ok: true,
       isMember,
@@ -443,6 +671,15 @@ export function registerCollectiveAppRoutes(app: Express): void {
       accreditationStatus,
       requiresAccreditationDeclaration,
       declarationEndpoint: "/api/investor/compliance/accreditation-declaration",
+      /* Additive: the existing five signals above are unchanged so no client
+         reading them can regress. */
+      accessAllowed: accessDecision.allow === true,
+      denialReason,
+      denialMessage: denialReason ? COLLECTIVE_DENIAL_MESSAGES[denialReason] : null,
+      /* v4 §1.1 — `isPartnerOnly` had NO consumer in the client. Rather than
+         delete it (D1), the redirect target it implies is published so the gate
+         can offer "You have a Consortium Partner workspace →". */
+      partnerWorkspaceRedirectTo: isPartnerOnly ? "/collective/partner/dashboard" : null,
       copy: {
         gateIndemnity: copy.collective_gate_indemnity,
         declarationIndemnity: copy.accreditation_declaration_indemnity,

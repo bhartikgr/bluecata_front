@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Radio } from "lucide-react";
+import { collectiveWidgetErrorText } from "@/lib/collectiveGateError";
 
 interface PulseResponse {
   status: "OK" | "AUDIT_LOG_UNAVAILABLE";
@@ -62,7 +63,7 @@ export function PlatformPulseCard() {
           </div>
         ) : q.error ? (
           <div className="text-sm text-red-700" data-testid="widget-pulse-error">
-            Couldn't load platform pulse.
+            {collectiveWidgetErrorText(q.error, 'Couldn\'t load platform pulse.')}
           </div>
         ) : (
           <TooltipProvider>

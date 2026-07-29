@@ -66,6 +66,9 @@ import { resolveCanonicalMemberTier } from "./lib/collectiveMemberSubscriptionRe
 import { resolveConsortiumPricing } from "./lib/partnerTiers"; /* v25.47 APD-020/030 — 5-tier consortium pricing */
 import { isDscMember } from "./adminDscRoutes"; /* v25.48 DSC-1a — dsc_roles source of truth; a granted DSC member may compute/score, same gate the vote route uses */
 import { founderOwnedCompanyIds as tenantFounderOwnedCompanyIds, investorVisibleCompanyIds as tenantInvestorVisibleCompanyIds } from "./lib/tenantAuth"; /* B12 (v24.0) */
+import { resolvePartnerOrgLabel } from "./lib/partnerOrgLabel"; /* W-COLLECTIVE Wave 1 (v5 §D) — organisation label for consortium_partner directory rows */
+import { collectiveCompanyName } from "./lib/collectiveCompanyName"; /* W-COLLECTIVE Wave 1 (v4 §1.3) — durable company name, never a raw co_… id */
+import { resolveSoftCircleAmounts, readDurableRoundTarget } from "./lib/softCircleAggregate"; /* W-COLLECTIVE Wave 1 (v6 §3) — soft-circle amount provenance */
 
 /* ============================================================
  * Helper: safe division
@@ -800,7 +803,10 @@ export function registerCollectiveRoutes(app: Express): void {
           const canonical = canonicalById.get(id);
           return {
             companyId: id,
-            companyName: canonical?.name ?? id,
+            /* W-COLLECTIVE Wave 1 (v4 §1.3) — was `canonical?.name ?? id`.
+               `canonicalCompanies` is the empty array, so this ALWAYS rendered
+               the raw `co_…` primary key as the company name. */
+            companyName: collectiveCompanyName(id, canonical?.name),
             founderName: undefined,
             sector: canonical?.sector ?? null,
             stage: canonical?.stage ?? null,
@@ -825,7 +831,12 @@ export function registerCollectiveRoutes(app: Express): void {
 
       return {
         companyId: p.companyId,
-        companyName: canonical?.name ?? p.founderName ?? p.companyId,
+        /* W-COLLECTIVE Wave 1 (v4 §1.3) — was
+           `canonical?.name ?? p.founderName ?? p.companyId`. With
+           `canonicalCompanies` empty that resolved to the FOUNDER'S PERSONAL
+           NAME in a company-name column, and to the raw `co_…` id after that.
+           `p.founderName` is deliberately no longer consulted here. */
+        companyName: collectiveCompanyName(p.companyId, canonical?.name),
         sector: p.sector ?? canonical?.sector ?? null,
         stage: p.stage ?? canonical?.stage ?? null,
         tagline: p.tagline ?? canonical?.description?.slice(0, 120) ?? null,
@@ -1044,7 +1055,20 @@ export function registerCollectiveRoutes(app: Express): void {
     // PRIVATE, never fall back to the raw contact `displayName`. The prior
     // `if (!uid) return c.displayName;` legacy bypass leaked names for
     // unlinked contacts and has been removed.
-    const dirName = (c: { email?: string | null; displayName: string }): string => {
+    const dirName = (c: { email?: string | null; displayName: string; id?: string; kind?: string }): string => {
+      /* W-COLLECTIVE Wave 1 (v4 §1.3 as corrected by v5 §D) — a
+         `consortium_partner` contact is an ORGANISATION. It cannot express
+         `visibleInCollectiveDirectory` (a natural-person preference whose
+         default is false), so every partner rendered as "Private Investor".
+         Resolve the ORG name directly from partner_organizations.id =
+         contact.id — never a contact/person display name, and never via
+         `partner_team_members` (a tautological hop that is not even declared in
+         shared/schema.ts). Falls back to the SAME fail-closed label when no
+         active organisation resolves, so this can only ever replace
+         "Private Investor" with a real business name. */
+      if (c.kind === "consortium_partner") {
+        return resolvePartnerOrgLabel(c.id ?? null, c.kind).label;
+      }
       const uid = (c.email && emailToUserId.get(c.email.toLowerCase())) || "";
       if (!uid) return "Private Investor";
       // v25.45 ROUND 7 — the Collective directory is a SOCIAL surface, not a
@@ -1148,27 +1172,49 @@ export function registerCollectiveRoutes(app: Express): void {
 
     const aggregates = Array.from(roundGroups.entries()).map(([rId, circles]) => {
       const round = canonicalRounds.find((r: { id: string }) => r.id === rId);
-      const totalSoftCircled = circles.reduce((sum, sc) => sum + (sc.amount ?? 0), 0);
-      const targetUsd = (round as Record<string, unknown>)?.targetAmountUsd as number ?? 0;
+      /* W-COLLECTIVE Wave 1 (v4 §1.3 + v6 §3) — amounts now carry PROVENANCE.
+         `targetUsd` came off the permanently-empty `canonicalRounds` (so every
+         round reported 0) and `softCircledTotal` summed seed rows together with
+         a projection that fails open to an in-memory cache. Both are now read
+         from the durable `rounds` / `soft_circles` tables, and are reported as
+         `null` with `amountsUnavailable:true` rather than guessed. The COUNT
+         keeps its previous seed+live semantics — a count is not an amount. */
+      const amounts = resolveSoftCircleAmounts(
+        rId,
+        circles.map((sc) => sc.id),
+        pct,
+      );
+      const durableRound = readDurableRoundTarget(rId);
       /* v25.36 — `canonicalRounds` is permanently empty, so derive the company
        * id from the round's own live circles when the canonical round lookup
        * misses. This keeps the chapter-scoped companyId on the response (and
-       * makes the per-round company attributable for cross-chapter tests). */
+       * makes the per-round company attributable for cross-chapter tests).
+       * Wave 1 adds the DURABLE `rounds.company_id` ahead of the circle-derived
+       * guess; the guess remains as the final fallback. */
       const compId =
         ((round as Record<string, unknown>)?.companyId as string) ??
+        durableRound.companyId ??
         circles.find((sc) => sc.companyId)?.companyId ??
         null;
       const canonical = compId ? canonicalCompanies.find((c) => c.id === compId) : null;
 
       return {
         roundId: rId,
-        roundName: (round as Record<string, unknown>)?.name as string ?? rId,
+        /* Was `?? rId`, which rendered the raw `rnd_…` id as a round name. */
+        roundName:
+          ((round as Record<string, unknown>)?.name as string) ??
+          durableRound.roundName ??
+          "Unnamed round",
         companyId: compId,
-        companyName: canonical?.name ?? compId ?? "Unknown",
-        targetUsd: targetUsd,
-        softCircledTotal: totalSoftCircled,
+        /* Was `canonical?.name ?? compId ?? "Unknown"` — a raw `co_…` id. */
+        companyName: collectiveCompanyName(compId, canonical?.name),
+        targetUsd: amounts.targetUsd,
+        softCircledTotal: amounts.softCircledTotal,
         softCircledCount: circles.length,
-        fillPct: targetUsd > 0 ? pct(totalSoftCircled, targetUsd) : null,
+        fillPct: amounts.fillPct,
+        /* Additive: TRUE when an amount above could not be proven durably, so
+           the client renders "—" instead of a confident wrong figure. */
+        amountsUnavailable: amounts.amountsUnavailable,
         // NOTE: per-investor amounts are NOT included (founder privacy)
         note: "Aggregate view only — per-investor amounts are not disclosed.",
       };
@@ -1212,7 +1258,12 @@ export function registerCollectiveRoutes(app: Express): void {
       const canonical = canonicalCompanies.find((c) => c.id === p.companyId);
       return {
         companyId: p.companyId,
-        companyName: canonical?.name ?? p.founderName ?? p.companyId,
+        /* W-COLLECTIVE Wave 1 (v4 §1.3) — was
+           `canonical?.name ?? p.founderName ?? p.companyId`. With
+           `canonicalCompanies` empty that resolved to the FOUNDER'S PERSONAL
+           NAME in a company-name column, and to the raw `co_…` id after that.
+           `p.founderName` is deliberately no longer consulted here. */
+        companyName: collectiveCompanyName(p.companyId, canonical?.name),
         sector: p.sector ?? canonical?.sector ?? null,
         compositeScore: composite?.compositeScore ?? null,
         autoTier: composite?.autoTier ?? null,

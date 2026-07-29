@@ -28,7 +28,7 @@
  */
 import type { Express, Request, Response } from "express";
 import { createHash, randomBytes } from "node:crypto";
-import { and, eq, isNull, desc, asc } from "drizzle-orm";
+import { and, eq, isNull, desc, asc, sql } from "drizzle-orm";
 import { resolvePersonaId } from "./lib/userContext";
 import { appendAdminAudit } from "./adminPlatformStore";
 import { emitBridgeEvent } from "./bridgeStore";
@@ -165,7 +165,12 @@ export function recordConsent(args: {
         .select({ hash: legalConsentsTable.hash, acceptedAt: legalConsentsTable.acceptedAt })
         .from(legalConsentsTable)
         .where(eq(legalConsentsTable.tenantId, tenantId))
-        .orderBy(desc(legalConsentsTable.acceptedAt), desc(legalConsentsTable.id))
+        // OWNWAVE TRIAGE (c): tie-break on rowid (insertion order), NOT on the
+        // random `id`. `accepted_at` is only millisecond-precise, so two
+        // consents recorded in the same ms (e.g. privacy+terms at signup) tie;
+        // with a random tie-break the "tip" could be an earlier row, forking
+        // the append-only chain and making verifyChain() report broken.
+        .orderBy(desc(legalConsentsTable.acceptedAt), sql`rowid desc`)
         .limit(1)
         .all() as Array<{ hash: string }>;
       const prevHash = tipRow[0]?.hash ?? "0".repeat(64);
@@ -238,7 +243,7 @@ export function getConsentsForUser(userId: string, tenantId?: string): LegalCons
         eq(legalConsentsTable.userId, userId),
         isNull(legalConsentsTable.deletedAt),
       ))
-      .orderBy(asc(legalConsentsTable.acceptedAt))
+      .orderBy(asc(legalConsentsTable.acceptedAt), sql`rowid asc`)
       .all() as any[];
     return rows.map(rowToConsent);
   } catch (err) {
@@ -259,7 +264,10 @@ export function getAllConsents(): LegalConsent[] {
       .select()
       .from(legalConsentsTable)
       .where(isNull(legalConsentsTable.deletedAt))
-      .orderBy(asc(legalConsentsTable.acceptedAt), asc(legalConsentsTable.id))
+      // Insertion order (rowid), not random-id order — the ledger is a hash
+      // chain, so the read order MUST match the order the rows were appended
+      // even when `accepted_at` ties to the millisecond. See recordConsent.
+      .orderBy(asc(legalConsentsTable.acceptedAt), sql`rowid asc`)
       .all() as any[];
     return rows.map(rowToConsent);
   } catch (err) {

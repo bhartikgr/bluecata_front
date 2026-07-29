@@ -18,6 +18,121 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { getDb } from "./db/connection";
 import { chapters, chapterMemberships } from "../shared/schema";
+import {
+  GUARD_ERRORS,
+  billingPrecondition,
+  lastAdminPrecondition,
+  readMembershipStrict,
+  type ChapterMembershipState,
+  type GuardVerdict,
+} from "./lib/chapterGovernanceRules";
+import {
+  revokeChapterMembership as revokeChapterMembershipGuarded,
+  type ChapterWriteActor,
+  type ChapterWriteResult,
+} from "./lib/chapterMembershipWriter";
+
+/**
+ * ⚠ `chapter_memberships` IS A MONEY TABLE (not a social relation).
+ * `collectiveBillingStore.isChapterMember()` gates Airwallex payment-intent
+ * creation, the billing portal, and subscription CANCEL / RESUME. So any write
+ * here that REDUCES a member's standing can leave them billed and 403'd out of
+ * their own cancel button. The single source of truth for the two rules that
+ * prevent that is `server/lib/chapterGovernanceRules.ts` — this store IMPORTS
+ * and CALLS it (`billingPrecondition`, `lastAdminPrecondition`) rather than
+ * re-implementing anything, so this surface and
+ * `server/lib/chapterMembershipWriter.ts` cannot drift apart.
+ *
+ * Semantics are identical to the HTTP writer's: billable ⇒ refuse with
+ * `SUBSCRIPTION_ACTIVE_CANCEL_FIRST`; unreadable billing ⇒ refuse with
+ * `BILLING_STATE_UNVERIFIABLE`; last active admin ⇒ refuse with
+ * `LAST_CHAPTER_ADMIN`; unreadable admin roster ⇒ `ADMIN_STATE_UNVERIFIABLE`.
+ *
+ * A refusal is THROWN as `ChapterGovernanceRefusalError` (never swallowed,
+ * never a silent drop) so it surfaces to the existing callers without changing
+ * any function signature.
+ *
+ * NOTE ON SCOPE, stated honestly: `joinChapter()` below can only ever set
+ * `status = 'active'` — it has no revoke/deactivate branch, and its update
+ * branch is unreachable for a LIVE ACTIVE row (that case early-returns with the
+ * role preserved). The gate is therefore evaluated on every membership
+ * transition it performs and is a structural guarantee for future callers; the
+ * reachable revoke entry point is `revokeChapterMembership()` at the bottom of
+ * this file, which delegates to the already-guarded production writer.
+ */
+export class ChapterGovernanceRefusalError extends Error {
+  readonly code: string;
+  readonly rule: string;
+  readonly details?: Record<string, unknown>;
+  constructor(code: string, message: string, rule: string, details?: Record<string, unknown>) {
+    super(message);
+    this.name = "ChapterGovernanceRefusalError";
+    this.code = code;
+    this.rule = rule;
+    this.details = details;
+  }
+}
+
+function refuse(verdict: GuardVerdict): void {
+  if (verdict.allow) return;
+  throw new ChapterGovernanceRefusalError(
+    verdict.error,
+    verdict.message,
+    verdict.rule,
+    verdict.details,
+  );
+}
+
+/**
+ * The SHARED preconditions, applied to a proposed (chapter, user) transition.
+ * `nextStatus`/`nextRole` describe what the caller is about to write.
+ *
+ * - A transition that DEACTIVATES a live membership (next status is not
+ *   'active') runs `billingPrecondition` + `lastAdminPrecondition`.
+ * - A transition that DEMOTES a live ACTIVE admin runs `lastAdminPrecondition`.
+ * - A transition that only raises standing (pending/revoked → active, or a new
+ *   row) runs neither: it cannot strand anyone and cannot empty the admin
+ *   roster.
+ * Reads fail closed: an unreadable membership row is a refusal, never an
+ * assumed "no row".
+ */
+function assertGovernedTransition(
+  chapterId: string,
+  userId: string,
+  nextRole: string,
+  nextStatus: string,
+): void {
+  let current: ChapterMembershipState | null;
+  try {
+    current = readMembershipStrict(chapterId, userId);
+  } catch (err) {
+    throw new ChapterGovernanceRefusalError(
+      "MEMBERSHIP_STATE_UNVERIFIABLE",
+      `The current chapter-membership row could not be read, so no write was attempted: ${(err as Error).message}`,
+      "chapter.governance.fail_closed",
+    );
+  }
+  const liveActive = !!current && current.status === "active" && current.deletedAt === null;
+  const deactivating = liveActive && String(nextStatus).trim().toLowerCase() !== "active";
+  const demoting =
+    liveActive &&
+    String(current!.role).trim().toLowerCase() === "admin" &&
+    String(nextRole).trim().toLowerCase() !== "admin";
+
+  if (deactivating) {
+    refuse(billingPrecondition(chapterId, userId));
+  }
+  if (deactivating || demoting) {
+    refuse(
+      lastAdminPrecondition(
+        chapterId,
+        userId,
+        current!.role,
+        deactivating ? "revoke" : "demote",
+      ),
+    );
+  }
+}
 
 export interface ChapterRow {
   id: string;
@@ -201,6 +316,14 @@ export async function joinChapter(opts: {
       return { id: existing[0].id, created: false };
     }
 
+    /* MONEY-TABLE GATE — the shared preconditions from
+       `chapterGovernanceRules.ts`, evaluated against the transition this write
+       is actually about to perform (role = `role`, status = 'active'). It is
+       placed AFTER the live-active early return above so the no-op path keeps
+       its exact previous behaviour, and INSIDE the transaction so a refusal
+       leaves nothing written. Any refusal THROWS and surfaces to the caller. */
+    assertGovernedTransition(chapterId, userId, role, "active");
+
     // Either no row, or a non-active row. Upsert.
     const id =
       existing[0]?.id ??
@@ -231,3 +354,32 @@ export async function joinChapter(opts: {
     return { id, created: existing.length === 0 };
   });
 }
+
+/**
+ * REVOKE / DEACTIVATE a chapter membership from the store layer.
+ *
+ * This is a pure DELEGATION to `server/lib/chapterMembershipWriter.ts`'s
+ * `revokeChapterMembership`, which runs the SAME shared preconditions from
+ * `server/lib/chapterGovernanceRules.ts` that the HTTP writer uses:
+ *   - `billingPrecondition`  — billable ⇒ `SUBSCRIPTION_ACTIVE_CANCEL_FIRST`,
+ *                              unreadable ⇒ `BILLING_STATE_UNVERIFIABLE`;
+ *   - `lastAdminPrecondition` — last active admin ⇒ `LAST_CHAPTER_ADMIN`,
+ *                              unreadable roster ⇒ `ADMIN_STATE_UNVERIFIABLE`;
+ *   - audit-before-mutation   — unauditable ⇒ `AUDIT_UNAVAILABLE`.
+ * NOTHING is re-implemented here, so the two surfaces cannot drift.
+ *
+ * It exists so that a caller reaching for "the chapters store" to remove a
+ * member lands on the guarded path instead of writing raw SQL against the money
+ * table. The refusal is RETURNED (`{ ok: false, error }`) exactly as the writer
+ * reports it — never swallowed.
+ */
+export function revokeChapterMembership(opts: {
+  chapterId: string;
+  userId: string;
+  actor: ChapterWriteActor;
+}): ChapterWriteResult {
+  return revokeChapterMembershipGuarded(opts.chapterId, opts.userId, opts.actor);
+}
+
+/** Re-exported so callers can branch on the shared codes without a second import. */
+export { GUARD_ERRORS };

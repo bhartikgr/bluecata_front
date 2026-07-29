@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Briefcase } from "lucide-react";
+import { collectiveWidgetErrorText } from "@/lib/collectiveGateError";
 
 interface Position {
   companyId: string;
@@ -57,7 +58,7 @@ export function MyPortfolioCard() {
           </div>
         ) : q.error ? (
           <div className="text-sm text-red-700" data-testid="widget-portfolio-error">
-            Couldn't load your portfolio.
+            {collectiveWidgetErrorText(q.error, 'Couldn\'t load your portfolio.')}
           </div>
         ) : (data?.count ?? 0) === 0 ? (
           <div className="text-center py-6 text-slate-500" data-testid="widget-portfolio-empty">

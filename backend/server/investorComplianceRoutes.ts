@@ -92,9 +92,10 @@ export function getLatestDeclaration(userId: string): AccreditationDeclarationRo
  *   (a) they have a self-declaration row within the validity window, OR
  *   (b) their compliance profile already reads self_certified/verified (covers
  *       investors accredited before the capture path existed).
- * The whole accreditation sub-check is itself behind the SOFT-default
- * COLLECTIVE_C5_ACCRED_ENFORCE flag in the gate, so this only hard-denies once
- * an operator flips to strict.
+ * NOTE: the gate's accreditation sub-check is UNCONDITIONAL — it is not behind a
+ * feature flag. A member with nothing on file is denied with
+ * ACCREDITATION_DECLARATION_REQUIRED plus the declaration endpoint, which the
+ * client turns into a first-sign-on capture prompt rather than a dead end.
  */
 export function hasAccreditedDeclaration(userId: string): boolean {
   if (!userId) return false;

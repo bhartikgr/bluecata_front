@@ -32,6 +32,22 @@ import { Card, CardContent } from "@/components/ui/card";
 import { CollectiveAccreditationBlocker } from "@/components/collective/CollectiveAccreditationBlocker";
 import type { CollectiveLegalCopy } from "@shared/collectiveLegalCopy";
 
+/* W-COLLECTIVE Wave 1 (v4 §1.1 / v5 §C / v6 §2) — the shared denial-reason
+   vocabulary. `unknown` is the only reason that renders the retry card; it is
+   what the server reports when a signal source could not be READ (as opposed to
+   read successfully and found lapsed), so an unreadable billing table can never
+   present itself as billing copy or as a pending application. */
+export type CollectiveDenialReason =
+  | "not_authed"
+  | "not_collective_member"
+  | "partner_only"
+  | "application_pending"
+  | "billing_deactivation_pending"
+  | "not_on_cap_table"
+  | "accreditation_required"
+  | "accreditation_unavailable"
+  | "unknown";
+
 interface CollectiveGateStateResponse {
   ok: boolean;
   isMember: boolean;
@@ -40,6 +56,12 @@ interface CollectiveGateStateResponse {
   accreditationStatus: "none" | "self_certified" | "verified";
   requiresAccreditationDeclaration: boolean;
   declarationEndpoint: string;
+  /* Additive Wave 1 fields. Optional so an older/cached server response still
+     renders exactly as before rather than falling into a blank state. */
+  accessAllowed?: boolean;
+  denialReason?: CollectiveDenialReason | null;
+  denialMessage?: string | null;
+  partnerWorkspaceRedirectTo?: string | null;
   copy?: {
     gateIndemnity?: CollectiveLegalCopy;
     declarationIndemnity?: CollectiveLegalCopy;
@@ -87,11 +109,26 @@ const HIGHLIGHTS = [
   { icon: TrendingUp, title: "M&A intelligence", body: "DSC pipeline, composite scores, and transaction-prep tooling built for the network." },
 ];
 
-function CollectiveMarketing() {
+function CollectiveMarketing({
+  denialReason,
+  denialMessage,
+  partnerWorkspaceRedirectTo,
+}: {
+  denialReason?: CollectiveDenialReason | null;
+  denialMessage?: string | null;
+  partnerWorkspaceRedirectTo?: string | null;
+}) {
   const { role } = useRole();
   // Founders apply through the founder surface; everyone else (investor / admin
   // / partner exploring) applies through the investor surface.
   const applyHref = role === "founder" ? "/founder/apply-to-collective" : "/investor/apply-to-collective";
+  /* v4 §1.1 — `isPartnerOnly` previously had no consumer anywhere in the client,
+     so a repaired value would have changed nothing on screen. A partner-only
+     session now gets a route into the workspace it actually owns instead of an
+     apply CTA it cannot use. */
+  const partnerOnly = denialReason === "partner_only" && !!partnerWorkspaceRedirectTo;
+  /* An application already in review must not be told to apply again. */
+  const applicationPending = denialReason === "application_pending";
 
   return (
     <div className="max-w-4xl mx-auto px-6 py-10" data-testid="collective-member-gate-marketing">
@@ -120,17 +157,32 @@ function CollectiveMarketing() {
       </div>
 
       <div className="flex flex-col items-center gap-3">
-        <Button
-          className="bg-[#cc0001] hover:bg-[#a30001] text-white gap-2"
-          data-testid="button-collective-apply"
-          asChild
-        >
-          <Link href={applyHref}>
-            Apply to the Collective <ArrowRight className="h-4 w-4" />
-          </Link>
-        </Button>
-        <p className="text-xs text-muted-foreground">
-          Already applied? Your access unlocks automatically once your membership is approved.
+        {partnerOnly ? (
+          <Button
+            className="bg-[#cc0001] hover:bg-[#a30001] text-white gap-2"
+            data-testid="button-collective-partner-workspace"
+            asChild
+          >
+            <Link href={partnerWorkspaceRedirectTo!}>
+              You have a Consortium Partner workspace <ArrowRight className="h-4 w-4" />
+            </Link>
+          </Button>
+        ) : (
+          <Button
+            className="bg-[#cc0001] hover:bg-[#a30001] text-white gap-2"
+            data-testid="button-collective-apply"
+            asChild
+          >
+            <Link href={applyHref}>
+              Apply to the Collective <ArrowRight className="h-4 w-4" />
+            </Link>
+          </Button>
+        )}
+        <p className="text-xs text-muted-foreground" data-testid="text-collective-gate-reason">
+          {denialMessage ??
+            (applicationPending
+              ? "Your Collective application is with our review team."
+              : "Already applied? Your access unlocks automatically once your membership is approved.")}
         </p>
       </div>
     </div>
@@ -178,7 +230,22 @@ export function CollectiveMemberGate({ children }: { children: React.ReactNode }
   // Fail-closed on a missing/malformed response — never mount children.
   const resolved = state ?? FAIL_CLOSED_STATE;
 
-  if (!resolved.isMember) return <CollectiveMarketing />;
+  /* W-COLLECTIVE Wave 1 (v5 §C) — `unknown` means a signal source could not be
+     read. That is NOT a membership verdict, so it renders the retry card rather
+     than the marketing panel or billing copy. Children are still not mounted. */
+  if (resolved.denialReason === "unknown") {
+    return <CollectiveGateRetry onRetry={refetch} />;
+  }
+
+  if (!resolved.isMember) {
+    return (
+      <CollectiveMarketing
+        denialReason={resolved.denialReason}
+        denialMessage={resolved.denialMessage}
+        partnerWorkspaceRedirectTo={resolved.partnerWorkspaceRedirectTo}
+      />
+    );
+  }
 
   if (resolved.requiresAccreditationDeclaration) {
     return (

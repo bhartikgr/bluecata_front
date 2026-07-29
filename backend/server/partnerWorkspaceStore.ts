@@ -43,6 +43,20 @@ import { resolvePartnerSeatLimit } from "./lib/partnerFeeResolver"; /* W-V44 FIX
  * and identity surfaces. Default `persistEntry` semantics elsewhere remain
  * unchanged (Lane G preservation). */
 import { persistEntryStrict, persistEntry as persistEntryShim } from "./lib/storePersistenceShim";
+/* OWNWAVE TRIAGE (b) — `hydrateEntries` is now imported STATICALLY alongside the
+ * two functions above, which have always been static from this same module (so
+ * there is provably no import cycle to avoid).
+ * It was previously pulled in via `require("./lib/storePersistenceShim")` inside
+ * hydratePartnerWorkspaceShimStore() and backfillPartnerAttributionsFromKv().
+ * That `require` is the createRequire shim, which resolves relative to
+ * `import.meta.url` — and `script/build.ts:77-84` DEFINES import.meta.url to
+ * `dist/index.cjs`, so in the production bundle the specifier resolved to
+ * `dist/lib/storePersistenceShim` and threw MODULE_NOT_FOUND. Both functions wrap
+ * their whole body in try/catch, so the throw was swallowed: the kv hydration and
+ * the kv→typed attribution backfill both silently did nothing on every boot.
+ * This is the hazard called out in CAPAVATE_LIVE_ENVIRONMENT.md §8.3, whose
+ * prescribed remedy is exactly this: "Prefer a static import". */
+import { hydrateEntries } from "./lib/storePersistenceShim";
 
 /* v25.28 Phase D — partner workspace *History arrays now durable.
  *
@@ -709,9 +723,6 @@ export async function hydratePartnerWorkspaceStoreV241(): Promise<void> {
 export function hydratePartnerWorkspaceShimStore(): number {
   let n = 0;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { hydrateEntries } = require("./lib/storePersistenceShim");
-
     const pipelineRows = (hydrateEntries("partnerPipeline") as Array<[string, PartnerPipelineDeal]>) ?? [];
     for (const [id, row] of pipelineRows) {
       if (typeof id !== "string" || !row) continue;
@@ -944,7 +955,27 @@ export const partnerTeamStore = {
    * active here, kept for clarity/future reuse), then most-privileged
    * subRole, then newest joinedAt, then stable id as a final tiebreak.
    */
-  dedupeActiveTeamMembers(rows: PartnerTeamMember[]): {
+  dedupeActiveTeamMembers(
+    rows: PartnerTeamMember[],
+    /* W-COLLECTIVE Wave 1 (v4 §1.4 / v5 §F) — OPTIONAL email collapse.
+     *
+     * The `userId` grouping below cannot see the live defect: when one human ends
+     * up with TWO platform userIds (the `u_834e8cd5998b` merge on LIVE), the two
+     * seat rows have different `userId`s and both survive, so the workspace shows
+     * "2 seats" for one person even after the identity merge.
+     *
+     * This store must not resolve emails itself — that would pull
+     * displayNameResolver (→ userContext, userCredentialsStore) into a module
+     * that runs during boot hydration. So the CALLER builds the map and passes
+     * it, and only DISPLAY call sites do. Enforcement (`countActiveSeats`,
+     * `seatReport`) deliberately omits it: a seat is a ROW, and email-collapsing
+     * the enforced number would hand affected partners free capacity.
+     *
+     * A blank/unknown email never groups — those rows fall back to `userId`, so
+     * two members with no resolvable email are never merged into one.
+     */
+    opts?: { emailByUserId?: Map<string, string | null> },
+  ): {
     members: PartnerTeamMember[];
     duplicateSeatCount: number;
     duplicateSeatIdsByUserId: Record<string, string[]>;
@@ -956,16 +987,22 @@ export const partnerTeamStore = {
       analyst: 2,
       viewer: 1,
     };
+    const emailByUserId = opts?.emailByUserId;
+    const groupKey = (row: PartnerTeamMember): string => {
+      const email = (emailByUserId?.get(row.userId) ?? "").trim().toLowerCase();
+      return email ? `email:${email}` : `user:${row.userId}`;
+    };
     const byUser = new Map<string, PartnerTeamMember[]>();
     for (const row of rows) {
-      const list = byUser.get(row.userId) ?? [];
+      const k = groupKey(row);
+      const list = byUser.get(k) ?? [];
       list.push(row);
-      byUser.set(row.userId, list);
+      byUser.set(k, list);
     }
     const members: PartnerTeamMember[] = [];
     const duplicateSeatIdsByUserId: Record<string, string[]> = {};
     let duplicateSeatCount = 0;
-    for (const [userId, group] of Array.from(byUser.entries())) {
+    for (const group of Array.from(byUser.values())) {
       if (group.length === 1) {
         members.push(group[0]);
         continue;
@@ -985,7 +1022,10 @@ export const partnerTeamStore = {
       const [representative, ...duplicates] = sorted;
       members.push(representative);
       if (duplicates.length > 0) {
-        duplicateSeatIdsByUserId[userId] = duplicates.map((d) => d.id);
+        /* Keyed by the SURVIVING member's userId. With an email collapse the
+           hidden rows can carry a different userId, so this map is the only
+           record of which rows were hidden behind which representative. */
+        duplicateSeatIdsByUserId[representative.userId] = duplicates.map((d) => d.id);
         duplicateSeatCount += duplicates.length;
       }
     }
@@ -1044,9 +1084,124 @@ export const partnerTeamStore = {
     return this.add(partnerId, userId, subRole, userId, {});
   },
 
+  /**
+   * W-COLLECTIVE Wave 1 (v4 §1.4 as corrected by v5 §F) — DURABLE seat count.
+   *
+   * THE PROBLEM. This counted rows in the in-process `teamMembers` array. That
+   * array is a rebuildable projection (see `hydratePartnerWorkspaceStore`), so
+   * on a cold or partially-hydrated process it under-reports. Both consumers
+   * are load-bearing:
+   *
+   *   requirePartnerAuth.assertTierSeats()      — ENFORCES the paid seat limit
+   *   partnerWorkspaceStore (dashboard summary) — SHOWS `team.activeSeats`
+   *
+   * An under-count on the enforcement path lets a partner invite past their
+   * paid tier; an under-count on the display path makes the workspace disagree
+   * with the admin view of the same organisation. Reading the durable table
+   * makes both agree with billing.
+   *
+   * NOT DE-DUPLICATED. The count is of SEAT ROWS, because a seat row is what
+   * the tier limit is sold and enforced against — collapsing duplicates here
+   * would silently hand a partner free capacity. `duplicateSeatCount` on
+   * `seatReport()` is how a duplicate becomes visible and fixable.
+   *
+   * Fail-SAFE, not fail-closed: if the durable read throws we fall back to the
+   * RAM projection rather than returning 0, because a 0 here would UNBLOCK
+   * `assertTierSeats` for every partner. A read error must never widen a limit.
+   */
   countActiveSeats(partnerId: string): number {
     requirePid(partnerId);
-    return teamMembers.filter((m) => m.partnerId === partnerId && m.status === "active").length;
+    const ramCount = teamMembers.filter(
+      (m) => m.partnerId === partnerId && m.status === "active",
+    ).length;
+    try {
+      const row = rawDb()
+        .prepare(
+          `SELECT COUNT(*) AS n FROM partner_team_members
+            WHERE partner_id = ? AND status = 'active'`,
+        )
+        .get(partnerId) as { n?: number } | undefined;
+      const dbCount = Number(row?.n ?? 0);
+      if (!Number.isFinite(dbCount)) return ramCount;
+      // Take the HIGHER of the two: a row written by a sibling process is not
+      // yet in RAM, and a row created in this process is write-through so it is
+      // in both. Neither source may lower the other.
+      return Math.max(dbCount, ramCount);
+    } catch (err) {
+      log.warn(
+        "[partnerWorkspaceStore.countActiveSeats] durable read failed, using RAM projection:",
+        (err as Error).message,
+      );
+      return ramCount;
+    }
+  },
+
+  /**
+   * W-COLLECTIVE Wave 1 (v4 §1.4 / v5 §F) — the seat figure plus the duplicate
+   * evidence, so an operator can see WHY a count is what it is.
+   *
+   * `activeSeats` is EXACTLY `countActiveSeats()` — the same function the
+   * enforcement path calls, which is what makes display and enforcement agree on
+   * the NUMBER. `duplicateSeatCount` and `duplicateSeatIdsByUserId` are computed
+   * by the existing `dedupeActiveTeamMembers()` collapse over the durable rows —
+   * presentation only, nothing is mutated or deleted.
+   *
+   * Review fix B5(c) — an earlier version of this comment claimed the report came
+   * "from ONE read". It does not, and the distinction matters to an operator:
+   * this function issues its own `SELECT id, partner_id, …` and then
+   * `countActiveSeats()` issues a second, independent `SELECT COUNT(*)`. They are
+   * separate snapshots and CAN disagree — most visibly when the first read throws
+   * (so `source` is `"ram_fallback"` and `distinctSeatUsers` comes from RAM) while
+   * the second succeeds (so `activeSeats` comes from the DB). `source` exists
+   * precisely so a mixed-provenance report is not mistaken for a coherent one:
+   * treat `distinctSeatUsers` as advisory whenever `source === "ram_fallback"`.
+   * See docs/RUNBOOK_partner_seats.md.
+   */
+  seatReport(partnerId: string): {
+    activeSeats: number;
+    distinctSeatUsers: number;
+    duplicateSeatCount: number;
+    duplicateSeatIdsByUserId: Record<string, string[]>;
+    source: "durable" | "ram_fallback";
+  } {
+    requirePid(partnerId);
+    let rows: PartnerTeamMember[] = [];
+    let source: "durable" | "ram_fallback" = "durable";
+    try {
+      const raw = rawDb()
+        .prepare(
+          `SELECT id, partner_id, user_id, sub_role, status, joined_at, removed_at, created_by, is_seed
+             FROM partner_team_members
+            WHERE partner_id = ? AND status = 'active'`,
+        )
+        .all(partnerId) as Record<string, unknown>[];
+      rows = raw.map((r) => ({
+        id: String(r.id),
+        partnerId: String(r.partner_id),
+        userId: String(r.user_id),
+        subRole: String(r.sub_role) as SubRole,
+        status: "active" as const,
+        joinedAt: String(r.joined_at),
+        removedAt: r.removed_at ? String(r.removed_at) : null,
+        createdBy: String(r.created_by),
+        isSeed: Boolean(r.is_seed),
+      }));
+    } catch (err) {
+      log.warn(
+        "[partnerWorkspaceStore.seatReport] durable read failed, using RAM projection:",
+        (err as Error).message,
+      );
+      source = "ram_fallback";
+      rows = teamMembers.filter((m) => m.partnerId === partnerId && m.status === "active");
+    }
+    const collapsed = this.dedupeActiveTeamMembers(rows);
+    return {
+      activeSeats: this.countActiveSeats(partnerId),
+      distinctSeatUsers: collapsed.members.length,
+      duplicateSeatCount: collapsed.duplicateSeatCount,
+      duplicateSeatIdsByUserId: collapsed.duplicateSeatIdsByUserId,
+      source,
+    };
   },
 };
 
@@ -1538,8 +1693,6 @@ export function backfillPartnerAttributionsFromKv():
     if (!sqliteTableExists("partner_attributions")) return result;
     if (!sqliteTableExists("kv_partnerAttributions")) return result;
 
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { hydrateEntries } = require("./lib/storePersistenceShim");
     const rows = (hydrateEntries("partnerAttributions") as Array<[string, PartnerAttribution]>) ?? [];
     const db: any = rawDb();
     const stmt = db.prepare(
@@ -2507,7 +2660,16 @@ export function partnerDashboardSnapshot(partnerId: string): {
   portfolio: { attributedCompanies: number; totalSpvCommittedMinor: number; totalFundCommittedMinor: number };
   pipeline: { byStage: Record<PipelineStage, number>; topDeals: PartnerPipelineDeal[] };
   recentActivity: PartnerPipelineActivity[];
-  team: { activeSeats: number; pendingInvitations: number; seatLimit: number };
+  team: {
+    activeSeats: number;
+    pendingInvitations: number;
+    seatLimit: number;
+    /* W-COLLECTIVE Wave 1 (v5 §F) — additive seat provenance. */
+    distinctSeatUsers: number;
+    duplicateSeatCount: number;
+    duplicateSeatIdsByUserId: Record<string, string[]>;
+    seatCountSource: "durable" | "ram_fallback";
+  };
   empty: boolean;
 } {
   requirePid(partnerId);
@@ -2538,7 +2700,12 @@ export function partnerDashboardSnapshot(partnerId: string): {
     .sort((a, b) => Date.parse(b.occurredAt) - Date.parse(a.occurredAt))
     .slice(0, 10);
 
-  const activeSeats = partnerTeamStore.countActiveSeats(partnerId);
+  /* W-COLLECTIVE Wave 1 (v4 §1.4 / v5 §F) — the banner now consumes EXACTLY the
+     figure `assertTierSeats()` enforces on, from one durable read, together with
+     the duplicate evidence so a partner who sees "2 seats" for one human can be
+     told why instead of raising a support ticket. */
+  const seats = partnerTeamStore.seatReport(partnerId);
+  const activeSeats = seats.activeSeats;
   const pendingInvitations = partnerInvitationStore.countPendingByPartner(partnerId);
   // W-V44 FIX R3 — surface the EFFECTIVE seat limit (per-partner override, else
   // tier default) so the partner dashboard and admin agree on the real cap.
@@ -2552,7 +2719,16 @@ export function partnerDashboardSnapshot(partnerId: string): {
     },
     pipeline: { byStage, topDeals },
     recentActivity,
-    team: { activeSeats, pendingInvitations, seatLimit },
+    team: {
+      activeSeats,
+      pendingInvitations,
+      seatLimit,
+      /* Additive (v5 §F). Zero for the overwhelming majority of partners. */
+      distinctSeatUsers: seats.distinctSeatUsers,
+      duplicateSeatCount: seats.duplicateSeatCount,
+      duplicateSeatIdsByUserId: seats.duplicateSeatIdsByUserId,
+      seatCountSource: seats.source,
+    },
     empty: attrs.length === 0 && pl.length === 0 && pSpvs.length === 0 && pFunds.length === 0,
   };
 }

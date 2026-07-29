@@ -107,7 +107,25 @@ describe("W-AVI64 FIX 4: admin search discovers a real founder company by name",
   });
 
   it("stays admin-gated: an anonymous caller is rejected (401)", async () => {
-    const res = await call("GET", `/api/admin/search?q=${encodeURIComponent(uniq)}`);
-    expect(res.status).toBe(401);
+    // TRIAGE (c) ENVIRONMENTAL. `vitest.config.ts` pins NODE_ENV=test, and
+    // userContext.resolvePersonaIdWithFallback (:518-531) then maps a
+    // header-less request onto demo persona `u_aisha_patel` so the sandbox can
+    // be browsed without logging in. That persona IS authed (just not admin),
+    // so requireAdmin answered 403 ADMIN_REQUIRED instead of 401 — the route
+    // was never actually reached anonymously. Production disables the fallback
+    // via NODE_ENV=production OR DISABLE_DEV_BYPASS=1 (:523-525).
+    //
+    // Setting the same switch production uses makes this test assert the
+    // PRODUCTION contract. The assertion itself is unchanged (still 401); only
+    // the environment is corrected. Scoped to this test — the sibling test
+    // needs the x-user-id header, which resolvePersonaId (:485) also gates on
+    // `!bypassDisabled`, so setting it file-wide would break that test.
+    process.env.DISABLE_DEV_BYPASS = "1";
+    try {
+      const res = await call("GET", `/api/admin/search?q=${encodeURIComponent(uniq)}`);
+      expect(res.status).toBe(401);
+    } finally {
+      delete process.env.DISABLE_DEV_BYPASS;
+    }
   });
 });

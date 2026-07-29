@@ -59,8 +59,11 @@ type V14Ctx = {
   collective?: { status?: string };
 };
 
-/** v24.5 GAP-3 — Check DB for admin role when in-memory persona says false. */
-function isDbAdmin(userId: string): boolean {
+/** v24.5 GAP-3 — Check DB for admin role when in-memory persona says false.
+ *  W-COLLECTIVE Wave 1 (v5 §C) — exported so `collectiveAccessDecision` reports
+ *  reasons off the SAME admin/membership probes this middleware enforces on,
+ *  rather than a second copy that could drift. Behaviour unchanged. */
+export function isDbAdmin(userId: string): boolean {
   try {
     const row = rawDb().prepare(
       `SELECT role FROM users WHERE id = ? LIMIT 1`,
@@ -77,7 +80,7 @@ function isDbAdmin(userId: string): boolean {
  * hydration) can never 403 a genuinely-active member on every
  * `/api/collective/me/*` route. Read errors degrade to "not active".
  */
-function isDbActiveMember(userId: string): boolean {
+export function isDbActiveMember(userId: string): boolean {
   try {
     const row = rawDb().prepare(
       `SELECT 1 FROM collective_memberships WHERE user_id = ? AND status = 'active' AND deleted_at IS NULL LIMIT 1`,

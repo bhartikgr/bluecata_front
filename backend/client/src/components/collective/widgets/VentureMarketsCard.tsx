@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Globe, Info } from "lucide-react";
 import { metricUnitLabel, metricDescription, metricDisplayName } from "@/data/ventureMarketRegistry";
+import { collectiveWidgetErrorText } from "@/lib/collectiveGateError";
 
 interface VentureRecord {
   exchangeSymbol: string;
@@ -65,7 +66,7 @@ export function VentureMarketsCard() {
           </div>
         ) : q.error ? (
           <div className="text-sm text-red-700" data-testid="widget-venture-error">
-            Couldn't load venture markets.
+            {collectiveWidgetErrorText(q.error, 'Couldn\'t load venture markets.')}
           </div>
         ) : notConfigured || records.length === 0 ? (
           <div className="text-center py-6 text-slate-500" data-testid="widget-venture-empty">

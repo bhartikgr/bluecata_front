@@ -9,6 +9,7 @@ import { apiRequest } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MessageSquare, Heart } from "lucide-react";
+import { collectiveWidgetErrorText } from "@/lib/collectiveGateError";
 
 interface Post {
   id: string;
@@ -52,7 +53,7 @@ export function NetworkPostsCard() {
           </div>
         ) : q.error ? (
           <div className="text-sm text-red-700" data-testid="widget-posts-error">
-            Couldn't load network posts.
+            {collectiveWidgetErrorText(q.error, 'Couldn\'t load network posts.')}
           </div>
         ) : posts.length === 0 ? (
           <div className="text-center py-6 text-slate-500" data-testid="widget-posts-empty">

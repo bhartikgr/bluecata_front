@@ -201,6 +201,18 @@ export interface Post {
   shareCount: number;
   /** companyIds the post-author is "Following" — drives the Following toggle on company posts. */
   followingCompanyIds?: string[];
+  /**
+   * W-COLLECTIVE Wave 2 Stage D (D1) — PER-VIEWER follow state, derived by the
+   * server from the durable `company_followers` rows for the REQUESTING viewer.
+   * `followingCompanyIds` above was stored on the post itself, so one investor's
+   * follow made the button read "Following ✓" for everybody. Kept alongside it
+   * (additive) rather than replacing it.
+   */
+  viewerIsFollowingCompany?: boolean;
+  /** Stage D (D1) — the company this post is attributed to, when authorKind === "company". */
+  authorCompanyId?: string;
+  /** Stage D (D1) — durable follower count for the attributed company. */
+  companyFollowerCount?: number;
   /** Sprint 19 — media attachments. */
   mediaUrls?: string[];
   /** Sprint 19 — extracted hashtags/topics. */
@@ -237,6 +249,10 @@ export const postSchema = z.object({
   ),
   shareCount: z.number().nonnegative().int(),
   followingCompanyIds: z.array(z.string()).optional(),
+  /* Stage D (D1) — additive; older payloads simply omit these. */
+  viewerIsFollowingCompany: z.boolean().optional(),
+  authorCompanyId: z.string().optional(),
+  companyFollowerCount: z.number().nonnegative().int().optional(),
 });
 
 export const postCreateSchema = z.object({
@@ -247,6 +263,12 @@ export const postCreateSchema = z.object({
   mediaUrls: z.array(z.string().url()).optional(),
   topics: z.array(z.string()).optional(),
   scheduledFor: z.string().optional(),
+  /* w-collective Wave 2 Stage D (D2) — OPTIONAL chapter context. When present
+     and the author holds an ACTIVE membership of that chapter, the server sets
+     `network_posts.chapter_id`, which is the POST ANCHOR that audience row 5
+     (shared active chapter) requires. Absent/NULL keeps the post invisible to
+     row 5 — that is the deliberate, safe default and must stay that way. */
+  chapterId: z.string().optional(),
 });
 
 export const postCommentCreateSchema = z.object({

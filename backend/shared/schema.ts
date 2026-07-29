@@ -64,6 +64,11 @@ export const users = sqliteTable("users", {
   // Wave C FIX C2 — profile durability (migration 0050).
   title: text("title"),
   displayName: text("display_name"),
+  // w-collective Wave 2 Stage A (migration 0120) — durable source for the
+  // `authorLocation` already rendered in the feed. Optional, self-entered, and
+  // investor-facing only: a founder's location is DERIVED from companies.hq at
+  // read time rather than duplicated here.
+  location: text("location"),
 });
 
 /**
@@ -234,12 +239,146 @@ export const networkPosts = sqliteTable("network_posts", {
   audience: text("audience").notNull().default("all"), // investors | founders | all
   body: text("body").notNull(),
   contentJson: text("content_json"), // rich media / attachments
+  // Aggregate counters. KEPT as-is by w-collective Wave 2 Stage A (migration
+  // 0119 adds per-user rows alongside them; these are neither removed nor
+  // repurposed). They remain the cheap read for feed projection.
   likes: integer("likes").notNull().default(0),
   comments: integer("comments").notNull().default(0),
   parentPostId: text("parent_post_id"), // thread support
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at"),
   deletedAt: text("deleted_at"),
+  // w-collective Wave 2 Stage A (migration 0118) — durable scope so a post
+  // restored from the DB can be re-scoped instead of being orphaned from the
+  // in-memory channel it was created into.
+  //
+  // NO `.default()` ON `scope`, DELIBERATELY. An unset scope is NULL and the
+  // read side must treat NULL as the SAFE (author-only) case. Do not give this
+  // column a default, a fallback or a helper that fills in a permissive value.
+  scope: text("scope"),
+  companyId: text("company_id"),
+  chapterId: text("chapter_id"),
+});
+
+/* ----- w-collective Wave 2 Stage A (2026-07-28) — durable foundations -----
+ *
+ * Stage A declares the tables and columns only. The endpoints/read paths that
+ * populate and consume them land in later stages, so nothing below changes
+ * behaviour yet. Each table's rationale is in its migration header.
+ */
+
+/**
+ * migration 0116 — durable per-USER company follow relation.
+ *
+ * Before this, followers existed only as in-memory demo seed arrays
+ * (server/commsStore.ts:489) — empty in production — and the live endpoint
+ * POST /api/comms/posts/:id/follow wrote the followed company id onto the POST
+ * object rather than the user, so "which users follow this company" was
+ * unanswerable and every follow was lost on restart.
+ *
+ * Physical uniqueness is on (user_id, company_id) for all time — deliberately
+ * NOT partial on `deleted_at IS NULL`. Unfollow soft-deletes; re-follow is an
+ * upsert that clears deleted_at, so there is exactly one row per pair.
+ */
+export const companyFollowers = sqliteTable("company_followers", {
+  id: text("id").primaryKey(),
+  tenantId: text("tenant_id"),
+  userId: text("user_id").notNull(),
+  companyId: text("company_id").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at"),
+  deletedAt: text("deleted_at"),
+});
+
+/**
+ * migration 0117 — comms channels, promoted from lazy runtime DDL.
+ *
+ * This table was never migration-managed: commsStore.persistChannel created it
+ * on the first channel write (server/commsStore.ts:280-287), so on a database
+ * where no channel had ever been persisted it was simply absent. The columns
+ * here are that exact runtime shape plus the durable company/round/chapter
+ * anchors, which previously existed only as in-memory derivation and therefore
+ * died at every restart.
+ */
+export const commsChannels = sqliteTable("comms_channels", {
+  id: text("id").primaryKey(),
+  kind: text("kind").notNull(),
+  participantUserIdsJson: text("participant_user_ids_json").notNull(),
+  createdAt: text("created_at").notNull(),
+  metadataJson: text("metadata_json"),
+  deletedAt: text("deleted_at"),
+  companyId: text("company_id"),
+  roundId: text("round_id"),
+  chapterId: text("chapter_id"),
+});
+
+/**
+ * migration 0119 — per-user likes.
+ *
+ * The physical table's primary key is the composite (post_id, user_id); it is
+ * additionally covered by uq_network_post_likes_post_user. Declared here
+ * without a drizzle composite-PK annotation because these definitions are used
+ * only for query building in this codebase — no drizzle-kit push runs against
+ * them — and the physical constraint is owned by the migration.
+ *
+ * The aggregate network_posts.likes column is KEPT and is not replaced by this
+ * table; later stages keep the two consistent.
+ */
+export const networkPostLikes = sqliteTable("network_post_likes", {
+  postId: text("post_id").notNull(),
+  userId: text("user_id").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
+/** migration 0119 — per-comment rows. Soft-deletable so a removed comment stays auditable. */
+export const networkPostComments = sqliteTable("network_post_comments", {
+  id: text("id").primaryKey(),
+  postId: text("post_id").notNull(),
+  authorUserId: text("author_user_id").notNull(),
+  body: text("body").notNull(),
+  createdAt: text("created_at").notNull(),
+  deletedAt: text("deleted_at"),
+});
+
+/**
+ * migration 0119 — share events. Append-only: the same user may share the same
+ * post more than once, so there is deliberately no uniqueness on (post, user).
+ */
+export const networkPostShares = sqliteTable("network_post_shares", {
+  id: text("id").primaryKey(),
+  postId: text("post_id").notNull(),
+  userId: text("user_id").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
+/**
+ * migration 0118 — durable marker for one-shot data backfills carried by
+ * migrations. Keyed by an opaque marker string so future one-shots reuse this
+ * table instead of each inventing a bespoke flag. Presence of a marker makes
+ * the corresponding backfill a no-op on re-run — including after an undo, which
+ * is the case the value-based guards alone cannot cover.
+ */
+export const migrationBackfillMarkers = sqliteTable("migration_backfill_markers", {
+  marker: text("marker").primaryKey(),
+  appliedAt: text("applied_at").notNull(),
+  rowsAffected: integer("rows_affected"),
+  notes: text("notes"),
+});
+
+/**
+ * migration 0118 — undo journal for the one-time legacy scope backfill. Records
+ * the prior scope/company/chapter of every post the backfill touched, so the
+ * change is reversible row by row (recipe in the migration header). Physical
+ * primary key is the composite (post_id, migration_id).
+ */
+export const networkPostScopeBackfill = sqliteTable("network_post_scope_backfill", {
+  postId: text("post_id").notNull(),
+  migrationId: text("migration_id").notNull(),
+  priorScope: text("prior_scope"),
+  priorCompanyId: text("prior_company_id"),
+  priorChapterId: text("prior_chapter_id"),
+  newScope: text("new_scope").notNull(),
+  backfilledAt: text("backfilled_at").notNull(),
 });
 
 export const roundInvitations = sqliteTable("round_invitations", {

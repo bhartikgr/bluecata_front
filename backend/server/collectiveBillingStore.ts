@@ -155,6 +155,82 @@ function computeHash(
   return h.digest("hex");
 }
 
+/**
+ * ── EXTRACTED, BEHAVIOUR-IDENTICAL LOCAL CANCELLATION ──────────────────────
+ * This is the body of `POST /api/collective/membership/cancel` lifted verbatim
+ * out of the route handler so a second caller (the GDPR erasure path in
+ * `server/gdprRoutes.ts`) can perform EXACTLY the same cancellation instead of
+ * re-implementing it. Nothing about what it does changed:
+ *   - same `payloadForHash` ({ id, action: "cancel_at_period_end", ts }),
+ *   - same `computeHash(billing.currHash, payloadForHash)` chain step,
+ *   - same single-statement `db.transaction` UPDATE of the SAME columns
+ *     (cancel_at_period_end = 1, prev_hash, curr_hash, updated_at) keyed on
+ *     `billing.id`,
+ *   - same `appendAdminAudit(... "collective.billing.cancel_requested" ...)`
+ *     entry with the same payload, still swallowed as non-fatal,
+ *   - same `{ ok, billingId, cancelAtPeriodEnd, accessThrough }` values and the
+ *     same `db_write_failed` + `(err as Error).message` failure shape that the
+ *     route turns into its 500.
+ *
+ * IT IS A LOCAL DB WRITE ONLY. It makes NO Airwallex API call — there is no
+ * gateway/adapter/HTTP call in this function, and none was removed from the
+ * route. The renewal worker is what honours `cancel_at_period_end`.
+ *
+ * Authorisation is deliberately NOT performed here: the route keeps its own
+ * `requireAuth` / `requireCollectiveMember` / `isChapterMember` gates ahead of
+ * the call, exactly as before.
+ */
+export type LocalCancelResult =
+  | { ok: true; billingId: string; cancelAtPeriodEnd: true; accessThrough: number | null }
+  | { ok: false; error: "db_write_failed"; message: string };
+
+export function applyLocalCancelAtPeriodEnd(
+  billing: BillingRow,
+  actorUserId: string,
+): LocalCancelResult {
+  try {
+    const ts = nowIso();
+    const payloadForHash = {
+      id: billing.id,
+      action: "cancel_at_period_end",
+      ts,
+    };
+    const currHash = computeHash(billing.currHash, payloadForHash);
+    const db: any = getDb();
+    db.transaction((tx: any) => {
+      tx.update(billingTable)
+        .set({
+          cancelAtPeriodEnd: 1,
+          prevHash: billing.currHash,
+          currHash,
+          updatedAt: ts,
+        } as any)
+        .where(eq((billingTable as any).id, billing.id))
+        .run();
+    });
+    try {
+      appendAdminAudit(
+        actorUserId,
+        `collective_billing:${billing.id}`,
+        "collective.billing.cancel_requested",
+        { billingId: billing.id, chapterId: billing.chapterId, userId: billing.userId, tier: billing.tier },
+      );
+    } catch { /* non-fatal */ }
+    return {
+      ok: true,
+      billingId: billing.id,
+      cancelAtPeriodEnd: true,
+      accessThrough: billing.currentPeriodEnd ?? null,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: "db_write_failed",
+      message: (err as Error).message,
+    };
+  }
+}
+
 function rowToBilling(r: any): BillingRow {
   return {
     id: r.id,
@@ -1559,48 +1635,24 @@ export function registerCollectiveBillingRoutes(app: Express): void {
       if (!billing || billing.status === "pending") {
         return res.status(404).json({ ok: false, error: "no_active_subscription" });
       }
-      try {
-        const ts = nowIso();
-        const payloadForHash = {
-          id: billing.id,
-          action: "cancel_at_period_end",
-          ts,
-        };
-        const currHash = computeHash(billing.currHash, payloadForHash);
-        const db: any = getDb();
-        db.transaction((tx: any) => {
-          tx.update(billingTable)
-            .set({
-              cancelAtPeriodEnd: 1,
-              prevHash: billing.currHash,
-              currHash,
-              updatedAt: ts,
-            } as any)
-            .where(eq((billingTable as any).id, billing.id))
-            .run();
-        });
-        try {
-          appendAdminAudit(
-            ctx?.userId ?? "system",
-            `collective_billing:${billing.id}`,
-            "collective.billing.cancel_requested",
-            { billingId: billing.id, chapterId: billing.chapterId, userId: billing.userId, tier: billing.tier },
-          );
-        } catch { /* non-fatal */ }
-        return res.json({
-          ok: true,
-          gateway: "airwallex",
-          billingId: billing.id,
-          cancelAtPeriodEnd: true,
-          accessThrough: billing.currentPeriodEnd ?? null,
-        });
-      } catch (err) {
+      /* The cancellation itself is `applyLocalCancelAtPeriodEnd` above — the
+         same code this handler used to inline, now shared with the GDPR
+         erasure path so the two cannot drift. Still a local DB write only. */
+      const cancelled = applyLocalCancelAtPeriodEnd(billing, ctx?.userId ?? "system");
+      if (!cancelled.ok) {
         return res.status(500).json({
           ok: false,
-          error: "db_write_failed",
-          message: (err as Error).message,
+          error: cancelled.error,
+          message: cancelled.message,
         });
       }
+      return res.json({
+        ok: true,
+        gateway: "airwallex",
+        billingId: cancelled.billingId,
+        cancelAtPeriodEnd: true,
+        accessThrough: cancelled.accessThrough,
+      });
     },
   );
 

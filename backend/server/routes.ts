@@ -194,6 +194,10 @@ import { registerAdminDscRoutes } from "./adminDscRoutes";
 // v17 Phase C — Founder accept/decline offers + DSC vote public endpoint.
 import { registerCollectiveOfferRoutes } from "./collectiveOffersStore";
 import { registerCollectiveDscVoteRoutes } from "./collectiveDscVoteRoutes";
+/* w-collective Wave 2 Stage D — D2 chapter-membership writer surface and
+   D4 investor self-entered profile location. */
+import { registerChapterMembershipRoutes } from "./chapterMembershipRoutes";
+import { registerUserProfileLocationRoutes } from "./userProfileLocationRoutes";
 import { registerDscPitchDeckV2548Routes } from "./lib/dscPitchDeckV2548"; /* v25.48 DSC-1c — signed pitch-deck secure link on the DSC review surface */
 import { registerScreeningEventRoutes } from "./screeningEventsStore";
 import { registerCollectiveBillingRoutes } from "./collectiveBillingStore";
@@ -296,6 +300,9 @@ import { users as usersTable } from "../shared/schema"; /* Avi 22-May Issue 6 */
 import { eq as drizzleEq } from "drizzle-orm"; /* Avi 22-May Issue 6 */
 import { SYNC_ENTITY_COUNT, getSyncDoc } from "./db/syncRepo";
 import { getOutbox } from "./bridgeStore";
+/* W-COLLECTIVE Wave 1 (v4 §1.5) — /api/healthz bridge-config telemetry. */
+import { inspectBridgeEnv } from "./lib/bridgeEnvAssert";
+import { getCommsOverflowCounts } from "./commsStore";
 import { loadUserContext, requireEntitlement } from "./lib/requireEntitlement";
 import { registerPersona } from "./lib/userContext";
 import { getUserContextForId, getUserContext } from "./lib/userContext";
@@ -1007,6 +1014,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
    * COLLECTIVE_ENABLED at the route handler level (requireCollectiveEnabled). */
   registerCollectiveOfferRoutes(app);
   registerCollectiveDscVoteRoutes(app);
+  /* w-collective Wave 2 Stage D (D2) — FIRST production writer for
+   * `chapter_memberships`. Until this registration, audience row 5 in
+   * networkPostAudience.ts was structurally unreachable on live data. */
+  registerChapterMembershipRoutes(app);
+  /* w-collective Wave 2 Stage D (D4) — investor-facing setter for the optional
+   * `users.location` declared by migration 0120 (previously unwritable). */
+  registerUserProfileLocationRoutes(app);
   registerDscPitchDeckV2548Routes(app); /* v25.48 DSC-1c — signed pitch-deck link */
   registerScreeningEventRoutes(app);
   /* v18 Phase B — Stripe Collective membership tier (basic/standard/premium).
@@ -1258,7 +1272,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   const buildTime = process.env.BUILD_TIME || new Date(SERVER_START).toISOString();
   app.get("/api/healthz", (_req, res) => {
     const dbOk = (() => { try { getDb(); return true; } catch { return false; } })();
-    const bridgeOutboxBacklog = getOutbox().filter(e => e.status === "queued" || e.status === "delivering").length;
+    const outbox = getOutbox();
+    const bridgeOutboxBacklog = outbox.filter(e => e.status === "queued" || e.status === "delivering").length;
+    /* W-COLLECTIVE Wave 1 (v4 §1.5). The bridge was pointed at a host that does
+       not resolve for months and this endpoint reported `ok: true` the whole
+       time, so the misconfiguration was only visible on an admin page nobody
+       opened. These fields let a monitor alert on it.
+       THIS ENDPOINT IS PUBLIC (no auth). Booleans and counts ONLY — never a
+       secret, never a credentialed URL, never a hostname. */
+    let bridgeEnvOk = false;
+    let bridgeOutboundConfigured = false;
+    try {
+      const report = inspectBridgeEnv();
+      bridgeEnvOk = report.ok;
+      bridgeOutboundConfigured = report.outboundConfigured;
+    } catch { /* never let telemetry break the healthcheck */ }
+    let outboxOverflowCount = 0;
+    try { outboxOverflowCount = getCommsOverflowCounts().total; } catch { /* ignore */ }
     res.json({
       ok: true,
       version,
@@ -1268,6 +1298,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       dbConnected: dbOk,
       bridgeOutboxBacklog,
       emailOutboxBacklog: 0,
+      bridgeEnvOk,
+      bridgeOutboundConfigured,
+      bridgeOutboxQueued: outbox.filter(e => e.status === "queued").length,
+      outboxOverflowCount,
       timestamp: new Date().toISOString(),
     });
   });

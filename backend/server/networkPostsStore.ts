@@ -52,6 +52,13 @@ export type NetworkPostRow = {
   status?: "draft" | "scheduled" | "published";
   scheduledFor?: string | null;
   publishedAt?: string | null;
+  /**
+   * W2B B4 — commentId → parentCommentId for nested replies. The Stage A
+   * `network_post_comments` table has no parent column and Stage B may not add
+   * a migration, so the link is journaled in `content_json` and carried through
+   * hydrate so a reply does not flatten to top-level on restart.
+   */
+  commentParents?: Record<string, string>;
 };
 
 /**
@@ -173,6 +180,7 @@ export async function hydrateNetworkPostsStore(): Promise<void> {
         parentPostId: row.parent_post_id ?? row.parentPostId ?? null,
         mediaUrls: content.mediaUrls,
         topics: content.topics,
+        commentParents: content.commentParents, // W2B B4
       };
       HYDRATED_POSTS.push(post);
       await consumeHydratedPost(post);

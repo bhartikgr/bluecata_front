@@ -103,6 +103,9 @@ function computeKpis() {
     emailQueue: 0,
     bridgeOutbox: outbox.filter(e => e.status === "queued").length,
     deadLetter: outbox.filter(e => e.status === "dead_letter").length,
+    /* W-COLLECTIVE Wave 1 (v5 §A.2) — additive; archived envelopes are retained
+       history, not queue depth, so they get their own bucket. */
+    bridgeOutboxArchived: outbox.filter(e => e.status === "archived").length,
   };
   // v25.42h — health.capTableReconcile now DB-derived from recon_runs. The
   // remaining sub-fields (closeGateFailures, dataroomUploadErrors,

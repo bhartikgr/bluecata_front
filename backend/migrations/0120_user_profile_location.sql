@@ -1,0 +1,34 @@
+-- 0120_user_profile_location.sql
+-- w-collective Wave 2 Stage A (2026-07-28) — durable source for author location.
+--
+-- WHY. `authorLocation` is ALREADY RENDERED in the product at exactly two sites —
+-- client/src/components/comms/PostsFeed.tsx:622-624 and
+-- client/src/pages/PostDetail.tsx:233-235 — but there is no durable column
+-- behind it. projectPost (server/commsStore.ts:1448-1506) sources it from the
+-- in-memory COMMS_USERS map, or hardcodes "San Francisco, CA" for company
+-- authors, so on LIVE it is blank for every real user. The field must not be
+-- dropped; it needs a source.
+--
+-- OWNER DECISION ON SEMANTICS:
+--   * FOUNDERS show their company HQ. That value already exists as
+--     companies.hq (shared/schema.ts:87) and is NOT duplicated here — it is
+--     derived at read time in a later stage.
+--   * INVESTORS get an optional self-entered profile field. That is the only
+--     thing this migration adds.
+-- Consequently this file adds ONE nullable column and no table.
+--
+-- `users` has no location column today (verified: shared/schema.ts:45-67 and the
+-- users CREATE literal in server/db/connection.ts:1863-1874).
+--
+-- Additive + idempotent + mirrored (server/db/migrations/0120_*.sql) +
+-- self-healed in server/db/connection.ts (column in the users CREATE literal for
+-- fresh DBs AND a guarded ADD COLUMN entry in applyV12AdditiveAlters for
+-- already-deployed DBs — the drizzle `users` table now declares the column, so
+-- without the guarded half any select against a deployed DB would raise
+-- "no such column: location").
+--
+-- SQLite has no ADD COLUMN IF NOT EXISTS; per the convention documented in
+-- migrations/0110_collective_membership_captable_exempt.sql:7-9 this relies on
+-- the runner swallowing the duplicate-column error (migrate.ts:203-210 sqlite,
+-- :229-235 postgres).
+ALTER TABLE users ADD COLUMN location TEXT;

@@ -93,15 +93,23 @@ describe("W9.1 migration mirror / drift check", () => {
     expect(modernDups).toEqual([]);
   });
 
-  it("the highest canonical migration id is the documented latest (0115, w-partner part 2)", () => {
+  it("the highest canonical migration id is the documented latest (0120, w-collective Wave 2 Stage A)", () => {
     const maxId = Math.max(...canon.map((f) => idOf(f) ?? -1));
-    // W9 added no migration and left the tip at 0113. The w-partner wave adds
+    // W9 added no migration and left the tip at 0113. The w-partner wave added
     // two: 0114_partner_attributions.sql (typed attributions + revision chain,
     // part 1) and 0115_partner_client_crm_lead.sql (designated client lead,
-    // part 2). The ledger tip is now 0115 and the next free id is 0116.
+    // part 2).
     //
-    // BUILD_STRATEGY_W_PARTNER.md:81 requires this pin to move "in the same
-    // commit as 0115 so no intermediate commit is red" — that is this commit.
-    expect(maxId).toBe(115);
+    // w-collective Wave 2 Stage A adds the five durable feed foundations:
+    //   0116_company_followers.sql        — per-USER company follow relation
+    //   0117_comms_channel_anchors.sql    — comms_channels + company/round/chapter
+    //   0118_network_post_scope.sql       — scope/company/chapter + one-time backfill
+    //   0119_network_post_engagement.sql  — likes / comments / shares rows
+    //   0120_user_profile_location.sql    — durable authorLocation source
+    // The ledger tip is now 0120 and the next free id is 0121.
+    //
+    // This pin must move in the SAME change set as the migrations it names, so
+    // no intermediate commit is red.
+    expect(maxId).toBe(120);
   });
 });

@@ -14,6 +14,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Vote } from "lucide-react";
 import { useActiveChapter } from "./useActiveChapter";
+import { collectiveWidgetErrorText } from "@/lib/collectiveGateError";
 
 interface EventRow {
   id: string;
@@ -83,7 +84,7 @@ export function MyScreenings() {
           </div>
         ) : error ? (
           <div className="text-sm text-red-700" data-testid="widget-my-screenings-error">
-            Couldn't load your screenings.
+            {collectiveWidgetErrorText(error, 'Couldn\'t load your screenings.')}
           </div>
         ) : !chapterId ? (
           <div className="text-sm text-slate-500" data-testid="widget-my-screenings-empty">

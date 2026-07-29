@@ -25,6 +25,24 @@ import { log } from "./lib/logger";
 
 export type DeactivationTargetStatus = "cancelled" | "past_due";
 
+/**
+ * W-COLLECTIVE Wave 1 (v5 §C) — tri-state result for the signals that
+ * fail-closed on a DB read error.
+ *
+ * `hasOpenMembershipDeactivation()` and `hasCancelledOrPastDueBilling()` both
+ * return `true` when the read itself fails, so a boolean cannot distinguish
+ * "this membership genuinely lapsed" from "we could not read the table". The
+ * gate is right to deny either way, but the *reason* it reports to the client
+ * must differ: a lapsed membership shows billing copy, an unreadable table
+ * shows the retry card.
+ *
+ * The boolean exports keep their signatures and their fail-closed behaviour
+ * byte-for-byte (an existing test asserts `typeof … === "boolean"`, and a
+ * wrapper cannot rescue a renamed function). These SIBLING readers are the only
+ * consumers of the tri-state and feed `collectiveAccessDecision` alone.
+ */
+export type TriState = true | false | "error";
+
 const RETRY_BACKOFF_MS = 5 * 60 * 1000; // 5 minutes between retries
 
 /** Idempotent inline schema self-heal (mirrors migration 0109). */
@@ -129,6 +147,63 @@ export function hasCancelledOrPastDueBilling(userId: string): boolean {
     // Unknown billing state after a read error → fail CLOSED (deny). A genuinely
     // active member recovers as soon as the read succeeds again.
     return true;
+  }
+}
+
+/**
+ * W-COLLECTIVE Wave 1 (v5 §C) — tri-state sibling of
+ * `hasOpenMembershipDeactivation`. Same query, same self-heal-and-retry-once
+ * path; the only difference is that an unreadable table yields `"error"`
+ * instead of collapsing to `true`. Callers MUST still deny on `"error"` — it
+ * only changes which reason is reported.
+ */
+export function hasOpenMembershipDeactivationTri(userId: string): TriState {
+  if (!userId) return false;
+  const read = (): boolean => {
+    const row = rawDb()
+      .prepare(
+        `SELECT 1 FROM collective_membership_deactivation_queue
+          WHERE user_id = ? AND resolved_at IS NULL LIMIT 1`,
+      )
+      .get(userId);
+    return !!row;
+  };
+  try {
+    return read();
+  } catch {
+    try {
+      ensureCollectiveMembershipDeactivationTables();
+      return read();
+    } catch {
+      log.warn(
+        "[collectiveMembershipDeactivationStore] hasOpenTri read failed; reporting error for",
+        userId,
+      );
+      return "error";
+    }
+  }
+}
+
+/**
+ * W-COLLECTIVE Wave 1 (v5 §C) — tri-state sibling of
+ * `hasCancelledOrPastDueBilling`. Reads the same STATE table only; never
+ * Airwallex / payment gateway code. An unreadable table yields `"error"`.
+ */
+export function hasCancelledOrPastDueBillingTri(userId: string): TriState {
+  if (!userId) return false;
+  try {
+    const row = rawDb()
+      .prepare(
+        `SELECT 1 FROM collective_memberships_billing
+          WHERE user_id = ?
+            AND status IN ('cancelled', 'past_due')
+            AND (deleted_at IS NULL OR deleted_at = '')
+          LIMIT 1`,
+      )
+      .get(userId);
+    return !!row;
+  } catch {
+    return "error";
   }
 }
 

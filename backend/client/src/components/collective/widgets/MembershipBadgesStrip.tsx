@@ -7,6 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useMe, deriveBadges, type BadgeKey } from "./useMe";
+import { collectiveWidgetErrorText } from "@/lib/collectiveGateError";
 
 const BADGE_LABELS: Record<BadgeKey, string> = {
   in_good_standing: "In Good Standing",
@@ -38,7 +39,7 @@ export function MembershipBadgesStrip() {
           </div>
         ) : error ? (
           <div className="text-sm text-red-700" data-testid="widget-badges-error">
-            Couldn't load your badges.
+            {collectiveWidgetErrorText(error, 'Couldn\'t load your badges.')}
           </div>
         ) : badges.length === 0 ? (
           <div className="text-sm text-slate-500" data-testid="widget-badges-empty">

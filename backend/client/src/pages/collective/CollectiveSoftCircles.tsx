@@ -12,22 +12,36 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Progress } from "@/components/ui/progress";
 import { Circle } from "lucide-react";
 
+/* W-COLLECTIVE Wave 1 (v4 §1.3 + v6 §3) — `targetUsd` and `softCircledTotal`
+   are now NULLABLE. The server used to invent them (target off an empty seed
+   array, total blended from a fail-open in-memory cache) and this page rendered
+   whatever arrived as fact. A null means "not provable from durable rows"; it
+   renders as an em dash, never as `$0`. */
 interface SoftCircleAggregate {
   roundId: string;
   roundName: string;
   companyId: string | null;
   companyName: string;
-  targetUsd: number;
-  softCircledTotal: number;
+  targetUsd: number | null;
+  softCircledTotal: number | null;
   softCircledCount: number;
   fillPct: number | null;
+  /** Additive; older cached responses omit it. */
+  amountsUnavailable?: boolean;
   note: string;
 }
 
+/** Renders "—" for a null amount. NEVER called with null (see `fmtUsdOrDash`). */
 function fmtUsd(usd: number): string {
   if (usd >= 1_000_000) return `$${(usd / 1_000_000).toFixed(1)}M`;
   if (usd >= 1_000) return `$${(usd / 1_000).toFixed(0)}K`;
   return `$${usd.toLocaleString()}`;
+}
+
+const AMOUNT_DASH = "—";
+
+function fmtUsdOrDash(usd: number | null | undefined): string {
+  return typeof usd === "number" && Number.isFinite(usd) ? fmtUsd(usd) : AMOUNT_DASH;
 }
 
 export default function CollectiveSoftCircles() {
@@ -98,23 +112,30 @@ export default function CollectiveSoftCircles() {
                 <div className="flex items-center justify-between text-xs text-slate-600">
                   <span>Soft-circled</span>
                   <span className="font-semibold" style={{ color: "#cc0001" }} data-testid={`total-${agg.roundId}`}>
-                    {fmtUsd(agg.softCircledTotal)}
+                    {fmtUsdOrDash(agg.softCircledTotal)}
                   </span>
                 </div>
-                {agg.targetUsd > 0 && (
+                {/* The progress bar is hidden whenever the fill cannot be
+                    computed — a bar at 0% reads as "nobody has circled". */}
+                {agg.fillPct !== null && typeof agg.targetUsd === "number" && agg.targetUsd > 0 && (
                   <>
                     <Progress
-                      value={agg.fillPct ?? 0}
+                      value={agg.fillPct}
                       className="h-2"
                       data-testid={`progress-${agg.roundId}`}
                     />
                     <div className="flex items-center justify-between text-xs">
-                      <span className="text-slate-400">Target: {fmtUsd(agg.targetUsd)}</span>
+                      <span className="text-slate-400">Target: {fmtUsdOrDash(agg.targetUsd)}</span>
                       <span className="font-medium text-slate-700" data-testid={`fill-pct-${agg.roundId}`}>
-                        {agg.fillPct !== null ? `${agg.fillPct}%` : "—"}
+                        {agg.fillPct}%
                       </span>
                     </div>
                   </>
+                )}
+                {agg.amountsUnavailable && (
+                  <p className="text-[11px] text-slate-400" data-testid={`amounts-unavailable-${agg.roundId}`}>
+                    Amounts unavailable for this round.
+                  </p>
                 )}
                 <div className="flex items-center gap-2">
                   <Badge className="bg-slate-100 text-slate-600 text-[10px]" data-testid={`count-${agg.roundId}`}>

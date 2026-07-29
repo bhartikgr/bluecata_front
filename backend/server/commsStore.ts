@@ -74,6 +74,11 @@ import { areCoMembersOnAnyCapTable } from "./lib/capTableMembership";
 /* W-AVI65 FIX 2 — widened DM-only co-membership predicate (founder↔investor).
    It calls the SACRED areCoMembersOnAnyCapTable internally, unchanged. */
 import { areDmCoMembers } from "./lib/dmCoMembership";
+/* W-COLLECTIVE Wave 2 Stage C — relationship-scoped audience for NETWORK posts.
+   Pure, read-only, fail-closed, and deliberately does NOT call
+   channelIsVisibleToViewer (which backfills participantUserIds → would turn a
+   read into a write grant). See server/lib/networkPostAudience.ts. */
+import { viewerCanSeeNetworkPost } from "./lib/networkPostAudience";
 // 1d — Consortium Partner author-label fallback (non-sacred): screen name →
 // registered/company name → "Consortium Partner". Keeps a partner author from
 // rendering as a raw u_redeemed_… id in the Posts feed.
@@ -84,6 +89,9 @@ import { emitNotification } from "./notificationsStore";
 import { resolvePersonaId } from "./lib/userContext";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 import { requireAdmin } from "./lib/authMiddleware"; /* v25.20 Lane 1 NC1 */
+/* W2B B3 — CALL-ONLY use of the sacred limiter. /api/comms had no rate limit at
+   all; the engagement endpoints get the existing per-user "write" bucket. */
+import { collectiveRateLimit } from "./lib/rateLimit";
 // B-505 fix v23.6.1 — resolve founder CRM contacts that have not yet been
 // provisioned into the comms layer, so "Message" never dead-ends on a 404.
 import { findCrmContactByInvestorId } from "./founderCrmStore";
@@ -99,6 +107,16 @@ import { getCompaniesForFounder } from "./multiCompanyStore";
 import { isNull } from "drizzle-orm";
 import { getDb, rawDb } from "./db/connection";
 import { collectiveChannelPosts as collectiveChannelPostsTable } from "@shared/schema";
+/* W2B B1 — durable drain for the two hash-chained comms ring buffers. */
+import { drainCommsAuditEntries, drainCommsOutboxEvents } from "./commsAuditDurable";
+/* W2B B4 — durable per-user post engagement (Stage A tables 0119). */
+import {
+  recordPostLike,
+  removePostLike,
+  recordPostComment,
+  recordPostShare,
+  loadPostEngagement,
+} from "./postEngagementStore";
 import { DEFAULT_CHAPTER_ID, DEFAULT_CHAPTER_TENANT_ID } from "./lib/chapterDefaults";
 import { log } from "./lib/logger";
 // v24.0 C13: badge propagation reads from the LIVE membership store, not the
@@ -107,6 +125,52 @@ import * as collectiveMembershipStore from "./collectiveMembershipStore";
 // v24.0 E7: partner detection for role-aware DM notification links.
 import { partnerTeamStore } from "./partnerWorkspaceStore";
 import { getUserContextForId } from "./lib/userContext";
+/* ────────────────────────────────────────────────────────────────────────────
+   W-COLLECTIVE Wave 2 STAGE D — DURABLE RE-SOURCING (D1/D2/D3/D4/D5)
+
+   D3: `COMMS_USERS` (below, line ~271) is `DEMO_SEED_ENABLED ? seed : {}` and
+   therefore HARD-EMPTY on live. Thirteen reads of it silently degraded. Each
+   now goes through `commsUserRef()` which falls back to the DB.
+   D1: follows persist to `company_followers` as a per-USER relation.
+   D2: `network_posts.chapter_id` is now anchored, so audience row 5 can fire.
+   D4: author location derives from `companies.hq` (founder) / `users.location`.
+   D5: `cap_table` / `company_followers` channels are rebuilt from durable rows.
+   ──────────────────────────────────────────────────────────────────────────── */
+import {
+  durableCommsUserRef,
+  durableCommsUserExists,
+  durableAuthorLocation,
+  durableActiveChapterIds,
+  durableCompanyName,
+  durableCompanyHq,
+  durableCapTableCompanyIds,
+  listDurableCommsUserIds,
+  durableCapTablePeerIds,
+  durableChapterPeerIds,
+  durableFollowPeerIds,
+  type DurableCommsUserRef,
+} from "./lib/commsUserDirectory";
+import {
+  followCompany,
+  unfollowCompany,
+  isFollowingCompany,
+  companiesFollowedBy,
+  followersOfCompany,
+  followerCountOfCompany,
+} from "./lib/companyFollowStore";
+import {
+  resolveChannelAnchors,
+  decodeChannelIdAnchors,
+  durableParticipantsFor,
+  viewerIsDurableChannelMember,
+  backfillChannelAnchors,
+  founderUserIdsOfCompany,
+  type AnchoredChannelKind,
+} from "./lib/commsChannelAnchors";
+import {
+  setPostChapterAnchor,
+  isActiveChapterMember,
+} from "./lib/chapterMembershipWriter";
 
 /* v24.0 E7 — role-aware messages path for in-app notification deep links.
  * Mirrors the existing founder-vs-investor logic at the thread-reply site,
@@ -125,8 +189,11 @@ function messagesPathForUser(userId: string, threadId: string): string {
       return `/founder/messages?thread=${threadId}`;
     }
   } catch { /* fall through */ }
-  // Fall back to the static COMMS_USERS role hint if context unavailable.
-  const isFounder = COMMS_USERS[userId]?.roles.includes("founder") ?? false;
+  /* D3 (:147) — role hint. Was `COMMS_USERS[userId]`, which is ALWAYS undefined
+     on live, so every user whose UserContext lookup failed was deep-linked to
+     /investor/messages — a founder landed on a page that does not hold their
+     thread. Now re-sourced from `company_members` / `users.role` via the DB. */
+  const isFounder = commsUserRef(userId)?.roles.includes("founder") ?? false;
   return `/${isFounder ? "founder" : "investor"}/messages?thread=${threadId}`;
 }
 
@@ -253,6 +320,48 @@ const _seed_COMMS_USERS: Record<string, UserRef> = {
 export const COMMS_USERS: Record<string, UserRef> = DEMO_SEED_ENABLED ? _seed_COMMS_USERS : {};
 
 /* ==================================================================== */
+/* W-COLLECTIVE Wave 2 STAGE D (D3) — THE RE-SOURCED DIRECTORY READ      */
+/* ==================================================================== */
+/**
+ * The SINGLE replacement for `COMMS_USERS[id]` at all thirteen read sites.
+ *
+ * `COMMS_USERS` above is `{}` whenever the demo seed is off, i.e. ALWAYS in
+ * production. Every `COMMS_USERS[x]` read therefore returned `undefined` on
+ * live, and each read site degraded quietly in its own direction (role badges
+ * to "Member", the member/contact label to "Invited contact", locations to "",
+ * `authorKind=collective` to zero posts, `sort=following` to every post, the DM
+ * picker to `[]`, the founder-only pin to a 403).
+ *
+ * Resolution order, and WHY:
+ *   1. the seed map when it is populated — so demo/test environments behave
+ *      EXACTLY as before this change (no test rewrite, no seed regression), and
+ *   2. otherwise the DURABLE `users`-row-backed ref from
+ *      `server/lib/commsUserDirectory.ts`.
+ * `undefined` still means "no such user", so every `if (!author)` /
+ * `COMMS_USERS[x] ? …` branch keeps its original MEANING while finally being
+ * answered from data.
+ *
+ * The return type is the STRUCTURAL union of the two: `UserRef` and
+ * `DurableCommsUserRef` declare the same fields, so call sites are unchanged.
+ */
+function commsUserRef(userId: string): UserRef | DurableCommsUserRef | undefined {
+  if (typeof userId !== "string" || !userId.trim()) return undefined;
+  const seeded = COMMS_USERS[userId];
+  if (seeded) return seeded;
+  return durableCommsUserRef(userId);
+}
+
+/**
+ * TRUE iff this id names a real platform member (seed OR durable `users` row).
+ * Used by the two "Collective member" vs "Invited contact" label sites.
+ */
+function commsUserIsKnown(userId: string): boolean {
+  if (typeof userId !== "string" || !userId.trim()) return false;
+  if (COMMS_USERS[userId]) return true;
+  return durableCommsUserExists(userId);
+}
+
+/* ==================================================================== */
 /* IN-MEMORY STORES                                                     */
 /* ==================================================================== */
 
@@ -277,31 +386,239 @@ const posts = new Map<string, Post>();
 function persistChannel(ch: Channel): void {
   try {
     const db: any = rawDb();
+    /* w-collective Wave 2 Stage A — CONVERGED with migration
+     * 0117_comms_channel_anchors.sql and with the comms_channels CREATE literal
+     * in server/db/connection.ts. All three must stay identical: this runtime
+     * DDL is what actually created the table on every existing database (it was
+     * never migration-managed before 0117), so if it drifts from the migration
+     * the anchor columns silently depend on which path ran first.
+     *
+     * Stage A added the anchor COLUMNS but deliberately did not populate them.
+     * w-collective Wave 2 Stage D (D5) POPULATES them: the INSERT below now
+     * writes `company_id` / `round_id` / `chapter_id` resolved by
+     * `resolveChannelAnchors` (in-memory value → existing durable anchor → a
+     * decode of the deterministic channel id, which is the primary key and
+     * therefore not a guess). Without this, `hydrateCommsStore` came back from a
+     * restart with no way to know which company a cap-table or company-followers
+     * channel belonged to, so those channels could not be rebuilt and their posts
+     * stayed permanently inaccessible.
+     * The DDL itself is UNCHANGED and must stay byte-identical to migration 0117
+     * and to the CREATE literal in server/db/connection.ts. */
     db.exec(`CREATE TABLE IF NOT EXISTS comms_channels (
-      id TEXT PRIMARY KEY NOT NULL,
-      kind TEXT NOT NULL,
+      id                        TEXT PRIMARY KEY NOT NULL,
+      kind                      TEXT NOT NULL,
       participant_user_ids_json TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      metadata_json TEXT,
-      deleted_at TEXT
+      created_at                TEXT NOT NULL,
+      metadata_json             TEXT,
+      deleted_at                TEXT,
+      company_id                TEXT,
+      round_id                  TEXT,
+      chapter_id                TEXT
     );`);
+    /* D5 — resolve the anchors for this channel. COALESCE on update so an
+       explicitly-set anchor is never overwritten with NULL by a later save. */
+    const anchors = resolveChannelAnchors(ch);
     db.prepare(
-      `INSERT INTO comms_channels (id, kind, participant_user_ids_json, created_at, metadata_json, deleted_at)
-         VALUES (?, ?, ?, ?, ?, NULL)
+      `INSERT INTO comms_channels (id, kind, participant_user_ids_json, created_at, metadata_json, deleted_at, company_id, round_id, chapter_id)
+         VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            participant_user_ids_json = excluded.participant_user_ids_json,
            metadata_json = excluded.metadata_json,
-           deleted_at = NULL`,
+           deleted_at = NULL,
+           company_id = COALESCE(excluded.company_id, comms_channels.company_id),
+           round_id   = COALESCE(excluded.round_id, comms_channels.round_id),
+           chapter_id = COALESCE(excluded.chapter_id, comms_channels.chapter_id)`,
     ).run(
       ch.id,
       ch.kind,
       JSON.stringify(ch.participantUserIds ?? []),
       ch.createdAt,
       ch.metadata ? JSON.stringify(ch.metadata) : null,
+      anchors.companyId ?? null,
+      anchors.roundId ?? null,
+      anchors.chapterId ?? null,
     );
   } catch (err) {
     log.warn("[commsStore.persistChannel] DB write failed (continuing in-memory):", (err as Error).message);
   }
+}
+
+/* ==================================================================== */
+/* W-COLLECTIVE Wave 2 STAGE D (D5) — ANCHORED-CHANNEL MATERIALISATION    */
+/* ==================================================================== */
+/**
+ * Create-or-refresh a `cap_table` / `company_followers` channel from DURABLE
+ * ROWS, and persist it with its 0117 anchors.
+ *
+ * THE BUG THIS CLOSES. Wave 1 made `GET /api/comms/posts/:id` fail closed when a
+ * post's channel cannot be resolved. Correct — but nothing ever created those
+ * two channel kinds outside the demo seed, so on live EVERY cap-table and
+ * company-followers post was orphaned and post detail returned 403 to its own
+ * author. Stage D may not ship with those posts still inaccessible.
+ *
+ * Participants come from `server/lib/commsChannelAnchors.ts`:
+ *   cap_table         → active founders ∪ committed `captable_commits` holders
+ *   company_followers → active founders ∪ live `company_followers` rows
+ * No seed array, no hardcoded id, nothing in memory: the same inputs rebuild the
+ * same channel after any restart.
+ *
+ * `soft_circle` is DELIBERATELY EXCLUDED — see the STOP-condition note in
+ * commsChannelAnchors.ts. It keeps its exact pre-D5 behaviour.
+ *
+ * Idempotent. Returns the channel, or `undefined` when the id is not an anchored
+ * kind or its company cannot be resolved (in which case the caller's existing
+ * fail-closed path stands).
+ */
+/**
+ * STAGE-D BLOCKER FIX B4a - union of a persisted participant list and a
+ * re-derived one. ORDER-STABLE (persisted order first, then newly derived in
+ * derivation order) and de-duplicated. Never shrinks: a persisted participant
+ * that can no longer be derived is KEPT and logged at warn, because the
+ * alternative is a silent, invisible loss of access on restart.
+ */
+/**
+ * STAGE-D BLOCKER FIX B4b - WRITE authority for a `company_followers` channel:
+ * the company's own ACTIVE founders (durable `company_members` rows, resolved by
+ * `founderUserIdsOfCompany`) and nobody else. Fail-closed on an unresolvable
+ * company id or any read error.
+ */
+function mayWriteToFollowersChannel(ch: Channel, actorId: string): boolean {
+  if (!actorId) return false;
+  try {
+    const companyId =
+      ch.companyId ??
+      resolveChannelAnchors(ch).companyId ??
+      (ch.metadata as { companyId?: string } | undefined)?.companyId;
+    if (!companyId) return false;
+    return founderUserIdsOfCompany(String(companyId)).includes(actorId);
+  } catch {
+    return false;
+  }
+}
+
+function unionParticipants(
+  persisted: readonly string[] | undefined,
+  derived: readonly string[] | undefined,
+  channelId: string,
+): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const u of persisted ?? []) {
+    if (typeof u !== "string" || u.trim() === "" || seen.has(u)) continue;
+    seen.add(u);
+    out.push(u);
+  }
+  const derivedList = (derived ?? []).filter((u) => typeof u === "string" && u.trim() !== "");
+  const derivedSet = new Set(derivedList);
+  for (const u of derivedList) {
+    if (seen.has(u)) continue;
+    seen.add(u);
+    out.push(u);
+  }
+  const orphans = (persisted ?? []).filter((u) => typeof u === "string" && u.trim() !== "" && !derivedSet.has(u));
+  if (orphans.length > 0) {
+    log.warn(
+      `[commsStore.ensureAnchoredChannel] ${channelId}: ${orphans.length} persisted participant(s) are not re-derivable from durable rows and were KEPT (no silent drop): ${orphans.join(", ")}`,
+    );
+  }
+  return out;
+}
+
+/**
+ * STAGE-D BLOCKER FIX B4a - read the PERSISTED channel row when the in-memory
+ * map has no entry yet. Without this, a request that materialises an anchored
+ * channel BEFORE `hydrateCommsStore` has loaded it (cold worker, first request
+ * in a fresh PM2 process) rebuilds it from derived rows only and then
+ * `persistChannel` OVERWRITES the durable participant list - the same silent
+ * drop, one layer earlier. Fail-soft: an unreadable row simply means "no
+ * persisted list", never a throw.
+ */
+function persistedChannelRow(channelId: string): Channel | undefined {
+  try {
+    const row = (rawDb() as any).prepare(
+      `SELECT id, kind, participant_user_ids_json, created_at, metadata_json,
+              company_id, round_id, chapter_id
+         FROM comms_channels WHERE id = ? AND deleted_at IS NULL LIMIT 1`,
+    ).get(channelId) as any;
+    if (!row) return undefined;
+    let participantUserIds: string[] = [];
+    let metadata: any = undefined;
+    try { participantUserIds = JSON.parse(row.participant_user_ids_json ?? "[]"); } catch { /* */ }
+    try { if (row.metadata_json) metadata = JSON.parse(row.metadata_json); } catch { /* */ }
+    if (!Array.isArray(participantUserIds)) participantUserIds = [];
+    return {
+      id: row.id,
+      kind: row.kind as Channel["kind"],
+      participantUserIds,
+      createdAt: row.created_at,
+      metadata,
+      ...(row.company_id ? { companyId: row.company_id as string } : {}),
+      ...(row.round_id ? { roundId: row.round_id as string } : {}),
+    } as Channel;
+  } catch {
+    return undefined;
+  }
+}
+
+function ensureAnchoredChannel(channelId: string): Channel | undefined {
+  const decoded = decodeChannelIdAnchors(channelId);
+  if (decoded.kind !== "cap_table" && decoded.kind !== "company_followers") return undefined;
+  const kind = decoded.kind as AnchoredChannelKind;
+  const existing = channels.get(channelId) ?? persistedChannelRow(channelId);
+  const anchors = existing ? resolveChannelAnchors(existing) : decoded.anchors;
+  const companyId = anchors.companyId;
+  if (!companyId) return existing;
+
+  const participants = durableParticipantsFor(kind, { companyId });
+  /* An anchored channel with NO derivable participants is NOT materialised with
+     an empty list — that would create a channel nobody, including the founder,
+     can read, and would mask the real cause. The caller's fail-closed path then
+     applies, and the durable membership check in `postIsVisibleToViewer` still
+     admits anyone the rows do authorise. */
+  if (participants.length === 0 && !existing) return undefined;
+
+  const founders = founderUserIdsOfCompany(companyId);
+  const ch: Channel = existing
+    ? {
+        ...existing,
+        companyId,
+        /* STAGE-D BLOCKER FIX B4a - MERGE, NEVER REPLACE.
+           This used to be `participants.length ? participants : existing...`,
+           i.e. the re-derived set REPLACED the persisted one, so every
+           persisted participant that is not re-derivable (an invited-round
+           investor backfilled by Stage C at :1528, a seeded or legacy channel
+           member) was SILENTLY DROPPED on restart - an access removal nobody
+           asked for and nobody could see. A hydration pass must never shrink a
+           participant list. Union, de-duplicated, persisted-first so the order
+           is stable across restarts. */
+        participantUserIds: unionParticipants(
+          existing.participantUserIds,
+          participants,
+          channelId,
+        ),
+      }
+    : {
+        id: channelId,
+        kind: kind as ChannelKind,
+        companyId,
+        participantUserIds: participants,
+        createdAt: nowIso(),
+        metadata: {
+          title:
+            kind === "cap_table"
+              ? `Cap Table · ${durableCompanyName(companyId) || companyId}`
+              : `${durableCompanyName(companyId) || companyId} · Followers`,
+          companyId,
+          ...(founders[0] ? { founderUserId: founders[0] } : {}),
+          /* Marks the channel as REBUILT-FROM-ROWS rather than seeded, so an
+             operator reading the row can tell where its members came from. */
+          rebuiltFrom: "durable_rows",
+        },
+      };
+  channels.set(channelId, ch);
+  persistChannel(ch);
+  backfillChannelAnchors(channelId, { companyId });
+  return ch;
 }
 
 function persistMessage(m: Message): void {
@@ -397,6 +714,87 @@ const outbox: CommsOutboxEvent[] = [];
 const auditEntries: Array<{ id: string; ts: string; eventType: string; actorId: string; payloadJson: string; prevHash: string; hash: string }> = [];
 let lastHash = "0".repeat(64);
 
+/* W-COLLECTIVE Wave 1 (v4 §1.5) — how many entries the two 500-item comms ring
+   buffers have dropped in THIS process. Monotonic process telemetry surfaced on
+   /api/healthz.
+
+   W2B B1 — a drop is now the LAST RESORT, not the normal path. Overflow is
+   drained to comms_audit_log / comms_outbox_events first (see
+   ./commsAuditDurable) and only evicted from memory once that write is
+   confirmed. `auditDropped` / `outboxDropped` therefore now count only the
+   genuinely unrecoverable case: the durable write kept failing until the hard
+   memory ceiling was reached. `auditPersisted` / `outboxPersisted` /
+   `drainFailures` make the healthy and degraded paths visible too. */
+const commsOverflow = {
+  auditDropped: 0,
+  outboxDropped: 0,
+  auditPersisted: 0,
+  outboxPersisted: 0,
+  drainFailures: 0,
+};
+
+/** Ring size kept resident in memory — unchanged from Wave 1. */
+const COMMS_RING_LIMIT = 500;
+/* Absolute memory ceiling while the durable drain is failing. Beyond this the
+   process would OOM, so entries are dropped and COUNTED. Ten ring-fulls buys
+   roughly a sustained-outage window without ever pretending nothing happened. */
+const COMMS_RING_HARD_CAP = COMMS_RING_LIMIT * 10;
+
+export function getCommsOverflowCounts(): {
+  auditDropped: number;
+  outboxDropped: number;
+  auditPersisted: number;
+  outboxPersisted: number;
+  drainFailures: number;
+  total: number;
+} {
+  return {
+    auditDropped: commsOverflow.auditDropped,
+    outboxDropped: commsOverflow.outboxDropped,
+    auditPersisted: commsOverflow.auditPersisted,
+    outboxPersisted: commsOverflow.outboxPersisted,
+    drainFailures: commsOverflow.drainFailures,
+    total: commsOverflow.auditDropped + commsOverflow.outboxDropped,
+  };
+}
+
+/**
+ * W2B B1 — durable drain shared by both ring buffers.
+ *
+ * Persist the overflow slice BEFORE evicting it. Three outcomes, none silent:
+ *   1. drain succeeds        → evict, count as persisted.
+ *   2. drain fails          → keep in memory, count a drain failure, retry on
+ *                             the next append.
+ *   3. drain keeps failing past the hard cap → evict and count as DROPPED,
+ *      which /api/healthz surfaces as outboxOverflowCount.
+ */
+function drainRing<T>(
+  buffer: T[],
+  persist: (slice: readonly T[]) => { ok: true; persisted: number } | { ok: false; error: string },
+  onPersisted: (n: number) => void,
+  onDropped: (n: number) => void,
+): void {
+  if (buffer.length <= COMMS_RING_LIMIT) return;
+  const overflowCount = buffer.length - COMMS_RING_LIMIT;
+  const slice = buffer.slice(0, overflowCount);
+  const result = persist(slice);
+  if (result.ok) {
+    buffer.splice(0, overflowCount);
+    onPersisted(result.persisted);
+    return;
+  }
+  commsOverflow.drainFailures += 1;
+  if (buffer.length > COMMS_RING_HARD_CAP) {
+    const dropCount = buffer.length - COMMS_RING_LIMIT;
+    buffer.splice(0, dropCount);
+    onDropped(dropCount);
+    log.error(
+      `[commsStore] durable drain unavailable and hard cap ${COMMS_RING_HARD_CAP} exceeded — DROPPED ${dropCount} entr(ies). ` +
+        `Cumulative dropped: audit=${commsOverflow.auditDropped} outbox=${commsOverflow.outboxDropped}.`,
+    );
+  }
+}
+
 function appendAudit(eventType: string, actorId: string, payload: unknown): { hash: string; prev: string } {
   const id = `comms_audit_${randomBytes(8).toString("hex")}`;
   const ts = new Date().toISOString();
@@ -407,7 +805,15 @@ function appendAudit(eventType: string, actorId: string, payload: unknown): { ha
     .digest("hex");
   auditEntries.push({ id, ts, eventType, actorId, payloadJson, prevHash: prev, hash });
   lastHash = hash;
-  if (auditEntries.length > 500) auditEntries.splice(0, auditEntries.length - 500);
+  /* W2B B1 — was `auditEntries.splice(0, auditEntries.length - 500)`, which
+     amputated the head of a hash chain with no durable copy. The overflow is
+     now written to comms_audit_log first and evicted only on success. */
+  drainRing(
+    auditEntries,
+    drainCommsAuditEntries,
+    (n) => { commsOverflow.auditPersisted += n; },
+    (n) => { commsOverflow.auditDropped += n; },
+  );
   return { hash, prev };
 }
 
@@ -423,7 +829,14 @@ function emitOutbox(eventType: string, actorId: string, ip: string | undefined, 
     auditChain: { priorHash: prev, hash },
     schemaVersion: "1.0",
   });
-  if (outbox.length > 500) outbox.splice(0, outbox.length - 500);
+  /* W2B B1 — was `outbox.splice(0, outbox.length - 500)`. Each envelope carries
+     `auditChain: {priorHash, hash}`, so dropping one dropped a chain link. */
+  drainRing(
+    outbox,
+    drainCommsOutboxEvents,
+    (n) => { commsOverflow.outboxPersisted += n; },
+    (n) => { commsOverflow.outboxDropped += n; },
+  );
 }
 
 /**
@@ -831,9 +1244,22 @@ if (DEMO_SEED_ENABLED) {
 /* HELPERS — visibility, gating                                         */
 /* ==================================================================== */
 
-/** DEF-038: Return minimal stub instead of Aisha's profile for unknown actors. */
+/**
+ * DEF-038: Return minimal stub instead of Aisha's profile for unknown actors.
+ *
+ * D3 (:963) — re-sourced. On live this ALWAYS returned the stub, whose
+ * `capTables` and `collectiveChapters` are empty, so `sharedContextBetween()`
+ * always computed "no shared context" for every pair of real users.
+ *
+ * WHY THIS CANNOT WIDEN DISCLOSURE: the shared context it feeds is consumed by
+ * `resolveDisplayIdentity`, whose result is OVERRIDDEN two blocks below by the
+ * SACRED `resolveDisplayName` for every pairing except self-view and a founder
+ * viewing their own channel. Real shared context therefore only ever improves
+ * the surfaces that were already permitted — it never becomes the deciding
+ * factor for someone else's name.
+ */
 function viewerOf(actorId: string): UserRef {
-  return COMMS_USERS[actorId] ?? {
+  return (commsUserRef(actorId) as UserRef | undefined) ?? {
     id: actorId, legalName: actorId,
     email: "", visibility: { visibleToCoMembers: false, visibleToCollectiveNetwork: false },
     capTables: [], collectiveChapters: [], roles: [],
@@ -858,10 +1284,19 @@ function resolveIdentity(
   /* W-AVI65 FIX 2 — set for DIRECT MESSAGE surfaces so co-membership is computed
      with the widened founder↔investor predicate (see areDmCoMembers). Absent =
      unchanged legacy behavior (investor↔investor ledger rule only). */
-  opts?: { dm?: boolean },
+  /* W-COLLECTIVE Wave 2 Stage C (C4) — set for SOCIAL surfaces (network and
+     company-follower post bylines, comment author labels, reaction history) so
+     the name resolves in the `collectiveDirectory` context, which requires the
+     subject's EXPLICIT opt-in. Absent = unchanged counterparty ("message")
+     behaviour, which cap_table-scoped posts and DMs keep. */
+  opts?: { dm?: boolean; social?: boolean },
 ): ReturnType<typeof resolveDisplayIdentity> {
   const v = viewerOf(viewerUserId);
-  const a = COMMS_USERS[authorUserId] ?? {
+  /* D3 (:996) — re-sourced author ref. Previously the stub on live, which meant
+     `a.legalName` was the raw `u_…` id for every author (see the legalName
+     recovery below) and `a.visibility` was a hardcoded all-false object rather
+     than the author's actual privacy preferences. */
+  const a = (commsUserRef(authorUserId) as UserRef | undefined) ?? {
     id: authorUserId, legalName: authorUserId,
     email: "", visibility: { visibleToCoMembers: false, visibleToCollectiveNetwork: false },
     capTables: [], collectiveChapters: [], roles: [],
@@ -896,19 +1331,35 @@ function resolveIdentity(
        so this can only ever ADD true cases, never remove them. Non-DM surfaces
        keep the exact legacy predicate. Co-membership is still proven only from
        durable rows — never from "a DM exists". */
-    const isCoMember = opts?.dm === true
-      ? areDmCoMembers(authorUserId, viewerUserId)
-      : areCoMembersOnAnyCapTable(authorUserId, viewerUserId);
+    /* W-COLLECTIVE Wave 2 Stage C (C4) — on a social surface the resolver's
+       social branch (userPrivacyResolver.ts:230-233) ignores isCoMember and
+       demands `visibleInCollectiveDirectory`, so co-membership is not even
+       computed: seeing a post must never be enough to learn an identity the
+       owner did not consent to expose socially. */
+    const social = opts?.social === true;
+    const isCoMember = social
+      ? false
+      : opts?.dm === true
+        ? areDmCoMembers(authorUserId, viewerUserId)
+        : areCoMembersOnAnyCapTable(authorUserId, viewerUserId);
     /* COMMS_USERS is EMPTY in production (see its declaration), so `a.legalName`
        degrades to the raw u_… id. Resolve the real name from the DB-backed
        resolver instead; if it cannot be resolved, keep the raw id so the
        resolver's / sanitizeCommsName's existing generic fallbacks apply (a raw
        id is never surfaced). */
-    const legalName = COMMS_USERS[authorUserId] ? a.legalName : dbLegalNameFor(authorUserId, a.legalName);
-    const policyName = resolveDisplayName(authorUserId, viewerUserId, "message", {
-      legalName,
-      isCoMember,
-    });
+    /* D3 — the ref now resolves from the DB too, so prefer its name whenever it
+       is a real name (i.e. not the raw id fallback) and only fall back to
+       `dbLegalNameFor` when the directory could not name this user at all. */
+    const legalName =
+      commsUserIsKnown(authorUserId) && a.legalName && a.legalName !== authorUserId
+        ? a.legalName
+        : dbLegalNameFor(authorUserId, a.legalName);
+    const policyName = resolveDisplayName(
+      authorUserId,
+      viewerUserId,
+      social ? "collectiveDirectory" : "message",
+      { legalName, isCoMember },
+    );
     if (policyName === "Private Investor") {
       return { ...resolved, displayName: policyName, isAnonymous: true };
     }
@@ -957,7 +1408,11 @@ function sanitizeCommsName(name: string | null | undefined, subjectUserId: strin
     const r = resolveDbDisplayName(subjectUserId);
     if (r?.name && !looksUnsafe(r.name)) return r.name;
   } catch { /* fall through */ }
-  return COMMS_USERS[subjectUserId] ? "Collective member" : "Invited contact";
+  /* D3 (:1102 / :1135) — re-sourced. `COMMS_USERS[subjectUserId]` is ALWAYS
+     undefined on live, so this generic backstop labelled EVERY fully onboarded
+     Collective member an "Invited contact". `commsUserIsKnown` answers the same
+     question ("is this a real platform member?") from the `users` table. */
+  return commsUserIsKnown(subjectUserId) ? "Collective member" : "Invited contact";
 }
 
 /**
@@ -990,7 +1445,11 @@ function resolveCommsDisplayName(
 
   // 4) safe generic — never email/id. Prefer "Collective member" for known
   // users, "Invited contact" for not-yet-provisioned CRM-only ids.
-  return COMMS_USERS[subjectUserId] ? "Collective member" : "Invited contact";
+  /* D3 (:1102 / :1135) — re-sourced. `COMMS_USERS[subjectUserId]` is ALWAYS
+     undefined on live, so this generic backstop labelled EVERY fully onboarded
+     Collective member an "Invited contact". `commsUserIsKnown` answers the same
+     question ("is this a real platform member?") from the `users` table. */
+  return commsUserIsKnown(subjectUserId) ? "Collective member" : "Invited contact";
 }
 
 /** Last message of a channel (used for previews). */
@@ -1177,6 +1636,86 @@ function channelIsVisibleToViewer(
   return false;
 }
 
+/**
+ * W-COLLECTIVE Wave 2 Stage C — canonical POST-read visibility gate.
+ *
+ * COMPOSITION, and why each half is shaped this way:
+ *
+ *  - `kind === "network"` → participant gate **OR** the relationship predicate.
+ *    The OR is essential: a per-author network channel has exactly one
+ *    participant (the author), so ANDing the two would make the widening
+ *    unreachable and Stage C a no-op.
+ *  - Every other kind (`cap_table`, `company_followers`, `dm`, `soft_circle`) →
+ *    the EXISTING participant gate ONLY, unchanged. `cap_table` posts route
+ *    through the same feed loop, so applying a relationship predicate to them
+ *    would leak round and ownership detail to company followers and co-chapter
+ *    members who are not on the cap table.
+ *
+ * `channelIsVisibleToViewer` is called WITHOUT `ctx` here (exactly as before),
+ * so no derived-membership backfill of `channel.participantUserIds` occurs on a
+ * post read, and `viewerCanSeeNetworkPost` never touches the channel at all.
+ * READ THEREFORE NEVER CONFERS WRITE: `canMutatePost` keeps reading the
+ * untouched participant array.
+ *
+ * This is a pure widening: it can only ADD visible posts, never remove one.
+ */
+function postIsVisibleToViewer(
+  channel: Channel,
+  post: { id: string; authorUserId?: string },
+  viewerUserId: string,
+): boolean {
+  if (channelIsVisibleToViewer(channel, viewerUserId)) return true;
+  /* ── W-COLLECTIVE Wave 2 Stage D (D5) — DURABLE anchored-channel membership ──
+     The participant array above is a SNAPSHOT taken when the channel was last
+     materialised. For the two anchored kinds the authoritative membership is a
+     row, and it changes between materialisations: an investor who follows a
+     company one minute after its followers channel was built, or who is added to
+     a cap table, would otherwise be denied until the next restart — and an
+     unfollow would keep working until then.
+
+     `viewerIsDurableChannelMember` answers the SAME question the participant
+     array is meant to answer ("is this viewer a member of THIS company's cap
+     table / follower set?"), live, from `captable_commits`, `company_members`
+     and `company_followers`. It does NOT apply the relationship audience to
+     these kinds, and it MUTATES NOTHING — no participant backfill — so reading a
+     post can never promote the reader to a channel writer (the invariant
+     `server/lib/networkPostAudience.ts` documents and Stage C asserts).
+     `soft_circle` returns false there, so funding surfaces are untouched. */
+  if (channel.kind === "cap_table" || channel.kind === "company_followers") {
+    /* You can always read your OWN post — the D5 acceptance criterion names the
+       author first, and an author who has since left the cap table must still be
+       able to open the thing they wrote. */
+    if (post.authorUserId && post.authorUserId === viewerUserId) return true;
+    return viewerIsDurableChannelMember(channel, viewerUserId);
+  }
+  if (channel.kind !== "network") return false;
+  return viewerCanSeeNetworkPost(post, viewerUserId);
+}
+
+/**
+ * W-COLLECTIVE Wave 2 Stage C (C4) — social identity policy for post surfaces.
+ *
+ * TRUE when a post's channel is a SOCIAL surface (`network` /
+ * `company_followers`), i.e. bylines, comment author labels and reaction
+ * history must resolve in the `collectiveDirectory` context, which requires an
+ * explicit opt-in (`visibleInCollectiveDirectory`) in the SACRED resolver
+ * (server/lib/userPrivacyResolver.ts:230-233). `cap_table`-scoped posts keep
+ * their existing counterparty (`"message"`) resolution path.
+ *
+ * WHY THIS MATTERS NOW. `projectPost` resolved every byline in the counterparty
+ * `"message"` context, whose masking branch
+ * (server/lib/userPrivacyResolver.ts:220-224) only requires cap-table/DM
+ * co-membership — a WEAKER consent test than the social branch. (An earlier
+ * document cited :227-233 as that masking branch; that is wrong — :227-229 is a
+ * comment and :230-233 is the social branch. Following it literally would have
+ * widened social presence without consent.) The inversion was inert while no
+ * post was cross-user visible; Stage C's widening makes it a live identity
+ * leak, so it is corrected here.
+ */
+function postSurfaceIsSocial(channel: Channel | undefined): boolean {
+  return channel?.kind === "network" || channel?.kind === "company_followers";
+}
+
 /** Pull the comms membership context off the request (set by loadUserContext). */
 function membershipCtxOf(req: Request): CommsMembershipCtx {
   return (req as Request & { userContext?: CommsMembershipCtx }).userContext;
@@ -1265,6 +1804,42 @@ interface PostView extends Post {
   authorLocation: string;
   authorCapavateAngelNetwork: boolean;
   isAnonymous: boolean;
+  /* W-COLLECTIVE Wave 2 Stage D (D1) — ADDITIVE, per-VIEWER follow state.
+     `followingCompanyIds` (inherited from `Post`) used to be a field written ON
+     THE POST, so one investor following made the button read "Following ✓" for
+     EVERY viewer. It is now recomputed per viewer from `company_followers` in
+     `projectPost`, and these two fields state the same answer unambiguously so
+     the client never has to infer it from a shared array.
+     The existing key and its array type are UNCHANGED — nothing is dropped. */
+  viewerIsFollowingCompany?: boolean;
+  /** The company this post is attributed to, when it is a company post. */
+  authorCompanyId?: string;
+  /** Total live followers of `authorCompanyId` (public count, no identities). */
+  companyFollowerCount?: number;
+}
+
+/**
+ * W-COLLECTIVE Wave 2 Stage D (D1) — the company a post is ATTRIBUTED to.
+ *
+ * Resolution order, all durable: the in-memory channel's `companyId` → the 0117
+ * channel anchor → a decode of the deterministic channel id → the post's own
+ * `companyId`. Returns "" when the post is not company-attributed, and the
+ * caller then reports no follow state at all rather than guessing one.
+ *
+ * Deliberately restricted by the CALLER to `authorKind === "company"`, exactly
+ * mirroring the follow endpoint's own guard, so no new field appears on a post
+ * kind that never had one.
+ */
+function companyIdOfPost(post: Post): string {
+  if (post.authorKind !== "company") return "";
+  const ch = channels.get(post.channelId);
+  if (ch?.companyId) return ch.companyId;
+  const anchored = ch
+    ? resolveChannelAnchors(ch).companyId
+    : decodeChannelIdAnchors(post.channelId).anchors.companyId;
+  if (anchored) return anchored;
+  const own = (post as Post & { companyId?: string }).companyId;
+  return typeof own === "string" && own.trim() ? own.trim() : "";
 }
 
 function channelKindBadge(kind: ChannelKind, channel: Channel): string {
@@ -1352,7 +1927,8 @@ function projectMessage(msg: Message, channel: Channel | undefined, viewerUserId
   const r = resolveIdentity(viewerUserId, msg.authorUserId, founderUserId, {
     dm: channel?.kind === "dm",
   });
-  const author = COMMS_USERS[msg.authorUserId];
+  /* D3 (:1554) — re-sourced. Every message role badge read "Member" on live. */
+  const author = commsUserRef(msg.authorUserId);
   const roleBadge = author?.roles.includes("founder") ? "Founder"
     : author?.roles.includes("soft_circler") ? "Soft-circler"
     : author?.roles.includes("investor") ? "Investor" : "Member";
@@ -1423,7 +1999,18 @@ function projectPost(post: Post, viewerUserId: string): PostView {
     const ch = channels.get(post.channelId);
     // v14 — no demo fallback; missing companyId yields empty string so the
     // name lookup misses cleanly instead of impersonating NovaPay.
-    const postCompanyId = ch?.companyId ?? "";
+    /* D5 — anchors, so a company post whose channel was not in memory (the
+       usual case after a restart) still knows its company. */
+    const postCompanyId =
+      ch?.companyId ?? (ch ? resolveChannelAnchors(ch).companyId ?? "" : decodeChannelIdAnchors(post.channelId).anchors.companyId ?? "");
+    /* W-COLLECTIVE Wave 2 Stage D — LATENT LIVE BUG, now fixed.
+       This was a hardcoded five-entry demo map, so on live EVERY company that
+       was not one of the five demo ids rendered its RAW `co_…` id as the post
+       byline, and the location line below was the literal string
+       "San Francisco, CA" for EVERY company post regardless of where the
+       company actually is. Both are now read from the `companies` row. The demo
+       map is kept ONLY as a last-resort fallback so the seeded demo ids keep
+       their expected labels when no `companies` row exists. */
     const COMPANY_NAME_MAP: Record<string, string> = {
       co_novapay: "NovaPay AI",
       co_arboreal: "Arboreal",
@@ -1431,12 +2018,23 @@ function projectPost(post: Post, viewerUserId: string): PostView {
       co_beacon: "Beacon Health",
       co_tideline: "Tideline Labs",
     };
-    const companyName = COMPANY_NAME_MAP[postCompanyId] ?? postCompanyId;
+    const companyName =
+      durableCompanyName(postCompanyId) || COMPANY_NAME_MAP[postCompanyId] || postCompanyId;
     resolvedName = companyName;
-    location = "San Francisco, CA";
+    /* D4 — a company byline shows the company HQ. Empty stays empty: both render
+       sites guard on `post.authorLocation &&`, so nothing is drawn. */
+    location = durableCompanyHq(postCompanyId);
     role = "Company";
   } else {
-    const r = resolveIdentity(viewerUserId, post.authorUserId, undefined);
+    /* W-COLLECTIVE Wave 2 Stage C (C4) — the BYLINE of a network or
+       company-follower post is a SOCIAL surface and must require the author's
+       explicit collective-directory opt-in. Derived from the channel kind here
+       (rather than at each of the four call sites) so every projection of the
+       same post agrees. cap_table-scoped posts keep the existing path. */
+    const bylineCh = channels.get(post.channelId);
+    const r = resolveIdentity(viewerUserId, post.authorUserId, undefined, {
+      social: postSurfaceIsSocial(bylineCh),
+    });
     resolvedName = r.displayName;
     isAnon = r.isAnonymous;
     // 1d — if the author is a Consortium Partner, apply the partner label
@@ -1447,8 +2045,13 @@ function projectPost(post: Post, viewerUserId: string): PostView {
       resolvedName = partnerLabel;
       isAnon = partnerLabel === "Consortium Partner";
     }
-    const author = COMMS_USERS[post.authorUserId];
-    location = author?.location ?? "";
+    /* D3 (:1657) — re-sourced author ref: was always undefined on live. */
+    const author = commsUserRef(post.authorUserId);
+    /* D4 (:1657) — AUTHOR LOCATION. Founders show their company HQ (derived
+       from `companies.hq`, never duplicated onto the user); investors show their
+       optional self-entered `users.location` (migration 0120, settable via
+       PATCH /api/users/me/location). Empty remains valid and renders NOTHING. */
+    location = durableAuthorLocation(post.authorUserId) || author?.location || "";
     // v24.0 C13: derive the Capavate Angel Network badge from live membership
     // state. Fall back to the static COMMS_USERS field only if the live store
     // is unavailable (e.g. not yet hydrated / import missing).
@@ -1457,9 +2060,22 @@ function projectPost(post: Post, viewerUserId: string): PostView {
     } else {
       cangel = author?.capavateAngelNetwork ?? false;
     }
+    /* D3 (:1660) — role badge. Read "Member" for every author on live. */
     role = author?.roles.includes("founder") ? "Founder"
       : author?.roles.includes("investor") ? "Investor"
       : "Member";
+  }
+  /* ── D1 — PER-VIEWER FOLLOW STATE ──────────────────────────────────────────
+     Resolved from the durable `company_followers` relation for THIS viewer.
+     `followingCompanyIds` is narrowed to the subset of this post's company that
+     the viewer actually follows, which keeps the response SHAPE identical
+     (`string[] | undefined`) while making its VALUE viewer-correct. */
+  let viewerFollows = false;
+  let followerCount: number | undefined;
+  const attributedCompanyId = companyIdOfPost(post);
+  if (attributedCompanyId) {
+    viewerFollows = isFollowingCompany(viewerUserId, attributedCompanyId);
+    followerCount = followerCountOfCompany(attributedCompanyId);
   }
   return {
     ...post,
@@ -1468,6 +2084,17 @@ function projectPost(post: Post, viewerUserId: string): PostView {
     authorLocation: location,
     authorCapavateAngelNetwork: cangel,
     isAnonymous: isAnon,
+    /* Only OVERRIDE the legacy array for company-attributed posts; every other
+       post keeps whatever it already had (usually `undefined`), so no shape
+       changes for post kinds that never carried follow state. */
+    followingCompanyIds: attributedCompanyId
+      ? viewerFollows
+        ? [attributedCompanyId]
+        : []
+      : post.followingCompanyIds,
+    viewerIsFollowingCompany: viewerFollows,
+    authorCompanyId: attributedCompanyId || undefined,
+    companyFollowerCount: followerCount,
   };
 }
 
@@ -1540,6 +2167,20 @@ export function registerCommsRoutes(app: Express): void {
     if (!ch) return res.status(404).json({ message: "Channel not found" });
     if (!channelIsVisibleToViewer(ch, actorId, ctx))
       return res.status(403).json({ message: "Not a member of this channel" });
+    /* STAGE-D BLOCKER FIX B4b - a company's followers feed is AUTHOR-RESTRICTED.
+       D5 made `followers__<companyId>` exist on live for the first time, and
+       because following is open self-service, any authenticated investor who
+       followed a company could POST into it (200; pre-Stage-D it was 404) -
+       an unmoderated broadcast channel into the founder's and every follower's
+       inbox. Followers READ; only the company's own active founders WRITE.
+       Fails closed: an unresolvable company id denies. The read path above is
+       untouched. */
+    if (ch.kind === "company_followers" && !mayWriteToFollowersChannel(ch, actorId)) {
+      return res.status(403).json({
+        message: "Not a member of this channel",
+        error: "followers_channel_read_only",
+      });
+    }
     const parsed = messageCreateSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: "Invalid message", issues: parsed.error.issues });
     return withIdempotency(req, res, `POST /api/comms/channels/${ch.id}/messages`, () => {
@@ -1704,30 +2345,72 @@ export function registerCommsRoutes(app: Express): void {
       if (!ch) continue;
       if (scope === "network" && ch.kind !== "network") continue;
       if (scope === "company_followers" && ch.kind !== "company_followers") continue;
-      // Visibility — must be participant of the channel.
-      if (!channelIsVisibleToViewer(ch, actorId)) continue;
+      /* Visibility — participant of the channel, OR (network posts only)
+         relationship audience. W-COLLECTIVE Wave 2 Stage C: still NO `ctx`, so
+         no participant backfill happens on a feed read. */
+      if (!postIsVisibleToViewer(ch, p, actorId)) continue;
       // Sprint 19 E — text search.
       if (q && !p.body.toLowerCase().includes(q)) continue;
       // Sprint 19 E — topic filter.
       if (topic && !(p as any).topics?.some((t: string) => t.toLowerCase() === topic)) continue;
       // Sprint 23 Wave B — DEF-034: filter by authorKind ("founders"|"investors"|"collective").
       if (authorKind && authorKind !== "all") {
-        const author = COMMS_USERS[p.authorUserId];
+        /* D3 (:1924) — RE-SOURCED, and this one FAILED CLOSED: `COMMS_USERS` is
+           `{}` on live, so `author` was ALWAYS undefined and
+           `authorKind=collective` returned ZERO posts — the Collective tab of
+           the feed was permanently empty. Chapter membership now comes from
+           ACTIVE, non-deleted `chapter_memberships` rows (the same predicate
+           audience row 5 uses), so the filter selects real Collective authors. */
+        const author = commsUserRef(p.authorUserId);
         if (authorKind === "founders" && p.authorKind !== "company") continue;
         if (authorKind === "investors" && p.authorKind !== "user") continue;
-        if (authorKind === "collective" && !(author?.collectiveChapters?.length ?? 0)) continue;
+        if (authorKind === "collective") {
+          const chapterCount =
+            author?.collectiveChapters?.length ?? durableActiveChapterIds(p.authorUserId).length;
+          if (!chapterCount) continue;
+        }
       }
       result.push(p);
     }
     if (sort === "newest") result.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     else if (sort === "featured") result.sort((a, b) => (b.likedByUserIds.length + b.shareCount) - (a.likedByUserIds.length + a.shareCount));
     else if (sort === "following") {
-      // Following = posts where the author is in your network connections / cap-table.
-      const follow = new Set([...me.capTables, ...me.collectiveChapters]);
+      /* ── D3 (:1937) — RE-SOURCED, and this one FAILED **OPEN** ───────────────
+         `COMMS_USERS` is `{}` on live, so `author` was ALWAYS undefined and the
+         `if (!author) return true` line admitted EVERY post: "Following" was
+         indistinguishable from "Newest". Simply deleting that line would have
+         swung it to the opposite failure — an EMPTY tab — because `me.capTables`
+         and `me.collectiveChapters` came from the same empty map.
+
+         Both halves are therefore re-sourced together. A post is "followed" when
+         ANY of these DURABLE relations holds between the viewer and the author:
+           • the viewer IS the author (your own posts belong in your feed);
+           • a shared cap table (committed positions / actively-founded company);
+           • a shared ACTIVE chapter;
+           • a live `company_followers` row for a company the author fronts —
+             i.e. the D1 follow relation, which is what "following" should have
+             meant all along.
+         This is a FEED FILTER, never an authorisation decision: every post in
+         `result` already passed `postIsVisibleToViewer` above. */
+      const viewerCapTables = new Set<string>(
+        me.capTables.length ? me.capTables : durableCapTableCompanyIds(actorId),
+      );
+      const viewerChapters = new Set<string>(
+        me.collectiveChapters.length ? me.collectiveChapters : durableActiveChapterIds(actorId),
+      );
+      const viewerFollowedCompanies = new Set<string>(companiesFollowedBy(actorId));
       result = result.filter((p) => {
-        const author = COMMS_USERS[p.authorUserId];
-        if (!author) return true;
-        return author.capTables.some((c) => follow.has(c)) || author.collectiveChapters.some((c) => follow.has(c));
+        if (p.authorUserId === actorId) return true;
+        const attributed = companyIdOfPost(p);
+        if (attributed && viewerFollowedCompanies.has(attributed)) return true;
+        const author = commsUserRef(p.authorUserId);
+        const authorCapTables = author?.capTables ?? [];
+        const authorChapters = author?.collectiveChapters ?? [];
+        if (authorCapTables.some((c) => viewerCapTables.has(c))) return true;
+        if (authorChapters.some((c) => viewerChapters.has(c))) return true;
+        // An author who fronts a company the viewer follows.
+        if (authorCapTables.some((c) => viewerFollowedCompanies.has(c))) return true;
+        return false;
       });
       result.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     }
@@ -1759,6 +2442,22 @@ export function registerCommsRoutes(app: Express): void {
           ? companyFollowersChannelId(parsed.data.companyId as string)
           : networkChannelId(actorId);
       }
+      /* ── D2 — CHAPTER CONTEXT, checked BEFORE anything is written ──────────
+         Fail closed: a caller may only anchor a post to a chapter they hold an
+         ACTIVE membership of. Rejecting up front means we never persist a post
+         and then discover we cannot honour the audience it asked for. */
+      const requestedChapterId = (parsed.data as { chapterId?: string }).chapterId?.trim();
+      if (requestedChapterId && !isActiveChapterMember(requestedChapterId, actorId)) {
+        return res.status(403).json({ message: "not_an_active_chapter_member" });
+      }
+      /* ── D5 — MATERIALISE THE ANCHORED CHANNEL ────────────────────────────
+         `cap_table` and `company_followers` channels were NEVER created here —
+         only the author's own `network` channel was — so a cap-table or
+         company-followers post was born with an unresolvable channel and post
+         detail (which fails closed since Wave 1) returned 403 to EVERYONE,
+         including its author. Now created and PERSISTED with 0117 anchors and a
+         participant list derived from durable rows. */
+      ensureAnchoredChannel(channelId);
       // Ensure the network channel exists for this user.
       if (!channels.has(channelId) && authorKind === "user" && parsed.data.visibility !== "cap_table") {
         const me = viewerOf(actorId);
@@ -1825,6 +2524,22 @@ export function registerCommsRoutes(app: Express): void {
         });
       }
       posts.set(id, post);
+      /* D2 — set the durable POST ANCHOR now that the row exists. Membership was
+         already verified above, so a failure here is a real write failure and is
+         surfaced rather than swallowed (rule: no silent drops — the caller asked
+         for a chapter audience and must be told if it was not applied). */
+      if (requestedChapterId) {
+        const anchored = setPostChapterAnchor(id, requestedChapterId);
+        if (!anchored.ok) {
+          posts.delete(id);
+          return res.status(500).json({
+            ok: false,
+            error: "POST_CHAPTER_ANCHOR_FAILED",
+            reason: anchored.error,
+            message: "Your post could not be published to that chapter. Please try again.",
+          });
+        }
+      }
       // v17 Phase B — Collective slice: persist Collective-visible posts
       // to the dedicated `collective_channel_posts` table so the Collective
       // feed survives restart. Only `public_to_collective` posts go here.
@@ -1883,13 +2598,16 @@ export function registerCommsRoutes(app: Express): void {
       // Sprint 19 G2 — emit in-app notifications to channel participants.
       if (!isScheduled) {
         const ch = channels.get(channelId);
-        const viewerRole = COMMS_USERS[actorId]?.roles.includes("founder") ? "founder" : "investor";
+        /* D3 (:2095) — re-sourced. Was ALWAYS "investor" on live, so a founder's
+           own post notification deep-linked their co-participants to the
+           investor surface. */
+        const viewerRole = commsUserRef(actorId)?.roles.includes("founder") ? "founder" : "investor";
         for (const uid of (ch?.participantUserIds ?? []).filter((u: string) => u !== actorId)) {
           try {
             emitNotification({
               userId: uid,
               kind: "investor_report.published",
-              title: `New post from ${resolveCommsDisplayName(null, actorId, { fullName: COMMS_USERS[actorId]?.legalName })}`,
+              title: `New post from ${resolveCommsDisplayName(null, actorId, { fullName: commsUserRef(actorId)?.legalName })}`,
               body: post.body.slice(0, 100),
               link: `/${viewerRole}/posts/${id}`,
             });
@@ -1954,7 +2672,12 @@ export function registerCommsRoutes(app: Express): void {
     const { actorId } = actorOf(req);
     const p = posts.get(req.params.id);
     if (!p) return res.status(404).json({ message: "Not found" });
-    const me = COMMS_USERS[actorId];
+    /* D3 (:2166) — RE-SOURCED. `COMMS_USERS` is `{}` on live, so `me` was ALWAYS
+       undefined and NOBODY could pin a post: every call returned 403, including
+       the founder the feature exists for. The founder role now comes from active
+       `company_members` rows / `users.role`. This is the first time this endpoint
+       can succeed in production. */
+    const me = commsUserRef(actorId);
     if (!me?.roles.includes("founder"))
       return res.status(403).json({ message: "Only founders can pin posts" });
     (p as any).pinnedByFounderUserId = actorId;
@@ -1997,21 +2720,31 @@ export function registerCommsRoutes(app: Express): void {
   });
 
   /* ---- Posts: like / unlike ---- */
-  app.post("/api/comms/posts/:id/like", (req, res) => {
+  /* W2B B3 — engagement writes are now rate-limited. `collectiveRateLimit` is
+     the EXISTING sacred limiter (server/lib/rateLimit.ts, call-only) already
+     mounted on /api/collective, /api/partner and /api/messages in routes.ts;
+     /api/comms had no limiter at all. Its "write" bucket is 60/min per user,
+     which is one sustained write per second — far above any human tapping like,
+     far below a script. Authorisation is NOT changed here (Stage C). */
+  app.post<{ id: string }>("/api/comms/posts/:id/like", collectiveRateLimit, (req, res) => {
     const { actorId, ip, ua } = actorOf(req);
     if (!canMutatePost(res, req.params.id, actorId)) return; // B14
     const p = posts.get(req.params.id)!;
     if (!p.likedByUserIds.includes(actorId)) p.likedByUserIds.push(actorId);
+    /* W2B B4 — durable, and idempotent per (post, user): INSERT OR IGNORE, so a
+       double-tap or a client retry is a no-op instead of a UNIQUE 500. */
+    recordPostLike(p.id, actorId, nowIso());
     emitOutbox("post.liked", actorId, ip, ua, { postId: p.id, userId: actorId });
     // Sprint 19 A — propagate to all feed caches.
     emitMutation({ aggregate: "post", id: p.id, change: "update" });
     res.json({ ok: true, likeCount: p.likedByUserIds.length });
   });
-  app.delete("/api/comms/posts/:id/like", (req, res) => {
+  app.delete<{ id: string }>("/api/comms/posts/:id/like", collectiveRateLimit, (req, res) => {
     const { actorId, ip, ua } = actorOf(req);
     if (!canMutatePost(res, req.params.id, actorId)) return; // B14
     const p = posts.get(req.params.id)!;
     p.likedByUserIds = p.likedByUserIds.filter((u) => u !== actorId);
+    removePostLike(p.id, actorId); // W2B B4
     emitOutbox("post.unliked", actorId, ip, ua, { postId: p.id, userId: actorId });
     emitMutation({ aggregate: "post", id: p.id, change: "update" });
     res.json({ ok: true, likeCount: p.likedByUserIds.length });
@@ -2022,26 +2755,59 @@ export function registerCommsRoutes(app: Express): void {
     const { actorId } = actorOf(req);
     const p = posts.get(req.params.id);
     if (!p) return res.status(404).json({ message: "Not found" });
+    /* ── W-COLLECTIVE Wave 2 Stage D (D5) — THE SHIP GATE ───────────────────
+       Rebuild an unresolvable `cap_table` / `company_followers` channel from
+       DURABLE ROWS before deciding. Wave 1's fail-closed rule is UNCHANGED and
+       still below — this only removes the reason the channel was missing in the
+       first place (nothing outside the demo seed ever created these two kinds),
+       which had made every such post permanently inaccessible even to its
+       author. If the rows do not describe a channel, `ch` stays undefined and
+       the read still DENIES. */
+    if (!channels.has(p.channelId)) ensureAnchoredChannel(p.channelId);
     const ch = channels.get(p.channelId);
-    if (ch && !channelIsVisibleToViewer(ch, actorId)) {
+    /* W-COLLECTIVE Wave 1 (v5 §B2) — FAIL CLOSED.
+       This was `if (ch && !visible)`: an unresolvable channel skipped the check
+       entirely and the post was served to any authenticated caller. On a
+       platform where `visibility:"cap_table"` posts carry round and ownership
+       detail, "I could not determine the audience" must deny, not allow.
+       `restorePostFromDb` now rebuilds the author's network channel, so the
+       common restart case resolves; a still-missing channel is a genuine
+       inability to authorise. */
+    /* W-COLLECTIVE Wave 2 Stage C (C2) — participant gate OR, for `network`
+       channels only, the relationship audience predicate. Wave 1's fail-closed
+       `!ch` branch is preserved: an unresolvable channel still denies, because
+       the predicate cannot be trusted to describe an audience we could not even
+       identify. Still no `ctx` → no participant backfill. */
+    if (!ch || !postIsVisibleToViewer(ch, p, actorId)) {
       return res.status(403).json({ message: "Not visible to you" });
     }
+    /* W-COLLECTIVE Wave 2 Stage C (C4) — social identity policy. */
+    const socialSurface = postSurfaceIsSocial(ch);
+    const isParticipant = ch.participantUserIds.includes(actorId);
     const view = projectPost(p, actorId);
     // Resolve comment author labels (anonymous-aware) for nicer UI rendering.
+    // On a social surface these resolve in the `collectiveDirectory` context.
     const commentsResolved = p.comments.map((c) => {
-      const r = resolveIdentity(actorId, c.userId, undefined);
+      const r = resolveIdentity(actorId, c.userId, undefined, { social: socialSurface });
       return { ...c, authorLabel: r.displayName, isAnonymous: r.isAnonymous, parentCommentId: (c as any).parentCommentId };
     });
-    // Reactions history is a derived view of likes for the detail panel.
-    const reactionHistory = p.likedByUserIds.map((uid) => {
-      const r = resolveIdentity(actorId, uid, undefined);
-      return { userId: uid, label: r.displayName, isAnonymous: r.isAnonymous };
-    });
+    /* Reactions history is a derived view of likes for the detail panel. Stage C:
+       SUPPRESSED ENTIRELY for non-participants — a relationship viewer who
+       gains sight of a post must not thereby enumerate WHO ELSE engaged with
+       it. Participants keep the list, resolved in the social context on social
+       surfaces. Deliberate narrowing: the field is always present (never
+       dropped), it is empty for non-participants. */
+    const reactionHistory = isParticipant
+      ? p.likedByUserIds.map((uid) => {
+          const r = resolveIdentity(actorId, uid, undefined, { social: socialSurface });
+          return { userId: uid, label: r.displayName, isAnonymous: r.isAnonymous };
+        })
+      : [];
     res.json({ post: view, comments: commentsResolved, reactionHistory });
   });
 
   /* ---- Posts: comments ---- */
-  app.post("/api/comms/posts/:id/comments", (req, res) => {
+  app.post<{ id: string }>("/api/comms/posts/:id/comments", collectiveRateLimit, (req, res) => {
     const { actorId, ip, ua } = actorOf(req);
     if (!canMutatePost(res, req.params.id, actorId)) return; // B14
     const p = posts.get(req.params.id)!;
@@ -2051,8 +2817,17 @@ export function registerCommsRoutes(app: Express): void {
     // Sprint 18 Phase 3 E4 — support a single level of nested replies via
     // optional parentCommentId.
     const parentCommentId = typeof req.body?.parentCommentId === "string" ? req.body.parentCommentId : undefined;
-    p.comments.push({ id: cid, userId: actorId, body: parsed.data.body, createdAt: nowIso(), parentCommentId } as any);
+    const commentCreatedAt = nowIso();
+    p.comments.push({ id: cid, userId: actorId, body: parsed.data.body, createdAt: commentCreatedAt, parentCommentId } as any);
     p.commentCount += 1;
+    recordPostComment({ // W2B B4
+      id: cid,
+      postId: p.id,
+      authorUserId: actorId,
+      body: parsed.data.body,
+      createdAt: commentCreatedAt,
+      parentCommentId,
+    });
     emitOutbox("post.commented", actorId, ip, ua, { postId: p.id, userId: actorId, commentId: cid, parentCommentId });
     // Sprint 19 A — emit SSE so feed cache refreshes.
     emitMutation({ aggregate: "post", id: p.id, change: "update" });
@@ -2060,29 +2835,166 @@ export function registerCommsRoutes(app: Express): void {
   });
 
   /* ---- Posts: share ---- */
-  app.post("/api/comms/posts/:id/share", (req, res) => {
+  app.post<{ id: string }>("/api/comms/posts/:id/share", collectiveRateLimit, (req, res) => {
     const { actorId, ip, ua } = actorOf(req);
     if (!canMutatePost(res, req.params.id, actorId)) return; // B14
     const p = posts.get(req.params.id)!;
     p.shareCount += 1;
+    /* W2B B4 — append-only share event. Deliberately no uniqueness: sharing the
+       same post twice is two real events, and the 0119 table reflects that. */
+    recordPostShare({ id: `sh_${randomBytes(8).toString("hex")}`, postId: p.id, userId: actorId, createdAt: nowIso() });
     emitOutbox("post.shared", actorId, ip, ua, { postId: p.id, userId: actorId });
     emitMutation({ aggregate: "post", id: p.id, change: "update" });
     res.json({ ok: true, shareCount: p.shareCount });
   });
 
-  /* ---- Posts: follow toggle (only company posts) ---- */
-  app.post("/api/comms/posts/:id/follow", (req, res) => {
+  /* ==================================================================== */
+  /* W-COLLECTIVE Wave 2 STAGE D (D1) — THE REWIRED FOLLOW ENDPOINT        */
+  /* ==================================================================== */
+  /**
+   * `POST /api/comms/posts/:id/follow` was broken in THREE ways at once:
+   *   1. it wrote the followed company id onto the POST (`p.followingCompanyIds`)
+   *      instead of recording a per-USER relation, so the store had no idea WHO
+   *      followed;
+   *   2. that write was IN-MEMORY only — every follow vanished on restart;
+   *   3. because the client button reads that shared post field
+   *      (client/src/components/comms/PostsFeed.tsx:743), ONE investor following
+   *      made the button read "Following ✓" for EVERY viewer.
+   *
+   * Owner decision implemented here: follows are OPEN — any authenticated
+   * investor may follow a company — and the founder sees follower IDENTITIES
+   * (see the follower-list endpoint below, which still routes every name through
+   * the SACRED privacy resolver so an explicit opt-out wins).
+   *
+   * ADDITIVE, NOT REPLACED: the path is unchanged and the response still
+   * contains `{ ok: true, followingCompanyIds }`. What changed is that the array
+   * is now THIS VIEWER's follow state read back from `company_followers`, and
+   * `following` / `followerCount` are added alongside it.
+   *
+   * NO MONEY: `company_followers` is a social relation. Following a company
+   * grants read access to its follower feed and nothing else — no commitment, no
+   * allocation, no soft-circle intent, no payment.
+   */
+  const resolveFollowTarget = (
+    postId: string,
+  ): { post: Post; companyId: string } | { error: { status: number; message: string } } => {
+    const p = posts.get(postId);
+    if (!p) return { error: { status: 404, message: "Not found" } };
+    if (p.authorKind !== "company") {
+      return { error: { status: 400, message: "Follow only valid for company posts" } };
+    }
+    /* v14 — never "co_novapay". D5 — also accept the durable anchor / id decode,
+       so a post whose channel is not in memory (the usual case after a restart)
+       is still followable instead of 400-ing with post_missing_companyId. */
+    const companyId = companyIdOfPost(p);
+    if (!companyId) return { error: { status: 400, message: "post_missing_companyId" } };
+    return { post: p, companyId };
+  };
+
+  app.post<{ id: string }>("/api/comms/posts/:id/follow", (req, res) => {
     const { actorId, ip, ua } = actorOf(req);
-    const p = posts.get(req.params.id);
-    if (!p) return res.status(404).json({ message: "Not found" });
-    if (p.authorKind !== "company")
-      return res.status(400).json({ message: "Follow only valid for company posts" });
-    // v14 — fall back to the post's own channelId-derived companyId; never "co_novapay".
-    const companyId = channels.get(p.channelId)?.companyId ?? "";
-    if (!companyId) return res.status(400).json({ message: "post_missing_companyId" });
-    p.followingCompanyIds = Array.from(new Set([...(p.followingCompanyIds ?? []), companyId]));
+    const target = resolveFollowTarget(req.params.id);
+    if ("error" in target) {
+      return res.status(target.error.status).json({ message: target.error.message });
+    }
+    const { post: p, companyId } = target;
+    /* DURABLE, per-USER, IDEMPOTENT (upsert that clears `deleted_at`). Fail
+       CLOSED: if the row cannot be written we do NOT report a follow. */
+    const written = followCompany(actorId, companyId);
+    if (!written.ok) {
+      return res.status(500).json({
+        ok: false,
+        error: "FOLLOW_PERSIST_FAILED",
+        reason: written.error,
+        message: "Your follow could not be saved. Please try again.",
+      });
+    }
+    /* The in-memory post field is NO LONGER the source of truth and is no longer
+       written — that write was the per-viewer bug. `projectPost` recomputes the
+       array per viewer from `company_followers`. */
+    const followingCompanyIds = isFollowingCompany(actorId, companyId) ? [companyId] : [];
     emitOutbox("post.followed", actorId, ip, ua, { postId: p.id, userId: actorId, companyId });
-    res.json({ ok: true, followingCompanyIds: p.followingCompanyIds });
+    emitMutation({ aggregate: "post", id: p.id, change: "update" });
+    res.json({
+      ok: true,
+      followingCompanyIds, // legacy key, legacy type — now per-viewer
+      following: true,
+      companyId,
+      followerCount: followerCountOfCompany(companyId),
+    });
+  });
+
+  /* ---- D1 — UNFOLLOW. There was no way to undo a follow at all. Soft:
+         `deleted_at` is set, and re-following clears it (0116's UNIQUE index is
+         NOT partial on `deleted_at`, so the upsert restores the same row). ---- */
+  app.delete<{ id: string }>("/api/comms/posts/:id/follow", (req, res) => {
+    const { actorId, ip, ua } = actorOf(req);
+    const target = resolveFollowTarget(req.params.id);
+    if ("error" in target) {
+      return res.status(target.error.status).json({ message: target.error.message });
+    }
+    const { post: p, companyId } = target;
+    const removed = unfollowCompany(actorId, companyId);
+    if (!removed.ok) {
+      return res.status(500).json({
+        ok: false,
+        error: "UNFOLLOW_PERSIST_FAILED",
+        reason: removed.error,
+        message: "Your unfollow could not be saved. Please try again.",
+      });
+    }
+    emitOutbox("post.unfollowed", actorId, ip, ua, { postId: p.id, userId: actorId, companyId });
+    emitMutation({ aggregate: "post", id: p.id, change: "update" });
+    res.json({
+      ok: true,
+      followingCompanyIds: [],
+      following: false,
+      companyId,
+      followerCount: followerCountOfCompany(companyId),
+    });
+  });
+
+  /* ==================================================================== */
+  /* D1 — FOUNDER-FACING FOLLOWER LIST                                     */
+  /* ==================================================================== */
+  /**
+   * `GET /api/comms/companies/:companyId/followers`
+   *
+   * Owner decision: the FOUNDER sees follower IDENTITIES. Authorisation is
+   * strict — only an ACTIVE founder/co_founder of that company (or a platform
+   * admin) may call it; every other caller gets 403, including followers.
+   *
+   * Identity resolution goes through the SACRED privacy resolver in the
+   * `message` context with `isCoMember: true`. That is justified because
+   * following is an AFFIRMATIVE act directed at this founder's company, which is
+   * the same posture as a counterparty relationship — and critically, an
+   * EXPLICIT opt-out still wins: `visibleToCoMembers:false` yields the follower's
+   * screen name, or "Private Investor" when they have none. Raw `legalName` is
+   * never emitted.
+   */
+  app.get<{ companyId: string }>("/api/comms/companies/:companyId/followers", (req, res) => {
+    const { actorId } = actorOf(req);
+    const companyId = String(req.params.companyId ?? "").trim();
+    if (!companyId) return res.status(400).json({ message: "companyId required" });
+    const ctx = membershipCtxOf(req) as { isAdmin?: boolean } | undefined;
+    const isFounderOfCompany = founderUserIdsOfCompany(companyId).includes(actorId);
+    if (!isFounderOfCompany && ctx?.isAdmin !== true) {
+      return res.status(403).json({ message: "Only the company founder can see followers" });
+    }
+    const followers = followersOfCompany(companyId).map((f) => {
+      const ref = commsUserRef(f.userId);
+      const displayName = resolveDisplayName(f.userId, actorId, "message", {
+        legalName: ref?.legalName ?? "",
+        isCoMember: true,
+      });
+      return {
+        userId: f.userId,
+        displayName,
+        isAnonymous: displayName === "Private Investor",
+        followedAt: f.followedAt,
+      };
+    });
+    res.json({ ok: true, companyId, followerCount: followers.length, followers });
   });
 
   /* ---- DM start ---- */
@@ -2091,7 +3003,10 @@ export function registerCommsRoutes(app: Express): void {
     try { ({ actorId, ip, ua } = actorOf(req)); } catch { return res.status(401).json({ message: "Unauthenticated" }); }
     const parsed = dmStartSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: "Invalid", issues: parsed.error.issues });
-    let target = COMMS_USERS[parsed.data.targetUserId];
+    /* D3 — re-sourced. A real platform member with a `users` row is no longer
+       treated as "not provisioned" just because the demo seed is off. The CRM
+       auto-provision path below stays as the fallback for CRM-only contacts. */
+    let target: UserRef | DurableCommsUserRef | undefined = commsUserRef(parsed.data.targetUserId);
     // B-505 fix v23.6.1 — CRM-only contacts (e.g. invited investors who haven't
     // fully onboarded into the comms layer) are absent from COMMS_USERS. The
     // founder owns the CRM record, so a founder-initiated DM is authorized by
@@ -2256,24 +3171,100 @@ export function registerCommsRoutes(app: Express): void {
   // Anonymous callers and viewers with no shared channels see an empty list.
   // Unit-test harnesses without userContext fall through to the legacy behavior
   // (return the full directory) so existing comms tests keep passing.
+  /* ====================================================================== */
+  /* W-COLLECTIVE Wave 2 STAGE D (D3) — RE-SOURCED **AND** DE-LEAKED         */
+  /* ====================================================================== */
+  /**
+   * TWO defects, in OPPOSITE directions, in one 18-line handler:
+   *
+   *  (a) EMPTY IN PRODUCTION. The list came from `Object.values(COMMS_USERS)`,
+   *      and `COMMS_USERS` is `{}` whenever the demo seed is off. So the DM
+   *      recipient picker (`client/src/pages/investor/Messages.tsx:67`,
+   *      `client/src/pages/partner/PartnerMessages.tsx:46`) and @mention
+   *      autocomplete have been rendering an EMPTY list to every live user. The
+   *      candidate set is now the real `users` table.
+   *
+   *  (b) A BULK PII DUMP waiting to happen. The old projection emitted RAW
+   *      `legalName` and the WHOLE `visibility` object, and the `if (!ctx)`
+   *      branch emitted the entire directory to an unauthenticated caller.
+   *      Re-sourcing (a) without fixing (b) would have converted a
+   *      hard-empty endpoint into a live investor-identity export. Every name
+   *      is now resolved through the SACRED `userPrivacyResolver` FOR THE
+   *      CALLING VIEWER, and `visibility` is reduced to the screen label the
+   *      viewer is already allowed to see.
+   *
+   * Authorisation: self, plus channel co-participants, plus durable cap-table
+   * co-members, chapter co-members and shared-follow peers. Unauthenticated
+   * callers get `[]`. Keys are UNCHANGED (`id, legalName, visibility, capTables,
+   * roles, location, capavateAngelNetwork`) so no client field is dropped.
+   */
   app.get("/api/comms/users", (req, res) => {
     const ctx = (req as unknown as { userContext?: { isAuthed?: boolean; userId?: string; isAdmin?: boolean } }).userContext;
-    const all = Object.values(COMMS_USERS).map((u) => ({
-      id: u.id, legalName: u.legalName, visibility: u.visibility,
-      capTables: u.capTables, roles: u.roles, location: u.location,
-      capavateAngelNetwork: u.capavateAngelNetwork ?? false,
-    }));
-    // Legacy test harnesses don't mount loadUserContext — preserve their behavior.
-    if (!ctx) return res.json(all);
-    if (!ctx.isAuthed) return res.json([]);
-    if (ctx.isAdmin) return res.json(all);
-    const viewerId = ctx.userId!;
+
+    /* Candidate ids: seed personas (when the demo seed is on) UNION the durable
+       `users` table. The union — not a replacement — is what keeps the existing
+       seeded DM/@mention tests green while making the endpoint work on live. */
+    const candidateIds = new Set<string>(Object.keys(COMMS_USERS));
+    for (const id of listDurableCommsUserIds(500)) candidateIds.add(id);
+
+    /* An unauthenticated caller gets NOTHING. This replaces the old `if (!ctx)`
+       branch that returned the whole directory to anyone; a legacy harness that
+       does not mount `loadUserContext` still has an actor header, which
+       `actorOf` reads, so it keeps working through the normal path below. */
+    const viewerId = ctx?.userId || (() => { try { return actorOf(req).actorId; } catch { return ""; } })();
+    if (ctx && ctx.isAuthed === false) return res.json([]);
+    if (!viewerId) return res.json([]);
+
+    const isAdmin = ctx?.isAdmin === true;
+    /* Peer set from DURABLE relations, not from a seed array. */
     const peers = new Set<string>([viewerId]);
     for (const ch of channels.values()) {
       if (!ch.participantUserIds.includes(viewerId)) continue;
       for (const p of ch.participantUserIds) peers.add(p);
     }
-    res.json(all.filter((u) => peers.has(u.id)));
+    for (const p of durableCapTablePeerIds(viewerId)) peers.add(p);
+    for (const p of durableChapterPeerIds(viewerId)) peers.add(p);
+    for (const p of durableFollowPeerIds(viewerId)) peers.add(p);
+
+    const out: Array<Record<string, unknown>> = [];
+    for (const id of Array.from(candidateIds)) {
+      const isSelf = id === viewerId;
+      if (!isSelf && !isAdmin && !peers.has(id)) continue;
+      const u = commsUserRef(id);
+      if (!u) continue;
+      /* PRIVACY: never the raw legal name for anyone but the subject. Cap-table
+         co-membership uses the SACRED predicate; everyone else is resolved in
+         the `collectiveDirectory` context, which requires an EXPLICIT opt-in and
+         otherwise yields the screen name or "Private Investor". An explicit
+         `visibleToCoMembers:false` therefore still wins. */
+      const displayName = isSelf
+        ? u.legalName
+        : areCoMembersOnAnyCapTable(viewerId, id)
+          ? resolveDisplayName(id, viewerId, "message", { legalName: u.legalName, isCoMember: true })
+          : resolveDisplayName(id, viewerId, "collectiveDirectory", { legalName: u.legalName });
+      /* `readUserPrivacyRaw` returns null when the subject has never set a
+         preference — absence is NOT an opt-out, so default to visible. */
+      const priv = readUserPrivacyRaw(id);
+      out.push({
+        id: u.id,
+        /* Same KEY and same TYPE as before (a string the picker renders), but a
+           privacy-resolved value instead of the raw legal name. */
+        legalName: displayName,
+        /* Reduced: the screen label only, and only when the viewer is already
+           being shown it. The subject's raw consent flags are no longer
+           broadcast — except to the subject themselves. */
+        visibility: isSelf
+          ? u.visibility
+          : { screenName: displayName === u.legalName ? u.visibility?.screenName : displayName },
+        capTables: u.capTables,
+        roles: u.roles,
+        location: u.location,
+        capavateAngelNetwork: (u as { capavateAngelNetwork?: boolean }).capavateAngelNetwork ?? false,
+        /* Additive, non-PII: lets the picker mark opted-out investors. */
+        isPrivate: priv?.visibleToCoMembers === false,
+      });
+    }
+    res.json(out);
   });
 
   /* ---- Current viewer (mock auth) ---- */
@@ -2433,6 +3424,7 @@ export function applyPostModerationToComms(
             companyId: cj.companyId ?? null,
             mediaUrls: cj.mediaUrls ?? [],
             topics: cj.topics ?? [],
+            commentParents: cj.commentParents, // W2B B4
           });
           const restored = posts.get(postId);
           if (restored) (restored as any).deletedAt = undefined;
@@ -2496,7 +3488,7 @@ export function publishDueScheduledPosts(now: Date = new Date()): {
           emitNotification({
             userId: uid,
             kind: "investor_report.published",
-            title: `New post from ${resolveCommsDisplayName(null, p.authorUserId, { fullName: COMMS_USERS[p.authorUserId]?.legalName })}`,
+            title: `New post from ${resolveCommsDisplayName(null, p.authorUserId, { fullName: commsUserRef(p.authorUserId)?.legalName })}`,
             body: p.body.slice(0, 100),
             link: `/posts/${p.id}`,
           });
@@ -2520,6 +3512,8 @@ export function restorePostFromDb(row: {
   companyId?: string | null;
   mediaUrls?: string[];
   topics?: string[];
+  /** W2B B4 — commentId → parentCommentId, journaled in content_json. */
+  commentParents?: Record<string, string>;
 }): void {
   if (posts.has(row.id)) return; // already present
   const authorKind = (row.authorKind ?? "user") as "user" | "company";
@@ -2533,11 +3527,54 @@ export function restorePostFromDb(row: {
   }
   if (visibility === "cap_table") {
     channelId = capTableChannelId(row.companyId as string);
+    /* ── W-COLLECTIVE Wave 2 Stage D (D5) — REBUILD, NOT GUESS ──────────────
+       The note below correctly refused to synthesise this channel's participant
+       list FROM THE POST ROW. Stage D does not do that either: the list is
+       derived from the company's own durable rows (`company_members` for active
+       founders, the SACRED `captable_commits` ledger for committed holders,
+       `company_followers` for follows) by `ensureAnchoredChannel`, and it is
+       persisted with its 0117 anchors so the next restart reproduces it exactly.
+       Nothing is guessed and nothing comes from a seed array. Until this, these
+       posts came back from every restart with no channel and post detail denied
+       them to EVERYONE, including their author — the D5 ship gate. */
+    ensureAnchoredChannel(channelId);
   } else if (authorKind === "company") {
     channelId = companyFollowersChannelId(row.companyId as string);
+    ensureAnchoredChannel(channelId); // D5 — see the note above.
   } else {
     channelId = networkChannelId(row.authorUserId);
+    /* W-COLLECTIVE Wave 1 (v4 §1.7, as corrected by v5 §B2).
+       The live create path (`POST /api/comms/posts`, above) creates the
+       author's `kind:"network"` channel before storing the post. This restore
+       path did not, so after a restart every DB-restored post pointed at a
+       channel absent from `channels`. `GET /api/comms/posts/:id` then took its
+       `if (ch && !visible)` branch, found no channel, and served the post to
+       ANY caller. The defect was in this restore path, not in the read.
+
+       ONLY the per-author network channel is reconstructed here. A `cap_table`
+       or `company_followers` channel's participant list IS the authorisation
+       decision (who is on the cap table / who follows the company) and cannot
+       be derived from a post row. Synthesising one from a guessed roster would
+       either leak the post or wrongly admit members. Those channels are rebuilt
+       from their own durable sources; a post whose channel is still missing is
+       now DENIED by the detail read rather than served to everyone. */
+    if (!channels.has(channelId)) {
+      const author = viewerOf(row.authorUserId);
+      channels.set(channelId, {
+        id: channelId,
+        kind: "network",
+        participantUserIds: [row.authorUserId],
+        createdAt: row.createdAt,
+        metadata: { title: `${author.legalName}'s network`, ownerUserId: row.authorUserId },
+      });
+    }
   }
+  /* W2B B4 — RESTORE engagement instead of resetting it.
+     These four fields used to be hardcoded to empty/zero, which is why every
+     restart of the LIVE server wiped every like, comment and share. They now
+     come from the Stage A tables (network_post_likes / _comments / _shares).
+     Soft-deleted comments are excluded by loadPostEngagement. */
+  const engagement = loadPostEngagement(row.id, row.commentParents);
   const post: Post = {
     id: row.id,
     channelId,
@@ -2546,10 +3583,10 @@ export function restorePostFromDb(row: {
     body: row.body,
     createdAt: row.createdAt,
     visibility,
-    likedByUserIds: [],
-    commentCount: 0,
-    comments: [],
-    shareCount: 0,
+    likedByUserIds: engagement.likedByUserIds,
+    commentCount: engagement.comments.length,
+    comments: engagement.comments as Post["comments"],
+    shareCount: engagement.shareCount,
     mediaUrls: row.mediaUrls,
     topics: row.topics,
     status: "published",
@@ -2636,8 +3673,14 @@ export async function hydrateCommsStore(): Promise<void> {
     /* 1. Channels */
     let chRows: any[] = [];
     try {
+      /* W-COLLECTIVE Wave 2 Stage D (D5) — the 0117 ANCHOR columns are now
+         SELECTed. They existed since Stage A but were never read, so a channel
+         came back from a restart with no idea which company/round/chapter it
+         belonged to and `cap_table` / `company_followers` channels could not be
+         rebuilt. */
       chRows = db.prepare(
-        `SELECT id, kind, participant_user_ids_json, created_at, metadata_json
+        `SELECT id, kind, participant_user_ids_json, created_at, metadata_json,
+                company_id, round_id, chapter_id
            FROM comms_channels WHERE deleted_at IS NULL`,
       ).all();
     } catch (err) {
@@ -2658,8 +3701,39 @@ export async function hydrateCommsStore(): Promise<void> {
         participantUserIds,
         createdAt: r.created_at,
         metadata,
+        /* D5 — carry the durable anchors back into memory. Fall back to a decode
+           of the channel id for rows persisted before the anchors were written
+           (the id is the primary key and is minted deterministically, so this is
+           a decode rather than a guess). */
+        ...(r.company_id
+          ? { companyId: r.company_id as string }
+          : decodeChannelIdAnchors(r.id).anchors.companyId
+            ? { companyId: decodeChannelIdAnchors(r.id).anchors.companyId as string }
+            : {}),
+        ...(r.round_id ? { roundId: r.round_id as string } : {}),
       };
       channels.set(ch.id, ch);
+    }
+
+    /* ── D5 — REBUILD ANCHORED CHANNEL MEMBERSHIP FROM DURABLE SOURCES ───────
+       For every persisted `cap_table` / `company_followers` channel, refresh the
+       participant list from the company's own rows (active founders, committed
+       `captable_commits` holders, live `company_followers`) instead of trusting a
+       possibly-stale JSON snapshot written by an earlier process. This is what
+       makes the restart test in the Stage D brief pass with participants
+       DERIVED, never seeded. `soft_circle` is deliberately skipped — deriving
+       round membership would put a funding surface live, which Stage D forbids.
+       Best-effort per channel: one bad row must not abort hydration. */
+    for (const ch of Array.from(channels.values())) {
+      if (ch.kind !== "cap_table" && ch.kind !== "company_followers") continue;
+      try {
+        ensureAnchoredChannel(ch.id);
+      } catch (err) {
+        log.warn(
+          `[hydrate] commsStore.anchoredChannel ${ch.id} rebuild failed:`,
+          (err as Error).message,
+        );
+      }
     }
 
     /* 2. Messages (already persisted; rebuild the Map) */

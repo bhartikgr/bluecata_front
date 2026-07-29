@@ -11,6 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Star } from "lucide-react";
 import { Link } from "wouter";
+import { collectiveWidgetErrorText } from "@/lib/collectiveGateError";
 
 interface ScoreRow {
   companyId: string;
@@ -53,7 +54,7 @@ export function FeaturedDealsGrid() {
           </div>
         ) : error ? (
           <div className="text-sm text-red-700" data-testid="widget-featured-error">
-            Couldn't load featured deals.
+            {collectiveWidgetErrorText(error, 'Couldn\'t load featured deals.')}
           </div>
         ) : top6.length === 0 ? (
           <div className="text-center py-6 text-slate-500" data-testid="widget-featured-empty">

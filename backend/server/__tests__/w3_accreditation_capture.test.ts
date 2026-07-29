@@ -7,10 +7,44 @@
  *   - GET  same → served clause + accredited/signedCurrent status
  *   - missing signature → 400 SIGNATURE_REQUIRED
  *   - missing criteria  → 400 CRITERIA_REQUIRED
- *   - C-5 gate: active member + on cap table + (soft) → 200
- *              active member + on cap table + strict + not-accredited → 403 ACCREDITATION_NOT_DECLARED
- *              active member + on cap table + strict + accredited → 200
+ *   - C-5 gate: active member + on cap table + profile-grace → 200 (no declaration row)
+ *              active member + on cap table + nothing on file → 403 ACCREDITATION_DECLARATION_REQUIRED
+ *              active member + on cap table + declared → 200
  *              active member + NOT on cap table → 403 not_on_cap_table
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * TRIAGE (a) STALE TEST — the two C-5 accreditation cases encoded a retired
+ * contract, in the same two ways as the sibling `w3_c5_gate_unit.test.ts`:
+ *
+ * 1. RETIRED FEATURE FLAG. They drove a SOFT/STRICT dual mode via
+ *    `COLLECTIVE_C5_ACCRED_ENFORCE`. That env var no longer exists anywhere in
+ *    product code — `requireCollectiveMember.ts` step 4 reads it zero times and
+ *    has no branch on it. The accreditation sub-check is now UNCONDITIONAL
+ *    first-sign-on capture, so setting/unsetting the var changed nothing and the
+ *    "SOFT default ⇒ admitted without a declaration" premise was false.
+ *
+ * 2. RETIRED ERROR CODE. `ACCREDITATION_NOT_DECLARED` exists nowhere in product
+ *    code. It was deliberately split so the client can distinguish a transient
+ *    read failure from a genuine missing declaration:
+ *      • ACCREDITATION_STATUS_UNAVAILABLE   (read failed — retryable)
+ *      • ACCREDITATION_DECLARATION_REQUIRED (none on file — go declare)
+ *
+ * WHY THE PRODUCT IS RIGHT (so this is (a), not (b)): the deny is not a dead
+ * end. It carries `requiresAccreditationDeclaration: true` + `declarationEndpoint`,
+ * and `CollectiveMemberGate.tsx:250` branches on that flag to render
+ * `collective/CollectiveAccreditationBlocker.tsx`, which posts the declaration
+ * and re-enters. A designed capture handshake, not a lost flag.
+ *
+ * NO CASE WAS DROPPED (4 → 4, both assertions preserved in kind):
+ *   • The old "SOFT ⇒ 200 without a declaration" case KEEPS its 200 assertion
+ *     AND its "without a declaration" character — it now earns admission through
+ *     the product's real no-declaration admit path: the profile grace route
+ *     (`getAccreditationGateStatus` Rule 2, `source: "profile"`), which exists
+ *     precisely for investors accredited before the capture path shipped. The
+ *     test asserts the declaration table is still EMPTY for that user, so the
+ *     original "even without a declaration" guarantee is tested, not weakened.
+ *   • The old "STRICT + not-accredited ⇒ 403" case KEEPS its 403 deny assertion,
+ *     re-pointed at the live code, and additionally pins the actionable payload.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import express, { type Express } from "express";
@@ -24,6 +58,7 @@ import {
 import { rawDb } from "../db/connection";
 import { getLatestDeclaration } from "../investorComplianceRoutes";
 import { storeCredential } from "../userCredentialsStore";
+import { spvEngineStore } from "../spvEngineStore";
 import { ACCREDITATION_CLAUSE_VERSION } from "@shared/accreditationClause";
 
 let app: Express;
@@ -171,7 +206,7 @@ describe("W3-B — accreditation capture routes", () => {
   });
 });
 
-describe("W3-C — C-5 gate: cap-table (hard) AND accreditation (soft-flagged)", () => {
+describe("W3-C — C-5 gate: cap-table (hard) AND accreditation (unconditional capture)", () => {
   it("active member NOT on a cap table → 403 not_on_cap_table", async () => {
     const uid = "u_w3_nocaptable";
     collectiveMembershipStore.activate(uid, "u_admin");
@@ -182,45 +217,50 @@ describe("W3-C — C-5 gate: cap-table (hard) AND accreditation (soft-flagged)",
     collectiveMembershipStore.deactivate(uid, "u_admin");
   });
 
-  it("active member + on cap table + SOFT default (unset) → 200 even without a declaration", async () => {
+  it("active member + on cap table + profile grace → 200 even without a declaration", async () => {
     const uid = "u_w3_soft";
     upsertActiveMembership(uid);
     upsertCapTablePositionForTests(uid);
-    delete process.env.COLLECTIVE_C5_ACCRED_ENFORCE;
+    // The product's real "admitted without a declaration" path: an investor whose
+    // compliance profile already reads verified is never asked to re-declare
+    // (getAccreditationGateStatus Rule 2 → source "profile"). This is what the
+    // retired SOFT default used to stand in for.
+    spvEngineStore.upsertComplianceProfile(uid, { accreditationStatus: "verified" });
+
     const r = await call("GET", GATED, { userId: uid });
     expect(r.status).toBe(200);
+    // The original guarantee — admitted with NO declaration row — still holds.
+    expect(getLatestDeclaration(uid)).toBeNull();
+    expect(countRows(uid)).toBe(0);
   });
 
-  it("active member + on cap table + STRICT + not-accredited → 403 ACCREDITATION_NOT_DECLARED", async () => {
+  it("active member + on cap table + nothing on file → 403 ACCREDITATION_DECLARATION_REQUIRED", async () => {
     const uid = "u_w3_strict_deny";
     upsertActiveMembership(uid);
     upsertCapTablePositionForTests(uid);
-    process.env.COLLECTIVE_C5_ACCRED_ENFORCE = "strict";
-    try {
-      const r = await call("GET", GATED, { userId: uid });
-      expect(r.status).toBe(403);
-      expect(r.body.error).toBe("ACCREDITATION_NOT_DECLARED");
-    } finally {
-      delete process.env.COLLECTIVE_C5_ACCRED_ENFORCE;
-    }
+
+    const r = await call("GET", GATED, { userId: uid });
+    expect(r.status).toBe(403);
+    expect(r.body.error).toBe("ACCREDITATION_DECLARATION_REQUIRED");
+    // The deny must be resolvable by the user — that is what makes unconditional
+    // enforcement a capture handshake rather than a lockout.
+    expect(r.body.requiresAccreditationDeclaration).toBe(true);
+    expect(r.body.declarationEndpoint).toBe(CAPTURE);
   });
 
-  it("active member + on cap table + STRICT + accredited (declared) → 200", async () => {
+  it("active member + on cap table + accredited (declared) → 200", async () => {
     const uid = "u_w3_strict_allow";
     upsertActiveMembership(uid);
     upsertCapTablePositionForTests(uid);
-    // Record a declaration first (soft/default so the POST is admitted).
+    // The capture route is not itself gated on accreditation, so the declaration
+    // can always be recorded from a blocked state.
     const post = await call("POST", CAPTURE, {
       userId: uid,
       body: { signatureName: "Katherine Johnson", criteria: ["us_income"] },
     });
     expect(post.status).toBe(201);
-    process.env.COLLECTIVE_C5_ACCRED_ENFORCE = "strict";
-    try {
-      const r = await call("GET", GATED, { userId: uid });
-      expect(r.status).toBe(200);
-    } finally {
-      delete process.env.COLLECTIVE_C5_ACCRED_ENFORCE;
-    }
+
+    const r = await call("GET", GATED, { userId: uid });
+    expect(r.status).toBe(200);
   });
 });

@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Activity, Info } from "lucide-react";
+import { collectiveWidgetErrorText } from "@/lib/collectiveGateError";
 
 interface EngagementResponse {
   score: number;
@@ -71,7 +72,7 @@ export function EngagementScoreCard() {
           <Skeleton className="h-24 w-full" data-testid="widget-engagement-loading" />
         ) : q.error ? (
           <div className="text-sm text-red-700" data-testid="widget-engagement-error">
-            Couldn't load your engagement score.
+            {collectiveWidgetErrorText(q.error, 'Couldn\'t load your engagement score.')}
           </div>
         ) : isEmpty ? (
           <div className="text-center py-6 text-slate-500" data-testid="widget-engagement-empty">
