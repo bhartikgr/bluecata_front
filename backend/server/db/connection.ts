@@ -113,6 +113,16 @@ export function getDb(): any {
   log.info(`[db] Opening SQLite at: ${path}`);
   _rawSqlite = new Database(path);
   _rawSqlite.pragma("journal_mode = WAL");
+  // Wave 0 deliverable 0-9 parts 1 & 2 — statement-form defence.
+  // recursive_triggers = ON: with the SQLite default OFF, `INSERT OR REPLACE`
+  // fires no `BEFORE DELETE` trigger, silently bypassing every immutability
+  // guard in V7 §5. V7 §5.0.0 finding "0.9-mut8" — largest single defect this
+  // report has found. Per-connection setting; resets on every new connection,
+  // so belongs in the factory (not in a migration).
+  // foreign_keys = ON: driver default happens to be ON, but that is not a
+  // guarantee — V7 §5.0 explicitly requires this be asserted, not assumed.
+  _rawSqlite.pragma("recursive_triggers = ON");
+  _rawSqlite.pragma("foreign_keys = ON");
   _drizzleDb = sqliteDrizzle(_rawSqlite, { schema });
   applyInlineMigrations(_rawSqlite);
   _driver = "sqlite";
@@ -286,6 +296,568 @@ function applyInlineMigrations(db: any) {
    * column tolerated). Additive only; NEVER touches Airwallex/payments or the
    * cap-table ledger. */
   applyW2CapTableExemptSchema(db);
+
+  /* Wave 0 deliverables 0-1 + 0-14 — mirror migrations/0121, 0122, 0123.
+   *
+   * Call-site pattern (Wave 0 Increment 1 v3 review fix, Opus blocker):
+   *   - DDL failures for genuine environment reasons (permission denied,
+   *     locked DB, disk full) are caught and logged. That matches the
+   *     applyEnh1YourDecisionDurableSchema precedent and lets the bootstrap
+   *     continue past a bad environment.
+   *   - Wave0SeedDriftError is a special marker thrown by the inline apply
+   *     functions when read-back verification detects that stored seed data
+   *     disagrees with the pinned canonical values. This is NEVER recoverable
+   *     and MUST fail boot: the currency_ref / platform_config tables carry
+   *     immutability triggers, so a drift row is un-updatable and Wave D's
+   *     money math would silently use wrong exponents or wrong policy values.
+   *     Re-throw so ops sees the failure at boot rather than at first FX call.
+   */
+  const runWave0Apply = (name: string, fn: (db: any) => void) => {
+    try {
+      fn(db);
+    } catch (e) {
+      // v4 fix Opus B1 / GPT-5 M5: use the robust type guard (handles both
+      // ES5-downlevel and modern emit) instead of bare `instanceof`.
+      if (isWave0SeedDriftError(e)) {
+        // Fail-fast: never continue past a drift. See class comment.
+        log.error(`[db][wave0] ${name} DRIFT — aborting bootstrap:`, (e as Error).message);
+        throw e;
+      }
+      log.warn(`[db][wave0] ${name} failed, continuing:`, e);
+    }
+  };
+
+  runWave0Apply("applyWave0CurrencyRefSchema", applyWave0CurrencyRefSchema);
+  runWave0Apply("applyWave0MoneyCoreSchema", applyWave0MoneyCoreSchema);
+  runWave0Apply("applyWave0PlatformConfigSchema", applyWave0PlatformConfigSchema);
+}
+
+/**
+ * Wave 0 Increment 1 v3+v4 review — fail-fast fix.
+ *
+ * Thrown by applyWave0*Schema functions when read-back drift detection finds
+ * that stored seed data disagrees with the pinned canonical values (a
+ * currency_ref row with a wrong exponent, or a platform_config row with a
+ * hash that doesn't match the pinned literal). Recognized at the call site
+ * and re-thrown to abort the entire bootstrap.
+ *
+ * Wave D and later depend on these tables holding exact values. Silently
+ * continuing past drift would surface later as FK errors, wrong money math,
+ * or a broken hash chain — far from the actual point of failure.
+ *
+ * v4 review Opus B1 + GPT-5 M5 fix: prototype repair + nominal marker.
+ *
+ * TypeScript ES5 downlevel emit (which the project's no-target tsconfig may
+ * produce depending on toolchain) breaks `instanceof` for classes extending
+ * built-ins like Error: `super(msg)` returns a new Error and the derived
+ * prototype is lost. Two defenses, both cheap:
+ *   1. `Object.setPrototypeOf(this, ...)` restores the prototype chain so
+ *      `instanceof Wave0SeedDriftError` works even under ES5 emit.
+ *   2. `readonly kind = 'wave0-seed-drift'` is a nominal string marker the
+ *      call site can check independently of `instanceof`. Belt and braces.
+ *
+ * Exported so tests can (a) construct and assert against it, and (b) verify
+ * the shipped apply functions raise it. Prior to v4 both were internal, which
+ * defeated the tests that were meant to guard the fail-fast path.
+ */
+export class Wave0SeedDriftError extends Error {
+  public readonly kind = "wave0-seed-drift" as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "Wave0SeedDriftError";
+    // v4 fix: ES5 __extends emit breaks the prototype chain. Restore it.
+    Object.setPrototypeOf(this, Wave0SeedDriftError.prototype);
+  }
+}
+
+/** Type guard for Wave0SeedDriftError that works even under ES5 downlevel.
+ *  Uses the nominal `kind` marker as the primary discriminator and falls back
+ *  to `instanceof` for the modern-emit path. */
+export function isWave0SeedDriftError(e: unknown): e is Wave0SeedDriftError {
+  if (e instanceof Wave0SeedDriftError) return true;
+  return (
+    typeof e === "object" &&
+    e !== null &&
+    (e as { kind?: unknown }).kind === "wave0-seed-drift"
+  );
+}
+
+/* Wave 0 0-1 part 1 — mirrors migrations/0121_wave0_currency_ref.sql byte-for-byte in
+ * intent. Ships the currency_ref immutable reference table + ISO 4217 fiat seed
+ * (167 codes; metals + fund codes excluded per Wave 0 Increment 1 review).
+ * Exponents match server/lib/currency.ts CURRENCY_EXPONENT_OVERRIDES exactly and
+ * follow ISO 4217 canonical values (HUF=2, TWD=2, CLF=4, UYW=4).
+ * No admin surface for exponents; is_active is reserved for Wave J governance.
+ * NEVER touches Airwallex/payments or the cap-table ledger. */
+export function applyWave0CurrencyRefSchema(db: any) {
+  // Zero-decimal (17) currencies per ISO 4217 (HUF and TWD are 2-decimal per ISO;
+  // Wave 0 Increment 1 review corrected the pre-existing divergence).
+  const ZERO_DECIMAL = new Set([
+    'BIF','CLP','DJF','GNF','ISK','JPY','KMF','KRW','PYG','RWF',
+    'UGX','UYI','VND','VUV','XAF','XOF','XPF',
+  ]);
+  // Three-decimal (7) currencies per ISO 4217. CLF moved to 4-decimal set below.
+  const THREE_DECIMAL = new Set([
+    'BHD','IQD','JOD','KWD','LYD','OMR','TND',
+  ]);
+  // Four-decimal (2) currencies per ISO 4217.
+  const FOUR_DECIMAL = new Set([
+    'CLF','UYW',
+  ]);
+  // ISO 4217 active alphabetic fiat codes as of 2026-08-01. 167 codes total.
+  // Metals (XAG, XAU, XPD, XPT), bond-market units (XBA-XBD), IMF SDR (XDR),
+  // African accounting unit (XUA), SUCRE (XSU), test code (XTS), and no-currency
+  // marker (XXX) are excluded: ISO 4217 defines no minor unit for them, and
+  // none are settlement currencies for this platform. Named exclusion, not a
+  // silent drop — documented in the mirror migration's header.
+  const ISO_4217: string[] = [
+    'AED','AFN','ALL','AMD','ANG','AOA','ARS','AUD','AWG','AZN',
+    'BAM','BBD','BDT','BGN','BHD','BIF','BMD','BND','BOB','BOV',
+    'BRL','BSD','BTN','BWP','BYN','BZD','CAD','CDF','CHE','CHF',
+    'CHW','CLF','CLP','CNY','COP','COU','CRC','CUC','CUP','CVE',
+    'CZK','DJF','DKK','DOP','DZD','EGP','ERN','ETB','EUR','FJD',
+    'FKP','GBP','GEL','GHS','GIP','GMD','GNF','GTQ','GYD','HKD',
+    'HNL','HTG','HUF','IDR','ILS','INR','IQD','IRR','ISK','JMD',
+    'JOD','JPY','KES','KGS','KHR','KMF','KPW','KRW','KWD','KYD',
+    'KZT','LAK','LBP','LKR','LRD','LSL','LYD','MAD','MDL','MGA',
+    'MKD','MMK','MNT','MOP','MRU','MUR','MVR','MWK','MXN','MXV',
+    'MYR','MZN','NAD','NGN','NIO','NOK','NPR','NZD','OMR','PAB',
+    'PEN','PGK','PHP','PKR','PLN','PYG','QAR','RON','RSD','RUB',
+    'RWF','SAR','SBD','SCR','SDG','SEK','SGD','SHP','SLE','SOS',
+    'SRD','SSP','STN','SVC','SYP','SZL','THB','TJS','TMT','TND',
+    'TOP','TRY','TTD','TWD','TZS','UAH','UGX','USD','USN','UYI',
+    'UYU','UYW','UZS','VED','VES','VND','VUV','WST',
+    'XAF','XCD','XCG','XOF','XPF',
+    'YER','ZAR','ZMW','ZWG',
+  ];
+
+  const ddl: string[] = [
+    `CREATE TABLE IF NOT EXISTS currency_ref (
+       code                TEXT PRIMARY KEY NOT NULL
+                             CHECK (length(code) = 3 AND code = upper(code)),
+       minor_unit_exponent INTEGER NOT NULL CHECK (minor_unit_exponent IN (0, 2, 3, 4)),
+       is_active           INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1))
+     ) STRICT`,
+    // V7 §5.0: code + exponent are immutable facts; is_active is the only mutable column.
+    // A redenomination is a NEW code + fx_rate_snapshot, never an edited exponent.
+    `CREATE TRIGGER IF NOT EXISTS trg_currency_ref_immutable BEFORE UPDATE ON currency_ref
+     WHEN NEW.minor_unit_exponent <> OLD.minor_unit_exponent OR NEW.code <> OLD.code
+     BEGIN SELECT RAISE(ABORT, 'CURRENCY_REF_IMMUTABLE'); END`,
+    `CREATE TRIGGER IF NOT EXISTS trg_currency_ref_no_delete BEFORE DELETE ON currency_ref
+     BEGIN SELECT RAISE(ABORT, 'CURRENCY_REF_NO_DELETE'); END`,
+  ];
+
+  // Wave 0 Increment 1 v3 review — Opus fail-fast fix.
+  //
+  // The DDL + seed transaction MUST NOT throw for drift, because DDL is
+  // transactional in SQLite: a throw here would roll back the CREATE TABLEs
+  // and the caller could then see "drift error" downgraded to a warning while
+  // the schema disappears. We commit DDL first, then read back OUTSIDE the tx
+  // and raise a distinguished Wave0SeedDriftError that the call site re-throws.
+  const expOf = (code: string): number =>
+    ZERO_DECIMAL.has(code) ? 0
+    : FOUR_DECIMAL.has(code) ? 4
+    : THREE_DECIMAL.has(code) ? 3
+    : 2;
+
+  const tx = db.transaction(() => {
+    for (const sql of ddl) db.exec(sql);
+    const seed = db.prepare(
+      `INSERT OR IGNORE INTO currency_ref (code, minor_unit_exponent, is_active)
+         VALUES (?, ?, 1)`,
+    );
+    for (const code of ISO_4217) seed.run(code, expOf(code));
+  });
+  tx();
+
+  // Read-back drift detection (post-tx). If a pre-existing row disagrees with
+  // the pinned canonical exponent, throw so the call site can fail boot.
+  // Runs after the DDL transaction has committed, so a drift error preserves
+  // the schema for post-mortem inspection rather than rolling it away.
+  const check = db.prepare(
+    `SELECT minor_unit_exponent AS e FROM currency_ref WHERE code = ?`,
+  );
+  const drift: string[] = [];
+  for (const code of ISO_4217) {
+    const expected = expOf(code);
+    const row = check.get(code) as { e: number } | undefined;
+    if (!row) { drift.push(`${code}: missing after seed`); continue; }
+    if (row.e !== expected) drift.push(`${code}: exponent ${row.e} ≠ expected ${expected}`);
+  }
+  if (drift.length > 0) {
+    throw new Wave0SeedDriftError(
+      `currency_ref seed drift detected: ${drift.join('; ')}`,
+    );
+  }
+}
+
+/* Wave 0 0-1 part 2 — mirrors migrations/0122_wave0_money_core.sql. Ships
+ * allocation_rule (ADR-5 rule 5 versioned allocator config) and fx_rate_snapshot
+ * (ADR-5 rule 4 exact-rational rate) with no-update / no-delete triggers per V7
+ * §5.0 round-5 blocker 5. Depends on currency_ref (0121). NEVER touches
+ * Airwallex/payments or the cap-table ledger. */
+export function applyWave0MoneyCoreSchema(db: any) {
+  const ddl: string[] = [
+    `CREATE TABLE IF NOT EXISTS allocation_rule (
+       rule_id             TEXT NOT NULL,
+       rule_version        INTEGER NOT NULL CHECK (rule_version > 0),
+       method              TEXT NOT NULL CHECK (method IN ('largest_remainder_stable')),
+       tie_break           TEXT NOT NULL
+                             CHECK (tie_break = 'remainder_desc_index_asc'),
+       created_at          TEXT NOT NULL
+                             CHECK (created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*'),
+       PRIMARY KEY (rule_id, rule_version)
+     ) STRICT`,
+    // Wave 0 Increment 1 review item 1: allocation_rule is immutable. A rule
+    // "change" is a new (rule_id, rule_version+1) row, never an edit.
+    `CREATE TRIGGER IF NOT EXISTS trg_allocation_rule_no_update
+       BEFORE UPDATE ON allocation_rule
+       BEGIN SELECT RAISE(ABORT, 'ALLOCATION_RULE_IMMUTABLE'); END`,
+    `CREATE TRIGGER IF NOT EXISTS trg_allocation_rule_no_delete
+       BEFORE DELETE ON allocation_rule
+       BEGIN SELECT RAISE(ABORT, 'ALLOCATION_RULE_IMMUTABLE'); END`,
+    `CREATE TABLE IF NOT EXISTS fx_rate_snapshot (
+       fx_id               TEXT PRIMARY KEY NOT NULL,
+       from_currency       TEXT NOT NULL REFERENCES currency_ref(code),
+       to_currency         TEXT NOT NULL REFERENCES currency_ref(code),
+       rate_numerator      INTEGER NOT NULL CHECK (rate_numerator > 0),
+       rate_denominator    INTEGER NOT NULL CHECK (rate_denominator > 0),
+       as_of_date          TEXT NOT NULL
+           CHECK (as_of_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+                  AND date(as_of_date) = as_of_date),
+       source              TEXT NOT NULL,
+       created_at          TEXT NOT NULL
+                             CHECK (created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*'),
+       UNIQUE (from_currency, to_currency, as_of_date, source)
+     ) STRICT`,
+    `CREATE TRIGGER IF NOT EXISTS trg_fx_no_update BEFORE UPDATE ON fx_rate_snapshot
+     BEGIN SELECT RAISE(ABORT, 'FX_SNAPSHOT_IMMUTABLE'); END`,
+    `CREATE TRIGGER IF NOT EXISTS trg_fx_no_delete BEFORE DELETE ON fx_rate_snapshot
+     BEGIN SELECT RAISE(ABORT, 'FX_SNAPSHOT_IMMUTABLE'); END`,
+  ];
+  const tx = db.transaction(() => {
+    for (const sql of ddl) db.exec(sql);
+  });
+  tx();
+}
+
+/* Wave 0 0-14 — mirrors migrations/0123_wave0_platform_config.sql. Ships
+ * platform_config + platform_config_history (append-only, hash-chained) with 6
+ * genesis rows in BOTH tables (Gemini v2 blocker 3 correction). Hash values are
+ * deterministic literals matching the SQL. Preimage formula (Increment 1 v2
+ * review item 8, canonical JSON):
+ *   sha256hex(JSON.stringify({v: version, key, vt: value_type, val: value_json,
+ *                             prev: prev_revision_hash}))
+ * See wave0/regen_0123.mjs for the derivation. Tests in wave0_new_guards.test.ts
+ * recompute and assert.
+ * NEVER touches Airwallex/payments or the cap-table ledger. */
+export function applyWave0PlatformConfigSchema(db: any) {
+  const GENESIS_PREV =
+    '0000000000000000000000000000000000000000000000000000000000000000';
+  // Genesis hashes match migrations/0123_wave0_platform_config.sql exactly.
+  // Formula (Wave 0 Increment 1 review item 8):
+  //   sha256hex(JSON.stringify({v: 1, key, vt: value_type, val: value_json,
+  //                             prev: '0'*64}))
+  // See wave0/regen_0123.mjs for the derivation. Test
+  // wave0_new_guards.test.ts recomputes every literal from the formula and
+  // asserts equality against both the DB and the shipped .sql text.
+  const seedRows = [
+    { key: 'quota.default_period', value_json: '"monthly"', value_type: 'string',
+      description: 'Default quota period for partner tier plans. Editable in Wave F (F-QP1).',
+      hash: 'e99068df51f72853c7b31758d7b4009464e6fb2f73c202c5bc8432db1e12cc8d',
+      history_id: 'pch_gen_quota_default_period' },
+    { key: 'billing_cycle.default', value_json: '"annual"', value_type: 'string',
+      description: 'Default billing cycle for new partners. Owner decision 5.',
+      hash: 'a2115296c7d01f78918ddc8870d3cbbee938213439a50162838e29a3c939fd66',
+      history_id: 'pch_gen_billing_cycle_default' },
+    { key: 'feeds.provider.default', value_json: '"none"', value_type: 'string',
+      description: 'Default market-data feeds provider. Wave F admin surface configures per-tenant.',
+      hash: '952b9e62c6fd7ef2c44ab8564fb9a65191a30a14a607e962009a3d725eec841a',
+      history_id: 'pch_gen_feeds_provider_default' },
+    { key: 'collective.partner_membership.review_window_days', value_json: '30', value_type: 'number',
+      description: 'Days admin has to review annual Collective-membership renewal. Owner decision 7.',
+      hash: 'a326ea08fc5a968ff83d51e594c4bcb3053402bcb1ac01b057e3f5765d935d80',
+      history_id: 'pch_gen_review_window' },
+    { key: 'collective.partner_membership.grace_days_after_expiry', value_json: '0', value_type: 'number',
+      description: 'Grace days after Collective membership expiry before access is revoked. Owner decision 7.',
+      hash: 'afe1b04a5296ff5c36ebd93aba71c9d143e834280d7d36faebc985b79058c815',
+      history_id: 'pch_gen_grace_days' },
+    { key: 'kyc.capital_call.gate_mode', value_json: '"warn"', value_type: 'string',
+      description: 'KYC gate behavior on capital calls: warn|block. Owner decision 9 (soft warn everywhere).',
+      hash: '22d5b402c900a307e5c14da41dac3713bbd64c3915b1b4e71a2b7664010a5834',
+      history_id: 'pch_gen_kyc_gate_mode' },
+  ];
+  const T0 = '2026-08-01T00:00:00Z';
+  const ddl: string[] = [
+    `CREATE TABLE IF NOT EXISTS platform_config (
+       key                 TEXT PRIMARY KEY NOT NULL,
+       value_json          TEXT NOT NULL
+                             CHECK (json_valid(value_json)),
+       value_type          TEXT NOT NULL CHECK (value_type IN ('string','number','boolean','json')),
+       description         TEXT,
+       is_secret           INTEGER NOT NULL DEFAULT 0 CHECK (is_secret IN (0,1)),
+       version             INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
+       prev_revision_hash  TEXT NOT NULL,
+       revision_hash       TEXT NOT NULL,
+       created_at          TEXT NOT NULL
+                             CHECK (created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*'),
+       updated_at          TEXT NOT NULL
+                             CHECK (updated_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*'),
+       created_by          TEXT,
+       updated_by          TEXT,
+       CHECK (
+         (value_type = 'string'  AND json_type(value_json) = 'text')    OR
+         (value_type = 'number'  AND json_type(value_json) IN ('integer','real')) OR
+         (value_type = 'boolean' AND json_type(value_json) IN ('true','false'))   OR
+         (value_type = 'json')
+       )
+     ) STRICT`,
+    `CREATE INDEX IF NOT EXISTS idx_platform_config_updated_at ON platform_config(updated_at)`,
+    `CREATE TABLE IF NOT EXISTS platform_config_history (
+       history_id          TEXT PRIMARY KEY NOT NULL,
+       config_key          TEXT NOT NULL,
+       version             INTEGER NOT NULL CHECK (version > 0),
+       snapshot_json       TEXT NOT NULL
+                             CHECK (json_valid(snapshot_json)),
+       prev_revision_hash  TEXT NOT NULL,
+       revision_hash       TEXT NOT NULL,
+       changed_at          TEXT NOT NULL
+                             CHECK (changed_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*'),
+       changed_by          TEXT,
+       change_kind         TEXT NOT NULL CHECK (change_kind IN ('genesis','update','revert')),
+       UNIQUE (config_key, version)
+     ) STRICT`,
+    `CREATE INDEX IF NOT EXISTS idx_pch_key_version ON platform_config_history(config_key, version)`,
+    `CREATE INDEX IF NOT EXISTS idx_pch_changed_at ON platform_config_history(changed_at)`,
+    // Wave 0 Increment 1 review item 4: history is DB-enforced append-only.
+    `CREATE TRIGGER IF NOT EXISTS trg_pch_no_update
+       BEFORE UPDATE ON platform_config_history
+       BEGIN SELECT RAISE(ABORT, 'PLATFORM_CONFIG_HISTORY_IMMUTABLE'); END`,
+    `CREATE TRIGGER IF NOT EXISTS trg_pch_no_delete
+       BEFORE DELETE ON platform_config_history
+       BEGIN SELECT RAISE(ABORT, 'PLATFORM_CONFIG_HISTORY_IMMUTABLE'); END`,
+    // Wave 0 Increment 1 v3+v4+v5 review — chain-guard triggers on current state
+    // + audit-content integrity + history-side integrity. See 0123 header.
+    `CREATE TRIGGER IF NOT EXISTS trg_pc_chain_guard
+       BEFORE UPDATE ON platform_config
+       WHEN NEW.version <> OLD.version + 1
+         OR NEW.prev_revision_hash <> OLD.revision_hash
+       BEGIN SELECT RAISE(ABORT, 'PLATFORM_CONFIG_CHAIN_BREAK'); END`,
+    // v5 fix (GPT-5 v4 B1 + Opus v4 C2): match history CONTENT not just existence.
+    // v7 note (Opus v5 C6): snapshot_json.val is DOUBLY-encoded JSON of value_json
+    //   (e.g. value_json='30' → snapshot.val="30"). json_extract returns TEXT;
+    //   this predicate compares TEXT to NEW.value_json (also TEXT). Wave F
+    //   writers MUST JSON.stringify the inner value_json when constructing the
+    //   snapshot. See 0123 header for full convention.
+    `CREATE TRIGGER IF NOT EXISTS trg_pc_atomic_audit
+       BEFORE UPDATE ON platform_config
+       WHEN NOT EXISTS (
+         SELECT 1 FROM platform_config_history
+         WHERE config_key = NEW.key
+           AND version = NEW.version
+           AND revision_hash = NEW.revision_hash
+           AND prev_revision_hash = NEW.prev_revision_hash
+           AND json_extract(snapshot_json, '$.val') = NEW.value_json
+           AND json_extract(snapshot_json, '$.vt')  = NEW.value_type
+           AND json_extract(snapshot_json, '$.key') = NEW.key
+           AND json_extract(snapshot_json, '$.v')   = NEW.version
+       )
+       BEGIN SELECT RAISE(ABORT, 'PLATFORM_CONFIG_UNAUDITED_UPDATE'); END`,
+    // v5 fix (GPT-5 v4 B2) + v6 fix (all 3 v5 reviewers): no direct INSERT
+    // without matching genesis history — AND the history row's content must
+    // match the inserted current row (prev_hash + snapshot val/vt/key/v).
+    // Predicate is now symmetric with trg_pc_atomic_audit's UPDATE contract.
+    // v7 note (Opus v6 N3): the prev_hash property is transitive — the WHEN
+    //   clause requires NEW.prev_revision_hash to equal the matched genesis
+    //   history row's prev, and trg_pch_chain_integrity forces genesis rows'
+    //   prev to be 64 zeros, so on any tables where the triggers were live at
+    //   history-write time NEW.prev_revision_hash MUST be 64 zeros. On legacy
+    //   tables predating the triggers this holds only via the matched row.
+    // v7 note (Opus v5 C6): same doubly-encoded snapshot_json.val convention
+    //   as trg_pc_atomic_audit — see 0123 header.
+    `CREATE TRIGGER IF NOT EXISTS trg_pc_no_direct_insert
+       BEFORE INSERT ON platform_config
+       WHEN NOT EXISTS (
+         SELECT 1 FROM platform_config_history
+         WHERE config_key = NEW.key
+           AND version = NEW.version
+           AND revision_hash = NEW.revision_hash
+           AND prev_revision_hash = NEW.prev_revision_hash
+           AND change_kind = 'genesis'
+           AND json_extract(snapshot_json, '$.val') = NEW.value_json
+           AND json_extract(snapshot_json, '$.vt')  = NEW.value_type
+           AND json_extract(snapshot_json, '$.key') = NEW.key
+           AND json_extract(snapshot_json, '$.v')   = NEW.version
+       )
+       BEGIN SELECT RAISE(ABORT, 'PLATFORM_CONFIG_UNAUDITED_INSERT'); END`,
+    // v6 fix (GPT-5 v5): platform_config.key immutable on UPDATE.
+    // Chain-guard checks version + prev_hash link on UPDATE, but did not
+    // require NEW.key = OLD.key. Combined with fabricated equal hashes
+    // across chains, a caller could rename the row into a different chain.
+    // Key is part of the audit identity; renaming is a new key (which must
+    // go through the genesis path) not an update to an existing key.
+    `CREATE TRIGGER IF NOT EXISTS trg_pc_no_key_change
+       BEFORE UPDATE ON platform_config
+       WHEN NEW.key <> OLD.key
+       BEGIN SELECT RAISE(ABORT, 'PLATFORM_CONFIG_KEY_IMMUTABLE'); END`,
+    `CREATE TRIGGER IF NOT EXISTS trg_pc_no_delete
+       BEFORE DELETE ON platform_config
+       BEGIN SELECT RAISE(ABORT, 'PLATFORM_CONFIG_NO_DELETE'); END`,
+    // v5 fix (GPT-5 v4 B3): history-side integrity.
+    `CREATE TRIGGER IF NOT EXISTS trg_pch_chain_integrity
+       BEFORE INSERT ON platform_config_history
+       WHEN
+         (NEW.change_kind = 'genesis' AND (
+            NEW.version <> 1
+            OR NEW.prev_revision_hash <> '0000000000000000000000000000000000000000000000000000000000000000'
+         ))
+         OR
+         (NEW.change_kind <> 'genesis' AND NOT EXISTS (
+            SELECT 1 FROM platform_config_history h
+            WHERE h.config_key = NEW.config_key
+              AND h.version = NEW.version - 1
+              AND h.revision_hash = NEW.prev_revision_hash
+         ))
+       BEGIN SELECT RAISE(ABORT, 'PLATFORM_CONFIG_HISTORY_CHAIN_BREAK'); END`,
+  ];
+  // Wave 0 Increment 1 v3 review — Opus fail-fast fix.
+  // DDL + seed inside the transaction; drift verification OUTSIDE so a drift
+  // error does not roll away the schema it was meant to protect.
+  const tx = db.transaction(() => {
+    for (const sql of ddl) db.exec(sql);
+    // v5 order change (GPT-5 v4 B2 fix): history rows FIRST, then current-state.
+    // trg_pc_no_direct_insert requires a matching genesis history row before
+    // the current INSERT is allowed. This mirrors what Wave F's write path
+    // must do (audit-first).
+    const seedHistory = db.prepare(
+      `INSERT OR IGNORE INTO platform_config_history
+         (history_id, config_key, version, snapshot_json, prev_revision_hash, revision_hash, changed_at, changed_by, change_kind)
+       VALUES (?, ?, 1, ?, ?, ?, ?, 'system:wave0_seed', 'genesis')`,
+    );
+    const seedCurrent = db.prepare(
+      `INSERT OR IGNORE INTO platform_config
+         (key, value_json, value_type, description, is_secret, version, prev_revision_hash, revision_hash, created_at, updated_at, created_by, updated_by)
+       VALUES (?, ?, ?, ?, 0, 1, ?, ?, ?, ?, 'system:wave0_seed', 'system:wave0_seed')`,
+    );
+    for (const r of seedRows) {
+      // Snapshot_json uses canonical JSON of {v, key, vt, val}. MUST match
+      // migrations/0123_wave0_platform_config.sql exactly — the hash chain
+      // depends on this being byte-identical.
+      const snapshot = JSON.stringify({ v: 1, key: r.key, vt: r.value_type, val: r.value_json });
+      seedHistory.run(r.history_id, r.key, snapshot, GENESIS_PREV, r.hash, T0);
+    }
+    for (const r of seedRows) {
+      seedCurrent.run(r.key, r.value_json, r.value_type, r.description, GENESIS_PREV, r.hash, T0, T0);
+    }
+  });
+  // v6 fix (Opus v5 B2): a pre-existing divergent history genesis row causes
+  // INSERT OR IGNORE to swallow the conflict, then trg_pc_no_direct_insert or
+  // trg_pch_chain_integrity aborts the subsequent INSERT with SQLITE_CONSTRAINT_TRIGGER.
+  // That is NOT a stray DDL error — it is genuine seed drift and must abort boot,
+  // not warn-and-continue. Convert the trigger-abort SqliteError into a
+  // Wave0SeedDriftError so runWave0Apply re-throws it (fail-loud) instead of
+  // downgrading to log.warn.
+  try {
+    tx();
+  } catch (e: any) {
+    const msg = String(e?.message ?? e);
+    const code = String(e?.code ?? '');
+    const isTriggerAbort =
+      code === 'SQLITE_CONSTRAINT_TRIGGER' ||
+      /PLATFORM_CONFIG_UNAUDITED_INSERT|PLATFORM_CONFIG_HISTORY_CHAIN_BREAK|PLATFORM_CONFIG_UNAUDITED_UPDATE|PLATFORM_CONFIG_CHAIN_BREAK|PLATFORM_CONFIG_HISTORY_IMMUTABLE|PLATFORM_CONFIG_NO_DELETE|PLATFORM_CONFIG_KEY_IMMUTABLE/.test(msg);
+    if (isTriggerAbort) {
+      throw new Wave0SeedDriftError(
+        `platform_config seed aborted by integrity trigger (likely a pre-existing divergent row): ${msg}`,
+      );
+    }
+    throw e;
+  }
+
+  // v6 fix (Opus v5 B1): read-back drift detection is a hybrid check.
+  //
+  // The GENESIS history row is deterministic forever — it is append-only,
+  // trigger-immutable, and never rewritten. We assert all 8 of its fields
+  // unconditionally.
+  //
+  // The CURRENT-state row is deterministic ONLY while version = 1. Wave F's
+  // whole purpose is to legitimately advance seeded config values via audited
+  // updates, which move version to 2, 3, ... . The prior v5 check treated
+  // version > 1 as drift and aborted boot, which would brick the platform on
+  // the first Wave F edit and had no in-schema recovery path (chain-guard
+  // makes version strictly monotone; no_delete blocks removal). So for the
+  // current row we split assertions into two groups:
+  //   - always-invariant fields: created_at, created_by (never change after seed)
+  //   - version=1 only fields:   value_json, value_type, description,
+  //                              is_secret, prev_revision_hash, revision_hash,
+  //                              updated_at, updated_by (all replaced on audited
+  //                              update). We still verify the pinned genesis
+  //                              hash by requiring a genesis history row with
+  //                              (config_key, version=1, prev=zeros, hash=pin).
+  const readCur = db.prepare(
+    `SELECT value_json, value_type, description, is_secret, version,
+            prev_revision_hash, revision_hash, created_at, updated_at,
+            created_by, updated_by
+     FROM platform_config WHERE key = ?`,
+  );
+  const readHist = db.prepare(
+    `SELECT config_key, version, snapshot_json, prev_revision_hash, revision_hash,
+            changed_at, changed_by, change_kind
+     FROM platform_config_history WHERE history_id = ?`,
+  );
+  const drift: string[] = [];
+  for (const r of seedRows) {
+    const expectedSnapshot = JSON.stringify({ v: 1, key: r.key, vt: r.value_type, val: r.value_json });
+    const cur = readCur.get(r.key) as any;
+    if (!cur) { drift.push(`platform_config: ${r.key} missing after seed`); continue; }
+    // Always-invariant fields (survive any legitimate audited update):
+    if (cur.created_at !== T0) drift.push(`platform_config[${r.key}]: created_at drift`);
+    if (cur.created_by !== 'system:wave0_seed') drift.push(`platform_config[${r.key}]: created_by drift`);
+    // Version=1-only fields (Wave F updates legitimately change these):
+    if (cur.version === 1) {
+      if (cur.value_json !== r.value_json) drift.push(`platform_config[${r.key}]: value_json drift`);
+      if (cur.value_type !== r.value_type) drift.push(`platform_config[${r.key}]: value_type drift`);
+      if (cur.description !== r.description) drift.push(`platform_config[${r.key}]: description drift`);
+      if (cur.is_secret !== 0) drift.push(`platform_config[${r.key}]: is_secret drift`);
+      if (cur.prev_revision_hash !== GENESIS_PREV) drift.push(`platform_config[${r.key}]: prev_revision_hash drift`);
+      if (cur.revision_hash !== r.hash) drift.push(`platform_config[${r.key}]: revision_hash drift`);
+      if (cur.updated_at !== T0) drift.push(`platform_config[${r.key}]: updated_at drift`);
+      if (cur.updated_by !== 'system:wave0_seed') drift.push(`platform_config[${r.key}]: updated_by drift`);
+    } else {
+      // v7 fix (Opus v6 C1): when the current row is at version > 1 we can no
+      // longer assert seed values, but we CAN assert that the current row's
+      // (version, revision_hash, prev_revision_hash) tuple corresponds to an
+      // actual history row for this key. Without this check, a legacy DB whose
+      // current row was written before the audit triggers existed (e.g. a
+      // tampered v2 row with a bogus revision_hash and no v2 history) would
+      // boot cleanly on this branch. The triggers cannot catch this because the
+      // row already exists; the drift check is the only place that can.
+      const linked = db.prepare(
+        `SELECT 1 FROM platform_config_history
+         WHERE config_key = ? AND version = ? AND revision_hash = ?
+           AND prev_revision_hash = ?`,
+      ).get(r.key, cur.version, cur.revision_hash, cur.prev_revision_hash);
+      if (!linked) {
+        drift.push(`platform_config[${r.key}]: version ${cur.version} row not linked to any history row (tampered or partially-migrated)`);
+      }
+    }
+
+    // GENESIS history row is invariant forever (append-only + trigger-immutable):
+    const hist = readHist.get(r.history_id) as any;
+    if (!hist) { drift.push(`platform_config_history: ${r.history_id} missing after seed`); continue; }
+    if (hist.config_key !== r.key) drift.push(`history[${r.history_id}]: config_key drift`);
+    if (hist.version !== 1) drift.push(`history[${r.history_id}]: version drift`);
+    if (hist.snapshot_json !== expectedSnapshot) drift.push(`history[${r.history_id}]: snapshot_json drift`);
+    if (hist.prev_revision_hash !== GENESIS_PREV) drift.push(`history[${r.history_id}]: prev_revision_hash drift`);
+    if (hist.revision_hash !== r.hash) drift.push(`history[${r.history_id}]: revision_hash drift`);
+    if (hist.changed_at !== T0) drift.push(`history[${r.history_id}]: changed_at drift`);
+    if (hist.changed_by !== 'system:wave0_seed') drift.push(`history[${r.history_id}]: changed_by drift`);
+    if (hist.change_kind !== 'genesis') drift.push(`history[${r.history_id}]: change_kind drift`);
+  }
+  if (drift.length > 0) {
+    throw new Wave0SeedDriftError(
+      `platform_config seed drift detected: ${drift.join('; ')}`,
+    );
+  }
 }
 
 /* v26.2.0 W2 A3/A4 — mirrors migrations/0110_collective_membership_captable_exempt.sql.
@@ -524,6 +1096,22 @@ function applyV2547Schema(db: any) {
        detail      TEXT,
        updated_at  TEXT NOT NULL
      )`,
+    // Wave A-1 v2.1 (ADR-3 action 3): chain_genesis re-base table. Mirrors
+    // migrations/0124_wave_a1_audit_seed_repair.sql. Additive-idempotent.
+    // STRICT + date shape CHECKs per Wave 0 0-D/0-E.
+    // Columns: anchor_row_id = the LAST pre-genesis row; anchor_hash =
+    // that row's hash. Walker starts at the row AFTER anchor_row_id
+    // seeding `prior` with anchor_hash.
+    `CREATE TABLE IF NOT EXISTS audit_chain_genesis (
+       tenant_id      TEXT PRIMARY KEY NOT NULL,
+       anchor_row_id  TEXT NOT NULL,
+       anchor_hash    TEXT NOT NULL,
+       effective_at   TEXT NOT NULL
+                        CHECK (effective_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*'),
+       reason         TEXT NOT NULL,
+       created_at     TEXT NOT NULL
+                        CHECK (created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*')
+     ) STRICT`,
     `CREATE TABLE IF NOT EXISTS collective_admin_settings (
        key         TEXT PRIMARY KEY NOT NULL,
        value_json  TEXT,
@@ -602,12 +1190,19 @@ function applyV2547Schema(db: any) {
     ];
     pulse.forEach(([symbol, label, category], i) => pulseSeed.run(symbol, label, category, i));
 
-    // Audit-chain health seed — one incident row (BLOCKER-6 / APD-029).
+    // Wave A-1 v2 (ADR-3 action 4): audit-chain health seed changed from
+    // 'incident' to 'ok'. v25.47 seeded 'incident' unconditionally so every
+    // fresh install and every :memory: boot came up P0 already-red. The
+    // real incident is detected at boot by
+    // `runAuditChainBootVerifier()` (server/lib/hydrateStores.ts:539);
+    // that tick writes 'incident' back if any tenant's chain fails to
+    // verify. Companion write: migration 0124_wave_a1_audit_seed_repair.sql
+    // handles upgrade installs where 0070 already wrote 'incident'.
     db.prepare(
       `INSERT OR IGNORE INTO audit_chain_health (key, status, detail, updated_at)
-         VALUES ('tenant_admin_capavate', 'incident',
-                 'P0 audit-chain continuity investigation (see blocker6_audit_chain_investigation.md)',
-                 '2026-06-30T00:00:00.000Z')`,
+         VALUES ('tenant_admin_capavate', 'ok',
+                 'seeded ok; boot verifier tick will re-check (Wave A-1 v2 ADR-3 action 4)',
+                 '2026-08-02T00:00:00.000Z')`,
     ).run();
   });
   tx();

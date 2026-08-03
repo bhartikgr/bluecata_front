@@ -2,8 +2,11 @@
  * v25.47 BLOCKER-6 (APD-029) — Audit-chain continuity health.
  *
  * Real-route supertest coverage (Tier-6):
- *   1. GET /api/admin/audit-chain-health (admin) surfaces the seeded incident
- *      row and reports incident=true.
+ *   1. GET /api/admin/audit-chain-health (admin) returns a healthy row.
+ *      Wave A-1 (ADR-3 action 4) flipped the seed from 'incident' to 'ok'
+ *      because the v25.47 seed came up P0-red on every fresh install and
+ *      every :memory: boot. The real incident (if any) is now detected by
+ *      the verifier tick, not pre-seeded.
  *   2. A non-admin caller is rejected (router-level requireAdmin boundary).
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -61,14 +64,16 @@ afterAll(async () => {
 });
 
 describe("BLOCKER-6 audit-chain health", () => {
-  it("surfaces the seeded incident row to an admin", async () => {
+  it("returns healthy on a fresh boot (Wave A-1 ADR-3 action 4)", async () => {
     const res = await call("GET", "/api/admin/audit-chain-health", { userId: "u_admin" });
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
-    expect(res.body.incident).toBe(true);
-    const incidentRow = res.body.rows.find((r: any) => r.key === "tenant_admin_capavate");
-    expect(incidentRow).toBeTruthy();
-    expect(incidentRow.status).toBe("incident");
+    // Wave A-1 flipped the seed: fresh install must NOT come up P0-red.
+    // The endpoint still surfaces the tenant row so admins can see it.
+    expect(res.body.incident).toBe(false);
+    const healthRow = res.body.rows.find((r: any) => r.key === "tenant_admin_capavate");
+    expect(healthRow).toBeTruthy();
+    expect(healthRow.status).toBe("ok");
   });
 
   it("rejects a non-admin caller", async () => {

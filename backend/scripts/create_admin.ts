@@ -174,30 +174,22 @@ async function createAdmin(args: Args): Promise<{
     });
   }
 
-  // Append an audit_log row. Hash-chain is maintained by the verifier — we
-  // emit a self-contained entry; the next reconciler tick will splice it into
-  // the chain. (We don't compute prevHash here to avoid contending with the
-  // hash-chain writer in captableCommitStore.ts; that module is math-sacred.)
-  // The `hash` column is NOT NULL on the schema, so we deterministically hash
-  // (userId, timestamp, action) — the reconciler will overwrite this with the
-  // proper hash-chain value on its next tick.
+  // Wave A-1 (ADR-3 action 1): write through appendAdminAudit() so the row
+  // joins the hash chain correctly. The previous implementation wrote
+  // prevHash: null and a placeholder hash from a different formula, banking
+  // on a "reconciler tick" that does not exist and permanently breaking the
+  // chain at link 0. This deliberately touches the appendAudit path in the
+  // math-sacred neighbourhood; that sensitivity is called out in §6.6.
   const action = created ? "admin.created" : promoted ? "admin.promoted" : "admin.password_rotated";
-  const auditId = `aud_${createHash("sha256").update(`${userId}:${now}:${action}`).digest("hex").slice(0, 24)}`;
-  const placeholderHash = createHash("sha256").update(`${auditId}:${userId}:${action}:${now}`).digest("hex");
   try {
-    await db.insert(auditLogTable).values({
-      id: auditId,
-      tenantId,
-      actorId: userId,
+    const { appendAdminAudit } = await import("../server/adminPlatformStore");
+    appendAdminAudit(
+      userId,
+      `user:${userId}`,
       action,
-      target: "user",
-      targetId: userId,
-      payloadJson: JSON.stringify({ email, name, source: "scripts/create_admin.ts" }),
-      prevHash: null,
-      hash: placeholderHash,
-      createdAt: now,
-      deletedAt: null,
-    });
+      { email, name, source: "scripts/create_admin.ts" },
+      tenantId,
+    );
   } catch (e) {
     // Audit-log insert is best-effort; the user/credential writes above are
     // the source of truth. Log a warning and continue.

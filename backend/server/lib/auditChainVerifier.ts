@@ -213,6 +213,15 @@ const CATALOG: ReadonlyArray<TableConfig> = [
     table: auditLogTable,
     hashCol: "hash",
     prevHashCol: "prevHash",
+    // Wave A-1 v2 (ADR-3): `null` remains an accepted genesis token here for
+    // backward-compatibility with legacy chains, but the chain_genesis
+    // re-base (audit_chain_genesis table, verifyTenantAuditChain in
+    // adminPlatformStore.ts) is the AUTHORITATIVE way to pin a starting hash
+    // for tenants known to contain malformed pre-genesis rows. This generic
+    // verifier is a cross-table catalog and does not consult
+    // audit_chain_genesis; callers who need the re-base must use
+    // verifyTenantAuditChain from adminPlatformStore.ts (which is what all
+    // three audit-log verifier endpoints now do post-Wave A-1 v2).
     genesisHashes: new Set([null, "GENESIS", "0".repeat(64)]),
     hasChapterId: false,
     hasTenantId: true,

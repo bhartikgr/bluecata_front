@@ -110,6 +110,10 @@ describe("W9.1 migration mirror / drift check", () => {
     //
     // This pin must move in the SAME change set as the migrations it names, so
     // no intermediate commit is red.
-    expect(maxId).toBe(120);
+    // Wave 0 in progress: 0121 currency_ref, 0122 money_core, 0123 platform_config shipped.
+    // Wave A-1 (ADR-3 actions 3 + 4) adds 0124_wave_a1_audit_seed_repair (data-repair only,
+    // no CREATE TABLE) as a companion write to connection.ts:1177's seed change.
+    // Pin will advance further as Wave 0 completes.
+    expect(maxId).toBe(124);
   });
 });

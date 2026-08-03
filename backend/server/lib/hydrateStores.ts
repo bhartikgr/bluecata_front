@@ -525,6 +525,75 @@ export function getHydrateProgress(): HydrateProgress {
   return { ..._hydrateProgress, failedNames: [..._hydrateProgress.failedNames] };
 }
 
+/**
+ * Wave A-1 v2 (ADR-3 action 3+4) — boot-time audit-chain verifier tick.
+ *
+ * For each tenant present in `audit_log`, run the shared verifier and
+ * update `audit_chain_health` accordingly. This is what makes the seed flip
+ * to 'ok' safe: if a tenant's chain is broken (now, or later, or by a bug
+ * we haven't caught), THIS is the code that turns the P0 banner back on.
+ *
+ * Exported for direct test invocation. Silent-failure-safe: any exception
+ * is caught by the caller and does not block boot.
+ */
+export async function runAuditChainBootVerifier(): Promise<{
+  tenantsChecked: number;
+  tenantsHealthy: number;
+  tenantsBroken: number;
+  brokenTenants: Array<{ tenantId: string; brokenAt: number; totalLinks: number }>;
+}> {
+  const { rawDb } = await import("../db/connection");
+  const db = rawDb();
+  const { verifyTenantAuditChain, resolveAuditChainHealth } = await import("../adminPlatformStore");
+  // Find every tenant that has at least one audit_log row. `deleted_at` is
+  // ignored (append-only chain math per Wave A-1 v2 policy).
+  let tenants: Array<{ tenant_id: string }> = [];
+  try {
+    tenants = db.prepare(`SELECT DISTINCT tenant_id FROM audit_log`).all() as Array<{ tenant_id: string }>;
+  } catch {
+    return { tenantsChecked: 0, tenantsHealthy: 0, tenantsBroken: 0, brokenTenants: [] };
+  }
+  let healthy = 0;
+  let broken = 0;
+  const brokenTenants: Array<{ tenantId: string; brokenAt: number; totalLinks: number }> = [];
+  for (const t of tenants) {
+    const vr = verifyTenantAuditChain(db, t.tenant_id);
+    if (vr.ok) {
+      healthy++;
+      // Note: resolveAuditChainHealth only ever writes 'ok'; it never sets
+      // 'incident' — so a healthy tenant simply confirms 'ok'.
+      try { resolveAuditChainHealth(t.tenant_id, true, "boot verifier tick"); } catch { /* non-fatal */ }
+    } else {
+      broken++;
+      brokenTenants.push({ tenantId: t.tenant_id, brokenAt: vr.brokenAt, totalLinks: vr.totalLinks });
+      // Write 'incident' directly. This IS the mechanism that arms the P0
+      // banner — without it, incidents can never fire.
+      try {
+        db.prepare(
+          `INSERT INTO audit_chain_health (key, status, detail, updated_at)
+           VALUES (?, 'incident', ?, ?)
+           ON CONFLICT(key) DO UPDATE SET
+             status = 'incident',
+             detail = excluded.detail,
+             updated_at = excluded.updated_at`,
+        ).run(
+          t.tenant_id,
+          `boot verifier tick: chain broken at link ${vr.brokenAt} of ${vr.totalLinks}${vr.genesisApplied ? " (post-genesis)" : ""}`,
+          new Date().toISOString(),
+        );
+      } catch (err) {
+        log.warn(`[audit-chain-verifier] failed to write incident for ${t.tenant_id}:`, (err as Error).message);
+      }
+    }
+  }
+  if (broken > 0) {
+    log.warn(`[audit-chain-verifier] boot tick: ${broken} tenant(s) BROKEN, ${healthy} healthy, ${tenants.length} total`);
+  } else {
+    log.info(`[audit-chain-verifier] boot tick: all ${tenants.length} tenant chain(s) verified clean`);
+  }
+  return { tenantsChecked: tenants.length, tenantsHealthy: healthy, tenantsBroken: broken, brokenTenants };
+}
+
 export async function hydrateAllStores(_db?: unknown): Promise<void> {
   const dbUrl = process.env.DATABASE_URL;
   _hydrateProgress.state = "in_progress";
@@ -557,6 +626,19 @@ export async function hydrateAllStores(_db?: unknown): Promise<void> {
       : _hydrateProgress.succeeded > 0
         ? "partial"
         : "failed";
+
+  // Wave A-1 v2 (ADR-3 action 3+4): boot-time audit-chain verifier tick.
+  // Runs AFTER HYDRATE_ORDER so all chain data is loaded. Writes 'incident'
+  // to audit_chain_health for tenants whose chain doesn't verify (broken by
+  // corruption introduced after the last known-good state); writes 'ok' for
+  // tenants that verify clean. Silent-failure protected: if the verifier
+  // itself throws (e.g., audit_log table missing), the tick logs and
+  // continues — it must not block boot.
+  try {
+    await runAuditChainBootVerifier();
+  } catch (err) {
+    log.warn("[hydrate] audit-chain boot verifier tick failed (non-fatal):", (err as Error).message);
+  }
 
   if (!dbUrl) {
     log.info("[hydrate] DATABASE_URL not set — non-v12 stores remain in-memory (sandbox mode)");

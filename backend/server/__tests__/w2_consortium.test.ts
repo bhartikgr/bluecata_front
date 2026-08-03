@@ -17,6 +17,7 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import express from "express";
 import request from "supertest";
+import { CONSORTIUM_AGREEMENT_VERSION } from "@shared/consortiumAgreement";
 
 import { registerPartnerRoutes } from "../partnerRoutes";
 import { registerSpvEngineRoutes } from "../spvEngineRoutes";
@@ -44,7 +45,10 @@ let app: express.Express;
 /** W2-I — the gate reads the DURABLE contacts column via rawDb(), NOT the
  *  in-memory sandbox shim requirePartnerAuth uses. So we drive the signed state
  *  by writing that exact row directly. */
-function signPartner(partnerId: string, version = "CPA-v0.1-DRAFT"): void {
+// Wave A-1 v2 (Gemini review): use the canonical CONSORTIUM_AGREEMENT_VERSION
+// so this helper doesn't rot when the version bumps (was hardcoded to the
+// CPA-v0.1-DRAFT placeholder; W-V44 FIX F bumped it to CPA-v1.0).
+function signPartner(partnerId: string, version = CONSORTIUM_AGREEMENT_VERSION): void {
   const now = new Date().toISOString();
   rawDb()
     .prepare(

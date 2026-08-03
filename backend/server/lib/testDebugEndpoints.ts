@@ -429,16 +429,38 @@ export function registerTestDebugEndpoints(app: Express): void {
         const now = new Date().toISOString();
         try {
           const db: any = rawDb();
+          // Wave 0-9c: chapter_memberships is payment-adjacent (Tier 4 per
+          // §7.1.1); INSERT OR REPLACE would silently delete-then-insert,
+          // bypassing BEFORE DELETE triggers. Use INSERT ... ON CONFLICT
+          // DO UPDATE so the row is preserved. joined_at + created_at are
+          // preserved on conflict (excluded not referenced for them) so a
+          // re-grant does not silently rewrite the original join date.
           db.prepare(
-            `INSERT OR REPLACE INTO chapter_memberships (
+            `INSERT INTO chapter_memberships (
                id, tenant_id, chapter_id, user_id, role, status,
                joined_at, created_at, updated_at, deleted_at
-             ) VALUES (?, ?, ?, ?, 'member', 'active', ?, ?, ?, NULL)`,
+             ) VALUES (?, ?, ?, ?, 'member', 'active', ?, ?, ?, NULL)
+             ON CONFLICT(id) DO UPDATE SET
+               role       = excluded.role,
+               status     = excluded.status,
+               updated_at = excluded.updated_at,
+               deleted_at = NULL`,
           ).run(`cm_${userId}_${chapterId}`, tenantId, chapterId, userId, now, now, now);
         } catch (e) {
+          // Wave 0-9c v2 (Opus + GPT-5 v1 review): a chapter_memberships
+          // write failure MUST propagate. The previous code logged a warning
+          // and still returned {ok:true, status:'active'}, hiding a real
+          // write breakage from the test that called this endpoint. Now we
+          // return 500 so the caller sees the failure and the test fails
+          // loudly.
           log.warn({
             route: "testDebug.grantCollectiveMember",
             message: `chapter_memberships insert failed: ${(e as Error).message}`,
+          });
+          return res.status(500).json({
+            ok: false,
+            error: "chapter_memberships_write_failed",
+            message: (e as Error).message,
           });
         }
         return res.json({ ok: true, userId, status: "active", chapterId });

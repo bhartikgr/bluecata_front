@@ -105,6 +105,8 @@ function persistRow(table: string, id: string, payload: unknown, createdAt: stri
   try {
     const db = rawDb();
     db.prepare(
+      // wave0-9c-allow-dynamic: table is one of the 12 fixed COMMS_TIERS_TABLES
+      // (non-money blob tables with no triggers). See constant declared above.
       `INSERT OR REPLACE INTO ${table} (id, payload, created_at) VALUES (?, ?, ?)`,
     ).run(id, JSON.stringify(payload), createdAt);
   } catch (err) {

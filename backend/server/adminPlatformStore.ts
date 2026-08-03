@@ -484,6 +484,148 @@ export function appendAdminAudit(
   return appendAudit(actor, entity, eventType, payload, tenantId);
 }
 
+/**
+ * Wave A-1 (ADR-3 action 2): the single ordering + soft-delete function.
+ *
+ * Writer and verifier MUST agree on how the chain is ordered and how
+ * soft-deleted rows are treated. Any drift here forks the chain.
+ *
+ * Design decisions (from ADR-3 rationale):
+ *   - `deleted_at` MUST NOT participate in chain math — audit_log is
+ *     append-only; the column exists for schema symmetry only. Both writer
+ *     and verifier ignore it.
+ *   - Ordering is `created_at ASC, id ASC`. The `id ASC` tiebreak closes
+ *     the same-millisecond flake documented in §6.5.
+ *
+ * The writer reads the tip via this canonical form (single-row LIMIT 1
+ * against a scoped tenant, DESC pairing of the same ordering — last row
+ * by (created_at, id) is the tip). The verifier walks in ASC order using
+ * the same ordering.
+ *
+ * DO NOT REFACTOR THE STRING FORMULA. `${prevHash}|${id}|${eventType}|${entity}|${ts}|${payloadStr}`
+ * is byte-compatible with every hash already in the chain. A change here
+ * invalidates the entire history.
+ */
+// Wave A-1 v2 (ADR-3): the id must be insertion-monotonic so (created_at, id)
+// sorts by insertion order. Random ids collide within the same millisecond
+// (Opus/GPT-5 v1 B1). The id encodes a millisecond timestamp in base36 (9
+// chars fixed-width, sortable through year 2059+) followed by a per-process
+// monotonic counter (5 hex chars) then 6 random hex chars for uniqueness
+// across processes. Total length after "al_" prefix: 20 chars.
+let _auditIdCounter = 0;
+let _auditIdLastMs = 0;
+export function generateAuditId(nowMs: number = Date.now()): string {
+  // Advance clock or reset counter within the same millisecond.
+  if (nowMs > _auditIdLastMs) {
+    _auditIdLastMs = nowMs;
+    _auditIdCounter = 0;
+  } else {
+    _auditIdCounter++;
+    // If the caller reused a stale ms, force strict monotonicity: bump
+    // effective ms upward for the id lexicographic sort. This is safe
+    // because the id is not the source of truth for ordering; created_at is
+    // still the ISO string and (created_at, id) tie-breaks with id.
+    nowMs = _auditIdLastMs;
+  }
+  const ts = nowMs.toString(36).padStart(9, "0").slice(-9);
+  const ctr = _auditIdCounter.toString(16).padStart(5, "0").slice(-5);
+  const rand = randomBytes(3).toString("hex"); // 6 hex chars
+  return `al_${ts}${ctr}${rand}`;
+}
+
+export const AUDIT_CHAIN_ORDER_SQL_ASC = "ORDER BY created_at ASC, id ASC" as const;
+export const AUDIT_CHAIN_ORDER_SQL_DESC = "ORDER BY created_at DESC, id DESC" as const;
+
+/** SQL fragment listing the columns needed by both writer and verifier,
+ *  keyed on tenant_id and IGNORING deleted_at (audit_log is append-only). */
+export const AUDIT_CHAIN_SELECT_SQL =
+  `SELECT id, action, target, created_at AS ts, payload_json AS "payloadJson", prev_hash AS "priorHash", hash FROM audit_log WHERE tenant_id = ? ${AUDIT_CHAIN_ORDER_SQL_ASC}` as const;
+
+/** SQL fragment for tip read: newest link by (created_at, id). */
+export const AUDIT_CHAIN_TIP_SQL =
+  `SELECT hash FROM audit_log WHERE tenant_id = ? ${AUDIT_CHAIN_ORDER_SQL_DESC} LIMIT 1` as const;
+
+/**
+ * Wave A-1 v2 (ADR-3): shared chain verifier used by /verify, /resolve, and
+ * the boot tick. Applies the chain_genesis re-base.
+ *
+ * Genesis contract (v2 corrected per Opus/GPT-5 v2 B1/B2):
+ *   audit_chain_genesis.anchor_hash IS the hash the walker uses as its
+ *     starting `prior`. The FIRST row verified is the first row whose
+ *     created_at > genesis.effective_at (or, equivalently, whose id sorts
+ *     lexicographically after any pre-genesis marker).
+ *   audit_chain_genesis.anchor_row_id (nullable) is the id of the LAST
+ *     pre-genesis row — informational only; the walker uses it to skip
+ *     everything up to and including it.
+ *   When a tenant has ONLY malformed rows and no valid successors yet,
+ *     the migration pins anchor_hash = <chosen pre-genesis row's hash>
+ *     and anchor_row_id = <that row's id>. Verification then walks zero
+ *     post-genesis rows and returns ok=true — no false green because the
+ *     boot tick will re-run once any successor is appended.
+ */
+export interface AuditChainVerifyResult {
+  tenantId: string;
+  ok: boolean;
+  brokenAt: number;
+  totalLinks: number;
+  genesisApplied: boolean;
+  genesisHash: string | null;
+  preGenesisRowCount: number;
+}
+
+export function verifyTenantAuditChain(
+  db: import("better-sqlite3").Database,
+  tenantId: string,
+): AuditChainVerifyResult {
+  // 1. Look up the chain_genesis record if present.
+  let anchorHash: string | null = null;
+  let anchorRowId: string | null = null;
+  try {
+    const g = db
+      .prepare(
+        `SELECT anchor_hash AS "anchorHash", anchor_row_id AS "anchorRowId" FROM audit_chain_genesis WHERE tenant_id = ?`,
+      )
+      .get(tenantId) as { anchorHash: string; anchorRowId: string | null } | undefined;
+    if (g) {
+      anchorHash = g.anchorHash;
+      anchorRowId = g.anchorRowId ?? null;
+    }
+  } catch {
+    // audit_chain_genesis table not yet migrated — fall back to "0"*64.
+  }
+  // 2. Walk the chain.
+  const rows = db.prepare(AUDIT_CHAIN_SELECT_SQL).all(tenantId) as Array<{ id: string; action: string; target: string; ts: string; payloadJson: string | null; priorHash: string | null; hash: string }>;
+  // 3. If a genesis is set, skip PAST the anchor row (walker starts at the
+  //    row AFTER anchor_row_id). This is the correct semantic per Opus/GPT-5
+  //    v2 B1 finding: the anchor IS the last trusted state; the walker
+  //    verifies EVERY row that comes after it.
+  let startIndex = 0;
+  if (anchorHash !== null && anchorRowId !== null) {
+    const idx = rows.findIndex((r) => r.id === anchorRowId);
+    startIndex = idx >= 0 ? idx + 1 : 0;
+  }
+  const effectiveRows = rows.slice(startIndex);
+  const prior0 = anchorHash ?? "0".repeat(64);
+  let prior = prior0;
+  let broken = -1;
+  for (let i = 0; i < effectiveRows.length; i++) {
+    const a = effectiveRows[i];
+    if (a.priorHash !== prior) { broken = i; break; }
+    const expected = sha256(`${prior}|${a.id}|${a.action}|${a.target}|${a.ts}|${a.payloadJson ?? "{}"}`);
+    if (a.hash !== expected) { broken = i; break; }
+    prior = a.hash;
+  }
+  return {
+    tenantId,
+    ok: broken === -1,
+    brokenAt: broken,
+    totalLinks: effectiveRows.length,
+    genesisApplied: anchorHash !== null,
+    genesisHash: anchorHash,
+    preGenesisRowCount: startIndex,
+  };
+}
+
 function appendAudit(
   actor: string,
   entity: string,
@@ -491,7 +633,7 @@ function appendAudit(
   payload: Record<string, unknown>,
   explicitTenantId?: string,
 ): AuditEntry {
-  const id = `al_${randomBytes(6).toString("hex")}`;
+  const id = generateAuditId();
   const ts = new Date().toISOString();
   const tenantId = resolveTenantId(entity, explicitTenantId);
   const payloadStr = JSON.stringify(payload);
@@ -507,11 +649,14 @@ function appendAudit(
       // SINGLE tenantId (the entry's own), but bypasses any soft-delete filter
       // because audit_log is append-only and `deleted_at` must never participate
       // in chain math even though the column exists for schema symmetry.
+      // Wave A-1 (ADR-3 action 2): (created_at DESC, id DESC) matches the
+      // canonical AUDIT_CHAIN_ORDER_SQL_DESC. `deleted_at` deliberately
+      // ignored — append-only chain math.
       const tipRow = tx
         .select({ hash: auditLogTable.hash })
         .from(auditLogTable)
         .where(eq(auditLogTable.tenantId, tenantId))
-        .orderBy(desc(auditLogTable.createdAt))
+        .orderBy(desc(auditLogTable.createdAt), desc(auditLogTable.id))
         .limit(1)
         .all() as Array<{ hash: string }>;
       const prevHash = tipRow[0]?.hash ?? "0".repeat(64);
@@ -1262,28 +1407,21 @@ export function registerAdminPlatformRoutes(app: Express): void {
     const tenantId = key;
     try {
       const db = rawDb();
-      const rows = db.prepare(
-        `SELECT id, action, target, created_at AS ts, payload_json AS "payloadJson", prev_hash AS "priorHash", hash FROM audit_log WHERE tenant_id = ? AND deleted_at IS NULL ORDER BY created_at ASC, id ASC`
-      ).all(tenantId) as Array<{ id: string; action: string; target: string; ts: string; payloadJson: string | null; priorHash: string; hash: string }>;
-      let prior = "0".repeat(64);
-      let broken = -1;
-      for (let i = 0; i < rows.length; i++) {
-        const a = rows[i];
-        if (a.priorHash !== prior) { broken = i; break; }
-        const expected = sha256(`${prior}|${a.id}|${a.action}|${a.target}|${a.ts}|${a.payloadJson ?? "{}"}`);
-        if (a.hash !== expected) { broken = i; break; }
-        prior = a.hash;
-      }
-      const verified = broken === -1;
+      // Wave A-1 v2 (ADR-3 action 2): call the single shared verifier. It
+      // applies chain_genesis re-base, uses AUDIT_CHAIN_SELECT_SQL, and
+      // ignores deleted_at (append-only chain math).
+      const vr = verifyTenantAuditChain(db, tenantId);
+      const verified = vr.ok;
       const result = resolveAuditChainHealth(key, verified, note);
       if (!result.cleared) {
         // Chain still broken — refuse to clear, surface where.
         return res.status(409).json({
           ok: false,
           error: "chain_not_clean",
-          message: `Cannot resolve: the audit chain for ${tenantId} did not verify clean (broken at link ${broken} of ${rows.length}). Investigate before resolving.`,
-          brokenAt: broken,
-          totalLinks: rows.length,
+          message: `Cannot resolve: the audit chain for ${tenantId} did not verify clean (broken at link ${vr.brokenAt} of ${vr.totalLinks}). Investigate before resolving.`,
+          brokenAt: vr.brokenAt,
+          totalLinks: vr.totalLinks,
+          genesisApplied: vr.genesisApplied,
           rows: result.rows,
           incident: result.incident,
         });
@@ -1294,10 +1432,10 @@ export function registerAdminPlatformRoutes(app: Express): void {
           actorId,
           `audit_chain_health:${key}`,
           "audit_chain_health.resolved",
-          { key, tenantId, totalLinks: rows.length, note },
+          { key, tenantId, totalLinks: vr.totalLinks, genesisApplied: vr.genesisApplied, note },
         );
       } catch { /* non-fatal */ }
-      return res.json({ ok: true, cleared: true, totalLinks: rows.length, rows: result.rows, incident: result.incident });
+      return res.json({ ok: true, cleared: true, totalLinks: vr.totalLinks, genesisApplied: vr.genesisApplied, rows: result.rows, incident: result.incident });
     } catch (err) {
       log.error("[admin.audit-chain-health/resolve] failed:", (err as Error).message);
       return res.status(503).json({ ok: false, error: "db_unavailable" });
@@ -1736,6 +1874,10 @@ export function registerAdminPlatformRoutes(app: Express): void {
     const entityRaw = String(req.query.entity ?? "");
     const actor = String(req.query.actor ?? "");
     const eventType = String(req.query.eventType ?? "");
+    // Wave A-1 (ADR-3 action 5): tenantId is now a real filter. Previously
+    // passing ?tenantId=... was silently ignored and returned unfiltered
+    // results, which actively hindered investigating a per-tenant chain break.
+    const tenantId = String(req.query.tenantId ?? "");
     const q = String(req.query.q ?? "").toLowerCase();
     const rawLimit = Number.parseInt(String(req.query.limit ?? ""), 10);
     const rawOffset = Number.parseInt(String(req.query.offset ?? ""), 10);
@@ -1759,6 +1901,8 @@ export function registerAdminPlatformRoutes(app: Express): void {
       }
       if (actor) { where.push("actor_id = ?"); binds.push(actor); }
       if (eventType) { where.push("action = ?"); binds.push(eventType); }
+      // Wave A-1 (ADR-3 action 5): honor ?tenantId=... as a real filter.
+      if (tenantId) { where.push("tenant_id = ?"); binds.push(tenantId); }
       if (q) { where.push("LOWER(payload_json) LIKE ?"); binds.push("%" + q + "%"); }
       const whereSql = "WHERE " + where.join(" AND ");
 
@@ -1784,12 +1928,16 @@ export function registerAdminPlatformRoutes(app: Express): void {
       return res.json({ count: items.length, total, limit: limit ?? total, offset, items });
     } catch (err) {
       // DB unavailable → degrade to mirror so the page never blanks for admins.
+      // Wave A-1 v2 (ADR-3 action 5, GPT-5 v1 finding #8b): honor tenantId in
+      // the fallback path too. Without this, ?tenantId=... on DB-error silently
+      // returned cross-tenant mirror rows.
       log.warn("[adminPlatformStore.audit-log] DB query failed; falling back to mirror:", (err as Error).message);
       const entity = entityRaw.endsWith("*") ? entityRaw.slice(0, -1) : entityRaw;
       const filtered = auditLog.filter(a =>
         (entity ? (a.entity === entity || a.entity.startsWith(entity)) : true) &&
         (actor ? a.actor === actor : true) &&
         (eventType ? a.eventType === eventType : true) &&
+        (tenantId ? ((a as unknown as { tenantId?: string }).tenantId ?? "") === tenantId : true) &&
         (q ? JSON.stringify(a).toLowerCase().includes(q) : true)
       );
       const total = filtered.length;
@@ -1814,29 +1962,19 @@ export function registerAdminPlatformRoutes(app: Express): void {
 
     try {
       const db = rawDb();
-      const verifyChain = (tenantId: string) => {
-        const rows = db.prepare(
-          `SELECT id, action, target, created_at AS ts, payload_json AS "payloadJson", prev_hash AS "priorHash", hash FROM audit_log WHERE tenant_id = ? AND deleted_at IS NULL ORDER BY created_at ASC, id ASC`
-        ).all(tenantId) as Array<{ id: string; action: string; target: string; ts: string; payloadJson: string | null; priorHash: string; hash: string }>;
-        let prior = "0".repeat(64);
-        let broken = -1;
-        for (let i = 0; i < rows.length; i++) {
-          const a = rows[i];
-          if (a.priorHash !== prior) { broken = i; break; }
-          const expected = sha256(`${prior}|${a.id}|${a.action}|${a.target}|${a.ts}|${a.payloadJson ?? "{}"}`);
-          if (a.hash !== expected) { broken = i; break; }
-          prior = a.hash;
-        }
-        return { tenantId, ok: broken === -1, brokenAt: broken, totalLinks: rows.length };
-      };
-
+      // Wave A-1 v2 (ADR-3 action 2): the single shared verifier. Applies
+      // chain_genesis re-base and honors AUDIT_CHAIN_SELECT_SQL (ignores
+      // deleted_at, uses (created_at ASC, id ASC) ordering). Any drift here
+      // forks the chain — do not inline an ad-hoc query.
       if (resolvedTenant) {
-        const r = verifyChain(resolvedTenant);
-        return res.json({ ok: r.ok, brokenAt: r.brokenAt, totalLinks: r.totalLinks, scope: `tenant:${resolvedTenant}` });
+        const r = verifyTenantAuditChain(db, resolvedTenant);
+        return res.json({ ok: r.ok, brokenAt: r.brokenAt, totalLinks: r.totalLinks, scope: `tenant:${resolvedTenant}`, genesisApplied: r.genesisApplied });
       }
       // Whole-platform: verify each tenant's chain independently.
-      const tenants = db.prepare(`SELECT DISTINCT tenant_id FROM audit_log WHERE deleted_at IS NULL`).all() as Array<{ tenant_id: string }>;
-      const perTenant = tenants.map((t) => verifyChain(t.tenant_id));
+      // Wave A-1 v2 (ADR-3 action 2): drop the `deleted_at IS NULL` filter to
+      // match the writer/verifier policy (append-only chain math).
+      const tenants = db.prepare(`SELECT DISTINCT tenant_id FROM audit_log`).all() as Array<{ tenant_id: string }>;
+      const perTenant = tenants.map((t) => verifyTenantAuditChain(db, t.tenant_id));
       const overallOk = perTenant.every((p) => p.ok);
       const overallLinks = perTenant.reduce((s, p) => s + p.totalLinks, 0);
       return res.json({ ok: overallOk, brokenAt: -1, totalLinks: overallLinks, scope: "all-tenants", perTenant });
@@ -1852,8 +1990,34 @@ export function registerAdminPlatformRoutes(app: Express): void {
     }
   });
   app.get("/api/admin/audit-log/export.csv", (_req: Request, res: Response) => {
-    const csv = ["id,ts,actor,entity,eventType,priorHash,hash", ...auditLog.map(a => [a.id,a.ts,a.actor,a.entity,a.eventType,a.priorHash,a.hash].join(","))].join("\n");
-    res.setHeader("content-type","text/csv");
+    // Wave A-1 v2 (ADR-3 action 5): CSV export.
+    // - Header order per V7 A-f: id,ts,tenantId,actor,entity,eventType,priorHash,hash
+    // - CSV-escape values containing comma / quote / newline / carriage-return
+    // - Neutralize spreadsheet formula-injection: cells that lead with '=',
+    //   '+', '-', '@', tab, or CR are prefixed with a single apostrophe.
+    //   Excel/Sheets treat the leading apostrophe as a text-marker — the
+    //   cell displays without the apostrophe. (GPT-5 v1 finding #7.)
+    const FORMULA_LEAD = /^[=+\-@\t\r]/;
+    const NEEDS_QUOTE = /[,\n\r"]/;
+    const esc = (v: unknown) => {
+      let s = v === null || v === undefined ? "" : String(v);
+      if (FORMULA_LEAD.test(s)) s = "'" + s;
+      if (NEEDS_QUOTE.test(s)) return `"${s.replace(/"/g, '""')}"`;
+      return s;
+    };
+    const header = "id,ts,tenantId,actor,entity,eventType,priorHash,hash";
+    const rows = auditLog.map((a) => [
+      esc(a.id),
+      esc(a.ts),
+      esc((a as unknown as { tenantId?: string }).tenantId ?? ""),
+      esc(a.actor),
+      esc(a.entity),
+      esc(a.eventType),
+      esc(a.priorHash),
+      esc(a.hash),
+    ].join(","));
+    const csv = [header, ...rows].join("\n");
+    res.setHeader("content-type", "text/csv");
     res.send(csv);
   });
   app.post("/api/admin/audit-log/append", (req: Request, res: Response) => {

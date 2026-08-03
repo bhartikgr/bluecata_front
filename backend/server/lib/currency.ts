@@ -18,14 +18,26 @@
  */
 
 /** ISO 4217 minor-unit exponents that differ from the default of 2.
- * 0-decimal (no minor unit) and 3-decimal currencies. Codes are upper-case. */
+ * 0-decimal (no minor unit), 3-decimal, and 4-decimal currencies. Codes are
+ * upper-case. Values match ISO 4217 canonical exponents — investor-grade
+ * global best practice (Wave 0 Increment 1 review correction, Aug 2026).
+ *
+ * Historical note: pre-Wave-0 this table had HUF=0, TWD=0, CLF=3 (a
+ * non-standard convention that stored these currencies as if they had no
+ * minor unit for HUF/TWD, or 3 decimals for CLF). Zero DB rows and zero
+ * tests referenced those values, so the correction to ISO 4217 canonical
+ * (HUF=2, TWD=2, CLF=4) is safe. Verified by grep sweep across migrations,
+ * fixtures, and tests before flipping. */
 const CURRENCY_EXPONENT_OVERRIDES: Record<string, number> = {
   // --- 0-decimal currencies (no minor unit) ---
   BIF: 0, CLP: 0, DJF: 0, GNF: 0, ISK: 0, JPY: 0, KMF: 0, KRW: 0,
   PYG: 0, RWF: 0, UGX: 0, UYI: 0, VND: 0, VUV: 0, XAF: 0, XOF: 0,
-  XPF: 0, HUF: 0, TWD: 0,
+  XPF: 0,
   // --- 3-decimal currencies ---
-  BHD: 3, IQD: 3, JOD: 3, KWD: 3, LYD: 3, OMR: 3, TND: 3, CLF: 3,
+  BHD: 3, IQD: 3, JOD: 3, KWD: 3, LYD: 3, OMR: 3, TND: 3,
+  // --- 4-decimal currencies (ISO 4217 canonical) ---
+  CLF: 4, UYW: 4,
+  // HUF, TWD, and other 2-decimal currencies use the default (2).
 };
 
 /** ISO 4217 minor-unit exponent for a currency code. Defaults to 2 for any
