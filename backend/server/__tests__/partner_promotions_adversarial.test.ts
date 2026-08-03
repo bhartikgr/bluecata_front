@@ -123,6 +123,7 @@ describe("Adversarial: idempotency / conflict", () => {
       .post(`/api/partner/me/pipeline/${dealAId}/promote-to-collective`)
       .set("x-user-id", USER_A_MANAGING)
       .send({ notes: "first" });
+    if (r1.status !== 201) console.error("R1 409 error:", r1.body);
     expect(r1.status).toBe(201);
     expect(r1.body.promotion.id).toBeDefined();
     const firstPromoId = r1.body.promotion.id;

@@ -526,48 +526,119 @@ export function getHydrateProgress(): HydrateProgress {
 }
 
 /**
- * Wave A-1 v2 (ADR-3 action 3+4) — boot-time audit-chain verifier tick.
+ * Wave A-1 v2.2 (ADR-3 action 3+4) — boot-time audit-chain verifier tick.
  *
  * For each tenant present in `audit_log`, run the shared verifier and
  * update `audit_chain_health` accordingly. This is what makes the seed flip
  * to 'ok' safe: if a tenant's chain is broken (now, or later, or by a bug
  * we haven't caught), THIS is the code that turns the P0 banner back on.
  *
- * Exported for direct test invocation. Silent-failure-safe: any exception
- * is caught by the caller and does not block boot.
+ * PRODUCTION-SAFETY (per Gemini v2.1 P0):
+ *   - Yields to the event loop between tenants via setImmediate so we don't
+ *     block Node for the duration of the sweep.
+ *   - `verifyTenantAuditChain` reads all rows for one tenant into memory;
+ *     that is unavoidable for chain math (we must compute a running hash
+ *     over ordered rows), but the memory is scoped to ONE tenant and freed
+ *     between iterations. For very large tenants, DEFAULT_MAX_TENANTS_PER_TICK
+ *     bounds the number of tenants processed per boot; the rest are queued
+ *     via setTimeout for a follow-up tick, so a cold start never spends more
+ *     than one tick's worth of CPU on chain verification. Callers running
+ *     tests can call `runAuditChainBootVerifier({ maxTenants: Infinity })`
+ *     to process everything synchronously.
+ *   - Silent-failure-safe: any exception is caught and logged; the tick
+ *     never blocks boot.
+ *
+ * Exported for direct test invocation.
  */
-export async function runAuditChainBootVerifier(): Promise<{
+const DEFAULT_MAX_TENANTS_PER_TICK = 64;
+
+export interface AuditChainBootVerifierOptions {
+  /** Max tenants to process this tick. Remaining tenants are scheduled for
+   *  a follow-up tick via setTimeout(fn, 0). Default: 64 per tick.
+   *  Pass `Infinity` to process everything synchronously (tests only). */
+  maxTenants?: number;
+  /** Keyset-cursor: only process tenant_ids strictly greater than this.
+   *  Set by follow-up ticks to advance the queue. Undefined = start from
+   *  the beginning of the sorted tenant list. (Wave A-1 v2.3 fix: v2.2
+   *  re-processed the first 64 tenants forever because no cursor was
+   *  threaded through.) */
+  afterTenantId?: string;
+}
+
+export interface AuditChainBootVerifierResult {
   tenantsChecked: number;
   tenantsHealthy: number;
   tenantsBroken: number;
+  tenantsQueued: number;
   brokenTenants: Array<{ tenantId: string; brokenAt: number; totalLinks: number }>;
-}> {
+  /** The last tenant_id processed this tick. If tenantsQueued > 0, the
+   *  follow-up tick uses this as its `afterTenantId` cursor. */
+  lastTenantId: string | null;
+}
+
+export async function runAuditChainBootVerifier(
+  opts: AuditChainBootVerifierOptions = {},
+): Promise<AuditChainBootVerifierResult> {
+  const maxTenants = opts.maxTenants ?? DEFAULT_MAX_TENANTS_PER_TICK;
+  const afterTenantId = opts.afterTenantId;
   const { rawDb } = await import("../db/connection");
   const db = rawDb();
-  const { verifyTenantAuditChain, resolveAuditChainHealth } = await import("../adminPlatformStore");
-  // Find every tenant that has at least one audit_log row. `deleted_at` is
-  // ignored (append-only chain math per Wave A-1 v2 policy).
-  let tenants: Array<{ tenant_id: string }> = [];
+  const { verifyTenantAuditChain } = await import("../adminPlatformStore");
+  // Wave A-1 v2.3: keyset-cursor advance. `ORDER BY tenant_id` gives a
+  // stable total ordering; `WHERE tenant_id > ?` advances the cursor.
+  // This is the fix for the v2.2 infinite-loop P0 that all three reviewers
+  // reproduced (Opus/GPT-5/Gemini v2.2).
+  let queryable: Array<{ tenant_id: string }> = [];
   try {
-    tenants = db.prepare(`SELECT DISTINCT tenant_id FROM audit_log`).all() as Array<{ tenant_id: string }>;
+    if (afterTenantId !== undefined) {
+      queryable = db
+        .prepare(`SELECT DISTINCT tenant_id FROM audit_log WHERE tenant_id > ? ORDER BY tenant_id ASC`)
+        .all(afterTenantId) as Array<{ tenant_id: string }>;
+    } else {
+      queryable = db
+        .prepare(`SELECT DISTINCT tenant_id FROM audit_log ORDER BY tenant_id ASC`)
+        .all() as Array<{ tenant_id: string }>;
+    }
   } catch {
-    return { tenantsChecked: 0, tenantsHealthy: 0, tenantsBroken: 0, brokenTenants: [] };
+    return { tenantsChecked: 0, tenantsHealthy: 0, tenantsBroken: 0, tenantsQueued: 0, brokenTenants: [], lastTenantId: null };
   }
+  const bounded = Number.isFinite(maxTenants) ? queryable.slice(0, maxTenants) : queryable;
+  const queued = Number.isFinite(maxTenants) && queryable.length > maxTenants
+    ? queryable.slice(maxTenants)
+    : [];
   let healthy = 0;
   let broken = 0;
   const brokenTenants: Array<{ tenantId: string; brokenAt: number; totalLinks: number }> = [];
-  for (const t of tenants) {
+  let lastTenantId: string | null = null;
+  for (let i = 0; i < bounded.length; i++) {
+    const t = bounded[i];
+    lastTenantId = t.tenant_id;
     const vr = verifyTenantAuditChain(db, t.tenant_id);
     if (vr.ok) {
       healthy++;
-      // Note: resolveAuditChainHealth only ever writes 'ok'; it never sets
-      // 'incident' — so a healthy tenant simply confirms 'ok'.
-      try { resolveAuditChainHealth(t.tenant_id, true, "boot verifier tick"); } catch { /* non-fatal */ }
+      // Wave A-1 v2.3 (Opus v2.2 P3-A): write 'ok' via INSERT-ON-CONFLICT
+      // so healthy tenants without a pre-seeded audit_chain_health row still
+      // get one. resolveAuditChainHealth is UPDATE-only and would silently
+      // no-op for such tenants.
+      try {
+        db.prepare(
+          `INSERT INTO audit_chain_health (key, status, detail, updated_at)
+           VALUES (?, 'ok', ?, ?)
+           ON CONFLICT(key) DO UPDATE SET
+             status = 'ok',
+             detail = excluded.detail,
+             updated_at = excluded.updated_at`,
+        ).run(
+          t.tenant_id,
+          `boot verifier tick: chain verified clean${vr.genesisApplied ? " (post-genesis)" : ""}`,
+          new Date().toISOString(),
+        );
+      } catch (err) {
+        log.warn(`[audit-chain-verifier] failed to write ok for ${t.tenant_id}:`, (err as Error).message);
+      }
     } else {
       broken++;
       brokenTenants.push({ tenantId: t.tenant_id, brokenAt: vr.brokenAt, totalLinks: vr.totalLinks });
-      // Write 'incident' directly. This IS the mechanism that arms the P0
-      // banner — without it, incidents can never fire.
       try {
         db.prepare(
           `INSERT INTO audit_chain_health (key, status, detail, updated_at)
@@ -585,13 +656,33 @@ export async function runAuditChainBootVerifier(): Promise<{
         log.warn(`[audit-chain-verifier] failed to write incident for ${t.tenant_id}:`, (err as Error).message);
       }
     }
+    if ((i + 1) % 8 === 0 && i + 1 < bounded.length) {
+      await new Promise((r) => setImmediate(r));
+    }
+  }
+  // Schedule follow-up tick with the cursor advanced. Terminates when
+  // there are no more queued tenants (queued.length === 0).
+  if (queued.length > 0 && lastTenantId !== null) {
+    const cursor = lastTenantId;
+    setTimeout(() => {
+      runAuditChainBootVerifier({ maxTenants, afterTenantId: cursor }).catch((err) => {
+        log.warn("[audit-chain-verifier] follow-up tick failed:", (err as Error).message);
+      });
+    }, 0);
   }
   if (broken > 0) {
-    log.warn(`[audit-chain-verifier] boot tick: ${broken} tenant(s) BROKEN, ${healthy} healthy, ${tenants.length} total`);
+    log.warn(`[audit-chain-verifier] boot tick: ${broken} tenant(s) BROKEN, ${healthy} healthy, ${bounded.length} processed${queued.length ? `, ${queued.length} queued for follow-up tick (cursor=${lastTenantId})` : ""}`);
   } else {
-    log.info(`[audit-chain-verifier] boot tick: all ${tenants.length} tenant chain(s) verified clean`);
+    log.info(`[audit-chain-verifier] boot tick: all ${bounded.length} tenant chain(s) verified clean${queued.length ? `, ${queued.length} queued for follow-up tick (cursor=${lastTenantId})` : ""}`);
   }
-  return { tenantsChecked: tenants.length, tenantsHealthy: healthy, tenantsBroken: broken, brokenTenants };
+  return {
+    tenantsChecked: bounded.length,
+    tenantsHealthy: healthy,
+    tenantsBroken: broken,
+    tenantsQueued: queued.length,
+    brokenTenants,
+    lastTenantId,
+  };
 }
 
 export async function hydrateAllStores(_db?: unknown): Promise<void> {

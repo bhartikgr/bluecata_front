@@ -595,14 +595,42 @@ export function verifyTenantAuditChain(
   }
   // 2. Walk the chain.
   const rows = db.prepare(AUDIT_CHAIN_SELECT_SQL).all(tenantId) as Array<{ id: string; action: string; target: string; ts: string; payloadJson: string | null; priorHash: string | null; hash: string }>;
-  // 3. If a genesis is set, skip PAST the anchor row (walker starts at the
-  //    row AFTER anchor_row_id). This is the correct semantic per Opus/GPT-5
-  //    v2 B1 finding: the anchor IS the last trusted state; the walker
-  //    verifies EVERY row that comes after it.
+  // 3. If a genesis is set: FAIL CLOSED if the anchor row is missing or its
+  //    stored hash differs from anchor_hash (GPT-5 v2.1 B1). A dangling
+  //    anchor is not a graceful degradation — it silently changes the
+  //    declared contract into "trust whatever hash is in the genesis table."
   let startIndex = 0;
   if (anchorHash !== null && anchorRowId !== null) {
     const idx = rows.findIndex((r) => r.id === anchorRowId);
-    startIndex = idx >= 0 ? idx + 1 : 0;
+    if (idx < 0) {
+      // Anchor row was deleted or never existed. Fail closed with a
+      // distinct brokenAt=-2 sentinel so the caller can distinguish from
+      // a chain that broke mid-walk.
+      return {
+        tenantId,
+        ok: false,
+        brokenAt: -2,
+        totalLinks: rows.length,
+        genesisApplied: true,
+        genesisHash: anchorHash,
+        preGenesisRowCount: 0,
+      };
+    }
+    if (rows[idx].hash !== anchorHash) {
+      // Anchor row exists but its stored hash disagrees with the pinned
+      // genesis hash. Someone tampered with either the row or the genesis
+      // record. Fail closed with brokenAt=-3.
+      return {
+        tenantId,
+        ok: false,
+        brokenAt: -3,
+        totalLinks: rows.length,
+        genesisApplied: true,
+        genesisHash: anchorHash,
+        preGenesisRowCount: 0,
+      };
+    }
+    startIndex = idx + 1;
   }
   const effectiveRows = rows.slice(startIndex);
   const prior0 = anchorHash ?? "0".repeat(64);

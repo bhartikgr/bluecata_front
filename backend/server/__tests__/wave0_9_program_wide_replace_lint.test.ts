@@ -423,9 +423,9 @@ describe("Wave 0-9c v3: program-wide REPLACE lint (AST-based)", () => {
       // and helper functions like dbAll/dbGet). No new SQL-string
       // concatenation was introduced.
       "server/adminPlatformStore.ts:597",
-      "server/adminPlatformStore.ts:765",
-      "server/adminPlatformStore.ts:768",
-      "server/adminPlatformStore.ts:1909",
+      "server/adminPlatformStore.ts:793",
+      "server/adminPlatformStore.ts:796",
+      "server/adminPlatformStore.ts:1937",
       "server/adminV25Store.ts:863",
       "server/collectiveWaveAStore.ts:91",
       "server/commsAuditDurable.ts:136",

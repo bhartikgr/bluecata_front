@@ -432,6 +432,7 @@ describe("GET /api/collective/dashboard", () => {
 
   it("returns kpis and recentActivity", async () => {
     const res = await request(app).get("/api/collective/dashboard");
+    if (res.status === 403) console.error("403 body:", res.body);
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty("kpis");
     expect(res.body).toHaveProperty("recentActivity");

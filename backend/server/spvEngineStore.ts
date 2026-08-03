@@ -803,6 +803,47 @@ export const spvEngineStore = {
     if (!data.investorId) throw new Error("INVESTOR_ID_REQUIRED");
     if (!Number.isFinite(data.commitmentMinor) || data.commitmentMinor <= 0) throw new Error("INVALID_COMMITMENT");
     if (s.minCheckMinor != null && data.commitmentMinor < s.minCheckMinor) throw new Error("BELOW_MIN_CHECK");
+    // Wave C v3 (Opus/GPT-5 IDOR fix) — tenant isolation guard.
+    // An investor already bound to a DIFFERENT partner (via an active subscription
+    // on that partner's SPV OR an active partner_sourced_investors relationship)
+    // cannot be subscribed here. A brand-new investor (no relationship anywhere)
+    // or one already bound to THIS partner may proceed. This mirrors the W1 C1/C2
+    // IDOR guard on the compliance routes; without it, a partner could bootstrap
+    // access to another partner's LP by guessing the investor ID.
+    try {
+      // Wave C v3.1 (Opus v3 O1 fix): a DENY-side query must not include
+      // grant-side narrowing predicates. Dropping `s.archived_at IS NULL`
+      // means an investor is STILL considered bound to their partner even
+      // after that partner archives the SPV they subscribed to. Otherwise
+      // Partner B could archive their SPV and Partner A could then claim B's
+      // investor. Only ss.status='withdrawn' is a genuine tenant-release
+      // signal, so it remains as the sole exclusion.
+      const boundElsewhere = rawDb().prepare(
+        `SELECT 1 FROM (
+           SELECT s.sponsor_partner_id AS partner_id
+             FROM spv_subscription ss
+             JOIN spv s ON s.id = ss.spv_id
+            WHERE ss.investor_id = ?
+              AND COALESCE(ss.status, '') <> 'withdrawn'
+           UNION ALL
+           SELECT partner_id FROM partner_sourced_investors
+            WHERE investor_id = ?
+              AND COALESCE(status, 'active') NOT IN ('revoked','deleted','inactive')
+         ) rel
+         WHERE rel.partner_id IS NOT NULL AND rel.partner_id <> ?
+         LIMIT 1`,
+      ).get(data.investorId, data.investorId, partnerId);
+      if (boundElsewhere) throw new Error("INVESTOR_NOT_IN_PARTNER_TENANT");
+    } catch (err) {
+      // Only rethrow the explicit tenant error; DB probes that fail (e.g. table
+      // missing) should NOT bypass the guard — fail closed by rethrowing.
+      if ((err as Error).message === "INVESTOR_NOT_IN_PARTNER_TENANT") throw err;
+      // Missing partner_sourced_investors table is possible (lazily created);
+      // if the FIRST probe (spv_subscription) also failed the whole query
+      // failed. Fail closed — refuse to subscribe rather than admit possibly-
+      // cross-tenant investors.
+      throw new Error("INVESTOR_TENANT_CHECK_FAILED");
+    }
     // Enforce cap across existing committed + this commitment.
     if (s.capMinor != null) {
       const existing = (subsBySpv.get(spvId) ?? []).filter((x) => x.status !== "withdrawn").reduce((a, x) => a + x.commitmentMinor, 0);

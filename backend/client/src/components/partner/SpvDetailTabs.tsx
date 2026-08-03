@@ -14,7 +14,7 @@
  * Tabs use `defaultValue` (uncontrolled) so the first click always registers
  * (avoids the controlled-derived-value first-interaction no-op, O7).
  */
-import { useState } from "react";
+import { useState, useId } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -30,6 +30,77 @@ import {
   filingsChecklist,
   WIND_DOWN_CHECKLIST,
 } from "@/lib/spvEducation";
+import {
+  SPV_MANDATE_MODES,
+  SPV_MANDATE_MODE_LABELS,
+  SPV_MANDATE_MODE_HELP,
+  SPV_FEE_TYPES,
+  SPV_DOC_TYPES,
+  SPV_INVESTOR_PERSONAS,
+} from "@shared/spvEngine";
+
+/* Wave C v2 helper — STRICT integer parse. Rejects empty, negatives,
+ * exponent notation ("1e7" → NaN), decimals, and non-numeric strings.
+ * Returns a finite non-negative integer or throws. */
+function parseMinor(v: string): number {
+  const s = (v ?? "").trim();
+  if (!s) throw new Error("Enter an amount in minor units (integer)");
+  if (!/^\d+$/.test(s)) throw new Error("Amount must be a whole number of minor units (no decimals, no scientific notation)");
+  const n = Number(s);
+  if (!Number.isSafeInteger(n) || n < 0) throw new Error("Amount is out of range");
+  return n;
+}
+
+/* Wave C v2 helper — STRICT percentage parse. Accepts 0–100 with up to 4
+ * decimal places. Returns a fraction 0–1. Empty throws. */
+function parsePercent(v: string): number {
+  const s = (v ?? "").trim();
+  if (!s) throw new Error("Enter a percentage between 0 and 100");
+  if (!/^\d{1,3}(\.\d{1,4})?$/.test(s)) throw new Error("Percentage must be between 0 and 100 (up to 4 decimal places)");
+  const n = Number(s);
+  if (!Number.isFinite(n) || n < 0 || n > 100) throw new Error("Percentage must be between 0 and 100");
+  return n / 100;
+}
+
+/* Wave C v2 helper — friendly translation of common backend error codes to
+ * GP-facing English. Backend routes return {error: "CODE"} — without this
+ * table every failure would render as a generic "Some of the information
+ * was invalid" toast. */
+const SPV_ERROR_TRANSLATIONS: Record<string, string> = {
+  SPV_NOT_FOUND: "This SPV no longer exists. Refresh the page.",
+  INVALID_MANDATE_MODE: "Please pick a mandate mode from the dropdown.",
+  INVALID_FEE_LAYER: "Fee layer must be Management (Platform is Capavate-admin only).",
+  INVALID_FEE_TYPE: "Fee type must be Fixed, Carry, or Hybrid.",
+  PLATFORM_FEE_ADMIN_ONLY: "Platform-layer fees are set by Capavate and can't be added here.",
+  FEE_AMOUNT_REQUIRED: "Enter a fixed amount for this fee type.",
+  FEE_CARRY_REQUIRED: "Enter a carry percentage for this fee type.",
+  STORAGE_KEY_REQUIRED: "Storage key required — upload the file first, then paste the returned key.",
+  TRANSFER_PARTIES_REQUIRED: "Both from- and to-investor IDs are required.",
+  INVALID_AMOUNT: "Amount must be greater than zero (minor units).",
+  INVALID_GROSS: "Gross proceeds must be a non-negative number.",
+  EVENT_REQUIRED: "Please pick an event type.",
+  DISTRIBUTION_BASIS_REQUIRED: "Cost basis is required for every distribution (never assumed).",
+  INVESTOR_ID_REQUIRED: "Investor ID required.",
+  COMPANY_AND_ROUND_REQUIRED: "Both company ID and company round ID are required.",
+  INSTRUMENT_NOT_IN_ROUND: "The selected round has no instrument configured. Fix the round first.",
+  FEES_UNPAID: "Fixed fees for this SPV are unpaid — settle them before deploying capital.",
+  ROUND_NOT_ELIGIBLE: "This company or round is not eligible under the SPV's mandate.",
+  ROUND_UNDERFUNDED: "The round doesn't have enough capacity for this deployment amount.",
+  MANDATE_MISMATCH: "This company doesn't match the SPV's mandate. Update the mandate first or pick a different company.",
+  INVESTOR_NOT_IN_PARTNER_TENANT: "That investor is already associated with a different partner and can't be subscribed here. Use an investor from your own workspace or contact the platform admin.",
+  INVESTOR_TENANT_CHECK_FAILED: "Couldn't verify the investor's tenant — the safety check failed closed. Try again in a moment.",
+  BELOW_MIN_CHECK: "Commitment is below the SPV's minimum check size.",
+  EXCEEDS_CAP: "Adding this commitment would push the SPV over its cap.",
+  ALREADY_SUBSCRIBED: "That investor already has an active subscription in this SPV.",
+  INVALID_COMMITMENT: "Commitment must be greater than zero.",
+};
+
+function spvErrorMessage(err: unknown): string {
+  const code = (err as { code?: string })?.code;
+  const msg = (err as { message?: string })?.message ?? "Something went wrong.";
+  if (code && SPV_ERROR_TRANSLATIONS[code]) return SPV_ERROR_TRANSLATIONS[code];
+  return msg;
+}
 
 function fmt(minor: number | null | undefined, currency: string) {
   if (minor == null) return "—";
@@ -187,6 +258,7 @@ export function SpvDetailTabs({
           <div><span className="font-medium">Geography:</span> {detail.mandate?.geography?.length ? detail.mandate.geography.join(", ") : "Any"}</div>
           <div><span className="font-medium">Stage:</span> {detail.mandate?.stage?.length ? detail.mandate.stage.join(", ") : "Any"}</div>
         </div>
+        {canWrite && <MandatePanel spvId={spvId} mandate={detail.mandate ?? null} onChanged={onChanged} />}
       </TabsContent>
 
       {/* ── Fees ─────────────────────────────────────────────────────────── */}
@@ -215,6 +287,7 @@ export function SpvDetailTabs({
             <div className="text-[10px] text-[var(--cv-color-text-faint)]" data-testid="spv-detail-platform-carry-note">The platform fee layer is set by Capavate and shown here when applied.</div>
           )}
         </div>
+        {canWrite && <FeePanel spvId={spvId} currency={currency} onChanged={onChanged} />}
       </TabsContent>
 
       {/* ── LPs / Subscriptions + funds confirmation + capital accounts (D10) ── */}
@@ -229,6 +302,8 @@ export function SpvDetailTabs({
             ))
           )}
         </div>
+
+        {canWrite && <SubscribePanel spvId={spvId} currency={currency} onChanged={onChanged} />}
 
         {/* D10 — minimal capital accounts. */}
         <div className="mt-4" data-testid="spv-detail-capital-accounts">
@@ -287,14 +362,7 @@ export function SpvDetailTabs({
             required, fail-closed eligibility) so it is a deliberate, separate
             step from linking a target — it never happens automatically. */}
         {canWrite && (
-          <div className="mt-3 border-t pt-3" data-testid="spv-deploy-affordance">
-            <Button size="sm" variant="outline" disabled data-testid="spv-deploy-action" title="Deploy capital into a company">
-              Deploy capital
-            </Button>
-            <div className="text-[10px] text-[var(--cv-color-text-faint)] mt-1">
-              Deploying links a company <span className="font-medium">and</span> commits an allocation amount (eligibility is checked and fails closed). Linking a target company above does not move any money.
-            </div>
-          </div>
+          <DeployPanel spvId={spvId} currency={currency} onChanged={onChanged} />
         )}
       </TabsContent>
 
@@ -311,6 +379,7 @@ export function SpvDetailTabs({
           )}
         </div>
         {canWrite && <DistributionPreview spvId={spvId} currency={currency} />}
+        {canWrite && <RecordDistributionPanel spvId={spvId} currency={currency} onChanged={onChanged} />}
       </TabsContent>
 
       {/* ── Documents ────────────────────────────────────────────────────── */}
@@ -325,6 +394,7 @@ export function SpvDetailTabs({
             ))
           )}
         </div>
+        {canWrite && <DocumentPanel spvId={spvId} onChanged={onChanged} />}
       </TabsContent>
 
       {/* ── Transfers (D12) ──────────────────────────────────────────────── */}
@@ -339,6 +409,7 @@ export function SpvDetailTabs({
             ))
           )}
         </div>
+        {canWrite && <TransferPanel spvId={spvId} currency={currency} onChanged={onChanged} />}
       </TabsContent>
 
       {/* ── Close / rolling close (SPV-CORE-3) ───────────────────────────── */}
@@ -351,6 +422,7 @@ export function SpvDetailTabs({
       <TabsContent value="winddown">
         <Edu testid="spv-edu-winddown">{SPV_EDU.windDown}</Edu>
         <VoluntaryChecklist items={[...WIND_DOWN_CHECKLIST]} testid="spv-winddown-checklist" />
+        {canWrite && spv.status !== "wound_down" && <WindDownPanel spvId={spvId} onChanged={onChanged} />}
       </TabsContent>
 
       {/* ── Compliance (D5 accreditation · D6 count · D7 filings · D1 formation) ── */}
@@ -420,9 +492,11 @@ function LpRow({
 
   const confirm = useMutation({
     mutationFn: async () => {
+      // Wave C v3 hardening (GPT-5 v2 finding): use parseMinor to reject
+      // exponent notation ("1e7" → 1 under-submit) and non-integer input.
       const j = await (
         await apiRequest("POST", `/api/partner/me/spv/${spvId}/subscriptions/${encodeURIComponent(row.investorId)}/confirm-funds`, {
-          receivedMinor: parseInt(received || "0", 10),
+          receivedMinor: parseMinor(received),
           reference: reference.trim() || null,
         })
       ).json();
@@ -483,8 +557,10 @@ function DistributionPreview({ spvId, currency }: { spvId: string; currency: str
 
   const preview = useMutation({
     mutationFn: async () => {
-      const body: Record<string, unknown> = { grossProceedsMinor: parseInt(gross || "0", 10) };
-      if (hurdle.trim()) body.hurdleRatePct = Number(hurdle);
+      // Wave C v3 hardening (GPT-5 v2 finding): use parseMinor to reject
+      // exponent notation and non-integer input on the gross proceeds field.
+      const body: Record<string, unknown> = { grossProceedsMinor: parseMinor(gross) };
+      if (hurdle.trim()) body.hurdleRatePct = parsePercent(hurdle) * 100; // hurdleRatePct expected as %.
       const j = await (await apiRequest("POST", `/api/partner/me/spv/${spvId}/distributions/preview`, body)).json();
       return j.split;
     },
@@ -611,6 +687,690 @@ function VoluntaryChecklist({ items, testid }: { items: string[]; testid: string
         </label>
       ))}
       <div className="text-[10px] text-[var(--cv-color-text-faint)] mt-1">Voluntary — for your guidance only. None of these steps block your SPV.</div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Wave C v2 — Unblock existing SPV UI (8 flows)
+ *
+ * Blockers fixed vs v1:
+ *   • C2 Mandate: SPV_MANDATE_MODES (deal_specific/open/thesis_lp_approval/
+ *     sector_restricted) from @shared/spvEngine — no more invented values.
+ *     Panel now exposes companyIds, checkMinMinor, checkMaxMinor (no silent
+ *     drop). ruleTree default uses key `rules` (not `clauses`) per MandateNode.
+ *   • C3 Fee: SPV_FEE_TYPES (fixed/carry/hybrid). Adds layer selector
+ *     defaulted to management; platform is displayed but disabled.
+ *   • C4 Document: SPV_DOC_TYPES (formation/operating_agreement/subscription/
+ *     formd/blue_sky/kyc/tax). Adds storageBackend + sizeBytes.
+ *   • C1 Deploy: instrument selector removed (server sources instrument from
+ *     the round, never trusted from client).
+ *   • C6 RecordDistribution: cost basis is REQUIRED per DISTRIBUTION_BASIS_
+ *     REQUIRED — panel no longer treats it as optional.
+ *   • C8 Subscribe: SPV_INVESTOR_PERSONAS (collective/capavate/partner).
+ *   • Numeric parsing: strict integer parser rejects "1e7", "1.5", empty.
+ *   • Error toasts: spvErrorMessage() reads err.code and translates.
+ *   • Accessibility: every Input carries id; every Label has htmlFor.
+ *
+ * All panels remain gated on canWrite (never render for read-only viewers).
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/* useId helper is imported from react at the top of the file; if we don't
+ * already have it, use useId() inline. */
+
+/* C1 v2 — Deploy capital into a company (unblocks the disabled button). */
+function DeployPanel({ spvId, currency, onChanged }: { spvId: string; currency: string; onChanged: () => void }) {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [companyId, setCompanyId] = useState("");
+  const [companyRoundId, setCompanyRoundId] = useState("");
+  const [amount, setAmount] = useState("");
+  const [eligibility, setEligibility] = useState<{ eligible: boolean; reasons: string[] } | null>(null);
+  const id = useId();
+
+  const checkElig = useMutation({
+    mutationFn: async () => {
+      const cid = companyId.trim();
+      if (!cid) throw new Error("Enter a company ID first");
+      const j = await (await apiRequest("GET", `/api/partner/me/spv/${spvId}/eligibility/${encodeURIComponent(cid)}`)).json();
+      return j as { eligible: boolean; reasons: string[] };
+    },
+    onSuccess: (r) => setEligibility(r),
+    onError: (e: Error) => toast({ variant: "destructive", title: "Eligibility check failed", description: spvErrorMessage(e) }),
+  });
+
+  const deploy = useMutation({
+    mutationFn: async () => {
+      const cid = companyId.trim();
+      const rid = companyRoundId.trim();
+      if (!cid) throw new Error("Company ID required");
+      if (!rid) throw new Error("Company round ID required");
+      const amt = parseMinor(amount);
+      if (amt <= 0) throw new Error("Amount must be greater than zero");
+      await (await apiRequest("POST", `/api/partner/me/spv/${spvId}/deployments`, {
+        companyId: cid,
+        companyRoundId: rid,
+        amountMinor: amt,
+        currency,
+      })).json();
+    },
+    onSuccess: () => {
+      toast({ title: "Capital deployed", description: `${fmt(parseMinor(amount), currency)} allocated.` });
+      setOpen(false);
+      setCompanyId(""); setCompanyRoundId(""); setAmount(""); setEligibility(null);
+      onChanged();
+    },
+    onError: (e: Error) => toast({ variant: "destructive", title: "Deploy failed", description: spvErrorMessage(e) }),
+  });
+
+  return (
+    <div className="mt-3 border-t pt-3" data-testid="spv-deploy-affordance">
+      {!open ? (
+        <>
+          <Button size="sm" variant="outline" data-testid="spv-deploy-action" onClick={() => setOpen(true)} title="Deploy capital into a company">
+            Deploy capital
+          </Button>
+          <div className="text-[10px] text-[var(--cv-color-text-faint)] mt-1">
+            Deploying links a company <span className="font-medium">and</span> commits an allocation amount. Eligibility is checked; the instrument comes from the selected round (not the client). Linking a target above does not move any money.
+          </div>
+        </>
+      ) : (
+        <div className="space-y-2" data-testid="spv-deploy-panel">
+          <div className="font-medium text-sm">Deploy capital</div>
+          <div>
+            <Label htmlFor={`${id}-companyId`} className="text-[10px]">Company ID</Label>
+            <Input id={`${id}-companyId`} value={companyId} onChange={(e) => { setCompanyId(e.target.value); setEligibility(null); }} data-testid="spv-deploy-company-id" placeholder="cmp_…" />
+          </div>
+          <div>
+            <Label htmlFor={`${id}-roundId`} className="text-[10px]">Company round ID</Label>
+            <Input id={`${id}-roundId`} value={companyRoundId} onChange={(e) => setCompanyRoundId(e.target.value)} data-testid="spv-deploy-round-id" placeholder="rnd_…" />
+            <div className="text-[10px] text-[var(--cv-color-text-faint)]">Instrument is sourced from this round automatically.</div>
+          </div>
+          <div>
+            <Label htmlFor={`${id}-amount`} className="text-[10px]">Amount ({currency}, minor units \u2014 whole integer only)</Label>
+            <Input id={`${id}-amount`} value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="numeric" pattern="[0-9]*" data-testid="spv-deploy-amount" placeholder="e.g. 5000000 = $50,000" />
+            {amount && /^\d+$/.test(amount) && <div className="text-[10px] text-[var(--cv-color-text-faint)]">≈ {fmt(Number(amount), currency)}</div>}
+          </div>
+          <div className="flex gap-2">
+            <Button size="sm" variant="outline" onClick={() => checkElig.mutate()} disabled={checkElig.isPending || !companyId.trim()} data-testid="spv-deploy-check-eligibility">
+              {checkElig.isPending ? "Checking…" : "Check eligibility"}
+            </Button>
+            <Button size="sm" onClick={() => deploy.mutate()} disabled={deploy.isPending} data-testid="spv-deploy-submit">
+              {deploy.isPending ? "Deploying…" : "Deploy"}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => { setOpen(false); setEligibility(null); }} data-testid="spv-deploy-cancel">Cancel</Button>
+          </div>
+          {eligibility && (
+            <div
+              className={`text-xs rounded p-2 ${eligibility.eligible ? "text-emerald-800" : "text-amber-900"}`}
+              style={eligibility.eligible ? { background: "rgba(16,185,129,0.1)" } : { background: "rgba(245,158,11,0.1)" }}
+              data-testid="spv-deploy-eligibility"
+            >
+              {eligibility.eligible ? "✓ Eligible per your SPV mandate." : `Not eligible: ${eligibility.reasons.join("; ") || "no reason given"}. The deploy call will fail closed unless you update the mandate.`}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* C2 v2 — Update SPV mandate. Uses canonical SPV_MANDATE_MODES enum;
+ *          exposes companyIds/checkMin/checkMax (no more silent drops). */
+function MandatePanel({ spvId, mandate, onChanged }: { spvId: string; mandate: { mode?: string; sector?: string[]; geography?: string[]; stage?: string[]; companyIds?: string[]; checkMinMinor?: number | null; checkMaxMinor?: number | null; ruleTree?: unknown } | null; onChanged: () => void }) {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [mode, setMode] = useState<string>((mandate?.mode as string) ?? SPV_MANDATE_MODES[0]);
+  const [sector, setSector] = useState((mandate?.sector ?? []).join(", "));
+  const [geography, setGeography] = useState((mandate?.geography ?? []).join(", "));
+  const [stage, setStage] = useState((mandate?.stage ?? []).join(", "));
+  const [companyIds, setCompanyIds] = useState((mandate?.companyIds ?? []).join(", "));
+  const [checkMin, setCheckMin] = useState(mandate?.checkMinMinor != null ? String(mandate.checkMinMinor) : "");
+  const [checkMax, setCheckMax] = useState(mandate?.checkMaxMinor != null ? String(mandate.checkMaxMinor) : "");
+  const id = useId();
+
+  const save = useMutation({
+    mutationFn: async () => {
+      // Preserve the existing rule tree if the caller has one; else use a
+      // valid empty tree keyed by `rules` (NOT `clauses`, which fails schema).
+      const ruleTree = mandate?.ruleTree ?? { op: "and", rules: [] };
+      const body: Record<string, unknown> = {
+        mode,
+        ruleTree,
+        sector: sector.split(",").map((s) => s.trim()).filter(Boolean),
+        geography: geography.split(",").map((s) => s.trim()).filter(Boolean),
+        stage: stage.split(",").map((s) => s.trim()).filter(Boolean),
+        companyIds: companyIds.split(",").map((s) => s.trim()).filter(Boolean),
+      };
+      if (checkMin.trim()) body.checkMinMinor = parseMinor(checkMin);
+      if (checkMax.trim()) body.checkMaxMinor = parseMinor(checkMax);
+      await (await apiRequest("PUT", `/api/partner/me/spv/${spvId}/mandate`, body)).json();
+    },
+    onSuccess: () => {
+      toast({ title: "Mandate updated" });
+      setOpen(false);
+      onChanged();
+    },
+    onError: (e: Error) => toast({ variant: "destructive", title: "Could not update mandate", description: spvErrorMessage(e) }),
+  });
+
+  return (
+    <div className="mt-3 border-t pt-3" data-testid="spv-mandate-edit">
+      {!open ? (
+        <Button size="sm" variant="outline" onClick={() => setOpen(true)} data-testid="spv-mandate-edit-open">Edit mandate</Button>
+      ) : (
+        <div className="space-y-2" data-testid="spv-mandate-edit-panel">
+          <div className="font-medium text-sm">Update mandate</div>
+          <div>
+            <Label htmlFor={`${id}-mode`} className="text-[10px]">Mode</Label>
+            <select id={`${id}-mode`} className="w-full text-xs border rounded px-2 py-1" value={mode} onChange={(e) => setMode(e.target.value)} data-testid="spv-mandate-mode">
+              {SPV_MANDATE_MODES.map((m) => (
+                <option key={m} value={m}>{SPV_MANDATE_MODE_LABELS[m as keyof typeof SPV_MANDATE_MODE_LABELS]}</option>
+              ))}
+            </select>
+            <div className="text-[10px] text-[var(--cv-color-text-faint)]">{SPV_MANDATE_MODE_HELP[mode as keyof typeof SPV_MANDATE_MODE_HELP]}</div>
+          </div>
+          <div>
+            <Label htmlFor={`${id}-sector`} className="text-[10px]">Sectors (comma-separated)</Label>
+            <Input id={`${id}-sector`} value={sector} onChange={(e) => setSector(e.target.value)} data-testid="spv-mandate-sector" placeholder="fintech, ai, saas" />
+          </div>
+          <div>
+            <Label htmlFor={`${id}-geo`} className="text-[10px]">Geography</Label>
+            <Input id={`${id}-geo`} value={geography} onChange={(e) => setGeography(e.target.value)} data-testid="spv-mandate-geography" placeholder="US, EU, MENA" />
+          </div>
+          <div>
+            <Label htmlFor={`${id}-stage`} className="text-[10px]">Stage</Label>
+            <Input id={`${id}-stage`} value={stage} onChange={(e) => setStage(e.target.value)} data-testid="spv-mandate-stage" placeholder="seed, series-a" />
+          </div>
+          <div>
+            <Label htmlFor={`${id}-companyIds`} className="text-[10px]">Allowlisted companies (comma-separated IDs, optional)</Label>
+            <Input id={`${id}-companyIds`} value={companyIds} onChange={(e) => setCompanyIds(e.target.value)} data-testid="spv-mandate-company-ids" placeholder="cmp_abc, cmp_xyz" />
+            <div className="text-[10px] text-[var(--cv-color-text-faint)]">Only companies listed here are eligible when mode is Deal-Specific or Sector-Restricted.</div>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <Label htmlFor={`${id}-checkMin`} className="text-[10px]">Min check (minor units)</Label>
+              <Input id={`${id}-checkMin`} value={checkMin} onChange={(e) => setCheckMin(e.target.value)} inputMode="numeric" pattern="[0-9]*" data-testid="spv-mandate-check-min" placeholder="optional" />
+            </div>
+            <div>
+              <Label htmlFor={`${id}-checkMax`} className="text-[10px]">Max check (minor units)</Label>
+              <Input id={`${id}-checkMax`} value={checkMax} onChange={(e) => setCheckMax(e.target.value)} inputMode="numeric" pattern="[0-9]*" data-testid="spv-mandate-check-max" placeholder="optional" />
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <Button size="sm" onClick={() => save.mutate()} disabled={save.isPending} data-testid="spv-mandate-submit">
+              {save.isPending ? "Saving…" : "Save mandate"}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setOpen(false)} data-testid="spv-mandate-cancel">Cancel</Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* C3 v2 — Add a GP fee. Uses canonical SPV_FEE_TYPES enum. */
+function FeePanel({ spvId, currency, onChanged }: { spvId: string; currency: string; onChanged: () => void }) {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [feeType, setFeeType] = useState<string>(SPV_FEE_TYPES[0]);
+  const [fixed, setFixed] = useState("");
+  const [carry, setCarry] = useState("");
+  const [effectiveDate, setEffectiveDate] = useState("");
+  const id = useId();
+
+  const showFixed = feeType === "fixed" || feeType === "hybrid";
+  const showCarry = feeType === "carry" || feeType === "hybrid";
+
+  const submit = useMutation({
+    mutationFn: async () => {
+      const body: Record<string, unknown> = {
+        layer: "management",
+        feeType,
+        currency,
+      };
+      if (showFixed) {
+        if (!fixed.trim()) throw new Error(feeType === "fixed" ? "Fixed amount required for a fixed fee" : "Fixed amount required for a hybrid fee");
+        body.fixedAmountMinor = parseMinor(fixed);
+      }
+      if (showCarry) {
+        if (!carry.trim()) throw new Error(feeType === "carry" ? "Carry % required for a carry fee" : "Carry % required for a hybrid fee");
+        body.carryPct = parsePercent(carry);
+      }
+      if (effectiveDate.trim()) body.effectiveDate = effectiveDate.trim();
+      await (await apiRequest("POST", `/api/partner/me/spv/${spvId}/fees`, body)).json();
+    },
+    onSuccess: () => {
+      toast({ title: "Fee added" });
+      setOpen(false);
+      setFixed(""); setCarry(""); setEffectiveDate("");
+      onChanged();
+    },
+    onError: (e: Error) => toast({ variant: "destructive", title: "Could not add fee", description: spvErrorMessage(e) }),
+  });
+
+  const feeTypeLabels: Record<string, string> = { fixed: "Fixed amount", carry: "Carry (performance %)", hybrid: "Hybrid (fixed + carry)" };
+
+  return (
+    <div className="mt-3 border-t pt-3" data-testid="spv-fee-add">
+      {!open ? (
+        <Button size="sm" variant="outline" onClick={() => setOpen(true)} data-testid="spv-fee-add-open">Add GP fee</Button>
+      ) : (
+        <div className="space-y-2" data-testid="spv-fee-add-panel">
+          <div className="font-medium text-sm">Add GP fee (Management layer)</div>
+          <div className="text-[10px] text-[var(--cv-color-text-faint)]">
+            Platform-layer fees are set by Capavate and cannot be added here.
+          </div>
+          <div>
+            <Label htmlFor={`${id}-feeType`} className="text-[10px]">Fee type</Label>
+            <select id={`${id}-feeType`} className="w-full text-xs border rounded px-2 py-1" value={feeType} onChange={(e) => setFeeType(e.target.value)} data-testid="spv-fee-type">
+              {SPV_FEE_TYPES.map((t) => <option key={t} value={t}>{feeTypeLabels[t] ?? t}</option>)}
+            </select>
+          </div>
+          {showFixed && (
+            <div>
+              <Label htmlFor={`${id}-fixed`} className="text-[10px]">Fixed amount ({currency}, minor units)</Label>
+              <Input id={`${id}-fixed`} value={fixed} onChange={(e) => setFixed(e.target.value)} inputMode="numeric" pattern="[0-9]*" data-testid="spv-fee-fixed" />
+              {fixed && /^\d+$/.test(fixed) && <div className="text-[10px] text-[var(--cv-color-text-faint)]">≈ {fmt(Number(fixed), currency)}</div>}
+            </div>
+          )}
+          {showCarry && (
+            <div>
+              <Label htmlFor={`${id}-carry`} className="text-[10px]">Carry / performance % (0–100)</Label>
+              <Input id={`${id}-carry`} value={carry} onChange={(e) => setCarry(e.target.value)} inputMode="decimal" data-testid="spv-fee-carry" placeholder="e.g. 20" />
+            </div>
+          )}
+          <div>
+            <Label htmlFor={`${id}-eff`} className="text-[10px]">Effective date (optional)</Label>
+            <Input id={`${id}-eff`} value={effectiveDate} onChange={(e) => setEffectiveDate(e.target.value)} type="date" data-testid="spv-fee-effective" />
+          </div>
+          <div className="flex gap-2">
+            <Button size="sm" onClick={() => submit.mutate()} disabled={submit.isPending} data-testid="spv-fee-submit">
+              {submit.isPending ? "Adding…" : "Add fee"}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setOpen(false)} data-testid="spv-fee-cancel">Cancel</Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* C4 v2 — Register a document. Uses canonical SPV_DOC_TYPES enum;
+ *          exposes storageBackend + sizeBytes (no more silent drops). */
+function DocumentPanel({ spvId, onChanged }: { spvId: string; onChanged: () => void }) {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [docType, setDocType] = useState<string>(SPV_DOC_TYPES[0]);
+  const [title, setTitle] = useState("");
+  const [storageKey, setStorageKey] = useState("");
+  const [storageBackend, setStorageBackend] = useState("s3");
+  const [contentType, setContentType] = useState("application/pdf");
+  const [sizeBytes, setSizeBytes] = useState("");
+  const [expiry, setExpiry] = useState("");
+  const id = useId();
+
+  const submit = useMutation({
+    mutationFn: async () => {
+      if (!storageKey.trim()) throw new Error("Storage key required (upload the file first, then paste the returned key)");
+      const body: Record<string, unknown> = {
+        docType,
+        title: title.trim() || undefined,
+        storageKey: storageKey.trim(),
+        storageBackend: storageBackend.trim() || undefined,
+        contentType: contentType.trim() || undefined,
+      };
+      if (sizeBytes.trim()) body.sizeBytes = parseMinor(sizeBytes);
+      if (expiry.trim()) body.expiry = expiry.trim();
+      await (await apiRequest("POST", `/api/partner/me/spv/${spvId}/documents`, body)).json();
+    },
+    onSuccess: () => {
+      toast({ title: "Document registered" });
+      setOpen(false);
+      setTitle(""); setStorageKey(""); setSizeBytes(""); setExpiry("");
+      onChanged();
+    },
+    onError: (e: Error) => toast({ variant: "destructive", title: "Could not register document", description: spvErrorMessage(e) }),
+  });
+
+  const docTypeLabels: Record<string, string> = {
+    formation: "Formation",
+    operating_agreement: "Operating agreement",
+    subscription: "Subscription agreement",
+    formd: "Form D",
+    blue_sky: "Blue-sky filing",
+    kyc: "KYC package",
+    tax: "Tax (K-1 / other)",
+  };
+
+  return (
+    <div className="mt-3 border-t pt-3" data-testid="spv-document-add">
+      {!open ? (
+        <Button size="sm" variant="outline" onClick={() => setOpen(true)} data-testid="spv-document-add-open">Register document</Button>
+      ) : (
+        <div className="space-y-2" data-testid="spv-document-add-panel">
+          <div className="font-medium text-sm">Register document</div>
+          <div>
+            <Label htmlFor={`${id}-type`} className="text-[10px]">Type</Label>
+            <select id={`${id}-type`} className="w-full text-xs border rounded px-2 py-1" value={docType} onChange={(e) => setDocType(e.target.value)} data-testid="spv-document-type">
+              {SPV_DOC_TYPES.map((t) => <option key={t} value={t}>{docTypeLabels[t] ?? t}</option>)}
+            </select>
+          </div>
+          <div>
+            <Label htmlFor={`${id}-title`} className="text-[10px]">Title (optional)</Label>
+            <Input id={`${id}-title`} value={title} onChange={(e) => setTitle(e.target.value)} data-testid="spv-document-title" placeholder="Q3 2026 Report" />
+          </div>
+          <div>
+            <Label htmlFor={`${id}-storageKey`} className="text-[10px]">Storage key</Label>
+            <Input id={`${id}-storageKey`} value={storageKey} onChange={(e) => setStorageKey(e.target.value)} data-testid="spv-document-storage-key" placeholder="documents/spv-xxx/file.pdf" />
+            <div className="text-[10px] text-[var(--cv-color-text-faint)]">The storage key returned after you upload the file.</div>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <Label htmlFor={`${id}-backend`} className="text-[10px]">Storage backend</Label>
+              <select id={`${id}-backend`} className="w-full text-xs border rounded px-2 py-1" value={storageBackend} onChange={(e) => setStorageBackend(e.target.value)} data-testid="spv-document-storage-backend">
+                <option value="s3">S3</option>
+                <option value="gcs">GCS</option>
+                <option value="azure">Azure Blob</option>
+                <option value="local">Local</option>
+              </select>
+            </div>
+            <div>
+              <Label htmlFor={`${id}-ct`} className="text-[10px]">Content type</Label>
+              <Input id={`${id}-ct`} value={contentType} onChange={(e) => setContentType(e.target.value)} data-testid="spv-document-content-type" />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <Label htmlFor={`${id}-size`} className="text-[10px]">Size (bytes, optional)</Label>
+              <Input id={`${id}-size`} value={sizeBytes} onChange={(e) => setSizeBytes(e.target.value)} inputMode="numeric" pattern="[0-9]*" data-testid="spv-document-size-bytes" />
+            </div>
+            <div>
+              <Label htmlFor={`${id}-expiry`} className="text-[10px]">Expiry (optional)</Label>
+              <Input id={`${id}-expiry`} value={expiry} onChange={(e) => setExpiry(e.target.value)} type="date" data-testid="spv-document-expiry" />
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <Button size="sm" onClick={() => submit.mutate()} disabled={submit.isPending} data-testid="spv-document-submit">
+              {submit.isPending ? "Registering…" : "Register"}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setOpen(false)} data-testid="spv-document-cancel">Cancel</Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* C5 v2 — Record a secondary transfer (MODEL only — no money movement). */
+function TransferPanel({ spvId, currency, onChanged }: { spvId: string; currency: string; onChanged: () => void }) {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [fromId, setFromId] = useState("");
+  const [toId, setToId] = useState("");
+  const [amount, setAmount] = useState("");
+  const [unitsPct, setUnitsPct] = useState("");
+  const id = useId();
+
+  const submit = useMutation({
+    mutationFn: async () => {
+      const f = fromId.trim(); const t = toId.trim();
+      if (!f || !t) throw new Error("Both investor IDs are required");
+      if (f === t) throw new Error("From and To investors must differ");
+      const body: Record<string, unknown> = {
+        fromInvestorId: f,
+        toInvestorId: t,
+        currency,
+      };
+      if (amount.trim()) body.amountMinor = parseMinor(amount);
+      if (unitsPct.trim()) body.unitsPct = parsePercent(unitsPct);
+      if (!body.amountMinor && !body.unitsPct) throw new Error("Enter an amount OR a units percentage");
+      await (await apiRequest("POST", `/api/partner/me/spv/${spvId}/transfers`, body)).json();
+    },
+    onSuccess: () => {
+      toast({ title: "Transfer recorded", description: "Model only — no money has moved." });
+      setOpen(false);
+      setFromId(""); setToId(""); setAmount(""); setUnitsPct("");
+      onChanged();
+    },
+    onError: (e: Error) => toast({ variant: "destructive", title: "Could not record transfer", description: spvErrorMessage(e) }),
+  });
+
+  return (
+    <div className="mt-3 border-t pt-3" data-testid="spv-transfer-add">
+      {!open ? (
+        <Button size="sm" variant="outline" onClick={() => setOpen(true)} data-testid="spv-transfer-add-open">Record transfer</Button>
+      ) : (
+        <div className="space-y-2" data-testid="spv-transfer-add-panel">
+          <div className="font-medium text-sm">Record secondary transfer</div>
+          <div className="text-[10px] text-[var(--cv-color-text-faint)]">Model-only. No cash moves; this updates the ownership register once approved by the GP.</div>
+          <div>
+            <Label htmlFor={`${id}-from`} className="text-[10px]">From investor ID</Label>
+            <Input id={`${id}-from`} value={fromId} onChange={(e) => setFromId(e.target.value)} data-testid="spv-transfer-from" />
+          </div>
+          <div>
+            <Label htmlFor={`${id}-to`} className="text-[10px]">To investor ID</Label>
+            <Input id={`${id}-to`} value={toId} onChange={(e) => setToId(e.target.value)} data-testid="spv-transfer-to" />
+          </div>
+          <div>
+            <Label htmlFor={`${id}-amt`} className="text-[10px]">Amount ({currency}, minor units)</Label>
+            <Input id={`${id}-amt`} value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="numeric" pattern="[0-9]*" data-testid="spv-transfer-amount" placeholder="or leave blank and use % below" />
+          </div>
+          <div>
+            <Label htmlFor={`${id}-pct`} className="text-[10px]">Units % (0–100)</Label>
+            <Input id={`${id}-pct`} value={unitsPct} onChange={(e) => setUnitsPct(e.target.value)} inputMode="decimal" data-testid="spv-transfer-units-pct" placeholder="e.g. 50 = half the LP's holdings" />
+          </div>
+          <div className="flex gap-2">
+            <Button size="sm" onClick={() => submit.mutate()} disabled={submit.isPending} data-testid="spv-transfer-submit">
+              {submit.isPending ? "Recording…" : "Record"}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setOpen(false)} data-testid="spv-transfer-cancel">Cancel</Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* C6 v2 — Record a real distribution. Cost basis is REQUIRED (server rule). */
+function RecordDistributionPanel({ spvId, currency, onChanged }: { spvId: string; currency: string; onChanged: () => void }) {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [event, setEvent] = useState("exit");
+  const [gross, setGross] = useState("");
+  const [costBasis, setCostBasis] = useState("");
+  const [outcome, setOutcome] = useState<"succeeded" | "failed">("succeeded");
+  const id = useId();
+
+  const submit = useMutation({
+    mutationFn: async () => {
+      const g = parseMinor(gross);
+      const cb = parseMinor(costBasis); // REQUIRED — server rejects if missing.
+      const body: Record<string, unknown> = {
+        event: event.trim() || "exit",
+        grossProceedsMinor: g,
+        costBasisMinor: cb,
+        currency,
+        collectionOutcome: outcome,
+      };
+      await (await apiRequest("POST", `/api/partner/me/spv/${spvId}/distributions`, body)).json();
+    },
+    onSuccess: () => {
+      toast({ title: "Distribution recorded" });
+      setOpen(false);
+      setGross(""); setCostBasis("");
+      onChanged();
+    },
+    onError: (e: Error) => toast({ variant: "destructive", title: "Could not record distribution", description: spvErrorMessage(e) }),
+  });
+
+  return (
+    <div className="mt-3 border-t pt-3" data-testid="spv-distribution-record">
+      {!open ? (
+        <Button size="sm" variant="outline" onClick={() => setOpen(true)} data-testid="spv-distribution-record-open">Record distribution</Button>
+      ) : (
+        <div className="space-y-2" data-testid="spv-distribution-record-panel">
+          <div className="font-medium text-sm">Record distribution</div>
+          <div className="text-[10px] text-[var(--cv-color-text-faint)]">Writes to the ledger. The waterfall computes LP / GP / platform splits automatically. Cost basis is required for accurate carry — never assumed.</div>
+          <div>
+            <Label htmlFor={`${id}-event`} className="text-[10px]">Event type</Label>
+            <select id={`${id}-event`} className="w-full text-xs border rounded px-2 py-1" value={event} onChange={(e) => setEvent(e.target.value)} data-testid="spv-distribution-event">
+              <option value="exit">Full exit</option>
+              <option value="partial_exit">Partial exit</option>
+              <option value="dividend">Dividend</option>
+              <option value="tender">Tender / secondary</option>
+              <option value="return_of_capital">Return of capital</option>
+            </select>
+          </div>
+          <div>
+            <Label htmlFor={`${id}-gross`} className="text-[10px]">Gross proceeds ({currency}, minor units)</Label>
+            <Input id={`${id}-gross`} value={gross} onChange={(e) => setGross(e.target.value)} inputMode="numeric" pattern="[0-9]*" data-testid="spv-distribution-gross" />
+            {gross && /^\d+$/.test(gross) && <div className="text-[10px] text-[var(--cv-color-text-faint)]">≈ {fmt(Number(gross), currency)}</div>}
+          </div>
+          <div>
+            <Label htmlFor={`${id}-cb`} className="text-[10px]">Cost basis <span className="text-red-700">(required)</span> — minor units</Label>
+            <Input id={`${id}-cb`} value={costBasis} onChange={(e) => setCostBasis(e.target.value)} inputMode="numeric" pattern="[0-9]*" data-testid="spv-distribution-cost-basis" />
+            {costBasis && /^\d+$/.test(costBasis) && <div className="text-[10px] text-[var(--cv-color-text-faint)]">≈ {fmt(Number(costBasis), currency)}</div>}
+            <div className="text-[10px] text-[var(--cv-color-text-faint)]">The total capital originally deployed (used to compute profit for carry).</div>
+          </div>
+          <div>
+            <Label htmlFor={`${id}-outcome`} className="text-[10px]">Collection outcome</Label>
+            <select id={`${id}-outcome`} className="w-full text-xs border rounded px-2 py-1" value={outcome} onChange={(e) => setOutcome(e.target.value as "succeeded" | "failed")} data-testid="spv-distribution-outcome">
+              <option value="succeeded">Collected</option>
+              <option value="failed">Failed / uncollected</option>
+            </select>
+          </div>
+          <div className="flex gap-2">
+            <Button size="sm" onClick={() => submit.mutate()} disabled={submit.isPending} data-testid="spv-distribution-submit">
+              {submit.isPending ? "Recording…" : "Record"}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setOpen(false)} data-testid="spv-distribution-cancel">Cancel</Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* C7 v2 — Wind down the SPV (managing_partner only). Two-step confirmation. */
+function WindDownPanel({ spvId, onChanged }: { spvId: string; onChanged: () => void }) {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [confirm, setConfirm] = useState("");
+  const CONFIRM_PHRASE = "WIND DOWN";
+  const id = useId();
+
+  const submit = useMutation({
+    mutationFn: async () => {
+      if (confirm.trim() !== CONFIRM_PHRASE) throw new Error(`Type "${CONFIRM_PHRASE}" to confirm`);
+      await (await apiRequest("POST", `/api/partner/me/spv/${spvId}/wind-down`, {})).json();
+    },
+    onSuccess: () => {
+      toast({ title: "SPV wound down", description: "The SPV is now archived. No further changes." });
+      setOpen(false);
+      setConfirm("");
+      onChanged();
+    },
+    onError: (e: Error) => toast({ variant: "destructive", title: "Could not wind down", description: spvErrorMessage(e) }),
+  });
+
+  return (
+    <div className="mt-3 border-t pt-3" data-testid="spv-winddown-action">
+      {!open ? (
+        <Button size="sm" variant="outline" onClick={() => setOpen(true)} data-testid="spv-winddown-open">Wind down SPV</Button>
+      ) : (
+        <div className="space-y-2" data-testid="spv-winddown-panel">
+          <div className="font-medium text-sm text-amber-900">Wind down SPV</div>
+          <div
+            className="text-xs rounded p-2 text-amber-900"
+            style={{ background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.3)" }}
+          >
+            This archives the SPV. Reports remain viewable, but no further capital calls, distributions, or transfers can be recorded. Only a Managing Partner can perform this action.
+          </div>
+          <div>
+            <Label htmlFor={`${id}-confirm`} className="text-[10px]">Type <span className="font-mono font-medium">{CONFIRM_PHRASE}</span> to confirm</Label>
+            <Input id={`${id}-confirm`} value={confirm} onChange={(e) => setConfirm(e.target.value)} data-testid="spv-winddown-confirm" />
+          </div>
+          <div className="flex gap-2">
+            <Button size="sm" onClick={() => submit.mutate()} disabled={submit.isPending || confirm.trim() !== CONFIRM_PHRASE} data-testid="spv-winddown-submit">
+              {submit.isPending ? "Winding down…" : "Wind down"}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => { setOpen(false); setConfirm(""); }} data-testid="spv-winddown-cancel">Cancel</Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* C8 v2 — Add a subscription. Uses SPV_INVESTOR_PERSONAS enum. */
+function SubscribePanel({ spvId, currency, onChanged }: { spvId: string; currency: string; onChanged: () => void }) {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [investorId, setInvestorId] = useState("");
+  const [commitment, setCommitment] = useState("");
+  const [persona, setPersona] = useState<string>(SPV_INVESTOR_PERSONAS[0]);
+  const id = useId();
+
+  const submit = useMutation({
+    mutationFn: async () => {
+      const iid = investorId.trim();
+      if (!iid) throw new Error("Investor ID required");
+      const amt = parseMinor(commitment);
+      if (amt <= 0) throw new Error("Commitment must be greater than zero");
+      await (await apiRequest("POST", `/api/partner/me/spv/${spvId}/subscriptions`, {
+        investorId: iid,
+        commitmentMinor: amt,
+        currency,
+        investorPersona: persona,
+      })).json();
+    },
+    onSuccess: () => {
+      toast({ title: "Subscription added" });
+      setOpen(false);
+      setInvestorId(""); setCommitment("");
+      onChanged();
+    },
+    onError: (e: Error) => toast({ variant: "destructive", title: "Could not add subscription", description: spvErrorMessage(e) }),
+  });
+
+  const personaLabels: Record<string, string> = {
+    collective: "Collective member (Capavate-managed)",
+    capavate: "Direct Capavate investor",
+    partner: "Partner-network investor",
+  };
+
+  return (
+    <div className="mt-3 border-t pt-3" data-testid="spv-subscription-add">
+      {!open ? (
+        <Button size="sm" variant="outline" onClick={() => setOpen(true)} data-testid="spv-subscription-add-open">Add LP subscription</Button>
+      ) : (
+        <div className="space-y-2" data-testid="spv-subscription-add-panel">
+          <div className="font-medium text-sm">Add LP subscription</div>
+          <div className="text-[10px] text-[var(--cv-color-text-faint)]">Creates a subscription in "review" state. The LP then signs, funds, and is confirmed.</div>
+          <div>
+            <Label htmlFor={`${id}-inv`} className="text-[10px]">Investor ID</Label>
+            <Input id={`${id}-inv`} value={investorId} onChange={(e) => setInvestorId(e.target.value)} data-testid="spv-subscription-investor-id" placeholder="inv_…" />
+          </div>
+          <div>
+            <Label htmlFor={`${id}-commit`} className="text-[10px]">Commitment ({currency}, minor units)</Label>
+            <Input id={`${id}-commit`} value={commitment} onChange={(e) => setCommitment(e.target.value)} inputMode="numeric" pattern="[0-9]*" data-testid="spv-subscription-commitment" />
+            {commitment && /^\d+$/.test(commitment) && <div className="text-[10px] text-[var(--cv-color-text-faint)]">≈ {fmt(Number(commitment), currency)}</div>}
+          </div>
+          <div>
+            <Label htmlFor={`${id}-persona`} className="text-[10px]">Investor persona</Label>
+            <select id={`${id}-persona`} className="w-full text-xs border rounded px-2 py-1" value={persona} onChange={(e) => setPersona(e.target.value)} data-testid="spv-subscription-persona">
+              {SPV_INVESTOR_PERSONAS.map((p) => <option key={p} value={p}>{personaLabels[p] ?? p}</option>)}
+            </select>
+          </div>
+          <div className="flex gap-2">
+            <Button size="sm" onClick={() => submit.mutate()} disabled={submit.isPending} data-testid="spv-subscription-submit">
+              {submit.isPending ? "Adding…" : "Add subscription"}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setOpen(false)} data-testid="spv-subscription-cancel">Cancel</Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

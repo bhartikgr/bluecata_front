@@ -45,18 +45,14 @@ SELECT DISTINCT
 FROM audit_log outer_al
 WHERE outer_al.prev_hash IS NULL;
 
--- Flip incident → ok for tenant_admin_capavate ONLY when a genesis exists.
--- Boot verifier tick handles other tenants and edge cases.
-UPDATE audit_chain_health
-   SET status = 'ok',
-       detail = 'chain_genesis re-base applied per Wave A-1 v2.1 (ADR-3 action 4). Boot verifier tick will re-check.',
-       updated_at = '2026-08-02T00:00:00.000Z'
- WHERE key = 'tenant_admin_capavate'
-   AND status = 'incident'
-   AND EXISTS (
-     SELECT 1 FROM audit_chain_genesis g WHERE g.tenant_id = 'tenant_admin_capavate'
-   );
+-- Wave A-1 v2.2 (per GPT-5 v2.1 B3): the migration does NOT clear
+-- audit_chain_health.status. The boot-time verifier tick
+-- (runAuditChainBootVerifier in server/lib/hydrateStores.ts) is the SOLE
+-- authority for that column post-migration. Rationale: this migration
+-- only pins the genesis anchor; it does not verify successor chains.
+-- The boot tick runs authoritative verifyTenantAuditChain per tenant and
+-- writes 'ok' or 'incident' based on the actual walk result.
 
 -- Rollback (manual):
---   UPDATE audit_chain_health SET status = 'incident' WHERE key = 'tenant_admin_capavate';
 --   DELETE FROM audit_chain_genesis WHERE tenant_id = 'tenant_admin_capavate';
+--   -- (The boot verifier tick will re-arm 'incident' on next boot if broken.)
