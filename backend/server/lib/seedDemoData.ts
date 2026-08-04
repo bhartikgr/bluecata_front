@@ -59,7 +59,11 @@ import {
   chapterLeaderboardSnapshots,
 } from "../../shared/schema";
 import { createHash } from "node:crypto";
-import { spvFundStore } from "../spvFundStore";
+// Wave B (v26.4.0) — SPV demo seed repointed from retired spvFundStore to the
+// canonical spvEngineStore. Uses createSpv with the engine's required enum
+// vocabulary (draft|open|closed|deployed|distributing|wound_down) plus
+// explicit carry_basis (which the engine requires — legacy default was implicit).
+import { spvEngineStore } from "../spvEngineStore";
 import { storeCredential } from "../userCredentialsStore";
 // 23-May Fix 7 — partner seed helpers (Consortium Partner login demo persona)
 import { _registerSeedPartner } from "../adminContactsStoreShim";
@@ -726,20 +730,42 @@ export async function seedDemoData(db: Db): Promise<{
   ];
   for (const seed of DEMO_SPV_SEED) {
     try {
-      const existing = spvFundStore.listByPartner(seed.partnerId);
+      const existing = spvEngineStore.listByPartner(seed.partnerId);
       if (existing.some((s) => s.name === seed.name)) continue;
-      spvFundStore.createSpv({
-        partnerId: seed.partnerId,
-        name: seed.name,
-        leadCompanyId: seed.leadCompanyId,
-        structureType: seed.structureType,
-        status: seed.status,
-        targetMinor: seed.targetMinor,
-        gpUserId: seed.gpUserId,
-        terms: seed.terms,
-      });
+      // Wave B v26.4.0-fix2 (Opus DEFECT-8): pass `structureType` through
+      // to the engine — the engine's SpvType enum (shared/spvEngine.ts:20)
+      // includes 'syndicate' as a first-class value; do NOT collapse it to
+      // 'spv'. Only unknown values fall back to 'spv' for safety.
+      //
+      // Status mapping: legacy `active` → engine `deployed` comes from
+      // spvEngineStore.mapFundStatus (NOT migrateLegacyPartnerSpvAndFunds).
+      // The migration and the seed live intentionally in separate vocabularies;
+      // this comment previously conflated them.
+      const engineSpvType = seed.structureType === "fund" ? "fund"
+        : seed.structureType === "syndicate" ? "syndicate"
+        : "spv";
+      const engineStatus =
+        seed.status === "fundraising" ? "open"
+        : seed.status === "active"    ? "deployed"
+        : seed.status === "wound_down" ? "wound_down"
+        : "draft";
+      spvEngineStore.createSpv(
+        seed.partnerId,
+        {
+          name: seed.name,
+          jurisdiction: "delaware",       // engine default (legacy demo had free-text jur)
+          carryBasis: "whole_spv",         // engine requires explicit carry
+          spvType: engineSpvType,
+          status: engineStatus,
+          targetRaiseMinor: seed.targetMinor,
+          targetCompanyId: seed.leadCompanyId ?? null,
+          gpUserId: seed.gpUserId ?? null,
+          terms: seed.terms ? { legacyTerms: seed.terms } : null,
+        },
+        seed.gpUserId ?? "seed:demo",
+      );
     } catch (e) {
-      log.warn(errorMeta("seedDemoData.spvFund", e, {
+      log.warn(errorMeta("seedDemoData.spvEngine", e, {
         chapterId: seed.chapterId,
         partnerId: seed.partnerId,
         name: seed.name,

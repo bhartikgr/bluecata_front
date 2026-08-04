@@ -38,7 +38,23 @@ import { apiRequest } from "@/lib/queryClient";
 // for any metric without a defensible source. Reflect that in the type so the
 // consuming UI is forced to null-check before calling .toFixed()/.toLocaleString().
 type Kpis = {
-  summary: { totalCompanies: number; totalInvestors: number; totalCommittedSoftCircle: number | null; totalFunded: number | null; momGrowthPct: number | null; churnPct: number | null; nrr: number | null };
+  summary: {
+    totalCompanies: number;
+    totalInvestors: number;
+    totalCommittedSoftCircle: number | null;
+    totalFunded: number | null;
+    momGrowthPct: number | null;
+    churnPct: number | null;
+    nrr: number | null;
+    // v26.4.0-fix2 (unanimous reviewer BLOCK) — Wave B SPV tiles wired to UI.
+    // Per-currency maps (Record<currency, minor_units>) render one tile per
+    // currency. On PG (Wave B.5 lands schema): server returns {} — UI shows "—".
+    // v26.4.0-fix3 (GPT NEW-2): totalActiveSpvs is nullable — on PG the server
+    // returns null, which renders as "—" (honest "unavailable"), NOT a fake 0.
+    totalSpvCommittedMinor?: Record<string, number>;
+    totalSpvWiredMinor?: Record<string, number>;
+    totalActiveSpvs?: number | null;
+  };
   queues: Record<string, number | null>;
   health: { capTableReconcile: { runs: number; success: number; successRatePct: number | null }; closeGateFailures: number | null; dataroomUploadErrors: number | null; messageDelivery: { sent: number | null; delivered: number | null; deliveryRatePct: number | null }; emailSlaSec: number | null };
   funnels: { onboarding: { step: string; count: number }[]; investor: { step: string; count: number }[] };
@@ -297,6 +313,80 @@ export default function AdminDashboard() {
             <div className="text-2xl font-semibold mt-1">{fmtUsd(data?.summary.totalFunded ?? 0)}</div>
           </Card>
         </div>
+
+        {/* v26.4.0-fix2 (Wave B UI wire — unanimous reviewer BLOCK) — SPV KPI
+            tiles. Owner Q3-C: WIRE not drop. Multi-currency by construction:
+            renders one column per currency present in the map, plus a scalar
+            "Active SPVs" count. On Postgres the map is empty and the tiles
+            show "—" (deferred to Wave B.5 schema wiring). */}
+        {(() => {
+          const committed = data?.summary.totalSpvCommittedMinor ?? {};
+          const wired = data?.summary.totalSpvWiredMinor ?? {};
+          const activeSpvs = data?.summary.totalActiveSpvs ?? null;
+          const committedCurrencies = Object.keys(committed).sort();
+          const wiredCurrencies = Object.keys(wired).sort();
+          const fmtCurrencyMinor = (m: number, ccy: string) =>
+            (m / 100).toLocaleString(undefined, { maximumFractionDigits: 0 }) + " " + ccy;
+          return (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-5">
+              <Card className="p-4" data-testid="stat-spv-active">
+                <div className="flex items-center justify-between mb-1">
+                  <Building2 className="h-4 w-4 text-muted-foreground" />
+                  <Badge variant="outline" className="text-[10px] text-emerald-700">SPV</Badge>
+                </div>
+                <div className="text-[10px] uppercase tracking-wider text-muted-foreground flex items-center gap-1">
+                  Active SPVs
+                  <HelpTip>Distinct active SPVs (excludes drafts and wound-down). Reads directly from the engine's spv table.</HelpTip>
+                </div>
+                <div className="text-2xl font-semibold mt-1" data-testid="stat-spv-active-value">
+                  {activeSpvs != null ? activeSpvs : "—"}
+                </div>
+              </Card>
+              <Card className="p-4" data-testid="stat-spv-committed">
+                <div className="flex items-center justify-between mb-1">
+                  <DollarSign className="h-4 w-4 text-muted-foreground" />
+                  <Badge variant="outline" className="text-[10px] text-emerald-700">Committed</Badge>
+                </div>
+                <div className="text-[10px] uppercase tracking-wider text-muted-foreground flex items-center gap-1">
+                  SPV Committed
+                  <HelpTip>Sum of active (non-withdrawn) SPV commitments, PER CURRENCY. Never a scalar sum across mixed currencies.</HelpTip>
+                </div>
+                <div className="mt-1 space-y-0.5" data-testid="stat-spv-committed-values">
+                  {committedCurrencies.length === 0 ? (
+                    <div className="text-2xl font-semibold">—</div>
+                  ) : (
+                    committedCurrencies.map((ccy) => (
+                      <div key={ccy} className="text-lg font-semibold">
+                        {fmtCurrencyMinor(committed[ccy], ccy)}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </Card>
+              <Card className="p-4" data-testid="stat-spv-wired">
+                <div className="flex items-center justify-between mb-1">
+                  <TrendingUp className="h-4 w-4 text-muted-foreground" />
+                  <Badge variant="outline" className="text-[10px] text-emerald-700">Wired</Badge>
+                </div>
+                <div className="text-[10px] uppercase tracking-wider text-muted-foreground flex items-center gap-1">
+                  SPV Wired
+                  <HelpTip>Sum of actual wired amounts on SPV subscriptions (wired_minor field), PER CURRENCY. Reflects real deposits, not soft-circles.</HelpTip>
+                </div>
+                <div className="mt-1 space-y-0.5" data-testid="stat-spv-wired-values">
+                  {wiredCurrencies.length === 0 ? (
+                    <div className="text-2xl font-semibold">—</div>
+                  ) : (
+                    wiredCurrencies.map((ccy) => (
+                      <div key={ccy} className="text-lg font-semibold">
+                        {fmtCurrencyMinor(wired[ccy], ccy)}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </Card>
+            </div>
+          );
+        })()}
 
         {/* Sprint 28 — Conversion analytics row (new). */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-5">

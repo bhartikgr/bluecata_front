@@ -1207,6 +1207,204 @@ function applyV2547Schema(db: any) {
   });
   tx();
 
+  /* Wave B v26.4.0-fix2 — mirror of migrations/0125_wave_b_backups.sql.
+   * Boot-time self-heal: idempotent full-row snapshot of the 9 legacy SPV
+   * source tables into wave_b_backup_* tables. Only executes on the FIRST
+   * boot after Wave B ships — subsequent boots see the `wave_b_backup_ddl_v1`
+   * marker in `_migrations_applied` and skip the whole block.
+   *
+   * v26.4.0-fix2 (round-2 fixes):
+   *   Opus DEFECT-9 / GPT-5.6 DEFECT-1 — SQLite requires `WHERE` before
+   *     `ON CONFLICT` on `INSERT ... SELECT`. Fixed with `WHERE 1=1`.
+   *   Opus DEFECT-11 — 6 spvs columns dropped by v26.4.0-fix1's explicit
+   *     column list (deployment_fee_*, sourcing_partner_id). Restored
+   *     here in the wave_b_backup_spvs DDL and column list.
+   *   No BEGIN/COMMIT in the .sql file (Opus DEFECT-10) — the runner
+   *     wraps every migration in db.transaction() already. This inline
+   *     mirror already uses `db.transaction()`; no change needed here.
+   *
+   * v26.4.0-fix (prior BLOCKs, preserved):
+   *   BLOCK-A — explicit PRIMARY KEY(id) on every backup table.
+   *   BLOCK-F — pre-create the 4 kv_partner* sources with IF NOT EXISTS.
+   *   BLOCK-G — portable SQL only (no `INSERT OR IGNORE`, no
+   *     `datetime('now')`); the marker gate prevents re-execution.
+   */
+  const waveBAlreadyApplied = db
+    .prepare("SELECT 1 AS one FROM _migrations_applied WHERE key = 'wave_b_backup_ddl_v1'")
+    .get();
+  if (!waveBAlreadyApplied) {
+    const waveBBackupTx = db.transaction(() => {
+      // 0. Ensure the 4 kv_partner* source tables exist (BLOCK-F).
+      // Shape matches storePersistenceShim.ensureTable exactly.
+      db.exec(`CREATE TABLE IF NOT EXISTS kv_partnerSpvs (
+        id TEXT PRIMARY KEY NOT NULL,
+        payload_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted_at TEXT
+      );`);
+      db.exec(`CREATE TABLE IF NOT EXISTS kv_partnerFunds (
+        id TEXT PRIMARY KEY NOT NULL,
+        payload_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted_at TEXT
+      );`);
+      db.exec(`CREATE TABLE IF NOT EXISTS kv_partnerSpvPositions (
+        id TEXT PRIMARY KEY NOT NULL,
+        payload_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted_at TEXT
+      );`);
+      db.exec(`CREATE TABLE IF NOT EXISTS kv_partnerFundCommitments (
+        id TEXT PRIMARY KEY NOT NULL,
+        payload_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted_at TEXT
+      );`);
+
+      // 1. Backup tables — explicit PRIMARY KEY(id) so ON CONFLICT works.
+      // v26.4.0-fix2 (Opus DEFECT-11) — wave_b_backup_spvs carries all 26
+      // canonical columns (20 from migration 0041 + 6 from 0054 fee/attribution).
+      const backupDdl: Array<[string, string]> = [
+        ["wave_b_backup_spvs", `CREATE TABLE IF NOT EXISTS wave_b_backup_spvs (
+          id TEXT PRIMARY KEY NOT NULL, tenant_id TEXT, partner_id TEXT, name TEXT,
+          lead_company_id TEXT, structure_type TEXT, status TEXT, target_minor INTEGER,
+          committed_minor INTEGER, called_minor INTEGER, distributed_minor INTEGER,
+          gp_user_id TEXT, formed_at TEXT, closes_at TEXT, terms TEXT,
+          prev_hash TEXT, curr_hash TEXT, created_at TEXT, updated_at TEXT, deleted_at TEXT,
+          deployment_fee_minor INTEGER, deployment_fee_currency TEXT, deployment_fee_payer TEXT,
+          deployment_fee_paid_at TEXT, deployment_fee_schedule_id TEXT, sourcing_partner_id TEXT
+        );`],
+        ["wave_b_backup_spv_commitments", `CREATE TABLE IF NOT EXISTS wave_b_backup_spv_commitments (
+          id TEXT PRIMARY KEY NOT NULL, tenant_id TEXT, spv_id TEXT, lp_user_id TEXT,
+          amount_minor INTEGER, status TEXT, commitment_doc_url TEXT, signed_at TEXT,
+          funded_at TEXT, prev_hash TEXT, curr_hash TEXT, created_at TEXT, updated_at TEXT
+        );`],
+        ["wave_b_backup_spv_capital_calls", `CREATE TABLE IF NOT EXISTS wave_b_backup_spv_capital_calls (
+          id TEXT PRIMARY KEY NOT NULL, tenant_id TEXT, spv_id TEXT, sequence_no INTEGER,
+          amount_minor INTEGER, called_at TEXT, due_at TEXT,
+          prev_hash TEXT, curr_hash TEXT, created_at TEXT
+        );`],
+        ["wave_b_backup_spv_distributions", `CREATE TABLE IF NOT EXISTS wave_b_backup_spv_distributions (
+          id TEXT PRIMARY KEY NOT NULL, tenant_id TEXT, spv_id TEXT, distribution_type TEXT,
+          total_minor INTEGER, distributed_at TEXT,
+          prev_hash TEXT, curr_hash TEXT, created_at TEXT
+        );`],
+        ["wave_b_backup_spv_positions", `CREATE TABLE IF NOT EXISTS wave_b_backup_spv_positions (
+          id TEXT PRIMARY KEY NOT NULL, tenant_id TEXT, spv_id TEXT, security_id TEXT,
+          shares TEXT, basis_minor INTEGER, acquired_at TEXT, status TEXT,
+          prev_hash TEXT, curr_hash TEXT, created_at TEXT, updated_at TEXT
+        );`],
+        ["wave_b_backup_kv_partnerSpvs", `CREATE TABLE IF NOT EXISTS wave_b_backup_kv_partnerSpvs (
+          id TEXT PRIMARY KEY NOT NULL, payload_json TEXT, updated_at TEXT, deleted_at TEXT
+        );`],
+        ["wave_b_backup_kv_partnerFunds", `CREATE TABLE IF NOT EXISTS wave_b_backup_kv_partnerFunds (
+          id TEXT PRIMARY KEY NOT NULL, payload_json TEXT, updated_at TEXT, deleted_at TEXT
+        );`],
+        ["wave_b_backup_kv_partnerSpvPositions", `CREATE TABLE IF NOT EXISTS wave_b_backup_kv_partnerSpvPositions (
+          id TEXT PRIMARY KEY NOT NULL, payload_json TEXT, updated_at TEXT, deleted_at TEXT
+        );`],
+        ["wave_b_backup_kv_partnerFundCommitments", `CREATE TABLE IF NOT EXISTS wave_b_backup_kv_partnerFundCommitments (
+          id TEXT PRIMARY KEY NOT NULL, payload_json TEXT, updated_at TEXT, deleted_at TEXT
+        );`],
+      ];
+      for (const [, ddl] of backupDdl) db.exec(ddl);
+
+      // 2. Full-row snapshot with explicit column lists (column-drift-safe)
+      // and portable ON CONFLICT DO NOTHING.
+      // v26.4.0-fix2 (Opus DEFECT-9 / GPT-5.6 DEFECT-1): SQLite requires
+      // `WHERE` before `ON CONFLICT` on `INSERT ... SELECT`. Using `WHERE 1=1`
+      // (also portable to Postgres) unambiguously disambiguates.
+      const copies: Array<[string, string]> = [
+        ["wave_b_backup_spvs", `INSERT INTO wave_b_backup_spvs
+          (id, tenant_id, partner_id, name, lead_company_id, structure_type, status,
+           target_minor, committed_minor, called_minor, distributed_minor, gp_user_id,
+           formed_at, closes_at, terms, prev_hash, curr_hash, created_at, updated_at, deleted_at,
+           deployment_fee_minor, deployment_fee_currency, deployment_fee_payer,
+           deployment_fee_paid_at, deployment_fee_schedule_id, sourcing_partner_id)
+          SELECT id, tenant_id, partner_id, name, lead_company_id, structure_type, status,
+                 target_minor, committed_minor, called_minor, distributed_minor, gp_user_id,
+                 formed_at, closes_at, terms, prev_hash, curr_hash, created_at, updated_at, deleted_at,
+                 deployment_fee_minor, deployment_fee_currency, deployment_fee_payer,
+                 deployment_fee_paid_at, deployment_fee_schedule_id, sourcing_partner_id
+          FROM spvs
+          WHERE 1=1
+          ON CONFLICT (id) DO NOTHING`],
+        ["wave_b_backup_spv_commitments", `INSERT INTO wave_b_backup_spv_commitments
+          (id, tenant_id, spv_id, lp_user_id, amount_minor, status, commitment_doc_url,
+           signed_at, funded_at, prev_hash, curr_hash, created_at, updated_at)
+          SELECT id, tenant_id, spv_id, lp_user_id, amount_minor, status, commitment_doc_url,
+                 signed_at, funded_at, prev_hash, curr_hash, created_at, updated_at
+          FROM spv_commitments
+          WHERE 1=1
+          ON CONFLICT (id) DO NOTHING`],
+        ["wave_b_backup_spv_capital_calls", `INSERT INTO wave_b_backup_spv_capital_calls
+          (id, tenant_id, spv_id, sequence_no, amount_minor, called_at, due_at,
+           prev_hash, curr_hash, created_at)
+          SELECT id, tenant_id, spv_id, sequence_no, amount_minor, called_at, due_at,
+                 prev_hash, curr_hash, created_at
+          FROM spv_capital_calls
+          WHERE 1=1
+          ON CONFLICT (id) DO NOTHING`],
+        ["wave_b_backup_spv_distributions", `INSERT INTO wave_b_backup_spv_distributions
+          (id, tenant_id, spv_id, distribution_type, total_minor, distributed_at,
+           prev_hash, curr_hash, created_at)
+          SELECT id, tenant_id, spv_id, distribution_type, total_minor, distributed_at,
+                 prev_hash, curr_hash, created_at
+          FROM spv_distributions
+          WHERE 1=1
+          ON CONFLICT (id) DO NOTHING`],
+        ["wave_b_backup_spv_positions", `INSERT INTO wave_b_backup_spv_positions
+          (id, tenant_id, spv_id, security_id, shares, basis_minor, acquired_at, status,
+           prev_hash, curr_hash, created_at, updated_at)
+          SELECT id, tenant_id, spv_id, security_id, shares, basis_minor, acquired_at, status,
+                 prev_hash, curr_hash, created_at, updated_at
+          FROM spv_positions
+          WHERE 1=1
+          ON CONFLICT (id) DO NOTHING`],
+        ["wave_b_backup_kv_partnerSpvs", `INSERT INTO wave_b_backup_kv_partnerSpvs
+          (id, payload_json, updated_at, deleted_at)
+          SELECT id, payload_json, updated_at, deleted_at FROM kv_partnerSpvs
+          WHERE 1=1
+          ON CONFLICT (id) DO NOTHING`],
+        ["wave_b_backup_kv_partnerFunds", `INSERT INTO wave_b_backup_kv_partnerFunds
+          (id, payload_json, updated_at, deleted_at)
+          SELECT id, payload_json, updated_at, deleted_at FROM kv_partnerFunds
+          WHERE 1=1
+          ON CONFLICT (id) DO NOTHING`],
+        ["wave_b_backup_kv_partnerSpvPositions", `INSERT INTO wave_b_backup_kv_partnerSpvPositions
+          (id, payload_json, updated_at, deleted_at)
+          SELECT id, payload_json, updated_at, deleted_at FROM kv_partnerSpvPositions
+          WHERE 1=1
+          ON CONFLICT (id) DO NOTHING`],
+        ["wave_b_backup_kv_partnerFundCommitments", `INSERT INTO wave_b_backup_kv_partnerFundCommitments
+          (id, payload_json, updated_at, deleted_at)
+          SELECT id, payload_json, updated_at, deleted_at FROM kv_partnerFundCommitments
+          WHERE 1=1
+          ON CONFLICT (id) DO NOTHING`],
+      ];
+      for (const [, sql] of copies) db.prepare(sql).run();
+
+      // 3. Marker — subsequent boots see this key and skip the whole block.
+      // Portable CURRENT_TIMESTAMP works on both SQLite and Postgres.
+      db.prepare(
+        `INSERT INTO _migrations_applied (key, applied_at, details)
+           VALUES ('wave_b_backup_ddl_v1', CURRENT_TIMESTAMP,
+                   'Wave B v26.4.0-fix backup DDL applied at boot. 9 backup tables materialized with PRIMARY KEY(id).')
+           ON CONFLICT (key) DO NOTHING`,
+      ).run();
+    });
+    try {
+      waveBBackupTx();
+    } catch (err) {
+      // Fail-soft: if a legacy source table is missing on a fresh install
+      // that pre-dates 0121, we log and continue. Wave B's own SQL migration
+      // 0125 handles this by creating the kv_* sources first; this boot
+      // mirror covers the :memory: / test path where migrations may not have
+      // run yet.
+      log.warn?.(`[wave_b] backup snapshot failed (non-fatal): ${(err as Error).message}`);
+    }
+  }
+
   // Additive ADD COLUMNs — outside the txn; each guarded against the
   // duplicate-column error so re-boots no-op (mirrors applyV12AdditiveAlters).
   const addColumns: string[] = [

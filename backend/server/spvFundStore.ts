@@ -1140,6 +1140,117 @@ export const spvFundStore = {
    * to mirror an in-memory SPV into the DB so it survives restart. Idempotent
    * on (partnerId, name): a second call with the same identity is a no-op.
    */
+  /**
+   * v26.4.0-fix3 (Opus NEW-1 / GPT NEW-3) — STRICT id-only shadow persist.
+   *
+   * The pre-existing `shadowPersistFromLegacy` had two soft-idempotency
+   * fallbacks that were safe when it was called from the DEAD legacy path
+   * (partnerSpvStore.create), but became actively DANGEROUS on the LIVE
+   * engine path (spvEngineStore.createSpv) because they:
+   *   1. Collapsed a valid duplicate-name SPV into an existing row keyed by
+   *      a different engine id → the second engine SPV had no legacy row
+   *      and all adapter reads 404 for it (GPT NEW-3).
+   *   2. Combined with `shadowCommitmentFromLegacy`'s "most recent SPV
+   *      for the partner" fallback, LP commitments could be silently
+   *      misattributed to the wrong SPV — hash-chained, unfixable via a
+   *      simple DELETE (Opus NEW-1). Financial catastrophe.
+   *
+   * This helper enforces:
+   *   - Idempotency ONLY on `legacyId` — never on `(partnerId, name)`.
+   *   - The resulting row is guaranteed to have `id === legacyId`
+   *     (achieved by `_overrideId`).
+   *   - Structure type / status vocabulary configurable so funds and
+   *     syndicates aren't force-labelled as `spv`.
+   *
+   * Returns null ONLY when `spvFundStore.createSpv` itself fails; the caller
+   * is expected to quarantine via the engine's `_quarantineOrphanSubscription`
+   * pattern. No secondary fallback.
+   */
+  shadowPersistFromLegacyStrict(args: {
+    legacyId: string;
+    partnerId: string;
+    name: string;
+    leadCompanyId?: string | null;
+    gpUserId?: string | null;
+    targetMinor?: number;
+    formedAt?: string | null;
+    status?: string;
+    structureType?: "spv" | "fund" | "syndicate" | "multi_asset" | "rolling_fund";
+  }): SpvRow | null {
+    try {
+      // Idempotency: only by legacyId. If a row with this exact id exists,
+      // return it (retry after restart is safe).
+      const byLegacyId = spvsCache.get(args.legacyId);
+      if (byLegacyId) return byLegacyId;
+      // Legacy status vocabulary (`open`/`closed`/`planned`) -> new SpvStatus.
+      const mappedStatus: SpvStatus =
+        args.status === "open" ? "fundraising" :
+        args.status === "closed" ? "active" :
+        args.status === "wound_down" ? "wound_down" :
+        args.status === "fundraising" ? "fundraising" :
+        args.status === "active" ? "active" :
+        "forming";
+      // Structure type: default to "spv" for backwards compat, but preserve
+      // fund/syndicate/etc. if the caller specifies (Opus NEW-3).
+      // v26.4.0-fix3: cast to satisfy the narrower StructureType enum on
+      // spvFundStore — the extra values ('multi_asset', 'rolling_fund')
+      // aren't legacy-visible but the caller may still pass them.
+      const structure: "spv" | "fund" | "syndicate" =
+        args.structureType === "fund" ? "fund" :
+        args.structureType === "syndicate" ? "syndicate" :
+        "spv";
+      return spvFundStore.createSpv({
+        partnerId: args.partnerId,
+        name: args.name,
+        leadCompanyId: args.leadCompanyId ?? null,
+        structureType: structure,
+        status: mappedStatus,
+        targetMinor: args.targetMinor ?? 0,
+        gpUserId: args.gpUserId ?? null,
+        formedAt: args.formedAt ?? null,
+        _overrideId: args.legacyId,
+      });
+    } catch (e) {
+      log.warn(errorMeta("spv.shadowPersistStrict", e, { legacyId: args.legacyId, partnerId: args.partnerId, name: args.name }));
+      return null;
+    }
+  },
+
+  /**
+   * v26.4.0-fix3 (Opus NEW-1) — STRICT commitment shadow-persist.
+   * Requires the parent legacy row to exist with `id === legacySpvId`.
+   * NEVER falls back to "most recent SPV for the partner". Returns null
+   * (caller must quarantine) when the target parent is missing.
+   */
+  shadowCommitmentFromLegacyStrict(args: {
+    legacyId: string;
+    legacySpvId: string;
+    partnerId: string;
+    lpUserId: string;
+    amountMinor: number;
+  }): SpvCommitmentRow | null {
+    try {
+      const target = spvsCache.get(args.legacySpvId);
+      // Fail closed: parent must exist AND belong to this partner.
+      if (!target || target.partnerId !== args.partnerId) return null;
+      // Idempotency: exact match on (spvId, lpUserId, amountMinor).
+      for (const c of Array.from(commitmentsCache.values())) {
+        if (c.spvId === target.id && c.lpUserId === args.lpUserId && c.amountMinor === args.amountMinor) {
+          return c;
+        }
+      }
+      return spvFundStore.addCommitment({
+        spvId: target.id,
+        lpUserId: args.lpUserId,
+        amountMinor: args.amountMinor,
+        status: "signed",
+      });
+    } catch (e) {
+      log.warn(errorMeta("spv.shadowCommitmentStrict", e, { legacySpvId: args.legacySpvId, partnerId: args.partnerId, lpUserId: args.lpUserId }));
+      return null;
+    }
+  },
+
   shadowPersistFromLegacy(args: {
     legacyId: string;
     partnerId: string;

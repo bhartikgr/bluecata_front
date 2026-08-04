@@ -2329,23 +2329,15 @@ export const partnerSpvStore = {
     persistEntryStrict("partnerSpvs", spv.id, spv);
     spvs.push(spv);
     pushHistory(spvsHistory, "partnerSpvsHistory", { ...spv });
-    // CP-028: shadow-persist to the DB-backed spvFundStore so the row survives
-    //   process restart. Best-effort — failure does NOT block the legacy path.
-    try {
-      // Lazy require to break the circular dep at module-load time.
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const sf = require("./spvFundStore") as typeof import("./spvFundStore");
-      sf.spvFundStore.shadowPersistFromLegacy({
-        legacyId: spv.id,
-        partnerId,
-        name: spv.spvName,
-        leadCompanyId: spv.targetCompanyId,
-        gpUserId: actor,
-        targetMinor: spv.totalCommittedMinor,
-        formedAt: now,
-        status: spv.status,
-      });
-    } catch { /* swallow — legacy path keeps working */ }
+    // Wave B v26.4.0-fix2 (Opus DEFECT-12) — the dual shadow-persist was
+    // MOVED to spvEngineStore.createSpv (the LIVE path per partnerRoutes.ts:1630),
+    // because spvUnifiedCanonical.test.ts:148 asserts that no live route
+    // calls partnerSpvStore.create. Any invocation of THIS method that still
+    // happens (tests, admin tooling) is intentionally isolated from the
+    // engine — the engine has its own creates via spvEngineStore.createSpv,
+    // and the retirement guard (G-5/G-6) explicitly requires this file to
+    // NOT require spvEngineStore or spvFundStore. Do not restore the dual
+    // write here.
     audit(actor, `partner:${partnerId}`, "partner.spv.recorded", { spvId: spv.id });
     emit("partner.spv_recorded", spv.id, { partnerId, spvId: spv.id, idempotencyKey: spv.id });
     return spv;
@@ -2448,18 +2440,13 @@ export const partnerSpvStore = {
     s.totalCommittedMinor = nextTotalCommittedMinor;
     s.updatedAt = now;
     s.updatedBy = actor;
-    // CP-028: shadow-persist position as a commitment in the DB-backed store.
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const sf = require("./spvFundStore") as typeof import("./spvFundStore");
-      sf.spvFundStore.shadowCommitmentFromLegacy({
-        legacyId: pos.id,
-        legacySpvId: spvId,
-        partnerId,
-        lpUserId: data.lpContactId,
-        amountMinor: data.positionAmountMinor,
-      });
-    } catch { /* swallow */ }
+    // Wave B v26.4.0-fix2 (Opus DEFECT-12) — same rationale as .create above:
+    // this method is NOT on the live path. The dual shadow-persist for
+    // subscriptions lives in spvEngineStore.subscribe, which IS the live path
+    // reached from partnerRoutes.ts:1705 (POST /:id/subscriptions).
+    // `normalizedMinor` is computed above and retained here so any future
+    // caller of this method (or a Wave B.5 refactor) has FX correctness
+    // available without re-deriving it.
     audit(actor, `partner:${partnerId}`, "partner.spv.position_recorded", { spvId, positionId: pos.id });
     return pos;
   },

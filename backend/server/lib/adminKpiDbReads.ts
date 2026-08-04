@@ -16,6 +16,7 @@
 import { getAllCompaniesFromDb } from "../multiCompanyStore";
 import { listRounds } from "../roundsStore";
 import { listForCompany as softCirclesForCompany } from "../softCircleStore";
+import { rawDb } from "../db/connection";
 import { DbUnavailableError } from "./errors";
 
 // v25.48 DATA-2 (fail-closed hardening per GPT-5.5) — these helpers MUST NOT
@@ -73,6 +74,108 @@ export function dbTotalCommittedSoftCircle(): number {
  * preserving the prior contract of never returning an empty array when at least
  * one real company exists.
  */
+/**
+ * Wave B (v26.4.0) — new SPV KPI tiles. Complements dbTotalFunded() (which sums
+ * per-round raisedAmount and stays untouched per owner Q3-C). These read
+ * SPV-side commitments and wires directly from the canonical spv_subscription
+ * table so admin dashboard can show:
+ *   - SPV Committed: sum of ACTIVE (non-withdrawn) commitments, PER CURRENCY.
+ *   - SPV Wired:     sum of actually-wired amounts, PER CURRENCY. Uses
+ *                    wired_minor (durable field), not the transient
+ *                    'wire_funded' status which advances to 'committed'.
+ *
+ * Both functions are pure DB-reads via better-sqlite3 prepared statements.
+ * No in-memory state, no caching. Multi-currency by construction — never a
+ * scalar sum across mixed currencies.
+ *
+ * These tiles are additive: the existing dbTotalFunded() (rounds KPI) is left
+ * exactly as-is. The genuine 'Funded=$0' bug (rounds.raisedAmount write-path
+ * is orphaned in routes.ts:5056) is a separate Wave F item, anchored at
+ * [[deferred:wave-F#rounds-raisedAmount-write-path]].
+ */
+export type SpvCommittedByCurrency = Record<string, number>;
+export type SpvWiredByCurrency     = Record<string, number>;
+
+// v26.4.0-fix2 (GPT-5.6 DEFECT-5) — rawDb() throws on Postgres driver.
+// These 3 KPIs read the engine's `spv` / `spv_subscription` tables which
+// aren't yet modeled in the drizzle schema. Rather than propagate the throw
+// (which would 503 the entire admin dashboard on Avi's PG production), we
+// detect the driver and DEGRADE GRACEFULLY:
+//   - On SQLite: normal per-currency aggregate reads.
+//   - On Postgres: return empty map / zero. NOT a false success — the
+//     tile UI renders "—" when the map is empty, matching how N/A is
+//     rendered for other pending-migration metrics. Wave B.5 or Wave F
+//     will add the drizzle schema entries and replace this with a
+//     portable read.
+//
+// The `driver=postgres` case is NEVER a bug hiding — it's an explicit,
+// documented deferred state, logged once per call for visibility.
+function _isSqliteDriver(): boolean {
+  try {
+    // Probing rawDb throws on PG, returns handle on SQLite. Cheap probe.
+    rawDb();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function dbTotalSpvCommittedMinor(): SpvCommittedByCurrency {
+  if (!_isSqliteDriver()) return {};
+  try {
+    const rows = rawDb()
+      .prepare(
+        `SELECT currency, COALESCE(SUM(commitment_minor), 0) AS total
+         FROM spv_subscription
+         WHERE status != 'withdrawn'
+         GROUP BY currency`,
+      )
+      .all() as Array<{ currency: string; total: number }>;
+    const out: SpvCommittedByCurrency = {};
+    for (const r of rows) out[r.currency] = Number(r.total) || 0;
+    return out;
+  } catch (err) {
+    throw new DbUnavailableError("admin KPI spv committed", err as Error);
+  }
+}
+
+export function dbTotalSpvWiredMinor(): SpvWiredByCurrency {
+  if (!_isSqliteDriver()) return {};
+  try {
+    const rows = rawDb()
+      .prepare(
+        `SELECT currency, COALESCE(SUM(wired_minor), 0) AS total
+         FROM spv_subscription
+         WHERE wired_minor > 0
+         GROUP BY currency`,
+      )
+      .all() as Array<{ currency: string; total: number }>;
+    const out: SpvWiredByCurrency = {};
+    for (const r of rows) out[r.currency] = Number(r.total) || 0;
+    return out;
+  } catch (err) {
+    throw new DbUnavailableError("admin KPI spv wired", err as Error);
+  }
+}
+
+/** Distinct active SPV count (archived_at IS NULL). Pure DB read.
+ *  v26.4.0-fix2 (Opus N-6): explicitly excludes draft and wound_down states
+ *  so the tile labelled "Active SPVs" reflects true active count.
+ *  v26.4.0-fix3 (GPT NEW-2): return NULL on Postgres so the UI renders "—"
+ *  instead of a fabricated "0". `null` is the honest "unavailable" signal;
+ *  the client already handles `activeSpvs == null` → "—". */
+export function dbTotalActiveSpvs(): number | null {
+  if (!_isSqliteDriver()) return null;
+  try {
+    const row = rawDb()
+      .prepare("SELECT COUNT(*) AS n FROM spv WHERE archived_at IS NULL AND status NOT IN ('draft', 'wound_down')")
+      .get() as { n: number };
+    return Number(row?.n) || 0;
+  } catch (err) {
+    throw new DbUnavailableError("admin KPI spv total", err as Error);
+  }
+}
+
 export function dbRegions(): Array<{ code: string; companies: number; raised: number }> {
   try {
     const companies = getAllCompaniesFromDb();

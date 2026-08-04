@@ -73,7 +73,16 @@ import { hydratePartnerWorkspaceCollectiveStore as realHydratePartnerCollective 
 // v19 Phase B — Messaging + Partner Workspace remaining DB-backed slices.
 import { hydrateMessagingStore as realHydrateMessaging } from "../messagingStore";
 import { hydratePartnerWorkspaceV19Store as realHydratePartnerV19 } from "../partnerWorkspaceV19Store";
-// CP Phase A — DB-backed SPV/Fund store + one-time CRM hash-chain stitcher.
+// Wave B (v26.4.0-fix2) — spvFundStore hydration entry KEPT for the whole
+// of Wave B. The store's read methods (getById, listCommitments,
+// listCapitalCalls, listDistributions, listPositions, reconcileSpv) read
+// from RAM caches that are ONLY populated by hydrateSpvFundStore(). The
+// 10 adapter routes shipped in this release (`spvLegacyAdapters.ts`)
+// DELEGATE to `spvFundStore` — they don't bypass the RAM caches.
+// The hydrator can be removed only in Wave B.5, which replaces
+// `spvFundStore` reads with direct-DB queries against the engine's
+// tables (`spv`, `spv_subscription`, `spv_capital_call`, `spv_distribution`).
+// Do NOT remove the entry until Wave B.5 lands.
 import { hydrateSpvFundStore as realHydrateSpvFund } from "../spvFundStore";
 import { stitchPartnerCrmChain } from "./partnerCrmChainStitch";
 // CP Phase B — consortium apply DB-backed hydrator.
@@ -245,12 +254,15 @@ const HYDRATE_ORDER: Array<{ name: string; fn: () => Promise<void> }> = [
   // v17 Phase B Collective slice block so partner_workspace tables are all
   // resident before any read traffic hits the routes.
   { name: "partnerWorkspaceV19Store",    fn: realHydratePartnerV19 },
-  // CP Phase A (CP-028) — DB-backed SPV/Fund store. Hydrates after the
-  // partner workspace so partner ids are known. Failure does not block boot.
+  // Wave B (v26.4.0-fix2) note: spvFundStore hydrator entry stays for the
+  // whole of Wave B. The 10 adapter routes in `spvLegacyAdapters.ts` still
+  // delegate to `spvFundStore` RAM reads — removing this entry would 404
+  // every legacy /positions, /commitments, /capital-calls, /distributions
+  // read. Wave B.5 replaces those RAM reads with direct-DB queries; the
+  // entry AND the import above can be removed together THEN, not now.
   { name: "spvFundStore",                fn: realHydrateSpvFund },
   // CP Phase B (CP-001..005) — Consortium apply applications + partner
-  // organizations row hydration. Hydrates AFTER spvFundStore so partner
-  // identities are warm; safe to fail (boot continues).
+  // organizations row hydration.
   { name: "consortiumApplyStore",        fn: realHydrateConsortiumApply },
   // CP Phase A (CP-008) — One-time CRM hash-chain stitcher. Marked idempotent
   // via _migrations_applied; subsequent boots are a no-op.

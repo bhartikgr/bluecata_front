@@ -61,6 +61,12 @@ export default function PartnerSpvDetail() {
     role.identity?.subRole === "bd";
   const [callAmount, setCallAmount] = useState("");
   const [distAmount, setDistAmount] = useState("");
+  // v26.4.0-fix3 (Opus NEW-4): distribution type is user-selectable. Prior
+  // client code hardcoded "dividend", which mischaracterized every SPV
+  // distribution (different tax/accounting meaning). Default to
+  // return_of_capital — the conservative label for SPV distributions where
+  // the GP hasn't yet confirmed the tax classification.
+  const [distType, setDistType] = useState<"return_of_capital" | "dividend" | "exit">("return_of_capital");
   const [lpEmail, setLpEmail] = useState("");
   const [lpFirstName, setLpFirstName] = useState("");
   const [lpLastName, setLpLastName] = useState("");
@@ -140,10 +146,15 @@ export default function PartnerSpvDetail() {
   });
 
   const distMut = useMutation({
-    mutationFn: async (totalMinor: number) => {
+    mutationFn: async (args: { totalMinor: number; type: "return_of_capital" | "dividend" | "exit" }) => {
+      // v26.4.0-fix3 (Opus NEW-4): distribution type now comes from the UI
+      // selector. Prior code hardcoded "dividend", which was the wrong
+      // default (different tax/accounting meaning than a return of capital).
+      // Legacy enum on POST /api/partner/me/spvs/:id/distributions:
+      // `dividend | exit | return_of_capital` (server/spvLegacyAdapters.ts).
       const res = await apiRequest("POST", `/api/partner/me/spvs/${spvId}/distributions`, {
-        distribution_type: "cash",
-        total_minor: totalMinor,
+        distribution_type: args.type,
+        total_minor: args.totalMinor,
         distributed_at: new Date().toISOString(),
       });
       return res.json();
@@ -248,8 +259,21 @@ export default function PartnerSpvDetail() {
 
       {isManagingPartner ? (
         <Card className="p-4 mb-4 space-y-3" data-testid="partner-spv-distribution-form">
-          <div className="font-medium">Record Distribution (cash)</div>
-          <div className="flex items-center gap-2">
+          <div className="font-medium">Record Distribution</div>
+          <div className="text-xs text-[var(--cv-color-text-muted)]">
+            Select the appropriate tax/accounting classification for this distribution. Return of capital is the conservative default when unsure.
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <select
+              className="h-9 rounded-md border px-2 text-sm bg-background"
+              value={distType}
+              onChange={(e) => setDistType(e.target.value as "return_of_capital" | "dividend" | "exit")}
+              data-testid="partner-spv-distribution-type"
+            >
+              <option value="return_of_capital">Return of Capital</option>
+              <option value="dividend">Dividend</option>
+              <option value="exit">Exit Proceeds</option>
+            </select>
             <Input
               type="number"
               inputMode="numeric"
@@ -258,6 +282,7 @@ export default function PartnerSpvDetail() {
               value={distAmount}
               onChange={(e) => setDistAmount(e.target.value)}
               data-testid="partner-spv-distribution-amount"
+              className="flex-1 min-w-[220px]"
             />
             <Button
               disabled={!distAmount || distMut.isPending}
@@ -267,7 +292,7 @@ export default function PartnerSpvDetail() {
                   toast({ variant: "destructive", title: "Invalid amount" });
                   return;
                 }
-                distMut.mutate(Math.round(n));
+                distMut.mutate({ totalMinor: Math.round(n), type: distType });
               }}
               data-testid="partner-spv-distribution-submit"
             >

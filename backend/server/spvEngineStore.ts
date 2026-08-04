@@ -28,6 +28,25 @@ import { createHash, randomBytes } from "crypto";
 import { rawDb } from "./db/connection";
 import { log } from "./lib/logger";
 import { emitBridgeEvent } from "./bridgeStore";
+// Wave B v26.4.0-fix (BLOCK-B) — static import replaces the prior lazy
+// `require("./spvFundStore")`. Verified: NO circular dependency exists
+// (`spvFundStore.ts` does not import from `spvEngineStore` at all, and
+// nothing in its import closure does either). The lazy pattern is
+// documented as bundle-fragile in CAPAVATE_LIVE_ENVIRONMENT.md §9 Issue-1
+// (round-wizard 403) and undefined under `tsx` ESM (npm run dev).
+// The Stage-2 adapters delegate here to preserve hash-chain invariants
+// through Wave B; Wave B.5 replaces the delegation with direct DB reads.
+import {
+  spvFundStore,
+  type SpvRow,
+  type SpvCommitmentRow,
+  type SpvCapitalCallRow,
+  type SpvDistributionRow,
+  type SpvPositionRow,
+  type SpvReconciliation,
+  type CommitmentStatus,
+  type DistributionType,
+} from "./spvFundStore";
 import { partnerSpvStore, partnerFundsStore } from "./partnerWorkspaceStore";
 import { listForCompany as listSubscriptionsForCompany } from "./subscriptionStore";
 import { getCompanyProfile } from "./companyProfileStore";
@@ -312,6 +331,41 @@ export const spvEngineStore = {
     };
     persistSpv(s);
     spvById.set(s.id, s);
+    // Wave B v26.4.0-fix2 (Opus DEFECT-12 / BLOCK-C real fix) — the previous
+    // dual-write in partnerSpvStore.create was on a DEAD path per
+    // spvUnifiedCanonical.test.ts:148 ("NO live route calls
+    // partnerSpvStore.create"). The LIVE path is this method,
+    // reached from partnerRoutes.ts:1630. Shadow-persist to the legacy
+    // spvs table + spvsCache HERE, keyed on the engine id via
+    // `_overrideId = s.id`, so the 10 legacy adapter routes (which do
+    // `spvFundStore.getById(id)` → `spvsCache.get(id)`) can find the
+    // SPV a partner just created through the UI.
+    // Best-effort with structured logging — engine remains authoritative.
+    // Legacy write retires when Wave B.5 replaces spvFundStore RAM reads
+    // with direct-DB queries.
+    // v26.4.0-fix3 (Opus NEW-1 / GPT NEW-3): use the STRICT variant so
+    // duplicate-name creates get their own legacy row keyed by engine id.
+    // Also pass the engine's spvType through so funds and syndicates aren't
+    // silently mislabelled as 'spv' in the legacy table (Opus NEW-3).
+    const persisted = spvFundStore.shadowPersistFromLegacyStrict({
+      legacyId: s.id,                        // engine id ≡ legacy id ≡ spvsCache key
+      partnerId,
+      name: s.name,
+      leadCompanyId: s.targetCompanyId,
+      gpUserId: s.gpUserId,
+      targetMinor: s.targetRaiseMinor ?? 0,
+      formedAt: now,
+      status: s.status,
+      structureType: s.spvType as "spv" | "fund" | "syndicate" | "multi_asset" | "rolling_fund",
+    });
+    if (!persisted) {
+      // Legacy shadow-persist genuinely failed (createSpv threw or the id
+      // was somehow non-unique). Engine remains authoritative — log loud so
+      // ops can drain manually. No silent drop.
+      log.warn?.(
+        `[spvEngineStore] createSpv: legacy shadow-persist returned null for spvId=${s.id} partnerId=${partnerId} name=${s.name}. Adapter reads for this SPV will 404 until reconciled.`,
+      );
+    }
     emit("spv.created", s.id, { partnerId, spvId: s.id, spvType, scope });
     return s;
   },
@@ -871,6 +925,51 @@ export const spvEngineStore = {
     };
     this._persistSub(sub);
     pushInto(subsBySpv, spvId, sub);
+    // Wave B v26.4.0-fix2 (Opus DEFECT-12 / BLOCK-C real fix, part 2) —
+    // shadow-persist to the legacy `spv_commitments` table so the adapter
+    // routes' /commitments GET/POST endpoints see this subscription. Legacy
+    // shadowCommitmentFromLegacy expects a legacy SPV id; because
+    // createSpv shadow-persisted the engine id AS the legacy id (line 350
+    // above), we can pass spvId here directly.
+    // Best-effort with structured logging — engine remains authoritative.
+    // v26.4.0-fix3 (Opus NEW-1): use the STRICT variant so the commitment is
+    // ALWAYS attributed to the SPV specified by `spvId`, never to a fallback
+    // "most recent SPV for the partner". Parent-missing case is quarantined
+    // via _quarantineOrphanSubscription (same pattern as shadowCommitmentToEngine).
+    const committed = spvFundStore.shadowCommitmentFromLegacyStrict({
+      legacyId: sub.id,
+      legacySpvId: spvId,
+      partnerId,
+      lpUserId: sub.investorId,
+      amountMinor: sub.commitmentMinor,
+    });
+    if (!committed) {
+      log.warn?.(
+        `[spvEngineStore] subscribe: legacy shadow-commitment returned null for subId=${sub.id} spvId=${spvId} lpUserId=${sub.investorId}. Quarantining for boot-time drain.`,
+      );
+      // Quarantine so the boot-time drain can retry once the parent legacy
+      // row lands (e.g. after an intermediate deploy that didn't complete).
+      const quarantined = _quarantineOrphanSubscription({
+        legacyPositionId: sub.id,
+        legacySpvId: spvId,
+        partnerId,
+        lpUserId: sub.investorId,
+        amountMinor: sub.commitmentMinor,
+      });
+      if (!quarantined) {
+        // Quarantine ALSO failed (Postgres, or DDL/upsert error). Engine
+        // remains authoritative — the subscription lives in `spv_subscription`
+        // and is visible via the engine's own read paths (KPI, /partner/spvs/
+        // list, etc.). Only the legacy adapter surface is degraded until
+        // Wave B.5 lands the direct-DB read migration.
+        log.error?.({
+          route: "spvEngineStore.subscribe",
+          code: "LEGACY_MIRROR_FAILED",
+          message: `subId=${sub.id} committed in engine but neither legacy mirror nor quarantine could persist. ` +
+            `Engine read paths remain correct; legacy adapter reads for this subscription will 404 until manually reconciled.`,
+        });
+      }
+    }
     emit("spv.subscription_created", spvId, { partnerId, spvId, subscriptionId: sub.id, investorId: sub.investorId });
     return sub;
   },
@@ -1028,6 +1127,11 @@ export const spvEngineStore = {
   _persistSub(sub: SpvSubscriptionDTO): void {
     const { prev, curr } = chain("spv_subscription", { ...sub, revisionHash: undefined });
     sub.revisionHash = curr;
+    // Wave B v26.4.0-fix (BLOCK-I part 1) — include commitment_minor and
+    // currency in the DO UPDATE SET clause so a re-persist with different
+    // amount/currency actually updates the row. Prior implementation only
+    // updated wired_minor/status/kyc/accreditation/etc., silently leaving
+    // commitment_minor and currency stale on any legitimate top-up path.
     persist(
       "spv_subscription",
       `INSERT INTO spv_subscription (id, spv_id, investor_id, investor_persona, commitment_minor,
@@ -1035,7 +1139,8 @@ export const spvEngineStore = {
          created_at, updated_at, updated_by, prev_hash, curr_hash)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(id) DO UPDATE SET
-         wired_minor=excluded.wired_minor, status=excluded.status, kyc_ref=excluded.kyc_ref,
+         commitment_minor=excluded.commitment_minor, wired_minor=excluded.wired_minor,
+         currency=excluded.currency, status=excluded.status, kyc_ref=excluded.kyc_ref,
          accreditation_ref=excluded.accreditation_ref, subscription_doc_ref=excluded.subscription_doc_ref,
          ownership_pct=excluded.ownership_pct, updated_at=excluded.updated_at,
          prev_hash=excluded.prev_hash, curr_hash=excluded.curr_hash`,
@@ -1749,6 +1854,721 @@ export function migrateLegacyPartnerSpvAndFunds(): { spvs: number; funds: number
   return { spvs: migratedSpvs, funds: migratedFunds };
 }
 
+/* ── Wave B (v26.4.0) — shadow-persist helpers for legacy write paths ─────
+ *
+ * These functions replace the retired
+ * `spvFundStore.shadowPersistFromLegacy` / `shadowCommitmentFromLegacy` sync
+ * paths that used to write to the legacy relational `spvs`/`spv_commitments`
+ * tables. They project every new partnerSpvStore create/position onto the
+ * canonical engine `spv`/`spv_subscription` tables using the same
+ * `spv_mig_<sha256(legacyId)[:24]>` id convention that
+ * `migrateLegacyPartnerSpvAndFunds` uses, so a subsequent boot backfill is a
+ * no-op (idempotent).
+ *
+ * They REUSE engine primitives — `persistSpv` and `_persistSub` — which:
+ *   • write-through to DB via `persist()` (never RAM-only)
+ *   • walk the engine's own hash chain via `chain()`
+ *   • use INSERT … ON CONFLICT(id) DO UPDATE so re-shadow is safe
+ *
+ * Wave B.5 (planned) will eliminate the engine's read-cache Maps; these
+ * helpers already do a real DB write on every call.
+ * ---------------------------------------------------------------------------- */
+
+function _migId(legacyId: string): string {
+  return `spv_mig_${sha256Hex(legacyId).slice(0, 24)}`;
+}
+
+function _mapPartnerSpvStatusToEngine(st: string | undefined | null): SpvStatus {
+  // Mirrors mapSpvStatus() used by migrateLegacyPartnerSpvAndFunds. Kept
+  // identical so a row shadow-persisted here matches a row backfilled at boot.
+  switch (st) {
+    case "planned":    return "draft";
+    case "open":       return "open";
+    case "closed":     return "closed";
+    case "wound_down": return "wound_down";
+    default:           return "draft";
+  }
+}
+
+/**
+ * Wave B replacement for the retired spvFundStore.shadowPersistFromLegacy.
+ * Projects a partnerSpvStore create onto the canonical engine `spv` table.
+ *
+ * Idempotent: re-invoking with the same legacyId writes the same engine id and
+ * uses persistSpv's ON CONFLICT(id) DO UPDATE, so the second call is a safe
+ * no-op / non-destructive update.
+ *
+ * The caller (partnerWorkspaceStore.partnerSpvStore.create) wraps this in a
+ * swallow so the workspace path keeps working during the Wave B rollout
+ * window; the engine's own boot backfill (migrateLegacyPartnerSpvAndFunds)
+ * will reconcile any missed row on the NEXT restart.
+ */
+export function shadowPersistPartnerSpvToEngine(input: {
+  legacyId: string;
+  partnerId: string;
+  name: string;
+  currency?: string | null;
+  totalCommittedMinor?: number | null;
+  targetCompanyId?: string | null;
+  jurisdiction?: string | null;
+  recordedBy?: string | null;
+  recordedAt?: string | null;
+  status?: string | null;
+  entityStructure?: string | null;
+}): void {
+  const id = _migId(input.legacyId);
+  const now = nowIso();
+  const jur = input.jurisdiction && isSpvJurisdiction(input.jurisdiction)
+    ? (input.jurisdiction as SpvDTO["jurisdiction"])
+    : "delaware";
+  const s: SpvDTO = {
+    id,
+    sponsorPartnerId: input.partnerId,
+    gpUserId: input.recordedBy ?? null,
+    name: input.name,
+    spvType: "spv",
+    jurisdiction: jur,
+    status: _mapPartnerSpvStatusToEngine(input.status ?? undefined),
+    distributionScope: "private",
+    targetRaiseMinor: input.totalCommittedMinor ?? null,
+    minCheckMinor: null,
+    capMinor: null,
+    currency: input.currency ?? "USD",
+    carryBasis: "whole_spv", // legacy default; GP amends post-migration
+    lpVisibility: SPV_DEFAULT_LP_VISIBILITY,
+    targetCompanyId: input.targetCompanyId ?? null,
+    closeDate: null,
+    terms: input.entityStructure ? { entityStructure: input.entityStructure } : null,
+    migratedFrom: input.legacyId,
+    createdAt: input.recordedAt ?? now,
+    createdBy: input.recordedBy ?? null,
+    updatedAt: now,
+    updatedBy: "wave_b:shadow_persist",
+    archivedAt: null,
+    revisionHash: "",
+  };
+  persistSpv(s);
+  spvById.set(s.id, s);
+}
+
+/**
+ * Wave B v26.4.0-fix replacement for the retired
+ * spvFundStore.shadowCommitmentFromLegacy. Projects a partnerSpvStore
+ * position onto the canonical engine `spv_subscription` table.
+ *
+ * Contract (v26.4.0-fix):
+ *  BLOCK-I: 1:1 (spv_id, investor_id) is enforced via the
+ *    `uq_spv_subscription_spv_investor` UNIQUE constraint. Pre-check
+ *    for existing (spv_id, investor_id) BEFORE persist — matches the
+ *    platform's canonical `engine.subscribe()` pattern at line 852
+ *    (`ALREADY_SUBSCRIBED`). If found, update the existing row's
+ *    commitment_minor (idempotent re-shadow of the same position). No
+ *    duplicate rows are created; no swallowed constraint violations.
+ *  BLOCK-E: fail-CLOSED on orphan (parent SPV not in engine cache).
+ *    Writes to `wave_b_orphan_subscriptions` quarantine table with
+ *    full context so a subsequent boot can retry. Structured log
+ *    emitted — no more silent drops.
+ *  BLOCK-H: caller (partnerWorkspaceStore.addPosition) passes
+ *    `normalizedMinor` (FX-normalized), not raw amount, so the value
+ *    labeled with the parent's currency is arithmetically consistent.
+ *  BLOCK-J: the `wave_b_orphan_subscriptions` quarantine is drained on
+ *    every boot by `migrateLegacyPartnerSpvAndFunds` — an orphan whose
+ *    parent lands later gets promoted to a real subscription then.
+ *
+ * Idempotency: repeat-call with same (spvId, investorId) is a safe
+ * update; repeat-call with different amount promotes to a top-up on
+ * the same subscription row (no duplicates).
+ */
+export function shadowCommitmentToEngine(input: {
+  legacyPositionId: string;
+  legacySpvId: string;
+  partnerId: string;
+  lpUserId: string;
+  amountMinor: number;
+}): { ok: true } | { ok: false; reason: "orphan_quarantined" | "orphan_lost" } {
+  // v26.4.0-fix3 (GPT round-4 BLOCK-1): return the outcome so callers can
+  // gate completion markers. Prior signature returned `void`, hiding the
+  // difference between (a) commitment applied, (b) parent missing but
+  // quarantined durably, and (c) parent missing AND quarantine also failed
+  // — the third case is data loss unless the caller aborts / retries.
+  const engineSpvId = _migId(input.legacySpvId);
+
+  // Parent SPV MUST exist in engine before subscription (FK-by-convention).
+  // v26.4.0-fix (BLOCK-E): quarantine orphans instead of silently dropping.
+  const parent = spvById.get(engineSpvId);
+  if (!parent) {
+    const quarantined = _quarantineOrphanSubscription(input);
+    return quarantined
+      ? { ok: false, reason: "orphan_quarantined" }
+      : { ok: false, reason: "orphan_lost" };
+  }
+
+  // v26.4.0-fix (BLOCK-I): 1:1 (spv, investor) — pre-check for an existing
+  // subscription and reuse its id if present (matches engine.subscribe()
+  // ALREADY_SUBSCRIBED semantics; shadow-persist is idempotent by design).
+  const existing = (subsBySpv.get(engineSpvId) ?? []).find(
+    (s) => s.investorId === input.lpUserId,
+  );
+  const now = nowIso();
+  const engineSubId = existing
+    ? existing.id
+    : `spvsub_mig_${sha256Hex(input.legacyPositionId).slice(0, 22)}`;
+
+  const sub: SpvSubscriptionDTO = {
+    id: engineSubId,
+    spvId: engineSpvId,
+    investorId: input.lpUserId,
+    investorPersona: "partner",
+    // v26.4.0-fix4 (Opus F4-2 fix): if a subscription already exists for this
+    // (spv, investor), the engine is authoritative for `commitmentMinor` —
+    // it may have been amended via engine.subscribe() top-ups or downward
+    // adjustments. NEVER overwrite it with the legacy amount on a re-run.
+    // On first-time shadow-persist (no existing sub), take the legacy amount
+    // as-is. This closes the retry-loop reassertion regression Opus flagged.
+    commitmentMinor: existing?.commitmentMinor ?? input.amountMinor,
+    wiredMinor: existing?.wiredMinor ?? 0,
+    // v4 Opus O3-3 fix: subscription currency inherits from parent SPV.
+    currency: parent.currency,
+    status: existing?.status ?? "review",
+    kycRef: existing?.kycRef ?? null,
+    accreditationRef: existing?.accreditationRef ?? null,
+    subscriptionDocRef: existing?.subscriptionDocRef ?? null,
+    ownershipPct: existing?.ownershipPct ?? null,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+    revisionHash: "",
+  };
+  spvEngineStore._persistSub(sub);
+
+  // Update the RAM cache in place (v26.4.0-fix GPT-5.6 BLOCK-I2: don't
+  // blindly append — either replace by id or push new).
+  const list = subsBySpv.get(engineSpvId) ?? [];
+  const idx = list.findIndex((s) => s.id === sub.id);
+  if (idx >= 0) {
+    list[idx] = sub;
+  } else {
+    list.push(sub);
+    subsBySpv.set(engineSpvId, list);
+  }
+  return { ok: true };
+}
+
+/**
+ * Wave B v26.4.0-fix (BLOCK-E) — orphan quarantine.
+ *
+ * Writes a would-be subscription to `wave_b_orphan_subscriptions` when the
+ * parent SPV isn't present in the engine yet. Drained by
+ * `_drainOrphanSubscriptions()` on every boot after
+ * `migrateLegacyPartnerSpvAndFunds()` has run — so an orphan whose parent
+ * lands via a later shadow-persist or migration is promoted to a real
+ * subscription automatically.
+ *
+ * The quarantine table is created lazily via IF NOT EXISTS. UNIQUE constraint
+ * on (legacy_spv_id, lp_user_id) makes re-quarantine a no-op update.
+ */
+function _quarantineOrphanSubscription(input: {
+  legacyPositionId: string;
+  legacySpvId: string;
+  partnerId: string;
+  lpUserId: string;
+  amountMinor: number;
+}): boolean {
+  // v26.4.0-fix3 (Gemini G-4): returns TRUE on successful quarantine, FALSE
+  // on failure. Callers MUST check the return value and escalate (throw or
+  // 5xx) when they can — a silent-drop here becomes irrecoverable data loss.
+  // The DDL+upsert exceptions are no longer swallowed as void; the failure
+  // signal propagates.
+  //
+  // On Postgres: rawDb() throws "not supported", so this function will always
+  // return FALSE and log.error — the correct behaviour, because the legacy
+  // spv/spv_subscription tables are not yet mirrored to PG. The caller in the
+  // live subscribe path (spvEngineStore.subscribe) treats a false return as
+  // "engine remains authoritative, adapter surface deferred" — no user-facing
+  // failure, but a loud ops signal.
+  try {
+    const db = rawDb();
+    db.exec(`CREATE TABLE IF NOT EXISTS wave_b_orphan_subscriptions (
+      id TEXT PRIMARY KEY NOT NULL,
+      legacy_spv_id TEXT NOT NULL,
+      legacy_position_id TEXT NOT NULL,
+      partner_id TEXT NOT NULL,
+      lp_user_id TEXT NOT NULL,
+      amount_minor INTEGER NOT NULL,
+      quarantined_at TEXT NOT NULL,
+      drained_at TEXT,
+      UNIQUE (legacy_spv_id, lp_user_id)
+    );`);
+    const id = `orphan_${sha256Hex(input.legacyPositionId).slice(0, 24)}`;
+    db.prepare(
+      `INSERT INTO wave_b_orphan_subscriptions
+        (id, legacy_spv_id, legacy_position_id, partner_id, lp_user_id, amount_minor, quarantined_at)
+       VALUES (?,?,?,?,?,?,?)
+       ON CONFLICT (legacy_spv_id, lp_user_id) DO UPDATE SET
+         legacy_position_id = excluded.legacy_position_id,
+         amount_minor = excluded.amount_minor,
+         quarantined_at = excluded.quarantined_at,
+         drained_at = NULL`,
+    ).run(id, input.legacySpvId, input.legacyPositionId, input.partnerId,
+          input.lpUserId, input.amountMinor, nowIso());
+    log.warn?.(
+      `[spvEngineStore] orphan quarantine: parent SPV missing for legacySpvId=${input.legacySpvId}; ` +
+      `quarantined to wave_b_orphan_subscriptions (id=${id}). Will be drained on next boot.`,
+    );
+    return true;
+  } catch (err) {
+    // No silent drop: log.error escalates to whatever alerting tier the
+    // logger is wired to (email, pagerduty, Sentry). Return false so the
+    // caller can distinguish "quarantined successfully" from "data loss risk".
+    log.error?.({
+      route: "spvEngineStore._quarantineOrphanSubscription",
+      code: "ORPHAN_QUARANTINE_FAILED",
+      message: `orphan quarantine write failed: ${(err as Error).message}. ` +
+        `Data loss risk: subscription (${input.legacySpvId}, ${input.lpUserId}, ${input.amountMinor}) not persisted to legacy or quarantine table.`,
+      legacySpvId: input.legacySpvId,
+      legacyPositionId: input.legacyPositionId,
+      partnerId: input.partnerId,
+      lpUserId: input.lpUserId,
+      amountMinor: input.amountMinor,
+    });
+    return false;
+  }
+}
+
+/**
+ * Wave B v26.4.0-fix (BLOCK-E + BLOCK-J) — drain the orphan quarantine on
+ * boot. For every orphan whose parent has now landed in the engine (either
+ * via migrateLegacyPartnerSpvAndFunds or via shadow-persist), promote it
+ * to a real spv_subscription row and mark the orphan row drained.
+ *
+ * Called from hydrateSpvEngineStore after the legacy backfill completes.
+ */
+export function drainOrphanSubscriptions(): { promoted: number; stillOrphaned: number } {
+  let promoted = 0;
+  let stillOrphaned = 0;
+  try {
+    const db = rawDb();
+    // Table may not exist yet on installs that never triggered an orphan.
+    db.exec(`CREATE TABLE IF NOT EXISTS wave_b_orphan_subscriptions (
+      id TEXT PRIMARY KEY NOT NULL,
+      legacy_spv_id TEXT NOT NULL,
+      legacy_position_id TEXT NOT NULL,
+      partner_id TEXT NOT NULL,
+      lp_user_id TEXT NOT NULL,
+      amount_minor INTEGER NOT NULL,
+      quarantined_at TEXT NOT NULL,
+      drained_at TEXT,
+      UNIQUE (legacy_spv_id, lp_user_id)
+    );`);
+    const rows = db
+      .prepare(
+        `SELECT id, legacy_spv_id, legacy_position_id, partner_id, lp_user_id, amount_minor
+           FROM wave_b_orphan_subscriptions
+          WHERE drained_at IS NULL`,
+      )
+      .all() as Array<{
+        id: string;
+        legacy_spv_id: string;
+        legacy_position_id: string;
+        partner_id: string;
+        lp_user_id: string;
+        amount_minor: number;
+      }>;
+
+    for (const r of rows) {
+      const engineSpvId = _migId(r.legacy_spv_id);
+      const parent = spvById.get(engineSpvId);
+      if (!parent) {
+        stillOrphaned++;
+        continue;
+      }
+      // Promote via shadowCommitmentToEngine (idempotent path).
+      // v26.4.0-fix3 (GPT round-4 BLOCK-1): consume the outcome. Only mark
+      // the orphan drained if promotion actually succeeded — if the caller
+      // returns `orphan_*` for any reason (race, restart), leave the row so
+      // the next boot retries.
+      const result = shadowCommitmentToEngine({
+        legacyPositionId: r.legacy_position_id,
+        legacySpvId: r.legacy_spv_id,
+        partnerId: r.partner_id,
+        lpUserId: r.lp_user_id,
+        amountMinor: r.amount_minor,
+      });
+      if (result.ok) {
+        db.prepare(
+          `UPDATE wave_b_orphan_subscriptions SET drained_at = ? WHERE id = ?`,
+        ).run(nowIso(), r.id);
+        promoted++;
+      } else {
+        stillOrphaned++;
+      }
+    }
+    if (promoted || stillOrphaned) {
+      log.info?.(
+        `[spvEngineStore] drainOrphanSubscriptions: promoted=${promoted}, still_orphaned=${stillOrphaned}`,
+      );
+    }
+  } catch (err) {
+    log.warn?.(`[spvEngineStore] drainOrphanSubscriptions non-fatal error: ${(err as Error).message}`);
+  }
+  return { promoted, stillOrphaned };
+}
+
+/**
+ * Wave B v26.4.0-fix (BLOCK-J) — backfill legacy child records
+ * (`kv_partnerSpvPositions`, `kv_partnerFundCommitments`) into the canonical
+ * `spv_subscription` table. Called from hydrateSpvEngineStore AFTER
+ * migrateLegacyPartnerSpvAndFunds and drainOrphanSubscriptions.
+ *
+ * The prior implementation of `migrateLegacyPartnerSpvAndFunds` migrated ONLY
+ * parent SPV/Fund headers, silently leaving every pre-Wave-B child money
+ * record unmigrated (so `dbTotalSpvCommittedMinor` KPI would understate by
+ * exactly the pre-migration total). This backfill closes GPT-5.6 T4-1.
+ *
+ * Idempotent via `_migrations_applied('wave_b_child_backfill_v1')`.
+ */
+export function backfillLegacyChildCommitments(): { positions: number; fundCommits: number; quarantined: number; lost: number } {
+  let positions = 0;
+  let fundCommits = 0;
+  // v26.4.0-fix3 (GPT round-4 BLOCK-1): track quarantine outcomes so we can
+  // refuse the completion marker if any row silently dropped. `quarantined`
+  // = parent missing but row is durably persisted for later drain; `lost`
+  // = parent missing AND quarantine write failed (data loss risk).
+  let quarantined = 0;
+  let lost = 0;
+  const db = rawDb();
+  try {
+    // Idempotency gate.
+    const already = db
+      .prepare("SELECT 1 AS one FROM _migrations_applied WHERE key = 'wave_b_child_backfill_v1'")
+      .get();
+    // v26.4.0-fix4 (GPT round-5 BLOCK): return the full 4-field shape to
+    // match the declared signature; TypeScript enforces this now.
+    if (already) return { positions: 0, fundCommits: 0, quarantined: 0, lost: 0 };
+
+    // Legacy kv_partnerSpvPositions rows are JSON payloads.
+    // Authoritative DTO in partnerWorkspaceStore.ts (PartnerSpvPosition):
+    //   { id, partnerSpvId, lpContactId, positionAmountMinor, currency,
+    //     fxRateToSpvBase, fxLockedAt, positionStatus, ... }
+    // Note the field is `positionStatus`, not `status` — possible values
+    // include 'pledged'/'committed'/'wired'/'cancelled'. Skip cancelled.
+    try {
+      const rows = db
+        .prepare("SELECT id, payload_json FROM kv_partnerSpvPositions WHERE deleted_at IS NULL")
+        .all() as Array<{ id: string; payload_json: string }>;
+      for (const r of rows) {
+        try {
+          const p = JSON.parse(r.payload_json) as {
+            id?: string;
+            partnerSpvId?: string;
+            lpContactId?: string;
+            positionAmountMinor?: number;
+            currency?: string;
+            fxRateToSpvBase?: string | null;
+            positionStatus?: string;
+          };
+          if (!p.partnerSpvId || !p.lpContactId || typeof p.positionAmountMinor !== "number") continue;
+          // Skip cancelled positions — they must not be recreated as active
+          // `review` subscriptions.
+          if (p.positionStatus === "cancelled" || p.positionStatus === "withdrawn") continue;
+          // BLOCK-H: apply FX normalization if the position carries a rate.
+          const rateNum = p.fxRateToSpvBase ? Number(p.fxRateToSpvBase) : NaN;
+          const normalizedMinor = Number.isFinite(rateNum) && rateNum > 0
+            ? Math.round(p.positionAmountMinor * rateNum)
+            : p.positionAmountMinor;
+          // v26.4.0-fix2 (Opus DEFECT-17): resolve partnerId from the engine
+          // parent first (authoritative post-migration); fall back to the
+          // legacy spvs row only if the engine hasn't been populated yet.
+          const migId = `spv_mig_${sha256Hex(p.partnerSpvId).slice(0, 24)}`;
+          const engineParent = spvById.get(migId);
+          const partnerId = engineParent?.sponsorPartnerId
+            ?? (db.prepare("SELECT partner_id FROM spvs WHERE id = ? LIMIT 1")
+                  .get(p.partnerSpvId) as { partner_id?: string } | undefined)?.partner_id
+            ?? null;
+          if (!partnerId) {
+            log.warn?.(`[spvEngineStore] backfill: position ${r.id} has no resolvable partnerId; quarantining`);
+          }
+          const result = shadowCommitmentToEngine({
+            legacyPositionId: p.id ?? r.id,
+            legacySpvId: p.partnerSpvId,
+            partnerId: partnerId ?? "",
+            lpUserId: p.lpContactId,
+            amountMinor: normalizedMinor,
+          });
+          if (result.ok) positions++;
+          else if (result.reason === "orphan_quarantined") quarantined++;
+          else lost++;
+        } catch (parseErr) {
+          log.warn?.(`[spvEngineStore] backfill: kv_partnerSpvPositions row ${r.id} skipped: ${(parseErr as Error).message}`);
+        }
+      }
+    } catch (err) {
+      // kv_partnerSpvPositions may not exist — non-fatal.
+      log.info?.(`[spvEngineStore] backfill: kv_partnerSpvPositions absent (${(err as Error).message})`);
+    }
+
+    // kv_partnerFundCommitments — authoritative DTO in
+    // partnerWorkspaceStore.ts:378-393 is PartnerFundCommitment. Fields:
+    //   { id, partnerFundId, lpContactId, commitmentMinor, currency,
+    //     fxRateToFundBase, fxLockedAt, status, pledgedAt, ... }
+    // v26.4.0-fix2 (GPT-5.6 DEFECT-2) — the prior implementation read
+    // `commitmentAmountMinor` (does not exist), causing every fund commitment
+    // to be silently skipped. Also `fxRateToFundBase` (not fxRateToSpvBase),
+    // and status filtering to skip cancelled/withdrawn rows.
+    try {
+      const rows = db
+        .prepare("SELECT id, payload_json FROM kv_partnerFundCommitments WHERE deleted_at IS NULL")
+        .all() as Array<{ id: string; payload_json: string }>;
+      for (const r of rows) {
+        try {
+          const c = JSON.parse(r.payload_json) as {
+            id?: string;
+            partnerFundId?: string;
+            lpContactId?: string;
+            commitmentMinor?: number;
+            currency?: string;
+            fxRateToFundBase?: string | null;
+            status?: string;
+          };
+          if (!c.partnerFundId || !c.lpContactId || typeof c.commitmentMinor !== "number") continue;
+          // Skip cancelled / withdrawn commitments — they must not be recreated
+          // as active `review` subscriptions.
+          if (c.status === "cancelled" || c.status === "withdrawn") continue;
+          // FX normalization if a rate is present on the source row.
+          const rateNum = c.fxRateToFundBase ? Number(c.fxRateToFundBase) : NaN;
+          const normalizedMinor = Number.isFinite(rateNum) && rateNum > 0
+            ? Math.round(c.commitmentMinor * rateNum)
+            : c.commitmentMinor;
+          // Resolve partnerId from the parent fund. Funds share the `spvs`
+          // table (funds are spv_type='fund' in the engine, but the workspace
+          // layer stores them separately). Try the parent engine record
+          // first — that's the authoritative post-migration source.
+          const migId = `spv_mig_${sha256Hex(c.partnerFundId).slice(0, 24)}`;
+          const engineParent = spvById.get(migId);
+          const partnerId = engineParent?.sponsorPartnerId
+            ?? (db.prepare("SELECT partner_id FROM spvs WHERE id = ? LIMIT 1")
+                  .get(c.partnerFundId) as { partner_id?: string } | undefined)?.partner_id
+            ?? null;
+          if (!partnerId) {
+            log.warn?.(`[spvEngineStore] backfill: fund commitment ${r.id} has no resolvable partnerId; quarantining`);
+            // Fall through with an empty partnerId sentinel so the quarantine
+            // still records the row and log emits.
+          }
+          const result = shadowCommitmentToEngine({
+            legacyPositionId: c.id ?? r.id,
+            legacySpvId: c.partnerFundId,
+            partnerId: partnerId ?? "",
+            lpUserId: c.lpContactId,
+            amountMinor: normalizedMinor,
+          });
+          if (result.ok) fundCommits++;
+          else if (result.reason === "orphan_quarantined") quarantined++;
+          else lost++;
+        } catch (parseErr) {
+          log.warn?.(`[spvEngineStore] backfill: kv_partnerFundCommitments row ${r.id} skipped: ${(parseErr as Error).message}`);
+        }
+      }
+    } catch (err) {
+      log.info?.(`[spvEngineStore] backfill: kv_partnerFundCommitments absent (${(err as Error).message})`);
+    }
+
+    // v26.4.0-fix3 (GPT round-4 BLOCK-1): only write the completion marker
+    // when EVERY child row was either promoted or durably quarantined. If
+    // any row was `orphan_lost` (parent missing AND quarantine failed),
+    // refuse the marker so the next boot retries the backfill. Data loss
+    // is preferred to be re-attempted rather than papered over.
+    if (lost > 0) {
+      log.error?.({
+        route: "spvEngineStore.backfillLegacyChildCommitments",
+        code: "BACKFILL_INCOMPLETE_DATA_LOSS_RISK",
+        message:
+          `Refusing to mark backfill complete: ${lost} child row(s) were orphaned AND quarantine write failed. ` +
+          `Positions=${positions}, fundCommits=${fundCommits}, quarantined=${quarantined}, lost=${lost}. ` +
+          `Next boot will retry the backfill.`,
+      });
+    } else {
+      db.prepare(
+        `INSERT INTO _migrations_applied (key, applied_at, details)
+           VALUES ('wave_b_child_backfill_v1', ?,
+                   'Wave B v26.4.0-fix legacy child backfill applied.')
+           ON CONFLICT (key) DO NOTHING`,
+      ).run(nowIso());
+    }
+    log.info?.(
+      `[spvEngineStore] backfillLegacyChildCommitments: positions=${positions}, fundCommits=${fundCommits}, quarantined=${quarantined}, lost=${lost}`,
+    );
+  } catch (err) {
+    log.error?.({
+      route: "spvEngineStore.backfillLegacyChildCommitments",
+      message: `backfill failed: ${(err as Error).message}`,
+    });
+    // On top-level failure, do not falsely report success.
+    return { positions, fundCommits, quarantined, lost };
+  }
+  return { positions, fundCommits, quarantined, lost };
+}
+
+/* ── Wave B (v26.4.0) Stage 2 — Legacy SPV Adapter Methods ─────────────
+ *
+ * These 8 methods expose the legacy `spvFundStore` write/read surface
+ * (spv_commitments, spv_capital_calls, spv_distributions, spv_positions,
+ * plus reconcile) through the canonical `spvEngineStore` namespace.
+ *
+ * IMPORTANT: Wave B Stage 2 does NOT re-implement the hash-chain SQL. Each
+ * adapter method DELEGATES to the corresponding `spvFundStore` method
+ * (same file still resident under server/spvFundStore.ts). This preserves:
+ *
+ *   • all BigInt reconciliation math (SpvReconciliation formulas)
+ *   • hash-chain integrity (prev_hash / curr_hash on 4 legacy tables)
+ *   • tenant_id partitioning and rowid tiebreak
+ *   • I-1 (capital-call monotonic sequence_no) and I-2 (distribution ≤
+ *     commitment) financial invariants
+ *   • denorm updates on `spvs.committed_minor` / `called_minor` /
+ *     `distributed_minor`
+ *
+ * Wave B.5 (planned) fully inlines this SQL into the engine and drops
+ * spvFundStore.ts entirely. Stage 2's contract-preserving delegation
+ * keeps every legacy DTO shape byte-identical for the 10 wire routes.
+ *
+ * Call convention: partnerId first, actor last (engine convention).
+ * Return types: legacy DTO shapes (SpvCommitmentRow, SpvCapitalCallRow, etc.)
+ * so the adapter routes serialize the same JSON they always did.
+ * ---------------------------------------------------------------------------- */
+
+/** Wave B Stage 2 — addCommitment adapter. Delegates to spvFundStore.
+ *  BLOCK-D fix: caller (route handler) validated `spv.partnerId === ctx.partnerId`,
+ *  and spvFundStore.addCommitment loads the SPV by spvId and throws
+ *  SPV_NOT_FOUND on missing/deleted, so ownership is enforced end-to-end. */
+export function engineAddCommitment(args: {
+  partnerId: string;
+  spvId: string;
+  lpUserId: string;
+  amountMinor: number;
+  commitmentDocUrl?: string | null;
+}): SpvCommitmentRow {
+  return spvFundStore.addCommitment({
+    spvId: args.spvId,
+    lpUserId: args.lpUserId,
+    amountMinor: args.amountMinor,
+    commitmentDocUrl: args.commitmentDocUrl ?? null,
+  });
+}
+
+/** Wave B Stage 2 — transitionCommitment adapter.
+ *  BLOCK-D fix: enforces `commitment.spvId === args.spvId` scoping BEFORE
+ *  delegating, so an authenticated partner cannot mutate a commitment that
+ *  belongs to a different SPV even if they know the commitmentId. */
+export function engineTransitionCommitment(args: {
+  partnerId: string;
+  spvId: string;
+  commitmentId: string;
+  status: CommitmentStatus;
+}): SpvCommitmentRow {
+  // Cross-tenant guard — verify the commitment belongs to the URL-scoped SPV.
+  const commitments = spvFundStore.listCommitments(args.spvId);
+  const owned = commitments.find((c) => c.id === args.commitmentId);
+  if (!owned) {
+    // Preserve the legacy contract's 404 mapping. The route re-maps this to
+    // 404 NOT_FOUND (see spvLegacyAdapters).
+    throw new Error("COMMITMENT_NOT_FOUND");
+  }
+  return spvFundStore.transitionCommitment({
+    commitmentId: args.commitmentId,
+    status: args.status,
+  });
+}
+
+/** Wave B Stage 2 — recordCapitalCall adapter (spv_capital_calls). */
+export function engineRecordCapitalCall(args: {
+  partnerId: string;
+  spvId: string;
+  amountMinor: number;
+  calledAt?: string;
+  dueAt?: string | null;
+}): SpvCapitalCallRow {
+  return spvFundStore.recordCapitalCall({
+    spvId: args.spvId,
+    amountMinor: args.amountMinor,
+    calledAt: args.calledAt,
+    dueAt: args.dueAt ?? null,
+  });
+}
+
+/** Wave B Stage 2 — recordDistribution adapter (spv_distributions).
+ *  I-2 invariant (distribution ≤ commitment) is enforced inside
+ *  spvFundStore.recordDistribution and throws
+ *  INVARIANT_DISTRIBUTION_EXCEEDS_COMMITMENTS. The adapter route re-maps
+ *  that to a 422 (see spvLegacyAdapters). */
+export function engineRecordDistribution(args: {
+  partnerId: string;
+  spvId: string;
+  distributionType?: DistributionType;
+  totalMinor: number;
+  distributedAt?: string;
+}): SpvDistributionRow {
+  return spvFundStore.recordDistribution({
+    spvId: args.spvId,
+    distributionType: args.distributionType,
+    totalMinor: args.totalMinor,
+    distributedAt: args.distributedAt,
+  });
+}
+
+/** Wave B Stage 2 — recordPosition adapter (spv_positions). */
+export function engineRecordLegacyPosition(args: {
+  partnerId: string;
+  spvId: string;
+  securityId: string;
+  shares: string;
+  basisMinor: number;
+  acquiredAt?: string | null;
+}): SpvPositionRow {
+  return spvFundStore.recordPosition({
+    spvId: args.spvId,
+    securityId: args.securityId,
+    shares: args.shares,
+    basisMinor: args.basisMinor,
+    acquiredAt: args.acquiredAt ?? null,
+  });
+}
+
+/** Wave B Stage 2 — listCommitments adapter (RAM-cache read for now). */
+export function engineListLegacyCommitments(spvId: string): SpvCommitmentRow[] {
+  return spvFundStore.listCommitments(spvId);
+}
+
+/** Wave B Stage 2 — listCapitalCalls adapter. */
+export function engineListCapitalCalls(spvId: string): SpvCapitalCallRow[] {
+  return spvFundStore.listCapitalCalls(spvId);
+}
+
+/** Wave B Stage 2 — listDistributions (LEGACY plural table) adapter.
+ *
+ *  NOTE: this is DISTINCT from the engine's own `spvEngineStore.listDistributions`
+ *  which reads the singular `spv_distribution` table. Stage 2 preserves the
+ *  legacy plural read path used by the /distributions route.
+ */
+export function engineListLegacyDistributions(spvId: string): SpvDistributionRow[] {
+  return spvFundStore.listDistributions(spvId);
+}
+
+/** Wave B Stage 2 — listPositions adapter (LEGACY spv_positions table). */
+export function engineListLegacyPositions(spvId: string): SpvPositionRow[] {
+  return spvFundStore.listPositions(spvId);
+}
+
+/** Wave B Stage 2 — reconcile adapter. Returns BigInt SpvReconciliation. */
+export function engineReconcileLegacySpv(spvId: string): SpvReconciliation {
+  return spvFundStore.reconcile(spvId);
+}
+
+/** Wave B Stage 2 — getLegacySpvById adapter (RAM-cache header read).
+ *  Used by the adapter routes for the initial ownership check
+ *  (spv.partnerId === ctx.partnerId).
+ */
+export function engineGetLegacySpvById(spvId: string): SpvRow | null {
+  return spvFundStore.getById(spvId);
+}
+
 /* ── hydrate-on-boot ────────────────────────────────────────────────────── */
 export async function hydrateSpvEngineStore(): Promise<void> {
   const db = rawDb();
@@ -1809,6 +2629,24 @@ export async function hydrateSpvEngineStore(): Promise<void> {
     migrateLegacyPartnerSpvAndFunds();
   } catch (err) {
     log.warn("[spvEngineStore] legacy backfill skipped:", (err as Error).message);
+  }
+
+  // Wave B v26.4.0-fix (BLOCK-E) — drain orphaned subscriptions whose parent
+  // SPVs have now landed. Runs after the parent header backfill so pending
+  // orphans get promoted to real subscriptions in the same boot.
+  try {
+    drainOrphanSubscriptions();
+  } catch (err) {
+    log.warn("[spvEngineStore] orphan drain skipped:", (err as Error).message);
+  }
+
+  // Wave B v26.4.0-fix (BLOCK-J) — one-time backfill of legacy child records
+  // (kv_partnerSpvPositions, kv_partnerFundCommitments) into spv_subscription.
+  // Gated by `wave_b_child_backfill_v1` marker; subsequent boots no-op.
+  try {
+    backfillLegacyChildCommitments();
+  } catch (err) {
+    log.warn("[spvEngineStore] legacy child backfill skipped:", (err as Error).message);
   }
 }
 

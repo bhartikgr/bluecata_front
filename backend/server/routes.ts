@@ -244,7 +244,13 @@ import { registerMessagingRoutes } from "./messagingStore";
  * The sacred store (Tier-1 #12) is NOT edited; enforcement lives at this layer. */
 import { registerLegacyMessagingCanDmGuard } from "./legacyMessagingCanDmGuard";
 import { registerPartnerWorkspaceV19Routes } from "./partnerWorkspaceV19Store";
-import { registerSpvFundRoutes } from "./spvFundStore";
+// Wave B (v26.4.0) Stage 2 — the 10 legacy /api/partner/me/spvs/:id/* child
+// routes are now registered by the engine-backed adapter, which imports the
+// engine's `engine*` methods (all of which delegate to spvFundStore
+// internally). This retires the direct routes.ts → spvFundStore coupling;
+// spvFundStore.ts becomes an internal implementation module. Response
+// shapes, status codes, gates, and SSE event names are byte-preserved.
+import { registerSpvLegacyAdapterRoutes } from "./spvLegacyAdapters";
 /* CP Phase B — Apply-to-Join + Promotion Moderation + GDPR. */
 import {
   registerConsortiumApplyRoutes,
@@ -1091,12 +1097,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   registerLegacyMessagingCanDmGuard(app);
   registerMessagingRoutes(app);
   registerPartnerWorkspaceV19Routes(app);
-  // CP Phase A (CP-028/029/030/031): DB-backed SPV lifecycle endpoints.
-  // Mounted AFTER partnerRoutes so the legacy v17/v18 top-level SPV paths
-  // (list/get/create/update + positions) remain owned by partnerRoutes.
-  // This module only adds non-conflicting child paths: /commitments,
-  // /capital-calls, /distributions, /detail, /db-positions.
-  registerSpvFundRoutes(app);
+  // Wave B (v26.4.0) Stage 2 — replaces registerSpvFundRoutes(app) with the
+  // engine-backed adapter. Byte-identical wire contract preserved (see
+  // spvLegacyAdapters.ts documentation). CP Phase A (CP-028/029/030/031)
+  // child paths still served: /commitments, /capital-calls, /distributions,
+  // /detail, /db-positions. Mounted AFTER partnerRoutes so the legacy
+  // v17/v18 top-level SPV paths (list/get/create/update + positions) remain
+  // owned by partnerRoutes.
+  registerSpvLegacyAdapterRoutes(app);
   /* ------------ CP Phase B (CP-001..005, CP-013, CP-015..018) ------------ */
   // Public apply flow, admin review, partner onboarding state, chapter-admin
   // promotion moderation queue, GDPR export/delete/anonymize.

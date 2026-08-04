@@ -15,7 +15,20 @@ import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import { companies, rounds, softCircles, dataroomFiles, reports } from "./mockData";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 // v25.48 DATA-2 (V-1/V-2/V-3) — DB-driven admin KPI reads (replace mockData arrays).
-import { dbTotalCompanies, dbTotalFunded, dbTotalCommittedSoftCircle, dbRegions } from "./lib/adminKpiDbReads";
+// Wave B v26.4.0-fix (BLOCK-K) — 3 new SPV KPI reads wired into the dashboard
+// summary payload. `dbTotalSpvCommittedMinor` and `dbTotalSpvWiredMinor` are
+// per-currency maps; `dbTotalActiveSpvs` is a scalar count. Backfill in
+// spvEngineStore.backfillLegacyChildCommitments() ensures these tiles reflect
+// the full pre-Wave-B history, not just post-Wave-B activity.
+import {
+  dbTotalCompanies,
+  dbTotalFunded,
+  dbTotalCommittedSoftCircle,
+  dbRegions,
+  dbTotalSpvCommittedMinor,
+  dbTotalSpvWiredMinor,
+  dbTotalActiveSpvs,
+} from "./lib/adminKpiDbReads";
 import { ALL_OUTBOUND_EVENT_TYPES, getOutbox } from "./bridgeStore";
 import { ALL_NOTIFICATION_KINDS } from "./notificationsStore";
 // Patch v10 (BUG-3 / BUG-6) — real KPI aggregation from canonical stores.
@@ -142,6 +155,13 @@ function computeKpis() {
   const arrUsd = Math.round(activeSubs.reduce((sum, s) => sum + (s.annualAmountMinor ?? 0), 0) / 100);
   const mrrUsd = Math.round(arrUsd / 12);
 
+  // Wave B v26.4.0-fix (BLOCK-K) — SPV KPIs. Per-currency maps so the UI can
+  // render one tile per currency (matching the multi-currency reality of
+  // Capavate's live test SPVs — Test SPV/USD, Asian Biotech/CAD, etc.).
+  const totalSpvCommittedMinor = dbTotalSpvCommittedMinor();
+  const totalSpvWiredMinor = dbTotalSpvWiredMinor();
+  const totalActiveSpvs = dbTotalActiveSpvs();
+
   return {
     summary: {
       totalCompanies,
@@ -153,6 +173,10 @@ function computeKpis() {
       momGrowthPct,
       churnPct,
       nrr,
+      // Wave B v26.4.0-fix (BLOCK-K) — SPV KPI tiles.
+      totalSpvCommittedMinor,
+      totalSpvWiredMinor,
+      totalActiveSpvs,
     },
     queues,
     health,
