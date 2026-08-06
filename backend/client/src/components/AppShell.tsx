@@ -203,55 +203,52 @@ const adminNav: NavGroup[] = [
   {
     title: "Capavate",
     items: [
-      /* W-V44 CONSOLIDATION — canonical Capavate fee hub (groups Pricing & Billing,
-         Pricing Models, Payments with descriptions). Underlying pages remain below. */
-      { href: "/admin/capavate-fees", label: "Capavate Fees", icon: DollarSign },
+      /* D2.5 SLICE 1 — ONE fee entry point for the whole platform.
+         Replaces 13 sidebar entries + 3 W-V44 hubs (see D25_ADMIN_FEE_AUDIT.md
+         root cause 2: the hub consolidation was additive, so 12 entry points
+         became 15). Every fee, every product line, every ledger lives behind
+         this single link now, one tab per concern, with a source-of-truth
+         panel next to every editable field. */
+      { href: "/admin/fees", label: "Fees & Billing", icon: DollarSign, testId: "nav-admin-fees" },
       { href: "/admin/companies", label: "Companies", icon: Building },
       { href: "/admin/investors", label: "Investors", icon: Users },
       { href: "/admin/formulas", label: "Formula Registry", icon: Calculator },
       { href: "/admin/regions", label: "Regions", icon: Globe },
       { href: "/admin/reconciliation", label: "Reconciliation", icon: GitCompareArrows },
-      { href: "/admin/payments", label: "Payments", icon: CreditCard, testId: "nav-admin-payments" },
       { href: "/admin/telemetry", label: "Telemetry", icon: BarChart3 },
-      { href: "/admin/pricing", label: "Pricing & Billing", icon: DollarSign },
+      /* D2.5 SLICE 1 — DELETED: /admin/payments and /admin/pricing.
+         Both are tabs of /admin/fees now. */
     ],
   },
   {
     title: "Collective",
     items: [
-      /* W-V44 CONSOLIDATION — canonical Collective fee hub (groups Application Fee,
-         Platform Fees, Subscriptions, Payment Schedules, P&L). Pages remain below. */
-      { href: "/admin/collective-fees", label: "Collective Fees", icon: DollarSign },
+      /* D2.5 SLICE 1 — DELETED: /admin/collective-fees hub. Collective fees
+         are the "Collective Tiers" + "Application Fee" tabs of /admin/fees. */
       { href: "/admin/collective/applications", label: "Collective Applications", icon: Inbox },
       { href: "/admin/collective/waitlist", label: "Collective Waitlist", icon: History },
       { href: "/admin/collective/members", label: "Collective Members", icon: Users },
       { href: "/admin/collective/settings", label: "Collective Settings", icon: Settings },
-      /* v25.39 — DB-driven founder application-fee editor. */
-      { href: "/admin/application-fee", label: "Application Fee", icon: DollarSign },
-      /* v25.45.4 L-2 — DB-driven Platform Fees admin (foundation for v25.46). */
-      { href: "/admin/platform-fees", label: "Platform Fees", icon: DollarSign },
-      /* v25.34 Collective Payment Model — admin surfaces for the Collective fee
-         catalogue and Collective P&L (DB-driven via /api/admin/collective-payments/*). */
-      { href: "/admin/collective-payment-schedules", label: "Collective Payment Schedules", icon: DollarSign },
-      { href: "/admin/collective-payment-pl", label: "Collective P&L", icon: BarChart3 },
-      /* W4 — DB-driven Collective subscription-package authoring (dynamic member tiers). */
-      { href: "/admin/collective-subscriptions", label: "Collective Subscriptions", icon: DollarSign },
+      /* D2.5 SLICE 1 — DELETED: /admin/application-fee, /admin/platform-fees,
+         /admin/collective-payment-schedules, /admin/collective-payment-pl,
+         /admin/collective-subscriptions. All five are tabs/sections of
+         /admin/fees. The duplicate application-fee editor is gone entirely:
+         there is now exactly ONE editor for that fee, writing
+         platform_fees['collective_application_fee'] in TRUE minor units. */
     ],
   },
   {
     title: "Consortium Partners",
     items: [
-      /* W-V44 CONSOLIDATION — canonical Partner fee hub (groups Partner Fee Schedules,
-         Commission Rates & tier pricing, Partner P&L). Underlying pages remain below. */
-      { href: "/admin/partner-fees-hub", label: "Partner Fees (Hub)", icon: DollarSign },
+      /* D2.5 SLICE 1 — DELETED: /admin/partner-fees-hub. Partner fees are the
+         "Consortium Partner Promotions" tab of /admin/fees. */
       { href: "/admin/consortium-applications", label: "Consortium Applications", icon: FileSignature },
       /* v25.33 Consortium Partner Payment Model — admin surfaces for partner roster,
          fee catalogue, and partner P&L (all DB-driven via /api/admin/*). */
       { href: "/admin/partners", label: "Partners", icon: Users },
-      { href: "/admin/partner-fees", label: "Partner Fees", icon: DollarSign },
-      /* v25.39 — DB-driven per-tier commission-rate editor. */
-      { href: "/admin/commission-rates", label: "Commission Rates", icon: DollarSign },
-      { href: "/admin/partner-pl", label: "Partner P&L", icon: BarChart3 },
+      /* D2.5 SLICE 1 — DELETED: /admin/partner-fees, /admin/commission-rates,
+         /admin/partner-pl. All three are sections of the /admin/fees
+         "Consortium Partner Promotions" and "Ledger & Invoices" tabs. */
       /* W6 — Ask-an-Expert partner-responder registry. */
       { href: "/admin/partner-responders", label: "Partner Responders", icon: Handshake },
     ],

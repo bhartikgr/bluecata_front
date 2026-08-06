@@ -25,6 +25,12 @@ import { emitSync } from "./sprint10Telemetry";
 // restart for any code still calling it.
 import { rawDb } from "./db/connection";
 import { log } from "./lib/logger";
+// D2.5 Slice 3 Fix 1 — coupon codes now resolve from the admin-editable
+// pricingModelStore.discountCodes (schema already had code/kind/amount/
+// expiresOn/maxRedemptions/active) instead of a hardcoded map. See
+// findDiscountCodeByCode's own doc for why the lookup is global (no model/
+// product-line scoping) — that preserves the old map's scope exactly.
+import { findDiscountCodeByCode, recordDiscountCodeRedemption } from "./pricingModelStore";
 
 export const PAYMENT_KINDS = [
   "collective_membership",
@@ -121,13 +127,49 @@ export const paymentChargeSchema = z.object({
   forceState: z.enum(["succeeded", "failed", "requires_3ds", "demo"]).default("demo"),
 });
 
+/**
+ * D2.5 Slice 3 Fix 1 — was a hardcoded `{ CP10: 0.10, FOUNDER20: 0.20,
+ * COLLECTIVE5: 0.05 }` map with no DB row and no admin endpoint anywhere in
+ * the repo (D25_DYNAMIC_VS_HARDCODED_VERIFICATION.md Item 2 — "the single
+ * worst finding"). Now resolves from `pricingModelStore.discountCodes` via
+ * `findDiscountCodeByCode`, which is case-insensitive, filters `active`,
+ * checks `expiresOn`, and enforces `maxRedemptions` — exactly the four
+ * requirements in the fix brief. On boot, `seedLegacyCouponCodesIfMissing`
+ * (pricingModelStore.ts) migrates the three legacy codes verbatim (10%/20%/5%,
+ * unlimited, never-expiring, active) so this function returns byte-identical
+ * results for CP10/FOUNDER20/COLLECTIVE5 before and after this patch — the
+ * only behavior CHANGE is that an admin can now see, edit, deactivate, expire,
+ * or rate-limit these codes (and any new ones) at /admin/pricing-models,
+ * which the old map made structurally impossible.
+ *
+ * `kind` support: "percent" reproduces the legacy percent-of-amount math
+ * exactly (Decimal.js, cent-perfect, ROUND_HALF_UP — unchanged from the old
+ * function body). "flat_minor" is additive (the old map never had a flat-cents
+ * kind, so there is no legacy behavior to preserve there) — it deducts a fixed
+ * minor-unit amount, capped at amountCents so a discount can never invert a
+ * charge negative. "trial_extension_days" does not affect a charge amount by
+ * definition (it extends a trial, handled by Fix 2's subscription-creation
+ * path, not a payment) — returns 0 here, same as an unknown code did before.
+ *
+ * NOTE: this function is pure (no side effects) so existing callers/tests that
+ * call it directly without a charge still work identically. Redemption-count
+ * increment happens ONLY in `chargeOrIdempotent`, after a discount was
+ * actually applied to a persisted charge — see the call site below.
+ */
 export function calcCouponDiscountCents(amountCents: number, code?: string): number {
   if (!code) return 0;
-  // Demo coupon table — referral codes via `?cp=` give 10%, "FOUNDER20" = 20%.
-  const map: Record<string, number> = { CP10: 0.10, FOUNDER20: 0.20, COLLECTIVE5: 0.05 };
-  const pct = map[code.toUpperCase()] ?? 0;
-  // Cent-perfect via Decimal.js
-  return new Decimal(amountCents).mul(pct).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber();
+  const found = findDiscountCodeByCode(code);
+  if (!found) return 0;
+  const { discount } = found;
+  if (discount.kind === "percent") {
+    // Cent-perfect via Decimal.js — identical math to the old hardcoded map.
+    return new Decimal(amountCents).mul(discount.amount).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber();
+  }
+  if (discount.kind === "flat_minor") {
+    return Math.min(Math.max(0, Math.round(discount.amount)), amountCents);
+  }
+  // "trial_extension_days" — not a charge-amount discount.
+  return 0;
 }
 
 export function chargeOrIdempotent(input: z.infer<typeof paymentChargeSchema>): { entry: PaymentEntry; deduped: boolean } {
@@ -180,6 +222,14 @@ export function chargeOrIdempotent(input: z.infer<typeof paymentChargeSchema>): 
     ledger.set(id, entry);
     intentIndex.set(input.intentId, id);
     persistPaymentEntry(entry);
+    /* D2.5 Slice 3 Fix 1 — increment the code's usesCount ONLY after a real
+     * discount was applied to a persisted charge (not on preview, not on a
+     * failed lookup). Best-effort — recordDiscountCodeRedemption already
+     * swallows its own errors, so this can never fail the charge itself. */
+    if (discountCents > 0 && input.couponCode) {
+      const found = findDiscountCodeByCode(input.couponCode);
+      if (found) recordDiscountCodeRedemption(found.modelId, input.couponCode);
+    }
     /* v25.32 final — since persistPaymentEntry now uses ON CONFLICT DO NOTHING,
      * a concurrent caller may have won the race. Re-read the durable row by
      * intent_id to confirm we are returning the canonical winner and not a

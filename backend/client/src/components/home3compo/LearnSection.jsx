@@ -1,8 +1,22 @@
 import React from "react";
 import useScrollReveal from "./useScrollReveal";
+import { Skeleton } from "@/components/Skeleton";
+import { usePublicPricing } from "@/lib/usePublicPricing";
 
+/**
+ * D2.5 Slice 2 — Dynamic public pricing.
+ * The Global Entrepreneur Academy's $1,500 one-time price used to be
+ * hardcoded here. Now reads GET /api/pricing-public via usePublicPricing so
+ * an admin edit to the Academy pricing model auto-propagates. Falls back to
+ * the static $1,500 value (logged via console.error) on fetch failure.
+ */
 export default function LearnSection() {
   useScrollReveal();
+  const { data: pricing, isLoading } = usePublicPricing();
+  const academy = pricing?.academy_one_time;
+  const academyAmount = academy?.price_minor != null && academy?.currency
+    ? `${academy.currency === "USD" ? "$" : `${academy.currency} `}${Math.round(academy.price_minor / 100).toLocaleString()}`
+    : "$1,500";
   return (
     <>
       {" "}
@@ -65,7 +79,11 @@ export default function LearnSection() {
                 <li>Direct access to angel investors</li>
               </ul>
               <div className="learn__card-price">
-                <span className="learn__card-amount">$1,500</span>
+                {isLoading ? (
+                  <Skeleton variant="line" className="h-7 w-20" />
+                ) : (
+                  <span className="learn__card-amount">{academyAmount}</span>
+                )}
                 <span className="learn__card-term">one-time investment</span>
               </div>
               <a

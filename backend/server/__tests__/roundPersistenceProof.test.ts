@@ -120,6 +120,10 @@ describe("Avi 22-May Issue 3 — round persistence end-to-end proof", () => {
         state: "draft",
         targetAmount: 5_000_000,
         preMoney: 25_000_000,
+        // Wave C v26.5.0 (Shadie Finding 1a) — non-foundation priced.
+        // Set equal to sharesAuthorized to preserve the derivation semantics
+        // this test uses (post-money reconciliation).
+        fdPreMoneyShares: 10_000_000,
         pricePerShare: 2.50,
         sharesAuthorized: 2_000_000,
         minTicket: 250_000,

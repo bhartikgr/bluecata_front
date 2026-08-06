@@ -128,21 +128,21 @@ import AdminRegionExtensionDetail from "@/pages/admin/RegionExtensionDetail";
 import AdminAuditLog from "@/pages/admin/AuditLog";
 import AuditChainVerifyPage from "@/pages/admin/AuditChainVerifyPage"; /* v19 Phase C */
 import AdminIntegrations from "@/pages/admin/AdminIntegrations"; /* W-V44 FIX K — market-data integrations */
-import { CapavateFeesHub, CollectiveFeesHub, PartnerFeesHub } from "@/pages/admin/FeeHub"; /* W-V44 — consolidated fee hubs */
+/* D2.5 SLICE 1 — the 15 old admin fee routes are RETIRED. Their imports
+   (FeeHub, Payments, PartnerFeeSchedules, AdminApplicationFee,
+   AdminPlatformFees, CollectiveSubscriptions, AdminCommissionRates,
+   PartnerPL, CollectivePaymentSchedules, CollectivePaymentPL, Pricing,
+   PricingModels, PricingModelDetail) are deleted along with the page
+   components. Everything they did now lives in ONE page:
+     /admin/fees → AdminFeesConsolidated
+   Capavate is in test mode, so there is NO redirect/deprecation window —
+   the old URLs fall through to the /admin/:rest* AdminNotFound catch-all
+   (HTTP-equivalent 404 for an SPA). Server routes are UNCHANGED. */
+import AdminFeesConsolidated from "@/pages/admin/AdminFeesConsolidated"; /* D2.5 Slice 1 — unified /admin/fees */
 import AdminReconciliation from "@/pages/admin/Reconciliation";
-import AdminPayments from "@/pages/admin/Payments"; /* v25.32 P1h */
 /* v25.33 Consortium Partner Payment Model — admin surfaces (DB-driven). */
 import AdminPartners from "@/pages/admin/Partners";
-import AdminPartnerFeeSchedules from "@/pages/admin/PartnerFeeSchedules";
-import AdminApplicationFee from "@/pages/admin/AdminApplicationFee"; /* v25.39 */
-import AdminPlatformFees from "@/pages/admin/AdminPlatformFees"; /* v25.45.4 L-2 — DB-driven Platform Fees admin (foundation for v25.46) */
-import CollectiveSubscriptions from "@/pages/admin/CollectiveSubscriptions"; /* W4 — Collective dynamic subscription-package admin CRUD */
 import PartnerResponders from "@/pages/admin/PartnerResponders"; /* W6 — Ask-an-Expert partner-responder registry */
-import AdminCommissionRates from "@/pages/admin/AdminCommissionRates"; /* v25.39 */
-import AdminPartnerPL from "@/pages/admin/PartnerPL";
-/* v25.34 Collective Payment Model — admin pages (DB-driven). */
-import AdminCollectivePaymentSchedules from "@/pages/admin/CollectivePaymentSchedules";
-import AdminCollectivePaymentPL from "@/pages/admin/CollectivePaymentPL";
 import AdminTelemetry from "@/pages/admin/Telemetry";
 // Sprint 12 — new admin + cross-role pages
 import NotificationCenter from "@/pages/NotificationCenter";
@@ -153,8 +153,6 @@ import AdminEmail from "@/pages/admin/Email";
 import AdminEmailComposer from "@/pages/admin/EmailComposer";
 import AdminNotifications from "@/pages/admin/Notifications";
 import AdminNotificationComposer from "@/pages/admin/NotificationComposer";
-import AdminPricing from "@/pages/admin/Pricing";
-import AdminPricingModelDetail from "@/pages/admin/PricingModelDetail";
 // Sprint 28 Billing — founder subscription + billing pages
 import FounderSubscribe from "@/pages/founder/Subscribe";
 import FounderBilling from "@/pages/founder/Billing";
@@ -253,6 +251,8 @@ function RequireActiveSubscription({ children }: { children: ReactNode }) {
   // for a hardcoded "co_novapay" subscription.
   const companyId = entCtx?.founder?.activeCompanyId ?? "";
 
+  const subCacheKey = companyId ? `subscription_cache_${companyId}` : null;
+
   const { data, isLoading } = useQuery<{ ok: boolean; subscription: { status: string } }>({
     queryKey: ["/api/founder/subscription", companyId],
     queryFn: async () => {
@@ -260,10 +260,49 @@ function RequireActiveSubscription({ children }: { children: ReactNode }) {
         const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
         const res = await fetch(`${API_BASE}/api/founder/subscription?companyId=${encodeURIComponent(companyId)}`);
         if (!res.ok) return { ok: false, subscription: { status: "pending_payment" } };
-        return res.json();
+        const json = await res.json();
+        // D2.5 Slice 3 Fix 4 — refresh the local cache on every successful
+        // response so a LATER network error has something recent to fall
+        // back on. Best-effort: localStorage can throw (quota/private mode);
+        // never let a cache-write failure break a successful fetch.
+        if (subCacheKey) {
+          try {
+            localStorage.setItem(subCacheKey, JSON.stringify({ ts: Date.now(), data: json }));
+          } catch {
+            /* best-effort cache write; ignore */
+          }
+        }
+        return json;
       } catch {
-        // Network error: allow through in demo/dev so UI isn't broken
-        return { ok: true, subscription: { status: "active" } };
+        // D2.5 Slice 3 Fix 4 — was: fail OPEN, unconditionally returning
+        // { ok: true, status: "active" } on ANY network error — the exact
+        // "genuinely hardcoded value" the audit flagged: a value that never
+        // varies no matter what the server actually says, because the server
+        // is never actually consulted on this path.
+        //
+        // Fix: fail CLOSED, with a cache-based grace period so a flaky
+        // network blip doesn't lock out a legitimately active subscriber.
+        //   1) A cached response < 24h old — reuse the LAST KNOWN status
+        //      (not an assumed "active"). If the cache says past_due, the
+        //      user still sees the paywall; this is not a bypass.
+        //   2) No usable cache — return the new "connection_error" sentinel,
+        //      which the render logic below routes to a technical-error
+        //      state, NOT the paywall (a network hiccup is not evidence of
+        //      a lapsed subscription).
+        if (subCacheKey) {
+          try {
+            const raw = localStorage.getItem(subCacheKey);
+            if (raw) {
+              const parsed = JSON.parse(raw) as { ts: number; data: { ok: boolean; subscription: { status: string } } };
+              if (Date.now() - parsed.ts < 24 * 60 * 60 * 1000) {
+                return parsed.data;
+              }
+            }
+          } catch {
+            /* corrupt/unreadable cache entry — fall through to connection_error */
+          }
+        }
+        return { ok: false, subscription: { status: "connection_error" } };
       }
     },
     enabled: !!companyId,
@@ -302,6 +341,34 @@ function RequireActiveSubscription({ children }: { children: ReactNode }) {
   }
 
   const status = data?.subscription?.status ?? "pending_payment";
+
+  // D2.5 Slice 3 Fix 4 — "connection_error" is a TECHNICAL failure (no cache,
+  // network unreachable), not a subscription-state signal. It must never be
+  // routed through INACTIVE_STATUSES → /founder/subscribe: that would show a
+  // paywall to a user whose subscription might be perfectly active, purely
+  // because their network blipped. Render an inline retry state instead —
+  // matches the existing skeleton-render convention in this component rather
+  // than introducing a new route (no server-rendered "connection error" page
+  // exists yet; the full paywall UI is Slice 1's /admin/fees Config tab per
+  // the task brief, this is scaffolding only).
+  if (status === "connection_error") {
+    return (
+      <div className="p-6 text-center" data-testid="subscription-gate-connection-error">
+        <p className="text-sm text-muted-foreground mb-3">
+          We couldn&apos;t reach the server to verify your subscription. Check your connection and try again.
+        </p>
+        <button
+          type="button"
+          className="text-sm underline"
+          data-testid="button-subscription-gate-retry"
+          onClick={() => window.location.reload()}
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
+
   if (INACTIVE_STATUSES.has(status)) {
     return <Redirect to="/founder/subscribe" />;
   }
@@ -735,36 +802,19 @@ function AppRouter() {
         <Route path="/admin/partners">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminPartners /></RequireAuth>}
         </Route>
-        {/* v25.33 — partner fee catalogue + partner P&L (DB-driven). */}
-        <Route path="/admin/partner-fees">
-          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminPartnerFeeSchedules /></RequireAuth>}
-        </Route>
-        <Route path="/admin/partner-pl">
-          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminPartnerPL /></RequireAuth>}
-        </Route>
-        {/* v25.39 — DB-driven fee config editors (application fee + commission rates). */}
-        <Route path="/admin/application-fee">
-          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminApplicationFee /></RequireAuth>}
-        </Route>
-        {/* v25.45.4 L-2 — DB-driven Platform Fees admin (foundation for v25.46). */}
-        <Route path="/admin/collective-subscriptions">
-          {() => <RequireAuth role="admin" redirectTo="/admin/login"><CollectiveSubscriptions /></RequireAuth>}
+        {/* D2.5 SLICE 1 — the ONE consolidated fee page. Replaces 15 routes:
+             /admin/pricing · /admin/pricing-models · /admin/pricing-models/:id
+             /admin/application-fee · /admin/platform-fees · /admin/commission-rates
+             /admin/partner-fees · /admin/partner-pl · /admin/collective-subscriptions
+             /admin/collective-payment-schedules · /admin/collective-payment-pl
+             /admin/payments · /admin/capavate-fees · /admin/collective-fees
+             /admin/partner-fees-hub
+           MUST stay above the /admin/:rest* catch-all. */}
+        <Route path="/admin/fees">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminFeesConsolidated /></RequireAuth>}
         </Route>
         <Route path="/admin/partner-responders">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><PartnerResponders /></RequireAuth>}
-        </Route>
-        <Route path="/admin/platform-fees">
-          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminPlatformFees /></RequireAuth>}
-        </Route>
-        <Route path="/admin/commission-rates">
-          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminCommissionRates /></RequireAuth>}
-        </Route>
-        {/* v25.34 — Collective payment schedules + Collective P&L (DB-driven). */}
-        <Route path="/admin/collective-payment-schedules">
-          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminCollectivePaymentSchedules /></RequireAuth>}
-        </Route>
-        <Route path="/admin/collective-payment-pl">
-          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminCollectivePaymentPL /></RequireAuth>}
         </Route>
         {/* v25.0 Track 5 — E7: Admin Partner Detail */}
         <Route path="/admin/partners/:id">
@@ -793,15 +843,6 @@ function AppRouter() {
         </Route>
         <Route path="/admin/notifications">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminNotifications /></RequireAuth>}
-        </Route>
-        <Route path="/admin/pricing">
-          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminPricing /></RequireAuth>}
-        </Route>
-        <Route path="/admin/pricing-models">
-          {() => <Redirect to="/admin/pricing" />}
-        </Route>
-        <Route path="/admin/pricing-models/:id">
-          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminPricingModelDetail /></RequireAuth>}
         </Route>
         <Route path="/admin/formulas/new">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminFormulaNew /></RequireAuth>}
@@ -836,17 +877,10 @@ function AppRouter() {
         <Route path="/admin/integrations">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminIntegrations /></RequireAuth>}
         </Route>
-        {/* W-V44 CONSOLIDATION — 3 canonical fee hubs (additive nav layer; the
-            underlying fee pages keep their own routes + full functionality). */}
-        <Route path="/admin/capavate-fees">
-          {() => <RequireAuth role="admin" redirectTo="/admin/login"><CapavateFeesHub /></RequireAuth>}
-        </Route>
-        <Route path="/admin/collective-fees">
-          {() => <RequireAuth role="admin" redirectTo="/admin/login"><CollectiveFeesHub /></RequireAuth>}
-        </Route>
-        <Route path="/admin/partner-fees-hub">
-          {() => <RequireAuth role="admin" redirectTo="/admin/login"><PartnerFeesHub /></RequireAuth>}
-        </Route>
+        {/* D2.5 SLICE 1 — the 3 W-V44 fee hub routes (/admin/capavate-fees,
+            /admin/collective-fees, /admin/partner-fees-hub) are DELETED.
+            Hub card decks became redundant the moment the leaf pages they
+            deep-linked to were folded into /admin/fees tabs. */}
         {/* Wave B FIX 11 (A-BUG-002) — documented alias path used by the v19
             admin runbook + QA scripts. Both routes render the same page. */}
         <Route path="/admin/audit/verify-chain">
@@ -859,9 +893,9 @@ function AppRouter() {
         <Route path="/admin/reconciliation">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminReconciliation /></RequireAuth>}
         </Route>
-        <Route path="/admin/payments">
-          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminPayments /></RequireAuth>}
-        </Route>
+        {/* D2.5 SLICE 1 — /admin/payments retired; the payment_ledger view now
+            lives in the /admin/fees "Ledger & Invoices" tab (same endpoint,
+            GET /api/admin/payments, which is UNCHANGED). */}
         <Route path="/admin/telemetry">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminTelemetry /></RequireAuth>}
         </Route>

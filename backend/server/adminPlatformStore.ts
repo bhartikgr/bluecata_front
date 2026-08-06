@@ -1250,31 +1250,27 @@ interface FounderTier {
  * and historical tests. Live behavior reads from pricingModelStore. */
 const founderTiers: FounderTier[] = [];
 
-const collectiveTiers = [
-  { id: "collective_standard", name: "Standard (Angel Network)", usdAnnual: 1200, description: "Full Collective member access" },
-  { id: "collective_plus", name: "Plus", usdAnnual: 2400, description: "Plus tier — DSC-eligible" },
-  { id: "collective_individual", name: "Individual", usdAnnual: 600, description: "Individual investor" },
-];
-
-const regionalPricing: Array<{ region: string; standardAnnualUsd: number; multiplier: number }> = [
-  { region: "US", standardAnnualUsd: 1200, multiplier: 1.00 },
-  { region: "CA", standardAnnualUsd: 1200, multiplier: 1.00 },
-  { region: "UK", standardAnnualUsd: 1200, multiplier: 1.00 },
-  { region: "EU", standardAnnualUsd: 1200, multiplier: 1.00 },
-  { region: "IN", standardAnnualUsd:  600, multiplier: 0.50 },
-  { region: "JP", standardAnnualUsd: 1200, multiplier: 1.00 },
-  { region: "HK", standardAnnualUsd: 1200, multiplier: 1.00 },
-  { region: "CN", standardAnnualUsd:  900, multiplier: 0.75 },
-  { region: "AU", standardAnnualUsd: 1200, multiplier: 1.00 },
-];
-
-const billingMetrics = {
-  mrrUsd: 84_200,
-  arrUsd: 84_200 * 12,
-  churnUsd: 4_800,
-  newRevenueUsd: 12_400,
-  expansionUsd: 2_100,
-};
+/* D2.5 SLICE 1 — DELETED: three hard-coded pricing/metric arrays.
+ *
+ *   • `collectiveTiers`   (H-5)  — $1,200 / $2,400 / $600 fabricated annual
+ *                                  Collective prices. Real Collective tiers
+ *                                  live in `collective_subscription_configs`
+ *                                  (canonical) with legacy `platform_fees`
+ *                                  rows; both are surfaced on /admin/fees →
+ *                                  "Collective Tiers" with source labels.
+ *   • `regionalPricing`   (H-13) — duplicated the REAL mechanism,
+ *                                  `region_extensions.pricing_multiplier`,
+ *                                  editable at /admin/regions/:id.
+ *   • `billingMetrics`    (H-15) — FABRICATED revenue (mrrUsd 84_200, and an
+ *                                  arithmetically inconsistent arrUsd =
+ *                                  mrr × 12). Live MRR/ARR is computed from
+ *                                  `subscriptionsStore` + `paymentStore`.
+ *
+ * All three violated this file's own standing rule (see the comment above
+ * `founderTiers`) and had ZERO client consumers — verified by grepping
+ * `client/src/` for their three endpoint paths. Their route handlers are
+ * deleted below and they are removed from the `_testAdmin` export.
+ */
 
 /* ------------ Telemetry power (event browser + funnel + cohort) ------------ */
 function telemetryEvents() {
@@ -2229,15 +2225,12 @@ export function registerAdminPlatformRoutes(app: Express): void {
       res.status(500).json({ tiers: [], error: (err as Error).message });
     }
   });
-  app.get("/api/admin/pricing/collective-tiers", (_req: Request, res: Response) => {
-    res.json({ tiers: collectiveTiers });
-  });
-  app.get("/api/admin/pricing/regional", (_req: Request, res: Response) => {
-    res.json({ regions: regionalPricing });
-  });
-  app.get("/api/admin/pricing/billing-metrics", (_req: Request, res: Response) => {
-    res.json(billingMetrics);
-  });
+  /* D2.5 SLICE 1 — DELETED, zero client consumers, hard-coded payloads:
+   *   GET /api/admin/pricing/collective-tiers   (served H-5)
+   *   GET /api/admin/pricing/regional          (served H-13)
+   *   GET /api/admin/pricing/billing-metrics   (served H-15)
+   * `GET /api/admin/pricing/founder-tiers` above is PRESERVED — it resolves
+   * dynamically from pricingModelStore. */
 }
 
-export const _testAdmin = { computeKpis, users, auditLog, appendAudit, reconRuns, founderTiers, collectiveTiers, regionalPricing };
+export const _testAdmin = { computeKpis, users, auditLog, appendAudit, reconRuns, founderTiers };

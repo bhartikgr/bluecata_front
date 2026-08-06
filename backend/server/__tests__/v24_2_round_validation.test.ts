@@ -109,6 +109,9 @@ describe("v24.2 Bug 4: POST /api/rounds validation regression guard", () => {
         targetAmount: 500_000,
         instrument: "preferred",
         preMoney: 4_000_000,
+        // Wave C v26.5.0 (Shadie Finding 1a) — non-foundation priced round now
+        // requires fdPreMoneyShares > 0. Assertion is on `ok: true`, unaffected.
+        fdPreMoneyShares: 3_200_000,
         pricePerShare: 1.25,
         sharesAuthorized: 3_200_000,
       },

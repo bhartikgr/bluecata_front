@@ -1,6 +1,28 @@
 import React from "react";
+import { Skeleton } from "@/components/Skeleton";
+import { usePublicPricing } from "@/lib/usePublicPricing";
 
+/**
+ * D2.5 Slice 2 — Dynamic public pricing.
+ *
+ * $840/year used to be hardcoded here (and in the deployed JS bundle) so an
+ * admin change at /admin/pricing-models never reached this page. This
+ * component now reads GET /api/pricing-public (via usePublicPricing) so
+ * admin pricing changes auto-propagate to the public homepage without a
+ * redeploy. On fetch failure it falls back to the last-known static values
+ * and logs the failure with console.error (see usePublicPricing.ts).
+ */
 export default function PricingSection() {
+  const { data: pricing, isLoading, isFallback } = usePublicPricing();
+  const annual = pricing?.capavate_annual;
+  const investors = pricing?.investors_free;
+  const partners = pricing?.partners_custom;
+  const asOf = pricing?.as_of;
+  const annualDisplay = annual?.display ?? "$840/year per company";
+  const annualAmount = annual?.price_minor != null && annual?.currency
+    ? `${annual.currency === "USD" ? "$" : `${annual.currency} `}${Math.round(annual.price_minor / 100).toLocaleString()}`
+    : "$840";
+
   return (
     <>
       <section className="pricing section" id="pricing">
@@ -9,9 +31,13 @@ export default function PricingSection() {
             <div className="eyebrow">
               <span className="eyebrow__dot"></span> Pricing
             </div>
-            <h2 className="section-title">
-              $840/year per company to activate a network <em>worth multiples more.</em>
-            </h2>
+            {isLoading ? (
+              <Skeleton variant="title" className="h-8 w-4/5" />
+            ) : (
+              <h2 className="section-title">
+                {annualDisplay} to activate a network <em>worth multiples more.</em>
+              </h2>
+            )}
             <p className="section-sub">
               One plan for companies, billed annually. Free for every investor
               they bring. Custom pricing for ecosystem partners who want to
@@ -28,12 +54,16 @@ export default function PricingSection() {
                 </p>
               </div>
               <div className="pricing__card-price-wrap">
-                <span className="pricing__card-price">$840</span>
+                {isLoading ? (
+                  <Skeleton variant="title" className="h-9 w-24" />
+                ) : (
+                  <span className="pricing__card-price">{annualAmount}</span>
+                )}
                 <span className="pricing__card-term">
                   /year · per company
                 </span>
                 <span className="pricing__card-annual">
-                  Each additional company: $840/year (per-company billing)
+                  Each additional company: {annualAmount}/year (per-company billing)
                 </span>
               </div>
             </div>
@@ -133,7 +163,11 @@ export default function PricingSection() {
           <div className="pricing__secondary reveal">
             <div className="pricing__secondary-card">
               <h4 className="pricing__secondary-name">For Investors</h4>
-              <div className="pricing__secondary-price">Free. Always.</div>
+              {isLoading ? (
+                <Skeleton variant="line" className="h-6 w-32" />
+              ) : (
+                <div className="pricing__secondary-price">{investors?.display ?? "Free. Always."}</div>
+              )}
               <p className="pricing__secondary-desc">
                 Access your verified portfolio, see co-investors, and track
                 every holding — at no cost. Investors are invited by their
@@ -155,7 +189,11 @@ export default function PricingSection() {
               <h4 className="pricing__secondary-name">
                 For Ecosystem Partners
               </h4>
-              <div className="pricing__secondary-price">Custom pricing</div>
+              {isLoading ? (
+                <Skeleton variant="line" className="h-6 w-32" />
+              ) : (
+                <div className="pricing__secondary-price">{partners?.display ?? "Custom pricing"}</div>
+              )}
               <p className="pricing__secondary-desc">
                 Volume onboarding, portfolio-wide management, and referral
                 revenue. Pricing based on number of client companies.
@@ -165,6 +203,16 @@ export default function PricingSection() {
               </a>
             </div>
           </div>
+          {!isLoading && asOf ? (
+            <p
+              className="pricing__as-of"
+              style={{ marginTop: "1rem", fontSize: "0.75rem", opacity: 0.6, textAlign: "center" }}
+              data-testid="pricing-as-of"
+            >
+              Pricing effective {asOf.slice(0, 10)}
+              {isFallback ? " (showing default pricing — live pricing temporarily unavailable)" : ""}
+            </p>
+          ) : null}
         </div>
       </section>
     </>

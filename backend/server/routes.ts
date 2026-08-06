@@ -184,6 +184,7 @@ import { registerAdminCollectiveFeeRoutes } from "./adminCollectiveFeeRoutes"; /
 import { registerAdminPlatformFeesRoutes } from "./adminPlatformFeesRoutes"; /* v25.45.4 L-2 — DB-backed Platform Fees admin (foundation for v25.46) */
 import { registerAdminFeeTierRoutes } from "./adminFeeTierRoutes"; /* v25.46.1 — multi-section fee admin: collective member-subscription + consortium subscription tiers + SPV deployment flat fee */
 import { registerCollectiveSubscriptionAdminRoutes } from "./collectiveSubscriptionAdminRoutes"; /* W4 — Collective dynamic subscription-package admin CRUD */
+import { registerCollectiveEnvFallbackAdminRoutes } from "./lib/collectiveEnvFallbackAdminRoutes"; /* D2.5 R1 fix B-5 — use_env_fallback write path */
 import { configureCollectiveSubscriptionConfigStore } from "./collectiveSubscriptionConfigStore"; /* W4 */
 import { registerV2546Routes } from "./v2546Routes"; /* v25.46 — 6-track release: messages, network posts, pulse SSE, markets quote, press */
 import { registerPulseSymbolRoutes } from "./pulseSymbolRoutes"; /* v25.47 APD-022 — DB-driven Pulse symbol registry */
@@ -310,6 +311,10 @@ import { getOutbox } from "./bridgeStore";
 import { inspectBridgeEnv } from "./lib/bridgeEnvAssert";
 import { getCommsOverflowCounts } from "./commsStore";
 import { loadUserContext, requireEntitlement } from "./lib/requireEntitlement";
+// D2.5 Slice 2 — public marketing-site pricing (NO auth). Reads the safe
+// subset of pricing_models / collective_subscription_configs so admin price
+// edits automatically reach capavate.com/#pricing. Zero Airwallex touches.
+import registerPublicPricingRoutes from "./publicPricingRoutes";
 import { registerPersona } from "./lib/userContext";
 import { getUserContextForId, getUserContext } from "./lib/userContext";
 // v25.56 Avi wave item 2 — provision a populated durable investor profile at
@@ -319,6 +324,23 @@ import { provisionRedeemedInvestorProfile } from "./investorProvisioning";
 // v25.45 ROUND 2 — per-route archive gate (canonical enforcement; the
 // /api/founder path-prefix middleware is defense-in-depth only).
 import { assertWorkspaceNotArchived } from "./middleware/archiveCheck";
+
+/* Wave C-2 (v26.6.0) — delegated-agency preflight for partner-acting-for-founder
+ * writes. NEW file server/lib/delegatedAgency.ts (spec §1, §7.2-B/C/D/E).
+ * This is the ONLY import statement Wave C-2 adds to routes.ts.
+ *
+ * D1-08: `rawDb` is deliberately NOT imported. §7.2's claim that rawDb is
+ * already imported "at real routes.ts:335" is FALSE — grep finds exactly one
+ * `rawDb` occurrence in this whole file and it is a COMMENT at :4143. Rather
+ * than add a second new import for a route-layer PARTNER_NOT_ACTIVE gate, D1
+ * relies on requireDelegatedAgencyIfPartner's P2 (identical query, identical
+ * typed 403) plus transactional Predicate 1-B for the ToC/ToU window. */
+import {
+  requireDelegatedAgencyIfPartner,
+  resolvePartnerContextIfPresent,
+  ROUTE_SCOPE_MAP,
+  DELEGATED_WRITE_SUB_ROLES,
+} from "./lib/delegatedAgency";
 // v25.45 ROUND 2 (F13b) — privacy resolver for cap-table PDF shareholder labels.
 import { resolveDisplayName } from "./lib/userPrivacyResolver";
 // v25.45 ROUND 8 (GPT-5.5 finding) — cap-table PDF must compute counterparty
@@ -453,6 +475,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   /* ------------ Sprint 17 D2: security headers + CORS (front of stack) ------------ */
   app.use(securityHeaders);
   app.use("/api", corsForApi);
+
+  // ---- D2.5 Slice 2: PUBLIC pricing endpoint for the marketing homepage.
+  // Must be mounted here — BEFORE any auth/admin gate — because
+  // capavate.com/#pricing is rendered for anonymous visitors. No req.userContext
+  // dependency, no session cookie required. Handler itself never accepts
+  // request bodies and only ever reads (never writes) pricingModelStore /
+  // collectiveSubscriptionConfigStore, so it is safe ahead of CSRF middleware too.
+  registerPublicPricingRoutes(app);
 
   /* v25.24 NH-5 — Origin allowlist is mounted in server/index.ts BEFORE
    * applyRouteGuards so it fires before the generic auth gate. Mounting it
@@ -1007,6 +1037,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
   } catch { /* audit wiring is best-effort */ }
   registerCollectiveSubscriptionAdminRoutes(app);
+  // D2.5 R1 fix (B-5 / FIX 5) — write path for collective_subscription_configs.use_env_fallback,
+  // which Slice 3's airwallexCollective.ts reads but nothing could ever set. Plain SQLite column
+  // write; does not import or modify airwallexCollective.ts; zero Airwallex API calls.
+  registerCollectiveEnvFallbackAdminRoutes(app);
   registerV2546Routes(app); /* v25.46 — 6-track release endpoints (messages, network posts, pulse, markets, press) */
   registerPulseSymbolRoutes(app); /* v25.47 APD-022 — DB-driven Pulse symbol registry */
   registerPostModerationRoutes(app); /* v25.47 APD-023 — network post moderation */
@@ -3190,9 +3224,130 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.post("/api/rounds/:id/invitations", requireAuth, async (req, res) => {
-    const check = requireFounderOwnsRound(req, res);
-    if (!check.ok || !check.companyId || !check.userId) return;
-    const id = paramStr(req.params.id);
+    /* ══════════════════════════════════════════════════════════════════
+     * Wave C-2 (v26.6.0) DUAL-BRANCH ENTRY. Was: an unconditional
+     * `requireFounderOwnsRound` at real :3193-3194. Both branches resolve the
+     * SAME three locals — (id, companyId, invitedByUserId) — and every
+     * statement below the branch is byte-identical to real :3196-3307 except
+     * the two args-object lines that read those locals instead of `check.*`,
+     * the additive delegated spread, and the DELEGATED_403 mapping block.
+     *
+     * V33-4-B9: resolve the company via `companyIdForRound` (real :3104-3112)
+     * rather than `roundsStoreGetById` alone, so rounds that exist only in
+     * `canonicalRounds` (seed/demo) still resolve.
+     * ══════════════════════════════════════════════════════════════════ */
+    const id = paramStr(req.params.id); // hoisted verbatim from real :3195
+    const resolvedCompanyId = companyIdForRound(id);
+    const round =
+      roundsStoreGetById(id) ??
+      (resolvedCompanyId ? canonicalRounds.find((rr: any) => rr.id === id) ?? null : null);
+    if (!round || !resolvedCompanyId) {
+      // Same status+code the real `requireFounderOwnsRound` returns for an
+      // unresolvable round (:3122-3125), so the observable response for a
+      // nonexistent round is UNCHANGED; only its order relative to the
+      // ownership check moves. No new information disclosure.
+      return res.status(404).json({ ok: false, error: "round_not_found" });
+    }
+
+    // Partner-context resolution, IN-HANDLER: this route runs only `requireAuth`,
+    // and mounting a partner-context middleware on the subtree would break every
+    // founder caller. Returns { userId, partnerId, partnerSubRole } | null
+    // REGARDLESS of sub_role — policy enforcement is the first statement of the
+    // partner branch (V33-4-B7 fail-OPEN closure). Cost on a pure-founder POST:
+    // one indexed single-row SELECT on partner_team_members.
+    const partnerCtx = await resolvePartnerContextIfPresent(req);
+
+    let companyId: string;
+    let invitedByUserId: string;
+    let actingOnBehalfOf:
+      | {
+          actorPartnerUserId: string;
+          engagementId: string;
+          partnerAttributionId: string;
+          partnerId: string;
+          actingOnBehalfOfUserId: string;
+          authorityArtifactId: string;
+        }
+      | null = null;
+
+    // V33-5-B3: `assertWorkspaceNotArchived` is invoked ONCE PER BRANCH,
+    // immediately AFTER that branch's authorization succeeds — never before. A
+    // common-path-first placement would let a non-owner probe archive state on
+    // rounds they do not own. Ordering matches the real founder helper
+    // (:3119-3132): ownership first (:3128), archive gate second (:3130).
+    if (partnerCtx) {
+      /* ---- PARTNER PATH (entirely NEW) ---- */
+      // Sub-role gate: route-layer fast fail. Helper P0 and transactional
+      // Predicate 1 re-check it. V33-5-N5: shared constant, ONE source of truth.
+      if (!(DELEGATED_WRITE_SUB_ROLES as readonly string[]).includes(partnerCtx.partnerSubRole)) {
+        return res.status(403).json({ ok: false, error: "SUB_ROLE_NOT_ALLOWED" });
+      }
+      // Route-scope preflight, keyed "METHOD /path" per §7.2-C. FAIL-CLOSED: a
+      // missing key is NOT "no scope required" — an unmapped route is
+      // unreachable by a partner and fully reachable by a founder (the founder
+      // branch never consults the map).
+      const requiredScope = ROUTE_SCOPE_MAP[`${req.method} ${req.route.path}`];
+      if (requiredScope === undefined) {
+        return res.status(403).json({ ok: false, error: "SCOPE_NOT_MAPPED" });
+      }
+      // Delegated-agency preflight — 8 ordered predicates P0-P7. P2 is the
+      // active-consortium-partner-org gate (kind='consortium_partner' AND
+      // status='active'), which is why D1 adds no route-layer duplicate of it
+      // and therefore no `rawDb` import (D1-08). On denial the helper has
+      // ALREADY sent the typed 403, so this branch must return without writing.
+      const delegated = await requireDelegatedAgencyIfPartner(req, res, {
+        companyId: resolvedCompanyId,
+        routePath: `${req.method} ${req.route.path}`,
+        requiredScope,
+      });
+      if (!delegated.ok) return;
+      /* Founder-of-record resolution. V33-1-M1: `round.founderUserId` is
+       * FABRICATED — no such field exists on the round record. The real
+       * derivation is from companyId via sprint21PortfolioRoutes.ts:160
+       * (`export async function founderUserIdForCompany(companyId: string)`).
+       *
+       * D1-10: resolved with the file's OWN in-handler `require` convention
+       * (precedents at :2647, :2669, :2733, :2735, :4250) rather than by
+       * extending the static `./sprint21PortfolioRoutes` import at :276. That
+       * keeps the D1 brief's "add ONE new import block" literally true — the
+       * delegatedAgency block is the only import statement added. */
+      const { founderUserIdForCompany } = require("./sprint21PortfolioRoutes");
+      const founderUserId = (await founderUserIdForCompany(resolvedCompanyId)) as string | null;
+      if (!founderUserId) {
+        return res.status(500).json({ ok: false, error: "FOUNDER_NOT_RESOLVED" });
+      }
+      companyId = resolvedCompanyId;
+      // Dual-actor semantics (§7.2 "Actor identity persisted"):
+      //   col 15 invited_by_user_id          = ACTING user (who pressed "send")
+      //   col 23 acting_on_behalf_of_user_id = FOUNDER-of-record (the principal)
+      //   col 24 actor_partner_user_id       = ACTING partner user (= col 15 here)
+      // Nothing is lost — both are queryable, and §20.4's DTO hydrates the
+      // inviter display name from col 24 when non-null, so the founder's own
+      // list view never misattributes the invite to themselves.
+      invitedByUserId = delegated.actorPartnerUserId;
+      actingOnBehalfOf = {
+        actorPartnerUserId: delegated.actorPartnerUserId,
+        engagementId: delegated.engagementId,
+        partnerAttributionId: delegated.partnerAttributionId,
+        partnerId: partnerCtx.partnerId,
+        actingOnBehalfOfUserId: founderUserId,
+        authorityArtifactId: delegated.authorityArtifactId, // §7.6 Predicate 4-B re-verifies THIS row
+      };
+      // V33-5-B3: archive gate AFTER partner authorization succeeds.
+      if (assertWorkspaceNotArchived(req, res, resolvedCompanyId)) return;
+    } else {
+      /* ---- FOUNDER PATH — real :3193-3194, re-indented by 2, tokens identical ---- */
+      const check = requireFounderOwnsRound(req, res);
+      if (!check.ok || !check.companyId || !check.userId) return;
+      companyId = check.companyId;
+      invitedByUserId = check.userId;
+      // `requireFounderOwnsRound` ALREADY invokes `assertWorkspaceNotArchived`
+      // internally at real :3130, so this call is redundant on the founder path.
+      // Kept explicit for the once-per-branch ordering invariant; idempotent —
+      // a no-op if the internal gate already sent a response.
+      if (assertWorkspaceNotArchived(req, res, resolvedCompanyId)) return;
+    }
+
     // sprint19 legacy callers use { inviteeEmail, inviteeName, expiresInDays }.
     // v15 canonical names are { investorEmail, investorName, expiryDays }.
     const body = req.body ?? {};
@@ -3254,7 +3409,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const result = await roundInvitationsCreate({
         roundId: id,
-        companyId: check.companyId,
+        companyId,
         investorEmail,
         investorName: typeof investorName === "string" ? investorName : null,
         investorFirstName: effFirst,
@@ -3264,7 +3419,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         typicalMarketSize: typeof typicalMarketSize === "string" ? typicalMarketSize : null,
         note: typeof note === "string" ? note : null,
         expiryDays: typeof expiryDays === "number" ? expiryDays : undefined,
-        invitedByUserId: check.userId,
+        invitedByUserId,
+        /* Seven NEW optional fields, additive. THE FOUNDER PATH SPREADS AN EMPTY
+         * OBJECT — the keys are OMITTED entirely, not passed as explicit nulls,
+         * so the call is behaviorally identical to the pre-C-2 founder call and
+         * `createInvitation`'s dispatch counts 0 of 7 delegated fields. This is
+         * the LOCK 5 founder byte-preservation criterion at the call site. */
+        ...(actingOnBehalfOf
+          ? {
+              actorPartnerUserId: actingOnBehalfOf.actorPartnerUserId,
+              actingOnBehalfOfUserId: actingOnBehalfOf.actingOnBehalfOfUserId,
+              engagementId: actingOnBehalfOf.engagementId,
+              partnerAttributionId: actingOnBehalfOf.partnerAttributionId,
+              partnerId: actingOnBehalfOf.partnerId,
+              routePath: `${req.method} ${req.route.path}`, // SAME string as the ROUTE_SCOPE_MAP key
+              authorityArtifactId: actingOnBehalfOf.authorityArtifactId,
+            }
+          : {}),
       });
       // L-006 fix v23.4.13: return redeemUrl on create so clients can display/copy it.
       // The redeemUrl contains the raw one-time token — it is intentionally surfaced
@@ -3301,6 +3472,32 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         msg === "invalid_email" || msg === "missing_round_id" || msg === "missing_company_id";
       if (isValidation) {
         return res.status(400).json({ ok: false, error: msg });
+      }
+      /* Wave C-2 (v26.6.0): map delegated-agency TRANSACTIONAL 403 throws to typed
+       * 403 responses instead of coalescing them into the generic 500 below.
+       * Every code has a producing throw site inside `createInvitationTx` /
+       * `createDelegatedInvitation` (§7.6), plus DELEGATED_AGENCY_REQUIRED from
+       * §7.2-E's programmer-error branch. Inserted BETWEEN the 400 allowlist and
+       * the 500 default; UNREACHABLE on the founder path, which never produces
+       * any of these strings.
+       *
+       * DELEGATED_ARGS_INCOMPLETE is deliberately ABSENT: it signals implementer
+       * misuse (a partial delegated arg set) and must surface as 500, not 403. */
+      const DELEGATED_403 = new Set([
+        "SUB_ROLE_NOT_ALLOWED",
+        "PARTNER_MISMATCH",
+        "PARTNER_NOT_ACTIVE",
+        "ATTRIBUTION_REVOKED",
+        "ENGAGEMENT_REVOKED",
+        "ENGAGEMENT_LETTER_REVOKED",
+        "AGREEMENT_NOT_SIGNED",
+        "AUTHORITY_ARTIFACT_MISSING_OR_EXPIRED",
+        "SCOPE_NOT_MAPPED",
+        "SCOPE_NOT_GRANTED",
+        "DELEGATED_AGENCY_REQUIRED",
+      ]);
+      if (DELEGATED_403.has(msg)) {
+        return res.status(403).json({ ok: false, error: msg });
       }
       return res.status(500).json({ ok: false, error: "INVITATION_PERSIST_FAILED" });
     }
@@ -4827,6 +5024,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       "targetAmount", "preMoney", "postMoney", "pricePerShare", "valuationCap",
       "discount", "interestRate", "maturityMonths", "strikePrice", "expiryYears",
       "minTicket", "sharesAuthorized", "poolSize",
+      // Wave C v26.5.0 (Shadie Finding 1a)
+      "fdPreMoneyShares",
     ]) {
       if (coerceNumeric(key)) return;
     }
@@ -5023,10 +5222,55 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           if (!rawDecGt0(rawPpsStr)) fieldErrors.pricePerShare = "Price per share must be greater than 0 for a priced round.";
           if (!rawDecGt0(rawSharesStr)) fieldErrors.sharesAuthorized = "Shares outstanding/authorized must be greater than 0 for a priced round.";
           if (has("preMoney") && (num("preMoney") ?? 0) <= 0) fieldErrors.preMoney = "Pre-money valuation must be greater than 0 for a priced round.";
+          // Wave C v26.5.0 (Shadie Finding 1a, GPT-5.6 BLOCK-2) — non-foundation
+          // priced preferred rounds MUST require BOTH preMoney > 0 AND
+          // fdPreMoneyShares > 0. The `has("preMoney")`-only branch above lets
+          // a direct API caller omit preMoney and still create the round with
+          // preMoney=null, which breaks the PPS math contract on downstream
+          // consumers. Foundation rounds skip both (formation event).
+          // Wave C v26.5.0 (Opus r2 MAJ-B) — normalise the missing-type default to
+          // "seed" here so the backstop matches the roundsStoreCreate default at
+          // the createRound call site. Was silently classifying `type: undefined`
+          // as non-foundation (both defaults happen to agree in that case but the
+          // divergence would bite future refactors).
+          const roundType = String(body.type ?? "seed");
+          if (roundType !== "foundation") {
+            if (!((num("preMoney") ?? 0) > 0)) {
+              fieldErrors.preMoney = "Pre-money valuation is required and must be greater than 0 for a priced round.";
+            }
+            // Wave C v26.5.0 (Opus r2 MAJ-A) — fdPreMoneyShares column is INTEGER;
+            // reject a fractional value so a direct API caller cannot poison the
+            // share count. `Number.isInteger` on the coerced number is the check;
+            // the client's `optionalIntegerString` already prevents non-integer
+            // submissions from the wizard.
+            const fd = num("fdPreMoneyShares");
+            if (!(fd !== null && Number.isFinite(fd) && Number.isInteger(fd) && fd > 0)) {
+              fieldErrors.fdPreMoneyShares = "Fully-diluted pre-money shares are required and must be a positive whole number for a priced round.";
+            }
+          }
         } else if (instrument === "common") {
           // common already enforces pps>0 AND shares>0 in the per-vehicle block
           // above (it derives targetAmount from them); only guard preMoney here.
           if (has("preMoney") && (num("preMoney") ?? 0) <= 0) fieldErrors.preMoney = "Pre-money valuation must be greater than 0 for a priced round.";
+          // Wave C v26.5.0 (Shadie Finding 1a, Opus MAJ-3) — non-foundation
+          // priced common rounds require preMoney > 0 AND fdPreMoneyShares > 0.
+          // Foundation common rounds skip both (formation event; PPS is manual).
+          // Uses `> 0` (not truthy) so 0 (not just null) is rejected.
+          // Wave C v26.5.0 (Opus r2 MAJ-A + MAJ-B) — mirror the preferred branch:
+          // (1) normalise missing type to "seed" so backstop matches the
+          //     roundsStoreCreate default; (2) require Number.isInteger on
+          //     fdPreMoneyShares so a direct API caller can't store a fraction
+          //     into the INTEGER column.
+          const roundTypeCommon = String(body.type ?? "seed");
+          if (roundTypeCommon !== "foundation") {
+            if (!((num("preMoney") ?? 0) > 0)) {
+              fieldErrors.preMoney = "Pre-money valuation is required and must be greater than 0 for a priced round.";
+            }
+            const fd = num("fdPreMoneyShares");
+            if (!(fd !== null && Number.isFinite(fd) && Number.isInteger(fd) && fd > 0)) {
+              fieldErrors.fdPreMoneyShares = "Fully-diluted pre-money shares are required and must be a positive whole number for a priced round.";
+            }
+          }
         } else if (instrument === "safe_post" || instrument === "safe_pre" || instrument === "convertible_note") {
           // SAFE / note: if either cap or discount is supplied, at least one must be > 0.
           if (has("valuationCap") || has("discount")) {
@@ -5058,6 +5302,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       "companyId", "name", "type", "state", "targetAmount", "preMoney",
       "postMoney", "pricePerShare", "minTicket", "closeDate", "termsSummary",
       "leadInvestor", "currency", "region", "openDate", "instrument",
+      // Wave C v26.5.0 (Shadie Finding 1a) — fdPreMoneyShares is a known
+      // column, not an extras_json passthrough. Passed to roundsStoreCreate
+      // below and persisted as rounds.fd_pre_money_shares.
+      "fdPreMoneyShares",
     ]);
     const extras: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(body)) {
@@ -5089,6 +5337,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         preMoney: body.preMoney ?? null,
         postMoney: derivedPostMoney,
         pricePerShare: body.pricePerShare ?? null,
+        // Wave C v26.5.0 (Shadie Finding 1a) — explicitly forward the FD
+        // pre-money share count to the store. Nullable; the backstop below
+        // rejects a non-foundation priced round if it's missing/non-positive.
+        fdPreMoneyShares: body.fdPreMoneyShares ?? null,
         minTicket: body.minTicket ?? null,
         closeDate: body.closeDate ?? null,
         termsSummary: body.termsSummary ?? null,

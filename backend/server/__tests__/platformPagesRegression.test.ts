@@ -192,8 +192,11 @@ describe("Platform regression \u2014 ADMIN persona (full coverage)", () => {
     it("GET /api/admin/pricing/founder-tiers", async () => {
       await smoke("GET", "/api/admin/pricing/founder-tiers", { userId: ADMIN, expectStatuses: [200] });
     });
-    it("GET /api/admin/pricing/collective-tiers", async () => {
-      await smoke("GET", "/api/admin/pricing/collective-tiers", { userId: ADMIN, expectStatuses: [200] });
+    /* D2.5 SLICE 1 — GET /api/admin/pricing/collective-tiers was DELETED
+     * (hard-coded 1200/2400/600 payload, zero repo consumers). Collective
+     * tiers are served by /api/admin/collective-subscriptions, smoked below. */
+    it("GET /api/admin/collective-subscriptions", async () => {
+      await smoke("GET", "/api/admin/collective-subscriptions", { userId: ADMIN, expectStatuses: [200] });
     });
   });
 

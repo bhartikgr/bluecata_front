@@ -156,6 +156,10 @@ describe("v23.9 Group A — P0", () => {
         instrument: "preferred",
         targetAmount: "1,000,000",
         preMoney: "5,000,000",
+        // Wave C v26.5.0 (Shadie Finding 1a) — non-foundation priced. Kept
+        // as a comma-formatted string to preserve the original sanitization
+        // proof (the very point of this test).
+        fdPreMoneyShares: "1,000,000",
         pricePerShare: "5",
         sharesAuthorized: "1,000,000",
       },

@@ -12,7 +12,7 @@
  *   - Stage mapping (10→7)
  *   - Payment Decimal.js cent reconciliation
  */
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach } from "vitest";
 import { createIntroRequest, updateIntroRequest, listIntroRequests, __clearIntroRequests } from "../introRequestStore";
 import { createChannel, archiveChannel, getChannelByCompany, addMember, TRANSACTION_PREP_THREADS, __clearTransactionPrep } from "../transactionPrepStore";
 import { createBroadcast, listBroadcasts, __clearBroadcasts } from "../milestoneBroadcastStore";
@@ -22,6 +22,18 @@ import { COMPANY_SYNC_FIELDS, COMPANY_SYNC_BLOCKLIST, filterCompanyPayload } fro
 import { mapCollectiveStateToCRMStage, mapCollectiveStateToPCRMStage, computeAutoTier, applyScoreGating, FOUNDER_CRM_STAGES, INVESTOR_PCRM_STAGES, AUTO_TIERS } from "@shared/crmStages";
 import { chargeOrIdempotent, calcCouponDiscountCents, softCircleRates, __clearPayments } from "../paymentStore";
 import { BridgeOutbound } from "../lib/bridgeOutbound";
+// D2.5 R1 fix (B-2): calcCouponDiscountCents (via findDiscountCodeByCode) now
+// depends on pricingModelStore.models being populated with the CP10/FOUNDER20/
+// COLLECTIVE5 legacy-coupon carrier. That seed only runs inside
+// hydratePricingModelStore(), which no suite in this file ever called —
+// so every "real" coupon lookup below silently found nothing and returned 0.
+// See server/pricingModelStore.ts seedLegacyCouponCodesIfMissing() for the
+// seeding contract (idempotent — safe to call once per test run).
+import { hydratePricingModelStore } from "../pricingModelStore";
+
+beforeAll(async () => {
+  await hydratePricingModelStore();
+});
 
 beforeEach(() => {
   __clearIntroRequests();

@@ -203,6 +203,11 @@ describe("v24.1 — Bug C: round postMoney derivation", () => {
         instrument: "preferred",
         targetAmount,
         preMoney,
+        // Wave C v26.5.0 (Shadie Finding 1a) — non-foundation priced rounds
+        // now require fdPreMoneyShares > 0. Set equal to sharesAuthorized here
+        // to preserve the original derivation semantics; the assertion below
+        // (post_money = preMoney + targetAmount) is unaffected.
+        fdPreMoneyShares: 1_000_000,
         pricePerShare: 2.0,
         sharesAuthorized: 1_000_000,
         currency: "USD",

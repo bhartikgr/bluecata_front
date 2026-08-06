@@ -112,7 +112,7 @@ const PLAN_TO_SLUG: Record<Plan, string> = {
 
 export class TierNotConfiguredError extends Error {
   constructor(public plan: Plan) {
-    super(`Plan '${plan}' is not configured by the administrator. Visit /admin/pricing-models to publish this tier.`);
+    super(`Plan '${plan}' is not configured by the administrator. Visit /admin/fees to publish this tier.`);
     this.name = "TierNotConfiguredError";
   }
 }
@@ -141,6 +141,37 @@ export function getPlanPriceStrict(plan: Plan): { annualMinor: number; currency:
 function resolvePlanPriceOrNull(plan: Plan): { annualMinor: number; currency: string; label: string } | null {
   try {
     return getPlanPriceStrict(plan);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * D2.5 Slice 3 Fix 2 — trial length now resolves from the admin-authored
+ * pricing model's `trial.lengthDays` field instead of being permanently
+ * fixed at the `?? 14` default a few lines below. The admin editor at
+ * `client/src/pages/admin/PricingModelDetail.tsx:793` (`data-testid=
+ * "input-trialDays"`) has written `PricingModel.trial.lengthDays` since it
+ * was built, but nothing ever read it — this is the read side.
+ *
+ * Mirrors `resolvePlanPriceOrNull`'s shape/failure mode exactly: same slug
+ * lookup, same "live" filter, same swallow-and-return-null on any failure
+ * (missing model, admin hasn't configured a plan yet, DB hiccup, etc). A
+ * null return means "nothing configured for this plan" and the caller's own
+ * `?? 14` stays as the safety net — so a plan with no live pricing model,
+ * or a live model with `trial: null` / no lengthDays, behaves EXACTLY as it
+ * did before this patch (14-day default, unchanged).
+ */
+function resolvePlanTrialDaysOrNull(plan: Plan): number | null {
+  try {
+    const slug = PLAN_TO_SLUG[plan];
+    if (!slug) return null;
+    const live = _listPricingModels({ productLine: "founder", status: "live" });
+    const m = live.find((x) => x.slug === slug);
+    if (!m || !m.trial) return null;
+    const days = m.trial.lengthDays;
+    if (typeof days !== "number" || !Number.isFinite(days) || days < 0) return null;
+    return Math.round(days);
   } catch {
     return null;
   }
@@ -404,7 +435,7 @@ export function updateSubscription(
   if (!planPrice) {
     return {
       ok: false,
-      error: `plan_not_configured: tier '${newPlan}' is not published in /admin/pricing-models`,
+      error: `plan_not_configured: tier '${newPlan}' is not published in /admin/fees`,
     };
   }
 
@@ -548,7 +579,20 @@ export function createSubscriptionForNewCompany(
   const actor = options.actor ?? "system:new_company";
   const plan = options.plan ?? "founder_pro";
   const wantsTrial = options.trial === true;
-  const trialDays = options.trialDays ?? 14;
+  /* D2.5 Slice 3 Fix 2 — precedence is now:
+   *   1) an EXPLICIT options.trialDays (e.g. managedFounderRoutes.ts:107
+   *      passing body.trialDays) — unchanged, still wins over everything.
+   *   2) the resolved plan's admin-authored pricing_models.trial.lengthDays
+   *      (PricingModelDetail.tsx:793 — this is the fix: that editor writes
+   *      a field nothing read before this patch).
+   *   3) `14` — the original hardcoded fallback, now a safety net rather
+   *      than the only value, reached only when neither 1 nor 2 apply (no
+   *      live pricing model for this plan, or a live model with no trial
+   *      configured). Byte-identical outcome for every caller today: no
+   *      pricing model currently has `trial.lengthDays` set to anything
+   *      other than 14 (see ASSUMPTIONS_SLICE_3.md), so this default falls
+   *      through to 14 in every live case until an admin changes it. */
+  const trialDays = options.trialDays ?? resolvePlanTrialDaysOrNull(plan) ?? 14;
 
   /* v25.32 final — idempotent check is DB-direct via getSubscription (which
    * is now DB-direct). The in-memory Map is no longer the read source. */

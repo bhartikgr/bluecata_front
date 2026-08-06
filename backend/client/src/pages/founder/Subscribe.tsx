@@ -190,7 +190,7 @@ function NoTiersState() {
             </h3>
             <p className="text-xs text-amber-800 mb-3">
               No plans have been published yet. Your administrator needs to set
-              prices in /admin/pricing-models before you can subscribe. Please
+              prices in /admin/fees before you can subscribe. Please
               check back shortly, or contact your administrator.
             </p>
             <p className="text-[11px] text-amber-700">

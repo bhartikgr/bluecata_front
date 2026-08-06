@@ -12,6 +12,16 @@ import { EventEmitter } from "node:events";
 import type { Request, Response } from "express";
 import { getUserContext } from "./userContext";
 import { founderOwnedCompanyIds, investorVisibleCompanyIds, companyIdForRound } from "./tenantAuth";
+/* D2 LOCK 4 (§15.4) — ESM-safe lazy CommonJS require. `package.json:5` sets
+ * "type": "module", so a BARE require() in this file's scope throws
+ * `ReferenceError: require is not defined` (documented production incident:
+ * yourDecisionStore.ts:30-46). Precedent for this exact shim: chapterResourcesStore.ts:27-34,
+ * sprint22Routes.ts:14-20, collectiveDscVoteRoutes.ts:51-58. Declared ONCE, at module
+ * scope, above eventVisibleToCaller's definition; used for every lazy pull in this file.
+ * Lazy (not static) because eventBus <- partnerWorkspaceStore <- db/connection is a
+ * module-init cycle if imported eagerly. */
+import { createRequire } from "node:module";
+const requireCjs = createRequire(import.meta.url);
 
 export interface MutationEvent {
   aggregate: string;     // "company" | "round" | "softCircle" | etc.
@@ -69,6 +79,91 @@ export function realtimeStreamHandler(req: Request, res: Response) {
     if (evt.aggregate === "round") {
       const cid = companyIdForRound(evt.id);
       return !!cid && accessibleCompanies.has(cid);
+    }
+    /* ============================================================================
+     * D2 LOCK 4 — partnerRepresentation: cross-pillar visibility (§15.4, V32-M1,
+     * V33-F2 active-attribution check, V33-1-B3 ESM shim; D2.5 four-pillar extension).
+     *
+     * Ozan requirement #5, "cross-integrated: change in one area propagates
+     * everywhere". When a Consortium Partner moves a founder A -> B, ONE event must
+     * light up up to four surfaces. `evt.id` is `${partnerId}:${companyId}`.
+     *
+     *   pillar 4  Admin superuser  -> already satisfied by `if (isAdmin) return true`
+     *                                 at :64 above. NOT re-implemented here; that line
+     *                                 is byte-preserved and is the whole Admin rule
+     *                                 ("always sees the event").
+     *   pillar 3  emitting Consortium Partner -> team membership AND active attribution
+     *   pillar 2  Capavate direct   -> caller entitled to the company AND the company
+     *                                  is a Capavate direct portfolio company
+     *   pillar 1  Collective admin  -> caller is an active Collective DSC principal AND
+     *                                  the company is a Collective member company
+     *
+     * Fail-closed everywhere. Every predicate is a fresh indexed SELECT per call
+     * (no cache, Ozan requirement #4) so a revoke landing between two SSE ticks is
+     * observed by the very next tick.
+     * ============================================================================ */
+    if (evt.aggregate === "partnerRepresentation") {
+      /* Two lazy requires, one per MODULE (not one per export) — the multi-export
+       * pattern documented at yourDecisionStore.ts:33-44. */
+      const {
+        parsePartnerRepresentationId,
+        hasActivePartnerAttribution,
+        hasActivePartnerEngagement,
+        isCapavatePortfolioCompany,
+        isCollectiveMemberCompany,
+      } = requireCjs("./eventBusPillarHelpers") as typeof import("./eventBusPillarHelpers");
+
+      // Fail closed on a malformed id (missing ':', empty half, or 3+ segments).
+      const parsed = parsePartnerRepresentationId(evt.id);
+      if (!parsed) return false;
+      const { partnerId: emittedPartnerId, companyId: emittedCompanyId } = parsed;
+
+      /* ---- pillar 3: the emitting Consortium Partner's own dashboard ---------- */
+      const { partnerTeamStore } = requireCjs("../partnerWorkspaceStore") as
+        typeof import("../partnerWorkspaceStore");
+      // Real method: partnerWorkspaceStore.ts:1035 (object exported at :875).
+      const teamMember = partnerTeamStore.findByUserId(ctx.userId);
+      if (teamMember) {
+        // A partner-side caller is resolved ONLY through the partner pillar. Never
+        // fall through to the Capavate/Collective pillars: that would let partner A's
+        // team read partner B's stage moves via a shared founder (scope leak).
+        if (teamMember.partnerId !== emittedPartnerId) return false;
+        // V33-F2: team membership alone is NOT enough. An attribution that has been
+        // revoked (or never existed) for this exact pair must not deliver.
+        return hasActivePartnerAttribution(emittedPartnerId, emittedCompanyId);
+      }
+
+      /* ---- cross-pillar precondition: the mandate must still be live ---------- */
+      // Non-partner pillars are told "a partner moved your founder" only while that
+      // partner actually holds the engagement. Revoked/terminated mid-event => the
+      // partner may still see its own workspace row (above), but propagation to
+      // Capavate direct and Collective is DENIED.
+      if (!hasActivePartnerEngagement(emittedPartnerId, emittedCompanyId)) return false;
+
+      /* ---- pillar 2: Capavate direct ----------------------------------------- */
+      // Two conjuncts, both required: (a) this caller is entitled to the company at
+      // all (reuses the already-computed accessibleCompanies set at :56-58 — no new
+      // entitlement surface invented), and (b) the company really is a Capavate
+      // direct portfolio company.
+      if (accessibleCompanies.has(emittedCompanyId) && isCapavatePortfolioCompany(emittedCompanyId)) {
+        return true;
+      }
+
+      /* ---- pillar 1: Collective admin ---------------------------------------- */
+      // `ctx.collective` is { status, role, expiresAt } (lib/userContext.ts:182-186).
+      // 'dsc' is the Collective's own screening/administration principal
+      // (CollectiveRole = 'standard' | 'dsc' | 'consortium_partner' | null, :137-141).
+      if (
+        ctx.collective?.status === "active" &&
+        ctx.collective?.role === "dsc" &&
+        isCollectiveMemberCompany(emittedCompanyId)
+      ) {
+        return true;
+      }
+
+      // No pillar matched -> fail closed. This is the "founder is NEITHER Capavate
+      // nor Collective" case: only the emitting partner (above) and Admin (:64) see it.
+      return false;
     }
     // For aggregates we cannot resolve to a company/tenant (e.g. user-scoped
     // events whose id IS the caller's own userId), only forward when the id is

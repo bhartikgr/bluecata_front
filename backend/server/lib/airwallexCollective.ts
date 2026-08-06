@@ -32,6 +32,10 @@
  */
 
 import { log } from "./logger";
+// D2.5 Slice 3 Fix 3 — direct DB read for the admin-authored Collective price
+// override. Imports the raw connection (not collectiveSubscriptionConfigStore.ts,
+// which imports FROM this module and would create a cycle).
+import { rawDb } from "../db/connection";
 import {
   createPaymentIntent as awCreatePaymentIntent,
   retrievePaymentIntent as awRetrievePaymentIntent,
@@ -151,8 +155,10 @@ function envVarsForTier(tier: CollectiveTier): {
   }
 }
 
-/** Read the per-tier price config from env. Null when AMOUNT_MINOR unset. */
-export function priceConfigForTier(tier: CollectiveTier): TierPriceConfig | null {
+/** Read the per-tier price config directly from env. Null when AMOUNT_MINOR unset.
+ *  D2.5 Slice 3 Fix 3 — this is the ORIGINAL implementation, kept verbatim and
+ *  renamed so `priceConfigForTier` (below) can fall back to it exactly. */
+function priceConfigFromEnv(tier: CollectiveTier): TierPriceConfig | null {
   const keys = envVarsForTier(tier);
   const amountRaw = (process.env[keys.amount] ?? "").trim();
   if (amountRaw.length === 0) return null;
@@ -162,6 +168,83 @@ export function priceConfigForTier(tier: CollectiveTier): TierPriceConfig | null
   const intervalRaw = (process.env[keys.interval] ?? "year").trim().toLowerCase();
   const interval: "year" | "month" = intervalRaw === "month" ? "month" : "year";
   return { amountMinor, currency, interval };
+}
+
+/**
+ * D2.5 Slice 3 Fix 3 — DB-first read of `collective_subscription_configs`.
+ *
+ * Queries directly via `rawDb()` (NOT by importing collectiveSubscriptionConfigStore.ts,
+ * which itself imports FROM this module for priceConfigForTier/priceIdForTier/
+ * COLLECTIVE_TIER_CATALOG — importing it here would create a circular
+ * dependency). Picks the most relevant live, non-deleted row for the tier:
+ * prefers `status = 'live'`, newest `updated_at` first, so if an admin has
+ * multiple packages mapped to the same Airwallex tier the freshest published
+ * one wins (same "most recent wins" convention used elsewhere — e.g.
+ * subscriptionsStore.ts's `active[0]` most-recent-first sort).
+ *
+ * Returns null (never throws) on any DB error, missing table (pre-migration
+ * boot), or no matching row — the caller (`priceConfigForTier`) falls back to
+ * env in every one of those cases, so a DB hiccup can never break checkout.
+ */
+function priceConfigFromDb(tier: CollectiveTier): (TierPriceConfig & { useEnvFallback: boolean }) | null {
+  try {
+    const row = rawDb()
+      .prepare(
+        `SELECT amount_minor, currency, interval, use_env_fallback
+         FROM collective_subscription_configs
+         WHERE airwallex_tier = ? AND deleted_at IS NULL
+         ORDER BY (status = 'live') DESC, updated_at DESC
+         LIMIT 1`,
+      )
+      .get(tier) as { amount_minor: number; currency: string; interval: string; use_env_fallback: number } | undefined;
+    if (!row) return null;
+    if (!Number.isFinite(row.amount_minor) || row.amount_minor <= 0) return null;
+    // Map the package interval enum ("annual"|"monthly"|"quarterly"|"one_time")
+    // to the Airwallex-facing ("year"|"month") shape. "quarterly"/"one_time"
+    // have no equivalent here — treat as unmappable so the caller falls back
+    // to env rather than silently mis-billing a cadence Airwallex can't express.
+    let interval: "year" | "month";
+    if (row.interval === "annual") interval = "year";
+    else if (row.interval === "monthly") interval = "month";
+    else return null;
+    return {
+      amountMinor: Math.round(row.amount_minor),
+      currency: (row.currency || "USD").trim().toUpperCase(),
+      interval,
+      useEnvFallback: !!row.use_env_fallback,
+    };
+  } catch (err) {
+    log.warn("[airwallexCollective] priceConfigFromDb read failed (falling back to env):", (err as Error).message);
+    return null;
+  }
+}
+
+/**
+ * D2.5 Slice 3 Fix 3 — was: read directly from `process.env` at call time,
+ * with NO DB read anywhere in this module (D25_DYNAMIC_VS_HARDCODED_
+ * VERIFICATION.md Item 5 — "the one genuine 'not admin-driven' pricing
+ * path"). An admin could author a Collective package price in the admin UI,
+ * but the actual charge boundary (`createCollectiveIntent` → this function)
+ * always re-derived the amount from env, ignoring the admin's edit.
+ *
+ * Fix: read `collective_subscription_configs` FIRST. Fall back to env when:
+ *   (a) no row exists for this tier at all (pre-migration / never-authored
+ *       deploys — preserves existing behavior with zero admin action needed), OR
+ *   (b) the row's `use_env_fallback` flag is true (the deploy-gated safety
+ *       valve the fix brief asks for — defaults to 1/true on every existing
+ *       row via the additive migration, so no live deploy's behavior changes
+ *       until an admin explicitly flips a specific package to DB-authoritative).
+ * This preserves `priceIdForTier`'s synthesized-id behavior unchanged when
+ * falling back to env, and makes an admin price edit take effect immediately
+ * (no deploy) once they've turned `use_env_fallback` off for that tier's package.
+ */
+export function priceConfigForTier(tier: CollectiveTier): TierPriceConfig | null {
+  const fromDb = priceConfigFromDb(tier);
+  if (fromDb && !fromDb.useEnvFallback) {
+    const { useEnvFallback, ...cfg } = fromDb;
+    return cfg;
+  }
+  return priceConfigFromEnv(tier);
 }
 
 /** Stable identifier for the tier's price block (used as DB price_id alias). */

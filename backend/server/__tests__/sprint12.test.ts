@@ -445,20 +445,28 @@ describe("Sprint 12 / Admin — pricing tiers", () => {
     expect(annual.billingCycle).toBe("annual");
   });
 
-  it("collective tiers endpoint returns the $1,200/yr Standard tier per audit §10", async () => {
+  /* D2.5 SLICE 1 — the two assertions that used to live here
+   * ("collective tiers endpoint returns the $1,200/yr Standard tier" and
+   * "regional matrix covers >=9 regions") are DELETED along with their
+   * endpoints. Both asserted HARD-CODED constants:
+   *   • /api/admin/pricing/collective-tiers served a fabricated
+   *     1200/2400/600 array (H-5). Real Collective tier prices live in
+   *     `collective_subscription_configs` — see
+   *     wave_w4_collective_subscriptions.test.ts for the live coverage.
+   *   • /api/admin/pricing/regional served a fabricated 9-region matrix
+   *     (H-13). Real regional multipliers live in `region_extensions`.
+   * Neither endpoint had a single repo consumer. Replaced by the negative
+   * guards below so they cannot be reintroduced. */
+  it("D2.5 Slice 1 — the 3 hard-coded pricing endpoints are GONE", async () => {
     const app = makeApp();
-    const r = await req(app, "GET", "/api/admin/pricing/collective-tiers");
-    expect(r.status).toBe(200);
-    const std = r.body.tiers.find((t: any) => t.id === "collective_standard" || /standard/i.test(t.name));
-    expect(std).toBeTruthy();
-    expect(std.usdAnnual).toBe(1200);
-  });
-
-  it("regional matrix covers ≥9 regions", async () => {
-    const app = makeApp();
-    const r = await req(app, "GET", "/api/admin/pricing/regional");
-    expect(r.status).toBe(200);
-    expect(r.body.regions.length).toBeGreaterThanOrEqual(9);
+    for (const p of [
+      "/api/admin/pricing/collective-tiers",
+      "/api/admin/pricing/regional",
+      "/api/admin/pricing/billing-metrics",
+    ]) {
+      const r = await req(app, "GET", p);
+      expect(r.status, `${p} must no longer be routed`).not.toBe(200);
+    }
   });
 });
 

@@ -22,6 +22,7 @@
 import type { Express, Request, Response } from "express";
 import { createHash } from "node:crypto";
 import { persistEntry, hydrateEntries, softDeleteEntry } from "./lib/storePersistenceShim";
+import { log } from "./lib/logger";
 
 const PERSIST_STORE = "pricingModelStore";
 const PERSIST_HISTORY_STORE = "pricingModelHistoryStore";
@@ -74,6 +75,14 @@ export interface DiscountCode {
   expiresOn: string | null;
   maxRedemptions: number | null;
   active: boolean;
+  /** D2.5 Slice 3 Fix 1 — ADDITIVE. Redemption counter, incremented every
+   *  time `calcCouponDiscountCents` (server/paymentStore.ts) actually
+   *  applies this code to a real charge. Absent/undefined on any code
+   *  authored before this field existed — treated as 0. Used to enforce
+   *  `maxRedemptions` at the charge boundary (the admin editor at
+   *  PricingModelDetail.tsx:734-758 only ever read/wrote the other 5
+   *  fields; this counter is invisible there today and safe to ignore). */
+  usesCount?: number;
 }
 
 export interface TrialConfig {
@@ -189,6 +198,67 @@ export function getModel(id: string): PricingModel | null {
 
 export function getModelHistory(id: string): PricingModel[] {
   return history.get(id) ?? [];
+}
+
+/**
+ * D2.5 Slice 3 Fix 1 — global discount-code lookup, case-insensitive.
+ *
+ * The legacy hardcoded map in `server/paymentStore.ts` (`calcCouponDiscountCents`)
+ * was called with a bare code string and no pricing-model/product-line context
+ * (it is invoked from `chargeOrIdempotent`, shared by every PAYMENT_KIND). To
+ * reproduce that behavior exactly, this searches EVERY model's `discountCodes`
+ * array (not just one model), across all product lines and statuses — a code
+ * authored on any model, in any status, is found. This mirrors the old map's
+ * global scope; scoping to "live" models only, or to one product line, would
+ * be a silent behavior change for any admin who already created a code before
+ * this patch landed. Returns the FIRST active, non-expired match plus the id
+ * of the model that owns it (needed by `recordDiscountCodeRedemption`).
+ */
+export function findDiscountCodeByCode(
+  code: string,
+): { modelId: string; discount: DiscountCode } | null {
+  const upper = code.trim().toUpperCase();
+  if (!upper) return null;
+  for (const m of models.values()) {
+    for (const d of m.discountCodes) {
+      if (d.code.trim().toUpperCase() !== upper) continue;
+      if (!d.active) continue;
+      if (d.expiresOn && new Date(d.expiresOn) < new Date()) continue;
+      if (d.maxRedemptions != null && (d.usesCount ?? 0) >= d.maxRedemptions) continue;
+      return { modelId: m.id, discount: d };
+    }
+  }
+  return null;
+}
+
+/**
+ * D2.5 Slice 3 Fix 1 — increment `usesCount` for a redeemed code.
+ *
+ * Called AFTER a charge has actually applied the discount (from
+ * `paymentStore.chargeOrIdempotent`), never before — a failed/demo charge
+ * still calls this today (matches the old map's behavior, which had no
+ * concept of usage at all and therefore never blocked repeated use by
+ * anyone). Best-effort: a failed increment must never block or roll back
+ * the payment it is attached to, so errors are swallowed with a warning,
+ * exactly like the other best-effort catches in this codebase
+ * (captableCommitStore.ts hydrateComplianceHolds is the house style).
+ * This does NOT bump `version`/`revisionHash`/history — usage count is a
+ * counter, not an authored revision, and audit-logging every redemption
+ * as a full pricing-model version would flood the admin revision history
+ * with non-authoring events.
+ */
+export function recordDiscountCodeRedemption(modelId: string, code: string): void {
+  try {
+    const m = models.get(modelId);
+    if (!m) return;
+    const upper = code.trim().toUpperCase();
+    const idx = m.discountCodes.findIndex(d => d.code.trim().toUpperCase() === upper);
+    if (idx === -1) return;
+    m.discountCodes[idx] = { ...m.discountCodes[idx], usesCount: (m.discountCodes[idx].usesCount ?? 0) + 1 };
+    persistEntry(PERSIST_STORE, modelId, m);
+  } catch (err) {
+    log.warn("[pricingModelStore] recordDiscountCodeRedemption best-effort update failed:", (err as Error).message);
+  }
 }
 
 export function verifyModelChain(id: string): { ok: boolean; brokenAt?: number; length: number } {
@@ -697,7 +767,7 @@ export function registerPricingModelRoutes(app: Express) {
       ok: true,
       created: created.map((m) => ({ id: m.id, slug: m.slug, name: m.name, basePriceMinor: m.basePriceMinor, currency: m.currency, status: m.status })),
       skipped,
-      message: `Migrated ${created.length} legacy tier(s) from existing subscription rows. Prices were copied from each subscription's annual_amount_minor field. Review each tier in /admin/pricing-models and adjust as needed.`,
+      message: `Migrated ${created.length} legacy tier(s) from existing subscription rows. Prices were copied from each subscription's annual_amount_minor field. Review each tier in /admin/fees and adjust as needed.`,
     });
   });
 }
@@ -706,6 +776,119 @@ export function registerPricingModelRoutes(app: Express) {
  * pricing). Tests that need rows must create them via `createModel()` or by
  * inserting fixture rows into the kv store directly. */
 export const _testPricingModels = { models, history };
+
+/**
+ * D2.5 Slice 3 Fix 1 — legacy coupon migration.
+ *
+ * `server/paymentStore.ts:calcCouponDiscountCents` used to consult a
+ * hardcoded `{ CP10: 0.10, FOUNDER20: 0.20, COLLECTIVE5: 0.05 }` map with NO
+ * DB row and NO admin endpoint anywhere. This function runs once per boot,
+ * AFTER `modelEntries` have been restored from the DB above, and seeds those
+ * three codes onto one dedicated carrier model — ONLY if none of the three
+ * codes already exist anywhere across all models (i.e. "INSERT OR IGNORE"
+ * semantics: never overwrites an admin's own edit/deactivation of CP10,
+ * FOUNDER20, or COLLECTIVE5, and never re-adds a code an admin deliberately
+ * deleted — checked per-code, so an admin who deletes just COLLECTIVE5 but
+ * leaves CP10/FOUNDER20 alone will not have COLLECTIVE5 silently reappear on
+ * the next boot).
+ *
+ * The carrier model (`pm_legacy_coupons`) is a deliberately inert draft
+ * container — status "draft" (D2.5 R1 fix: changed from "live") because
+ * `findDiscountCodeByCode` does NOT filter by status (it scans every model
+ * regardless of status — see that function's own doc), so the coupon codes
+ * are found identically either way. Keeping the carrier "draft" instead of
+ * "live" is what keeps it OUT of every founder-facing/admin-facing/public
+ * listModels({status:"live"}) query (billing tiers, admin pricing-tiers,
+ * Slice 1's Annual tab, Slice 2's public endpoint) — previously, "live" +
+ * productLine "founder" + cadence "annual" + basePriceMinor 0 made this
+ * carrier match every one of those "first live annual founder model"
+ * fallbacks and get presented as a selectable/advertised $0/year plan.
+ * productLine "founder" (the codes' historical usage per
+ * `sprint14_stores.test.ts` was via `collective_membership` and
+ * `founder_subscription` kinds — the carrier's own productLine is cosmetic
+ * since `findDiscountCodeByCode` is global) and a $0 base price are kept
+ * as-is; the carrier is still not a purchasable tier and still has no slug
+ * used by `getPlanPriceStrict`, so `Subscribe.tsx` cannot resolve it either
+ * way — status "draft" is simply the belt-and-suspenders fix so no
+ * "first live model" fallback can pick it up.
+ */
+function seedLegacyCouponCodesIfMissing(): void {
+  const LEGACY_CODES: Array<{ code: string; pct: number }> = [
+    { code: "CP10", pct: 0.10 },
+    { code: "FOUNDER20", pct: 0.20 },
+    { code: "COLLECTIVE5", pct: 0.05 },
+  ];
+  try {
+    const missing = LEGACY_CODES.filter(({ code }) => findDiscountCodeByCode(code) === null &&
+      !Array.from(models.values()).some(m => m.discountCodes.some(d => d.code.trim().toUpperCase() === code)));
+    if (missing.length === 0) return; // all three already present (or deliberately absent+seeded before) — no-op
+
+    const CARRIER_ID = "pm_legacy_coupons";
+    const now = new Date().toISOString();
+    let carrier = models.get(CARRIER_ID);
+    if (!carrier) {
+      carrier = {
+        id: CARRIER_ID,
+        productLine: "founder",
+        slug: "__legacy-coupons-carrier",
+        name: "Legacy coupon codes (migrated)",
+        description: "Auto-migrated from the hardcoded coupon map in server/paymentStore.ts (D2.5 Slice 3, Fix 1). Codes here apply platform-wide, matching the pre-migration behavior. Deactivate or edit individual codes below; do not rely on this model's own price fields — it is not a purchasable tier.",
+        status: "draft", // D2.5 R1 fix (B-3): was "live" — kept coupons out of listModels({status:"live"}) so this carrier no longer leaks into founder/admin/public pricing surfaces. findDiscountCodeByCode() does not filter by status, so CP10/FOUNDER20/COLLECTIVE5 still resolve identically.
+        currency: "USD",
+        basePriceMinor: 0,
+        cadence: "annual",
+        cadenceOptions: [],
+        currencyOverrides: [],
+        regionalMultipliers: [],
+        features: [],
+        metering: [],
+        volumeBrackets: [],
+        discountCodes: [],
+        trial: null,
+        effectiveFrom: null,
+        effectiveTo: null,
+        grandfatherOnChange: false,
+        taxInclusive: false,
+        version: 1,
+        prevRevisionHash: lastHashChain,
+        revisionHash: "",
+        createdAt: now,
+        updatedAt: now,
+        createdBy: "migration:d2_5_slice_3_fix1",
+        updatedBy: "migration:d2_5_slice_3_fix1",
+      };
+      carrier.revisionHash = hashRevision(carrier.prevRevisionHash, carrier);
+      lastHashChain = carrier.revisionHash;
+    }
+    for (const { code, pct } of missing) {
+      carrier.discountCodes.push({
+        code,
+        kind: "percent",
+        amount: pct,
+        expiresOn: null,
+        maxRedemptions: null,
+        active: true,
+        usesCount: 0,
+      });
+    }
+    carrier.updatedAt = now;
+    carrier.updatedBy = "migration:d2_5_slice_3_fix1";
+    models.set(CARRIER_ID, carrier);
+    if (!history.has(CARRIER_ID)) history.set(CARRIER_ID, [snapshot(carrier)]);
+    persistEntry(PERSIST_STORE, CARRIER_ID, carrier);
+    persistEntry(PERSIST_HISTORY_STORE, CARRIER_ID, history.get(CARRIER_ID) ?? []);
+    console.info(
+      `[hydrate] pricingModelStore: seeded ${missing.length} legacy coupon code(s) onto ${CARRIER_ID} (byte-preserved cutover, D2.5 Slice 3 Fix 1): ${missing.map(m => m.code).join(", ")}`,
+    );
+  } catch (err) {
+    // Best-effort, same as every other self-heal seed in this codebase
+    // (V33-1-B1 pattern): never block boot on a seed failure. If this
+    // throws, the OLD hardcoded map in paymentStore.ts is no longer being
+    // read (this patch removes it) — so a seed failure here means coupons
+    // stop working until the next successful boot, not a crash.
+    log.warn("[pricingModelStore] seedLegacyCouponCodesIfMissing failed (non-fatal):", (err as Error).message);
+  }
+}
 
 /**
  * v25.9 — Rehydrate pricing models + history from DB on boot.
@@ -726,6 +909,11 @@ export async function hydratePricingModelStore(): Promise<void> {
         `[hydrate] pricingModelStore: ${modelEntries.length} models, ${histEntries.length} history lists restored`,
       );
     }
+
+    /* D2.5 Slice 3 Fix 1 — one-time legacy coupon migration. Runs on every
+     * boot but is a no-op once the three codes exist anywhere (see function
+     * doc for the exact "INSERT OR IGNORE" semantics). */
+    seedLegacyCouponCodesIfMissing();
   } catch (err) {
     console.warn(
       `[hydrate] pricingModelStore: DB read failed (non-fatal): ${(err as Error).message}`,

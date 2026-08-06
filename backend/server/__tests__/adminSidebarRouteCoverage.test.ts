@@ -125,7 +125,9 @@ describe("Wave C FIX C7 — admin sidebar route coverage + 404 polish", () => {
       "/admin/migration",
       "/admin/email",
       "/admin/notifications",
-      "/admin/pricing",
+      /* D2.5 Slice 1 — /admin/pricing retired; the single canonical fee
+         entry point is now /admin/fees (AdminFeesConsolidated). */
+      "/admin/fees",
     ];
     for (const c of canonical) {
       expect(APP, `${c} should be registered`).toMatch(

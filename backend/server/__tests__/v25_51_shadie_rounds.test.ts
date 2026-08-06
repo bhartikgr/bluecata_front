@@ -174,6 +174,8 @@ describe("v25.51 8a — common priced round creation + math safety", () => {
         type: "series_a",
         instrument: "preferred",
         preMoney: 4_000_000,
+        // Wave C v26.5.0 (Shadie Finding 1a) — non-foundation priced.
+        fdPreMoneyShares: 3_200_000,
         pricePerShare: 1.25,
         sharesAuthorized: 3_200_000,
         // targetAmount omitted → preferred must still reject (unchanged contract).

@@ -1987,6 +1987,53 @@ export const partnerPipelineStore = {
     if (patch.stage && patch.stage !== prevStage) {
       partnerPipelineActivityStore.add(d.id, "stage_change", `Stage changed from ${prevStage} to ${patch.stage}`, actor);
     }
+    /* ════════════════════════════════════════════════════════════════════════════════
+     * Wave C-2 / D2 LOCK 4 (§15.4) — cross-pillar stage-change emit.
+     *
+     * Grep-verified before this edit: this file contained ZERO `emitMutation` /
+     * `eventBus` references, so a partner stage change previously emitted NOTHING and
+     * no surface refreshed live. This is the emit site that makes eventBus.ts's new
+     * `partnerRepresentation` branch reachable.
+     *
+     * The `patch.stage && patch.stage !== prevStage` guard IS the idempotency gate: a
+     * re-save with the same stage emits nothing. `d.companyId` is `string | null`
+     * (PartnerPipelineDeal.companyId, :219), so a null-company deal emits nothing
+     * (A-D2-09) rather than emitting `${partnerId}:null`.
+     *
+     * R1 FIX B2 (BLOCKER, independently found by Opus R1 D2-B1 and GPT-5.6 D2-B2) —
+     * the partnerRepresentation event's tenantId is the EMITTING PARTNER's tenant
+     * (`tenant_pt_<partnerId>`), NOT `tenant_co_<companyId>`. Reason: eventBus.ts's
+     * pre-existing tenant-match at :66 runs BEFORE the new branch, and
+     * `accessibleTenants` is populated from founder-owned AND investor-visible company
+     * tenants (`tenant_co_<companyId>`). With `tenant_co_*` on this event, (a) any
+     * founder of the company — including one whose partner engagement was REVOKED —
+     * would match at :66 and return true before pillar 2's hasActivePartnerEngagement
+     * gate ever ran, making that gate dead code for the exact caller it gates, and (b)
+     * any investor with cap-table visibility would receive a commercially sensitive
+     * partner-pipeline frame — a fifth, unsanctioned recipient class outside the four
+     * approved pillars. Only partner-side entitlement resolution ever produces a
+     * `tenant_pt_*` tenant, so with this fix founders and investors are decided
+     * EXCLUSIVELY by the new branch, and the emitting partner's own team keeps the
+     * ordinary tenant-match fast path (belt-and-suspenders with pillar 3).
+     *
+     * The companion `company` event is still emitted, unchanged, carrying
+     * `tenant_co_<companyId>` — that is the sole route by which a founder legitimately
+     * learns of the change, via the untouched pre-existing `company` branch.
+     *
+     * `change: "update"` is one of the three existing legal literals — MutationEvent's
+     * union is NOT widened. Lazy `require` (the :28 createRequire shim) because
+     * eventBus.ts lazily requires THIS module, so a static import would close a
+     * module-init cycle. Non-fatal: a realtime emit must never fail a committed write.
+     * ════════════════════════════════════════════════════════════════════════════════ */
+    if (patch.stage && patch.stage !== prevStage && d.companyId) {
+      try {
+        const { emitMutation } = require("./lib/eventBus") as typeof import("./lib/eventBus");
+        emitMutation({ aggregate: "partnerRepresentation", id: `${partnerId}:${d.companyId}`, change: "update", tenantId: `tenant_pt_${partnerId}` });
+        emitMutation({ aggregate: "company",               id: d.companyId,                   change: "update", tenantId: `tenant_co_${d.companyId}` });
+      } catch (emitErr) {
+        log.warn("[partnerPipelineStore.update] partnerRepresentation emit failed (non-fatal):", (emitErr as Error).message);
+      }
+    }
     audit(actor, `partner:${partnerId}`, "partner.pipeline.updated", { dealId, changes: Object.keys(patch) });
     return next;
   },

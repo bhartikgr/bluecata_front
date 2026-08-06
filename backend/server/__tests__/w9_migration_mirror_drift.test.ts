@@ -113,7 +113,23 @@ describe("W9.1 migration mirror / drift check", () => {
     // Wave 0 in progress: 0121 currency_ref, 0122 money_core, 0123 platform_config shipped.
     // Wave A-1 (ADR-3 actions 3 + 4) adds 0124_wave_a1_audit_seed_repair (data-repair only,
     // no CREATE TABLE) as a companion write to connection.ts:1177's seed change.
+    // Wave B v26.4.0 adds 0125_wave_b_backups + 0126_wave_b_backups_repair.
+    // Wave C v26.5.0 (Shadie Finding 1a) adds 0127_wave_c_fd_pre_money_shares.
+    // Wave C-2 v26.6.0 adds nine migrations, advancing the tip 0127 -> 0137:
+    //   0128_wave_c2_mfc_stages.sql        — mfc_stages + mfc_stage_transitions
+    //   0129_wave_c2_partner_attributions_scope.sql — partner_attributions +5 scope cols
+    //   0130_wave_c2_authority_artifacts.sql — authority_artifacts (+ mf_engagement ref)
+    //   0131_wave_c2_mf_engagement_columns.sql — mf_engagement +7, mf_engagement_event +5
+    //   0132_wave_c2_soft_circle_provenance.sql — partner_deal_pipeline provenance cols
+    //   0133_wave_c2_provenance_columns.sql — round_invitations +5, soft_circles +5
+    //   0134_wave_c2_partner_crm_contact_client_scope.sql — partner_crm_contact_client_scope
+    //   0136_wave_c2_partner_company_relationship_spine.sql — partner_company_relationship
+    //                                        + pcr_surface_presence (the PCR spine)
+    //   0137_wave_c2_mfc_classification_requests.sql — mfc_classification_requests
+    // NOTE the deliberate gap at 0135: the id is reserved and intentionally unused, so
+    // this assertion pins the MAX id (0137), not the migration COUNT (9). A count-based
+    // assertion would be wrong here.
     // Pin will advance further as Wave 0 completes.
-    expect(maxId).toBe(124);
+    expect(maxId).toBe(137);
   });
 });

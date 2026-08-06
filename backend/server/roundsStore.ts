@@ -58,6 +58,10 @@ export type Round = {
   raisedAmount: number;
   preMoney: number | null;
   postMoney: number | null;
+  // Wave C v26.5.0 (Shadie Finding 1a) — fully-diluted pre-money share count,
+  // the PPS denominator for post-formation priced rounds. Nullable (foundation
+  // rounds and legacy pre-migration rows).
+  fdPreMoneyShares: number | null;
   pricePerShare: number | null;
   minTicket: number | null;
   closeDate: string | null;
@@ -107,6 +111,8 @@ function rowToRound(row: any): Round {
     raisedAmount: Number(row.raised_amount ?? row.raisedAmount ?? 0),
     preMoney: row.pre_money ?? row.preMoney ?? null,
     postMoney: row.post_money ?? row.postMoney ?? null,
+    // Wave C v26.5.0 (Shadie Finding 1a)
+    fdPreMoneyShares: row.fd_pre_money_shares ?? row.fdPreMoneyShares ?? null,
     pricePerShare: row.price_per_share ?? row.pricePerShare ?? null,
     minTicket: row.min_ticket ?? row.minTicket ?? null,
     closeDate: row.close_date ?? row.closeDate ?? null,
@@ -211,6 +217,10 @@ export function createRound(input: {
   targetAmount?: number;
   preMoney?: number | null;
   postMoney?: number | null;
+  // Wave C v26.5.0 (Shadie Finding 1a) — the PPS denominator for post-
+  // formation priced rounds. Server backstop in routes.ts enforces > 0 for
+  // non-foundation priced rounds; the store just persists whatever it's given.
+  fdPreMoneyShares?: number | null;
   pricePerShare?: number | null;
   minTicket?: number | null;
   closeDate?: string | null;
@@ -249,6 +259,12 @@ export function createRound(input: {
     raisedAmount: 0,
     preMoney: input.preMoney ?? null,
     postMoney: input.postMoney ?? null,
+    // Wave C v26.5.0 (Shadie Finding 1a). Coerced to a finite number when
+    // supplied so the Round shape stays consistent with the DB projection.
+    fdPreMoneyShares:
+      input.fdPreMoneyShares != null && Number.isFinite(Number(input.fdPreMoneyShares))
+        ? Number(input.fdPreMoneyShares)
+        : null,
     pricePerShare: input.pricePerShare ?? null,
     minTicket: input.minTicket ?? null,
     closeDate: input.closeDate ?? null,
@@ -291,6 +307,9 @@ export function createRound(input: {
           raisedAmount: 0,
           preMoney: round.preMoney ?? undefined,
           postMoney: round.postMoney ?? undefined,
+          // Wave C v26.5.0 (Shadie Finding 1a) — drizzle column name is
+          // fdPreMoneyShares (mapped to fd_pre_money_shares in schema.ts).
+          fdPreMoneyShares: round.fdPreMoneyShares ?? undefined,
           pricePerShare: round.pricePerShare ?? undefined,
           minTicket: round.minTicket ?? undefined,
           closeDate: round.closeDate ?? undefined,
@@ -551,6 +570,15 @@ const UPDATE_WHITELIST: Record<string, keyof typeof roundsTable.$inferInsert> = 
   pricePerShare: "pricePerShare",
   preMoney: "preMoney",
   valuationPre: "preMoney", /* alias */
+  // Wave C v26.5.0 (Shadie Finding 1a) — whitelisted so ANY route that
+  // patches through `updateRound` can update the FD share count without
+  // routing it into extras_json. The specific `PATCH /api/rounds/:id/terms`
+  // route (routes.ts ~2041) still uses its own inline numericTerm() allow-list
+  // that does NOT yet include fdPreMoneyShares, so the Edit-Terms dialog
+  // cannot correct the FD count today. That wiring is a Wave D follow-up
+  // (see WAVE_C_ASSUMPTIONS_LOG.md ASSUMP-024, deferred MAJ-1). Adding this
+  // to the whitelist now avoids a future silent-drop when the route is wired.
+  fdPreMoneyShares: "fdPreMoneyShares",
   postMoney: "postMoney",
   valuationPost: "postMoney", /* alias */
   closeDate: "closeDate",
@@ -711,6 +739,12 @@ export function updateRound(
       "preMoney", "postMoney", "pricePerShare", "minTicket", "closeDate",
       "termsSummary", "leadInvestor", "currency", "region", "openDate",
       "instrument", "createdAt", "updatedAt", "closedAt",
+      // Wave C v26.5.0 (Shadie 1a, Opus BLOCK-3) — fdPreMoneyShares is a real
+      // rounds column, not a passthrough. Without listing it here the extras
+      // rewrite copies it into extras_json on every update, and rowToRound's
+      // trailing `...extras` spread then overwrites the authoritative column
+      // on the next hydrate. Add before shipping to avoid a two-writer bug.
+      "fdPreMoneyShares",
     ]);
     const currentExtras: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(round)) {

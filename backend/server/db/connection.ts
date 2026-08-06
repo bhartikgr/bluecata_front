@@ -21,6 +21,41 @@ import * as schema from "../../shared/schema";
 import { createRequire } from "node:module";
 import { log } from "../lib/logger";
 
+/* ---------------------------------------------------------------------------
+ * Wave C-2 v26.6.0 (D1 integration) — the nine self-heal schema installers for
+ * migrations 0128-0137. Each lives at server/lib/<name>.ts and imports `log`
+ * from "./logger" (sibling); from server/db/ the path is "../lib/<name>".
+ *
+ * NOTE on the 0132 symbol: the delivered file is
+ *   server/lib/applyWaveC2SoftCircleProvenanceSchema.ts
+ * but its PRIMARY export is `applyWaveC2PipelineSchema` (spec §2.2's 0132 row);
+ * `applyWaveC2SoftCircleProvenanceSchema` exists only as a re-export alias at
+ * that file's :195. D1 imports the primary name.
+ *
+ * NOTE on the 0128 symbol: the delivered c2_a_0128 file declares
+ * `function applyWaveC2MfcStagesSchema(db: any)` WITHOUT `export` and imports
+ * `log` from "../lib/logger" (it was drafted to be inlined into THIS file).
+ * D1 relocates it to server/lib/applyWaveC2MfcStagesSchema.ts, adds `export`,
+ * and rewrites its own log import to "./logger" — see ASSUMPTIONS_D1.md D1-02.
+ * ------------------------------------------------------------------------- */
+import { applyWaveC2MfcStagesSchema } from "../lib/applyWaveC2MfcStagesSchema";
+import { applyD25Slice3CollectiveEnvFallbackSchema } from "../lib/applyD25Slice3CollectiveEnvFallbackSchema";
+import { applyWaveC2PartnerAttributionsScopeSchema } from "../lib/applyWaveC2PartnerAttributionsScopeSchema";
+import { applyWaveC2AuthorityArtifactsSchema } from "../lib/applyWaveC2AuthorityArtifactsSchema";
+import { applyWaveC2MfEngagementSchema } from "../lib/applyWaveC2MfEngagementSchema";
+import { applyWaveC2PipelineSchema } from "../lib/applyWaveC2SoftCircleProvenanceSchema";
+import { applyWaveC2ProvenanceColumnsSchema } from "../lib/applyWaveC2ProvenanceColumnsSchema";
+import { applyWaveC2ClientScopeSchema } from "../lib/applyWaveC2ClientScopeSchema";
+import { applyWaveC2PcrSpineSchema } from "../lib/applyWaveC2PcrSpineSchema";
+import { applyWaveC2ClassificationRequestsSchema } from "../lib/applyWaveC2ClassificationRequestsSchema";
+
+/* Wave C-2.e / D3 — the KV-to-SQL partner-pipeline data backfill (spec §2.2's
+ * 0132 row). Lives at server/db/backfills/ per ASSUMPTIONS_D3.md:4. This is a
+ * SAFE static import cycle (that module imports `rawDb` back from this file);
+ * see the long rationale at the deferred call site at the tail of
+ * applyInlineMigrations before changing it to a lazy require. */
+import { runWaveC2PipelineKvBackfill } from "./backfills/runWaveC2PipelineKvBackfill";
+
 // Patch v11 (B-V11-3): dual-mode require. In tsx (ESM) dev, we need
 // `createRequire(import.meta.url)`. In the esbuild CJS production bundle,
 // `import.meta.url` is empty and `createRequire(undefined)` throws
@@ -297,6 +332,112 @@ function applyInlineMigrations(db: any) {
    * cap-table ledger. */
   applyW2CapTableExemptSchema(db);
 
+  /* Wave C v26.5.0 (0127) — add fd_pre_money_shares INTEGER column to `rounds`.
+   * Shadie Finding 1a: PPS denominator MUST be fully-diluted pre-money shares
+   * (existing common + preferred as-converted + granted options + reserved pool
+   * + SAFE/note conversions), NOT sharesAuthorized (which is new-shares-issued).
+   * Boot-safe + idempotent (ADD COLUMN wrapped; duplicate column tolerated).
+   * Additive only; NEVER touches Airwallex/payments or the cap-table ledger. */
+  applyWaveCFdPreMoneySharesSchema(db);
+
+  /* ═══════════════════════════════════════════════════════════════════════
+   * Wave C-2 v26.6.0 (D1) — nine self-heal installers, migrations 0128-0137.
+   *
+   * ORDERING CONTRACT. Every table these installers ALTER, and every FK target
+   * they reference at CREATE time, is already present when the first line below
+   * runs, because buildProductionTableStatements() executes at :193/:196 —
+   * inside the tx() at :198, strictly BEFORE any statement in this function
+   * body. The dependency order below is therefore *declarative documentation*
+   * of the spec's dependency graph, not a load-bearing runtime guarantee; the
+   * structural guarantee lives in the array (see the D1 additions there).
+   *
+   * The one ordering fact that IS load-bearing: 0131 and 0132 each add
+   * `current_stage_id TEXT REFERENCES mfc_stages(id)` ONLY when a
+   * sqlite_master probe finds `mfc_stages` (0131's :104-119, 0132's :81-111).
+   * D1 satisfies that probe from the array (mfc_stages is now a
+   * buildProductionTableStatements entry), which is why 0128 can safely run
+   * LAST here without amputating those two columns for a boot. Do NOT remove
+   * the mfc_stages array entry without also moving 0128 back to first.
+   * ═══════════════════════════════════════════════════════════════════════ */
+
+  /* 0129 (C-2.b) — LOCK 2: folds client_engagements into partner_attributions.
+   * 5 additive columns (authority_artifact_id kept BARE, no REFERENCES, per
+   * V32-M8 — authority_artifacts does not exist until 0130) plus the
+   * uq_partner_attributions_active partial unique index, behind a duplicate-
+   * grain pre-flight. No dependencies: partner_attributions is pre-existing
+   * (migration 0114; array entry at :2129). */
+  applyWaveC2PartnerAttributionsScopeSchema(db);
+
+  /* 0130 (C-2.c) — authority_artifacts (engagement letters, client authority
+   * scope grants, DPAs, referral consents) + 2 additive mf_engagement columns
+   * (consent_scope NOT NULL DEFAULT 'public_data_only', authority_artifact_id).
+   * Depends on partner_attributions' 0129 columns; the mf_engagement ALTERs
+   * depend on the D1 full-shape mf_engagement array entry. */
+  applyWaveC2AuthorityArtifactsSchema(db);
+
+  /* 0131 (C-2.d) — LOCK 3-A. 6 additive mf_engagement columns
+   * (founder_revoked_at, founder_revoked_by, archived_at, owner_user_id,
+   * current_stage_id, current_stage_machine_type), 5 additive
+   * mf_engagement_event columns, and one narrow 12-step rebuild of
+   * mf_engagement_event. Depends on mf_engagement (D1 array entry) and, for
+   * current_stage_id's REFERENCES clause, on mfc_stages (D1 array entry). */
+  applyWaveC2MfEngagementSchema(db);
+
+  /* 0132 (C-2.e) — pipeline unification. 16 additive partner_deal_pipeline
+   * columns + uq_partner_deal_pipeline_legacy_id behind a duplicate pre-flight.
+   * Touches NEITHER mf_engagement NOR soft_circles despite its filename; the
+   * primary export is applyWaveC2PipelineSchema. Depends on mfc_stages (D1
+   * array entry) for current_stage_id's REFERENCES clause. */
+  applyWaveC2PipelineSchema(db);
+
+  /* 0133 (C-2.f) — provenance columns (LOCK 1, LOCK 2, V32-M6). 5 additive
+   * round_invitations columns (engagement_id kept BARE TEXT per V32-M8 — see
+   * 0133's own :70-78 rationale) and 5 additive soft_circles columns. Must
+   * cover BOTH tables in one call (V33-4-N2). Depends on partner_attributions
+   * (0129) and, for read coherence, on mf_engagement existing (D1 array
+   * entry) — but NOT at DDL time, since engagement_id carries no REFERENCES. */
+  applyWaveC2ProvenanceColumnsSchema(db);
+
+  /* 0134 (C-2.g) — partner_crm_contact_client_scope join table (§13.2 D2's
+   * client-scoped sub-CRM). Greenfield table; created from the D1 array entry,
+   * so this call's own CREATE TABLE IF NOT EXISTS is a genuine no-op. Depends
+   * on partner_attributions (0129) + pre-C-2 partner_crm_contacts / users. */
+  applyWaveC2ClientScopeSchema(db);
+
+  /* 0136 (C-2.h) — partner_company_relationship spine + pcr_surface_presence
+   * + pcr_id on the four real PCR surfaces (mf_engagement,
+   * partner_deal_pipeline, partner_attributions, partner_portfolio_company).
+   * soft_circles is explicitly NOT a PCR surface (§14.1). The two new tables
+   * come from the D1 array entries; the four pcr_id ALTERs run here. */
+  applyWaveC2PcrSpineSchema(db);
+
+  /* 0137 (C-2.i) — mfc_classification_requests (live-blocker fix §8.2(b)).
+   * Greenfield table from the D1 array entry; the partial UNIQUE index
+   * uq_mfc_classification_requests_pending is the sole anti-spam mechanism
+   * (V32-B6). Spec §2.2's 0137 row: "Depends on: none". */
+  applyWaveC2ClassificationRequestsSchema(db);
+
+  /* 0128 (C-2.a) — MFC stage engine (mfc_stages + mfc_stage_transitions).
+   * Schema-only self-heal; seeds live exclusively in
+   * migrations/0128_wave_c2_mfc_stages.sql. Registered LAST per the D1 brief:
+   * its own guard probes partner_organizations (array entry :4159), which is
+   * unconditionally present by :198, and both of its tables are already
+   * created by the D1 array entries — so nothing downstream of it can be
+   * starved. See the ORDERING CONTRACT note above before reordering. */
+  applyWaveC2MfcStagesSchema(db);
+
+  /* D2.5 Slice 3, Fix 3 — adds collective_subscription_configs.use_env_fallback
+   * (INTEGER NOT NULL DEFAULT 1). Registered after applyWaveC2MfcStagesSchema
+   * and BEFORE the collective_subscription_configs CREATE TABLE array entry
+   * below has any bearing here: this self-heal itself guards on the table
+   * already existing (sqlite_master check) and no-ops on a fresh DB where the
+   * table has not been created yet this boot — the array entry creates the
+   * base table unconditionally on every boot, and on the NEXT boot (or later
+   * in the same boot, once the productionStmts chain has run) this self-heal
+   * adds the column. Safe under all orderings; matches the ORDERING CONTRACT
+   * pattern documented above applyWaveC2MfcStagesSchema. */
+  applyD25Slice3CollectiveEnvFallbackSchema(db);
+
   /* Wave 0 deliverables 0-1 + 0-14 — mirror migrations/0121, 0122, 0123.
    *
    * Call-site pattern (Wave 0 Increment 1 v3 review fix, Opus blocker):
@@ -330,6 +471,101 @@ function applyInlineMigrations(db: any) {
   runWave0Apply("applyWave0CurrencyRefSchema", applyWave0CurrencyRefSchema);
   runWave0Apply("applyWave0MoneyCoreSchema", applyWave0MoneyCoreSchema);
   runWave0Apply("applyWave0PlatformConfigSchema", applyWave0PlatformConfigSchema);
+
+  /* ═══════════════════════════════════════════════════════════════════════
+   * Wave C-2.e / D3 — KV-to-SQL partner-pipeline backfill.
+   *
+   * Spec §2.2's 0132 row calls for a "KV-to-SQL backfill (guarded TypeScript
+   * boot step, `runWaveC2PipelineKvBackfill`, mirrors the 0114 precedent for
+   * lazy-KV backfills — not raw SQL)". Unlike the nine `applyWaveC2*Schema`
+   * installers above, this is a DATA migration, not DDL, so it is deliberately
+   * NOT a synchronous statement in this function. Three reasons, all
+   * load-bearing:
+   *
+   *  1. IMPORT-CYCLE SAFETY. The module imports `rawDb` from "../connection"
+   *     (i.e. THIS file), so the static import at the top of this file is a
+   *     cycle. It is a SAFE cycle, and deliberately a static import rather
+   *     than a lazy `_require()`: the backfill's only `rawDb` reference is at
+   *     its `:406` (`db = dbArg ?? rawDb()`), INSIDE the function body — its
+   *     module-init phase touches nothing from this file (grep-verified: 2
+   *     `rawDb` hits total, the import and :406). Under tsx/ESM the binding is
+   *     live and hoisted; under the esbuild CJS bundle it is a getter resolved
+   *     at call time. Either way the partially-initialised namespace is never
+   *     read during evaluation. A lazy `_require("./backfills/…")` was
+   *     REJECTED because `_require` is not statically analysable, so esbuild
+   *     would leave it as a runtime resolution that cannot find a relative
+   *     path inside the single-file `dist/index.cjs` bundle — note every
+   *     existing `_require()` call in this file (:93, :94, :113, :114) names an
+   *     external package, never a relative module. `server/lib/eventBus_helpers_LOCK4.ts`
+   *     is the same-shaped precedent: it statically imports `rawDb` from
+   *     "../db/connection" and calls it only inside function bodies.
+   *
+   *  2. RE-ENTRANCY. `applyInlineMigrations` is called from `getDb()` at :127,
+   *     BEFORE `_driver` is assigned at :128. Anything the backfill does that
+   *     reaches `rawDb()` while we are still inside this call would re-enter a
+   *     half-initialised `getDb()`. `setImmediate` defers past `getDb()`'s
+   *     return, so `_driver`/`_drizzleDb` are fully assigned before the
+   *     backfill runs, and it reads the KV source it needs (`kv_partnerPipeline`,
+   *     hydrated by storePersistenceShim) rather than a cold table.
+   *
+   *  3. IT READS STORES, NOT JUST TABLES. It consumes `hydrateEntries` from
+   *     lib/storePersistenceShim, so it must not run inside the DDL phase.
+   *
+   * SAFETY. The module's entire body is wrapped in one try/catch that
+   * `log.warn()`s and returns a structured result — it NEVER throws to boot
+   * (V33-1-B1) — and it self-guards every schema prerequisite via
+   * `sqlite_master` + `PRAGMA table_info` before any write, so a fresh,
+   * zero-migrations-run database is a clean no-op. It is additionally
+   * idempotent via the `BACKFILL_LOCK_ID = "backfill_0132"` advisory lock, so a
+   * second boot reports `skipped='already_completed', inserted=0`. The extra
+   * try/catch below is belt-and-braces against a require()-time resolution
+   * failure only.
+   *
+   * OPT-OUT. Set WAVE_C2_SKIP_PIPELINE_KV_BACKFILL=1 to suppress the boot
+   * invocation entirely (e.g. to run it manually, or `{verifyOnly:true}`, from
+   * a script during a maintenance window). Skipped under NODE_ENV=test so the
+   * suite's :memory: databases are not charged for it.
+   * ═══════════════════════════════════════════════════════════════════════ */
+  if (
+    process.env.NODE_ENV !== "test" &&
+    process.env.WAVE_C2_SKIP_PIPELINE_KV_BACKFILL !== "1"
+  ) {
+    setImmediate(() => {
+      try {
+        const res = runWaveC2PipelineKvBackfill(db);
+        if (res && res.skipped) {
+          log.info(
+            `[db] runWaveC2PipelineKvBackfill skipped: ${res.skipped}`,
+          );
+        } else if (res) {
+          log.info(
+            `[db] runWaveC2PipelineKvBackfill ok=${res.ok} kvRowsRead=${res.kvRowsRead} ` +
+              `tenantsCommitted=${res.tenantsCommitted} inserted=${res.inserted} ` +
+              `transitionsInserted=${res.transitionsInserted} ` +
+              `skippedNullCompany=${res.skippedNullCompany} ` +
+              `skippedLegacyIdConflict=${res.skippedLegacyIdConflict} ` +
+              `stagesUnresolved=${res.stagesUnresolved}`,
+          );
+          for (const cv of res.chainVerify ?? []) {
+            if (cv && cv.status !== "clean") {
+              log.warn(
+                `[db] runWaveC2PipelineKvBackfill chain ${cv.status} for tenant ${cv.partnerId ?? "?"}`,
+              );
+            }
+          }
+          for (const e of res.errors ?? []) {
+            log.warn(`[db] runWaveC2PipelineKvBackfill error: ${String(e)}`);
+          }
+        }
+      } catch (err) {
+        // Non-fatal by contract. Boot continues regardless.
+        log.warn(
+          "[db] runWaveC2PipelineKvBackfill boot step failed (non-fatal):",
+          err,
+        );
+      }
+    });
+  }
 }
 
 /**
@@ -857,6 +1093,27 @@ export function applyWave0PlatformConfigSchema(db: any) {
     throw new Wave0SeedDriftError(
       `platform_config seed drift detected: ${drift.join('; ')}`,
     );
+  }
+}
+
+/* Wave C v26.5.0 (0127) — mirrors migrations/0127_wave_c_fd_pre_money_shares.sql.
+ * SQLite ADD COLUMN has no IF NOT EXISTS, so we swallow the duplicate-column error.
+ * Any non-idempotent error is rethrown (matches house pattern). Nullable column,
+ * safe on existing rows — they'll read as NULL until re-saved with an FD count. */
+function applyWaveCFdPreMoneySharesSchema(db: any) {
+  try {
+    // PRAGMA guard first — cheaper than an ALTER attempt and lets us skip if
+    // the column already exists.
+    const cols = db.prepare("PRAGMA table_info(rounds)").all() as Array<{ name: string }>;
+    if (cols.some((c) => c.name === "fd_pre_money_shares")) return;
+    db.exec("ALTER TABLE rounds ADD COLUMN fd_pre_money_shares INTEGER");
+  } catch (e: any) {
+    const msg = String(e?.message ?? e);
+    // Idempotent: duplicate column tolerated (race with runner); missing table
+    // is a fresh-DB corner case, also tolerated.
+    if (!/duplicate column name|no such table/i.test(msg)) {
+      throw e;
+    }
   }
 }
 
@@ -4178,6 +4435,226 @@ function buildProductionTableStatements(): string[] {
     `CREATE INDEX IF NOT EXISTS idx_data_delete_log_user      ON data_delete_log(user_id);`,
     `CREATE INDEX IF NOT EXISTS idx_data_delete_log_tenant    ON data_delete_log(tenant_id);`,
     `CREATE INDEX IF NOT EXISTS idx_data_delete_log_created   ON data_delete_log(created_at);`,
+
+    /* ═════════════════════════════════════════════════════════════════════
+     * Wave C-2 v26.6.0 (D1 integration) — production table statements for
+     * migrations 0128-0137.
+     *
+     * WHY HERE, AT THE TAIL: every FK target these entries name
+     * (partner_organizations :4159, companies :2737, partner_attributions
+     * :2129, partner_crm_contacts :3944, users :2716) is declared EARLIER in
+     * this same returned array, so appending keeps CREATE-time resolution in
+     * dependency order. This whole array is consumed at :193 and executed at
+     * :196 inside the tx() at :198 — i.e. BEFORE every self-heal call in
+     * applyInlineMigrations, including all nine Wave C-2 installers.
+     *
+     * WHAT IS DELIBERATELY ABSENT: the four per-surface `idx_<surface>_pcr`
+     * indexes from 0136 (:148-151) and 0130's
+     * idx_mf_engagement_authority_artifact (:117). Those index COLUMNS that do
+     * not exist until the corresponding self-heal ALTERs run, so putting them
+     * here would fail every boot. They stay in their own installers.
+     * ═════════════════════════════════════════════════════════════════════ */
+
+    /* ---- 0130 (C-2.c) + 0131 (C-2.d) + 0136 (C-2.h) shared prerequisite:
+     * mf_engagement FULL SHAPE.
+     *
+     * mf_engagement is a pre-Wave-C2 table created ONLY by applyMfcrmSchema()
+     * (server/lib/mfcrmSchema.ts:56), which is NOT in this boot chain at all —
+     * grep: its single non-test caller is managedFounderStore.ts:858, inside
+     * hydrateManagedFounderStore(). Three Wave C-2 installers ALTER
+     * mf_engagement (0130, 0131, 0136); without an entry here they hard-fail
+     * with `no such table: mf_engagement` on every fresh boot.
+     *
+     * The DDL below is COPIED BYTE-FOR-BYTE from mfcrmSchema.ts:56-74 — all 14
+     * columns plus UNIQUE (partner_id, company_id) plus both indexes. The
+     * FULL shape is mandatory, not a convenience: applyMfcrmSchema() is
+     * CREATE-only (mfcrmSchema.ts:243 `for (const sql of stmts) db.exec(sql);`
+     * — zero ALTER TABLE / PRAGMA table_info anywhere in it) and it latches
+     * `applied = true` even in its catch (mfcrmSchema.ts:244, :251). A
+     * reduced-shape entry here would win the CREATE race, applyMfcrmSchema()'s
+     * identical IF NOT EXISTS CREATE would silently no-op forever, and
+     * managedFounderStore.createEngagement's INSERT would die on
+     * `no column named mode` for the process lifetime. Byte-identical means
+     * whichever runs first produces the complete table and the other is a
+     * genuine no-op. Do NOT edit this block by hand — regenerate it from
+     * mfcrmSchema.ts:56-74. ---- */
+    `CREATE TABLE IF NOT EXISTS mf_engagement (
+      id                     TEXT PRIMARY KEY NOT NULL,
+      partner_id             TEXT NOT NULL,
+      company_id             TEXT NOT NULL,
+      mode                   TEXT NOT NULL DEFAULT 'B',
+      status                 TEXT NOT NULL DEFAULT 'ACTIVE',
+      authority_artifact_ref TEXT,
+      authority_expires_at   TEXT,
+      trial_expires_at       TEXT,
+      chapter_id             TEXT,
+      matter_id              TEXT,
+      sources_capital_at_create INTEGER,
+      created_by             TEXT,
+      created_at             TEXT NOT NULL,
+      updated_at             TEXT NOT NULL,
+      UNIQUE (partner_id, company_id)
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_mf_engagement_partner ON mf_engagement(partner_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_mf_engagement_company ON mf_engagement(partner_id, company_id);`,
+
+    /* ---- 0128 (C-2.a) — MFC stage engine. Two tables + 5 indexes, matching
+     * 0128_wave_c2_mfc_stages.sql post-round-1 (no REFERENCES users(id) on
+     * actor_user_id per BLOCK-2; no idx_mfc_stages_partner_type per MINOR-2).
+     * Present here so 0131's and 0132's sqlite_master probe for mfc_stages
+     * succeeds on the SAME boot rather than one boot later (0128 round-1
+     * MAJOR-2), which is what lets 0128 be registered last. ---- */
+    `CREATE TABLE IF NOT EXISTS mfc_stages (
+      id                       TEXT PRIMARY KEY NOT NULL,
+      partner_id               TEXT NOT NULL REFERENCES partner_organizations(id),
+      stage_machine_type       TEXT NOT NULL CHECK (stage_machine_type IN ('mfc_engagement','partner_pipeline','mp_soft_circle')),
+      key                      TEXT NOT NULL,
+      label                    TEXT NOT NULL,
+      ordinal                  INTEGER NOT NULL,
+      is_terminal              INTEGER NOT NULL DEFAULT 0,
+      default_probability_pct  INTEGER CHECK (default_probability_pct IS NULL OR (default_probability_pct >= 0 AND default_probability_pct <= 100)),
+      age_sla_hours            INTEGER CHECK (age_sla_hours IS NULL OR age_sla_hours >= 0),
+      created_at               TEXT NOT NULL,
+      updated_at               TEXT NOT NULL,
+      UNIQUE (partner_id, stage_machine_type, key),
+      UNIQUE (partner_id, stage_machine_type, ordinal),
+      UNIQUE (id, stage_machine_type)
+    );`,
+    `CREATE TABLE IF NOT EXISTS mfc_stage_transitions (
+      id                       TEXT PRIMARY KEY NOT NULL,
+      partner_id               TEXT NOT NULL REFERENCES partner_organizations(id),
+      stage_machine_type       TEXT NOT NULL CHECK (stage_machine_type IN ('mfc_engagement','partner_pipeline','mp_soft_circle')),
+      subject_id               TEXT NOT NULL,
+      from_stage_id            TEXT,
+      to_stage_id              TEXT NOT NULL,
+      actor_user_id            TEXT NOT NULL,
+      actor_role               TEXT NOT NULL CHECK (actor_role IN ('founder','partner','admin','system')),
+      reason                   TEXT,
+      note                     TEXT,
+      created_at               TEXT NOT NULL,
+      FOREIGN KEY (from_stage_id, stage_machine_type) REFERENCES mfc_stages(id, stage_machine_type),
+      FOREIGN KEY (to_stage_id,   stage_machine_type) REFERENCES mfc_stages(id, stage_machine_type)
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_mfc_stages_terminal ON mfc_stages(is_terminal);`,
+    `CREATE INDEX IF NOT EXISTS idx_mfc_stage_transitions_subject_created ON mfc_stage_transitions(subject_id, created_at DESC);`,
+    `CREATE INDEX IF NOT EXISTS idx_mfc_stage_transitions_partner_type    ON mfc_stage_transitions(partner_id, stage_machine_type);`,
+    `CREATE INDEX IF NOT EXISTS idx_mfc_stage_transitions_to_stage   ON mfc_stage_transitions(to_stage_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_mfc_stage_transitions_from_stage ON mfc_stage_transitions(from_stage_id) WHERE from_stage_id IS NOT NULL;`,
+
+    /* ---- 0130 (C-2.c) — authority_artifacts. Byte-identical to
+     * 0130_wave_c2_authority_artifacts.sql. Note the partial UNIQUE index
+     * uq_authority_artifacts_effective (V32-N7): at most one non-revoked
+     * artifact per (partner_attribution_id, kind) for CLIENT-level artifacts;
+     * firm-level rows (partner_attribution_id IS NULL) are policed at
+     * contacts by uq_contacts_partner_agreement instead. ---- */
+    `CREATE TABLE IF NOT EXISTS authority_artifacts (
+      id                       TEXT PRIMARY KEY NOT NULL,
+      partner_id               TEXT NOT NULL REFERENCES partner_organizations(id),
+      partner_attribution_id   TEXT REFERENCES partner_attributions(id),
+      company_id               TEXT REFERENCES companies(id),
+      kind                     TEXT NOT NULL CHECK (kind IN (
+                                 'engagement_letter',
+                                 'client_authority_scope',
+                                 'dpa',
+                                 'referral_consent'
+                               )),
+      effective_at             TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      expires_at               TEXT,
+      revoked_at               TEXT,
+      revoked_by               TEXT,
+      content_hash             TEXT NOT NULL,
+      storage_uri              TEXT NOT NULL,
+      mime_type                TEXT NOT NULL,
+      byte_size                INTEGER NOT NULL CHECK (byte_size > 0),
+      signed_by_founder_at     TEXT,
+      signed_by_founder_ip     TEXT,
+      signed_by_partner_at     TEXT,
+      signed_by_partner_ip     TEXT,
+      verification_status      TEXT NOT NULL DEFAULT 'unverified' CHECK (verification_status IN (
+                                 'unverified',
+                                 'auto_verified',
+                                 'admin_verified',
+                                 'rejected'
+                               )),
+      verification_notes       TEXT,
+      created_at               TEXT NOT NULL,
+      created_by               TEXT,
+      updated_at               TEXT NOT NULL,
+      updated_by               TEXT,
+      CHECK (
+        (kind IN ('engagement_letter','client_authority_scope')
+          AND partner_attribution_id IS NOT NULL AND company_id IS NOT NULL)
+        OR
+        (kind IN ('dpa','referral_consent'))
+      )
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_authority_artifacts_partner ON authority_artifacts(partner_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_authority_artifacts_partner_company ON authority_artifacts(partner_id, company_id) WHERE company_id IS NOT NULL;`,
+    `CREATE INDEX IF NOT EXISTS idx_authority_artifacts_attribution ON authority_artifacts(partner_attribution_id) WHERE partner_attribution_id IS NOT NULL;`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS uq_authority_artifacts_effective ON authority_artifacts(partner_attribution_id, kind) WHERE revoked_at IS NULL AND partner_attribution_id IS NOT NULL;`,
+
+    /* ---- 0134 (C-2.g) — partner_crm_contact_client_scope. created_at carries
+     * a DEFAULT (R2 fix, M-g1) so §14.4's literal 5-column promotion-upsert
+     * INSERT does not trip its NOT NULL. idx_pccs_contact is deliberately
+     * omitted (MINOR m-g2 — redundant left-prefix of the UNIQUE index). ---- */
+    `CREATE TABLE IF NOT EXISTS partner_crm_contact_client_scope (
+      id                       TEXT PRIMARY KEY NOT NULL,
+      partner_crm_contact_id   TEXT NOT NULL REFERENCES partner_crm_contacts(id),
+      partner_attribution_id   TEXT NOT NULL REFERENCES partner_attributions(id),
+      scoped_by_user_id        TEXT NOT NULL REFERENCES users(id),
+      scoped_at                TEXT NOT NULL,
+      created_at               TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      created_by               TEXT,
+      UNIQUE (partner_crm_contact_id, partner_attribution_id)
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_pccs_attribution ON partner_crm_contact_client_scope(partner_attribution_id);`,
+
+    /* ---- 0136 (C-2.h) — PCR spine + surface-presence join. Spine-seed ids use
+     * '|' as the partner_id/company_id separator (R2 fix, BLOCKER 2 — '_' was
+     * non-injective); seeding itself lives in the numbered migration. ---- */
+    `CREATE TABLE IF NOT EXISTS partner_company_relationship (
+      id          TEXT PRIMARY KEY NOT NULL,
+      partner_id  TEXT NOT NULL REFERENCES partner_organizations(id),
+      company_id  TEXT NOT NULL REFERENCES companies(id),
+      created_at  TEXT NOT NULL,
+      updated_at  TEXT NOT NULL,
+      UNIQUE (partner_id, company_id)
+    );`,
+    `CREATE TABLE IF NOT EXISTS pcr_surface_presence (
+      id          TEXT PRIMARY KEY NOT NULL,
+      pcr_id      TEXT NOT NULL REFERENCES partner_company_relationship(id),
+      surface     TEXT NOT NULL CHECK (surface IN ('mfc','pipeline','clients','portfolio')),
+      row_id      TEXT NOT NULL,
+      added_at    TEXT NOT NULL,
+      removed_at  TEXT,
+      UNIQUE (pcr_id, surface, row_id)
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_pcr_partner  ON partner_company_relationship(partner_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_pcr_company  ON partner_company_relationship(company_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_pcr_surface_presence_pcr     ON pcr_surface_presence(pcr_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_pcr_surface_presence_row     ON pcr_surface_presence(surface, row_id);`,
+
+    /* ---- 0137 (C-2.i) — mfc_classification_requests.
+     * uq_mfc_classification_requests_pending is a PARTIAL UNIQUE index, not a
+     * plain index: it is the sole anti-spam / idempotency mechanism on the
+     * request-classification route (V32-B6 — no rate limiter exists). ---- */
+    `CREATE TABLE IF NOT EXISTS mfc_classification_requests (
+      id                    TEXT PRIMARY KEY NOT NULL,
+      partner_id            TEXT NOT NULL REFERENCES partner_organizations(id),
+      requested_by_user_id  TEXT NOT NULL REFERENCES users(id),
+      status                TEXT NOT NULL DEFAULT 'pending' CHECK (status IN (
+                              'pending',
+                              'approved',
+                              'rejected'
+                            )),
+      created_at            TEXT NOT NULL,
+      resolved_at           TEXT,
+      resolved_by_user_id   TEXT REFERENCES users(id),
+      note                  TEXT
+    );`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS uq_mfc_classification_requests_pending ON mfc_classification_requests(partner_id) WHERE status = 'pending';`,
+    `CREATE INDEX IF NOT EXISTS idx_mfc_classification_requests_status_created ON mfc_classification_requests(status, created_at);`,
+    `CREATE INDEX IF NOT EXISTS idx_mfc_classification_requests_partner ON mfc_classification_requests(partner_id);`,
 
     /* v19 Phase C perf indexes moved to applyV12AdditiveAlters() so they
      * run AFTER all v17 ALTER TABLE statements (which add chapter_id

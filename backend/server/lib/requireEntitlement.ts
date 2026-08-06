@@ -20,6 +20,8 @@
  */
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import { getUserContext, type UserContext } from "./userContext";
+import { getSubscription } from "../subscriptionsStore";
+import { log } from "./logger";
 
 export type Entitlement =
   | "admin"
@@ -177,6 +179,92 @@ export function requireEntitlement(...required: Entitlement[]): RequestHandler {
       }
     }
     next();
+  };
+}
+
+/**
+ * D2.5 Slice 3 Fix 4 — server-side backstop, independent of the client-side
+ * fail-closed change above (App.tsx's RequireActiveSubscription). Per the
+ * task brief this is SCAFFOLDING: a new, self-contained middleware that can
+ * be wired onto authenticated founder routes going forward. It is not wired
+ * into any route by this patch ("Ozan is testing server-side enforcement
+ * separately") and does NOT touch the sacred `paymentGatewayAdapter.ts`
+ * routes (`GET`/`PATCH /api/founder/subscription`) that App.tsx's client
+ * check calls today.
+ *
+ * Deliberately does NOT read `req.userContext` for subscription state —
+ * confirmed via grep that `UserContext` (sacred `./userContext.ts`) carries
+ * no subscription/billing fields at all. Instead this calls
+ * `subscriptionsStore.getSubscription(companyId)` directly, DB-direct per
+ * that store's contract (never serves stale RAM, throws on DB failure).
+ *
+ * Behavior:
+ *   - No companyId resolvable on the request → 401 (can't be enforced
+ *     without knowing which company; treat as unauthenticated for this check).
+ *   - No subscription row found for that company → pass through. A missing
+ *     row means "never subscribed / pre-onboarding", which is a DIFFERENT
+ *     state machine (company-creation / onboarding flow) than "lapsed
+ *     payment" — this backstop only enforces PAYMENT lapse, not onboarding.
+ *   - status === "past_due" → 402 Payment Required.
+ *   - status === "trialing" AND trialEndsOn is in the past → 402 Payment
+ *     Required. This is the closest mapping for the brief's "expired" case:
+ *     `SubscriptionStatus` has no literal "expired" value (confirmed via
+ *     grep) — a subscription whose trial has run out without converting to
+ *     paid is represented as `status: "trialing"` with a past `trialEndsOn`,
+ *     not a distinct status string.
+ *   - Any other status (active, unpaid, cancelled, pending_payment,
+ *     cancel_at_period_end) → pass through unchanged; this backstop's scope
+ *     is exactly the two states named in the brief, nothing broader.
+ *   - DB read failure → log and pass through (fail OPEN on infra failure,
+ *     not fail closed) — deliberate: an availability incident in the
+ *     subscriptions DB must not become a platform-wide 402 outage for every
+ *     authenticated founder route this is mounted on. This mirrors the
+ *     existing house convention elsewhere in this file (checkEntitlement
+ *     failures are explicit 403s from KNOWN state, never inferred from
+ *     exceptions) and is the intentionally more conservative choice for a
+ *     backstop that is not yet wired into production traffic.
+ */
+export function requireActiveSubscription(): RequestHandler {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const companyId = pickCompanyId(req);
+    if (!companyId) {
+      return res.status(401).json({
+        error: "NOT_AUTHED",
+        message: HUMAN_MESSAGES.NOT_AUTHED,
+      });
+    }
+    try {
+      const sub = getSubscription(companyId);
+      if (!sub) return next(); // never subscribed / pre-onboarding — not this backstop's concern
+
+      if (sub.status === "past_due") {
+        return res.status(402).json({
+          error: "SUBSCRIPTION_PAST_DUE",
+          message: "Your subscription payment is past due.",
+          companyId,
+          status: sub.status,
+        });
+      }
+
+      if (sub.status === "trialing" && sub.trialEndsOn) {
+        const trialEnd = new Date(sub.trialEndsOn).getTime();
+        if (Number.isFinite(trialEnd) && trialEnd < Date.now()) {
+          return res.status(402).json({
+            error: "SUBSCRIPTION_TRIAL_EXPIRED",
+            message: "Your trial has ended.",
+            companyId,
+            status: sub.status,
+            trialEndsOn: sub.trialEndsOn,
+          });
+        }
+      }
+
+      return next();
+    } catch (err) {
+      // Fail open on infra failure — see doc comment above for rationale.
+      log.warn("[requireEntitlement] requireActiveSubscription DB read failed — passing through:", (err as Error).message);
+      return next();
+    }
   };
 }
 

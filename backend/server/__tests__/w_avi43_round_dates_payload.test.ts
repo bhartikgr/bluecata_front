@@ -132,6 +132,11 @@ describe("W-AVI43 Issue 1 (B) — server creates the round + persists the dates 
         name: "Avi43 Common Round",
         type: "series_a",
         instrument: "common",
+        // Wave C v26.5.0 (Shadie Finding 1a) — non-foundation priced common
+        // now requires preMoney + fdPreMoneyShares > 0. Values chosen so
+        // preMoney / fdPreMoneyShares = 0.26 = pricePerShare (self-consistent).
+        preMoney: "26",
+        fdPreMoneyShares: "100",
         pricePerShare: "0.26",
         sharesAuthorized: "100",
         region: "US",

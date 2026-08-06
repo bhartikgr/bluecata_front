@@ -151,6 +151,12 @@ type FormShape = {
  // common to many instruments
  targetAmount: string;
  preMoney: string;
+ // Wave C v26.5.0 (Shadie Finding 1a) — fully-diluted pre-money share count.
+ // Used ONLY as the PPS denominator for post-formation priced rounds
+ // (pre-money ÷ FD shares, grossed up for any pool top-up). Foundation rounds
+ // do NOT collect this (foundation is the formation event; no prior FD count).
+ // Distinct from `sharesAuthorized` which is NEW shares issued in this round.
+ fdPreMoneyShares: string;
  pricePerShare: string;
  minTicket: string;
  // SAFE / Note
@@ -195,6 +201,7 @@ const defaultForm: FormShape = {
  // instrument, region, mfn, anti-dilution, etc.) are intentionally preserved.
  targetAmount: "",
  preMoney: "",
+ fdPreMoneyShares: "",   // Wave C v26.5.0
  // v23.4.9 Phase 1 (Avi #2) — share price is DERIVED for priced rounds
  // (pre-money ÷ shares authorized), so it must start EMPTY rather than
  // carrying a hardcoded mock value. The previous "1.42" default was also a
@@ -377,7 +384,23 @@ export default function RoundNew() {
  // targetAmount>0 and priced-preMoney guards with no on-screen field to fix.
  // Omit (null) when unused; server derives targetAmount = PPS × shares for common.
  targetAmount: usesField("targetAmount") ? requiredDecimalString(form.targetAmount) : null,
- preMoney: usesField("preMoney") ? requiredDecimalString(form.preMoney) : null,
+ // Wave C v26.5.0 (Shadie Finding 1a) — preMoney is now in
+ // INSTRUMENTS.common.fields (previously only in preferred). For a Foundation
+ // round the input is hidden (render gate is `!isFoundationRound`) so
+ // form.preMoney stays "" — without this second gate the payload would send
+ // requiredDecimalString("") which coerces to "0", tripping the server's
+ // priced-preMoney>0 guard for common. Foundation ALWAYS omits preMoney so
+ // the payload sends null, matching v25.51 8a's original invariant.
+ preMoney: usesField("preMoney") && form.type !== "foundation"
+ ? requiredDecimalString(form.preMoney)
+ : null,
+ // Wave C v26.5.0 (Shadie Finding 1a) — FD pre-money share count.
+ // Only sent when the instrument uses it (common/preferred) AND the round is
+ // not a foundation round. Foundation rounds have no prior FD count so we
+ // send null; server backstop enforces the same rule at POST /api/rounds.
+ fdPreMoneyShares: usesField("fdPreMoneyShares") && form.type !== "foundation"
+ ? optionalIntegerString(form.fdPreMoneyShares)
+ : null,
  pricePerShare: optionalDecimalString(form.pricePerShare),
  valuationCap: optionalDecimalString(form.valuationCap),
  discount: optionalDecimalString(form.discount),
@@ -625,6 +648,11 @@ export default function RoundNew() {
  // is set at conversion); Warrants use an explicit strikePrice that stays
  // editable. So this read-only derivation applies ONLY to priced rounds.
  const isPricedInstrument = form.instrument === "preferred" || form.instrument === "common";
+ // Wave C v26.5.0 (Shadie Finding 1a) — foundation rounds are the formation
+ // event and don't collect preMoney or fdPreMoneyShares. Declared at render
+ // scope so the render, validation, and payload branches all use the same
+ // predicate (avoids state divergence).
+ const isFoundationRound = form.type === "foundation";
  // W-FIX2 F5 — investor-grade PPS: pre-money ÷ fully-diluted PRE-MONEY shares
  // INCLUDING the option-pool top-up (the "pool shuffle"). When the founder
  // attaches an option pool to this priced round (addonPool below), a pre-money
@@ -638,8 +666,16 @@ export default function RoundNew() {
  if (!isFinite(p) || p <= 0 || p >= 100) return 0;
  return p / 100;
  })();
+ // Wave C v26.5.0 (Shadie Finding 1a) — prefer the founder-supplied
+ // fully-diluted pre-money share count as the PPS base. Fall back to
+ // sharesAuthorized only when fdPreMoneyShares is blank; validation below
+ // enforces non-blank for all non-foundation priced rounds, so this fallback
+ // is only reachable for foundation (which uses a manual PPS anyway).
+ // The local variable is deliberately named `shares` to preserve the
+ // wfix2b_f5_auto_pps.test.ts source-lock on `shares / (1 - poolTopUpPct)`.
  const fdPreMoneyShares = (() => {
- const shares = Number(form.sharesAuthorized);
+ const fd = Number(form.fdPreMoneyShares);
+ const shares = isFinite(fd) && fd > 0 ? fd : Number(form.sharesAuthorized);
  if (!isFinite(shares) || shares <= 0) return 0;
  return poolTopUpPct > 0 ? shares / (1 - poolTopUpPct) : shares;
  })();
@@ -726,13 +762,29 @@ export default function RoundNew() {
  if (!usesField(field as string)) return;
  if (!(numOf(form[field] as string) > 0)) e[field as string] = `${label} is required and must be greater than 0.`;
  };
+ // Wave C v26.5.0 (Shadie Finding 1a) — foundation rounds are the
+ // formation event: no prior valuation, no fully-diluted pre-money to
+ // divide by. They collect only Shares authorized + a manual PPS.
+ // Post-formation priced rounds (common OR preferred) require
+ // preMoney + fdPreMoneyShares so auto-mode PPS can compute correctly.
+ // Uses the render-scope isFoundationRound declared above (line 646).
  switch (form.instrument) {
  case "common":
  reqPos("sharesAuthorized", "Shares authorized");
+ if (!isFoundationRound) {
+ reqPos("preMoney", "Pre-money valuation");
+ reqPos("fdPreMoneyShares", "Fully-diluted pre-money shares");
+ }
  if (!(numOf(effectivePps) > 0)) e.pricePerShare = "Price per share is required and must be greater than 0.";
  break;
  case "preferred":
+ // Wave C v26.5.0 (Shadie 1a, Opus BLOCK-2) — preMoney is gated on
+ // !isFoundationRound so type=foundation + instrument=preferred does
+ // not permanently disable Continue with a hidden input.
+ if (!isFoundationRound) {
  reqPos("preMoney", "Pre-money valuation");
+ reqPos("fdPreMoneyShares", "Fully-diluted pre-money shares");
+ }
  reqPos("targetAmount", "Target raise");
  if (!(numOf(effectivePps) > 0)) e.pricePerShare = "Price per share is required and must be greater than 0.";
  break;
@@ -1014,11 +1066,30 @@ export default function RoundNew() {
  {usesField("targetAmount") && (
  <div><LabelWithTip tip="How much new money you want this round to bring in. Investors look at progress vs. this number to decide whether to commit."><Label>Target raise (USD)</Label></LabelWithTip><FormattedNumberInput className="mt-1 font-mono" value={form.targetAmount} onChange={v => update("targetAmount", v)} data-testid="input-target" />{step2Errors.targetAmount && <p className="text-xs text-rose-500 mt-1" data-testid="err-targetAmount">{step2Errors.targetAmount}</p>}</div>
  )}
- {usesField("preMoney") && (
+ {usesField("preMoney") && !isFoundationRound && (
  <>
  <div><LabelWithTip tip="The agreed value of your company BEFORE the new money lands. Pre-money + new money = post-money."><Label>Pre-money valuation (USD)</Label></LabelWithTip><FormattedNumberInput className="mt-1 font-mono" value={form.preMoney} onChange={v => update("preMoney", v)} data-testid="input-pre" />{step2Errors.preMoney && <p className="text-xs text-rose-500 mt-1" data-testid="err-preMoney">{step2Errors.preMoney}</p>}</div>
  <div><LabelWithTip tip="Calculated automatically: pre-money + target raise. This is the company's valuation immediately after the round closes."><Label>Implied post-money</Label></LabelWithTip><Input className="mt-1 font-mono bg-secondary/50" value={`$${post.toLocaleString()}`} readOnly data-testid="input-post" /></div>
  </>
+ )}
+ {/* Wave C v26.5.0 (Shadie Finding 1a) — fully-diluted pre-money shares.
+ Only rendered for non-foundation priced rounds. This is the PPS denominator;
+ not to be confused with "Shares authorized" below which is new-shares-issued. */}
+ {usesField("fdPreMoneyShares") && !isFoundationRound && (
+ <div>
+ <LabelWithTip tip="Fully-diluted pre-money shares BEFORE this round: existing common + preferred (as-converted) + granted options + option pool reserved + SAFE/note conversions. Used only to compute the price per share — not to issue new shares. Investor convention is 'broad' FD (include the reserved pool).">
+ <Label>Fully-diluted pre-money shares</Label>
+ </LabelWithTip>
+ <FormattedNumberInput
+ className="mt-1 font-mono"
+ value={form.fdPreMoneyShares}
+ onChange={v => update("fdPreMoneyShares", v)}
+ data-testid="input-fd-pre-money-shares"
+ />
+ {step2Errors.fdPreMoneyShares && (
+ <p className="text-xs text-rose-500 mt-1" data-testid="err-fdPreMoneyShares">{step2Errors.fdPreMoneyShares}</p>
+ )}
+ </div>
  )}
  {usesField("pricePerShare") && (
  <div data-testid="pps-block">

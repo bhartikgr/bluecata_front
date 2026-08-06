@@ -426,13 +426,14 @@ describe("KL-06 — Stripe Gateway Adapter", () => {
 });
 
 /* ============================================================
- * KL-07: Invoice→Company cross-link in Pricing.tsx
+ * KL-07: Invoice→Company cross-link (D2.5 Slice 1: Pricing.tsx was retired;
+ * the guarded surface moved to AdminFeesConsolidated.tsx "Ledger & Invoices")
  * ============================================================ */
 describe("KL-07 — Invoice Company Cross-Link", () => {
-  it("Pricing.tsx source contains Link to /admin/companies/:id for invoice rows", () => {
+  it("AdminFeesConsolidated.tsx contains Link to /admin/companies/:id for invoice rows", () => {
     const pricingPath = path.resolve(
       __dirname,
-      "../../client/src/pages/admin/Pricing.tsx",
+      "../../client/src/pages/admin/AdminFeesConsolidated.tsx",
     );
     const src = fs.readFileSync(pricingPath, "utf8");
     // The companyId cell should be wrapped in a Link

@@ -216,7 +216,7 @@ describe("v25.53 N1 — all seven investment vehicles are creatable", () => {
 
     const preferred = await call("POST", "/api/rounds", {
       userId,
-      body: { companyId, name: "Series A", type: "series_a", instrument: "preferred", preMoney: 8_000_000, targetAmount: 2_000_000, pricePerShare: 1.5, sharesAuthorized: 1_333_333 },
+      body: { companyId, name: "Series A", type: "series_a", instrument: "preferred", preMoney: 8_000_000, targetAmount: 2_000_000, pricePerShare: 1.5, sharesAuthorized: 1_333_333, /* Wave C v26.5.0 (Shadie 1a) */ fdPreMoneyShares: 5_333_333 },
     });
     expect(preferred.status).toBe(200);
 
@@ -583,7 +583,7 @@ describe("v25.53 REVISE NB-b — server-side priced (preferred) completeness", (
   it("preferred with a target AND pps>0 AND shares>0 still creates", async () => {
     const res = await call("POST", "/api/rounds", {
       userId,
-      body: { companyId, name: "Pref Complete", type: "series_a", instrument: "preferred", targetAmount: 2_000_000, preMoney: 8_000_000, pricePerShare: 1.5, sharesAuthorized: 1_333_333 },
+      body: { companyId, name: "Pref Complete", type: "series_a", instrument: "preferred", targetAmount: 2_000_000, preMoney: 8_000_000, pricePerShare: 1.5, sharesAuthorized: 1_333_333, /* Wave C v26.5.0 (Shadie 1a) */ fdPreMoneyShares: 5_333_333 },
     });
     expect(res.status).toBe(200);
     expect(res.body?.ok).toBe(true);

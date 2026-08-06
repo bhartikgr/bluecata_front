@@ -197,6 +197,30 @@ export const roundInvitations = pgTable("round_invitations", {
   state: text("state").notNull(),
   expiresAt: text("expires_at"),
   sentAt: text("sent_at"),
+  /* ═══ Wave C-2, migration 0133 — delegated-agency provenance (§7.6, LOCK 5) ═══
+     Declared here because Drizzle SILENTLY DROPS undeclared columns from typed
+     inserts/selects (the v25.25 Avi-7 class of bug documented on `softCircles`
+     below). All five are nullable: every founder-originated invitation reads them
+     as NULL, and the founder INSERT in roundInvitationsStore.ts does not name them
+     at all.
+
+     FK note — `engagementId` is BARE TEXT with NO `references()`, permanently and in
+     BOTH dialects (delta 0133 §"schema.ts vs schema.pg.ts divergence"): `mf_engagement`
+     is created only by `applyMfcrmSchema()`, which runs AFTER `applyInlineMigrations`,
+     and several writers never call it at all, so a declared FK would encode a
+     constraint the runtime cannot enforce (V32-M8 precedent). The other four columns'
+     FK targets are likewise enforced at the application layer only.
+
+     Indexes (`idx_round_invitations_sourced_partner`,
+     `idx_round_invitations_engagement`) are PARTIAL indexes and live in
+     migrations/0133_wave_c2_provenance_columns.sql, which is their source of truth —
+     this file declares zero indexes anywhere, so declaring them here would break
+     convention. ═══ */
+  sourcedFromPartnerId: text("sourced_from_partner_id"),
+  sourcedFromPartnerAttributionId: text("sourced_from_partner_attribution_id"),
+  actingOnBehalfOfUserId: text("acting_on_behalf_of_user_id"),
+  actorPartnerUserId: text("actor_partner_user_id"),
+  engagementId: text("engagement_id"),
   viewedAt: text("viewed_at"),
 });
 
@@ -219,6 +243,21 @@ export const softCircles = pgTable("soft_circles", {
   investorEmail: text("investor_email"),
   amountMinor: integer("amount_minor").notNull().default(0),
   currency: text("currency").notNull().default("USD"),
+  /* ═══ Wave C-2, migration 0133 — partner-sourcing + stage-machine columns ═══
+     `partnerWorkflowStageId` intentionally has NO FK: §4.1's trigger-based substitute
+     polices its validity against `mfc_stages` (stage_machine_type='mp_soft_circle'),
+     not a DB-level FK. `currentStageMachineType` is CHECK-pinned to the single literal
+     'mp_soft_circle' in the migration (V32-M6).
+
+     `softCircles` gets NO `pcrId` column — §14.1 frames soft_circles as a LENS over
+     provenance columns, not a PCR surface, and it has no `partner_id` column at all,
+     so it structurally cannot key into the spine's (partnerId, companyId) grain
+     (delta 0136). ═══ */
+  sourcedFromPartnerId: text("sourced_from_partner_id"),
+  sourcedFromPartnerAttributionId: text("sourced_from_partner_attribution_id"),
+  partnerCrmContactId: text("partner_crm_contact_id"),
+  partnerWorkflowStageId: text("partner_workflow_stage_id"),
+  currentStageMachineType: text("current_stage_machine_type"),
   collectiveVisible: integer("collective_visible").notNull().default(1),
   updatedAt: text("updated_at"),
   deletedAt: text("deleted_at"),
@@ -1351,6 +1390,37 @@ export const partnerDealPipeline = pgTable("partner_deal_pipeline", {
   notes: text("notes").notNull().default(""),
   prevHash: text("prev_hash"),
   currHash: text("curr_hash").notNull(),
+  /* ═══ Wave C-2, migrations 0132 + 0136 — stage machine + KV mirror + PCR spine ═══
+     Two groups:
+
+     (1) Stage-machine + deal-shape columns (0132). `currentStageMachineType` is
+         CHECK-pinned to the literal 'partner_pipeline' in the migration.
+
+     (2) The `kv*`-prefixed columns are the KV-to-SQL mirror targets that
+         server/db/backfills/runWaveC2PipelineKvBackfill.ts (D3) writes. They are
+         PREFIXED because `notes`, `currency`, `version`, `updatedAt`, `updatedBy`
+         already exist on this table (or on its V19 sibling) with different meanings —
+         one column, one meaning; never overload.
+
+     (3) `pcrId` (0136) — the PCR spine backreference. §3.4's dual-read design gives
+         each of the four real PCR surfaces its own `pcr_id` + single-column index. ═══ */
+  currentStageId: text("current_stage_id"),
+  currentStageMachineType: text("current_stage_machine_type"),
+  probabilityPctOverride: integer("probability_pct_override"),
+  dealSizeUsd: doublePrecision("deal_size_usd"),
+  mappingNote: text("mapping_note"),
+  dealName: text("deal_name"),
+  currency: text("currency"),
+  sector: text("sector"),
+  geography: text("geography"),
+  kvNotes: text("kv_notes"),
+  kvVersion: integer("kv_version"),
+  kvUpdatedAt: text("kv_updated_at"),
+  kvUpdatedBy: text("kv_updated_by"),
+  kvIsSeed: integer("kv_is_seed"),
+  kvPrevRevisionHash: text("kv_prev_revision_hash"),
+  kvRevisionHash: text("kv_revision_hash"),
+  pcrId: text("pcr_id"),
   legacyId: text("legacy_id"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
@@ -1557,3 +1627,255 @@ export type SoftCircle = typeof softCircles.$inferSelect;
 export type DataroomFile = typeof dataroomFiles.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type InsertUser = z.infer<typeof insertUserSchema>;
+
+/* ══════════════════════════════════════════════════════════════════════════════════════
+ * WAVE C-2 (v26.6.0) — Managed-Founder CRM / partner-representation schema
+ *
+ * Companion to migrations 0128-0134, 0136, 0137 (mirrored byte-identically in
+ * `migrations/` and `server/db/migrations/`, enforced by
+ * `server/__tests__/w9_migration_mirror_drift.test.ts`) and to the nine PRAGMA-guarded
+ * self-heal modules in `server/lib/applyWaveC2*Schema.ts`.
+ *
+ * CONVENTION NOTES — read before extending:
+ *
+ * 1. NO `references()`. This file declares zero `references()` calls anywhere (grep-
+ *    verified across all 1559 pre-existing lines), so every FK below is expressed as a
+ *    bare `text()` column and documented in prose. The numbered `.sql` migrations are the
+ *    SINGLE source of truth for FK enforcement. Adding typed Drizzle FKs only here would
+ *    create a two-source-of-truth hazard without adding any runtime enforcement.
+ *
+ * 2. NO index or CHECK declarations. Same reason: this file declares zero indexes and
+ *    zero CHECKs today. Every UNIQUE, PARTIAL UNIQUE, plain index and CHECK named in the
+ *    `shared_schema_delta.md` docs lives in its numbered migration, which is authoritative.
+ *    The delta docs explicitly sanction this ("express as a raw-SQL migration-only index
+ *    ... with a comment in schema.ts pointing at the migration as the source of truth").
+ *    Each table below names its migration-owned constraints in a comment.
+ *
+ * 3. Booleans are `integer()` 0/1, matching the SQLite storage convention this file and
+ *    `schema.pg.ts` both use.
+ *
+ * 4. TIMESTAMP DEFAULTS ARE NOT DECLARED HERE. `authority_artifacts.effective_at` and
+ *    `partner_crm_contact_client_scope.created_at` carry SQLite `strftime(...)` DEFAULTs in
+ *    their migrations. `strftime` is NOT Postgres-legal (flagged as MAJOR M-c2 in the 0130
+ *    delta and explicitly left unresolved there), so declaring the default in Drizzle would
+ *    force one dialect to be wrong. Both dialect files therefore declare the column NOT NULL
+ *    with no default and let each migration own its own dialect-correct default expression.
+ *
+ * TABLES NOT DECLARED IN THIS FILE (deliberate, documented gap — assumption A-APPLY-SCH1):
+ *   Four tables receive Wave C-2 columns but have NO Drizzle definition in this file at
+ *   all, and never have:
+ *     • `partner_attributions`     (created by migration 0114)  — 0129 adds 5 cols, 0136 adds pcr_id
+ *     • `mf_engagement`            (created by server/lib/mfcrmSchema.ts) — 0130 +2, 0131 +6, 0136 +1
+ *     • `mf_engagement_event`      (created by server/lib/mfcrmSchema.ts) — 0131 +5, 2 relaxed to NULL
+ *     • `partner_portfolio_company`                              — 0136 adds pcr_id
+ *   Every reader/writer of these four tables in the tree uses `rawDb().prepare(...)` — grep-
+ *   verified: `managedFounderStore.ts` (persistEngagement :202, recordEvent :228),
+ *   `server/lib/delegatedAgency.ts`, and `roundInvitationsStore.ts`'s new
+ *   `createDelegatedInvitation` all use raw SQL — so there is no typed-insert column-dropping
+ *   hazard to fix, which is the ONLY reason this file declares additive columns at all.
+ *   Authoring four full greenfield Drizzle definitions (≈70 columns) purely to hang 14 new
+ *   columns off them would be a large, unreviewed, untested surface that no delta doc
+ *   specifies and no code path would exercise. Deferred, and reported as an open item.
+ * ══════════════════════════════════════════════════════════════════════════════════════ */
+
+/* ---------- migration 0128 — the stage-machine catalogue ----------
+ * Migration-owned constraints: UNIQUE (partner_id, stage_machine_type, key);
+ * UNIQUE (partner_id, stage_machine_type, ordinal); UNIQUE (id, stage_machine_type)
+ * [the composite FK target for mfc_stage_transitions]; index idx_mfc_stages_terminal on
+ * is_terminal. `idx_mfc_stages_partner_type` was REMOVED in round 1 as redundant (MINOR-2)
+ * — do not re-add it. `stage_machine_type` CHECK: 'mfc_engagement' | 'partner_pipeline'
+ * | 'mp_soft_circle'. `default_probability_pct` CHECK 0-100; `age_sla_hours` CHECK >= 0.
+ * FK (app-layer here, DB-level in the migration): partner_id -> partner_organizations.id. */
+export const mfcStages = pgTable("mfc_stages", {
+  id: text("id").primaryKey(),
+  partnerId: text("partner_id").notNull(),
+  stageMachineType: text("stage_machine_type").notNull(),
+  key: text("key").notNull(),
+  label: text("label").notNull(),
+  ordinal: integer("ordinal").notNull(),
+  /** 0/1 boolean-as-int, matching this file's SQLite storage convention. */
+  isTerminal: integer("is_terminal").notNull().default(0),
+  defaultProbabilityPct: integer("default_probability_pct"),
+  ageSlaHours: integer("age_sla_hours"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+/* ---------- migration 0128 — the stage-transition audit trail ----------
+ * `subjectId` is POLYMORPHIC (mf_engagement.id | partner_deal_pipeline.id |
+ * soft_circles.id, resolved by `stageMachineType`) and therefore can never be a typed FK
+ * in any dialect — the parent table varies per row.
+ *
+ * `actorUserId` has NO FK, by round-1 BLOCK-2 fix: the tree-wide idiom is
+ * `ctx?.userId ?? "system"` and NO `users` row with id 'system' exists, so a FK would
+ * reject every system-actor transition.
+ *
+ * Migration-owned composite FKs: (from_stage_id, stage_machine_type) and
+ * (to_stage_id, stage_machine_type) -> mfc_stages(id, stage_machine_type).
+ * Migration-owned indexes: idx_mfc_stage_transitions_subject_created (subject_id,
+ * created_at DESC); ..._partner_type (partner_id, stage_machine_type); ..._to_stage;
+ * ..._from_stage (PARTIAL, WHERE from_stage_id IS NOT NULL).
+ * `actorRole` CHECK: 'founder' | 'partner' | 'admin' | 'system'. */
+export const mfcStageTransitions = pgTable("mfc_stage_transitions", {
+  id: text("id").primaryKey(),
+  partnerId: text("partner_id").notNull(),
+  stageMachineType: text("stage_machine_type").notNull(),
+  subjectId: text("subject_id").notNull(),
+  fromStageId: text("from_stage_id"),
+  toStageId: text("to_stage_id").notNull(),
+  actorUserId: text("actor_user_id").notNull(),
+  actorRole: text("actor_role").notNull(),
+  reason: text("reason"),
+  note: text("note"),
+  createdAt: text("created_at").notNull(),
+});
+
+/* ---------- migration 0130 — signed authority artifacts ----------
+ * `partnerAttributionId` and `companyId` are NULLABLE: both are NULL for FIRM-level
+ * artifacts (V32-M7), which is exactly what the migration's table-level CHECK encodes:
+ *   CHECK ( (kind IN ('engagement_letter','client_authority_scope')
+ *             AND partner_attribution_id IS NOT NULL AND company_id IS NOT NULL)
+ *           OR kind IN ('dpa','referral_consent') )
+ * `kind` CHECK: 'engagement_letter' | 'client_authority_scope' | 'dpa' | 'referral_consent'.
+ * `verificationStatus` CHECK: 'unverified' | 'auto_verified' | 'admin_verified' | 'rejected',
+ * DEFAULT 'unverified' (a plain string literal, so it IS declared below — unlike the
+ * strftime timestamp default, see convention note 4). `byteSize` CHECK > 0.
+ * `expiresAt` NULL means PERPETUAL.
+ * Migration-owned indexes: idx_authority_artifacts_partner; ..._partner_company (PARTIAL,
+ * WHERE company_id IS NOT NULL); ..._attribution (PARTIAL, WHERE partner_attribution_id IS
+ * NOT NULL); uq_authority_artifacts_effective UNIQUE (partner_attribution_id, kind)
+ * PARTIAL WHERE revoked_at IS NULL AND partner_attribution_id IS NOT NULL — firm-level
+ * artifacts are deliberately NOT constrained by it (V32-N7).
+ *
+ * `effectiveAt` is NOT NULL with NO declared default — see convention note 4. */
+export const authorityArtifacts = pgTable("authority_artifacts", {
+  id: text("id").primaryKey(),
+  partnerId: text("partner_id").notNull(),
+  partnerAttributionId: text("partner_attribution_id"),
+  companyId: text("company_id"),
+  kind: text("kind").notNull(),
+  effectiveAt: text("effective_at").notNull(),
+  expiresAt: text("expires_at"),
+  revokedAt: text("revoked_at"),
+  revokedBy: text("revoked_by"),
+  /** SHA-256 of the signed artifact bytes. */
+  contentHash: text("content_hash").notNull(),
+  storageUri: text("storage_uri").notNull(),
+  mimeType: text("mime_type").notNull(),
+  byteSize: integer("byte_size").notNull(),
+  signedByFounderAt: text("signed_by_founder_at"),
+  signedByFounderIp: text("signed_by_founder_ip"),
+  signedByPartnerAt: text("signed_by_partner_at"),
+  signedByPartnerIp: text("signed_by_partner_ip"),
+  verificationStatus: text("verification_status").notNull().default("unverified"),
+  verificationNotes: text("verification_notes"),
+  createdAt: text("created_at").notNull(),
+  createdBy: text("created_by"),
+  updatedAt: text("updated_at").notNull(),
+  updatedBy: text("updated_by"),
+});
+
+/* ---------- migration 0134 — per-contact client scoping ----------
+ * Migration-owned constraints: uq_pccs_contact_attribution UNIQUE (partner_crm_contact_id,
+ * partner_attribution_id) — backs §14.4's race-safe promotion upsert; idx_pccs_attribution
+ * on partner_attribution_id ALONE (the reverse-lookup direction). Deliberately NO index on
+ * partner_crm_contact_id alone (R2 fix, MINOR m-g2): it is fully redundant with the
+ * composite unique index's leftmost-prefix coverage.
+ *
+ * `createdAt` is NOT NULL and carries a strftime DEFAULT in the migration (R2 fix / Opus
+ * MAJOR M-g1 — without it, a §13.2-shaped 5-column insert omitting created_at violates NOT
+ * NULL). The default is NOT declared here — see convention note 4. */
+export const partnerCrmContactClientScope = pgTable("partner_crm_contact_client_scope", {
+  id: text("id").primaryKey(),
+  partnerCrmContactId: text("partner_crm_contact_id").notNull(),
+  partnerAttributionId: text("partner_attribution_id").notNull(),
+  scopedByUserId: text("scoped_by_user_id").notNull(),
+  scopedAt: text("scoped_at").notNull(),
+  createdAt: text("created_at").notNull(),
+  createdBy: text("created_by"),
+});
+
+/* ---------- migration 0136 — the partner<->company relationship SPINE ----------
+ * §3.2's natural key. Migration-owned: UNIQUE INDEX (partner_id, company_id);
+ * idx_pcr_partner on partner_id; idx_pcr_company on company_id. BOTH single-column
+ * indexes are kept: company_id alone is NOT served by the composite unique index's
+ * leftmost-prefix rule, and §3.2/§3.4 specify a dual-read pattern.
+ *
+ * Seed-id format (informational): 'pcr_' || partner_id || '|' || company_id — PIPE-
+ * delimited (R2 fix, Opus r1 BLOCKER 2; the original '_'-delimited scheme was
+ * non-injective). No bearing on the column type; `id` is a plain text PK either way. */
+export const partnerCompanyRelationship = pgTable("partner_company_relationship", {
+  id: text("id").primaryKey(),
+  partnerId: text("partner_id").notNull(),
+  companyId: text("company_id").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+/* ---------- migration 0136 — which surfaces a spine row is present on ----------
+ * APPEND-ONLY per §3.2: a surface removal sets `removedAt`, it never deletes the row.
+ * `surface` CHECK: 'mfc' | 'pipeline' | 'clients' | 'portfolio'.
+ * `rowId` is polymorphic (the id on whichever surface `surface` names) so it can never be
+ * a typed FK. Migration-owned: UNIQUE INDEX (pcr_id, surface, row_id);
+ * idx_pcr_surface_presence_pcr on pcr_id; idx_pcr_surface_presence_row on (surface, row_id). */
+export const pcrSurfacePresence = pgTable("pcr_surface_presence", {
+  id: text("id").primaryKey(),
+  pcrId: text("pcr_id").notNull(),
+  surface: text("surface").notNull(),
+  rowId: text("row_id").notNull(),
+  addedAt: text("added_at").notNull(),
+  removedAt: text("removed_at"),
+});
+
+/* ---------- migration 0137 — partner classification requests ----------
+ * `status` CHECK: 'pending' | 'approved' | 'rejected', DEFAULT 'pending' (a string
+ * literal, so it IS declared below).
+ * Migration-owned: uq_mfc_classification_requests_pending — a PARTIAL UNIQUE index on
+ * partner_id WHERE status='pending'. Per §8.2 this partial index is the SOLE anti-spam /
+ * idempotency mechanism for POST /api/partner/me/mfcrm/request-classification, because no
+ * rate limiter is wired to that route today (V32-B6's honest correction). Do not treat it
+ * as merely an optimisation.
+ * Also migration-owned: idx_..._status_created on (status, created_at) for the §16.1 admin
+ * queue; idx_..._partner on partner_id alone for §8.2's classification-status read, which
+ * must resolve the most recent request of ANY status and so is NOT covered by the
+ * pending-only partial index. */
+export const mfcClassificationRequests = pgTable("mfc_classification_requests", {
+  id: text("id").primaryKey(),
+  partnerId: text("partner_id").notNull(),
+  requestedByUserId: text("requested_by_user_id").notNull(),
+  status: text("status").notNull().default("pending"),
+  createdAt: text("created_at").notNull(),
+  resolvedAt: text("resolved_at"),
+  resolvedByUserId: text("resolved_by_user_id"),
+  note: text("note"),
+});
+
+/* ---------- shared across migrations 0129 / 0132 / 0136 (§2.1) ----------
+ * Declared EXACTLY ONCE, not per-wave. `missingFk` CHECK is spec §2.1's VERBATIM
+ * five-value vocabulary — 'company_id' | 'partner_id' | 'legacy_id' | 'duplicate_grain' |
+ * 'none'. R3 fix: 0129 originally shipped an invented vocabulary that omitted 'legacy_id'
+ * and 'company_id' (Opus r2 blocker NEW-B1); do not re-widen or re-narrow it.
+ * Writers: 0129 -> 'duplicate_grain' (tie-break revocation, no FK was actually missing);
+ * 0132 -> 'legacy_id' (KV row collides with a V19 row on legacy_id; V19 wins) and
+ * 'company_id' (KV row has a NULL company reference). */
+export const c2BackfillSkipLog = pgTable("c2_backfill_skip_log", {
+  id: text("id").primaryKey(),
+  sourceTable: text("source_table").notNull(),
+  sourceId: text("source_id").notNull(),
+  missingFk: text("missing_fk").notNull(),
+  reason: text("reason").notNull(),
+  skippedAt: text("skipped_at").notNull(),
+});
+
+/* ---------- migration 0132 — advisory lock for the KV->SQL pipeline backfill ----------
+ * Single-active-row advisory lock preventing the D3 backfill
+ * (server/db/backfills/runWaveC2PipelineKvBackfill.ts) from running concurrently across
+ * boot instances: a second instance's INSERT on the same lock `id` raises a PK violation
+ * and that instance skips the backfill entirely. The leading underscore in the TABLE name
+ * follows the tree's internal/private-table convention (cf. `_preflight_check`). */
+export const c2PipelineBackfillLock = pgTable("_c2_pipeline_backfill_lock", {
+  id: text("id").primaryKey(),
+  startedAt: text("started_at").notNull(),
+  host: text("host").notNull(),
+  completedAt: text("completed_at"),
+});
