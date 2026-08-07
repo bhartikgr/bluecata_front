@@ -4498,6 +4498,40 @@ function buildProductionTableStatements(): string[] {
     `CREATE INDEX IF NOT EXISTS idx_mf_engagement_partner ON mf_engagement(partner_id);`,
     `CREATE INDEX IF NOT EXISTS idx_mf_engagement_company ON mf_engagement(partner_id, company_id);`,
 
+    /* ---- v26.7.1 POST-DEPLOY FIX — mf_engagement_event (Avi deploy failure, 2026-08-06).
+     *
+     * SIBLING to the mf_engagement fix above. Same class of defect, missed by all 3
+     * triple-review reviewers: reviewers reasoned about the specific table called out
+     * in D-INT-1 (`mf_engagement`) but not about the transitive sibling graph.
+     *
+     * mf_engagement_event is a pre-Wave-C2 table created ONLY by applyMfcrmSchema()
+     * (server/lib/mfcrmSchema.ts:77). Three Wave C-2 migrations ALTER it (0130 comments,
+     * 0131 Part 2 ADDs, 0131 Part 3 rebuild references it in INSERT...SELECT). Without
+     * an entry here it hard-fails on every fresh boot with `no such column: company_id`
+     * during 0131's PART 3 INSERT...SELECT statement.
+     *
+     * The DDL below is COPIED BYTE-FOR-BYTE from mfcrmSchema.ts:77-88 — all 8 baseline
+     * columns plus both indexes. The 5 additional columns from 0131 (actor_role,
+     * actor_partner_user_id, acting_on_behalf_of_user_id, partner_attribution_id,
+     * event_data_json) are DELIBERATELY NOT added here — they remain the responsibility
+     * of migration 0131's Part 2 ADD COLUMN statements, preserving the migration audit
+     * trail and matching the D1 pattern. Byte-identical to the applyMfcrmSchema()
+     * version means whichever runs first produces the complete table and the other is a
+     * genuine no-op. Do NOT edit this block by hand — regenerate it from
+     * mfcrmSchema.ts:77-88. ---- */
+    `CREATE TABLE IF NOT EXISTS mf_engagement_event (
+      id            TEXT PRIMARY KEY NOT NULL,
+      partner_id    TEXT NOT NULL,
+      engagement_id TEXT NOT NULL,
+      company_id    TEXT NOT NULL,
+      event_type    TEXT NOT NULL,
+      detail_json   TEXT,
+      actor         TEXT,
+      created_at    TEXT NOT NULL
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_mf_engagement_event_partner ON mf_engagement_event(partner_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_mf_engagement_event_eng ON mf_engagement_event(engagement_id);`,
+
     /* ---- 0128 (C-2.a) — MFC stage engine. Two tables + 5 indexes, matching
      * 0128_wave_c2_mfc_stages.sql post-round-1 (no REFERENCES users(id) on
      * actor_user_id per BLOCK-2; no idx_mfc_stages_partner_type per MINOR-2).
