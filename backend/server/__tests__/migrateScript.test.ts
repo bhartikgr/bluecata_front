@@ -273,4 +273,97 @@ describe("server/db/migrate.ts — splitStatements()", () => {
     const stmts = splitStatements(sql);
     expect(stmts.length).toBe(2);
   });
+
+  // v26.7.2 hotfix regression tests — CREATE TRIGGER + BEGIN...END handling.
+  // All three reviewers (Opus, GPT-5.6, Gemini) flagged that CASE...END
+  // inside trigger bodies and BEGIN TRANSACTION statements were mishandled
+  // by the initial hotfix. These tests lock down the correct behavior.
+
+  it("[v26.7.2] preserves CREATE TRIGGER ... BEGIN ... END (0121 pattern)", () => {
+    const sql =
+      "CREATE TRIGGER trg BEFORE UPDATE ON t " +
+      "BEGIN SELECT RAISE(ABORT, 'x'); END;\n" +
+      "SELECT 9;";
+    const stmts = splitStatements(sql);
+    expect(stmts.length).toBe(2);
+    expect(stmts[0]).toContain("CREATE TRIGGER");
+    expect(stmts[0]).toContain("END");
+    expect(stmts[1]).toContain("SELECT 9");
+  });
+
+  it("[v26.7.2] CASE...END inside trigger body does NOT close trigger", () => {
+    const sql =
+      "CREATE TRIGGER t BEFORE UPDATE ON a\n" +
+      "BEGIN\n" +
+      "  SELECT CASE WHEN 1 THEN 1 ELSE 0 END;\n" +
+      "  SELECT RAISE(ABORT, 'x');\n" +
+      "END;\n" +
+      "SELECT 9;";
+    const stmts = splitStatements(sql);
+    expect(stmts.length).toBe(2);
+    // The trigger body must contain both inner semicolons intact.
+    expect(stmts[0]).toContain("CASE");
+    expect(stmts[0]).toContain("RAISE");
+  });
+
+  it("[v26.7.2] nested CASE...CASE...END...END inside trigger", () => {
+    const sql =
+      "CREATE TRIGGER t BEFORE UPDATE ON x\n" +
+      "BEGIN\n" +
+      "  UPDATE y SET a = CASE WHEN b THEN CASE WHEN c THEN 1 ELSE 2 END ELSE 3 END WHERE id = 1;\n" +
+      "END;\n" +
+      "SELECT 9;";
+    const stmts = splitStatements(sql);
+    expect(stmts.length).toBe(2);
+  });
+
+  it("[v26.7.2] BEGIN TRANSACTION is NOT treated as trigger opener", () => {
+    const sql =
+      "BEGIN TRANSACTION;\n" +
+      "CREATE TABLE a(x);\n" +
+      "COMMIT;\n" +
+      "SELECT 9;";
+    const stmts = splitStatements(sql);
+    expect(stmts.length).toBe(4);
+  });
+
+  it("[v26.7.2] bare BEGIN; is NOT treated as trigger opener", () => {
+    const sql = "BEGIN;\nCREATE TABLE a(x);\nCOMMIT;";
+    const stmts = splitStatements(sql);
+    expect(stmts.length).toBe(3);
+  });
+
+  it("[v26.7.2] BEGIN IMMEDIATE / DEFERRED / EXCLUSIVE", () => {
+    for (const mode of ["IMMEDIATE", "DEFERRED", "EXCLUSIVE"]) {
+      const sql = `BEGIN ${mode};\nCREATE TABLE a(x);\nCOMMIT;`;
+      const stmts = splitStatements(sql);
+      expect(stmts.length).toBe(3);
+    }
+  });
+
+  it("[v26.7.2] BEGIN/END inside string literal are ignored", () => {
+    const sql =
+      "INSERT INTO log VALUES ('BEGIN transaction started');\n" +
+      "INSERT INTO log VALUES ('END of file');";
+    const stmts = splitStatements(sql);
+    expect(stmts.length).toBe(2);
+  });
+
+  it("[v26.7.2] BEGIN/END inside comments are ignored", () => {
+    const sql =
+      "-- BEGIN comment END\n" +
+      "CREATE TABLE a(x);\n" +
+      "/* BEGIN block END */\n" +
+      "CREATE TABLE b(y);";
+    const stmts = splitStatements(sql);
+    expect(stmts.length).toBe(2);
+  });
+
+  it("[v26.7.2] RAISE(ABORT,'x')END; — paren as END prev-char", () => {
+    const sql =
+      "CREATE TRIGGER t BEFORE UPDATE ON x BEGIN SELECT RAISE(ABORT,'msg')END;\n" +
+      "SELECT 1;";
+    const stmts = splitStatements(sql);
+    expect(stmts.length).toBe(2);
+  });
 });

@@ -224,11 +224,130 @@ export function getDbDriver(): "sqlite" | "postgres" | null {
 // idempotent.
 
 function applyInlineMigrations(db: any) {
+  // v26.7.2 hotfix: prevent SQLite lock contention if PM2 restart races
+  // this path. One-line, cheap, and idempotent.
+  try { db.pragma("busy_timeout = 5000"); } catch { /* noop */ }
+
+  // v26.7.2 hotfix (post-review hardened): on production DBs (like Avi's)
+  // an older `_migrations_applied` table may exist with schema
+  // (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL). The rest of
+  // connection.ts expects the newer shape
+  // (key TEXT PRIMARY KEY, applied_at TEXT, details TEXT DEFAULT '').
+  // Because `CREATE TABLE IF NOT EXISTS _migrations_applied` no-ops on the
+  // older table, `SELECT ... WHERE key = ?` in applyV2547Schema and
+  // elsewhere raises "no such column: key" and aborts applyInlineMigrations
+  // entirely.
+  //
+  // Repair strategy (all three steps run in ONE db.transaction so a crash
+  // between them rolls back cleanly — SQLite DDL is transactional):
+  //   1. Rename legacy table out of the way (collision-safe: if a prior
+  //      partial repair left the backup behind, pick a fresh suffix)
+  //   2. Create the modern shape (IF NOT EXISTS so a benign race with
+  //      buildCreateTableStatements is a no-op)
+  //   3. INSERT OR IGNORE copy from the renamed backup, preserving the
+  //      original applied_at timestamps and stamping details for audit
+  //
+  // Also sets legacy_alter_table = ON around the RENAME because on a
+  // drifted schema (any dangling view or trigger) SQLite 3.25+ default
+  // behavior fails the rename with "error in view X: no such table Y".
+  // Avi's DB is definitionally drifted — that is why this hotfix exists.
+  try {
+    const hasLegacyTable = db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='_migrations_applied'"
+      )
+      .get();
+    if (hasLegacyTable) {
+      const cols = db
+        .prepare("PRAGMA table_info('_migrations_applied')")
+        .all() as { name: string }[];
+      const colNames = new Set(cols.map((c) => c.name));
+      const hasKey = colNames.has("key");
+      const hasName = colNames.has("name");
+      if (!hasKey && hasName) {
+        // Legacy shape only — needs repair.
+        // Pick a collision-safe backup target.
+        let target = "_migrations_applied_legacy_v26_7_2";
+        for (
+          let n = 2;
+          db
+            .prepare(
+              "SELECT name FROM sqlite_master WHERE type='table' AND name=?"
+            )
+            .get(target);
+          n++
+        ) {
+          target = `_migrations_applied_legacy_v26_7_2_${n}`;
+        }
+        // Toggle legacy_alter_table for the RENAME window (outside the
+        // transaction because PRAGMA legacy_alter_table CAN be set at any
+        // time — unlike PRAGMA foreign_keys).
+        db.pragma("legacy_alter_table = ON");
+        try {
+          const repairTx = db.transaction(() => {
+            db.exec(
+              `ALTER TABLE _migrations_applied RENAME TO ${target}`
+            );
+            db.exec(`CREATE TABLE IF NOT EXISTS _migrations_applied (
+              key TEXT PRIMARY KEY NOT NULL,
+              applied_at TEXT NOT NULL,
+              details TEXT NOT NULL DEFAULT ''
+            );`);
+            db.exec(
+              `INSERT OR IGNORE INTO _migrations_applied (key, applied_at, details)
+                 SELECT name, applied_at, 'seeded from legacy tracker by v26.7.2'
+                 FROM ${target}`
+            );
+          });
+          repairTx();
+          log.info(
+            `[db] v26.7.2 repaired legacy _migrations_applied shape (backup kept as ${target})`
+          );
+        } finally {
+          db.pragma("legacy_alter_table = OFF");
+        }
+      }
+    }
+  } catch (err) {
+    // MUST NOT be silent: a swallowed failure here reproduces the ORIGINAL
+    // "no such column: key" several hundred lines later with no breadcrumb.
+    // The migration will still fail downstream, but the operator will now
+    // have a diagnostic pointing at THIS repair as the actual root cause.
+    log.error(
+      `[db] v26.7.2 _migrations_applied shape repair FAILED — ` +
+        `expect "no such column: key" or migrate abort downstream: ${
+          (err as Error).message
+        }`
+    );
+  }
+
   const baseStmts = buildCreateTableStatements();
   const productionStmts = buildProductionTableStatements();
   const tx = db.transaction(() => {
-    for (const sql of baseStmts) db.exec(sql);
-    for (const sql of productionStmts) db.exec(sql);
+    // v26.7.2 hotfix (post-review CHANGE-5): fail-soft for CREATE INDEX
+    // statements that hit "no such column" or "no such table". This mirrors
+    // migrate.ts::isNonFatalIndexError. A perf index on a column that a
+    // later ALTER guard adds must NOT take down the entire boot — this is
+    // the 3rd time that exact bug class shipped (network_posts@0118,
+    // mf_engagement@v26.7.1, comms_channels@v26.7.2). Making the CREATE
+    // INDEX fail-soft here means the next unordered index is a warning,
+    // not a production outage.
+    const isIndexNoColOrTable = (sql: string, msg: string): boolean => {
+      if (!/^\s*CREATE\s+(UNIQUE\s+)?INDEX/i.test(sql)) return false;
+      return /no such column|no such table/i.test(msg);
+    };
+    for (const sql of [...baseStmts, ...productionStmts]) {
+      try {
+        db.exec(sql);
+      } catch (err) {
+        const msg = (err as Error).message || "";
+        if (isIndexNoColOrTable(sql, msg)) {
+          log.warn(`[db] inline DDL: deferred index — ${msg}`);
+          continue;
+        }
+        throw err;
+      }
+    }
   });
   tx();
 
@@ -2713,6 +2832,16 @@ function applyV12AdditiveAlters(db: any) {
     "CREATE INDEX IF NOT EXISTS idx_network_posts_scope ON network_posts(scope, created_at)",
     "CREATE INDEX IF NOT EXISTS idx_network_posts_company ON network_posts(company_id)",
     "CREATE INDEX IF NOT EXISTS idx_network_posts_chapter ON network_posts(chapter_id)",
+    // v26.7.2 hotfix: comms_channels anchor indexes — moved here from
+    // buildCreateTableStatements() so they run AFTER the four ADD COLUMN
+    // guards above (company_id / round_id / chapter_id / kind at 2645-2648).
+    // On a DB whose comms_channels was built by the OLD runtime DDL these
+    // columns are freshly added by the ALTER TABLE guards, so the indexes
+    // can only be built once those succeed.
+    "CREATE INDEX IF NOT EXISTS idx_comms_channels_company ON comms_channels(company_id)",
+    "CREATE INDEX IF NOT EXISTS idx_comms_channels_round ON comms_channels(round_id)",
+    "CREATE INDEX IF NOT EXISTS idx_comms_channels_chapter ON comms_channels(chapter_id)",
+    "CREATE INDEX IF NOT EXISTS idx_comms_channels_kind ON comms_channels(kind)",
     // v17 Phase A — chapter scoping indices.
     "CREATE INDEX IF NOT EXISTS idx_chapters_tenant ON chapters(tenant_id)",
     "CREATE INDEX IF NOT EXISTS idx_chapters_status ON chapters(status)",
@@ -5508,10 +5637,20 @@ function buildCreateTableStatements(): string[] {
       round_id                  TEXT,
       chapter_id                TEXT
     );`,
-    `CREATE INDEX IF NOT EXISTS idx_comms_channels_company ON comms_channels(company_id);`,
-    `CREATE INDEX IF NOT EXISTS idx_comms_channels_round ON comms_channels(round_id);`,
-    `CREATE INDEX IF NOT EXISTS idx_comms_channels_chapter ON comms_channels(chapter_id);`,
-    `CREATE INDEX IF NOT EXISTS idx_comms_channels_kind ON comms_channels(kind);`,
+    /* ---- v26.7.2 hotfix: MOVED to applyV12AdditiveAlters --------------
+     * The four comms_channels indexes below used to live here inside
+     * buildCreateTableStatements. On a DB whose comms_channels was
+     * created by the OLD runtime DDL (pre-migration-0117 form: no
+     * company_id / round_id / chapter_id columns), the CREATE TABLE IF
+     * NOT EXISTS above no-ops and these CREATE INDEX statements raise
+     * "no such column: company_id", aborting applyInlineMigrations
+     * before applyV12AdditiveAlters (which HAS the guarded ALTER TABLE
+     * ADD COLUMN statements at connection.ts:2645-2648) ever runs.
+     * The 4 CREATE INDEX statements are now emitted from
+     * applyV12AdditiveAlters() AFTER the ALTER TABLE ADD COLUMN guards
+     * so the columns are guaranteed to exist by the time the indexes
+     * are built. Do NOT re-add them here.
+     * -------------------------------------------------------------------- */
     /* migration 0116 — durable per-USER company follow relation. Followers were
      * in-memory demo seed arrays (commsStore.ts:489), empty in production, and
      * POST /api/comms/posts/:id/follow wrote the followed company onto the POST

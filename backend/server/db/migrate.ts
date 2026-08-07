@@ -86,6 +86,22 @@ export function splitStatements(sql: string): string[] {
   let inBacktick = false;
   let inLineComment = false;
   let inBlockComment = false;
+  // v26.7.2 hotfix (post-review hardened): track BEGIN...END nesting for
+  // CREATE TRIGGER bodies. Semicolons inside a trigger body must NOT
+  // terminate the outer CREATE TRIGGER statement.
+  //
+  // We must distinguish:
+  //   • trigger-body BEGIN (opens depth)
+  //   • transaction BEGIN / BEGIN TRANSACTION / BEGIN DEFERRED / IMMEDIATE
+  //     / EXCLUSIVE (does NOT open depth; the runner already wraps every
+  //     migration in a transaction, so any inner BEGIN is invalid anyway)
+  //   • CASE...END expressions (open a separate depth so their END does
+  //     not close a surrounding trigger body prematurely)
+  //   • identifiers named `begin`/`end` (SQLite accepts these unquoted;
+  //     we require whitespace/paren/semicolon before the keyword AND we
+  //     reject the transaction-control forms explicitly)
+  let beginDepth = 0;
+  let caseDepth = 0;
 
   while (i < n) {
     const c = sql[i];
@@ -157,7 +173,76 @@ export function splitStatements(sql: string): string[] {
       i++;
       continue;
     }
+    // v26.7.2 hotfix (post-review): match SQL keywords case-insensitively
+    // at word boundaries. Only apply when outside strings/comments (already
+    // guarded above by continue statements).
+
+    // BEGIN — open a trigger-body depth, unless this is a transaction-
+    // control BEGIN (`BEGIN;`, `BEGIN TRANSACTION`, `BEGIN DEFERRED/
+    // IMMEDIATE/EXCLUSIVE`). Transaction BEGINs are not paired with END
+    // and would otherwise swallow the rest of the file into one chunk.
+    if (
+      (c === "B" || c === "b") &&
+      /^begin\b/i.test(sql.slice(i, i + 6))
+    ) {
+      const prev = i > 0 ? sql[i - 1] : " ";
+      const isWordBoundary = i === 0 || /[\s(;]/.test(prev);
+      // What follows BEGIN? Check the next ~30 chars past the keyword.
+      const after = sql.slice(i + 5, i + 35);
+      const isTxnControl =
+        /^\s*(;|$)/.test(after) ||
+        /^\s+(transaction|deferred|immediate|exclusive)\b/i.test(after);
+      if (isWordBoundary && !isTxnControl) {
+        beginDepth++;
+        buf += sql.slice(i, i + 5);
+        i += 5;
+        continue;
+      }
+    }
+    // CASE — track a separate depth so CASE...END inside a trigger body
+    // does not decrement beginDepth. Only when we're inside a trigger.
+    if (
+      (c === "C" || c === "c") &&
+      /^case\b/i.test(sql.slice(i, i + 5)) &&
+      beginDepth > 0
+    ) {
+      const prev = i > 0 ? sql[i - 1] : " ";
+      if (i === 0 || /[\s(,;]/.test(prev)) {
+        caseDepth++;
+        buf += sql.slice(i, i + 4);
+        i += 4;
+        continue;
+      }
+    }
+    // END — closes the innermost open construct. CASE first (if any),
+    // otherwise the trigger body. `RAISE(ABORT,'x')END` is legal SQL, so
+    // ')' is a valid preceding character.
+    if (
+      (c === "E" || c === "e") &&
+      /^end\b/i.test(sql.slice(i, i + 4)) &&
+      (beginDepth > 0 || caseDepth > 0)
+    ) {
+      const prev = i > 0 ? sql[i - 1] : " ";
+      if (/[\s;)]/.test(prev)) {
+        if (caseDepth > 0) {
+          caseDepth--;
+        } else {
+          beginDepth--;
+        }
+        buf += sql.slice(i, i + 3);
+        i += 3;
+        continue;
+      }
+    }
+
     if (c === ";") {
+      // Semicolons inside BEGIN...END blocks terminate INNER statements only,
+      // not the outer CREATE TRIGGER. Keep them in the buffer.
+      if (beginDepth > 0) {
+        buf += c;
+        i++;
+        continue;
+      }
       const stmt = buf.trim();
       if (stmt.length > 0) out.push(stmt);
       buf = "";
@@ -254,6 +339,96 @@ function openSqliteAdapter(url: string, log: Logger): MigrationAdapter {
           applied_at TEXT NOT NULL
         )
       `);
+
+      // v26.7.2 hotfix: seed __drizzle_migrations_applied from the legacy
+      // _migrations_applied tracker if it exists. On production DBs that
+      // predate the numbered-runner migration_applied table, all history
+      // lives in the legacy table. Without this seed the new runner
+      // re-applies every migration from 0001, hitting pre-existing bugs
+      // (e.g. 0121 CREATE TRIGGER splitStatements) and failing.
+      // Also handles the legacy_v26_7_2 rename table (see connection.ts
+      // applyInlineMigrations shape-repair).
+      try {
+        const legacyCandidates = [
+          "_migrations_applied",
+          "_migrations_applied_legacy_v26_7_2",
+        ];
+        for (const tblName of legacyCandidates) {
+          const exists = db
+            .prepare(
+              "SELECT name FROM sqlite_master WHERE type='table' AND name=?"
+            )
+            .get(tblName);
+          if (!exists) continue;
+          // Detect which column holds the migration filename
+          const cols = db
+            .prepare(`PRAGMA table_info('${tblName}')`)
+            .all() as { name: string }[];
+          const colSet = new Set(cols.map((c) => c.name));
+          const filenameCol = colSet.has("name")
+            ? "name"
+            : colSet.has("key")
+              ? "key"
+              : null;
+          if (!filenameCol) continue;
+          const legacyRows = db
+            .prepare(
+              `SELECT ${filenameCol} AS n, applied_at AS at FROM ${tblName}`
+            )
+            .all() as { n: string; at: string }[];
+          if (legacyRows.length === 0) continue;
+          const nowIso = new Date().toISOString();
+          const insert = db.prepare(
+            "INSERT OR IGNORE INTO __drizzle_migrations_applied (name, applied_at) VALUES (?, ?)"
+          );
+          // Match seeded rows against the actual on-disk filenames to
+          // canonicalize extension casing exactly. If a file is missing
+          // from disk but present in legacy tracker, we still seed it (with
+          // lowercase .sql) so an accidentally-deleted-then-restored file
+          // doesn't re-run.
+          const seededNames: string[] = [];
+          const seedTxn = db.transaction(
+            (rows: { n: string; at: string }[]) => {
+              let seeded = 0;
+              for (const row of rows) {
+                // Skip non-strings defensively
+                if (typeof row.n !== "string") continue;
+                const base = row.n.replace(/\.sql$/i, "");
+                // Only seed entries that look like numbered migration filenames.
+                if (!/^\d{4,}_/.test(base)) continue;
+                // The runner checks `applied.has(f.name)` where f.name is
+                // the full filename WITH `.sql` suffix — seed with suffix.
+                // Preserve the LEGACY applied_at timestamp for audit trail;
+                // only fall back to nowIso if the legacy row lacked one.
+                const withSuffix = `${base}.sql`;
+                const timestamp =
+                  typeof row.at === "string" && row.at ? row.at : nowIso;
+                const result = insert.run(withSuffix, timestamp);
+                if (result.changes > 0) {
+                  seeded++;
+                  seededNames.push(withSuffix);
+                }
+              }
+              return seeded;
+            }
+          );
+          const seeded = seedTxn(legacyRows);
+          if (seeded > 0) {
+            log.info(
+              `Seeded ${seeded} legacy-tracker entries (from ${tblName}) into __drizzle_migrations_applied`
+            );
+            // Always log the seeded names — auditable, and lets an operator
+            // diff the seeded set against actual schema state.
+            log.info(
+              `[migrate] seeded (ASSUMED applied, NOT verified against schema): ${seededNames.join(", ")}`
+            );
+          }
+        }
+      } catch (err: any) {
+        log.warn(
+          `[migrate] legacy tracker seed skipped: ${err?.message ?? String(err)}`
+        );
+      }
     },
     appliedSet() {
       const rows = db
