@@ -22,6 +22,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ShieldCheck, ArrowLeft } from "lucide-react";
 import { AccreditationDeclaration } from "@/components/investor/AccreditationDeclaration";
+/* WAVE 18 ORP-040 — investor KYC document upload + read-back. The two endpoints
+   (server/lib/kycDocumentStore.ts:132,:218) had zero client callers. This page is
+   the investor's existing compliance home, so the documents belong beside the
+   accreditation declaration they support. */
+import { InvestorKycDocumentsPanel } from "@/components/investor/InvestorKycDocumentsPanel";
 
 export default function InvestorAccreditation() {
   const search = useSearch();
@@ -72,6 +77,9 @@ export default function InvestorAccreditation() {
                  control after invalidating its GET. Nothing else to do here. */
             }}
           />
+
+          {/* WAVE 18 ORP-040 — additive sibling element. */}
+          <InvestorKycDocumentsPanel />
         </div>
       </PageBody>
     </>

@@ -44,10 +44,15 @@ beforeAll(async () => {
 afterAll(() => {
   if (PRIOR_ENFORCE_FLAG === undefined) delete process.env.ENFORCE_AUTH_RATELIMIT;
   else process.env.ENFORCE_AUTH_RATELIMIT = PRIOR_ENFORCE_FLAG;
+  /* WAVE 19 — a test in this file sets TRUSTED_PROXY_HOPS; it must not escape
+     the file and re-loosen another suite's limiter keying. */
+  delete process.env.TRUSTED_PROXY_HOPS;
 });
 
 beforeEach(() => {
   _resetAuthRateLimitsForTests();
+  /* WAVE 19 — fail-closed default unless a test opts in explicitly. */
+  delete process.env.TRUSTED_PROXY_HOPS;
 });
 
 describe("Wave C FIX C4 — per-IP rate limit on /api/auth/login", () => {
@@ -97,6 +102,25 @@ describe("Wave C FIX C4 — per-IP rate limit on /api/auth/login", () => {
   });
 
   it("rate limits are PER-IP (distinct IPs have independent budgets)", async () => {
+    /* WAVE 19 · WAIVER-2 — INTENT PRESERVED, MECHANISM CORRECTED.
+     *
+     * This test used to establish "distinct IPs" purely by sending a different
+     * `X-Forwarded-For` on each request. That is not two clients; it is one
+     * client sending two strings. Before the WAIVER-2 fix the limiter believed
+     * it, which is precisely why an attacker could spray login attempts
+     * without limit — so the test was, unintentionally, asserting the
+     * vulnerability, and would have gone green forever while the throttle did
+     * nothing.
+     *
+     * `authIpKey` now goes through `resolveRateLimitClientIp`, which ignores
+     * the header unless `TRUSTED_PROXY_HOPS` declares how many proxies WE
+     * operate in front of the process. Setting it to 1 here models the real
+     * deployment this test is about — a load balancer that appends the true
+     * peer — so the ORIGINAL assertion (two genuinely distinct clients get
+     * independent budgets) is preserved and still meaningful. The companion
+     * test below covers the untrusted case.
+     */
+    process.env.TRUSTED_PROXY_HOPS = "1";
     const limit = AuthRateLimitConfig.LOGIN_LIMIT;
     // IP A exhausts its budget.
     for (let i = 0; i < limit; i++) {
@@ -117,6 +141,22 @@ describe("Wave C FIX C4 — per-IP rate limit on /api/auth/login", () => {
       .set("X-Forwarded-For", "203.0.113.11")
       .send({ email: "b@x.com", password: "x" });
     expect(rb.status).not.toBe(429);
+  });
+
+  it("WAVE 19 — with NO trusted-proxy configuration, rotating X-Forwarded-For does NOT buy a fresh budget", async () => {
+    /* The pole the original test was missing, and the actual security
+       property: fail closed. One host, many claimed addresses, one budget. */
+    delete process.env.TRUSTED_PROXY_HOPS;
+    const limit = AuthRateLimitConfig.LOGIN_LIMIT;
+    const codes: number[] = [];
+    for (let i = 0; i < limit + 3; i++) {
+      const r = await request(app)
+        .post("/api/auth/login")
+        .set("X-Forwarded-For", `198.51.100.${i}`)
+        .send({ email: `spray${i}@x.com`, password: "x" });
+      codes.push(r.status);
+    }
+    expect(codes.filter((c) => c === 429)).toHaveLength(3);
   });
 
   it("does not throttle a successful login attempt issued within the budget", async () => {

@@ -15,6 +15,7 @@ import { isActiveLiveRoundState } from "@shared/schema";
  */
 import { useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { LoadFailedRefusal } from "@/components/LoadFailedRefusal"; /* WAVE 22 · ITEM 4 */
 import { Link, useLocation } from "wouter";
 import { PageBody, PageHeader } from "@/components/AppShell";
 import { Stat, StateBadge } from "@/components/common";
@@ -523,7 +524,23 @@ export default function FounderDashboard() {
               <p className="text-xs text-muted-foreground mt-0.5">Investor-led initiatives proposed for {company?.companyName ?? "this company"}.</p>
             </CardHeader>
             <CardContent className="space-y-3">
-              {inbound.length === 0 ? (
+              {/* WAVE 22 · ITEM 4 (REVIEW B F-4) — `inbound` derives from
+                  `asArray(maAll.data)`, so a failed /api/investor/ma/initiatives
+                  load collapsed to zero and this card asserted "No inbound M&A
+                  initiatives" to a founder who may have live acquirer interest.
+                  Sibling refusal + retry; empty state re-gated on isSuccess. */}
+              {maAll.isError ? (
+                <LoadFailedRefusal
+                  what="inbound M&A initiatives"
+                  testId="founder-ma-inbound-error"
+                  onRetry={() => void maAll.refetch()}
+                  isRetrying={maAll.isFetching}
+                />
+              ) : !maAll.isSuccess ? (
+                <div className="text-sm text-muted-foreground border border-dashed border-border rounded-md p-4 text-center" data-testid="founder-ma-inbound-not-loaded">
+                  Inbound initiatives have not loaded. Check your connection.
+                </div>
+              ) : inbound.length === 0 ? (
                 <div className="text-sm text-muted-foreground border border-dashed border-border rounded-md p-4 text-center" data-testid="text-ma-empty">
                   No inbound M&amp;A initiatives. When an investor opens one from their portfolio view, it lands here.
                 </div>
@@ -639,7 +656,22 @@ export default function FounderDashboard() {
                       <span className="text-muted-foreground tabular-nums ml-2">{d.totalViews} · {d.uniqueViewers}u</span>
                     </li>
                   ))}
-                  {(engagement.data?.topDocs ?? []).length === 0 && <li className="text-xs text-muted-foreground">No views yet.</li>}
+                  {/* WAVE 22 · ITEM 4 — "No views yet." on a failed engagement
+                      load tells a founder their data room is being ignored. */}
+                  {engagement.isError && (
+                    <li>
+                      <LoadFailedRefusal
+                        what="data-room view stats"
+                        testId="founder-topdocs-error"
+                        onRetry={() => void engagement.refetch()}
+                        isRetrying={engagement.isFetching}
+                      />
+                    </li>
+                  )}
+                  {!engagement.isError && !engagement.isSuccess && (
+                    <li className="text-xs text-muted-foreground" data-testid="founder-topdocs-not-loaded">View stats have not loaded. Check your connection.</li>
+                  )}
+                  {engagement.isSuccess && (engagement.data?.topDocs ?? []).length === 0 && <li className="text-xs text-muted-foreground">No views yet.</li>}
                 </ul>
               </CardContent>
             </Card>
@@ -685,13 +717,27 @@ export default function FounderDashboard() {
           </CardHeader>
           <CardContent>
             <ul className="divide-y divide-border -mx-3">
-              {activity.data?.length === 0 && (
+              {/* WAVE 22 · ITEM 4 — sibling refusal for the activity log. */}
+              {activity.isError && (
+                <li className="px-3 py-4">
+                  <LoadFailedRefusal
+                    what="your activity log"
+                    testId="founder-activity-error"
+                    onRetry={() => void activity.refetch()}
+                    isRetrying={activity.isFetching}
+                  />
+                </li>
+              )}
+              {!activity.isError && !activity.isSuccess && !activity.isLoading && (
+                <li className="px-3 py-4 text-center text-sm text-muted-foreground" data-testid="founder-activity-not-loaded">Activity has not loaded. Check your connection.</li>
+              )}
+              {activity.isSuccess && activity.data?.length === 0 && (
                 <li className="px-3 py-4 text-center text-sm text-muted-foreground" data-testid="activity-empty">
                   No recent activity.{" "}
                   <Link href="/founder/glossary" className="text-[hsl(0_100%_40%)] underline">Browse glossary →</Link>
                 </li>
               )}
-              {activity.data?.slice(0, 5).map(a => (
+              {activity.isSuccess && activity.data?.slice(0, 5).map(a => (
                 <li key={a.id} className="px-3 py-2.5 flex items-start gap-3 text-sm" data-testid={`row-activity-${a.id}`}>
                   <div className="mt-1 h-1.5 w-1.5 rounded-full bg-[hsl(0_100%_40%)]" />
                   <div className="flex-1 min-w-0">

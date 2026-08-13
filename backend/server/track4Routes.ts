@@ -30,6 +30,18 @@ import { getUserContext } from "./lib/userContext";
 import { resolveDisplayName } from "./lib/userPrivacyResolver";
 import { rawDb } from "./db/connection";
 import { log } from "./lib/logger";
+import { toMinor } from "./lib/currency"; /* WAVE 33 OQ-33-2 — ISO 4217 exponent, never a hardcoded *100 */
+/* WAVE 35 · F3 — the SIXTH cross-currency summation. This handler already
+ * SELECTed each row's `currency` (it needs it for the exponent) and then threw
+ * it away, adding ¥ minor units and $ minor units into one `totalRaisedMinor`.
+ * Same contract, same helpers, as the five sites Wave 21 fixed: bucket per
+ * currency, and emit a scalar ONLY when exactly one currency is present. */
+import {
+  addToBucket,
+  singleCurrencyScalar,
+  bucketsToArray,
+  type CurrencyBuckets,
+} from "./lib/currencyScalar";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -39,6 +51,10 @@ interface SoftCircleAttribution {
   id: string;
   company_id: string | null;
   amount_minor: number;
+  /* WAVE 35 · F3 — the row's own ISO 4217 code. It was already SELECTed for
+   * the exponent; carrying it onto the row is what makes partitioning
+   * possible instead of summing across currencies. */
+  currency: string;
   source_type: SourceType | null;
   source_id: string | null;
   investor_user_id: string | null;
@@ -119,14 +135,24 @@ function handleFounderChannels(req: Request, res: Response): void {
 
   let rows: SoftCircleAttribution[];
   try {
-    rows = rawDb()
+    /* WAVE 33 OQ-33-2 sink 5 — the minor-unit fallback used to be computed IN
+     * SQL as `CAST(ROUND(sc.amount * 100) AS INTEGER)`, a hardcoded ISO 4217
+     * exponent of 2. SQLite cannot apply a per-row exponent in-query, so the
+     * raw major amount and the row's own currency are selected instead and
+     * the conversion happens in JS through `toMinor`. For JPY (exponent 0)
+     * the old form reported every unmigrated soft circle — and therefore the
+     * whole founder-channel attribution total — 100x too large. Same numeric
+     * type (integer minor units) as before, so no downstream reader changes. */
+    const raw = rawDb()
       .prepare(
         // Join through rounds to find SCs by company (company_id may be NULL on the SC row itself
         // when the drizzle ORM doesn't map the field correctly; the canonical company linkage is
         // via the round). Falls back to direct company_id match for legacy rows that store it directly.
         `SELECT sc.id,
                 COALESCE(sc.company_id, r.company_id) AS company_id,
-                CASE WHEN sc.amount_minor > 0 THEN sc.amount_minor ELSE CAST(ROUND(sc.amount * 100) AS INTEGER) END AS amount_minor,
+                sc.amount_minor AS amount_minor,
+                sc.amount AS amount_major,
+                COALESCE(sc.currency, r.currency) AS currency,
                 sc.source_type,
                 sc.source_id,
                 sc.investor_user_id,
@@ -135,44 +161,71 @@ function handleFounderChannels(req: Request, res: Response): void {
            LEFT JOIN rounds r ON sc.round_id = r.id
           WHERE COALESCE(sc.company_id, r.company_id) = ?`,
       )
-      .all(companyId) as SoftCircleAttribution[];
+      .all(companyId) as Array<
+        Omit<SoftCircleAttribution, "amount_minor" | "currency"> & {
+          amount_minor: number | null;
+          amount_major: number | null;
+          currency: string | null;
+        }
+      >;
+    rows = raw.map((r) => {
+      const stored = Number(r.amount_minor) || 0;
+      /* WAVE 35 · F3 — the SAME code that picks the exponent below is now also
+       * carried onto the row and used to partition every total. Previously it
+       * was consumed here and discarded, which is precisely how ¥ and $ ended
+       * up in one integer. */
+      const cur = String(r.currency ?? "USD").trim().toUpperCase() || "USD";
+      return {
+        id: r.id,
+        company_id: r.company_id,
+        amount_minor: stored > 0 ? stored : toMinor(Number(r.amount_major) || 0, cur),
+        currency: cur,
+        source_type: r.source_type,
+        source_id: r.source_id,
+        investor_user_id: r.investor_user_id,
+        investor_name: r.investor_name,
+      };
+    });
   } catch (err) {
     log.error("[track4/D1] DB query failed:", (err as Error).message);
     res.status(500).json({ ok: false, error: "DB_ERROR", message: (err as Error).message });
     return;
   }
 
-  // Aggregate by channel
-  type ChannelBucket = { countSCs: number; totalMinor: number };
+  /* WAVE 35 · F3 — every accumulator is now a PER-CURRENCY bucket map. A raw
+   * `totalMinor` integer is only derived at emit time, and only when the
+   * bucket map holds exactly one currency. */
+  type ChannelBucket = { countSCs: number; buckets: CurrencyBuckets };
   const channels: Record<SourceType, ChannelBucket> = {
-    direct:     { countSCs: 0, totalMinor: 0 },
-    collective: { countSCs: 0, totalMinor: 0 },
-    partner:    { countSCs: 0, totalMinor: 0 },
+    direct:     { countSCs: 0, buckets: {} },
+    collective: { countSCs: 0, buckets: {} },
+    partner:    { countSCs: 0, buckets: {} },
   };
-  const unattributed: ChannelBucket = { countSCs: 0, totalMinor: 0 };
+  const unattributed: ChannelBucket = { countSCs: 0, buckets: {} };
 
-  // Partner aggregation: partnerId → { partnerName?, countSCs, totalMinor }
-  const byPartnerMap = new Map<string, { partnerId: string; partnerName: string; countSCs: number; totalMinor: number }>();
-  // Collective aggregation: userId → { userId, name, countSCs, totalMinor }
-  const byCollectiveMemberMap = new Map<string, { userId: string; name: string; countSCs: number; totalMinor: number }>();
+  // Partner aggregation: partnerId → { partnerName?, countSCs, buckets }
+  const byPartnerMap = new Map<string, { partnerId: string; partnerName: string; countSCs: number; buckets: CurrencyBuckets }>();
+  // Collective aggregation: userId → { userId, name, countSCs, buckets }
+  const byCollectiveMemberMap = new Map<string, { userId: string; name: string; countSCs: number; buckets: CurrencyBuckets }>();
 
-  let totalRaisedMinor = 0;
+  const totalBuckets: CurrencyBuckets = {};
 
   for (const row of rows) {
     const minor = Number(row.amount_minor) || 0;
-    totalRaisedMinor += minor;
+    const cur = row.currency;
+    addToBucket(totalBuckets, cur, minor);
 
     const st = (row.source_type as SourceType | null) ?? null;
 
     if (!st || !["direct", "collective", "partner"].includes(st)) {
       // Unattributed (source_type NULL or unexpected value)
       unattributed.countSCs++;
-      unattributed.totalMinor += minor;
+      addToBucket(unattributed.buckets, cur, minor);
       continue;
     }
 
     channels[st].countSCs++;
-    channels[st].totalMinor += minor;
+    addToBucket(channels[st].buckets, cur, minor);
 
     if (st === "partner" && row.source_id) {
       const pid = row.source_id;
@@ -185,11 +238,11 @@ function handleFounderChannels(req: Request, res: Response): void {
             .get(pid) as { name?: string } | undefined;
           if (pRow?.name) pName = pRow.name;
         } catch { /* best-effort */ }
-        byPartnerMap.set(pid, { partnerId: pid, partnerName: pName, countSCs: 0, totalMinor: 0 });
+        byPartnerMap.set(pid, { partnerId: pid, partnerName: pName, countSCs: 0, buckets: {} });
       }
       const bucket = byPartnerMap.get(pid)!;
       bucket.countSCs++;
-      bucket.totalMinor += minor;
+      addToBucket(bucket.buckets, cur, minor);
     }
 
     if (st === "collective" && row.source_id) {
@@ -221,19 +274,40 @@ function handleFounderChannels(req: Request, res: Response): void {
           legalName: rawMemberName,
           isCoMember: true,
         });
-        byCollectiveMemberMap.set(uid, { userId: uid, name: memberName, countSCs: 0, totalMinor: 0 });
+        byCollectiveMemberMap.set(uid, { userId: uid, name: memberName, countSCs: 0, buckets: {} });
       }
       const bucket = byCollectiveMemberMap.get(uid)!;
       bucket.countSCs++;
-      bucket.totalMinor += minor;
+      addToBucket(bucket.buckets, cur, minor);
     }
   }
 
-  // Invariant check: channel sums + unattributed === totalRaisedMinor
-  const channelSum = channels.direct.totalMinor + channels.collective.totalMinor + channels.partner.totalMinor + unattributed.totalMinor;
-  const invariantOk = channelSum === totalRaisedMinor;
+  /* WAVE 35 · F3 — the invariant is now checked PER CURRENCY. Comparing two
+   * cross-currency sums would have "passed" while both numbers were
+   * meaningless, which is why the old check never caught this. */
+  const perCurrencyInvariant: Array<{ currency: string; channelSum: number; total: number; ok: boolean }> = [];
+  const allCurrencies = new Set<string>([
+    ...Object.keys(totalBuckets),
+    ...Object.keys(channels.direct.buckets),
+    ...Object.keys(channels.collective.buckets),
+    ...Object.keys(channels.partner.buckets),
+    ...Object.keys(unattributed.buckets),
+  ]);
+  for (const c of Array.from(allCurrencies).sort()) {
+    const sum =
+      (channels.direct.buckets[c] ?? 0) +
+      (channels.collective.buckets[c] ?? 0) +
+      (channels.partner.buckets[c] ?? 0) +
+      (unattributed.buckets[c] ?? 0);
+    const tot = totalBuckets[c] ?? 0;
+    perCurrencyInvariant.push({ currency: c, channelSum: sum, total: tot, ok: sum === tot });
+  }
+  const invariantOk = perCurrencyInvariant.every((e) => e.ok);
   if (!invariantOk) {
-    log.warn(`[track4/D1] Invariant violation for company ${companyId}: channelSum=${channelSum} totalRaisedMinor=${totalRaisedMinor}`);
+    log.warn(
+      `[track4/D1] Invariant violation for company ${companyId}: ` +
+      perCurrencyInvariant.filter((e) => !e.ok).map((e) => `${e.currency} channelSum=${e.channelSum} total=${e.total}`).join("; "),
+    );
   }
 
   // v25.2: surface the sponsoring consortium partner (from consortium_links) even when
@@ -265,7 +339,7 @@ function handleFounderChannels(req: Request, res: Response): void {
           partnerId: linkRow.partner_id,
           partnerName: pName,
           countSCs: 0,
-          totalMinor: 0,
+          buckets: {},
         });
       }
     }
@@ -273,20 +347,53 @@ function handleFounderChannels(req: Request, res: Response): void {
     log.warn(`[track4/D1] consortium_links lookup failed for ${companyId}:`, (err as Error).message);
   }
 
+  /* WAVE 35 · F3 — emit. `totalMinor` keeps its name and its integer type for
+   * every existing single-currency reader, but it is now derived through
+   * `singleCurrencyScalar` and is NULL when two or more currencies contributed
+   * (nulls, not zeros, with the reason and the currency list attached so the
+   * renderer can refuse honestly). The per-currency array beside it is the
+   * authoritative shape and is ALWAYS present — nothing is dropped. */
+  const emitBucket = (b: { countSCs: number; buckets: CurrencyBuckets }) => {
+    const scalar = singleCurrencyScalar(b.buckets, "USD");
+    return {
+      countSCs: b.countSCs,
+      totalMinor: scalar.available ? scalar.minor : null,
+      currency: scalar.available ? scalar.currency : null,
+      byCurrency: bucketsToArray(b.buckets),
+      ...(scalar.available ? {} : { unavailableReason: scalar.reason, currencies: scalar.currencies }),
+    };
+  };
+
+  const totalScalar = singleCurrencyScalar(totalBuckets, "USD");
+  const totalRaisedMinor = totalScalar.available ? totalScalar.minor : null;
+
   res.json({
     ok: true,
     companyId,
     totalRaisedMinor,
+    totalRaisedCurrency: totalScalar.available ? totalScalar.currency : null,
+    totalRaisedByCurrency: bucketsToArray(totalBuckets),
+    ...(totalScalar.available
+      ? {}
+      : { totalRaisedUnavailableReason: totalScalar.reason, currencies: totalScalar.currencies }),
     byChannel: {
-      direct:     channels.direct,
-      collective: channels.collective,
-      partner:    channels.partner,
+      direct:     emitBucket(channels.direct),
+      collective: emitBucket(channels.collective),
+      partner:    emitBucket(channels.partner),
     },
-    unattributed: unattributed.countSCs > 0 ? unattributed : undefined,
-    byPartner: Array.from(byPartnerMap.values()),
-    byCollectiveMember: Array.from(byCollectiveMemberMap.values()),
+    unattributed: unattributed.countSCs > 0 ? emitBucket(unattributed) : undefined,
+    byPartner: Array.from(byPartnerMap.values()).map((p) => ({
+      partnerId: p.partnerId,
+      partnerName: p.partnerName,
+      ...emitBucket(p),
+    })),
+    byCollectiveMember: Array.from(byCollectiveMemberMap.values()).map((m) => ({
+      userId: m.userId,
+      name: m.name,
+      ...emitBucket(m),
+    })),
     sponsoringPartner,
-    _meta: { invariantOk, channelSum, totalRaisedMinor },
+    _meta: { invariantOk, perCurrencyInvariant, totalRaisedByCurrency: bucketsToArray(totalBuckets) },
   });
 }
 

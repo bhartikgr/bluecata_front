@@ -11,6 +11,7 @@
  * there are NO hardcoded fee amounts in this file.
  */
 import { rawDb } from "../db/connection";
+import { assertStoredFraction } from "./percentPolicy";
 import type { PartnerTier } from "../adminContactsStoreShim";
 import { resolveEffectiveSeatLimit } from "../adminContactsStore"; /* W-V44 FIX R3 */
 
@@ -210,7 +211,31 @@ export function resolveCommissionOverridePct(partnerId: string): number | null {
     .prepare(`SELECT commission_override_pct FROM contacts WHERE id = ? AND kind = 'consortium_partner' AND deleted_at IS NULL`)
     .get(partnerId) as { commission_override_pct: number | null } | undefined;
   if (!row || row.commission_override_pct === null || row.commission_override_pct === undefined) return null;
-  return row.commission_override_pct;
+  /* ── WAVE 5 / P-12 ──────────────────────────────────────────────────────
+   * THE READ SIDE IS THE SIDE THAT DECIDES THE FEE.
+   *
+   * The WRITE path already clamps this column to [0,1]
+   * (server/lib/partnerFeeAdminRoutes.ts:181-194). This READ did not check
+   * anything and returned the raw column, which is a real gap and not a
+   * theoretical one, because the column is declared plain `REAL` at
+   * server/db/connection.ts:2068 — with no CHECK constraint, so ANY writer
+   * that is not that one admin route (a data fix, an import, a future
+   * endpoint, a direct UPDATE) can seat an out-of-domain value, and this
+   * function would hand it straight to the fee math as if it were a rate. A
+   * stored 30 (someone typing "30" meaning 30%) would bill THIRTY TIMES the
+   * transaction.
+   *
+   * `assertStoredFraction` THROWS rather than clamping. Clamping here would
+   * silently bill 100% instead of silently billing 3000% — both wrong, and
+   * the clamp hides the bad row forever. Throwing fails the fee resolution
+   * loudly with the offending value in the message.
+   *
+   * Defence in depth: migration 0153 also attaches insert/update triggers
+   * (trg_contacts_commission_override_pct_ins / _upd) that fence the column
+   * at the TABLE, so no writer can seat an out-of-domain value in the first
+   * place. connection.ts is SACRED, so a trigger is the only way to add the
+   * constraint the column should have had. */
+  return assertStoredFraction("partner.commissionOverridePct", row.commission_override_pct);
 }
 
 /* ===========================================================================

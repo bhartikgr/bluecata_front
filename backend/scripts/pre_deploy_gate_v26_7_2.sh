@@ -53,6 +53,175 @@ echo "Target DB: $DB_PATH"
 echo "Timestamp: $(date -Iseconds)"
 echo ""
 
+# ---- Step 0: SACRED-HASH CHECK (WAVE 10 / G-3, closes DEF-079). -------------
+#
+# THE DEFECT THIS CLOSES. Until now this script gated the DATABASE and nothing
+# else. It pre-marked non-idempotent migrations, then handed control to
+# `npm run db:migrate` against WHATEVER SOURCE HAPPENED TO BE ON DISK. A tree in
+# which a SACRED file had been edited — `server/captableCommitStore.ts`,
+# `server/subscriptionStore.ts`, `server/paymentGatewayAdapter.ts`,
+# `server/lib/migrationRunner.ts` and 36 others — passed this gate without a
+# word. `scripts/sacred_check.sh` existed and was correct, but it was only wired
+# into `npm run preflight` (package.json), which is a DEVELOPER command run in
+# the repo. The PRODUCTION path, which is this script, never called it. That is
+# DEF-079: the one gate an operator actually runs on the server was the one gate
+# with no source-integrity check.
+#
+# WHY IT RUNS FIRST. It runs before the backup and before any write, so a tree
+# with a tampered money-core file cannot even reach the point of touching the
+# production DB.
+#
+# WHY IT IS NOT SILENTLY SKIPPED. If `sacred_check.sh` is missing, this gate
+# FAILS — it does not shrug and continue. A missing verifier is indistinguishable
+# from a failing one, and treating it as a pass is precisely the vacuously-green
+# failure mode that WAVE 7B found in DA-3's scope fence, where
+# `collectFencedPaths()` silently skipped paths that did not exist on disk and
+# so reported success while checking nothing. There is exactly one escape hatch,
+# it is loud, and it names itself in the output:
+#
+#   SACRED_GATE_OVERRIDE=1 bash scripts/pre_deploy_gate_v26_7_2.sh /path/data.db
+#
+# FALSIFICATION (run before shipping, recorded in build_log/WAVE10_REPORT.md):
+# appending one byte to `server/captableCommitStore.ts` makes this step exit 1
+# and abort the gate; reverting the byte makes it pass again. A check that has
+# not been made to fail is not evidence.
+GATE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SACRED_CHECK="$GATE_DIR/sacred_check.sh"
+echo "[0/5] Sacred-file integrity (G-3 / DEF-079)"
+if [ "${SACRED_GATE_OVERRIDE:-0}" = "1" ]; then
+  echo "      !!! SACRED CHECK OVERRIDDEN via SACRED_GATE_OVERRIDE=1."
+  echo "      !!! This deploy is UNVERIFIED at the source level. Record who"
+  echo "      !!! authorised it and why in the deploy log."
+elif [ ! -f "$SACRED_CHECK" ]; then
+  echo "      FAIL: $SACRED_CHECK is missing." >&2
+  echo "            The gate cannot verify source integrity, so it refuses to" >&2
+  echo "            proceed. A verifier that is absent is not a verifier that" >&2
+  echo "            passed. Restore scripts/sacred_check.sh from the release" >&2
+  echo "            package, or re-run with SACRED_GATE_OVERRIDE=1 if you are" >&2
+  echo "            knowingly accepting an unverified tree." >&2
+  exit 1
+else
+  # W31-A3 — REPORT WHAT THE CHECKER SAID, DO NOT RE-STATE IT FROM MEMORY.
+  # This line read "47/47 sacred files byte-identical (2 under WAIVER-1 freeze)"
+  # — a hardcoded string that had drifted badly: the freeze holds FIVE files
+  # under four different waivers, including WAIVER-4 over a live LP-privacy fix.
+  # The operator running a deploy saw "2 under WAIVER-1" and would reasonably
+  # conclude three other waived files were unwaived drift, or never learn they
+  # existed. Running WITHOUT `--quiet` and echoing the checker's own summary
+  # means this gate can no longer disagree with the checker: there is one string
+  # and sacred_check.sh derives it from the KNOWN_DRIFT array.
+  #
+  # The capture is written as the `if` CONDITION, not as a bare assignment.
+  # `set -e` (line 38) aborts the script on a failing simple command, so
+  # `SACRED_SUMMARY=$(...)` followed by `if [ $? -eq 0 ]` would kill the gate the
+  # instant sacred drift was detected — losing the entire FAIL branch below,
+  # which is the branch that tells the operator what to do. Exit status inside an
+  # `if` condition is exempt from `set -e`, so both poles stay reachable.
+  if SACRED_SUMMARY="$(bash "$SACRED_CHECK" 2>/dev/null)"; then
+    echo "      OK: ${SACRED_SUMMARY:-sacred check passed but printed nothing}"
+  else
+    echo "" >&2
+    echo "      FAIL: sacred-file drift detected. The gate is ABORTING before" >&2
+    echo "            the DB backup and before any write." >&2
+    echo "            Full detail:  bash scripts/sacred_check.sh" >&2
+    echo "            Manifest:     bash scripts/sacred_check.sh --list" >&2
+    echo "            A drifted sacred file means the tree you are about to" >&2
+    echo "            migrate is not the tree that was reviewed. Do not deploy" >&2
+    echo "            it. If the drift is intentional and owner-approved it" >&2
+    echo "            belongs in the KNOWN_DRIFT freeze in sacred_check.sh" >&2
+    echo "            (WAIVER-1 pattern), with the old hash recorded, NOT in an" >&2
+    echo "            override on the day of the deploy." >&2
+    exit 1
+  fi
+fi
+echo ""
+
+# ---- Step 0b: COVERAGE CI GATE (WAVE 12 / C-2). -----------------------------
+#
+# THE DEFECT THIS CLOSES. Step 0 above verifies that sacred files have not
+# DRIFTED. It cannot tell you whether the build they belong to still accounts
+# for every row of the register, because nothing anywhere executed either
+# coverage checker. `spec/_v8_coverage.py` appears in this repo exactly twice:
+# as a SHA256 row in scripts/sacred_check.sh (which freezes its bytes) and as a
+# file on disk. Its bytes were guarded; its VERDICT was never read.
+#
+# Worse, it has no --ci mode and never validates argv, so a CI job written as
+# `python3 spec/_v8_coverage.py --ci` exits 0 while enforcing no baseline at
+# all — the same vacuously-green shape as DA-3's scope fence described in
+# Step 0's comment. scripts/coverage_ci_gate.sh is the real gate; see its
+# header for defects D1/D2/D3 and the falsification of each.
+#
+# WHY IT IS HERE AND NOT ONLY IN `npm run preflight`. Step 0's comment above
+# records precisely this mistake for sacred_check.sh: it existed, it was
+# correct, and it was wired ONLY into a developer command, so the production
+# path never called it (DEF-079). Wiring C-2 into preflight alone would repeat
+# DEF-079 verbatim. It is wired into BOTH.
+#
+# WHY IT IS NOT SILENTLY SKIPPED. Same rule as Step 0 — a missing verifier is
+# not a passing verifier. Missing script => FAIL. One loud, self-naming
+# escape hatch:
+#
+#   COVERAGE_GATE_OVERRIDE=1 bash scripts/pre_deploy_gate_v26_7_2.sh /path/data.db
+#
+# It is skipped WITHOUT failure in exactly one case: the spec/ tree is not
+# present beside the repo. Release packages ship the app tree without spec/,
+# and this gate must remain runnable on a production server. That skip is
+# printed, never silent, and it says what was not checked.
+#
+# FALSIFICATION (build_log/WAVE12_REPORT.md, 35/35 assertions):
+# scripts/__tests__/coverage_ci_gate_falsify.sh drives this gate against
+# mutated COPIES of spec/ and proves it exits 1 on a real undispositioned
+# register row and on a stale baseline, and 2 on a missing/malformed baseline,
+# an unknown flag, H1/H2/H4/H6 tampering and missing inputs.
+COVERAGE_GATE="$GATE_DIR/coverage_ci_gate.sh"
+COVERAGE_SPEC_ROOT="${SPEC_ROOT:-$(cd "$GATE_DIR/../.." 2>/dev/null && pwd)/spec}"
+echo "[0b/5] Coverage non-regression (C-2)"
+if [ "${COVERAGE_GATE_OVERRIDE:-0}" = "1" ]; then
+  echo "      !!! COVERAGE GATE OVERRIDDEN via COVERAGE_GATE_OVERRIDE=1."
+  echo "      !!! Register coverage is UNVERIFIED for this deploy. Record who"
+  echo "      !!! authorised it and why in the deploy log."
+elif [ ! -d "$COVERAGE_SPEC_ROOT" ]; then
+  echo "      SKIPPED: no spec/ tree at $COVERAGE_SPEC_ROOT"
+  echo "               This is a release-package tree, which ships without"
+  echo "               spec/. NOT CHECKED: register coverage non-regression."
+  echo "               Source integrity (Step 0) still applies and passed."
+elif [ ! -f "$COVERAGE_GATE" ]; then
+  echo "      FAIL: $COVERAGE_GATE is missing." >&2
+  echo "            spec/ is present, so this tree is expected to be gated on" >&2
+  echo "            coverage, but the gate itself is absent. A verifier that is" >&2
+  echo "            absent is not a verifier that passed. Restore it, or re-run" >&2
+  echo "            with COVERAGE_GATE_OVERRIDE=1 to knowingly accept a tree" >&2
+  echo "            whose register coverage nobody checked." >&2
+  exit 1
+else
+  # `set -e` is in force (line 38). A bare `X="$(failing_cmd)"` assignment under
+  # `set -e` terminates the shell AT THE ASSIGNMENT, so COV_RC is never assigned
+  # and none of the diagnostics below ever print: the operator sees the gate stop
+  # after the "[0b/5]" line with exit 1 and no reason at all. That is exactly the
+  # silent failure this gate exists to prevent, and the first draft of this step
+  # had it (falsified: 0 bytes on stderr, exit 1). The `|| COV_RC=$?` suffix puts
+  # the command in a list, which suppresses `set -e` for it. Step 0 above dodges
+  # the same trap by using `if bash ...; then`.
+  COV_RC=0
+  COV_LOG="$(SPEC_ROOT="$COVERAGE_SPEC_ROOT" bash "$COVERAGE_GATE" 2>&1)" || COV_RC=$?
+  if [ "$COV_RC" = "0" ]; then
+    echo "      OK: $(sed -n 's/^gap (2 ways) *: *\([0-9]*\).*/gap \1/p' <<<"$COV_LOG" | head -1) == baseline, semantic gates H1..H6 clean"
+  else
+    echo "" >&2
+    echo "      FAIL (exit $COV_RC): coverage gate refused this tree. ABORTING" >&2
+    echo "            before the DB backup and before any write." >&2
+    echo "$COV_LOG" | sed 's/^/            /' >&2
+    echo "            exit 1 = the gap moved: either a register row lost its" >&2
+    echo "                     disposition (regression) or the baseline is stale." >&2
+    echo "            exit 2 = the inputs are invalid. That is a tampering" >&2
+    echo "                     signal, not a coverage number. Do not deploy and" >&2
+    echo "                     do not 'fix' it by editing the baseline." >&2
+    echo "            Detail:  bash scripts/coverage_ci_gate.sh --print" >&2
+    exit 1
+  fi
+fi
+echo ""
+
 # ---- Step 1: Back up the DB. Non-negotiable. --------------------------------
 BACKUP="${DB_PATH}.pre-v26.7.2.$(date +%Y%m%d_%H%M%S)"
 echo "[1/5] Backing up DB to $BACKUP"

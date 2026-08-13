@@ -92,10 +92,27 @@ describe("Sprint 16 — Comms tiers routes", () => {
     expect(r.body.id).toMatch(/^qaq_/);
   });
 
+  /* WAVE 18 / ORP-043 — contract change, deliberately reflected here.
+     This route used to answer the PLATFORM-WIDE advocate set to any caller and
+     named no company at all. It is now identity-bound and company-scoped
+     (`?companyId=`, cap-table membership or admin). The advisory label, the
+     array shape and the "not a cap-table-engine input" note are unchanged and
+     are still asserted below; only the identity/scope arguments were added.
+     The refusal poles (401 with no identity, 403 off the cap table, 400 with no
+     companyId) are asserted in server/__tests__/wave18_orp043_comms_tiers.test.ts. */
   it("GET /api/founder/crm/high-value-advocates labels advisory only", async () => {
-    const app = buildApp();
-    const r = await call(app, "GET", "/api/founder/crm/high-value-advocates");
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as express.Request & { userContext?: unknown }).userContext = {
+        userId: "u_admin", isAdmin: true, isAuthed: true,
+      };
+      next();
+    });
+    registerCommsTiersRoutes(app);
+    const r = await call(app, "GET", "/api/founder/crm/high-value-advocates?companyId=c1");
     expect(r.status).toBe(200);
+    expect(r.body.companyId).toBe("c1");
     expect(r.body.label).toBe("For informational purposes only");
     expect(Array.isArray(r.body.advocates)).toBe(true);
     expect(r.body.note).toMatch(/NOT a cap-table-engine input/);

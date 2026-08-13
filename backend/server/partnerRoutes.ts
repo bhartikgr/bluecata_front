@@ -26,7 +26,7 @@ const require = createRequire(import.meta.url);
 import type { Express, Request, Response } from "express";
 import { createHash, randomBytes } from "node:crypto"; /* v25.14 NC1 — secure team-invite redeem password */
 import { requireAdmin, requireAuth } from "./lib/authMiddleware";
-import { requirePartnerAuth, requirePartnerSelf, assertSubRole, assertTier, assertTierSeats } from "./lib/requirePartnerAuth";
+import { requirePartnerAuth, requirePartnerSelf, assertSubRole, assertTier, assertTierSeats, assertSeatCapacity } from "./lib/requirePartnerAuth";
 import { requireSignedAgreement } from "./lib/requireSignedAgreement";
 import { resolvePartnerEffectivePlan, EffectivePlanError } from "./lib/partnerEffectivePlan"; /* GROUP C (C5) — /api/partner/me surfaces the dynamic effective plan (price incl override, commission, report-only quota, rev-share) that drives the partner FE. */
 import { getUserContext } from "./lib/userContext";
@@ -53,12 +53,16 @@ import {
   PromotionConflictError,
   ALL_PIPELINE_STAGES,
   hashInviteToken,
+  type PartnerTeamInvitation,
 } from "./partnerWorkspaceStore";
 import { getAllContacts, listContacts, updateContact, createContact, upsertConsortiumPartner } from "./adminContactsStore";
 import { registerPersona, getUserContextForId } from "./lib/userContext";
 import { resolveDisplayNames } from "./lib/displayNameResolver"; /* W2-G — shared userId->name resolver */
 import { isPartnerTitle } from "../shared/partnerTitles"; /* 2a — display title enum (distinct from permission tier) */
 import { recordSignoff, linkSignoffToSpv } from "./spvLaunchSignoffStore"; /* 1c — durable launch sign-off (also gates the legacy /spvs create path) */
+/* WAVE 22 · ITEM 2 (REVIEW B F-3) — legacy SPV-create sign-off `ip` was the raw
+ * forwarded header. One shared hardened resolver, not a second local copy. */
+import { resolveRateLimitClientIp } from "./lib/rateLimit";
 import { hashPassword } from "./lib/auth"; /* v25.49.3 R1 — partner-role auth_users seed hash */
 import { storeCredential, lookupByUserId } from "./userCredentialsStore"; /* v25.49.3 R1 — durable bcrypt credential + hydration probe */
 import { rawDb } from "./db/connection";
@@ -81,7 +85,7 @@ import { PORTFOLIO_PROFILE_WRITE_ROLES } from "../shared/partnerRoles"; /* w-par
 import { linkConsortiumPartner, unlinkConsortiumPartner, getConsortiumPartnerId } from "./consortiumLinkStore";
 import { upsertInvestorContactFromPartner, removeInvestorContactForPartner } from "./founderCrmStore";
 import { spvEngineStore } from "./spvEngineStore"; /* Ozan #4 — legacy SPV routes shim THROUGH the canonical engine so no SPV is ever created outside it */
-import { isSpvJurisdiction } from "../shared/spvEngine";
+import { resolveSpvJurisdiction } from "../shared/spvEngine"; /* WAVE 4A follow-up 2 */
 
 /* ============================================================
  * Helpers
@@ -600,7 +604,36 @@ export function registerPartnerRoutes(app: Express): void {
     }
     const actor = String((req.userContext?.userId) ?? ""); /* v14 */ if (!actor) return res.status(401).json({ error: "missing_identity" });
     const partnerId = String(req.params.id);
-    const a = partnerAttributionStore.create(partnerId, companyId, actor, source ?? "admin_manual", notes ?? null);
+    /* WAVE 33 / CP-PIPE-06 — PROVENANCE CANNOT BE OMITTED.
+       This read `source ?? "admin_manual"`. A caller who sent no source did not
+       get a refusal — they got a row permanently asserting the attribution was
+       an administrative decision, indistinguishable afterwards from a real one,
+       in the table the spec designates the SSOT for who originated a
+       relationship. Note that the validator directly above ALREADY rejected an
+       *unknown* source with a 400: omission was the single case that received a
+       fiction instead of an error. It is now the same refusal. */
+    if (source === undefined || source === null || (typeof source === "string" && source.trim() === "")) {
+      return badRequest(
+        res,
+        `source is required and is not assumed — one of: ${ATTRIBUTION_SOURCES.join(", ")}. An unstated source recorded as an administrative decision would fabricate provenance that later readers cannot tell from a real record.`,
+      );
+    }
+    let a;
+    try {
+      a = partnerAttributionStore.create(partnerId, companyId, actor, source, notes ?? null);
+    } catch (err) {
+      /* CP-PIPE-06 — a refused acquisition is a 409: the request was
+         well-formed, the state of the world forbids it. Nothing was written. */
+      const msg = (err as Error).message ?? "";
+      if (msg.startsWith("PROVENANCE_REFUSED:")) {
+        return res.status(409).json({
+          error: "PROVENANCE_REFUSED",
+          verdict: (err as Error & { verdict?: string }).verdict ?? null,
+          message: msg.slice(msg.indexOf(": ") + 2),
+        });
+      }
+      throw err;
+    }
     // v25.14 NM2 — notify the partner's managing_partner team members so
     // they don't have to poll the admin attribution page to discover a
     // newly-granted attribution.
@@ -705,6 +738,38 @@ export function registerPartnerRoutes(app: Express): void {
      * payment path. null when no effective plan resolved (mis-config). */
     const commissionPct =
       effectivePlan ? effectivePlan.commission.rate * 100 : null;
+    /* WAVE 7B FE-14 (DEF-060) — subscription STATE, additive and display-only.
+     *
+     * The dashboard printed the resolved tier price under the fixed heading
+     * "Your subscription" for every partner. For a partner with no
+     * `contacts.subscription_id` — a Path-1 partner, who is not billed a
+     * subscription at all (server/lib/partnerSelfServiceRoutes.ts:106-124
+     * returns `subscription: null` for exactly that case) — that heading is a
+     * false statement about money: the number shown is the tier's ADVERTISED
+     * price, not anything they pay.
+     *
+     * Resolved HERE rather than by having the dashboard call
+     * /api/partner/me/subscription, because that route is gated to
+     * `managing_partner` and every other sub-role would get a 403 and fall
+     * back to the same wrong label. This is the ONE bootstrap read every
+     * partner sub-role can already make, and it already reads the same
+     * `contacts` row via getById(). No new store, no new auth surface, no new
+     * query — one extra column off a row that is already loaded.
+     *
+     * DISPLAY-ONLY: nothing branches on this for pricing, billing, ledgers,
+     * entitlement or access. It only chooses a label. */
+    const subscriptionState: "subscribed" | "unsubscribed" | "unknown" = (() => {
+      try {
+        const row = rawDb()
+          .prepare(`SELECT subscription_id FROM contacts WHERE id = ?`)
+          .get(ctx.partnerId) as { subscription_id?: string | null } | undefined;
+        if (!row) return "unknown";
+        return row.subscription_id ? "subscribed" : "unsubscribed";
+      } catch {
+        /* Never break /me over a label. */
+        return "unknown";
+      }
+    })();
     res.json({
       partnerId: ctx.partnerId,
       tier: ctx.tier,
@@ -715,6 +780,7 @@ export function registerPartnerRoutes(app: Express): void {
       commissionPct,
       partnerType,
       region,
+      subscriptionState,
     });
   });
 
@@ -1002,6 +1068,54 @@ export function registerPartnerRoutes(app: Express): void {
       }
       const a = partnerPipelineActivityStore.add(String(req.params.id), activityType as typeof validActivityTypes[number], body, ctx.userId);
       res.status(201).json({ activity: a });
+    },
+  );
+
+  /* WAVE 27 · CP-PIPE-04 — the read half of the pipeline activity log.
+
+     THE GAP. `partnerPipelineActivityStore.listForPipeline` exists at
+     `server/partnerWorkspaceStore.ts:2261` with NO route and NO client caller
+     anywhere in the tree — an engine with no door, which the standing rules say
+     is not shipped. Until now the log was WRITE-ONLY: the POST above records
+     email/note/call/meeting entries, and `partnerWorkspaceStore.ts:2155` also
+     writes a `stage_change` entry every time a deal moves stage, so partners
+     have been silently accumulating deal history that nothing could ever read
+     back. Data written and never surfaced is the same defect as data dropped.
+
+     OWNERSHIP GUARD — note this is NOT redundant. `listForPipeline` filters on
+     `pipelineId` ALONE; it has no notion of a partner. Exposing it without
+     first resolving the deal through `partnerPipelineStore.getById(ctx.partnerId,
+     ...)` would let any authenticated partner read any other partner's deal
+     history by guessing an id. The POST above already guards this way and the
+     GET must match it exactly — same lookup, same 404, so a foreign id is
+     indistinguishable from a missing one and the route cannot be used to probe
+     for the existence of other partners' deals.
+
+     Sub-roles are deliberately WIDER than the writer: `viewer` may read the log
+     but still cannot append to it.
+
+     Ordering: newest first, tie-broken by id so the sequence is stable across
+     calls when two entries share an `occurredAt` (the stage-change writer and a
+     manual note can land in the same millisecond). */
+  app.get(
+    "/api/partner/me/pipeline/:id/activities",
+    requirePartnerAuth,
+    assertSubRole("managing_partner", "associate", "bd", "viewer"),
+    requireSignedAgreement,
+    (req: Request, res: Response) => {
+      const ctx = req.partnerContext!;
+      const dealId = String(req.params.id);
+      const deal = partnerPipelineStore.getById(ctx.partnerId, dealId);
+      if (!deal) return res.status(404).json({ error: "DEAL_NOT_FOUND" });
+      const activities = partnerPipelineActivityStore
+        .listForPipeline(dealId)
+        .slice()
+        .sort((a, b) =>
+          a.occurredAt === b.occurredAt
+            ? b.id.localeCompare(a.id)
+            : b.occurredAt.localeCompare(a.occurredAt),
+        );
+      res.json({ activities });
     },
   );
 
@@ -1293,8 +1407,13 @@ export function registerPartnerRoutes(app: Express): void {
        are two userIds for the SAME human (the `u_834e8cd5998b` LIVE merge) show
        as one member instead of two. `listByPartner()` is still passed UNCHANGED
        and un-deduplicated — it backs F3 authz, promotion moderation and
-       notification fan-out, and must never be collapsed at source. The collapse
-       is DISPLAY-only; `countActiveSeats()` still counts rows. */
+       notification fan-out, and must never be collapsed at source. The EMAIL
+       collapse applied here is DISPLAY-only.
+       v26.7.3 FIX-4 (comment correction, MINOR-3) — the previous sentence
+       "countActiveSeats() still counts rows" is no longer true: enforcement now
+       collapses duplicate active rows by the canonical server-assigned `userId`
+       (never by email). The email-keyed collapse here remains display-only and
+       is NOT what the seat limit is enforced against; `activeSeats` below is. */
     const activeRoster = partnerTeamStore.listByPartner(pid);
     const rosterIdentityById = resolveDisplayNames(activeRoster.map((m) => m.userId));
     const emailByUserId = new Map<string, string | null>(
@@ -1343,7 +1462,12 @@ export function registerPartnerRoutes(app: Express): void {
        enforces with so the banner can never disagree with the 403; the client
        must not carry its own copy of TIER_SEAT_LIMITS. */
     const { seatLimit } = resolvePartnerSeatLimit(pid, req.partnerContext!.tier);
-    res.json({ members, invitations, seatLimit, meta: { duplicateSeatCount, duplicateSeatIdsByUserId } });
+    // v26.7.3 FIX-4 — expose the same server-owned, userId-deduplicated active
+    // seat count used by dashboard and invite enforcement. The roster's existing
+    // email-based display collapse remains intact (and still reports its cleanup
+    // warning), but must not become the source of truth for the seat-limit banner.
+    const activeSeats = partnerTeamStore.seatReport(pid).activeSeats;
+    res.json({ members, invitations, seatLimit, activeSeats, meta: { duplicateSeatCount, duplicateSeatIdsByUserId } });
   });
 
   /* v25.50 Phase 7 (7c) — edit a team member's partner-local contact info.
@@ -1389,16 +1513,34 @@ export function registerPartnerRoutes(app: Express): void {
       // only a known title from the shared list; unknown/empty => null (never a
       // permission, so a bad value is harmless — fail soft to null, not 400).
       const resolvedTitle: string | null = isPartnerTitle(title) ? title : null;
-      try {
-        assertTierSeats(ctx.partnerId);
-      } catch (e) {
-        return res.status(403).json({ error: (e as Error).message });
-      }
       const ip = (req.ip ?? "").toString();
       const ua = String(req.headers["user-agent"] ?? "");
-      const { invitation, plainToken } = partnerInvitationStore.create(
-        ctx.partnerId, email, subRole as PartnerSubRole, ctx.userId, { ip, ua, title: resolvedTitle },
-      );
+      /* WAVE 19 FE-19 (SEAT-04) — the seat check and the insert are now ONE
+         transaction. Previously `assertTierSeats()` ran here and
+         `partnerInvitationStore.create()` ran on the next line with no lock
+         between them, so two simultaneous invitations could both claim the
+         last seat of a paid tier. `createWithSeatGuard` re-reads the durable
+         active + pending counts inside a better-sqlite3 IMMEDIATE transaction
+         and applies the SAME policy function; the loser's insert rolls back.
+         The 403 contract and its error string are unchanged, so the existing
+         client copy still matches. */
+      let invitation: PartnerTeamInvitation;
+      let plainToken: string;
+      try {
+        ({ invitation, plainToken } = partnerInvitationStore.createWithSeatGuard(
+          ctx.partnerId, email, subRole as PartnerSubRole, ctx.userId,
+          (counts) => assertSeatCapacity(ctx.partnerId, counts),
+          { ip, ua, title: resolvedTitle },
+        ));
+      } catch (e) {
+        const msg = (e as Error).message ?? "";
+        if (msg.includes("PARTNER_TIER_SEAT_LIMIT_REACHED") || msg.includes("PARTNER_NOT_FOUND")) {
+          return res.status(403).json({
+            error: msg.includes("PARTNER_NOT_FOUND") ? "PARTNER_NOT_FOUND" : "PARTNER_TIER_SEAT_LIMIT_REACHED",
+          });
+        }
+        throw e;
+      }
       // Plain token is returned ONCE to the inviter so they can copy/send via email
       res.status(201).json({ invitation, plainToken });
     },
@@ -1619,14 +1761,16 @@ export function registerPartnerRoutes(app: Express): void {
           userId: ctx.userId,
           signerLegalName: signoffLegalName,
           signerSubRole: ctx.partnerSubRole ?? null,
-          ip: (req.headers["x-forwarded-for"] as string) || req.socket?.remoteAddress || null,
+          ip: resolveRateLimitClientIp(req), /* WAVE 22 · ITEM 2 — trusted-hop resolution, never the raw header */
           userAgent: (req.headers["user-agent"] as string) ?? null,
         });
       } catch {
         return res.status(500).json({ error: "SIGNOFF_PERSIST_FAILED" });
       }
       try {
-        const canonicalJurisdiction = isSpvJurisdiction(jurisdiction) ? jurisdiction : "delaware";
+        /* WAVE 4A / follow-up 2 — resolveSpvJurisdiction() (Wave 3C) replaces the
+           hard-coded "delaware" fallback: unknown input becomes "other". */
+        const canonicalJurisdiction = resolveSpvJurisdiction(jurisdiction);
         const spv = spvEngineStore.createSpv(
           ctx.partnerId,
           {
@@ -1747,7 +1891,9 @@ export function registerPartnerRoutes(app: Express): void {
         return badRequest(res, "status must be one of " + validFundStatus.join("|"));
       }
       try {
-        const canonicalJurisdiction = isSpvJurisdiction(jurisdiction) ? jurisdiction : "delaware";
+        /* WAVE 4A / follow-up 2 — resolveSpvJurisdiction() (Wave 3C) replaces the
+           hard-coded "delaware" fallback: unknown input becomes "other". */
+        const canonicalJurisdiction = resolveSpvJurisdiction(jurisdiction);
         const fund = spvEngineStore.createSpv(
           ctx.partnerId,
           {

@@ -22,6 +22,9 @@ import {
   type NotificationKind,
   type Notification,
 } from "../notificationsStore";
+/* WAVE 15 / ORP-033 — founder notification preferences, stored in
+ * `founder_notification_preference` (migration 0170) and enforced below. */
+import { isKindEnabled } from "./founderNotificationPrefs";
 
 export interface CadenceRules {
   quietHoursStart: number; // 0..23
@@ -59,7 +62,7 @@ const sendRing = new Map<string, SendRecord[]>();
 
 export interface CadenceDecision {
   allow: boolean;
-  reason?: "ok" | "quiet_hours" | "rate_limit_hour" | "rate_limit_day" | "digest_pending";
+  reason?: "ok" | "quiet_hours" | "rate_limit_hour" | "rate_limit_day" | "digest_pending" | "user_opted_out";
   /** When `allow=false`, suggested retry timestamp. */
   retryAt?: number;
 }
@@ -102,6 +105,26 @@ export function evaluateCadence(args: {
 
   if (rules.criticalBypass.has(args.kind)) {
     return { allow: true, reason: "ok" };
+  }
+
+  /* WAVE 15 / ORP-033 — THE PREFERENCE IS ENFORCED HERE.
+   *
+   * This is the item's real sink. `server/notificationsStore.ts` is SACRED and
+   * its `emitNotification` (:142) never reads any preference at all, so storing
+   * a preference without this check would have produced exactly the dishonest
+   * switch the founder Settings banner was warning about. `evaluateCadence` is
+   * the ONE editable point that already decides allow/deny for a (user, kind),
+   * so the check belongs here and nowhere else.
+   *
+   * ORDER MATTERS: it sits AFTER the critical-bypass return, so a critical kind
+   * can never be muted even if a row somehow said so — belt to the DB CHECK's
+   * braces (`locked = 0 OR enabled = 1`, migration 0170).
+   *
+   * Falsified in server/__tests__/wave15_notification_prefs.test.ts: with the
+   * preference off the decision is `user_opted_out` and `emitWithCadence`
+   * returns a null notification; with it on the same call is allowed. */
+  if (!isKindEnabled(args.userId, args.kind, "in_app")) {
+    return { allow: false, reason: "user_opted_out" };
   }
 
   const bucket = getBucket(args.userId);

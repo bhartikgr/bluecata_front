@@ -14,20 +14,35 @@
  * Tabs use `defaultValue` (uncontrolled) so the first click always registers
  * (avoids the controlled-derived-value first-interaction no-op, O7).
  */
-import { useState, useId } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useState, useId, useMemo, useEffect } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { formatMinor as formatMinorLib } from "@/lib/currency";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { parsePercentInputToFraction, formatFractionAsPercent } from "@/lib/percentDisplay"; /* WAVE 10 / EN-5 — the single canonical percent parser */
+import { Link } from "wouter"; /* WAVE 10 — link into the EN-1/EN-2 performance surface */
+/* WAVE 8 / ORP-030 — the missing client callers for the ten orphaned SPV
+   engine endpoints. Mounted into the tabs that already existed on screen. */
+import {
+  SpvFeeLedgerPanel,
+  useSpvCapitalAccounts,
+  SpvCloseSummaryPanel,
+  SpvSignoffsPanel,
+  SpvEligibilityPanel,
+  SpvDeploymentLifecyclePanel,
+} from "@/components/partner/SpvOperationsPanels";
 import { Button } from "@/components/ui/button";
+/* WAVE 32 / CP-SPV-30 capability 1 — the NAV surface. An engine with no route,
+   or a component mounted nowhere, is not shipped; this is where it mounts. */
+import { SpvNavPanel } from "@/components/partner/SpvNavPanel";
+import { SpvK1Panel } from "@/components/partner/SpvK1Panel";
+import { SpvSideLetterPanel } from "@/components/partner/SpvSideLetterPanel";
+import SpvReachPanel from "@/components/partner/SpvReachPanel";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   SPV_EDU,
-  investorCountAwareness,
-  formationChecklist,
-  filingsChecklist,
   WIND_DOWN_CHECKLIST,
 } from "@/lib/spvEducation";
 import {
@@ -36,7 +51,23 @@ import {
   SPV_MANDATE_MODE_HELP,
   SPV_FEE_TYPES,
   SPV_DOC_TYPES,
+  spvDocTypesForJurisdiction,
   SPV_INVESTOR_PERSONAS,
+  /* WAVE 3C / J-3 — jurisdiction-conditional compliance content. These replace
+   * the three `@/lib/spvEducation` helpers (investorCountAwareness /
+   * formationChecklist / filingsChecklist) THIS FILE used to call. Those
+   * helpers keyed off the 4-member enum and returned US copy (Form D,
+   * blue-sky, ~100 3(c)(1) cap, Tax ID/EIN) for EVERY jurisdiction that was
+   * not literally "cayman"/"bvi" — which, because deriveEngineJurisdiction
+   * collapsed everything else to "delaware", meant a BVI or Dutch vehicle got
+   * the full US block. The shared ontology is now the single source and it is
+   * exhaustive over the widened enum. The spvEducation helpers are left in
+   * place, exported and tested (server/__tests__/wfix1f_spv_education.test.ts)
+   * — nothing is deleted, this surface simply reads from the ontology now. */
+  spvJurisdictionCompliance,
+  spvFormationChecklist,
+  spvFilingsChecklist,
+  SPV_JURISDICTION_GENERIC_NOTICE,
 } from "@shared/spvEngine";
 
 /* Wave C v2 helper — STRICT integer parse. Rejects empty, negatives,
@@ -51,15 +82,26 @@ function parseMinor(v: string): number {
   return n;
 }
 
-/* Wave C v2 helper — STRICT percentage parse. Accepts 0–100 with up to 4
- * decimal places. Returns a fraction 0–1. Empty throws. */
-function parsePercent(v: string): number {
-  const s = (v ?? "").trim();
-  if (!s) throw new Error("Enter a percentage between 0 and 100");
-  if (!/^\d{1,3}(\.\d{1,4})?$/.test(s)) throw new Error("Percentage must be between 0 and 100 (up to 4 decimal places)");
-  const n = Number(s);
-  if (!Number.isFinite(n) || n < 0 || n > 100) throw new Error("Percentage must be between 0 and 100");
-  return n / 100;
+/**
+ * WAVE 10 / EN-5 — the local `parsePercent` this replaces is RETIRED.
+ *
+ * It was a second, independent implementation of the owner's percent ruling
+ * sitting next to the canonical one in `client/src/lib/percentDisplay.ts`. The
+ * two agreed today, which is precisely what makes a duplicate dangerous: the
+ * next change to the ruling gets applied to one of them, the divergence is
+ * silent, and the field that still uses the stale copy keeps validating
+ * against yesterday's rule. There must be ONE parser.
+ *
+ * `parsePercentInputToFraction` returns a result object rather than throwing.
+ * This wrapper preserves the throwing shape the three call sites are built
+ * around, so retiring the duplicate does not become a refactor of the form
+ * handlers — and, unlike the old copy, it reports the field name and the
+ * permitted range in the message the operator actually sees.
+ */
+function parsePercent(v: string, label = "Percentage"): number {
+  const r = parsePercentInputToFraction(v, { label });
+  if (!r.ok) throw new Error(r.error);
+  return r.fraction;
 }
 
 /* Wave C v2 helper — friendly translation of common backend error codes to
@@ -76,6 +118,19 @@ const SPV_ERROR_TRANSLATIONS: Record<string, string> = {
   FEE_CARRY_REQUIRED: "Enter a carry percentage for this fee type.",
   STORAGE_KEY_REQUIRED: "Storage key required — upload the file first, then paste the returned key.",
   TRANSFER_PARTIES_REQUIRED: "Both from- and to-investor IDs are required.",
+  // WAVE 25 / FE-4 — the store-side transfer guards. Untranslated codes fall
+  // through to a generic toast, which is how a real refusal reads as noise.
+  TRANSFER_SELF: "A transfer needs two different investors — from and to are the same.",
+  TRANSFER_CONSIDERATION_REQUIRED: "Enter an amount OR a units percentage for this transfer.",
+  INVALID_UNITS_PCT: "Units percentage must be a fraction greater than 0 and at most 1 (0.25 = 25%).",
+  SPV_WOUND_DOWN: "This SPV has been wound down. No further transfers can be recorded against it.",
+  // WAVE 25 / FE-1 — mandate check-size bounds.
+  INVALID_CHECK_MIN: "Minimum check must be a whole, non-negative number of minor units.",
+  INVALID_CHECK_MAX: "Maximum check must be a whole, non-negative number of minor units.",
+  INVALID_CHECK_RANGE: "Minimum check cannot be greater than maximum check.",
+  // WAVE 25 / FE-7 — the compliance write path.
+  INVALID_COMPLIANCE_PROFILE_PATCH: "Some compliance fields were not accepted. Check the KYC and accreditation values.",
+  INVESTOR_NOT_RELATED_TO_PARTNER: "That investor is not in your partner workspace, so their compliance profile cannot be read or edited here.",
   INVALID_AMOUNT: "Amount must be greater than zero (minor units).",
   INVALID_GROSS: "Gross proceeds must be a non-negative number.",
   EVENT_REQUIRED: "Please pick an event type.",
@@ -124,10 +179,30 @@ type Sub = { investorId: string; commitmentMinor: number; status: string };
 type RegisterRow = { investorId: string; commitmentMinor: number; ownershipPct: number };
 type Fee = { layer: string; feeType: string; carryPct: number | null; fixedAmountMinor: number | null };
 type Deployment = { companyId: string; amountMinor: number; status: string };
-type Distribution = { event: string; grossProceedsMinor: number; gpCarryMinor: number; platformCarryMinor: number };
+/* WAVE 32 / CP-SPV-30 capability 2 — the waterfall now records a
+   `side_letter_adjustment` tier when per-LP negotiated carry changed the
+   economics. Optional, because a vehicle with no side letters still persists
+   the unchanged five-tier waterfall. */
+type SideLetterAdjustment = {
+  investorId: string;
+  sideLetterId: string;
+  fundCarryScaled: number;
+  lpCarryScaled: number;
+  carryBeforeMinor: number;
+  carryAfterMinor: number;
+  netBeforeMinor: number;
+  netAfterMinor: number;
+};
+type WaterfallTier = { tier: string; amountMinor?: number; adjustments?: SideLetterAdjustment[] };
+type Distribution = { event: string; grossProceedsMinor: number; gpCarryMinor: number; platformCarryMinor: number; waterfall?: WaterfallTier[] };
+
+/** Integer billionths -> a human percent. Never `n > 1 ? n / 100 : n`. */
+function carryScaledToPercentLabel(scaled: number): string {
+  return `${(scaled / 10_000_000).toFixed(2).replace(/\.?0+$/, "")}%`;
+}
 type Doc = { id?: string; docType?: string; title?: string; createdAt?: string };
 type Transfer = { id?: string; fromInvestorId?: string; toInvestorId?: string; status?: string };
-type CapitalAccount = { investorId: string; contributedMinor: number; confirmedMinor: number; distributedMinor: number };
+type CapitalAccount = { investorId: string; contributedMinor: number; confirmedMinor: number; distributedMinor: number; dpiRatio?: number | null };
 type CloseSummary = {
   confirmedCount: number;
   confirmedMinor: number;
@@ -139,7 +214,13 @@ type CloseSummary = {
 };
 
 export interface SpvDetail {
-  spv?: { status?: string; jurisdiction?: string; lpVisibility?: string; closeDate?: string | null; targetRaiseMinor?: number | null; targetCompanyId?: string | null };
+  /* WAVE 25 / SPV-E (DEF-086) — `revisionHash` and `updatedAt` are read for the
+     Overview audit-receipt line. Both are real `SpvDTO` fields
+     (shared/spvEngine.ts). `version` and `prevRevisionHash` are deliberately
+     NOT declared here: they do not exist on SpvDTO, and declaring them is what
+     made the retired PartnerSpvDetail accordion render `undefined` twice
+     (DEF-087 / OQ-35). */
+  spv?: { status?: string; jurisdiction?: string; lpVisibility?: string; closeDate?: string | null; targetRaiseMinor?: number | null; targetCompanyId?: string | null; terms?: Record<string, unknown> | null; revisionHash?: string | null; updatedAt?: string | null };
   mandate?: { mode?: string; sector?: string[]; geography?: string[]; stage?: string[] } | null;
   fees?: Fee[];
   subscriptions?: Sub[];
@@ -154,12 +235,15 @@ export interface SpvDetail {
   // (0.2 = 20%); platformCarryPct is the admin-set platform layer (read-only).
   feeSummary?: {
     commitmentMinor: number;
-    managementFeeMinor: number;
-    platformFeeMinor: number;
-    netDeployedMinor: number;
+    /* WAVE 26 / S-3 SECOND PATH — null, not 0, when the server could not
+       trust the fee table. See shared/spvEngine.ts SpvFeeBreakdown. */
+    managementFeeMinor: number | null;
+    platformFeeMinor: number | null;
+    netDeployedMinor: number | null;
     currency: string;
     managementCarryPct: number | null;
     platformCarryPct: number | null;
+    feesUnknown?: boolean;
   } | null;
 }
 
@@ -186,14 +270,49 @@ export function SpvDetailTabs({
   const documents = detail.documents ?? [];
   const transfers = detail.transfers ?? [];
   const capitalAccounts = detail.capitalAccounts ?? [];
+  /* WAVE 8 / ORP-030 — prefer the authoritative GET /capital-accounts endpoint
+     (server/spvEngineRoutes.ts:555), which had no client caller at all, and
+     fall back to the rows carried on the generic detail payload so the table
+     below can never go blank. */
+  /* WAVE 36 / ROW 9 — the detail payload has never carried a DPI, so its rows
+     enter the fallback as `dpiRatio: null` ("not reported"), not as 0.00x. The
+     ratio is only ever the one the capital-account endpoint produced. */
+  const { rows: capitalAccountRows, source: capitalAccountsSource } = useSpvCapitalAccounts(
+    spvId,
+    capitalAccounts.map((c) => ({ ...c, dpiRatio: c.dpiRatio ?? null })),
+  );
   const closeSummary = detail.closeSummary;
   const spv = detail.spv ?? {};
   const raised = register.reduce((a, r) => a + r.commitmentMinor, 0);
-  const jurisdiction = spv.jurisdiction ?? null;
+  // WAVE 3C / J-3 — resolve the jurisdiction the COMPLIANCE copy is keyed on.
+  // `terms.jurisdictionCountry` is what the GP actually chose in the wizard and
+  // is the more specific value; the `jurisdiction` enum column is the legacy
+  // coerced one (4 of 6 live vehicles disagree with their own country until
+  // scripts/backfill_spv_jurisdiction.ts is applied). Prefer the country, fall
+  // back to the enum, and let the ontology decide — never a hard-coded block.
+  const jurisdictionCountry = typeof spv.terms?.jurisdictionCountry === "string" ? spv.terms.jurisdictionCountry : "";
+  const jurisdiction = (jurisdictionCountry.trim() || spv.jurisdiction) ?? null;
+  const compliance = spvJurisdictionCompliance(jurisdiction);
+
+  /* WAVE 20 / V-1 — vintage year, read from the SAME `terms.vintage` key the
+   * wizard writes (PartnerSpvEngine.tsx:336) and the admin legacy shim writes
+   * (server/partnerRoutes.ts:1705). `terms` is `Record<string, unknown>`, so
+   * this narrows defensively and NEVER substitutes a guessed year: a vehicle
+   * with no recorded vintage renders an em-dash. A non-integer or implausible
+   * value is also refused rather than printed, so a corrupt blob cannot put a
+   * fabricated year on a legal-ish summary. */
+  const spvVintageDisplay = ((): string => {
+    const raw = spv.terms?.vintage;
+    const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : NaN;
+    if (!Number.isInteger(n) || n < 1990 || n > 9999) return "—";
+    return String(n);
+  })();
+  const jurisdictionDisplay =
+    compliance.code === "other" && jurisdictionCountry.trim() ? jurisdictionCountry.trim() : compliance.label;
 
   // D6 — jurisdiction-aware, NON-BLOCKING investor-count awareness.
   const lpCount = subs.filter((s) => s.status !== "withdrawn").length;
-  const awareness = investorCountAwareness(jurisdiction);
+  const awareness = { limit: compliance.investorCountLimit, label: compliance.investorCountNote };
   const nearLimit = awareness.limit != null && lpCount >= Math.floor(awareness.limit * 0.8);
   const overLimit = awareness.limit != null && lpCount > awareness.limit;
 
@@ -211,6 +330,30 @@ export function SpvDetailTabs({
         <TabsTrigger value="close" data-testid="spv-tab-close">Close</TabsTrigger>
         <TabsTrigger value="winddown" data-testid="spv-tab-winddown">Wind-down</TabsTrigger>
         <TabsTrigger value="compliance" data-testid="spv-tab-compliance">Compliance</TabsTrigger>
+        {/* WAVE 11 / EN-9 — the TWELFTH tab. WAVE 10 could not add this: the
+            silent-drop guard fingerprinted TabsList by its children's
+            concatenated text, so appending a trigger reported the eleven-tab
+            list as REMOVED. That fingerprinting was fixed at the start of this
+            wave (child-set membership + subsequence order), and this tab is the
+            proof it works on the real file, not only on a fixture. */}
+        <TabsTrigger value="esignature" data-testid="spv-tab-esignature">E-signature</TabsTrigger>
+        {/* WAVE 32 / CP-SPV-30 — the THIRTEENTH tab. APPENDED AT THE END on
+            purpose: the silent-drop guard reads a Card or trigger inserted
+            mid-list as a renumbering of its siblings' positional paths, which
+            reports untouched surfaces as removals. Appending is the shape that
+            adds without renumbering. */}
+        <TabsTrigger value="nav" data-testid="spv-tab-nav">NAV</TabsTrigger>
+        {/* WAVE 32 / CP-SPV-30 capability 3 — the FOURTEENTH tab, appended at
+            the END for the same reason as the thirteenth: appending adds
+            without renumbering its siblings' positional paths. */}
+        <TabsTrigger value="k1" data-testid="spv-tab-k1">K-1</TabsTrigger>
+        {/* WAVE 32 / CP-SPV-30 capability 4 — the FIFTEENTH tab, appended at
+            the END so no sibling's positional path is renumbered. */}
+        <TabsTrigger value="sideletters" data-testid="spv-tab-sideletters">Side letters</TabsTrigger>
+        {/* WAVE 33 / CP-SPV-53 — the SIXTEENTH tab, appended at the END so no
+            sibling's positional path is renumbered. The scope selector said
+            what the GP had chosen; nothing said what the choice actually did. */}
+        <TabsTrigger value="reach" data-testid="spv-tab-reach">Reach</TabsTrigger>
       </TabsList>
 
       {/* ── Overview ─────────────────────────────────────────────────────── */}
@@ -225,6 +368,17 @@ export function SpvDetailTabs({
           {SPV_EDU.actingOnBehalf}
         </div>
         <Edu testid="spv-edu-overview">{SPV_EDU.whatIsAnSpv}</Edu>
+        {/* WAVE 15 / ORP-063 (DEF-063) — SPV_EDU had 18 keys and 16 references.
+            `terms` and `reviewLaunch` were authored copy that no surface
+            rendered: existing functionality that was not reflected in the UI.
+            They are RENDERED here as SIBLING elements (never appended inside an
+            existing text node, which the silent-drop guard reads as one removal
+            plus one addition) rather than deleted. The two keys are also
+            recorded as `copy_key` rows with disposition `adopted` and this file
+            as `caller_ref` in `orphan_surface_disposition` (migration 0171), so
+            the adoption is auditable and cannot be re-reported as an orphan. */}
+        <Edu testid="spv-edu-terms">{SPV_EDU.terms}</Edu>
+        <Edu testid="spv-edu-review-launch">{SPV_EDU.reviewLaunch}</Edu>
         <div className="grid grid-cols-2 gap-3 text-sm">
           <div data-testid="spv-detail-raise">
             <div className="font-medium">Raise progress</div>
@@ -234,6 +388,24 @@ export function SpvDetailTabs({
             <div className="font-medium">Status</div>
             <div className="text-xs">{spv.status ?? "—"}</div>
           </div>
+          {/* J-4 (WAVE 3C) — jurisdiction on the overview, alongside status.
+              Rendered through a component (not inline JSX) so the silent-drop
+              guard's tab-label fingerprint for this tab is unchanged: nothing
+              is removed, this is purely additive. */}
+          <JurisdictionField value={jurisdictionDisplay} />
+          {/* WAVE 20 / V-1 (DEF-085) — vintage year on the overview, alongside
+              jurisdiction. It was CAPTURED by the wizard
+              (PartnerSpvEngine.tsx:550 field → :336 terms.vintage) and shown on
+              the LIST row (:980), but the detail page — the surface a GP opens
+              to inspect one vehicle — never displayed it. Same `terms.vintage`
+              key the admin writer uses (partnerRoutes.ts:1705), so there is no
+              second source of truth and no new column.
+
+              Rendered through a component, not inline JSX, for the same reason
+              JurisdictionField is: the silent-drop guard fingerprints a tab by
+              the concatenated text of its inline JSX children, so inline copy
+              here would make this untouched tab read as REMOVED. */}
+          <VintageField value={spvVintageDisplay} />
           <div data-testid="spv-detail-lpvisibility">
             <div className="font-medium">LP co-investor visibility</div>
             <div className="text-xs">
@@ -246,17 +418,61 @@ export function SpvDetailTabs({
             <div className="font-medium">Investors</div>
             <div className="text-xs">{lpCount}</div>
           </div>
+          {/* WAVE 10 / EN-1 + EN-2 — the way in to the performance surface.
+              WITHOUT THIS THE PAGE IS UNREACHABLE, which is trap #1 exactly:
+              W-4 in Wave 7B was a fix landed on a page nothing could navigate
+              to. Rendered through a component, following the JurisdictionField
+              precedent above, so the guard's text fingerprint for this tab does
+              not move. */}
+          <PerformanceLink spvId={spvId} />
+          {/* WAVE 25 / SPV-E (DEF-086) — the audit receipt, restored to the
+              Overview tab. It was lost when the PartnerSpvDetail accordion was
+              collapsed into these tabs; OQ23_REMOVED_SURFACES_DELTA.md:246
+              records option (c), "add the audit receipt (version + revision
+              hash) to the engine Overview tab", as the intended home.
+
+              ONLY REAL FIELDS. The retired accordion rendered four field names,
+              two of which — `version` and `prevRevisionHash` — do not exist on
+              SpvDTO (shared/spvEngine.ts declares `revisionHash` and the
+              timestamps, nothing else), so it printed `undefined` on both
+              endpoints. That is DEF-087, and OQ-35 leaves "expose the chain
+              read" as the owner's open call. This line therefore shows the two
+              values that are genuinely available and says plainly that the
+              version number is not, rather than inventing it.
+
+              Rendered through a component, following the JurisdictionField and
+              VintageField precedent in this same grid, so the guard's text
+              fingerprint for this tab does not move. */}
+          <AuditReceiptField revisionHash={spv.revisionHash ?? null} updatedAt={spv.updatedAt ?? null} />
         </div>
       </TabsContent>
 
       {/* ── Mandate ──────────────────────────────────────────────────────── */}
       <TabsContent value="mandate">
         <Edu testid="spv-edu-mandate">{SPV_EDU.mandate}</Edu>
+        {/* WAVE 25 / FE-1 — empty state.
+
+            The four lines below keep their EXACT JSX shape (#text + {expr}) and
+            their exact position in this tab's direct-child sequence. An earlier
+            attempt wrapped the whole <div> in a ternary and the silent-drop
+            guard correctly rejected it: `childorder=Edu|div|{expr}` became
+            `Edu|{expr}|{expr}`, reported as two REMOVED panel bodies. Rule 8 —
+            additions, never restructuring.
+
+            What changed is only the FALLBACK inside each existing expression.
+            With no `spv_mandate` row the tab used to print "Geography: Any" and
+            "Stage: Any": a fabricated claim that the mandate permits anything.
+            It permits nothing — `deployCapital` throws NO_MANDATE
+            (server/spvEngineStore.ts:1517) and `isCompanyEligible` returns
+            NO_MANDATE (spvEngineStore.ts:601) in exactly this state. Both the
+            "Any" and "None selected" literals are retained, on the branch where
+            they are TRUE (a mandate exists and the list is empty). Rule 7. */}
         <div className="text-sm space-y-1" data-testid="spv-detail-mandate">
           <div><span className="font-medium">Mode:</span> {detail.mandate?.mode ?? "—"}</div>
-          <div><span className="font-medium">Sectors:</span> {detail.mandate?.sector?.length ? detail.mandate.sector.join(", ") : "None selected"}</div>
-          <div><span className="font-medium">Geography:</span> {detail.mandate?.geography?.length ? detail.mandate.geography.join(", ") : "Any"}</div>
-          <div><span className="font-medium">Stage:</span> {detail.mandate?.stage?.length ? detail.mandate.stage.join(", ") : "Any"}</div>
+          <div><span className="font-medium">Sectors:</span> {detail.mandate?.sector?.length ? detail.mandate.sector.join(", ") : detail.mandate ? "None selected" : "—"}</div>
+          <div><span className="font-medium">Geography:</span> {detail.mandate?.geography?.length ? detail.mandate.geography.join(", ") : detail.mandate ? "Any" : "—"}</div>
+          <div><span className="font-medium">Stage:</span> {detail.mandate?.stage?.length ? detail.mandate.stage.join(", ") : detail.mandate ? "Any" : "—"}</div>
+          <MandateEmptyState mandate={detail.mandate ?? null} canWrite={canWrite} />
         </div>
         {canWrite && <MandatePanel spvId={spvId} mandate={detail.mandate ?? null} onChanged={onChanged} />}
       </TabsContent>
@@ -278,6 +494,17 @@ export function SpvDetailTabs({
           {/* D3/SPV-BUG-5 — platform carry % read-only, pulled live from the
               admin-set fee config (DB-driven, never hardcoded). Shown wherever
               carry appears; falls back to the transparency note when unset. */}
+          {/* WAVE 26 / S-3 SECOND PATH — a SIBLING element (never text appended
+              into an existing node, which the drop guard reads as a removal plus
+              an addition). Without it, `feesUnknown` would fall through to the
+              transparency note below, which reads "shown here when applied" and
+              would tell a GP the platform layer is simply unset when in truth
+              the server could not read the fee table at all. */}
+          {detail.feeSummary?.feesUnknown ? (
+            <div className="mt-1 text-xs text-red-600" role="alert" data-testid="spv-detail-fees-unknown">
+              Fee figures are unavailable — the fee schedule could not be read. These are not zero fees; nothing is being shown until the schedule loads.
+            </div>
+          ) : null}
           {detail.feeSummary?.platformCarryPct != null ? (
             <div className="mt-1 text-xs" data-testid="spv-detail-platform-carry">
               <span className="font-medium">Platform carry:</span> {(detail.feeSummary.platformCarryPct * 100).toFixed(1)}%
@@ -286,6 +513,11 @@ export function SpvDetailTabs({
           ) : (
             <div className="text-[10px] text-[var(--cv-color-text-faint)]" data-testid="spv-detail-platform-carry-note">The platform fee layer is set by Capavate and shown here when applied.</div>
           )}
+          {/* ORP-030 — GET /fee-breakdown, GET /fee-obligations,
+              POST /fee-obligations/:obId/charge. Nested inside this existing
+              <div> rather than added as a new direct child of <TabsContent> so
+              no existing panel fingerprint is disturbed. */}
+          <SpvFeeLedgerPanel spvId={spvId} currency={currency} canWrite={canWrite} onChanged={onChanged} />
         </div>
         {canWrite && <FeePanel spvId={spvId} currency={currency} onChanged={onChanged} />}
       </TabsContent>
@@ -305,23 +537,50 @@ export function SpvDetailTabs({
 
         {canWrite && <SubscribePanel spvId={spvId} currency={currency} onChanged={onChanged} />}
 
-        {/* D10 — minimal capital accounts. */}
+        {/* D10 — minimal capital accounts.
+            WAVE 8 / ORP-030: this block used to derive its rows from the generic
+            detail payload while GET /capital-accounts
+            (server/spvEngineRoutes.ts:555) had no caller at all. It now reads
+            that authoritative endpoint via useSpvCapitalAccounts() and keeps the
+            derived rows as a visible fallback, so the tab can never go blank.
+            The MARKUP and every copy string below are deliberately left exactly
+            where they were — moving them into the panel component tripped the
+            silent-drop guard as a real copy loss, which is the correct verdict:
+            those strings must stay on this surface. */}
         <div className="mt-4" data-testid="spv-detail-capital-accounts">
           <div className="font-medium text-sm mb-1">Capital accounts</div>
           <Edu testid="spv-edu-capital-accounts">{SPV_EDU.capitalAccounts}</Edu>
-          {capitalAccounts.length === 0 ? (
+          <div className="text-[10px] text-[var(--cv-color-text-faint)]" data-testid="spv-capital-accounts-source">
+            {capitalAccountsSource === "endpoint"
+              ? "Read live from the SPV capital-account endpoint."
+              : "Showing the figures carried on the SPV detail payload."}
+          </div>
+          {capitalAccountRows.length === 0 ? (
             <div className="text-xs text-[var(--cv-color-text-faint)]">not yet reported</div>
           ) : (
             <div className="text-xs">
-              <div className="grid grid-cols-4 gap-2 font-medium border-b pb-1">
-                <div>Investor</div><div>Contributed</div><div>Confirmed</div><div>Distributed</div>
+              {/* WAVE 36 / ROW 9 — DPI is APPENDED as the last column of each
+                  row. Appended, never inserted: the silent-drop guard reads a
+                  cell inserted mid-row as a renumbering of its siblings'
+                  positional paths and reports untouched cells as removed. The
+                  four existing headers and their text are untouched. */}
+              <div className="grid grid-cols-5 gap-2 font-medium border-b pb-1">
+                <div>Investor</div><div>Contributed</div><div>Confirmed</div><div>Distributed</div><div>DPI</div>
               </div>
-              {capitalAccounts.map((c) => (
-                <div key={c.investorId} className="grid grid-cols-4 gap-2 py-0.5" data-testid={`spv-cap-acct-${c.investorId}`}>
+              {capitalAccountRows.map((c) => (
+                <div key={c.investorId} className="grid grid-cols-5 gap-2 py-0.5" data-testid={`spv-cap-acct-${c.investorId}`}>
                   <div className="truncate">{c.investorId}</div>
                   <div className="font-mono">{fmt(c.contributedMinor, currency)}</div>
                   <div className="font-mono">{fmt(c.confirmedMinor, currency)}</div>
                   <div className="font-mono">{fmt(c.distributedMinor, currency)}</div>
+                  {/* The server's ratio, rendered. NOT recomputed here, and a
+                      null renders as a refusal — an LP with nothing paid in has
+                      an UNDEFINED DPI, not a DPI of zero. */}
+                  <div className="font-mono" data-testid={`spv-cap-acct-dpi-${c.investorId}`}>
+                    {c.dpiRatio == null
+                      ? <span className="text-[var(--cv-color-text-faint)]">not reported</span>
+                      : `${c.dpiRatio.toFixed(2)}x`}
+                  </div>
                 </div>
               ))}
             </div>
@@ -356,6 +615,17 @@ export function SpvDetailTabs({
               <div key={i} className="text-xs">{d.companyId}: {fmt(d.amountMinor, currency)} · {d.status}</div>
             ))
           )}
+          {/* ORP-030 — POST /eligibility/evaluate, PATCH /deployments/:depId and
+              POST /deployments/:depId/commit; all three were orphaned. Nested in
+              this existing <div> to leave the tab's panel fingerprint intact. */}
+          <SpvEligibilityPanel spvId={spvId} canWrite={canWrite} />
+          <SpvDeploymentLifecyclePanel
+            spvId={spvId}
+            deployments={deployments}
+            currency={currency}
+            canWrite={canWrite}
+            onChanged={onChanged}
+          />
         </div>
 
         {/* D2 — Deploy affordance. Deploying commits a real allocation (amount
@@ -378,6 +648,36 @@ export function SpvDetailTabs({
             ))
           )}
         </div>
+        {/* WAVE 32 / CP-SPV-30 — SIDE-LETTER EFFECTS ON RECORDED DISTRIBUTIONS.
+            A SIBLING block appended after the distributions list, never text
+            spliced into an existing row: the silent-drop guard reads an
+            appended string inside a live text node as a removal plus an
+            addition. Rendered only when the engine actually recorded an
+            adjustment, so a vehicle without side letters shows nothing new. */}
+        {distributions.some((d) => (d.waterfall ?? []).some((t) => t.tier === "side_letter_adjustment")) && (
+          <div className="mt-3 border-t pt-3" data-testid="spv-distribution-side-letter-effects">
+            <div className="font-medium text-sm mb-1">Side-letter adjustments</div>
+            <div className="text-[10px] text-[var(--cv-color-text-faint)] mb-2">
+              Per-LP negotiated carry applied by the waterfall. Each line is the carry this LP
+              actually bore against the fund default, taken from the recorded distribution.
+            </div>
+            <div className="space-y-1">
+              {distributions.map((d, i) =>
+                (d.waterfall ?? [])
+                  .filter((t) => t.tier === "side_letter_adjustment")
+                  .flatMap((t) => t.adjustments ?? [])
+                  .map((a, j) => (
+                    <div key={`${i}-${j}`} className="text-xs" data-testid="spv-side-letter-effect-row">
+                      {d.event}: {a.investorId} · carry {carryScaledToPercentLabel(a.lpCarryScaled)} vs fund{" "}
+                      {carryScaledToPercentLabel(a.fundCarryScaled)} · {fmt(a.carryBeforeMinor, currency)} →{" "}
+                      {fmt(a.carryAfterMinor, currency)} · net {fmt(a.netBeforeMinor, currency)} →{" "}
+                      {fmt(a.netAfterMinor, currency)}
+                    </div>
+                  )),
+              )}
+            </div>
+          </div>
+        )}
         {canWrite && <DistributionPreview spvId={spvId} currency={currency} />}
         {canWrite && <RecordDistributionPanel spvId={spvId} currency={currency} onChanged={onChanged} />}
       </TabsContent>
@@ -394,7 +694,12 @@ export function SpvDetailTabs({
             ))
           )}
         </div>
-        {canWrite && <DocumentPanel spvId={spvId} onChanged={onChanged} />}
+        {/* WAVE 23 · ITEM 6 — the document-type dropdown is jurisdiction-filtered.
+            `jurisdiction` is the same resolved value the compliance content on
+            this page is keyed on (terms.jurisdictionCountry, falling back to the
+            legacy enum column), so the dropdown and the compliance copy can
+            never disagree about where this vehicle is domiciled. */}
+        {canWrite && <DocumentPanel spvId={spvId} jurisdiction={jurisdiction} onChanged={onChanged} />}
       </TabsContent>
 
       {/* ── Transfers (D12) ──────────────────────────────────────────────── */}
@@ -415,7 +720,20 @@ export function SpvDetailTabs({
       {/* ── Close / rolling close (SPV-CORE-3) ───────────────────────────── */}
       <TabsContent value="close">
         <Edu testid="spv-edu-closing">{SPV_EDU.closing}</Edu>
-        <ClosePanel spvId={spvId} spvStatus={spv.status ?? ""} currency={currency} summary={closeSummary} canWrite={canWrite} onChanged={onChanged} />
+        {/* ORP-030 — GET /close-summary. ClosePanel renders the summary carried
+            on the detail payload; the authoritative endpoint is rendered from
+            INSIDE ClosePanel (see its `authoritative` slot) so this tab's
+            direct-child sequence — which the silent-drop guard fingerprints —
+            is byte-for-byte what it was before this wave. */}
+        <ClosePanel
+          spvId={spvId}
+          spvStatus={spv.status ?? ""}
+          currency={currency}
+          summary={closeSummary}
+          canWrite={canWrite}
+          onChanged={onChanged}
+          authoritative={<SpvCloseSummaryPanel spvId={spvId} currency={currency} />}
+        />
       </TabsContent>
 
       {/* ── Wind-down (D13 voluntary checklist) ──────────────────────────── */}
@@ -429,6 +747,16 @@ export function SpvDetailTabs({
       <TabsContent value="compliance">
         {/* D6 — jurisdiction-aware NON-BLOCKING investor-count warning. */}
         <div className="mb-3" data-testid="spv-compliance-investor-count">
+          {/* ORP-030 — GET /signoffs, previously orphaned. Nested inside this
+              existing block so the compliance tab's panel fingerprint is
+              unchanged (the guard digests direct children only). */}
+          <SpvSignoffsPanel spvId={spvId} />
+          {/* J-3/J-4 (WAVE 3C) — state WHICH jurisdiction every item below is
+              keyed on, so a GP can immediately see that a non-US vehicle is not
+              being shown US law. Rendered as a component nested inside the
+              first existing block so the guard's child-sequence digest and
+              tab-label fingerprint for this panel are both unchanged. */}
+          <ComplianceJurisdictionHeader value={jurisdictionDisplay} isUnitedStates={compliance.isUnitedStates} />
           <div className="font-medium text-sm">Investor count</div>
           <Edu testid="spv-edu-investor-count">{SPV_EDU.investorCount}</Edu>
           {awareness.limit == null ? (
@@ -449,23 +777,364 @@ export function SpvDetailTabs({
         <div className="mb-3" data-testid="spv-compliance-accreditation">
           <div className="font-medium text-sm">Accreditation</div>
           <Edu testid="spv-edu-accreditation">{SPV_EDU.accreditation}</Edu>
+          {/* WAVE 25 / FE-7 — the compliance WRITE path. GET+PUT
+              /api/partner/me/compliance/:investorId had zero client callers;
+              this is their first. Appended as a third child of this existing
+              block — an addition, never a restructure, so the guard's
+              child-sequence digest for the compliance tab is unchanged. */}
+          <InvestorCompliancePanel register={register} canWrite={canWrite} />
         </div>
 
         {/* D7 — voluntary filings checklist. */}
         <div className="mb-3" data-testid="spv-compliance-filings">
           <div className="font-medium text-sm">Regulatory filings (voluntary)</div>
           <Edu testid="spv-edu-filings">{SPV_EDU.filings}</Edu>
-          <VoluntaryChecklist items={filingsChecklist(jurisdiction)} testid="spv-filings-checklist" />
+          {/* J-3 — where Capavate holds no verified requirements for the
+              jurisdiction we say so, and show a NEUTRAL list. We never invent a
+              foreign filing, and we never fall back to the US one. */}
+          {!compliance.filingsAreJurisdictionSpecific && (
+            <div className="text-xs text-[var(--cv-color-text-muted)] mb-1" data-testid="spv-filings-generic-notice">
+              {SPV_JURISDICTION_GENERIC_NOTICE}
+            </div>
+          )}
+          <VoluntaryChecklist items={spvFilingsChecklist(jurisdiction)} testid="spv-filings-checklist" />
         </div>
 
         {/* D1 — voluntary formation checklist. */}
         <div data-testid="spv-compliance-formation">
           <div className="font-medium text-sm">Formation checklist (voluntary)</div>
           <Edu testid="spv-edu-formation">{SPV_EDU.nameJurisdiction}</Edu>
-          <VoluntaryChecklist items={formationChecklist(jurisdiction)} testid="spv-formation-checklist" />
+          <VoluntaryChecklist items={spvFormationChecklist(jurisdiction)} testid="spv-formation-checklist" />
         </div>
       </TabsContent>
+
+      {/* ── E-signature (WAVE 11 / EN-9) ─────────────────────────────────── */}
+      <TabsContent value="esignature">
+        <EsignaturePanel spvId={spvId} documents={documents} canWrite={canWrite} />
+      </TabsContent>
+
+      {/* ── NAV (WAVE 32 / CP-SPV-30 capability 1) ───────────────────────── */}
+      <TabsContent value="nav">
+        <SpvNavPanel spvId={spvId} canWrite={canWrite} />
+      </TabsContent>
+
+      {/* ── K-1 (WAVE 32 / CP-SPV-30 capability 3) ───────────────────────── */}
+      <TabsContent value="k1">
+        <SpvK1Panel spvId={spvId} canWrite={canWrite} />
+      </TabsContent>
+
+      {/* ── Side letters (WAVE 32 / CP-SPV-30 capability 4) ───────────────── */}
+      <TabsContent value="sideletters">
+        <SpvSideLetterPanel spvId={spvId} canWrite={canWrite} />
+      </TabsContent>
+
+      {/* ── Reach (WAVE 33 / CP-SPV-53) ──────────────────────────────────── */}
+      <TabsContent value="reach">
+        <SpvReachPanel spvId={spvId} />
+      </TabsContent>
     </Tabs>
+  );
+}
+
+/* ==========================================================================
+ * WAVE 11 / EN-9 — the e-signature surface.
+ *
+ * Backed by GET/POST /api/partner/me/spvs/:spvId/esignature and the sign / void
+ * endpoints in server/lib/esignatureRoutes.ts. The document list comes from the
+ * SPV's own documents (the dataroom byte seam), so an LPA is sent against a file
+ * that actually exists rather than a typed-in reference.
+ *
+ * The provider is shown BY NAME. If the configured provider cannot execute, the
+ * server refuses the send and that refusal is rendered here — never a silent
+ * downgrade to a typed name.
+ * ======================================================================== */
+type EsignRecipient = {
+  id: string; role: string; signingOrder: number; fullName: string; email: string;
+  status: string; signedName: string | null; signatureHash: string | null; signedAt: string | null;
+};
+type EsignEnvelope = {
+  id: string; documentKind: string; documentRef: string; documentTitle: string;
+  documentSha256: string | null; provider: string; status: string;
+  createdAt: string; sentAt: string | null; completedAt: string | null;
+  completionHash: string | null; lastError: string | null;
+};
+type EsignDetail = {
+  envelope: EsignEnvelope;
+  recipients: EsignRecipient[];
+  events: Array<{ id: string; eventKind: string; fromStatus: string | null; toStatus: string | null; createdAt: string }>;
+  nextAction: string;
+  documentHashBound: boolean;
+};
+
+function EsignaturePanel({
+  spvId,
+  documents,
+  canWrite,
+}: {
+  spvId: string;
+  documents: Array<{ id?: string; title?: string; docType?: string }>;
+  canWrite: boolean;
+}) {
+  const { toast } = useToast();
+  const { data, isLoading, isError, error, refetch } = useQuery<{
+    spvId: string;
+    schemaInstalled: boolean;
+    provider?: string;
+    providerConfigMissing?: boolean;
+    envelopes: EsignDetail[];
+    message?: string;
+  }>({
+    queryKey: [`/api/partner/me/spvs/${spvId}/esignature`],
+    retry: false,
+    queryFn: async () =>
+      (await apiRequest("GET", `/api/partner/me/spvs/${encodeURIComponent(spvId)}/esignature`)).json(),
+  });
+
+  const [docRef, setDocRef] = useState("");
+  const [docKind, setDocKind] = useState("lpa");
+  const [signerName, setSignerName] = useState("");
+  const [signerEmail, setSignerEmail] = useState("");
+  const [gpName, setGpName] = useState("");
+  const [gpEmail, setGpEmail] = useState("");
+  const [typedName, setTypedName] = useState("");
+
+  const createMut = useMutation({
+    mutationFn: async () =>
+      (
+        await apiRequest("POST", `/api/partner/me/spvs/${encodeURIComponent(spvId)}/esignature`, {
+          documentKind: docKind,
+          documentRef: docRef,
+          documentTitle: documents.find((d) => d.id === docRef)?.title ?? docRef,
+          recipients: [
+            { role: "signer", signingOrder: 1, partyKind: "lp", fullName: signerName, email: signerEmail },
+            ...(gpName.trim() && gpEmail.trim()
+              ? [{ role: "countersigner", signingOrder: 2, partyKind: "gp", fullName: gpName, email: gpEmail }]
+              : []),
+          ],
+        })
+      ).json(),
+    onSuccess: () => {
+      setDocRef(""); setSignerName(""); setSignerEmail(""); setGpName(""); setGpEmail("");
+      void refetch();
+      toast({ title: "Envelope sent for signature" });
+    },
+    onError: (e: unknown) =>
+      toast({
+        title: "Could not send for signature",
+        description: e instanceof Error ? e.message : "unknown error",
+        variant: "destructive",
+      }),
+  });
+
+  const signMut = useMutation({
+    mutationFn: async (v: { envelopeId: string; recipientId: string }) =>
+      (
+        await apiRequest("POST", `/api/partner/me/esignature/${encodeURIComponent(v.envelopeId)}/sign`, {
+          recipientId: v.recipientId,
+          signedName: typedName,
+        })
+      ).json(),
+    onSuccess: () => {
+      setTypedName("");
+      void refetch();
+      toast({ title: "Signature recorded" });
+    },
+    onError: (e: unknown) =>
+      toast({
+        title: "Signature refused",
+        description: e instanceof Error ? e.message : "unknown error",
+        variant: "destructive",
+      }),
+  });
+
+  const voidMut = useMutation({
+    mutationFn: async (envelopeId: string) =>
+      (await apiRequest("POST", `/api/partner/me/esignature/${encodeURIComponent(envelopeId)}/void`, { reason: "voided by GP" })).json(),
+    onSuccess: () => { void refetch(); toast({ title: "Envelope voided" }); },
+  });
+
+  if (isLoading) {
+    return <div className="text-xs text-[var(--cv-color-text-faint)]" data-testid="spv-esign-loading">Loading…</div>;
+  }
+  if (isError) {
+    return (
+      <div className="rounded-md border border-rose-200 bg-rose-50 p-3 text-xs text-rose-900" data-testid="spv-esign-error">
+        {error instanceof Error ? error.message : "Could not load e-signature envelopes."}
+      </div>
+    );
+  }
+  if (data && data.schemaInstalled === false) {
+    return (
+      <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900" data-testid="spv-esign-schema-missing">
+        {data.message ?? "The e-signature tables are not installed on this database yet."}
+      </div>
+    );
+  }
+
+  const envelopes = data?.envelopes ?? [];
+
+  return (
+    <div className="space-y-4" data-testid="spv-detail-esignature">
+      <div className="text-xs text-[var(--cv-color-text-muted)]" data-testid="spv-esign-provider">
+        Signing method: <span className="font-mono">{data?.provider ?? "unknown"}</span>
+        {data?.providerConfigMissing
+          ? " — not configured; sends will be refused rather than downgraded."
+          : ""}
+      </div>
+
+      {envelopes.length === 0 ? (
+        <div className="text-xs text-[var(--cv-color-text-faint)]" data-testid="spv-esign-empty">
+          No documents have been sent for signature on this vehicle yet.
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {envelopes.map((d) => (
+            <div key={d.envelope.id} className="rounded-md border border-[var(--cv-color-border)] p-3" data-testid="spv-esign-envelope">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-sm font-medium">{d.envelope.documentTitle}</div>
+                <div className="text-xs font-mono" data-testid="spv-esign-status">{d.envelope.status}</div>
+              </div>
+              <div className="mt-1 text-xs text-[var(--cv-color-text-muted)]" data-testid="spv-esign-next-action">
+                {d.nextAction}
+              </div>
+              {!d.documentHashBound && (
+                <div className="mt-1 text-xs text-amber-800" data-testid="spv-esign-unbound-doc">
+                  No document hash was captured, so this envelope cannot prove which bytes were signed.
+                </div>
+              )}
+              {d.envelope.lastError && (
+                <div className="mt-1 text-xs text-rose-800" data-testid="spv-esign-last-error">
+                  {d.envelope.lastError}
+                </div>
+              )}
+              <ul className="mt-2 space-y-1 text-xs">
+                {d.recipients.map((r) => (
+                  <li key={r.id} className="flex flex-wrap items-center gap-2" data-testid="spv-esign-recipient">
+                    <span className="font-mono">{r.signingOrder}</span>
+                    <span>{r.fullName}</span>
+                    <span className="text-[var(--cv-color-text-faint)]">{r.role}</span>
+                    <span className="font-mono">{r.status}</span>
+                    {r.signedAt ? (
+                      <span className="text-[var(--cv-color-text-faint)]">
+                        signed {new Date(r.signedAt).toLocaleDateString()}
+                      </span>
+                    ) : null}
+                    {canWrite && r.status !== "signed" && r.role !== "cc" &&
+                      (d.envelope.status === "sent" || d.envelope.status === "partially_signed") ? (
+                      <>
+                        <Input
+                          className="h-7 w-40 text-xs"
+                          placeholder="Type full name"
+                          value={typedName}
+                          onChange={(e) => setTypedName(e.target.value)}
+                          data-testid="spv-esign-typed-name"
+                        />
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          data-testid="spv-esign-sign-btn"
+                          disabled={signMut.isPending || !typedName.trim()}
+                          onClick={() => signMut.mutate({ envelopeId: d.envelope.id, recipientId: r.id })}
+                        >
+                          Record signature
+                        </Button>
+                      </>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+              {d.envelope.completionHash && (
+                <div className="mt-2 break-all text-[10px] font-mono text-[var(--cv-color-text-faint)]" data-testid="spv-esign-completion-hash">
+                  execution hash {d.envelope.completionHash}
+                </div>
+              )}
+              {canWrite && d.envelope.status !== "completed" && d.envelope.status !== "voided" && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="mt-2"
+                  data-testid="spv-esign-void-btn"
+                  disabled={voidMut.isPending}
+                  onClick={() => voidMut.mutate(d.envelope.id)}
+                >
+                  Void envelope
+                </Button>
+              )}
+              <ul className="mt-2 space-y-0.5 text-[10px] text-[var(--cv-color-text-faint)]" data-testid="spv-esign-events">
+                {d.events.slice(-6).map((e) => (
+                  <li key={e.id}>
+                    {e.eventKind}
+                    {e.toStatus ? ` → ${e.toStatus}` : ""} · {new Date(e.createdAt).toLocaleString()}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {canWrite && (
+        <div className="rounded-md border border-[var(--cv-color-border)] p-3" data-testid="spv-esign-new">
+          <div className="text-sm font-medium">Send a document for signature</div>
+          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            <div>
+              <Label className="text-xs">Document</Label>
+              <select
+                className="mt-1 w-full rounded border px-2 py-1 text-xs"
+                value={docRef}
+                onChange={(e) => setDocRef(e.target.value)}
+                data-testid="spv-esign-document"
+              >
+                <option value="">Select a document…</option>
+                {documents.map((d, i) => (
+                  <option key={d.id ?? i} value={d.id ?? ""}>
+                    {d.title ?? d.docType ?? "document"}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <Label className="text-xs">Document type</Label>
+              <select
+                className="mt-1 w-full rounded border px-2 py-1 text-xs"
+                value={docKind}
+                onChange={(e) => setDocKind(e.target.value)}
+                data-testid="spv-esign-document-kind"
+              >
+                <option value="lpa">LPA</option>
+                <option value="subscription_agreement">Subscription agreement</option>
+                <option value="side_letter">Side letter</option>
+              </select>
+            </div>
+            <div>
+              <Label className="text-xs">Signatory name</Label>
+              <Input className="mt-1 h-8 text-xs" value={signerName} onChange={(e) => setSignerName(e.target.value)} data-testid="spv-esign-signer-name" />
+            </div>
+            <div>
+              <Label className="text-xs">Signatory email</Label>
+              <Input className="mt-1 h-8 text-xs" value={signerEmail} onChange={(e) => setSignerEmail(e.target.value)} data-testid="spv-esign-signer-email" />
+            </div>
+            <div>
+              <Label className="text-xs">Countersignatory name (optional)</Label>
+              <Input className="mt-1 h-8 text-xs" value={gpName} onChange={(e) => setGpName(e.target.value)} data-testid="spv-esign-gp-name" />
+            </div>
+            <div>
+              <Label className="text-xs">Countersignatory email (optional)</Label>
+              <Input className="mt-1 h-8 text-xs" value={gpEmail} onChange={(e) => setGpEmail(e.target.value)} data-testid="spv-esign-gp-email" />
+            </div>
+          </div>
+          <Button
+            size="sm"
+            className="mt-3"
+            data-testid="spv-esign-send-btn"
+            disabled={createMut.isPending || !docRef || !signerName.trim() || !signerEmail.trim()}
+            onClick={() => createMut.mutate()}
+          >
+            Send for signature
+          </Button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -554,18 +1223,55 @@ function DistributionPreview({ spvId, currency }: { spvId: string; currency: str
   const [gross, setGross] = useState("");
   const [hurdle, setHurdle] = useState("");
   const [split, setSplit] = useState<{ tiers: { tier: string; amountMinor: number }[]; lpTotalMinor: number; gpTotalMinor: number; tiered: boolean } | null>(null);
+  const [hurdleUsed, setHurdleUsed] = useState<{ fraction: number | null; source: string; termsAsWritten: number | null } | null>(null);
+  /* WAVE 26 / S-3 SECOND PATH — a RENDERED failure, not a four-second toast. */
+  const [previewFailure, setPreviewFailure] = useState<string | null>(null);
+
+  /* WAVE 14 / P-7 — the SPV's OWN agreed hurdle, read from terms. Until this
+     wave nothing in the product read this field: the wizard collected it, the
+     route normalised it, the store persisted it, and every consumer of the
+     waterfall took the hurdle from its own caller instead. So this panel asked
+     the GP to retype a number the SPV already carried, and a typo silently
+     previewed a split on terms the LPs never agreed to. */
+  const storedHurdle = useQuery<{ hurdle: { fraction: number | null; source: string; asWritten: number | null } }>({
+    queryKey: [`/api/partner/me/spv/${spvId}/hurdle`],
+    retry: false,
+  });
+  const termHurdle = storedHurdle.data?.hurdle?.fraction ?? null;
 
   const preview = useMutation({
     mutationFn: async () => {
       // Wave C v3 hardening (GPT-5 v2 finding): use parseMinor to reject
       // exponent notation and non-integer input on the gross proceeds field.
       const body: Record<string, unknown> = { grossProceedsMinor: parseMinor(gross) };
-      if (hurdle.trim()) body.hurdleRatePct = parsePercent(hurdle) * 100; // hurdleRatePct expected as %.
+      if (hurdle.trim()) body.hurdleRatePct = parsePercent(hurdle, "Hurdle rate"); // WAVE 4A: hurdleRatePct is a FRACTION.
+      /* Blank field is deliberately NOT sent, so the server applies the SPV's
+         stored term. Sending null would mean "explicitly no hurdle". */
       const j = await (await apiRequest("POST", `/api/partner/me/spv/${spvId}/distributions/preview`, body)).json();
+      setHurdleUsed(j.hurdleUsed ?? null);
       return j.split;
     },
-    onSuccess: (s) => setSplit(s),
-    onError: (e: Error) => toast({ variant: "destructive", title: "Preview failed", description: e.message }),
+    onSuccess: (s) => {
+      setSplit(s);
+      setPreviewFailure(null);
+    },
+    /* WAVE 26 / S-3 SECOND PATH. Two defects were fixed here, both about what
+       the GP is left looking at when a preview fails.
+
+       (1) `split` was NOT cleared, so a failed re-preview left the PREVIOUS
+           run's LP/GP totals on screen, computed from different inputs, with
+           nothing on the page saying so. The toast that announced the failure
+           is gone in seconds; the stale money stays.
+       (2) A toast is not a rendered state. `FEE_STATE_UNKNOWN` (503) means the
+           server could not read the fee schedule — the reason the split cannot
+           be computed at all — and that has to persist next to the empty result
+           until the GP runs a preview that succeeds. */
+    onError: (e: Error) => {
+      setSplit(null);
+      setHurdleUsed(null);
+      setPreviewFailure(e.message || "Preview failed");
+      toast({ variant: "destructive", title: "Preview failed", description: e.message });
+    },
   });
 
   return (
@@ -581,9 +1287,34 @@ function DistributionPreview({ spvId, currency }: { spvId: string; currency: str
           <Input value={hurdle} onChange={(e) => setHurdle(e.target.value)} type="number" placeholder="e.g. 8" data-testid="spv-preview-hurdle" />
         </div>
       </div>
+      {termHurdle !== null && (
+        <div className="mt-1 text-[10px] text-[var(--cv-color-text-faint)]" data-testid="spv-preview-term-hurdle">
+          This SPV's agreed hurdle is {formatFractionAsPercent(termHurdle)}. Leave the field blank to preview on the agreed
+          term; type a value only to model a what-if.
+          {" "}
+          <button
+            type="button"
+            className="underline"
+            onClick={() => setHurdle("")}
+            data-testid="spv-preview-use-term-hurdle"
+          >
+            Use agreed term
+          </button>
+        </div>
+      )}
       <Button size="sm" className="mt-2" disabled={preview.isPending || !gross.trim()} onClick={() => preview.mutate()} data-testid="spv-preview-run">
         {preview.isPending ? "Computing…" : "Preview split"}
       </Button>
+      {/* WAVE 26 / S-3 SECOND PATH — SIBLING of the result block, never nested
+          inside it: the result block does not render when there is no split,
+          which is exactly when this has to be visible. */}
+      {previewFailure !== null && (
+        <div className="mt-2 text-xs text-red-600" role="alert" data-testid="spv-preview-failed">
+          {/FEE_STATE_UNKNOWN/.test(previewFailure)
+            ? "No split can be computed: the SPV fee schedule could not be read, so the carry is unknown. This is not a zero-carry split — nothing is being shown. Try again once the schedule loads."
+            : `No split is shown — the preview did not complete: ${previewFailure}`}
+        </div>
+      )}
       {split && (
         <div className="mt-2 text-xs space-y-0.5" data-testid="spv-preview-result">
           {split.tiers.map((t, i) => (
@@ -591,9 +1322,79 @@ function DistributionPreview({ spvId, currency }: { spvId: string; currency: str
           ))}
           <div className="flex justify-between border-t pt-1 font-medium"><span>LP total</span><span className="font-mono">{fmt(split.lpTotalMinor, currency)}</span></div>
           <div className="flex justify-between font-medium"><span>GP total</span><span className="font-mono">{fmt(split.gpTotalMinor, currency)}</span></div>
+          {hurdleUsed && (
+            <div className="text-[10px] text-[var(--cv-color-text-faint)]" data-testid="spv-preview-hurdle-used">
+              Hurdle applied:{" "}
+              {hurdleUsed.fraction === null || hurdleUsed.fraction === 0
+                ? "none"
+                : formatFractionAsPercent(hurdleUsed.fraction)}{" "}
+              ({hurdleUsed.source === "spv_terms" ? "the SPV's agreed term" : hurdleUsed.source === "request" ? "typed above, overriding the agreed term" : "no term set"})
+            </div>
+          )}
           <div className="text-[10px] text-[var(--cv-color-text-faint)]">{split.tiered ? "Tiered waterfall (preferred return + GP catch-up engaged)." : "Simple waterfall (return of capital, then carry)."} This is a preview only — no money moves.</div>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * WAVE 25 / FE-3 — the resolved rolling-close policy, RENDERED.
+ *
+ * Mirrors `SpvCloseWindowPolicy` in server/lib/spvFeeScheduleStore.ts.
+ */
+interface SpvCloseWindowPolicy {
+  windowDays: number;
+  scopeKind: "platform" | "partner" | "spv";
+  scopeId: string;
+  policyId: string;
+}
+
+/**
+ * WAVE 25 / FE-3. A component, not inline JSX, for the same reason as
+ * `JurisdictionField` below: the silent-drop guard fingerprints a container by
+ * the concatenated text of its INLINE children, so inline copy here would make
+ * the untouched close panel read as a removal plus an addition. As a sibling
+ * element the addition is genuinely additive.
+ *
+ * Rule 7 — a missing policy is rendered as a refusal, never as a fabricated
+ * "30 days" and never as a blank line that looks like there is no window.
+ */
+function CloseWindowPolicyLine({
+  isLoading,
+  isError,
+  error,
+  policy,
+}: {
+  isLoading: boolean;
+  isError: boolean;
+  error: Error | null;
+  policy: SpvCloseWindowPolicy | undefined;
+}) {
+  if (isLoading) {
+    return (
+      <div className="text-xs text-[var(--cv-color-text-muted)]" data-testid="spv-close-window-loading">
+        <span>Loading the rolling-close window policy…</span>
+      </div>
+    );
+  }
+  if (isError || !policy) {
+    return (
+      <div
+        className="rounded p-2 text-xs text-amber-900"
+        style={{ background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.3)" }}
+        data-testid="spv-close-window-unavailable"
+      >
+        <div>Rolling-close window unavailable — no active close-window policy resolved for this vehicle.</div>
+        <div>Reopening is disabled until an administrator sets a policy at platform, partner or SPV scope.</div>
+        {error?.message ? <div data-testid="spv-close-window-error-detail">{error.message}</div> : null}
+      </div>
+    );
+  }
+  return (
+    <div className="text-xs text-[var(--cv-color-text-muted)]" data-testid="spv-close-window-policy">
+      <span data-testid="spv-close-window-days">Rolling-close window: {policy.windowDays} day(s)</span>
+      <span data-testid="spv-close-window-scope"> · policy scope {policy.scopeKind} ({policy.scopeId})</span>
     </div>
   );
 }
@@ -606,6 +1407,7 @@ function ClosePanel({
   summary,
   canWrite,
   onChanged,
+  authoritative,
 }: {
   spvId: string;
   spvStatus: string;
@@ -613,9 +1415,28 @@ function ClosePanel({
   summary: CloseSummary | undefined;
   canWrite: boolean;
   onChanged: () => void;
+  /* WAVE 8 / ORP-030 — slot for the authoritative GET /close-summary panel. It
+     is passed in rather than rendered as a sibling in the Close tab so the
+     tab's direct-child sequence (fingerprinted by the silent-drop guard) is
+     unchanged; nothing existing is moved or removed. */
+  authoritative?: React.ReactNode;
 }) {
   const { toast } = useToast();
   const [setTargetToRaised, setSetTargetToRaised] = useState(false);
+
+  /* WAVE 25 / FE-3 — the rolling-close window is DB policy, not a literal.
+     `resolveCloseWindowDays` (server/lib/spvFeeScheduleStore.ts) shipped in
+     WAVE 6 with zero callers while this component posted a hardcoded 30. The
+     window now comes from GET /close-window; when no policy row resolves the
+     server answers 503 and this panel RENDERS that (rule 7) and disables the
+     reopen action, rather than inventing 30 and looking like it worked. */
+  const closeWindow = useQuery<{ closeWindow: SpvCloseWindowPolicy }>({
+    queryKey: [`/api/partner/me/spv/${spvId}/close-window`],
+    retry: false,
+    queryFn: async () =>
+      (await apiRequest("GET", `/api/partner/me/spv/${encodeURIComponent(spvId)}/close-window`)).json(),
+  });
+  const closeWindowDays = closeWindow.data?.closeWindow?.windowDays;
 
   const close = useMutation({
     mutationFn: async () =>
@@ -629,7 +1450,7 @@ function ClosePanel({
 
   const reopen = useMutation({
     mutationFn: async () =>
-      (await apiRequest("POST", `/api/partner/me/spv/${spvId}/reopen`, { windowDays: 30 })).json(),
+      (await apiRequest("POST", `/api/partner/me/spv/${spvId}/reopen`, { windowDays: closeWindowDays })).json(),
     onSuccess: () => {
       toast({ title: "Reopened for a rolling close" });
       onChanged();
@@ -665,10 +1486,131 @@ function ClosePanel({
           </Button>
         </div>
       )}
+      <CloseWindowPolicyLine
+        isLoading={closeWindow.isLoading}
+        isError={closeWindow.isError}
+        error={closeWindow.error as Error | null}
+        policy={closeWindow.data?.closeWindow}
+      />
       {canWrite && isClosed && (
-        <Button size="sm" variant="outline" disabled={reopen.isPending} onClick={() => reopen.mutate()} data-testid="spv-reopen-submit">
+        <Button size="sm" variant="outline" disabled={reopen.isPending || closeWindowDays == null} onClick={() => reopen.mutate()} data-testid="spv-reopen-submit">
           {reopen.isPending ? "Reopening…" : "Reopen for a rolling close"}
         </Button>
+      )}
+      {authoritative}
+    </div>
+  );
+}
+
+/**
+ * J-4 (WAVE 3C) — jurisdiction on the Overview tab.
+ *
+ * A component rather than inline JSX on purpose: the silent-drop guard
+ * fingerprints a tab by the concatenated text of its inline JSX children, so
+ * inline copy here would make an untouched tab look "removed". Nothing about
+ * the existing overview content changes; this is strictly an addition.
+ */
+/**
+ * WAVE 10 / EN-1 + EN-2 — link into the vehicle's ILPA performance surface.
+ *
+ * A component rather than inline JSX for the reason stated on JurisdictionField
+ * below: the silent-drop guard fingerprints a tab by the concatenated text of
+ * its children, so inline text added here would change this tab's identity and
+ * be reported as the old tab having been REMOVED. Behind a component the
+ * addition is invisible to the fingerprint and genuinely additive.
+ */
+function PerformanceLink({ spvId }: { spvId: string }) {
+  return (
+    <div data-testid="spv-detail-performance-link">
+      <div className="font-medium">Performance</div>
+      <div className="text-xs">
+        <Link
+          href={`/collective/partner/spvs/${encodeURIComponent(spvId)}/performance`}
+          className="underline"
+          data-testid="spv-detail-performance-link-anchor"
+        >
+          Cash flows, IRR / DPI / TVPI and ledger integrity
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * WAVE 20 / V-1 — vintage year on the Overview tab. Sibling of
+ * JurisdictionField, added for the reason documented on that component.
+ *
+ * NEVER guesses. A vehicle created before the wizard carried the field has no
+ * `terms.vintage`; that renders an em-dash, not the current year.
+ */
+function VintageField({ value }: { value: string }) {
+  return (
+    <div data-testid="spv-detail-vintage">
+      <div className="font-medium">Vintage year</div>
+      <div className="text-xs">{value}</div>
+    </div>
+  );
+}
+
+/* WAVE 25 / SPV-E (DEF-086) — the Overview audit receipt.
+ *
+ * `revisionHash` is the hash-chain head for this SPV row and is a real SpvDTO
+ * field. `version` and `prevRevisionHash` are NOT (DEF-087); the retired
+ * accordion rendered them and printed `undefined`. Exposing them needs a chain
+ * read no endpoint offers — that is OQ-35, the owner's open call — so this
+ * component states their absence instead of inventing a value.
+ *
+ * Rule 7: a missing hash renders as an explicit "not recorded" refusal, never
+ * as a blank, a dash pretending to be data, or the string "undefined". */
+function AuditReceiptField({ revisionHash, updatedAt }: { revisionHash: string | null; updatedAt: string | null }) {
+  const shortHash = revisionHash && revisionHash.length > 16 ? `${revisionHash.slice(0, 16)}…` : revisionHash;
+  return (
+    <div data-testid="spv-detail-audit-receipt">
+      <div className="font-medium">Audit receipt</div>
+      {revisionHash ? (
+        <div className="text-xs font-mono break-all" title={revisionHash} data-testid="spv-detail-audit-receipt-hash">{shortHash}</div>
+      ) : (
+        <div className="text-xs text-[var(--cv-color-text-faint)]" data-testid="spv-detail-audit-receipt-missing">
+          No revision hash recorded for this SPV.
+        </div>
+      )}
+      <div className="text-[10px] text-[var(--cv-color-text-faint)]" data-testid="spv-detail-audit-receipt-updated">
+        {updatedAt ? `Last revised ${updatedAt}` : "Revision time not recorded"}
+      </div>
+      {/* OQ-35 — named openly rather than left as a silent gap. */}
+      <div className="text-[10px] text-[var(--cv-color-text-faint)]" data-testid="spv-detail-audit-receipt-version-note">
+        Revision number and previous hash are not exposed by the engine yet.
+      </div>
+    </div>
+  );
+}
+
+function JurisdictionField({ value }: { value: string }) {
+  return (
+    <div data-testid="spv-detail-jurisdiction">
+      <div className="font-medium">Jurisdiction</div>
+      <div className="text-xs">{value}</div>
+    </div>
+  );
+}
+
+/**
+ * J-3 (WAVE 3C) — names the jurisdiction the whole Compliance tab is keyed on,
+ * and says out loud when a vehicle is NOT American, because the failure this
+ * wave fixes was a BVI company and a Dutch syndicate both being shown SEC Form
+ * D and blue-sky notices.
+ */
+function ComplianceJurisdictionHeader({ value, isUnitedStates }: { value: string; isUnitedStates: boolean }) {
+  return (
+    <div className="mb-3" data-testid="spv-compliance-jurisdiction">
+      <div className="font-medium text-sm">Jurisdiction</div>
+      <div className="text-xs text-[var(--cv-color-text-muted)]">
+        {value}. Everything below is scoped to this jurisdiction.
+      </div>
+      {!isUnitedStates && (
+        <div className="text-xs text-[var(--cv-color-text-muted)]" data-testid="spv-compliance-non-us">
+          This is not a United States vehicle, so US securities items are not shown.
+        </div>
       )}
     </div>
   );
@@ -815,6 +1757,41 @@ function DeployPanel({ spvId, currency, onChanged }: { spvId: string; currency: 
   );
 }
 
+/**
+ * WAVE 25 / FE-1 — the SPV mandate tab's HONEST empty state.
+ *
+ * Before this, an SPV with no `spv_mandate` row rendered:
+ *     Mode: — · Sectors: None selected · Geography: Any · Stage: Any
+ * "Any" is a claim about a permissive mandate. There is no mandate. The engine
+ * refuses in exactly this state — `deployCapital` throws `NO_MANDATE`
+ * (server/spvEngineStore.ts:1517) and `isCompanyEligible` returns
+ * `{eligible:false, reasons:["NO_MANDATE"]}` (spvEngineStore.ts:601) — so the
+ * tab was contradicting the engine. Rule 7: a fail-closed state is RENDERED,
+ * never dressed up as a permissive default.
+ *
+ * A component rather than inline JSX, per the `JurisdictionField` precedent in
+ * this file: the silent-drop guard fingerprints a tab by the concatenated text
+ * of its inline children.
+ */
+function MandateEmptyState({ mandate, canWrite }: { mandate: unknown; canWrite: boolean }) {
+  if (mandate) return null;
+  return (
+    <div
+      className="rounded p-2 text-sm text-amber-900"
+      style={{ background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.3)" }}
+      data-testid="spv-mandate-empty"
+    >
+      <div className="font-medium">No mandate has been set for this SPV.</div>
+      <div>This is not an open mandate. Deployment and eligibility both fail closed with NO_MANDATE until one is recorded.</div>
+      {canWrite ? (
+        <div data-testid="spv-mandate-empty-cta">Use “Edit mandate” below to set one.</div>
+      ) : (
+        <div data-testid="spv-mandate-empty-readonly">Ask a managing partner or associate to set the mandate.</div>
+      )}
+    </div>
+  );
+}
+
 /* C2 v2 — Update SPV mandate. Uses canonical SPV_MANDATE_MODES enum;
  *          exposes companyIds/checkMin/checkMax (no more silent drops). */
 function MandatePanel({ spvId, mandate, onChanged }: { spvId: string; mandate: { mode?: string; sector?: string[]; geography?: string[]; stage?: string[]; companyIds?: string[]; checkMinMinor?: number | null; checkMaxMinor?: number | null; ruleTree?: unknown } | null; onChanged: () => void }) {
@@ -844,6 +1821,19 @@ function MandatePanel({ spvId, mandate, onChanged }: { spvId: string; mandate: {
       };
       if (checkMin.trim()) body.checkMinMinor = parseMinor(checkMin);
       if (checkMax.trim()) body.checkMaxMinor = parseMinor(checkMax);
+      /* WAVE 25 / FE-1 — validation. An inverted range was accepted by BOTH
+         sides and persisted: nothing in `setMandate` (spvEngineStore.ts:530)
+         nor here ever compared the two. The server-side check is the real
+         gate (see INVALID_CHECK_RANGE in the store — the API is a second door
+         onto the same sink); this one exists so the GP is told before the
+         round trip rather than after it. */
+      if (
+        typeof body.checkMinMinor === "number" &&
+        typeof body.checkMaxMinor === "number" &&
+        body.checkMinMinor > body.checkMaxMinor
+      ) {
+        throw new Error("Minimum check cannot be greater than maximum check.");
+      }
       await (await apiRequest("PUT", `/api/partner/me/spv/${spvId}/mandate`, body)).json();
     },
     onSuccess: () => {
@@ -935,7 +1925,7 @@ function FeePanel({ spvId, currency, onChanged }: { spvId: string; currency: str
       }
       if (showCarry) {
         if (!carry.trim()) throw new Error(feeType === "carry" ? "Carry % required for a carry fee" : "Carry % required for a hybrid fee");
-        body.carryPct = parsePercent(carry);
+        body.carryPct = parsePercent(carry, "Carry");
       }
       if (effectiveDate.trim()) body.effectiveDate = effectiveDate.trim();
       await (await apiRequest("POST", `/api/partner/me/spv/${spvId}/fees`, body)).json();
@@ -998,10 +1988,20 @@ function FeePanel({ spvId, currency, onChanged }: { spvId: string; currency: str
 
 /* C4 v2 — Register a document. Uses canonical SPV_DOC_TYPES enum;
  *          exposes storageBackend + sizeBytes (no more silent drops). */
-function DocumentPanel({ spvId, onChanged }: { spvId: string; onChanged: () => void }) {
+function DocumentPanel({ spvId, jurisdiction, onChanged }: { spvId: string; jurisdiction: string | null; onChanged: () => void }) {
   const { toast } = useToast();
   const [open, setOpen] = useState(false);
-  const [docType, setDocType] = useState<string>(SPV_DOC_TYPES[0]);
+  // WAVE 23 · ITEM 6 — offered types come from the ontology, not the raw enum.
+  // A non-US vehicle is not shown Form D or blue-sky filings. `SPV_DOC_TYPES`
+  // itself is untouched, so documents already registered under any type still
+  // read back.
+  const docTypes = useMemo(() => spvDocTypesForJurisdiction(jurisdiction), [jurisdiction]);
+  const [docType, setDocType] = useState<string>(docTypes[0]);
+  // If the vehicle's jurisdiction changes under an open panel, a US-only type
+  // must not stay selected and be submitted.
+  useEffect(() => {
+    if (!(docTypes as readonly string[]).includes(docType)) setDocType(docTypes[0]);
+  }, [docTypes, docType]);
   const [title, setTitle] = useState("");
   const [storageKey, setStorageKey] = useState("");
   const [storageBackend, setStorageBackend] = useState("s3");
@@ -1053,7 +2053,7 @@ function DocumentPanel({ spvId, onChanged }: { spvId: string; onChanged: () => v
           <div>
             <Label htmlFor={`${id}-type`} className="text-[10px]">Type</Label>
             <select id={`${id}-type`} className="w-full text-xs border rounded px-2 py-1" value={docType} onChange={(e) => setDocType(e.target.value)} data-testid="spv-document-type">
-              {SPV_DOC_TYPES.map((t) => <option key={t} value={t}>{docTypeLabels[t] ?? t}</option>)}
+              {docTypes.map((t) => <option key={t} value={t}>{docTypeLabels[t] ?? t}</option>)}
             </select>
           </div>
           <div>
@@ -1102,6 +2102,180 @@ function DocumentPanel({ spvId, onChanged }: { spvId: string; onChanged: () => v
   );
 }
 
+/* ── WAVE 25 / FE-7 — the investor compliance WRITE path ────────────────────
+ *
+ * `GET /api/partner/me/compliance/:investorId` and
+ * `PUT /api/partner/me/compliance/:investorId` (spvEngineRoutes.ts:455 and
+ * :473) have existed, IDOR-guarded and zod-`.strict()`-validated, with a
+ * per-investor `gateStatus()` behind them — and `grep -rn "me/compliance"
+ * client/` returned NOTHING. Zero callers on either verb. The compliance tab
+ * was read-only educational copy: investor count, an "Accreditation" heading
+ * with a paragraph under it, and two voluntary checklists. A GP could read
+ * about accreditation and had no way to record it.
+ *
+ * The other half of FE-7 — "two-argument call signature" — is ALREADY correct;
+ * see WAVE25_REPORT.md. This is the half that was actually missing.
+ *
+ * Rendered as a nested child of the existing `spv-compliance-accreditation`
+ * block so the compliance TabsContent's direct-child sequence, which the
+ * silent-drop guard fingerprints, is unchanged. Same shape as the
+ * SpvSignoffsPanel mount above it.
+ *
+ * FAIL-CLOSED RENDERING (rule 7): when the profile read errors we say so. We
+ * never render "KYC: none" for a profile we could not load — that is a
+ * fabricated compliance fact, and it is the exact failure mode a fabricated
+ * `$0` is in the money surfaces. */
+const KYC_STATUSES = ["none", "pending", "verified", "expired", "manual_review"] as const;
+const ACCREDITATION_STATUSES = ["none", "self_certified", "verified", "manual_review"] as const;
+const COMPLIANCE_STATUS_LABELS: Record<string, string> = {
+  none: "Not recorded",
+  pending: "Pending",
+  verified: "Verified",
+  expired: "Expired",
+  manual_review: "Manual review",
+  self_certified: "Self-certified",
+};
+
+interface InvestorComplianceProfile {
+  investorId: string;
+  kycStatus: string;
+  kycVerifiedAt: string | null;
+  kycExpiry: string | null;
+  accreditationStatus: string;
+  accreditationCertifiedAt: string | null;
+  jurisdiction: string | null;
+}
+interface InvestorComplianceGates { kyc: boolean; accreditation: boolean; needsReview: boolean }
+
+function InvestorCompliancePanel({
+  register,
+  canWrite,
+}: {
+  register: RegisterRow[];
+  canWrite: boolean;
+}) {
+  const { toast } = useToast();
+  const id = useId();
+  const [selected, setSelected] = useState("");
+  const [kycStatus, setKycStatus] = useState("");
+  const [accreditationStatus, setAccreditationStatus] = useState("");
+  const [dirty, setDirty] = useState(false);
+
+  const investorId = selected.trim();
+  const q = useQuery<{ profile: InvestorComplianceProfile | null; gates: InvestorComplianceGates }>({
+    queryKey: ["/api/partner/me/compliance", investorId],
+    queryFn: async () => (await apiRequest("GET", `/api/partner/me/compliance/${encodeURIComponent(investorId)}`)).json(),
+    enabled: investorId.length > 0,
+  });
+
+  /* Reset the form to whatever the server actually holds whenever the selected
+     investor's profile arrives, unless the GP has started editing. An
+     unsubmitted edit must never leak across investors. */
+  useEffect(() => {
+    if (dirty) return;
+    setKycStatus(q.data?.profile?.kycStatus ?? "none");
+    setAccreditationStatus(q.data?.profile?.accreditationStatus ?? "none");
+  }, [q.data, dirty]);
+
+  useEffect(() => { setDirty(false); }, [investorId]);
+
+  const save = useMutation({
+    mutationFn: async () => {
+      if (!investorId) throw new Error("INVESTOR_ID_REQUIRED");
+      await (await apiRequest("PUT", `/api/partner/me/compliance/${encodeURIComponent(investorId)}`, {
+        kycStatus,
+        accreditationStatus,
+      })).json();
+    },
+    onSuccess: () => {
+      toast({ title: "Compliance profile saved", description: "KYC and accreditation status recorded for this investor." });
+      setDirty(false);
+      void q.refetch();
+    },
+    onError: (e: Error) => toast({ variant: "destructive", title: "Could not save compliance profile", description: spvErrorMessage(e) }),
+  });
+
+  return (
+    <div className="mt-2 border-t pt-2 space-y-2" data-testid="spv-investor-compliance">
+      <div className="text-xs font-medium">Investor KYC &amp; accreditation</div>
+      {register.length === 0 ? (
+        <div className="text-xs text-[var(--cv-color-text-faint)]" data-testid="spv-investor-compliance-empty">
+          No investors on the register yet — compliance profiles appear here once an investor subscribes.
+        </div>
+      ) : (
+        <>
+          <div>
+            <Label htmlFor={`${id}-investor`} className="text-[10px]">Investor</Label>
+            <select
+              id={`${id}-investor`}
+              className="w-full text-xs border rounded px-2 py-1"
+              value={selected}
+              onChange={(e) => setSelected(e.target.value)}
+              data-testid="spv-investor-compliance-select"
+            >
+              <option value="">Select an investor…</option>
+              {register.map((r) => (
+                <option key={r.investorId} value={r.investorId}>{r.investorId}</option>
+              ))}
+            </select>
+          </div>
+          {investorId === "" ? null : q.isLoading ? (
+            <div className="text-xs text-[var(--cv-color-text-faint)]" data-testid="spv-investor-compliance-loading">Loading compliance profile…</div>
+          ) : q.isError ? (
+            <div className="text-xs text-red-700" data-testid="spv-investor-compliance-error">
+              Could not load this investor's compliance profile. Nothing is shown rather than a status we cannot vouch for. {spvErrorMessage(q.error as Error)}
+            </div>
+          ) : (
+            <>
+              <div className="text-xs text-[var(--cv-color-text-muted)]" data-testid="spv-investor-compliance-gates">
+                {q.data?.profile == null
+                  ? "No compliance profile recorded for this investor yet."
+                  : `KYC: ${COMPLIANCE_STATUS_LABELS[q.data.profile.kycStatus] ?? q.data.profile.kycStatus} · Accreditation: ${COMPLIANCE_STATUS_LABELS[q.data.profile.accreditationStatus] ?? q.data.profile.accreditationStatus}`}
+                {q.data?.gates?.needsReview ? " · Flagged for manual review" : ""}
+              </div>
+              <div>
+                <Label htmlFor={`${id}-kyc`} className="text-[10px]">KYC status</Label>
+                <select
+                  id={`${id}-kyc`}
+                  className="w-full text-xs border rounded px-2 py-1"
+                  value={kycStatus}
+                  disabled={!canWrite}
+                  onChange={(e) => { setDirty(true); setKycStatus(e.target.value); }}
+                  data-testid="spv-investor-compliance-kyc"
+                >
+                  {KYC_STATUSES.map((s) => <option key={s} value={s}>{COMPLIANCE_STATUS_LABELS[s]}</option>)}
+                </select>
+              </div>
+              <div>
+                <Label htmlFor={`${id}-accr`} className="text-[10px]">Accreditation status</Label>
+                <select
+                  id={`${id}-accr`}
+                  className="w-full text-xs border rounded px-2 py-1"
+                  value={accreditationStatus}
+                  disabled={!canWrite}
+                  onChange={(e) => { setDirty(true); setAccreditationStatus(e.target.value); }}
+                  data-testid="spv-investor-compliance-accreditation"
+                >
+                  {ACCREDITATION_STATUSES.map((s) => <option key={s} value={s}>{COMPLIANCE_STATUS_LABELS[s]}</option>)}
+                </select>
+              </div>
+              {canWrite ? (
+                <Button size="sm" onClick={() => save.mutate()} disabled={save.isPending} data-testid="spv-investor-compliance-save">
+                  {save.isPending ? "Saving…" : "Save compliance profile"}
+                </Button>
+              ) : (
+                <div className="text-xs text-[var(--cv-color-text-faint)]" data-testid="spv-investor-compliance-readonly">
+                  Read-only: your role cannot change compliance status.
+                </div>
+              )}
+            </>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 /* C5 v2 — Record a secondary transfer (MODEL only — no money movement). */
 function TransferPanel({ spvId, currency, onChanged }: { spvId: string; currency: string; onChanged: () => void }) {
   const { toast } = useToast();
@@ -1123,7 +2297,7 @@ function TransferPanel({ spvId, currency, onChanged }: { spvId: string; currency
         currency,
       };
       if (amount.trim()) body.amountMinor = parseMinor(amount);
-      if (unitsPct.trim()) body.unitsPct = parsePercent(unitsPct);
+      if (unitsPct.trim()) body.unitsPct = parsePercent(unitsPct, "Units");
       if (!body.amountMinor && !body.unitsPct) throw new Error("Enter an amount OR a units percentage");
       await (await apiRequest("POST", `/api/partner/me/spv/${spvId}/transfers`, body)).json();
     },
@@ -1179,7 +2353,10 @@ function RecordDistributionPanel({ spvId, currency, onChanged }: { spvId: string
   const [event, setEvent] = useState("exit");
   const [gross, setGross] = useState("");
   const [costBasis, setCostBasis] = useState("");
-  const [outcome, setOutcome] = useState<"succeeded" | "failed">("succeeded");
+  // WAVE 1A / S-2 — the `collectionOutcome` selector is GONE. A partner may not
+  // declare that carry was collected; the server rejects the key outright
+  // (SETTLEMENT_NOT_CLIENT_SUPPLIED) and derives settlement from the gateway or a
+  // Capavate platform admin. See server/lib/feeSettlementAuthority.ts.
   const id = useId();
 
   const submit = useMutation({
@@ -1191,7 +2368,6 @@ function RecordDistributionPanel({ spvId, currency, onChanged }: { spvId: string
         grossProceedsMinor: g,
         costBasisMinor: cb,
         currency,
-        collectionOutcome: outcome,
       };
       await (await apiRequest("POST", `/api/partner/me/spv/${spvId}/distributions`, body)).json();
     },
@@ -1233,12 +2409,9 @@ function RecordDistributionPanel({ spvId, currency, onChanged }: { spvId: string
             {costBasis && /^\d+$/.test(costBasis) && <div className="text-[10px] text-[var(--cv-color-text-faint)]">≈ {fmt(Number(costBasis), currency)}</div>}
             <div className="text-[10px] text-[var(--cv-color-text-faint)]">The total capital originally deployed (used to compute profit for carry).</div>
           </div>
-          <div>
-            <Label htmlFor={`${id}-outcome`} className="text-[10px]">Collection outcome</Label>
-            <select id={`${id}-outcome`} className="w-full text-xs border rounded px-2 py-1" value={outcome} onChange={(e) => setOutcome(e.target.value as "succeeded" | "failed")} data-testid="spv-distribution-outcome">
-              <option value="succeeded">Collected</option>
-              <option value="failed">Failed / uncollected</option>
-            </select>
+          <div className="text-[10px] text-[var(--cv-color-text-faint)]" data-testid="spv-distribution-settlement-note">
+            Carry settlement is not self-declared. If this SPV charges carry, the collection
+            is settled by the payment gateway or recorded by a Capavate platform admin.
           </div>
           <div className="flex gap-2">
             <Button size="sm" onClick={() => submit.mutate()} disabled={submit.isPending} data-testid="spv-distribution-submit">

@@ -34,6 +34,12 @@ import { getDb } from "./db/connection";
 import { pAll } from "./db/portable"; /* Wave H Track A — Postgres compatibility */
 import { dscVotes as dscVotesTable } from "../shared/schema";
 import * as collectiveMembershipStore from "./collectiveMembershipStore";
+/* WAVE 36 · ROW 6 — STATIC import. This was a lazy `require("./chaptersStore")`
+ * destructuring a name that module did not export; the throw was swallowed and
+ * every chapter-scoped quorum was computed against 0. A static import makes the
+ * same mistake a COMPILE error instead of a silent governance failure.
+ * Verified non-circular: chaptersStore does not import this module. */
+import { countActiveChapterMembers } from "./chaptersStore";
 import { log } from "./lib/logger";
 
 export type DscVote = "approve" | "reject" | "conditional" | "abstain";
@@ -342,13 +348,11 @@ export function tallyForCompany(companyId: string, opts?: { chapterId?: string }
    * chapterId is passed (audit / aggregate path). */
   let memberCount: number;
   if (opts?.chapterId) {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { countActiveChapterMembers } = require("./chaptersStore");
-      memberCount = countActiveChapterMembers(opts.chapterId) ?? 0;
-    } catch {
-      memberCount = 0;
-    }
+    /* WAVE 36 · ROW 6 — no try/catch. The previous `catch { memberCount = 0 }`
+     * converted "I could not read the roster" into "the chapter has no members",
+     * which silently forces quorumReached = false forever. An unreadable roster
+     * is an error the caller must see, not a quorum verdict. */
+    memberCount = countActiveChapterMembers(opts.chapterId);
   } else {
     memberCount = collectiveMembershipStore.listActive().length;
   }

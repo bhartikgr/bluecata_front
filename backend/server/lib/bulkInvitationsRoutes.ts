@@ -30,6 +30,12 @@ import type { Express, Request, Response } from "express";
 import { createHash, randomBytes } from "node:crypto";
 import { rawDb } from "../db/connection";
 import { log } from "./logger";
+/* WAVE 36 · ROW 6 — STATIC import of the REAL export. The lazy
+ * `require("../bridgeStore")` here destructured `emitBridge`, which bridgeStore
+ * has never exported; the call threw and a bare catch that dismissed the bridge
+ * as "optional" swallowed it, so this event was emitted zero times. */
+import { emitBridgeEvent } from "../bridgeStore";
+
 // v25.20 Lane 6 NC fix: bulk CSV invitations previously persisted rows but
 // never sent emails — invitees were silently invited and never knew. Mirror
 // the single-invitation path: sendMail + escapeHtml + best-effort try/catch.
@@ -243,12 +249,18 @@ export function registerBulkInvitationsRoutes(app: Express): void {
           );
         }
         created.push({ id: r.invId, email: r.email, redeemUrl: link });
-        try {
-          const { emitBridge } = require("../bridgeStore");
-          emitBridge("round.invitation_sent", r.invId, "roundInvitation", {
-            invitationId: r.invId, roundId, companyId: owner.companyId, investorEmail: r.email,
-          });
-        } catch { /* bridge optional */ }
+        /* WAVE 36 · ROW 6 — real emit (was a dead `emitBridge` require). */
+        emitBridgeEvent({
+          eventType: "round.invitation_sent",
+          aggregateId: r.invId,
+          aggregateKind: "invitation",
+          payload: {
+            invitationId: r.invId,
+            roundId,
+            companyId: owner.companyId,
+            investorEmail: r.email,
+          },
+        });
       }
 
       return res.json({

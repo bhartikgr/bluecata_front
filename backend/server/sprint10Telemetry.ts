@@ -40,6 +40,10 @@ import { log } from "./lib/logger";
 // runtime (inside emitSync), never during module initialization, so the
 // binding is fully defined by the time it is invoked. This is safe.
 import { appendAdminAudit } from "./adminPlatformStore";
+// WAVE 8 ORP-045 — forward registry-declared telemetry types onto the outbound
+// bridge. Registry-driven (server/bridgeStore.ts ALL_OUTBOUND_EVENT_TYPES); see
+// server/lib/telemetryBridgeForward.ts for the rationale and the failure policy.
+import { forwardTelemetryToBridge } from "./lib/telemetryBridgeForward";
 
 /**
  * Map a DB row back to the SyncEnvelope<unknown> shape the API + callers
@@ -152,6 +156,14 @@ export function emitSync<T>(opts: {
   } catch (err) {
     log.warn("[sprint10Telemetry.emitSync] audit_log write-through failed (continuing):", (err as Error).message);
   }
+
+  // WAVE 8 ORP-045 / DEF-045 — third write-through: the outbound bridge. Only
+  // event types that are on the published peer contract
+  // (ALL_OUTBOUND_EVENT_TYPES) are forwarded, so this cannot leak an
+  // undeclared type to the peer. Before this, the 17 emitSync types — incl.
+  // the money events payment_charged and captable_commit — had no peer
+  // visibility at all. forwardTelemetryToBridge swallows its own failures.
+  forwardTelemetryToBridge(env as SyncEnvelope<unknown>);
 
   return env;
 }

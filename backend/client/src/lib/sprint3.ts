@@ -31,13 +31,24 @@ import {
 } from "@capavate/cap-table-engine";
 import { referenceComputeCapTable } from "@capavate/cap-table-engine-ref";
 
+/* WAVE 22 · ITEM 1 (REVIEW B F-2) — the two evidence fields are NULLABLE.
+ * `null` is the explicit "not captured" state and is accompanied by a
+ * machine-readable reason string. It is never a synthesised stand-in, and the
+ * fields are never silently dropped. See the header comment in
+ * `client/src/components/CloseRoundPanel.tsx`. */
 export type SignoffRecord = {
   actorId: string;
   actorName: string;
   actorRole: "founder" | "admin";
   ts: string;
-  ipAddress?: string;
-  identityHash: string;
+  /** Client-observed address, or `null` = not captured (see reason field). */
+  ipAddress?: string | null;
+  /** Why `ipAddress` is null. Persisted with the audit record. */
+  ipAddressUnavailableReason?: string;
+  /** Identity attestation hash, or `null` = not captured (see reason field). */
+  identityHash: string | null;
+  /** Why `identityHash` is null. Persisted with the audit record. */
+  identityHashUnavailableReason?: string;
 };
 
 export type RoundCloseState = {
@@ -119,8 +130,15 @@ async function mirrorSignoffToAuditLog(s: RoundCloseState): Promise<void> {
             roundId: s.roundId,
             actorRole: item.record.actorRole,
             actorName: item.record.actorName,
-            ipAddress: item.record.ipAddress,
-            identityHash: item.record.identityHash,
+            /* WAVE 22 · ITEM 1 — explicit nulls plus their documented reasons
+             * travel to the durable audit record. The server OVERWRITES the
+             * address with the peer it actually observed
+             * (`serverObservedIp`), so the durable record carries a real
+             * value rather than a client claim. */
+            ipAddress: item.record.ipAddress ?? null,
+            ipAddressUnavailableReason: item.record.ipAddressUnavailableReason ?? null,
+            identityHash: item.record.identityHash ?? null,
+            identityHashUnavailableReason: item.record.identityHashUnavailableReason ?? null,
             ts: item.record.ts,
             closed: s.closed,
             closedAt: s.closedAt,

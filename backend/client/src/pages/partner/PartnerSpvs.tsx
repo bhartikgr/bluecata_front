@@ -16,11 +16,28 @@ import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 
+/* MAJOR 3 (WAVE 2B) — FIELD-NAME CORRECTION, sibling of SC-1.
+ *
+ * Wave 2 fixed the DETAIL pages (PartnerSpvDetail.tsx) but this LIST page read
+ * the same fictional fields, so Review B (build_log/WAVES_012_REVIEW_B.md,
+ * MAJOR 3) left every row rendering `undefined` for the name and `$0.00` for
+ * the target.
+ *
+ * GET /api/partner/me/spvs answers
+ *   res.json({ spvs: spvEngineStore.listByPartner(...) })  — partnerRoutes.ts:1595-1597
+ * i.e. an array of canonical `SpvDTO` (shared/spvEngine.ts:205-230). The DTO has:
+ *   name              (NOT `spvName`)               — spvEngine.ts:208
+ *   targetRaiseMinor  (NOT `targetSizeMinor`, and NULLABLE) — spvEngine.ts:214
+ *
+ * `spvName` remains a legitimate WRITE alias on POST /api/partner/me/spvs
+ * (partnerRoutes.ts:1606) and PATCH /api/partner/me/spvs/:id
+ * (partnerRoutes.ts:1681). It is a write alias only and is never echoed on
+ * read, so the create form below still sends `spvName` — deliberately. */
 type Spv = {
   id: string;
-  spvName: string;
+  name: string;
   jurisdiction: string;
-  targetSizeMinor: number;
+  targetRaiseMinor: number | null;
   currency: string;
   status: string;
 };
@@ -145,11 +162,17 @@ export default function PartnerSpvs() {
               <Link href={`/collective/partner/spvs/${s.id}`} className="block hover:bg-[var(--cv-color-surface-2)] -m-3 p-3 rounded">
                 <div className="flex justify-between items-center">
                   <div>
-                    <div className="font-medium">{s.spvName}</div>
+                    <div className="font-medium">{s.name}</div>
                     <div className="text-xs text-[var(--cv-color-text-muted)]">{s.jurisdiction} · {s.status}</div>
                   </div>
                   <div className="text-right">
-                    <div className="font-mono">{formatMinor(s.targetSizeMinor, s.currency)}</div>
+                    {/* MAJOR 3 — `targetRaiseMinor` is nullable on the DTO; an
+                        unset target must read as "—", never as $0.00. */}
+                    <div className="font-mono">
+                      {s.targetRaiseMinor === null || s.targetRaiseMinor === undefined
+                        ? "\u2014"
+                        : formatMinor(s.targetRaiseMinor, s.currency)}
+                    </div>
                     <div className="text-xs text-[var(--cv-color-text-muted)]">target</div>
                   </div>
                 </div>

@@ -127,7 +127,16 @@ describe("W-CAP Part 2 — interim (pro-forma) endpoint", () => {
   it("rejects an unauthenticated request (ownership guard)", async () => {
     const companyId = `co_guard_${Date.now()}`;
     const r = await get(`/api/companies/${companyId}/captable/interim`);
-    expect([401, 403]).toContain(r.status);
+    /* WAVE 35 · F9 — the refusal shape for a caller with NO relationship to the
+       company changed from 403 to 404 on purpose. A 403 distinguishes "this id
+       exists but you may not have it" from "this id does not exist", which lets
+       an authenticated investor enumerate valid company ids — including SPV
+       ids, which are the private vehicles. `GET /api/companies/:id` already
+       stated that policy ("so we don't even leak the existence of the company
+       id"); its three siblings now match. 401 remains correct for a caller with
+       no identity at all. */
+    expect([401, 404]).toContain(r.status);
+    expect([403]).not.toContain(r.status);
   });
 
   it("does not leak another company's committed positions", async () => {

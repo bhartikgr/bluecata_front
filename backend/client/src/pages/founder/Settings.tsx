@@ -25,9 +25,41 @@ import { useActiveCompany, useActiveCompanyId } from "@/lib/useActiveCompany";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { fmtUSD, fmtDate } from "@/lib/format";
 import { Link } from "wouter";
-import { FINANCIAL_FIELD_COPY, getFieldsForStage } from "@/lib/financialFieldCopy";
+import {
+  FINANCIAL_FIELD_COPY,
+  getFieldsForStage,
+  AS_WRITTEN_DECIMAL_UNITS,
+  AS_WRITTEN_INPUT_STEP,
+  toStoredAsWritten,
+} from "@/lib/financialFieldCopy";
 import { Slider } from "@/components/ui/slider";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { formatMinor } from "@/lib/currency";
+
+/* ── WAVE 15 / ORP-033 — shape of GET|PUT /api/founder/notification-preferences.
+ * Declared locally and structurally (Record<string, boolean> for channels rather
+ * than a closed union) so that adding a channel server-side cannot silently drop
+ * a switch from this page: an unknown channel still renders. */
+export interface NotifPrefRow {
+  key: string;
+  label: string;
+  locked: boolean;
+  channels: Record<string, boolean>;
+  explicit: boolean;
+}
+export interface NotifPrefCoverage {
+  governedKinds: number;
+  totalKinds: number;
+  enforcedAt: string;
+  note: string;
+}
+export interface NotifPrefsResponse {
+  ok?: boolean;
+  preferences?: NotifPrefRow[];
+  channels?: string[];
+  catalog?: Array<{ key: string; label: string; locked: boolean; kinds: string[]; defaultEnabled: boolean }>;
+  coverage?: NotifPrefCoverage;
+}
 
 /**
  * v23.8 C6/W-17 — derive a default ISO-4217 currency from a free-text HQ /
@@ -52,7 +84,10 @@ export function deriveCurrencyFromRegion(region: string | null | undefined): str
 }
 
 type PricingFeature = { key: string; label: string; included: boolean; limit?: string };
-type PricingTier = { id: string; name: string; monthlyUsd: number; annualUsd: number; blurb: string; features: PricingFeature[]; billingCycle?: "annual" | "monthly" | "one_time"; annualPriceCents?: number; displayPrice?: string };
+/* WAVE 35 · F2 — monthlyUsd/annualUsd are USD-ONLY and are null for a tier
+ * priced in another currency (server/adminPricingStore.ts). currency +
+ * monthlyMinor/annualMinor carry the truth for every currency. */
+type PricingTier = { id: string; name: string; monthlyUsd: number | null; annualUsd: number | null; currency?: string; monthlyMinor?: number; annualMinor?: number; blurb: string; features: PricingFeature[]; billingCycle?: "annual" | "monthly" | "one_time"; annualPriceCents?: number; displayPrice?: string };
 
 export default function Settings() {
   const { toast } = useToast();
@@ -426,6 +461,45 @@ export default function Settings() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [billingTabActive, companyId, subPending, hasPendingRequest, subscriptionQ.dataUpdatedAt]);
 
+  /* ── WAVE 15 / ORP-033 ─────────────────────────────────────────────────────
+   * The notifications tab used to render ten `defaultChecked` switches over a
+   * hardcoded array with an amber "coming soon" banner. The store, the DB table
+   * and the cadence gate now exist, so the switches are bound to them. The
+   * server also returns an honest `coverage` statement, which the tab renders
+   * verbatim instead of implying blanket coverage it does not have.
+   * Sink: PUT /api/founder/notification-preferences -> setPreference() ->
+   * founder_notification_preference. Read back by notificationCadence.ts.
+   * ─────────────────────────────────────────────────────────────────────────── */
+  const notifPrefsQ = useQuery<NotifPrefsResponse>({
+    queryKey: ["/api/founder/notification-preferences"],
+    queryFn: async () => (await apiRequest("GET", "/api/founder/notification-preferences")).json(),
+  });
+
+  const setNotifPrefMut = useMutation({
+    mutationFn: async (vars: { prefKey: string; channel: string; enabled: boolean }) =>
+      (await apiRequest("PUT", "/api/founder/notification-preferences", vars)).json(),
+    onSuccess: (data: NotifPrefsResponse) => {
+      /* Write the server's returned rows straight into the cache. The server is
+       * the authority on what was actually stored — a locked key it refused, or
+       * a default it left absent, must not be papered over by optimism here. */
+      queryClient.setQueryData(["/api/founder/notification-preferences"], (prev: NotifPrefsResponse | undefined) =>
+        prev ? { ...prev, preferences: data.preferences ?? prev.preferences } : prev,
+      );
+      queryClient.invalidateQueries({ queryKey: ["/api/founder/notification-preferences"] });
+      toast({ title: "Notification preference saved" });
+    },
+    onError: (err: unknown) => {
+      const msg = err instanceof Error ? err.message : "";
+      toast({
+        title: msg.includes("LOCKED") ? "This alert cannot be muted" : "Could not save preference",
+        description: msg.includes("LOCKED")
+          ? "Critical alerts are delivered regardless of preference."
+          : "Nothing was changed. Please try again.",
+        variant: "destructive",
+      });
+    },
+  });
+
   const saveProfileMut = useMutation({
     mutationFn: async () => (await apiRequest("PATCH", "/api/auth/me", { timezone, name: profileName, firstName: profileFirstName.trim(), lastName: profileLastName.trim(), email: profileEmail, title: profileTitle })).json(),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] }); toast({ title: "Profile saved" }); },
@@ -601,6 +675,25 @@ export default function Settings() {
             <TabsTrigger value="legal" data-testid="tab-legal"><ShieldCheck className="h-3.5 w-3.5 mr-1" /> Legal</TabsTrigger>
             <TabsTrigger value="delete" data-testid="tab-delete"><Trash2 className="h-3.5 w-3.5 mr-1" /> Delete Workspace</TabsTrigger>
           </TabsList>
+          {/* WAVE 8 / ORP-049 (DEF-049) — v25.45 F7 deleted the Settings →
+                Company TAB and left /founder/settings/company routed as a
+                redirect to /founder/company (App.tsx:689 in this tree; the
+                audit cited :683). Verified: the redirect target IS reachable
+                and IS linked (Settings.tsx region tab, RoundNew.tsx), so no
+                capability was lost — but the Company entry point vanished from
+                the tab strip where a founder looks for it, which is why the
+                alias route went unlinked. This restores the entry point as a
+                LINK (not a resurrected tab, which F7 deliberately removed),
+                pointed at the legacy alias so that path is genuinely exercised
+                rather than sitting as dead routing. */}
+            <Link
+              href="/founder/settings/company"
+              className="inline-flex items-center px-3 py-1.5 text-sm underline text-muted-foreground hover:text-foreground"
+              data-testid="tab-company-link"
+            >
+              <Building2 className="h-3.5 w-3.5 mr-1" /> Company Profile
+            </Link>
+
 
           {/* PROFILE */}
           <TabsContent value="profile" className="mt-4">
@@ -757,7 +850,23 @@ export default function Settings() {
                 const effectiveCycle: "monthly" | "annual" = singleTier
                   ? (t.billingCycle === "monthly" ? "monthly" : "annual")
                   : billingPeriod;
-                const price = effectiveCycle === "monthly" ? t.monthlyUsd : t.annualUsd;
+                /* WAVE 35 · F2 — was `t.monthlyUsd`/`t.annualUsd` piped into
+                 * fmtUSD(), so a ¥1,200,000 tier rendered "$12,000". Price now
+                 * comes from integer minor units + the tier's own ISO-4217
+                 * currency; when neither is available the card renders an
+                 * explicit refusal rather than a plausible wrong number. */
+                const tierCurrency = t.currency || "USD";
+                const priceMinor = effectiveCycle === "monthly" ? t.monthlyMinor : t.annualMinor;
+                const legacyUsd = effectiveCycle === "monthly" ? t.monthlyUsd : t.annualUsd;
+                const priceIsKnown = typeof priceMinor === "number" || typeof legacyUsd === "number";
+                const priceIsFree = typeof priceMinor === "number" ? priceMinor === 0 : legacyUsd === 0;
+                const priceLabel = !priceIsKnown
+                  ? "Price unavailable"
+                  : priceIsFree
+                    ? "Free"
+                    : typeof priceMinor === "number"
+                      ? formatMinor(priceMinor, tierCurrency)
+                      : fmtUSD(legacyUsd as number);
                 const isActive = t.id === activeTier;
                 return (
                   <Card key={t.id} className={isActive ? "border-[hsl(0_100%_40%)] border-2" : ""} data-testid={`card-tier-${t.id}`}>
@@ -777,8 +886,8 @@ export default function Settings() {
                           </>
                         ) : (
                           <>
-                            <div className="text-2xl font-bold">{price === 0 ? "Free" : fmtUSD(price)}</div>
-                            <div className="text-xs text-muted-foreground">{price === 0 ? "Always" : `per ${effectiveCycle === "monthly" ? "month" : "year"}`}</div>
+                            <div className="text-2xl font-bold" data-testid={`tier-price-${t.id}`}>{priceLabel}</div>
+                            <div className="text-xs text-muted-foreground">{!priceIsKnown ? "Contact us for pricing in this currency" : priceIsFree ? "Always" : `per ${effectiveCycle === "monthly" ? "month" : "year"}`}</div>
                           </>
                         )}
                       </div>
@@ -857,7 +966,7 @@ export default function Settings() {
                     <Badge variant={subscription.status === "active" ? "default" : "secondary"} data-testid="badge-subscription-status">{subscription.status}</Badge>
                   )}
                   {typeof subscription?.amountMinor === "number" && (
-                    <div className="text-sm text-muted-foreground tabular-nums" data-testid="text-plan-amount">{fmtUSD(subscription.amountMinor / 100, { currency: subscription.currency || "USD" })}/mo</div>
+                    <div className="text-sm text-muted-foreground tabular-nums" data-testid="text-plan-amount">{formatMinor(subscription.amountMinor, subscription.currency || "USD")}/mo</div>
                   )}
                   {subscription?.nextBillingDate && (
                     <div className="text-xs text-muted-foreground">Next billing {fmtDate(subscription.nextBillingDate)}</div>
@@ -918,7 +1027,7 @@ export default function Settings() {
                             <div className="text-xs text-muted-foreground">{fmtDate(inv.issuedAt)}</div>
                           </div>
                           <div className="flex items-center gap-3 shrink-0">
-                            <span className="tabular-nums">{fmtUSD((inv.totalMinor ?? inv.amountMinor ?? 0) / 100, { currency: inv.currency || "USD" })}</span>
+                            <span className="tabular-nums">{formatMinor(inv.totalMinor ?? inv.amountMinor ?? 0, inv.currency || "USD")}</span>
                             <Badge
                               variant={inv.status === "paid" ? "default" : inv.status === "void" || inv.status === "refunded" ? "destructive" : "secondary"}
                               data-testid={`invoice-status-${inv.id}`}
@@ -959,32 +1068,95 @@ export default function Settings() {
               title="Notifications"
               body="Channel and frequency for alerts. Choose between in-app bell, email digest (daily/weekly), and webhook callbacks for connected systems. Critical security alerts cannot be suppressed."
             />
-            {/* v25.20 Lane 4 sub-finding: the toggles below are not yet wired to a
-              * notification-preference store. Be honest about it so founders
-              * don't think they've disabled an alert they're still receiving. */}
+            {/* WAVE 15 / ORP-033 — these switches are no longer decorative. Each
+              * one PUTs to /api/founder/notification-preferences, which writes
+              * `founder_notification_preference`, which `notificationCadence.ts`
+              * reads before it decides to deliver. The old "coming soon" banner
+              * is replaced by the server's OWN coverage statement, rendered
+              * verbatim, because the coverage is real but partial: emitNotification
+              * in the sacred notificationsStore.ts does not consult preferences,
+              * so only the kinds that route through the cadence gate are governed.
+              * Saying so is the difference between a wired control and a lie. */}
+            <div className="mb-3 rounded-md border border-sky-300 bg-sky-50 text-sky-900 px-3 py-2 text-xs" data-testid="banner-notifications-coverage">
+              <span className="font-medium">What these switches actually control.</span>
+              <span className="ml-1" data-testid="text-notif-coverage-note">
+                {notifPrefsQ.data?.coverage?.note ?? "Loading coverage detail…"}
+              </span>
+              <span className="ml-1 block mt-1" data-testid="text-notif-coverage-counts">
+                {notifPrefsQ.data?.coverage
+                  ? `${notifPrefsQ.data.coverage.governedKinds} of ${notifPrefsQ.data.coverage.totalKinds} notification kinds are gated by these preferences.`
+                  : ""}
+              </span>
+              <span className="ml-1 block" data-testid="text-notif-coverage-enforced-at">
+                {notifPrefsQ.data?.coverage ? `Enforced at: ${notifPrefsQ.data.coverage.enforcedAt}` : ""}
+              </span>
+            </div>
+            {/* WAVE 15 / ORP-033 — the original amber warning is RESTORED, not
+              * allowlisted, and not deleted. `evaluateCadence` consults the
+              * preference for the `in_app` channel only
+              * (notificationCadence.ts: isKindEnabled(userId, kind, "in_app")),
+              * so for the Email and Webhook columns the sentence below is still
+              * literally true: the row is stored, but no delivery path reads it
+              * yet. Scoping the warning to the two channels it still describes
+              * is how the copy stays truthful while the in-app switch becomes
+              * real. The scope label is a SIBLING element — appending it inside
+              * the existing text node would read to the silent-drop guard as one
+              * removal plus one addition. */}
             <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 text-amber-900 px-3 py-2 text-xs" data-testid="banner-notifications-preview">
-              Notification preferences are coming soon. Toggling these switches
-              previews the planned controls but does not yet change what you
-              receive.
+              <span className="font-medium block" data-testid="text-notif-preview-scope">
+                Applies to the Email and Webhook columns only.
+              </span>
+              <span>
+                Notification preferences are coming soon. Toggling these switches
+                previews the planned controls but does not yet change what you
+                receive.
+              </span>
+              <span className="block mt-1" data-testid="text-notif-preview-inapp">
+                The In-app column is live: it is read by the cadence gate before
+                a notification is delivered.
+              </span>
             </div>
             <Card>
               <CardHeader><CardTitle className="text-base">Email & in-app notifications</CardTitle></CardHeader>
               <CardContent className="space-y-3 text-sm">
-                {[
-                  ["Investor opens a dataroom file", true],
-                  ["Investor accepts an invitation", true],
-                  ["Soft-circle commitment is made", true],
-                  ["Soft-circle commitment is downgraded", true],
-                  ["Round close milestone reached", true],
-                  ["Investor comments on a report", true],
-                  ["Cap-table change committed", true],
-                  ["Weekly fundraising digest", false],
-                  ["M&A inbound interest received", true],
-                  ["Compliance hold triggered", true],
-                ].map(([label, on]) => (
-                  <div key={label as string} className="flex items-center justify-between border-b border-border last:border-0 pb-2 last:pb-0">
-                    <span>{label as string}</span>
-                    <Switch defaultChecked={!!on} data-testid={`switch-notif-${(label as string).toLowerCase().replace(/[^a-z0-9]+/g, "-")}`} />
+                {notifPrefsQ.isLoading && (
+                  <div className="text-muted-foreground" data-testid="loading-notif-prefs">Loading your notification preferences…</div>
+                )}
+                {notifPrefsQ.isError && (
+                  <div className="text-destructive" data-testid="error-notif-prefs">
+                    Could not load notification preferences. Nothing has been changed.
+                  </div>
+                )}
+                {asArray<NotifPrefRow>(notifPrefsQ.data?.preferences).map((p) => (
+                  <div key={p.key} className="border-b border-border last:border-0 pb-2 last:pb-0" data-testid={`row-notif-${p.key.replace(/[^a-z0-9]+/gi, "-")}`}>
+                    <div className="flex items-center justify-between">
+                      <span>{p.label}</span>
+                      <div className="flex items-center gap-3">
+                        {asArray<string>(notifPrefsQ.data?.channels).map((ch) => (
+                          <label key={ch} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                            <span>{ch === "in_app" ? "In-app" : ch === "email" ? "Email" : "Webhook"}</span>
+                            <Switch
+                              checked={!!p.channels?.[ch]}
+                              disabled={p.locked || setNotifPrefMut.isPending}
+                              onCheckedChange={(next) =>
+                                setNotifPrefMut.mutate({ prefKey: p.key, channel: ch, enabled: next })
+                              }
+                              data-testid={`switch-notif-${p.key.replace(/[^a-z0-9]+/gi, "-")}-${ch}`}
+                            />
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                    {p.locked && (
+                      <span className="text-xs text-amber-700" data-testid={`text-notif-locked-${p.key.replace(/[^a-z0-9]+/gi, "-")}`}>
+                        Critical alert — cannot be muted. The server and the database both refuse to disable it.
+                      </span>
+                    )}
+                    {!p.locked && !p.explicit && (
+                      <span className="text-xs text-muted-foreground" data-testid={`text-notif-default-${p.key.replace(/[^a-z0-9]+/gi, "-")}`}>
+                        Platform default — no choice saved yet.
+                      </span>
+                    )}
                   </div>
                 ))}
               </CardContent>
@@ -1642,7 +1814,12 @@ function SettingsPreferencesTab({ companyId }: { companyId: string | undefined }
 }
 
 // ── Financials Tab ───────────────────────────────────────────
-function SettingsFinancialsTab({ companyId }: { companyId: string | undefined }) {
+/* WAVE 35 - ROW 8: exported (additive; no behaviour change) so the percent
+   round-trip can be proven END TO END through the real component - type a
+   value, save, re-hydrate from what was actually sent, assert the same value
+   returns. A test that re-implements the conversion in its own body is exactly
+   the F10 defect this wave is closing, so the test drives this component. */
+export function SettingsFinancialsTab({ companyId }: { companyId: string | undefined }) {
   const { toast } = useToast();
   const profileQ = useProfileData(companyId);
   const profile = profileQ.data?.profile ?? {};
@@ -1684,11 +1861,25 @@ function SettingsFinancialsTab({ companyId }: { companyId: string | undefined })
         const raw = values[f.key];
         if (raw === undefined || raw === "") continue;
         const n = parseFloat(raw);
-        if (isNaN(n) || n < 0) continue;
+        /* WAVE 35 - ROW 8: was `if (isNaN(n) || n < 0) continue;`, which
+           SILENTLY DROPPED a negative value - the save reported success and
+           the number never arrived. netMarginPct's own worked example is
+           "-10% net margin", so the field refused its own documentation.
+           Negatives are now accepted for the fields that admit them. */
+        if (isNaN(n)) continue;
+        if (n < 0 && !f.allowsNegative) continue;
         if (f.minorUnits) {
           patch[f.key] = Math.round(n * 100);
-        } else if (f.unit === "pct") {
-          patch[f.key] = Math.round(n * 100);
+        } else if (AS_WRITTEN_DECIMAL_UNITS.has(f.unit)) {
+          /* WAVE 35 - ROW 8. Was `Math.round(n * 100)`, which was ASYMMETRIC:
+             the read path above only divides when `f.minorUnits` is set, and
+             no pct field carries it. A founder typed 42.5, reopened the form
+             and saw 4250; the next save stored 425000, and the error
+             compounded on every save. spec/PERCENT_POLICY_v2.md (owner ruling
+             OR-1, "1=1%. 100=100%") is binding: the stored number IS the
+             percentage, to 4 decimals - which Math.round(n * 100) destroys.
+             Stored as written now, so read and write are exact inverses. */
+          patch[f.key] = toStoredAsWritten(n);
         } else {
           patch[f.key] = f.unit === "months" || f.unit === "count" ? Math.round(n) : n;
         }
@@ -1740,6 +1931,10 @@ function SettingsFinancialsTab({ companyId }: { companyId: string | undefined })
                     <Label className="text-sm font-semibold">{f.label}</Label>
                     {f.minorUnits && <Badge variant="outline" className="text-[10px]">USD</Badge>}
                     {f.unit === "pct" && <Badge variant="outline" className="text-[10px]">%</Badge>}
+                    {/* WAVE 35 - ROW 8: LTV:CAC is a MULTIPLE. It used to carry
+                        the "%" badge above, telling a founder "3%" where the
+                        business means "3x". Appended as a sibling badge. */}
+                    {f.unit === "ratio" && <Badge variant="outline" className="text-[10px]">x (multiple)</Badge>}
                     {f.unit === "months" && <Badge variant="outline" className="text-[10px]">months</Badge>}
                   </div>
                   <p className="text-xs text-muted-foreground mb-2">{f.description}</p>
@@ -1748,11 +1943,11 @@ function SettingsFinancialsTab({ companyId }: { companyId: string | undefined })
                   </div>
                   <Input
                     type="number"
-                    step={f.unit === "pct" ? "0.01" : "1"}
-                    min="0"
+                    step={AS_WRITTEN_DECIMAL_UNITS.has(f.unit) ? AS_WRITTEN_INPUT_STEP : "1"}
+                    {...(f.allowsNegative ? {} : { min: "0" })}
                     value={values[f.key] ?? ""}
                     onChange={e => setValues(prev => ({ ...prev, [f.key]: e.target.value }))}
-                    placeholder={f.minorUnits ? "Enter in USD" : f.unit === "pct" ? "Enter %" : "Enter value"}
+                    placeholder={f.minorUnits ? "Enter in USD" : f.unit === "pct" ? "Enter %" : f.unit === "ratio" ? "Enter a multiple, e.g. 3.0" : "Enter value"}
                     data-testid={`input-financial-${f.key}`}
                   />
                 </div>

@@ -15,7 +15,12 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CheckCircle2, AlertCircle, Clock } from "lucide-react";
-import { getFieldCopy } from "@/lib/financialFieldCopy";
+import {
+  getFieldCopy,
+  AS_WRITTEN_DECIMAL_UNITS,
+  AS_WRITTEN_INPUT_STEP,
+  toStoredAsWritten,
+} from "@/lib/financialFieldCopy";
 
 /* ============================================================
  * Types
@@ -86,14 +91,19 @@ export default function FinancialsFill() {
           return;
         }
         parsedValue = n;
-      } else if (fieldCopy?.unit === "pct") {
+      } else if (fieldCopy && AS_WRITTEN_DECIMAL_UNITS.has(fieldCopy.unit)) {
         const n = parseFloat(parsedValue as string);
         if (isNaN(n)) {
           setSubmitError("Please enter a valid number");
           return;
         }
-        // Store pct × 100 as integer
-        parsedValue = Math.round(n * 100);
+        /* WAVE 35 - ROW 8: the SECOND copy of the same write defect. This path
+           also did `Math.round(n * 100)` while every read path renders the
+           stored number directly, so an accountant filling 42.5 through a
+           magic link stored 4250. Percent-as-written per
+           spec/PERCENT_POLICY_v2.md, to 4 decimals, identical conversion to
+           the founder Settings path because both now call the SAME function. */
+        parsedValue = toStoredAsWritten(n);
       }
 
       const r = await fetch(`/api/financials-fill/${token}`, {
@@ -238,13 +248,15 @@ export default function FinancialsFill() {
                 {fieldCopy?.label ?? ctx?.fieldKey}
                 {fieldCopy?.minorUnits && <span className="text-muted-foreground ml-1">(in USD)</span>}
                 {fieldCopy?.unit === "pct" && <span className="text-muted-foreground ml-1">(%)</span>}
+                {/* WAVE 35 - ROW 8: a multiple, never a percentage. */}
+                {fieldCopy?.unit === "ratio" && <span className="text-muted-foreground ml-1">(x, a multiple)</span>}
                 {fieldCopy?.unit === "months" && <span className="text-muted-foreground ml-1">(months)</span>}
               </Label>
               <Input
                 id="fill-value"
-                type={fieldCopy?.unit === "usd_minor" || fieldCopy?.unit === "count" || fieldCopy?.unit === "months" || fieldCopy?.unit === "pct" ? "number" : "text"}
-                step={fieldCopy?.unit === "pct" ? "0.01" : "1"}
-                min="0"
+                type={fieldCopy?.unit === "usd_minor" || fieldCopy?.unit === "count" || fieldCopy?.unit === "months" || (fieldCopy != null && AS_WRITTEN_DECIMAL_UNITS.has(fieldCopy.unit)) ? "number" : "text"}
+                step={fieldCopy != null && AS_WRITTEN_DECIMAL_UNITS.has(fieldCopy.unit) ? AS_WRITTEN_INPUT_STEP : "1"}
+                {...(fieldCopy?.allowsNegative ? {} : { min: "0" })}
                 value={value}
                 onChange={e => setValue(e.target.value)}
                 placeholder={fieldCopy?.minorUnits ? "Enter amount in USD (e.g. 600000)" : "Enter value"}

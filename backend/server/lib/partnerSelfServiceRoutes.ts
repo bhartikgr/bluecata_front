@@ -23,6 +23,25 @@
  * integer minor units. Reads are side-effect-free.
  */
 import { createHash, randomBytes } from "node:crypto";
+import { quotePartnerSubscription } from "./partnerBillingStore";
+/* WAVE 11 / EN-6 — the single amount producer + the partner-scoped charge path. */
+import {
+  quotePartnerCheckout,
+  startPartnerCheckout,
+  getActiveForSubject,
+  listForSubject,
+  listSubscriptionEvents,
+  PartnerCheckoutError,
+} from "./partnerSubscriptionStore";
+/* WAVE 11 / EN-7 + EN-8 — proration engine and grace/enforcement reporting. */
+import {
+  previewPlanChange,
+  applyPlanChange,
+  cancelSubscription,
+  listChanges,
+  PlanChangeError,
+} from "./subscriptionChangeStore";
+import { enforcementStatusForSubject } from "./subscriptionEnforcementWorker";
 import type { Express, Request, Response } from "express";
 import multer from "multer"; /* v25.50 Phase 7 (10) — real tax-form document upload. */
 import { requirePartnerAuth, requirePartnerSubrole } from "./requirePartnerAuth";
@@ -100,6 +119,59 @@ function readAgreementSignedState(pid: string): { signed: boolean; signedAt: str
 
 const ALLOWED_FORM_TYPES = new Set(["W-9", "W-8BEN", "W-8BEN-E", "T4A"]);
 
+/* ============================================================
+ * WAVE 11 / EN-6 + EN-7 + EN-8 — the partner subscription lifecycle block.
+ *
+ * WHY THIS IS A HELPER ON THE EXISTING ROUTE AND NOT A NEW ROUTE.
+ * The first draft of this wave registered a SECOND
+ * `GET /api/partner/me/subscription`. Express serves the FIRST matching
+ * registration, so that handler would never have executed: a route that exists,
+ * type-checks, and returns nothing to anybody. That is the "fix where data
+ * doesn't flow" trap in its purest form, caught by grepping the tree for the
+ * path instead of assuming the path was free.
+ *
+ * So the lifecycle data is folded into the EXISTING handler, ADDITIVELY: every
+ * pre-existing key (`subscription`, `agreement`) is returned unchanged, and the
+ * new keys sit alongside them. Nothing that read this endpoint before can break.
+ *
+ * `capavate_subscriptions` (the sacred store's table, surfaced as
+ * `subscription`) and `partner_subscription` (this wave's, surfaced as
+ * `partnerSubscription`) are BOTH reported, deliberately: they are joined on the
+ * payment-intent id, and showing them side by side is how a divergence becomes
+ * visible instead of silent.
+ *
+ * Fail-soft by design: if the Wave 11 tables are not present yet (a database
+ * that has not run 0167 and cannot self-heal), the pre-existing part of the
+ * response must still be served. The failure is REPORTED in
+ * `lifecycleUnavailable`, never swallowed into a plausible-looking empty state.
+ * ============================================================ */
+function wave11SubscriptionBlock(partnerId: string): Record<string, unknown> {
+  try {
+    const active = getActiveForSubject("partner", partnerId);
+    return {
+      partnerSubscription: active,
+      partnerSubscriptionHistory: listForSubject("partner", partnerId),
+      partnerSubscriptionEvents: active ? listSubscriptionEvents(active.id) : [],
+      partnerSubscriptionChanges: active ? listChanges(active.id) : [],
+      enforcement: enforcementStatusForSubject("partner", partnerId),
+      checkoutPath: "/api/partner/me/checkout",
+      checkoutMethod: "POST",
+      lifecycleUnavailable: null,
+    };
+  } catch (err) {
+    return {
+      partnerSubscription: null,
+      partnerSubscriptionHistory: [],
+      partnerSubscriptionEvents: [],
+      partnerSubscriptionChanges: [],
+      enforcement: null,
+      checkoutPath: "/api/partner/me/checkout",
+      checkoutMethod: "POST",
+      lifecycleUnavailable: sanitizeErrorMessage(err),
+    };
+  }
+}
+
 export function registerPartnerSelfServiceRoutes(app: Express): void {
   /* ==========================================================
    * GET /api/partner/me/subscription — Subscription tab.
@@ -120,7 +192,11 @@ export function registerPartnerSelfServiceRoutes(app: Express): void {
           .get(pid) as { subscription_id: string | null } | undefined;
         const subId = contact?.subscription_id ?? null;
         if (!subId) {
-          return res.json({ subscription: null, agreement: currentAgreement() });
+          return res.json({
+            subscription: null,
+            agreement: currentAgreement(),
+            ...wave11SubscriptionBlock(pid),
+          });
         }
         const sub = db
           .prepare(
@@ -131,7 +207,11 @@ export function registerPartnerSelfServiceRoutes(app: Express): void {
              FROM capavate_subscriptions WHERE id = ?`,
           )
           .get(subId) as Record<string, unknown> | undefined;
-        res.json({ subscription: sub ?? null, agreement: currentAgreement() });
+        res.json({
+          subscription: sub ?? null,
+          agreement: currentAgreement(),
+          ...wave11SubscriptionBlock(pid),
+        });
       } catch (err) {
         res.status(500).json({ error: "PARTNER_SUBSCRIPTION_QUERY_FAILED", message: sanitizeErrorMessage(err) });
       }
@@ -462,7 +542,7 @@ export function registerPartnerSelfServiceRoutes(app: Express): void {
     (req: Request, res: Response) => {
       const pid = req.partnerContext!.partnerId;
       const tier = req.partnerContext!.tier;
-      const body = (req.body ?? {}) as { cycle?: unknown };
+      const body = (req.body ?? {}) as { cycle?: unknown; promotionCode?: unknown };
       const cycle = body.cycle === "annual" ? "annual" : "monthly";
       try {
         // GROUP C (C3) — re-connect the per-partner subscription override on the
@@ -478,49 +558,276 @@ export function registerPartnerSelfServiceRoutes(app: Express): void {
         // FAIL-CLOSED: if NEITHER an override NOR an advertised tier resolves the
         // resolver throws and we return 409 (never charge a silent $0). A per-
         // partner explicit $0 override is the ONLY path to a $0 amount.
-        let plan;
+        /* ── WAVE 11 / EN-6 — ONE AMOUNT PRODUCER ─────────────────────────────
+         *
+         * This handler used to compose `resolvePartnerEffectivePlan` +
+         * `quotePartnerSubscription` itself (see git history at this line). It
+         * now calls `quotePartnerCheckout`, which is the SAME function the new
+         * charge route `POST /api/partner/me/checkout` calls. That is deliberate
+         * and is the answer to the "second path to the same write" trap: with two
+         * copies of the composition, the quote a partner is shown and the amount
+         * they are charged could drift apart on any future edit to either one.
+         * There is now exactly one place that turns (partner, tier, cycle, code)
+         * into an amount, and both routes go through it.
+         *
+         * EVERY RESPONSE FIELD BELOW IS PRESERVED. W-7's `priceDerivation`,
+         * XT-4's discount fields and `checkoutPath` are all still returned —
+         * `checkoutPath` now points at the partner-scoped charge route instead of
+         * the founder route that 403s a partner (server/routes.ts POST
+         * /api/billing/plan, `not_owner` on the founder-company ownership check).
+         * The old value is still reported as `legacyCheckoutPath` so nothing that
+         * read it is silently broken.
+         *
+         * FAIL-CLOSED behaviour is unchanged: no override and no advertised tier
+         * still returns 409 PARTNER_SUBSCRIPTION_NOT_AVAILABLE, and an explicit
+         * per-partner $0 override remains the only route to a $0 amount. */
+        let quote;
         try {
-          plan = resolvePartnerEffectivePlan(pid, tier, { cycle });
-        } catch (planErr) {
-          if (planErr instanceof EffectivePlanError) {
-            return res.status(409).json({
-              error: "PARTNER_SUBSCRIPTION_NOT_AVAILABLE",
-              message: "This partner tier is not available for subscription (not on the advertised pricing surface).",
-            });
+          quote = quotePartnerCheckout({
+            partnerId: pid,
+            tierSlug: String(tier),
+            cycle,
+            promotionCode:
+              typeof (req.body as any)?.promotionCode === "string"
+                ? (req.body as any).promotionCode
+                : null,
+          });
+        } catch (quoteErr) {
+          if (quoteErr instanceof PartnerCheckoutError) {
+            return res
+              .status(quoteErr.httpStatus)
+              .json({ error: quoteErr.code, message: quoteErr.message });
           }
-          throw planErr;
+          throw quoteErr;
         }
-        // The effective override amount is the EXACT per-cycle amount the admin
-        // set; the advertised fallback keeps the 12× annual convention so the
-        // per-month rate the partner saw on the pricing page is honored.
-        const amountMinor =
-          plan.effectivePrice.source === "partner_override"
-            ? plan.effectivePrice.amountMinor
-            : cycle === "annual"
-              ? plan.effectivePrice.amountMinor * 12
-              : plan.effectivePrice.amountMinor;
-        const resolved = {
-          amountMinor,
-          currency: plan.effectivePrice.currency,
-          computedVia:
-            plan.effectivePrice.source === "partner_override"
-              ? "partner_override"
-              : "consortium_pricing_advertised",
-        };
+        const existing = getActiveForSubject("partner", pid);
         res.json({
           ok: true,
           tier,
           cycle,
-          amountMinor: resolved.amountMinor,
-          currency: resolved.currency,
-          computedVia: resolved.computedVia,
-          // The AMOUNT above is the ONLY value that flows into the existing
-          // billing/gateway path — the Airwallex adapter/call itself is UNCHANGED.
-          // The client completes checkout via the existing billing plan flow.
-          checkoutPath: "/api/billing/plan",
+          amountMinor: quote.amountMinor,
+          currency: quote.currency,
+          computedVia: quote.computedVia,
+          // W-7 — the derivation is now VISIBLE. "legacy_x12" means no admin
+          // annual price is authored for this tier yet.
+          priceDerivation: quote.priceDerivation,
+          listAmountMinor: quote.listAmountMinor,
+          // XT-4 — discount surfaced so the partner sees what was applied, and
+          // WHY it was not, when a code is rejected.
+          discountMinor: quote.discountMinor,
+          discountCode: quote.discountCode,
+          discountRejectedReason: quote.discountRejectedReason,
+          trialExtensionDays: quote.trialExtensionDays,
+          // WAVE 11 / EN-6 — a real POST target that a partner can actually
+          // reach. The client POSTs here to mint the payment intent.
+          checkoutPath: "/api/partner/me/checkout",
+          checkoutMethod: "POST",
+          // Preserved for any caller that read the old value.
+          legacyCheckoutPath: "/api/billing/plan",
+          // Reporting only: tells the UI to offer "change plan" rather than
+          // "subscribe" when a subscription already exists.
+          activeSubscription: existing
+            ? {
+                id: existing.id,
+                tierSlug: existing.tierSlug,
+                cycle: existing.cycle,
+                status: existing.status,
+                currentPeriodEnd: existing.currentPeriodEnd,
+              }
+            : null,
         });
       } catch (err) {
         res.status(500).json({ error: "PARTNER_SUBSCRIBE_FAILED", message: sanitizeErrorMessage(err) });
+      }
+    },
+  );
+  /* ============================================================
+   * WAVE 11 / EN-6 — POST /api/partner/me/checkout
+   *
+   * The route that closes DEF-058 / PRM-008 / PRM-013. The old flow ended at
+   * an `<a href="/api/billing/plan">`: a GET navigation to a POST-only founder
+   * route which 403s a partner on its founder-company ownership check. This
+   * mints the payment intent through the SAME Airwallex adapter and records the
+   * money through the SAME sacred `subscriptionStore.recordPendingSubscription`
+   * that the founder path uses — neither is modified.
+   *
+   * Auth: managing_partner + signed agreement, identical to the quote route. A
+   * partner can only ever check out for THEIR OWN partnerId, because the id is
+   * taken from `req.partnerContext`, never from the body.
+   * ========================================================== */
+  app.post(
+    "/api/partner/me/checkout",
+    requirePartnerAuth,
+    requirePartnerSubrole(["managing_partner"]),
+    requireSignedAgreement,
+    async (req: Request, res: Response) => {
+      const pid = req.partnerContext!.partnerId;
+      const tier = req.partnerContext!.tier;
+      const body = (req.body ?? {}) as {
+        cycle?: unknown;
+        promotionCode?: unknown;
+        returnPath?: unknown;
+      };
+      const cycle = body.cycle === "annual" ? "annual" : "monthly";
+      const proto = (req.headers["x-forwarded-proto"] as string | undefined) ?? req.protocol ?? "https";
+      const host = req.get("host") ?? "localhost";
+      try {
+        const result = await startPartnerCheckout({
+          subjectKind: "partner",
+          subjectId: pid,
+          tierSlug: String(tier),
+          cycle,
+          promotionCode: typeof body.promotionCode === "string" ? body.promotionCode : null,
+          actorUserId: String((req as any).user?.id ?? (req as any).userId ?? pid),
+          appOrigin: `${proto}://${host}`,
+          returnPath: typeof body.returnPath === "string" ? body.returnPath : undefined,
+        });
+        res.json({
+          ok: true,
+          subscriptionId: result.subscription.id,
+          status: result.subscription.status,
+          gatewayStatus: result.status,
+          amountMinor: result.quote.amountMinor,
+          currency: result.quote.currency,
+          listAmountMinor: result.quote.listAmountMinor,
+          discountMinor: result.quote.discountMinor,
+          discountCode: result.quote.discountCode,
+          discountRejectedReason: result.quote.discountRejectedReason,
+          priceDerivation: result.quote.priceDerivation,
+          paymentIntentId: result.paymentIntentId,
+          clientSecret: result.clientSecret,
+          merchantOrderId: result.merchantOrderId,
+          hostedPaymentPageUrl: result.hostedPaymentPageUrl,
+          returnUrl: result.returnUrl,
+          stubMode: result.stubMode,
+          currentPeriodEnd: result.subscription.currentPeriodEnd,
+        });
+      } catch (err) {
+        if (err instanceof PartnerCheckoutError) {
+          return res.status(err.httpStatus).json({ error: err.code, message: err.message });
+        }
+        res
+          .status(500)
+          .json({ error: "PARTNER_CHECKOUT_FAILED", message: sanitizeErrorMessage(err) });
+      }
+    },
+  );
+
+  /* ============================================================
+   * WAVE 11 / EN-7 — POST /api/partner/me/subscription/change/preview
+   * Arithmetic only; nothing is charged and nothing moves. The 'previewed' row
+   * is written by the APPLY path, not here, so a partner clicking around does
+   * not litter the change ledger.
+   * ========================================================== */
+  app.post(
+    "/api/partner/me/subscription/change/preview",
+    requirePartnerAuth,
+    requirePartnerSubrole(["managing_partner"]),
+    (req: Request, res: Response) => {
+      const pid = req.partnerContext!.partnerId;
+      const body = (req.body ?? {}) as { toTier?: unknown; toCycle?: unknown; promotionCode?: unknown };
+      try {
+        const active = getActiveForSubject("partner", pid);
+        if (!active) {
+          return res.status(409).json({
+            error: "NO_ACTIVE_SUBSCRIPTION",
+            message: "There is no active subscription to change. Subscribe first.",
+          });
+        }
+        const preview = previewPlanChange({
+          subscriptionId: active.id,
+          toTier: typeof body.toTier === "string" ? body.toTier : undefined,
+          toCycle: body.toCycle === "annual" ? "annual" : body.toCycle === "monthly" ? "monthly" : undefined,
+          promotionCode: typeof body.promotionCode === "string" ? body.promotionCode : null,
+        });
+        res.json({ ok: true, preview });
+      } catch (err) {
+        if (err instanceof PlanChangeError) {
+          return res.status(err.httpStatus).json({ error: err.code, message: err.message });
+        }
+        res
+          .status(500)
+          .json({ error: "PLAN_CHANGE_PREVIEW_FAILED", message: sanitizeErrorMessage(err) });
+      }
+    },
+  );
+
+  /* ============================================================
+   * WAVE 11 / EN-7 — POST /api/partner/me/subscription/change
+   * Applies the change and records the proration as the first ever producer of
+   * paymentStore's `proration` payment kind.
+   * ========================================================== */
+  app.post(
+    "/api/partner/me/subscription/change",
+    requirePartnerAuth,
+    requirePartnerSubrole(["managing_partner"]),
+    requireSignedAgreement,
+    (req: Request, res: Response) => {
+      const pid = req.partnerContext!.partnerId;
+      const body = (req.body ?? {}) as { toTier?: unknown; toCycle?: unknown; promotionCode?: unknown };
+      try {
+        const active = getActiveForSubject("partner", pid);
+        if (!active) {
+          return res.status(409).json({
+            error: "NO_ACTIVE_SUBSCRIPTION",
+            message: "There is no active subscription to change. Subscribe first.",
+          });
+        }
+        const out = applyPlanChange({
+          subscriptionId: active.id,
+          toTier: typeof body.toTier === "string" ? body.toTier : undefined,
+          toCycle: body.toCycle === "annual" ? "annual" : body.toCycle === "monthly" ? "monthly" : undefined,
+          promotionCode: typeof body.promotionCode === "string" ? body.promotionCode : null,
+          actor: String((req as any).user?.id ?? pid),
+        });
+        res.json({ ok: true, change: out.change, subscription: out.subscription });
+      } catch (err) {
+        if (err instanceof PlanChangeError) {
+          return res.status(err.httpStatus).json({ error: err.code, message: err.message });
+        }
+        res
+          .status(500)
+          .json({ error: "PLAN_CHANGE_FAILED", message: sanitizeErrorMessage(err) });
+      }
+    },
+  );
+
+  /* ============================================================
+   * WAVE 11 / EN-7 — POST /api/partner/me/subscription/cancel
+   * Default is cancel-at-period-end: the partner keeps what they paid for.
+   * `immediate: true` ends it now and records the prorated credit.
+   * ========================================================== */
+  app.post(
+    "/api/partner/me/subscription/cancel",
+    requirePartnerAuth,
+    requirePartnerSubrole(["managing_partner"]),
+    (req: Request, res: Response) => {
+      const pid = req.partnerContext!.partnerId;
+      const immediate = (req.body ?? {}).immediate === true;
+      try {
+        const active = getActiveForSubject("partner", pid);
+        if (!active) {
+          return res.status(409).json({
+            error: "NO_ACTIVE_SUBSCRIPTION",
+            message: "There is no active subscription to cancel.",
+          });
+        }
+        const out = cancelSubscription({
+          subscriptionId: active.id,
+          actor: String((req as any).user?.id ?? pid),
+          immediate,
+        });
+        res.json({
+          ok: true,
+          subscription: out.subscription,
+          creditMinor: out.creditMinor,
+          immediate,
+        });
+      } catch (err) {
+        if (err instanceof PlanChangeError) {
+          return res.status(err.httpStatus).json({ error: err.code, message: err.message });
+        }
+        res.status(500).json({ error: "CANCEL_FAILED", message: sanitizeErrorMessage(err) });
       }
     },
   );

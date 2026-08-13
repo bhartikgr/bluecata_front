@@ -30,6 +30,7 @@
 
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import crypto from "node:crypto";
 
@@ -169,6 +170,54 @@ describe("Wave B (v26.4.0) Stage 2 — Retirement guard", () => {
     expect(src).toMatch(/from\s+["']\.\.\/spvEngineStore["']/);
   });
 
+  /* WAVE 36 · ROW 5 — hoisted from inside the (G-8) test body to describe
+     scope so (G-10) below can assert coverage against it. Contents unchanged. */
+    const WAIVER_1_FROZEN: Record<string, string> = {
+      "client/src/components/home3compo/LearnSection.jsx":
+        "63ff0c9fd78e8bc749661c28f7bb5825f648ab7db0efd39cb90d48fa8eb9dc33",
+      "client/src/components/home3compo/PricingSection.jsx":
+        "e8da7f99a1eba63b3ad2099a9cbe5dba9ec3f10ce00d68f7efe4399c10fa8b6a",
+      "server/lib/rateLimit.ts":
+        "0c2f117299ea503b31356da2f9267f8bd9577345c7d718ad646ebf74b92bccfc",
+      // WAIVER-4 (owner-signed 2026-08-11, "Signatures confirmed") — X-C1 / P1-8.
+      // SPV limited partners were resolving as cap-table counterparties, so two
+      // passive LPs in one vehicle could be revealed to each other by six live
+      // callers. See scripts/sacred_check.sh for the full rationale and hash
+      // lineage, and server/__tests__/xc1_spv_comembership_privacy.test.ts for
+      // both-pole proof (LPs hidden AND real counterparties still authorised).
+      //
+      // THIS ENTRY EXISTS BECAUSE OF A SECOND-PATH MISS. WAIVER-4 was recorded in
+      // sacred_check.sh but not here, and there are TWO enforcement points reading
+      // the same 40-path manifest. sacred_check.sh went green while this test went
+      // red — the same "fix landed where the data does not flow" failure this build
+      // has hit a dozen times, committed while adding a waiver ABOUT that very
+      // discipline. Any future sacred waiver must update BOTH places.
+      "server/lib/capTableMembership.ts":
+        "688b555426544527534afa12ce54e34069480db989c74c85d7d9020b9a45d750",
+      // WAIVER-5 — WAVE 34, **PENDING OWNER RATIFICATION** (parent agent,
+      // 2026-08-11). Covers client/src/pages/founder/Billing.tsx, whose
+      // `minor / 100` hardcoded an ISO-4217 exponent of 2 and would render a JPY
+      // invoice wrong by a factor of 100 to a paying customer. Now exponent-driven
+      // via client/src/lib/currency.ts formatMinor.
+      //
+      // THE FILE IS SACRED AND THE EDIT WAS DIRECTED BY THE PARENT'S OWN BRIEF,
+      // which named it by path and line while omitting it from that brief's
+      // read-never-edit list. The build agent made the fix under that instruction
+      // and escalated rather than hiding it — the correct behaviour.
+      //
+      // AND THIS ENTRY, AGAIN, IS THE SECOND-PATH MISS. WAIVER-5 was recorded in
+      // sacred_check.sh, which reported 47/47 green, while this test stayed RED.
+      // That is the identical failure documented for WAIVER-4 eleven lines above,
+      // repeated on the very next waiver despite the warning being written here.
+      // A waiver is not installed until BOTH enforcement points are updated and
+      // BOTH have been observed green.
+      //
+      // TO DECLINE: restore hash 813de790… as the live content, delete this entry
+      // and the sacred_check.sh row. Nothing else depends on it.
+      "client/src/pages/founder/Billing.tsx":
+        "ddbc591cc49b8b95ac9bfea90062486bc13e2eed134687235506e5e06d57ce5f",
+    };
+
   /* ---------- G-8: Sacred manifest still 40/40 ---------- */
   it("(G-8) Sacred baseline is self-consistent (40/40)", () => {
     const manifest = fs.readFileSync(SACRED_MANIFEST, "utf8");
@@ -197,9 +246,212 @@ describe("Wave B (v26.4.0) Stage 2 — Retirement guard", () => {
         mismatches.push(`${rel} — expected ${expected.slice(0, 12)}… got ${actual.slice(0, 12)}…`);
       }
     }
-    expect(total).toBe(40); // Baseline size invariant
-    expect(mismatches).toEqual([]);
-    expect(ok).toBe(40);
+    // Baseline size invariant — 40 is CORRECT and must not be "corrected" to 47.
+    // This test reads sacred_baseline/SACRED_SHA256.txt, which holds 40 entries.
+    // `npm run sacred` reports 47/47 because scripts/sacred_check.sh checks those
+    // 40 PLUS 7 further files it tracks separately (see its header). Two different
+    // manifests, two different correct numbers. Changing this to 47 makes the test
+    // fail, which is how this comment came to be written.
+    expect(total).toBe(40);
+    // WAIVER-1 (owner ruling 2026-08-09, spec/OWNER_RULINGS_2026_08_09.md item G-4 /
+    // DEF-081): LearnSection.jsx and PricingSection.jsx drifted from their recorded
+    // 2026-07 hashes and the owner ruled ADOPT THE CURRENT BYTES AS FROZEN.
+    // scripts/sacred_check.sh enforces them against the NEW frozen hash; this test
+    // read only the old base manifest and so reported them as mismatches. It now
+    // honours the SAME waiver, with the frozen hashes duplicated here deliberately
+    // so a further change to either file still fails BOTH checks.
+    // WAIVER-2 (owner ruling 2026-08-11, CP-MSG-05): server/lib/rateLimit.ts.
+    // WAVE 21 finding — Wave 19 took this waiver, edited the file and re-froze
+    // the hash in scripts/sacred_check.sh, but never added the entry HERE. This
+    // test therefore reported the waived file as an unwaived mismatch, exactly
+    // as WAIVER-1 did before it was recorded. Wave 21 edited the same file
+    // again under the same waiver (ITEM 1 fail-closed TRUSTED_PROXY_HOPS,
+    // ITEM 4 durable buckets), which is what surfaced the omission.
+    // Kept structurally identical to WAIVER_1_FROZEN, and duplicated from
+    // sacred_check.sh deliberately, so a further unwaived change to
+    // rateLimit.ts still fails BOTH checks.
+    //
+    // WAVE 23 (2026-08-11) — and the duplication did its job. ITEM 2 edited
+    // rateLimit.ts again under WAIVER-2 (the x-forwarded-for header is now
+    // honoured only when the DIRECT SOCKET PEER is itself a trusted proxy;
+    // fail-closed otherwise). `scripts/sacred_check.sh` was re-frozen to
+    // 0c2f1172…bccfc and THIS test immediately failed on the stale c76574f9…
+    // copy — which is precisely the omission Wave 21 documented above. The
+    // second copy is updated here rather than deleted: two independent checks
+    // is the point.
+    // Lineage: 50abd000… (original) → cda4a32e… (Wave 19) → c76574f9…
+    // (Wave 21) → 0c2f1172… (Wave 23, current).
+    //
+    // WAIVER-3 (owner-granted 2026-08-11, delegated) covers server/db/migrate.ts.
+    // The comment that stood here said it "needs NO entry" because the path is
+    // not one of the 40 in sacred_baseline/SACRED_SHA256.txt. That was true and
+    // it was still the third half-installed waiver in a row: WAIVER-3 was
+    // enforced at ONE point (sacred_check.sh EXTRA_FROZEN) and at zero points
+    // here, so an edit to migrate.ts — a SACRED file, and the one that decides
+    // what a fresh install\'s schema is — turned exactly one light red. It is
+    // now enforced by (G-9) below, with the hash duplicated independently, and
+    // (G-10) makes a future half-install impossible to land silently.
+    const unwaived = mismatches.filter((m) => {
+      const rel = String(m).split(" \u2014 ")[0];
+      const frozen = WAIVER_1_FROZEN[rel];
+      if (!frozen) return true;
+      return sha256File(path.join(ROOT, rel)) !== frozen;
+    });
+    expect(unwaived).toEqual([]);
+    expect(ok + Object.keys(WAIVER_1_FROZEN).length).toBe(40);
+  });
+
+  /* ---------- G-9: waived files OUTSIDE the 40-path manifest ---------- */
+  /* WAVE 36 · ROW 5. The 40-path manifest is not the whole sacred surface.
+   * sacred_check.sh additionally enforces KNOWN_DRIFT rows whose path is not in
+   * the base manifest, through its EXTRA_FROZEN pass. This test had no
+   * counterpart, so those files had ONE enforcement point, not two.
+   *
+   * The hash below is duplicated from sacred_check.sh deliberately — the same
+   * reasoning as WAIVER_1_FROZEN. Two independent copies is the mechanism; a
+   * single shared source of truth would fail open if that source were edited. */
+  const EXTRA_WAIVED_FROZEN: Record<string, { sha: string; waiver: string }> = {
+    "server/db/migrate.ts": {
+      sha: "5790f11d1182be1c5af8b59a52a4314dd3e1ad5f9a6d0049986bc42d1ee1a44c",
+      waiver: "WAIVER-3",
+    },
+  };
+
+  it("(G-9) waived files outside the 40-path manifest are pinned to an EXACT hash here too", () => {
+    /* An exact hash, not an ignore. The distinction is the whole finding: a
+     * waiver that skips the file makes every future edit invisible; a waiver
+     * that pins bytes makes exactly ONE state legal. */
+    for (const [rel, { sha, waiver }] of Object.entries(EXTRA_WAIVED_FROZEN)) {
+      const abs = path.join(ROOT, rel);
+      expect(fs.existsSync(abs), `${rel} (${waiver}) is waived but missing`).toBe(true);
+      expect(sha256File(abs), `${rel} drifted from its ${waiver} frozen bytes`).toBe(sha);
+      /* And the pin is a real sha256, not a placeholder that would match anything. */
+      expect(sha).toMatch(/^[a-f0-9]{64}$/);
+    }
+    expect(Object.keys(EXTRA_WAIVED_FROZEN).length).toBeGreaterThan(0);
+  });
+
+  /* ---------- G-10: no waiver may be installed at only ONE point ---------- */
+  it("(G-10) EVERY KNOWN_DRIFT waiver in sacred_check.sh is also enforced by this test", () => {
+    /* WAVE 36 · ROW 5. WAIVER-3, WAIVER-4 and WAIVER-5 were each recorded in
+     * sacred_check.sh and omitted here — three times, with the warning against
+     * it written in this very file. Prose did not stop it; this assertion does.
+     * It reads the shell script and requires every waived path to be covered by
+     * one of the two tables above. Coverage is checked structurally; the HASHES
+     * stay independently duplicated, so this does not turn the second
+     * enforcement point into a mirror of the first. */
+    const sh = fs.readFileSync(path.join(ROOT, "scripts", "sacred_check.sh"), "utf8");
+    /* Matched over the WHOLE script, not a slice. The first draft sliced from
+       `KNOWN_DRIFT=(` to the next `)`, which lands inside a comment in the
+       array body — it parsed 2 of the 6 rows and would have passed while
+       checking a third of what it claims to check. Caught by the S0 count
+       assertion below, which is why that assertion is there. */
+    expect(sh).toContain("KNOWN_DRIFT=(");
+    const block = sh;
+    /* WAVE 38 · ROW 6 — field 5 (ratification state) is now part of every row,
+       so the pattern accepts it and CAPTURES it. It is optional in the regex on
+       purpose: a row that lost its field 5 must still be parsed and then fail
+       the explicit ratification assertion below with a readable message, rather
+       than vanish from `rows` and be silently uncovered. */
+    const rows = [...block.matchAll(/^"([^"|]+)\|([a-f0-9]{64})\|([a-f0-9]{64})\|(WAIVER-\d+)(?:\|([A-Z-]+))?"/gm)]
+      .map((m) => ({ path: m[1], frozen: m[3], waiver: m[4], ratification: m[5] ?? "" }));
+    /* S0 — the parser parses. Five waivers were in force when this was written;
+     * a sixth must RAISE this number, never lower it. */
+    expect(rows.length).toBeGreaterThanOrEqual(6);
+    const baseManifestPaths = new Set(
+      fs.readFileSync(SACRED_MANIFEST, "utf8")
+        .split("\n")
+        .map((l) => l.trim().match(/^[a-f0-9]{64}\s+(.+)$/i)?.[1])
+        .filter(Boolean) as string[],
+    );
+    const uncovered: string[] = [];
+    for (const r of rows) {
+      const coveredHere = baseManifestPaths.has(r.path)
+        ? WAIVER_1_FROZEN[r.path] === r.frozen
+        : EXTRA_WAIVED_FROZEN[r.path]?.sha === r.frozen;
+      if (!coveredHere) uncovered.push(`${r.path} (${r.waiver})`);
+    }
+    expect(uncovered, "waivers installed in sacred_check.sh but NOT in this test").toEqual([]);
+  });
+
+  /* ---------- G-11: an UNRATIFIED waiver must be visible, at BOTH points ----- */
+  /* WAVE 38 · ROW 6. WAIVER-5 (client/src/pages/founder/Billing.tsx) was taken
+   * under DELEGATED authority and has never been signed off by the owner. Its
+   * bytes were enforced — but every gate an operator reads printed a flat green
+   * `SACRED OK: 47/47`, so nothing distinguished a sacred edit the owner
+   * approved from one nobody has yet agreed to. Enforcement of BYTES is not
+   * ratification of a DECISION, and a summary that conflates them is a check
+   * that passes while checking nothing.
+   *
+   * This table is the SECOND enforcement point's independent copy of the
+   * ratification state — the same reasoning as WAIVER_1_FROZEN and
+   * EXTRA_WAIVED_FROZEN. It is compared against sacred_check.sh in BOTH
+   * directions, so neither a waiver quietly marked RATIFIED there nor a new
+   * unratified waiver added there can slip past. */
+  const PENDING_RATIFICATION: Record<string, string> = {
+    "client/src/pages/founder/Billing.tsx": "WAIVER-5",
+  };
+
+  it("(G-11) the pending-ratification set matches sacred_check.sh in BOTH directions", () => {
+    const sh = fs.readFileSync(path.join(ROOT, "scripts", "sacred_check.sh"), "utf8");
+    const rows = [...sh.matchAll(/^"([^"|]+)\|([a-f0-9]{64})\|([a-f0-9]{64})\|(WAIVER-\d+)(?:\|([A-Z-]+))?"/gm)]
+      .map((m) => ({ path: m[1], waiver: m[4], ratification: m[5] ?? "" }));
+    expect(rows.length).toBeGreaterThanOrEqual(6);
+
+    /* POLE 1 — every row states a RECOGNISED ratification state. A missing or
+       unknown value must never be read as approval. */
+    for (const r of rows) {
+      expect(
+        ["RATIFIED", "PENDING-OWNER-RATIFICATION"],
+        `${r.path} (${r.waiver}) has no recognised ratification state: "${r.ratification}"`,
+      ).toContain(r.ratification);
+    }
+
+    /* POLE 2 — the two sets are equal. */
+    const pendingThere = rows
+      .filter((r) => r.ratification === "PENDING-OWNER-RATIFICATION")
+      .map((r) => `${r.waiver} ${r.path}`)
+      .sort();
+    const pendingHere = Object.entries(PENDING_RATIFICATION)
+      .map(([p, w]) => `${w} ${p}`)
+      .sort();
+    expect(pendingThere, "pending waivers in sacred_check.sh vs this test").toEqual(pendingHere);
+
+    /* POLE 3 — and it is a NON-EMPTY set today. If WAIVER-5 is ever ratified,
+       this assertion is the thing that forces the ratification to be recorded
+       in both places at once instead of one. */
+    expect(pendingHere.length).toBe(1);
+    expect(pendingHere[0]).toContain("WAIVER-5");
+  });
+
+  it("(G-11b) sacred_check.sh's OWN OUTPUT names every unratified waiver", () => {
+    /* The point of Row 6 is what an OPERATOR SEES, so this executes the gate and
+       reads the line, rather than trusting the array it is derived from. The
+       script only reads files, so running it here cannot dirty the tree. */
+    const out = execFileSync("bash", [path.join(ROOT, "scripts", "sacred_check.sh")], {
+      encoding: "utf8",
+      cwd: ROOT,
+    });
+    expect(out).toContain("SACRED OK: 47/47");
+    for (const [rel, waiver] of Object.entries(PENDING_RATIFICATION)) {
+      expect(out, `${waiver} is pending ratification but the summary line does not say so`).toContain(waiver);
+      expect(out).toContain(rel);
+    }
+    expect(out).toContain("PENDING OWNER RATIFICATION");
+
+    /* BOTH POLES. The machine-readable form must agree with the human line —
+       a JSON consumer (the deploy gate) must not see a cleaner story. */
+    const json = JSON.parse(
+      execFileSync("bash", [path.join(ROOT, "scripts", "sacred_check.sh"), "--json"], {
+        encoding: "utf8",
+        cwd: ROOT,
+      }).trim(),
+    ) as { entries: number; ok: number; unratified_waivers: number; unratified: string; exit: number };
+    expect(json.entries).toBe(47);
+    expect(json.ok).toBe(47);
+    expect(json.exit).toBe(0);
+    expect(json.unratified_waivers).toBe(Object.keys(PENDING_RATIFICATION).length);
+    expect(json.unratified).toContain("WAIVER-5");
   });
 });
 
@@ -251,8 +503,15 @@ describe("Wave B (v26.4.0) Stage 2 — Positive assertions on new code", () => {
     expect(sha256File(a)).toBe(sha256File(b));
   });
 
-  it("Version was bumped to 26.4.0", () => {
+  it("Version is at or beyond the Wave B bump (26.4.0)", () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
-    expect(pkg.version).toBe("26.4.0");
+    // Originally pinned to exactly "26.4.0". That form breaks on EVERY subsequent
+    // release, which trains people to edit the test instead of reading it — the
+    // version reached 26.9.0 before anyone noticed this was red. The intent was
+    // always "the Wave B bump happened and was never rolled back", so assert that.
+    const [maj, min, pat] = String(pkg.version).split(".").map(Number);
+    expect(Number.isFinite(maj) && Number.isFinite(min) && Number.isFinite(pat)).toBe(true);
+    const asNum = maj * 1_000_000 + min * 1_000 + pat;
+    expect(asNum).toBeGreaterThanOrEqual(26 * 1_000_000 + 4 * 1_000 + 0);
   });
 });

@@ -33,6 +33,8 @@ import { HelpTip } from "@/components/HelpTip";
 import { AdminPageIntro } from "@/components/AdminPageIntro";
 import { BuildVersionMarker } from "@/components/BuildVersionMarker";
 import { apiRequest } from "@/lib/queryClient";
+/* WAVE 34 · TASK 2 — ISO-4217 exponent for the per-currency SPV money tiles. */
+import { fromMinor } from "@/lib/currency";
 
 // v25.42h round-2 — the backend now returns `null` (never a fabricated number)
 // for any metric without a defensible source. Reflect that in the type so the
@@ -325,8 +327,19 @@ export default function AdminDashboard() {
           const activeSpvs = data?.summary.totalActiveSpvs ?? null;
           const committedCurrencies = Object.keys(committed).sort();
           const wiredCurrencies = Object.keys(wired).sort();
+          /* WAVE 34 · TASK 2 — was:
+           *   (m / 100).toLocaleString(undefined, { maximumFractionDigits: 0 }) + " " + ccy
+           * The currency was not merely in scope, it was the parameter `ccy`,
+           * and the divisor was still a hardcoded exponent-2 assumption. These
+           * tiles are multi-currency BY CONSTRUCTION (one row per currency in
+           * the map), so the defect was maximally exposed here: a ¥250,000,000
+           * commitment rendered as "2,500,000 JPY" — wrong by 100. `fromMinor`
+           * reads the exponent from the ISO-4217 table (JPY/KRW = 0). The
+           * rendered SHAPE is unchanged (grouped number + " " + code), so no
+           * other tile or copy assertion moves — these tiles have always been
+           * whole-unit (maximumFractionDigits: 0), which is retained. */
           const fmtCurrencyMinor = (m: number, ccy: string) =>
-            (m / 100).toLocaleString(undefined, { maximumFractionDigits: 0 }) + " " + ccy;
+            fromMinor(m, ccy).toLocaleString(undefined, { maximumFractionDigits: 0 }) + " " + ccy;
           return (
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-5">
               <Card className="p-4" data-testid="stat-spv-active">

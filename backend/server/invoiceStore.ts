@@ -40,6 +40,7 @@ import { log } from "./lib/logger";
 import { requireAuth } from "./lib/authMiddleware"; /* v25.19 Lane 1 NC2 */
 import { getUserContext } from "./lib/userContext"; /* v25.19 Lane 1 NC2 */
 import { getCompaniesForFounder } from "./multiCompanyStore"; /* v25.19 Lane 1 NC2 */
+import { formatMinor } from "./lib/currency"; /* WAVE 34 — ISO 4217 exponent, never a hardcoded /100 */
 
 /* v25.19 Lane 1 NC2 helper — the v25.18 audit caught that GET /api/founder/invoices
    had no ownership gate. Per-invoice routes already 403 cross-tenant, but the
@@ -612,15 +613,18 @@ export async function hydrateInvoiceStore(): Promise<void> {
 
 /* ---------- PDF generation ---------- */
 
+/* WAVE 34 — was:
+ *   new Intl.NumberFormat("en-US", { style: "currency", currency,
+ *     minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(amountMinor / 100)
+ *   ...catch: `${currency} ${(amountMinor / 100).toFixed(2)}`
+ * Both branches hardcoded an ISO 4217 exponent of 2 while handing the invoice's
+ * real currency to Intl as the CODE. A JPY invoice (exponent 0) therefore
+ * printed ¥10,000 for ¥1,000,000 — money rendered to a paying customer, wrong
+ * by a factor of 100. `formatMinor` derives the divisor and the fraction-digit
+ * count from the currency, and carries the same `en-US` locale pin and the same
+ * Intl-throws fallback, so nothing else about the rendering changes. */
 function formatMoney(amountMinor: number, currency: string): string {
-  try {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency", currency,
-      minimumFractionDigits: 2, maximumFractionDigits: 2,
-    }).format(amountMinor / 100);
-  } catch {
-    return `${currency} ${(amountMinor / 100).toFixed(2)}`;
-  }
+  return formatMinor(amountMinor, currency, { locale: "en-US" });
 }
 
 export function generateInvoicePdf(invoice: Invoice): Buffer {
@@ -783,8 +787,13 @@ export function registerInvoiceRoutes(app: Express): void {
     if (inv.companyId !== companyId) { res.status(403).json({ ok: false, error: "forbidden" }); return; }
 
     const toEmail = String(req.body?.email ?? "founder@capavate.com");
+    /* WAVE 34 — was:
+     *   new Intl.NumberFormat("en-US", { style: "currency", currency,
+     *     maximumFractionDigits: 2 }).format(minor / 100)
+     * The same hardcoded-exponent defect as `formatMoney` above, on the invoice
+     * EMAIL path. Same numeric type in (integer minor units), same string out. */
     const fmtMoney = (minor: number, currency: string) =>
-      new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 2 }).format(minor / 100);
+      formatMinor(minor, currency, { locale: "en-US" });
 
     sendMail({
       to: toEmail,

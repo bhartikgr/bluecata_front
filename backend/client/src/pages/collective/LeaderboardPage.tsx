@@ -15,6 +15,7 @@
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { LoadFailedRefusal } from "@/components/LoadFailedRefusal"; /* WAVE 22 · ITEM 4 */
 import { apiRequest } from "@/lib/queryClient";
 import { useCollectiveStream } from "@/lib/sseClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -148,6 +149,26 @@ export default function LeaderboardPage(): JSX.Element | null {
                   <Skeleton className="h-10 w-full" />
                   <Skeleton className="h-10 w-full" />
                   <Skeleton className="h-10 w-full" />
+                </div>
+              ) : lbQ.isError ? (
+                /* WAVE 22 · ITEM 4 (REVIEW B F-4) — a failed leaderboard load
+                   rendered "No activity in this period yet. Be the first to ask
+                   a question…", telling an active chapter that nobody in it has
+                   done anything. Sibling refusal + retry, Wave 18 W-4 shape. */
+                <LoadFailedRefusal
+                  what="the leaderboard"
+                  testId="collective-leaderboard-error"
+                  onRetry={() => void lbQ.refetch()}
+                  isRetrying={lbQ.isFetching}
+                />
+              ) : !lbQ.isSuccess ? (
+                /* WAVE 22 · ITEM 4 — the query is DISABLED until a chapter id
+                   resolves, and a disabled query is neither loading nor errored
+                   nor successful. That is exactly the isSuccess gap Wave 18
+                   documented; without this branch a member whose chapters call
+                   is still in flight sees "No activity in this period yet." */
+                <div className="text-sm text-muted-foreground py-6 text-center" data-testid="collective-leaderboard-not-loaded">
+                  The leaderboard has not loaded yet.
                 </div>
               ) : entries.length === 0 ? (
                 <div className="text-sm text-muted-foreground py-6 text-center" data-testid="lb-empty">

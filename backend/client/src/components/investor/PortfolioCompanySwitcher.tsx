@@ -19,6 +19,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
+import {
+  useLpVehicleInterests,
+  lpOnlyBody,
+  LP_ONLY_HEADLINE,
+  LP_INTERESTS_UNAVAILABLE_COPY,
+} from "@/lib/investor/lpVehicleInterests";
 
 type Position = {
   id: string;
@@ -69,6 +75,13 @@ export function PortfolioCompanySwitcher({
 
   const data = positions.data ?? [];
 
+  // WAVE 35 · ROW 7 — `positions` counts DIRECT cap-table positions only. An LP
+  // who has wired real capital into a vehicle has none of them, and used to be
+  // told "Your portfolio is empty" immediately above <LpPositions />, which was
+  // at that moment rendering their actual holdings. Same query key as
+  // LpPositions, so the two share one cache entry and cannot disagree.
+  const lp = useLpVehicleInterests();
+
   // v25.48.2 Q8 (Ozan) — do NOT bounce an investor with no holdings off the
   // Portfolio page. The previous redirect to /investor/invitations made the
   // Portfolio nav item feel broken (clicking it silently threw you elsewhere).
@@ -90,6 +103,63 @@ export function PortfolioCompanySwitcher({
       <div className="flex items-center gap-4 p-4 border-2 border-border rounded-lg bg-background animate-pulse">
         <div className="h-9 w-9 rounded bg-muted" />
         <div className="h-5 w-48 bg-muted rounded" />
+      </div>
+    );
+  }
+
+  // Hold the empty-state until we know whether there are vehicle interests.
+  // Rendering "empty" during the LP request and then correcting it is still a
+  // moment in which the product lied to the investor.
+  if (data.length === 0 && !lp.isResolved) {
+    return (
+      <div
+        className="flex items-center gap-4 p-4 border-2 border-border rounded-lg bg-background animate-pulse"
+        data-testid="portfolio-empty-pending-lp"
+      >
+        <div className="h-9 w-9 rounded bg-muted" />
+        <div className="h-5 w-48 bg-muted rounded" />
+      </div>
+    );
+  }
+
+  // No direct positions, but this identity IS a committed LP somewhere. Say
+  // what is true instead of what is convenient. The genuinely-empty state below
+  // is left byte-for-byte intact for the investor it was written for.
+  if (data.length === 0 && (lp.count ?? 0) > 0) {
+    return (
+      <div
+        className="flex flex-col items-center text-center gap-4 p-10 border-2 border-dashed border-border rounded-lg bg-background"
+        data-testid="portfolio-lp-only-state"
+      >
+        <div className="h-12 w-12 rounded-full bg-muted flex items-center justify-center">
+          <Briefcase className="h-6 w-6 text-muted-foreground" />
+        </div>
+        <div>
+          <h2 className="text-lg font-semibold" data-testid="portfolio-lp-only-headline">
+            {LP_ONLY_HEADLINE}
+          </h2>
+          <p
+            className="text-sm text-muted-foreground mt-1 max-w-md"
+            data-testid="portfolio-lp-only-body"
+          >
+            {lpOnlyBody(lp.count ?? 0)}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          <Button
+            onClick={() => navigate("/investor/invitations")}
+            data-testid="button-lp-only-review-invitations"
+          >
+            Review invitations
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => navigate("/investor/earlier-investments")}
+            data-testid="button-lp-only-claim-earlier"
+          >
+            I invested before I had an account
+          </Button>
+        </div>
       </div>
     );
   }
@@ -121,6 +191,20 @@ export function PortfolioCompanySwitcher({
           >
             Review invitations
           </Button>
+          {/* WAVE 22 · ITEM 3 (REVIEW B F-1) — inbound link to
+              `/investor/earlier-investments` (ClaimPositions). Added as a
+              SIBLING button alongside the existing two, never as text spliced
+              into an existing node. This is exactly the user the page was
+              built for: an LP looking at an empty portfolio who holds a
+              position taken before they had an account. Second inbound link:
+              investor nav, DEALS section (AppShell.tsx). */}
+          <Button
+            variant="outline"
+            onClick={() => navigate("/investor/earlier-investments")}
+            data-testid="button-portfolio-claim-earlier"
+          >
+            I invested before I had an account
+          </Button>
           <Button
             variant="outline"
             onClick={() => navigate("/investor/dashboard")}
@@ -129,6 +213,18 @@ export function PortfolioCompanySwitcher({
             Back to dashboard
           </Button>
         </div>
+        {/* Appended as the LAST sibling of the empty-state, never spliced into
+            an existing text node: when the LP question could not be answered we
+            must not present "empty" as established fact. */}
+        {lp.isUnavailable && (
+          <p
+            className="text-sm mt-1 max-w-md"
+            style={{ color: "#8a5a06" }}
+            data-testid="portfolio-lp-unavailable"
+          >
+            {LP_INTERESTS_UNAVAILABLE_COPY}
+          </p>
+        )}
       </div>
     );
   }

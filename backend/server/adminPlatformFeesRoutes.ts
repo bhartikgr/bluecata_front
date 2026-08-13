@@ -31,6 +31,8 @@ import { sanitizeErrorMessage } from "./lib/sanitize";
 import { log } from "./lib/logger";
 import { listFees, getFee, setFee } from "./platformFeesStore";
 import { updateApplicationFee } from "./lib/collectiveApplicationFeeResolver";
+/* WAVE 34 · TASK 2 — ISO-4217 exponent for the minor→display mirror below. */
+import { fromMinor } from "./lib/currency";
 
 function actorOf(req: Request): string {
   const ctx = (req as Request & {
@@ -94,14 +96,23 @@ export function registerAdminPlatformFeesRoutes(app: Express): void {
     // fallback (that would break the documented v25.38/v25.39 source='default'
     // contract when the config row is absent), we MIRROR-WRITE the new value into
     // the config table. platform_fees stores TRUE minor units (cents); the config
-    // table / founder display contract uses display units (fmtUSD with NO /100),
-    // so we convert cents ÷ 100. This makes a Platform-Fees edit flow to the
-    // founder Billing surface with source='db'.
+    // table / founder display contract uses display units (fmtUSD with NO
+    // division), so we convert minor → major. This makes a Platform-Fees edit
+    // flow to the founder Billing surface with source='db'.
+    //
+    // WAVE 34 · TASK 2 — was: `Math.round(amountMinor / 100)`. The hardcoded
+    // exponent-2 divisor ignored `updated.currency`, which was already in scope
+    // on the very next line. A ¥250,000 fee (JPY, exponent 0) was mirrored as
+    // 2,500 and the founder's Collective application screen then quoted ¥2,500
+    // — a real price, wrong by a factor of 100. `fromMinor` reads the ISO-4217
+    // exponent from server/lib/currency.ts (JPY/KRW = 0) and returns a number,
+    // so the argument type of updateApplicationFee is unchanged.
     if (key === "collective_application_fee") {
       try {
+        const mirrorCurrency = updated.currency || "USD";
         updateApplicationFee(
-          Math.round(amountMinor / 100),
-          updated.currency || "USD",
+          fromMinor(amountMinor, mirrorCurrency),
+          mirrorCurrency,
           userId || "admin",
         );
       } catch (mirrorErr) {

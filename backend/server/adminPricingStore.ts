@@ -22,14 +22,29 @@
  * import that destructures it (server code, tests) sees current data.
  */
 import type { Express, Request, Response } from "express";
+/* WAVE 34 · TASK 2 — ISO-4217 exponent for the tier displayPrice string.
+   WAVE 35 · F2 — and now for the NUMBERS in the same object literal, which
+   Wave 34 classified "USD by contract" (category 3) and left on a hardcoded
+   `/100`. Review A falsified that classification by execution. */
+import { fromMinor, toMinor, currencyExponent } from "./lib/currency";
 import * as pricingModel from "./pricingModelStore";
 import { requireAuth } from "./lib/authMiddleware"; /* v25.48.3 Q-C3 — founder-scoped read route */
 
 export type PricingTier = {
   id: string;
   name: string;
-  monthlyUsd: number;
-  annualUsd: number;
+  /* WAVE 35 · F2 — these two are USD-ONLY and are now `null` for any tier
+     priced in another currency. They were `Math.round(minor / 100)` labelled
+     USD: a ¥1,200,000/year JPY plan was served to founders as `annualUsd:
+     12000` and rendered `$12,000` — 100× understated AND mislabelled. A null
+     forces the consumer to render a refusal or use the currency-aware fields
+     below; a zero would have been a lie that looks like a price. */
+  monthlyUsd: number | null;
+  annualUsd: number | null;
+  /** WAVE 35 · F2 — the truth: ISO-4217 code + integer minor units. */
+  currency: string;
+  monthlyMinor: number;
+  annualMinor: number;
   blurb: string;
   features: Array<{ key: string; label: string; included: boolean; limit?: string }>;
   /** v19 Wave A: explicit billing cycle for display. */
@@ -51,17 +66,42 @@ function modelToTier(m: pricingModel.PricingModel): PricingTier {
     monthlyOption?.priceMinor ??
     (m.cadence === "monthly" ? m.basePriceMinor : Math.round(annualMinor / 12));
 
+  /* WAVE 35 · F2 — the model carries a first-class per-model `currency`, and
+     the sibling `displayPrice` line below already reads it. The two numeric
+     fields did not, so the SAME object literal carried a currency-aware string
+     and two currency-blind numbers. */
+  const tierCurrency = String(m.currency || "USD").toUpperCase();
+  const isUsd = tierCurrency === "USD";
+
   return {
     id: m.id,
     name: m.name,
-    monthlyUsd: Math.round((monthlyMinor || 0) / 100),
-    annualUsd: Math.round((annualMinor || 0) / 100),
+    /* USD-only, null otherwise — see the type. `fromMinor` supplies the
+       ISO-4217 exponent instead of a hardcoded 100, so this stays correct if
+       the USD exponent assumption is ever revisited. */
+    monthlyUsd: isUsd ? Math.round(fromMinor(monthlyMinor || 0, tierCurrency)) : null,
+    annualUsd: isUsd ? Math.round(fromMinor(annualMinor || 0, tierCurrency)) : null,
+    currency: tierCurrency,
+    monthlyMinor: monthlyMinor || 0,
+    annualMinor: annualMinor || 0,
     blurb: m.description,
     features: m.features.map((f) => ({ key: f.key, label: f.label, included: f.included })),
     billingCycle: m.cadence === "annual" || m.cadence === "monthly" || m.cadence === "one_time" ? m.cadence : "annual",
     annualPriceCents: annualMinor,
+    /* WAVE 34 · TASK 2 — was:
+     *   `$${Math.round(annualMinor / 100).toLocaleString()} ${m.currency || "USD"}/year`
+     * The model's OWN currency was interpolated into the very string that was
+     * built with a hardcoded exponent-2 divisor — and with a hardcoded "$".
+     * A ¥1,200,000/year tier rendered "$12,000 JPY/year": wrong magnitude AND
+     * wrong symbol. `fromMinor` supplies the ISO-4217 exponent; the "$" is now
+     * conditional on USD, matching the shape publicPricingRoutes already uses.
+     * USD output is byte-identical to before. */
     displayPrice: annualMinor > 0
-      ? `$${Math.round(annualMinor / 100).toLocaleString()} ${m.currency || "USD"}/year`
+      ? (() => {
+          const tierCurrency = m.currency || "USD";
+          const symbol = tierCurrency === "USD" ? "$" : "";
+          return `${symbol}${fromMinor(annualMinor, tierCurrency).toLocaleString()} ${tierCurrency}/year`;
+        })()
       : "Free",
   };
 }
@@ -133,9 +173,49 @@ export function registerAdminPricingRoutes(app: Express): void {
 
     const update: Partial<pricingModel.PricingModel> = {};
 
+    /* WAVE 35 · F2 (write pole) — the READ path served `monthlyUsd` for a JPY
+     * model; this WRITE path accepted it back and did `* 100`, which for a
+     * zero-exponent currency PERSISTS a 100× over-statement into
+     * pricingModelStore. A USD-named field cannot describe a non-USD model, so
+     * it is REFUSED rather than silently mis-scaled. Callers pricing a non-USD
+     * tier send the exponent-free `monthlyMinor` / `annualMinor` instead. */
+    const modelCurrency = String(model.currency || "USD").toUpperCase();
+    const usdFieldSent =
+      typeof req.body?.monthlyUsd === "number" || typeof req.body?.annualUsd === "number";
+    if (usdFieldSent && modelCurrency !== "USD") {
+      return res.status(400).json({
+        error: "currency_mismatch",
+        message:
+          `Tier "${id}" is priced in ${modelCurrency}. The USD-only fields monthlyUsd/annualUsd ` +
+          `cannot express a ${modelCurrency} price (ISO-4217 exponent ` +
+          `${currencyExponent(modelCurrency)}, not 2). Send monthlyMinor / annualMinor ` +
+          `as integer minor units instead.`,
+        currency: modelCurrency,
+        expectedFields: ["monthlyMinor", "annualMinor"],
+      });
+    }
+
+    /* Exponent-free minor-unit writes — valid for EVERY currency. */
+    const applyMinor = (cadence: "monthly" | "annual", priceMinor: number) => {
+      const opts = (update.cadenceOptions ?? model.cadenceOptions ?? []).map((c) =>
+        c.cadence === cadence ? { ...c, priceMinor } : c,
+      );
+      if (!opts.some((c) => c.cadence === cadence)) opts.push({ cadence, priceMinor });
+      update.cadenceOptions = opts;
+      if (model.cadence === cadence) update.basePriceMinor = priceMinor;
+    };
+    if (typeof req.body?.monthlyMinor === "number" && Number.isInteger(req.body.monthlyMinor)) {
+      applyMinor("monthly", req.body.monthlyMinor);
+    }
+    if (typeof req.body?.annualMinor === "number" && Number.isInteger(req.body.annualMinor)) {
+      applyMinor("annual", req.body.annualMinor);
+    }
+
     if (typeof req.body?.monthlyUsd === "number") {
-      const monthlyMinor = Math.round(req.body.monthlyUsd * 100);
-      const newCadenceOpts = (model.cadenceOptions ?? []).map((c) =>
+      /* modelCurrency is USD here (guarded above); toMinor supplies the
+       * ISO-4217 exponent rather than a hardcoded 100. */
+      const monthlyMinor = toMinor(req.body.monthlyUsd, modelCurrency);
+      const newCadenceOpts = (update.cadenceOptions ?? model.cadenceOptions ?? []).map((c) =>
         c.cadence === "monthly" ? { ...c, priceMinor: monthlyMinor } : c,
       );
       if (!newCadenceOpts.some((c) => c.cadence === "monthly")) {
@@ -146,7 +226,7 @@ export function registerAdminPricingRoutes(app: Express): void {
     }
 
     if (typeof req.body?.annualUsd === "number") {
-      const annualMinor = Math.round(req.body.annualUsd * 100);
+      const annualMinor = toMinor(req.body.annualUsd, modelCurrency);
       const newCadenceOpts = (update.cadenceOptions ?? model.cadenceOptions ?? []).map((c) =>
         c.cadence === "annual" ? { ...c, priceMinor: annualMinor } : c,
       );

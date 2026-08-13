@@ -6,6 +6,7 @@
  * Light-mode only. No web storage.
  */
 
+import { LegalFooterLinks } from "@/components/LegalFooterLinks";
 import { useState, type ReactNode } from "react";
 import { Link, useLocation } from "wouter";
 import {
@@ -15,6 +16,7 @@ import {
   PiggyBank, CalendarDays, Trophy, Receipt,
   /* v25.42 (Bucket B) — icons for the 7 new Collective nav entries. */
   Network, Handshake, ClipboardCheck, Inbox,
+  LayoutTemplate, /* WAVE 30 ENGINE 3 — SPV Templates nav icon */
   /* v25.33 Consortium Partner Payment Model — icons for the new partner
      self-service nav items (Subscribe / Agreement / Tax Forms). */
   FileSignature, FileCheck,
@@ -22,6 +24,9 @@ import {
   MessageSquare, Newspaper,
   /* GROUP F1 — icon for the person-level partner CRM Contacts nav item. */
   Contact,
+  /* WAVE 7 W-8 (DEF-057) / W-5 (DEF-056) — icons for the restored Tasks and
+     Files nav entries. */
+  ListTodo, FolderOpen,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -173,6 +178,28 @@ const PARTNER_WORKSPACE_GROUPS: NavGroup[] = [
       /* W-MFCRM — Managed Founders engine (engagements + 3 CRM-layer drill-down).
          Additive entry; nothing existing was renamed/moved/removed. */
       { href: "/collective/partner/managed-founders", label: "Managed Founders", icon: Handshake, "data-testid": "nav-partner-managed-founders" },
+      /* WAVE 20 XT-10 — the way IN to the Managed-Founder PERSONA surface.
+         server/managedFounderPersonaRoutes.ts registers 17 partner routes
+         (angel chapters + carry, accounting rebill/custody/fund-admin, law
+         matters/counsel/conflicts), mounted at server/routes.ts:1014. A grep of
+         client/ for `mfcrm/angel|mfcrm/acct|mfcrm/law` returned ZERO callers
+         before this wave: seventeen live, gated, DB-backed endpoints with no
+         page and no door. Same shape as FE-8 above — additive entry, nothing
+         renamed, moved or removed. The page itself resolves the persona from
+         the capability profile and renders an explanation when the firm type
+         has no persona surface, so this entry is never a dead end. */
+      { href: "/collective/partner/persona-tools", label: "Persona Tools", icon: Scale, "data-testid": "nav-partner-persona-tools" },
+      /* WAVE 7B FE-8 (DEF-054) — WIRING, not a build. The partner onboarding
+         checklist was fully shipped by CP Phase B: the page exists
+         (client/src/pages/partner/OnboardingChecklistPage.tsx), the route is
+         declared and mounted inside CollectiveShell (client/src/App.tsx:1326),
+         and both halves of the engine are live — GET and PATCH
+         /api/partner/onboarding/state. What was missing was any way in: a
+         whole-app search for "/collective/partner/onboarding" found the route
+         declaration and NOTHING else. No nav entry, no link, no redirect. A
+         partner could only reach their own onboarding checklist by typing the
+         URL. Same shape as W-5/W-8 in Wave 7. */
+      { href: "/collective/partner/onboarding", label: "Onboarding", icon: ClipboardCheck, "data-testid": "nav-partner-onboarding" },
     ],
   },
   {
@@ -188,6 +215,13 @@ const PARTNER_WORKSPACE_GROUPS: NavGroup[] = [
          page. The legacy /spvs and /funds routes stay reachable (they redirect to
          the canonical surface) so no bookmark/link breaks — Sacred Rule #78. */
       { href: "/collective/partner/spv-engine", label: "SPVs", icon: Building2, "data-testid": "nav-partner-spvs" },
+      /* WAVE 30 ENGINE 3 — "SPV Templates": reusable structure defaults for the
+         SPV create form. `spv_template` was absent tree-wide before this wave
+         (migration 0177 creates it), so this is its only entry point. Added as
+         a SIBLING entry directly beneath the canonical SPVs link — no existing
+         nav item's text was edited, per the guard's sibling rule. Applying a
+         template does NOT create an SPV; the signed launch flow is unchanged. */
+      { href: "/collective/partner/spv-templates", label: "SPV Templates", icon: LayoutTemplate, "data-testid": "nav-partner-spv-templates" },
       /* W2-A — "Clients" nav item restored. (The prior "(page deleted)" comment
          was inaccurate: PartnerClients.tsx / PartnerClientDetail.tsx were never
          deleted — only their routes/nav were trimmed in v25.50.0, and the read
@@ -198,6 +232,12 @@ const PARTNER_WORKSPACE_GROUPS: NavGroup[] = [
       /* W2-D — "Portfolio" nav item added; the /api/partner/me/portfolio API
          already existed but had no client route/nav to reach it. */
       { href: "/collective/partner/portfolio", label: "Portfolio", icon: PiggyBank, "data-testid": "nav-partner-portfolio" },
+      /* WAVE 30 ENGINE 2 — "Relationship Map": the union across Managed Founder
+         CRM, pipeline, clients and portfolio. Migration 0136 shipped the
+         partner_company_relationship spine with no reader, route or nav; this
+         is the entry point that makes it reachable. Added as a SIBLING entry
+         — no existing nav item's text was edited. */
+      { href: "/collective/partner/relationships", label: "Relationship Map", icon: Network, "data-testid": "nav-partner-relationships" },
     ],
   },
   {
@@ -214,7 +254,16 @@ const PARTNER_WORKSPACE_GROUPS: NavGroup[] = [
     items: [
       { href: "/collective/partner/team", label: "Team", icon: UserPlus, "data-testid": "nav-partner-team" },
       { href: "/collective/partner/notes", label: "Notes", icon: FileText, "data-testid": "nav-partner-notes" },
-      /* v25.50.0 Phase 6 (spec 5a/6a) — "Tasks" and "Files" nav items removed (pages deleted). */
+      /* WAVE 7 W-8 (DEF-057) + W-5 (DEF-056) — "Tasks" and "Files" restored.
+         The v25.50.0 Phase 6 note that stood here said the pages were deleted;
+         they were not — PartnerTasks.tsx and PartnerFiles.tsx were on disk the
+         whole time, as were partnerTasksStore/partnerFilesStore and the
+         partner_tasks/partner_files tables. Only the route, the nav entry and
+         the server route surface had been removed, which is precisely the
+         "functionality that exists is not reflected in the UI" shape. The
+         original hrefs, labels and data-testids are restored unchanged. */
+      { href: "/collective/partner/tasks", label: "Tasks", icon: ListTodo, "data-testid": "nav-partner-tasks" },
+      { href: "/collective/partner/files", label: "Files", icon: FolderOpen, "data-testid": "nav-partner-files" },
     ],
   },
   {
@@ -587,6 +636,9 @@ export function CollectiveShell({ children }: CollectiveShellProps) {
           {isMemberGateExempt(location)
             ? children
             : <CollectiveMemberGate>{children}</CollectiveMemberGate>}
+          {/* WAVE 8 / ORP-047 — Terms/Privacy entry point for the Collective
+              and Consortium Partner shells (see LegalFooterLinks.tsx). */}
+          <LegalFooterLinks />
         </main>
       </div>
     </div>

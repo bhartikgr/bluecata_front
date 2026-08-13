@@ -32,6 +32,8 @@ import type { Express, Request, Response } from "express";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { emitMutation } from "./lib/eventBus";
+/* WAVE 17 ORP-044 — leaf module (logger + currency only); see emitBridgeEvent. */
+import { maybeBroadcastGovernanceMetric } from "./lib/wave17MilestoneAutoTriggers";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 import { getDb } from "./db/connection";
 import { rawDb } from "./db/connection";
@@ -321,6 +323,11 @@ export type OutboundEventType =
   | "safe.converted"
   | "note.converted"
   | "round.closed"
+  /* WAVE 8 / ORP-050 — the REAL round terms-update event. routes.ts duck-typed
+     `BridgeOutbound.roundTermsUpdated` (which never existed), so every terms
+     update fell through to `audit_log.appended` with the intended type buried
+     in the payload and no peer could ever subscribe to it. */
+  | "round.terms_updated"
   | "governance_metric.published"
   // Sprint 16 — round-port gap G1
   | "soft_circle.submitted"
@@ -405,13 +412,93 @@ export type OutboundEventType =
   | "partner.archived"
   | "partner.application_submitted"
   | "partner.application_approved"
-  | "partner.application_rejected";
+  | "partner.application_rejected"
+  /* ── WAVE 36 · ROW 6 — four events that were being emitted through a lazy
+     `require("../bridgeStore")` destructuring `emitBridge`, a name this module
+     has NEVER exported (the real export is `emitBridgeEvent`). The destructure
+     produced `undefined`, the call threw, and a bare catch that dismissed the
+     bridge as "optional" swallowed it — so these four events were emitted ZERO times
+     since they were written. The call sites are now static imports of
+     `emitBridgeEvent`, which means the types must exist here for real. */
+  | "founderTeam.invitation_sent"
+  | "founderTeam.member_removed"
+  | "maInitiative.response_recorded"
+  | "round.invitation_sent"
+  /* ── WAVE 8 ORP-028 (SPV-55) — the 21 spv.* events emitted by
+     server/spvEngineStore.ts through its local emit() wrapper (:178), which
+     casts `eventType as never` and therefore bypassed this union. They were
+     landing in the outbox but were absent from GET /api/bridge/event-types,
+     absent from Sync Status, and — the operational hazard — rejected
+     400 invalid_event_type by the manual emit/replay endpoint (:1387), so a
+     failed SPV delivery could never be replayed. Registering them here fixes
+     all three at once. */
+  | "spv.created"
+  | "spv.updated"
+  | "spv.scope_changed"
+  | "spv.wound_down"
+  | "spv.mandate_set"
+  | "spv.fee_set"
+  | "spv.fee_obligation_accrued"
+  | "spv.fee_obligation_paid"
+  | "spv.fee_obligation_waived"
+  | "spv.subscription_created"
+  | "spv.subscription_advanced"
+  | "spv.lp_committed"
+  | "spv.deployment_created"
+  | "spv.deployment_advanced"
+  | "spv.deployed"
+  | "spv.distribution_recorded"
+  | "spv.funds_confirmed"
+  | "spv.closed_to_new_lps"
+  | "spv.reopened_rolling_close"
+  | "spv.document_added"
+  | "spv.transfer_proposed"
+  /* ── WAVE 8 ORP-034 (BRG-03) — partnerWorkspaceStore.ts:2455 emits this via
+     the same `eventType as any` wrapper (:863). Every sibling event from that
+     wrapper is registered; this was a single missed registration. */
+  | "partner.spv_updated"
+  /* ── WAVE 8 ORP-045 — the 17 emitSync() telemetry types. They were a
+     second-class, peer-invisible system; payment_charged and captable_commit
+     are money/ledger events. Registering them makes emitSync forward them to
+     the outbound bridge (server/lib/telemetryBridgeForward.ts) — the forwarder
+     is registry-driven, so this list is the single source of truth. */
+  | "cap_table_broadcast_sent"
+  | "captable_commit"
+  | "collective_application_submitted"
+  | "collective_company_application_submitted"
+  | "collective_company_nomination_submitted"
+  | "crm_contact_added"
+  | "crm_intro_requested"
+  | "crm_note_added"
+  | "crm_pipeline_moved"
+  | "crm_task_completed"
+  | "dsc.review_received"
+  | "founder_crm_broadcast"
+  | "payment_charged"
+  | "report_sent"
+  | "soft_circle.lapsed"
+  | "transaction_prep_channel_archived"
+  | "transaction_prep_channel_created";
 
+/* WAVE 15 / A-5 (DEF-035) — the union stopped at the four Sprint 12 types even
+   though `server/lib/bridgeInbound.ts` has grown WORKING, idempotent handlers
+   for four more. The handlers were reachable at runtime (POST
+   /api/bridge/inbound does not gate on this registry) but the peer had no way
+   to LEARN they exist, because GET /api/bridge/event-types and
+   GET /api/admin/bridge/inbox both publish this array. Their case labels were
+   written `case "…" as never` precisely to work around this too-narrow union;
+   widening the union is what makes the casts unnecessary. */
 export type InboundEventType =
   | "dsc.scores"
   | "ma.intelligence_rankings"
   | "partner.introduction_status"
-  | "network.social_signals";
+  | "network.social_signals"
+  // WAVE 15 A-5 — Sprint 13 handlers, previously unadvertised.
+  | "member.application_decision"
+  | "membership.renewal_status"
+  | "kyc.status_decision"
+  // WAVE 15 A-5 — Sprint 16 G2 handler, previously unadvertised.
+  | "soft_circle.submitted";
 
 export interface TraceEntry {
   formulaId: string;
@@ -521,6 +608,7 @@ export const ALL_OUTBOUND_EVENT_TYPES: OutboundEventType[] = [
   "safe.converted",
   "note.converted",
   "round.closed",
+  "round.terms_updated", /* WAVE 8 / ORP-050 */
   "governance_metric.published",
   // Sprint 16 — round-port gap G1
   "soft_circle.submitted",
@@ -601,6 +689,53 @@ export const ALL_OUTBOUND_EVENT_TYPES: OutboundEventType[] = [
   "partner.application_submitted",
   "partner.application_approved",
   "partner.application_rejected",
+  // WAVE 36 · ROW 6 — see type union above. Emitted for real as of this wave.
+  "founderTeam.invitation_sent",
+  "founderTeam.member_removed",
+  "maInitiative.response_recorded",
+  "round.invitation_sent",
+  // WAVE 8 ORP-028 (SPV-55) — spv.* family, see type union above.
+  "spv.created",
+  "spv.updated",
+  "spv.scope_changed",
+  "spv.wound_down",
+  "spv.mandate_set",
+  "spv.fee_set",
+  "spv.fee_obligation_accrued",
+  "spv.fee_obligation_paid",
+  "spv.fee_obligation_waived",
+  "spv.subscription_created",
+  "spv.subscription_advanced",
+  "spv.lp_committed",
+  "spv.deployment_created",
+  "spv.deployment_advanced",
+  "spv.deployed",
+  "spv.distribution_recorded",
+  "spv.funds_confirmed",
+  "spv.closed_to_new_lps",
+  "spv.reopened_rolling_close",
+  "spv.document_added",
+  "spv.transfer_proposed",
+  // WAVE 8 ORP-034 (BRG-03) — see type union above.
+  "partner.spv_updated",
+  // WAVE 8 ORP-045 — emitSync telemetry types promoted to the peer contract.
+  "cap_table_broadcast_sent",
+  "captable_commit",
+  "collective_application_submitted",
+  "collective_company_application_submitted",
+  "collective_company_nomination_submitted",
+  "crm_contact_added",
+  "crm_intro_requested",
+  "crm_note_added",
+  "crm_pipeline_moved",
+  "crm_task_completed",
+  "dsc.review_received",
+  "founder_crm_broadcast",
+  "payment_charged",
+  "report_sent",
+  "soft_circle.lapsed",
+  "transaction_prep_channel_archived",
+  "transaction_prep_channel_created",
 ];
 
 export const ALL_INBOUND_EVENT_TYPES: InboundEventType[] = [
@@ -608,6 +743,15 @@ export const ALL_INBOUND_EVENT_TYPES: InboundEventType[] = [
   "ma.intelligence_rankings",
   "partner.introduction_status",
   "network.social_signals",
+  /* WAVE 15 A-5 (DEF-035) — four handlers that already worked but were never
+     published. Handler bodies: server/lib/bridgeInbound.ts:117 (member),
+     :129 (renewal), :141 (kyc), :153 (soft circle). The completeness of this
+     array against the handler table is now machine-enforced by
+     assertInboundRegistryComplete() in server/lib/bridgeInbound.ts. */
+  "member.application_decision",
+  "membership.renewal_status",
+  "kyc.status_decision",
+  "soft_circle.submitted",
 ];
 
 export interface EmitArgs {
@@ -660,6 +804,25 @@ export function emitBridgeEvent(args: EmitArgs): OutboxEntry {
   persistOutboxInsert(entry);
   // Fan out to SSE realtime channel so admin Bridge page + collective dashboard update within ~1s
   emitMutation({ aggregate: "bridge", id: entry.envelope.eventId, change: "create" });
+  /* WAVE 17 ORP-044 — AUTO-TRIGGER `governance_metric_published`.
+     Attached HERE because both producers of `company.profile.updated` —
+     server/companyProfileStore.ts:786 (PATCH /api/founder/profile, the surface the
+     founder actually saves board composition from) and server/profileStore.ts:253
+     via BridgeOutbound — are SACRED files, and this is the single point both flow
+     through. The observer itself is a no-op for every other event type and adds NO
+     bridge event (the audit chain and outbox are untouched), so nothing here
+     changes for the other ~40 event types. See
+     server/lib/wave17MilestoneAutoTriggers.ts for why the declared
+     `governance_metric.published` helper alone was not a viable emit point (zero
+     callers tree-wide). */
+  try {
+    maybeBroadcastGovernanceMetric({
+      eventType: args.eventType,
+      companyId: args.aggregateId,
+      actorUserId: args.actor?.userId ?? null,
+      payload: args.payload,
+    });
+  } catch { /* non-fatal: a broadcast must never break an emit */ }
   return entry;
 }
 

@@ -15,6 +15,7 @@
  *               NEVER blocks (suggests set-target = raised instead).
  *               canReopenClose            — rolling closes within a window.
  */
+import { assertStoredFraction } from "./percentPolicy"; /* WAVE 10 / EN-5 — retires the local frac() clamp */
 
 export type FundsConfirmationStatus = "matched" | "short" | "over";
 
@@ -84,13 +85,59 @@ export interface DistributionInput {
   gpCatchUpPct?: number | null;
 }
 
-const frac = (v: unknown): number => {
-  const n = typeof v === "number" ? v : Number(String(v ?? "").trim());
-  if (!Number.isFinite(n) || n <= 0) return 0;
-  return n > 1 ? n / 100 : n; // accept either 0.2 or 20 (%)
-};
-
 /**
+ * WAVE 10 / EN-5 — the shared `frac()` helper this replaces is RETIRED.
+ *
+ * WHAT IT DID AND WHY IT WAS WRONG
+ *   It ended in `Math.min(1, n)`: any out-of-domain value was silently clamped
+ *   to 100% instead of rejected. For carry that is merely lossy. For the hurdle
+ *   it is a money defect — an unnormalised 8 ("8%") became 1, a ONE HUNDRED
+ *   PERCENT preferred return, and the preferred-return tier then absorbed the
+ *   whole distribution before any LP profit was allocated. That is P-4.
+ *
+ *   P-4 was closed at the CREATE and UPDATE routes by `normaliseSpvTermsHurdle`.
+ *   It was NOT closed here, and the offline preview route
+ *   (POST /api/partner/me/spv/:spvId/distributions/preview) passes
+ *   `req.body.hurdleRatePct` STRAIGHT through with no normalisation — a second
+ *   path to the same clamp. Fixing only the cited site would have left it open.
+ *
+ * WHAT REPLACES IT
+ *   `assertStoredFraction` from the percent policy, per field, which REJECTS
+ *   out-of-domain input rather than clamping it. A wrong number now surfaces as
+ *   a loud error at the boundary instead of a quiet, plausible, wrong split.
+ *   There is deliberately no local fallback: a rival parser is what EN-5 exists
+ *   to remove.
+ */
+const fracField = (field: string, v: unknown): number => {
+  if (v === null || v === undefined || v === "") return 0;
+  const n = assertStoredFraction(field, v);
+  return n > 0 ? n : 0;
+};
+/**
+ * ── XT-C5 · WATERFALL BOUNDARY (1 of 3) ─────────────────────────────────────
+ * There are THREE functions in this tree that compute a "waterfall". They are
+ * NOT rivals — they are three different capabilities whose names collide, and
+ * `ENGINE_REGISTRY.md` C-5 exists because a future builder will find all three
+ * and have to guess. The boundary is restated at each site so that builder
+ * finds it in the file they are already editing, not in a spec they have no
+ * reason to open:
+ *
+ *   1. THIS ONE — `spvOfflineOps.computeDistributionSplit`.
+ *      NON-PERSISTING PREVIEW. Route: POST .../spv/:spvId/distributions/preview.
+ *      Moves no money, writes no row, touches no hash chain. Safe to call
+ *      speculatively from a UI as the GP types.
+ *   2. `spvEngineStore.recordDistribution` (:1697) — CANONICAL for actually
+ *      distributing to SPV LPs. 5 tiers, per-LP allocations, carry collected
+ *      through the payment ledger before the row persists, hash-chained.
+ *   3. `computeWaterfall` from `@capavate/cap-table-engine`
+ *      (`server/track1Routes.ts:206`) — FOUNDER-SIDE EXIT MODELLING.
+ *      Liquidation preferences by share class and breakpoints. A different
+ *      question entirely: who gets what if the COMPANY is sold.
+ *
+ * RULE: LP distribution → (2). Exit modelling → (3). Preview → this file.
+ * Never substitute one for another. Calling (1) where (2) belongs is the
+ * expensive mistake: it returns a plausible split and collects no carry.
+ *
  * SPV-CORE-2 — waterfall split. With NO hurdle this is the simple model
  * (return of capital, then carry on profit) — byte-for-byte the current
  * behavior. With a hurdle set it adds the preferred-return + GP-catch-up tiers.
@@ -98,8 +145,9 @@ const frac = (v: unknown): number => {
 export function computeDistributionSplit(input: DistributionInput): DistributionSplit {
   const gross = Math.max(0, asMinor(input.grossProceedsMinor));
   const contributed = Math.max(0, asMinor(input.contributedMinor));
-  const carryPct = Math.min(1, Math.max(0, frac(input.carryPct)));
-  const hurdle = frac(input.hurdleRatePct);
+  const carryPct = fracField("spv.carryPct", input.carryPct);
+  // REJECTS an unnormalised percent instead of clamping it to a 100% hurdle.
+  const hurdle = fracField("spv.hurdleRateFraction", input.hurdleRatePct);
 
   const tiers: DistributionTier[] = [];
   let remaining = gross;
@@ -130,7 +178,7 @@ export function computeDistributionSplit(input: DistributionInput): Distribution
 
   // Tier 3 — GP catch-up so the GP reaches carryPct of (pref + catch-up).
   const catchUpPct = (() => {
-    const c = frac(input.gpCatchUpPct);
+    const c = fracField("spv.gpCatchUpPct", input.gpCatchUpPct);
     return c > 0 ? Math.min(1, c) : 1; // default: full catch-up
   })();
   let gpCatch = 0;
@@ -157,12 +205,36 @@ export interface CapitalAccountRow {
   contributedMinor: number;
   confirmedMinor: number;
   distributedMinor: number;
+  /**
+   * WAVE 36 / ROW 9 — realised DPI (distributions ÷ paid-in), as a RATIO.
+   *
+   * THE CANONICAL PRODUCER. It lives here, beside the amounts it divides, and
+   * not in the browser: the two operands are integer minor units of the SPV's
+   * single currency, and a ratio derived anywhere else would be a second
+   * definition of DPI that could drift from this one.
+   *
+   * `null`, NEVER 0, when there is no paid-in capital to divide by — a fund
+   * that has called nothing has an UNDEFINED DPI, not a DPI of zero, and the
+   * UI renders that null as an explicit refusal.
+   *
+   * Denominator is `confirmedMinor` (capital actually paid in), which is what
+   * DPI means. `contributedMinor` is only a commitment and would understate
+   * the multiple for any LP who has not been fully called.
+   *
+   * TVPI and IRR are deliberately ABSENT: TVPI needs a per-LP share of a
+   * current NAV mark and IRR needs dated flows per LP, and this platform has
+   * no canonical producer for either at capital-account granularity. See the
+   * copy correction in client/src/lib/spvEducation.ts (capitalAccounts).
+   */
+  dpiRatio: number | null;
 }
 
 /**
  * SPV-CORE-2 — minimal per-LP capital accounts (D10). `contributed` is the
  * committed amount on the register; `confirmed` is what has actually been
  * confirmed-received; `distributed` sums the LP's net distribution allocations.
+ *
+ * WAVE 36 / ROW 9 additionally emits `dpiRatio` — see CapitalAccountRow.
  */
 export function computeCapitalAccounts(
   register: ReadonlyArray<{ investorId: string; commitmentMinor: number }>,
@@ -174,11 +246,17 @@ export function computeCapitalAccounts(
       (sum, d) => sum + d.allocations.filter((a) => a.investorId === r.investorId).reduce((s, a) => s + a.netMinor, 0),
       0,
     );
+    const confirmedMinor = asMinor(confirmedByInvestor[r.investorId] ?? 0);
     return {
       investorId: r.investorId,
       contributedMinor: r.commitmentMinor,
-      confirmedMinor: asMinor(confirmedByInvestor[r.investorId] ?? 0),
+      confirmedMinor,
       distributedMinor,
+      /* Undefined, not zero, when nothing has been paid in. Both operands are
+         integer minor units of the same single SPV currency, so the ratio is
+         exponent-independent: it is identical for USD (exponent 2) and JPY
+         (exponent 0) given the same economic flows. */
+      dpiRatio: confirmedMinor > 0 ? distributedMinor / confirmedMinor : null,
     };
   });
 }

@@ -48,6 +48,8 @@ import {
 import { useToast } from "@/hooks/use-toast";
 
 import { fmtUSD, fmtPct } from "@/lib/format";
+/* WAVE 31 · W31-A1 — exponent-aware money rendering for the mark chart. */
+import { formatMinorOrUnavailable } from "@/lib/moneyDisplay";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { PromoteToCollectiveDialog } from "./PromoteToCollectiveDialog";
 import { broadBasedWeightedAverage } from "@/pages/investor/Portfolio";
@@ -91,21 +93,91 @@ type PromotionStatus = {
   rationale: string;
 } | null;
 
+/* WAVE 31 · W31-A1 — the real `valuation_event` shape.
+ *
+ * WAS: `{ holdingId: string; marks: Array<{ month: number; value: number }> }`
+ * — a shape that existed only to describe a hardcoded `[]`. `value` was a bare
+ * number with no currency beside it and `month` was an array index, so the
+ * chart could not have rendered a real, dated, denominated mark even if the
+ * server had sent one.
+ *
+ * `fairValueMinor` is INTEGER MINOR UNITS and never travels without its
+ * `currency`. `unavailableReason` distinguishes "nothing recorded" from "we
+ * refuse to plot this", which an empty array cannot. */
+type MarkPoint = {
+  id: string;
+  valuationDate: string;
+  fairValueMinor: number;
+  currency: string;
+  method: string;
+  source: string;
+  isExternal: boolean;
+  overrideId: string | null;
+  overrideReason: string | null;
+  originalFairValueMinor: number | null;
+  /* WAVE 36 · ROW 10 — both produced by the SERVER
+     (server/lib/investorMarkHistory.ts) from `badgeForAge()` against the
+     DB-driven `marks.stale_warn_days` / `marks.stale_expired_days`. The
+     thresholds are NOT hardcoded here: 180/365 are today's configured values,
+     not laws, and a copy of them in this file would go silently wrong the day
+     the owner changes the config. */
+  ageDays?: number;
+  badge?: "fresh" | "stale" | "expired" | "unmarked" | "gp_override";
+};
+
 type MarkHistory = {
-  holdingId: string;
-  marks: Array<{ month: number; value: number }>;
+  companyId: string;
+  holdingId: string | null;
+  currency: string | null;
+  marks: MarkPoint[];
+  /* WAVE 36 · ROW 10 — the thresholds the badges were decided by, so the
+     tooltip can SAY what "stale" means instead of asserting it. */
+  markThresholds?: { staleWarnDays: number; staleExpiredDays: number } | null;
+  unavailableReason:
+    | "NO_MARKS_RECORDED"
+    | "MARKS_SPAN_CURRENCIES"
+    | "MARKS_UNAVAILABLE"
+    | null;
 };
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
 
-function positionIrr(p: Position): number {
-  // DEF-055: use dynamic current year, not hardcoded 2026
-  const years = Math.max(1, new Date().getFullYear() - p.vintageYear);
-  const m = p.currentValue / Math.max(1, p.invested);
-  return (Math.pow(m, 1 / years) - 1) * 100;
-}
+/**
+ * WAVE 16 — XT-C4 (ENGINE_REGISTRY C-4 / OPN-018). `positionIrr()` USED TO LIVE
+ * HERE and it was RP-3, the fabrication Wave 9 deleted from the server:
+ *
+ *     const years = Math.max(1, new Date().getFullYear() - p.vintageYear);
+ *     const m = p.currentValue / Math.max(1, p.invested);
+ *     return (Math.pow(m, 1 / years) - 1) * 100;   // labelled "IRR"
+ *
+ * That is a hold-period CAGR of a single mark, not an internal rate of return.
+ * It cannot be one: it has no dated cash flows, so a follow-on cheque, a
+ * secondary, a distribution and a bridge all move it in the wrong direction, and
+ * a position marked flat for four years reports 0.0% "IRR" as confidently as a
+ * real solve would.
+ *
+ * Wave 9 (RP-3) removed exactly this arithmetic from
+ * `server/portfolioAnalyticsStore.ts` and replaced it with XIRR (ACT/365F,
+ * bracket + Brent) from `@capavate/math-fns`, SUPPRESSED with a `MetricStatus`
+ * whenever there are no marks. THE CLIENT COPY SURVIVED — a SECOND PATH to the
+ * same fabrication, rendered to investors at `/investor/portfolio`
+ * (`client/src/App.tsx:787`). The XT-C4 fence found it; see
+ * `scripts/lint/fundMetricsWinnerFence.ts` rule R1/RP-3-positionIrr.
+ *
+ * WHY THIS SURFACE SHOWS NO NUMBER RATHER THAN A DIFFERENT ONE: the strip's only
+ * input is `GET /api/investor/portfolio2` (`server/routes.ts:2818`), a per-position
+ * payload with `invested`, `currentValue` and `vintageYear` and NO cash-flow
+ * dates. Per-company IRR has no canonical producer yet — `computePortfolioAnalyticsFor`
+ * reports IRR at PORTFOLIO level only (`server/portfolioAnalyticsStore.ts:112-128`),
+ * and per-position dated flows are EN-1's ledger. So the card stays, labelled,
+ * with an explicit suppression instead of a fabricated figure. A blank is not a
+ * failure; a fabricated IRR in front of an investment bank is.
+ */
+export const IRR_SUPPRESSED_DISPLAY = "—";
+export const IRR_SUPPRESSED_REASON =
+  "IRR needs dated cash flows, which this position payload does not carry. It is suppressed rather than approximated.";
 
 function moic(p: Position): number {
   return p.invested > 0 ? p.currentValue / p.invested : 0;
@@ -163,9 +235,9 @@ function KvCard({
 
 function CompanyKpiStrip({ position: p }: { position: Position }) {
   const m = moic(p);
-  const irr = positionIrr(p);
 
   return (
+    <>
     <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
       <KvCard
         label="Invested"
@@ -197,12 +269,21 @@ function CompanyKpiStrip({ position: p }: { position: Position }) {
       />
       <KvCard
         label="IRR"
-        value={`${irr >= 0 ? "+" : ""}${irr.toFixed(1)}%`}
+        value={IRR_SUPPRESSED_DISPLAY}
         hint={p.lastRoundLabel}
         testid="kpi-co-irr"
-        accent={irr > 0}
       />
     </div>
+    {/* XT-C4 — a SIBLING element, deliberately not appended inside the card's
+        existing text node: the silent-drop guard reads an edit inside a text node
+        as one removal plus one addition. */}
+    <div
+      className="text-[10px] text-muted-foreground mt-2"
+      data-testid="note-co-irr-suppressed"
+    >
+      {IRR_SUPPRESSED_REASON}
+    </div>
+    </>
   );
 }
 
@@ -270,13 +351,97 @@ function FounderUpdatesFeed({ companyId }: { companyId: string }) {
 /* Mark history chart                                                  */
 /* ------------------------------------------------------------------ */
 
-function MarkHistoryChart({ positionId }: { positionId: string }) {
+function MarkHistoryChart({ companyId }: { companyId: string }) {
   const marksQ = useQuery<MarkHistory>({
-    queryKey: ["/api/investor/portfolio", positionId, "marks"],
-    enabled: !!positionId,
+    queryKey: ["/api/investor/portfolio", companyId, "marks"],
+    enabled: !!companyId,
   });
 
   const marks = marksQ.data?.marks ?? [];
+  const currency = marksQ.data?.currency ?? null;
+  const reason = marksQ.data?.unavailableReason ?? null;
+
+  /* Rule 5 — the axis and the tooltip render through `formatMinor` with the
+   * currency the SERVER sent. The previous chart called `fmtUSD` on every
+   * point, which stamps a dollar sign on a figure that may be neither dollars
+   * nor 2-decimal: a ¥900,000 mark (JPY, exponent 0) rendered as "$9,000.00",
+   * wrong by 100× and mislabelled. `formatMinorOrUnavailable` also refuses to
+   * print "$0.00" for an absent number. */
+  const fmtAxis = (minor: number) =>
+    formatMinorOrUnavailable(minor, currency, { placeholder: "—" });
+
+  /* WAVE 36 · ROW 10 — the tooltip. The chart used the default Recharts
+     tooltip, which shows the value and the date and nothing else, so a mark
+     four years old and a GP's manual restatement carried exactly the same
+     visual authority as a fresh priced-round NAV. `MarkPoint` has always
+     carried `overrideId` / `overrideReason` / `originalFairValueMinor`, and
+     now also the SERVER's `badge` and `ageDays`; the tooltip was simply
+     throwing them away. Nothing here recomputes staleness — the thresholds are
+     DB-driven and the verdict is the server's. */
+  const thresholds = marksQ.data?.markThresholds ?? null;
+  const byDate = new Map(marks.map((m) => [m.valuationDate, m]));
+
+  const badgeCopy = (m: MarkPoint): { label: string; explain: string } | null => {
+    if (m.badge === "expired") {
+      return {
+        label: "Expired",
+        explain: thresholds
+          ? `${m.ageDays} days old — at or past the ${thresholds.staleExpiredDays}-day expiry the platform is configured with.`
+          : `${m.ageDays ?? "?"} days old — past the configured expiry.`,
+      };
+    }
+    if (m.badge === "stale") {
+      return {
+        label: "Stale",
+        explain: thresholds
+          ? `${m.ageDays} days old — at or past the ${thresholds.staleWarnDays}-day staleness threshold the platform is configured with.`
+          : `${m.ageDays ?? "?"} days old — past the configured staleness threshold.`,
+      };
+    }
+    if (m.badge === "unmarked") {
+      /* The server could not read the thresholds. It says so rather than
+         calling the mark fresh, and so does this. */
+      return { label: "Age not assessed", explain: "The staleness thresholds could not be read, so this mark has not been assessed." };
+    }
+    return null;
+  };
+
+  function MarkTooltip({ active, label }: { active?: boolean; label?: string | number }) {
+    if (!active) return null;
+    const m = byDate.get(String(label ?? ""));
+    if (!m) return null;
+    const badge = badgeCopy(m);
+    return (
+      <div className="rounded-md border border-border bg-white p-2 text-xs shadow-sm" data-testid="mark-history-tooltip">
+        <div className="font-medium" data-testid="mark-history-tooltip-value">{fmtAxis(m.fairValueMinor)}</div>
+        <div className="text-muted-foreground">{m.valuationDate}</div>
+
+        {badge && (
+          <div className="mt-1" data-testid="mark-history-tooltip-staleness">
+            <Badge variant="outline" className="text-[10px]">{badge.label}</Badge>
+            <div className="mt-0.5 text-[11px] text-muted-foreground">{badge.explain}</div>
+          </div>
+        )}
+
+        {m.overrideId && (
+          <div className="mt-1" data-testid="mark-history-tooltip-override">
+            <Badge variant="outline" className="text-[10px]">GP override</Badge>
+            <div className="mt-0.5 text-[11px] text-muted-foreground">
+              This figure was set manually by the GP, not derived from a priced round.
+              {m.overrideReason ? ` Reason: ${m.overrideReason}` : " No reason was recorded."}
+            </div>
+            {m.originalFairValueMinor != null && (
+              /* What the valuation event itself said, so the reader can see the
+                 size of the restatement rather than only its result. */
+              <div className="text-[11px] text-muted-foreground" data-testid="mark-history-tooltip-override-original">
+                Originally {fmtAxis(m.originalFairValueMinor)}.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <Card>
@@ -284,7 +449,30 @@ function MarkHistoryChart({ positionId }: { positionId: string }) {
         <CardTitle className="text-base">Mark history</CardTitle>
       </CardHeader>
       <CardContent>
-        {marks.length === 0 ? (
+        {reason === "MARKS_SPAN_CURRENCIES" ? (
+          /* NOT an empty state. Marks EXIST; they are denominated in more than
+           * one currency, so no single comparable series can be drawn and none
+           * is invented. A line chart is an implicit comparison of its points,
+           * so plotting ¥ beside $ would be a lie told by the y-axis — and it
+           * would look entirely normal, which is what makes it dangerous. The
+           * refusal is RENDERED (rule 5: nulls not zeros, with a rendered
+           * refusal), never swallowed. */
+          <div
+            className="h-32 flex items-center justify-center text-center text-sm text-muted-foreground border border-dashed border-border rounded-md px-4"
+            data-testid="mark-history-mixed-currency"
+          >
+            Marks for this company are recorded in more than one currency. No
+            combined series is shown, because comparing them would require an
+            exchange rate this platform does not hold.
+          </div>
+        ) : reason === "MARKS_UNAVAILABLE" ? (
+          <div
+            className="h-32 flex items-center justify-center text-center text-sm text-muted-foreground border border-dashed border-border rounded-md px-4"
+            data-testid="mark-history-unavailable"
+          >
+            Mark history is temporarily unavailable.
+          </div>
+        ) : marks.length === 0 ? (
           <div className="h-32 flex items-center justify-center text-sm text-muted-foreground border border-dashed border-border rounded-md">
             No mark history yet. Historical mark data appears here once recorded
             by the founder.
@@ -294,18 +482,18 @@ function MarkHistoryChart({ positionId }: { positionId: string }) {
             <ResponsiveContainer width="100%" height="100%">
               <LineChart
                 data={marks.map((m) => ({
-                  month: `M${m.month + 1}`,
-                  value: m.value,
+                  month: m.valuationDate,
+                  value: m.fairValueMinor,
                 }))}
               >
                 <XAxis dataKey="month" tick={{ fontSize: 10 }} />
                 <YAxis
-                  tickFormatter={(v) => fmtUSD(v as number, { compact: true })}
+                  tickFormatter={(v) => fmtAxis(v as number)}
                   tick={{ fontSize: 10 }}
                 />
-                <RTooltip
-                  formatter={(v: number) => fmtUSD(v, { compact: true })}
-                />
+                {/* WAVE 36 · ROW 10 — the custom tooltip replaces a formatter
+                    that could only ever render the bare number. */}
+                <RTooltip content={<MarkTooltip />} />
                 <Line
                   type="monotone"
                   dataKey="value"
@@ -751,7 +939,7 @@ export function PortfolioCompanyOverview({
       {/* Two-column layout for updates + marks */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <FounderUpdatesFeed companyId={companyId} />
-        <MarkHistoryChart positionId={position.id} />
+        <MarkHistoryChart companyId={companyId} />
       </div>
 
       {/* Calculators */}

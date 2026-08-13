@@ -14,6 +14,14 @@ import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ArrowLeft, ExternalLink, Globe, Linkedin, BookOpen, BarChart3, FileText } from "lucide-react";
 import { safeExternalHref } from "@/lib/safeUrl"; /* v25.17 Lane D NC3 — block javascript: URL XSS */
+/* WAVE 36 · ROW 4 — the two cap-table-summary money rows below were the last
+   live money-exponent-fence violations. Both fields are USD by declaration
+   (`lastValuationUsd`; `lastRaiseAmount` is populated from `lastRaiseSizeUsd`)
+   and both render a hardcoded `$`, which is why Wave 34 BASELINED them rather
+   than fixing them. Wave 36 fixes them instead of re-pinning: `fromMinor`
+   supplies the ISO-4217 exponent, so the rendered string is byte-identical for
+   USD today and stays correct if the source field is ever re-denominated. */
+import { fromMinor } from "@/lib/currency";
 
 const TIER_COLORS: Record<string, string> = {
   A: "bg-emerald-100 text-emerald-700",
@@ -225,9 +233,18 @@ export default function CollectiveDealRoomDetail() {
               <CardContent className="space-y-2 text-sm">
                 <Row label="ARR" value={profile.arrUsd ? `$${(profile.arrUsd / 100).toLocaleString()}` : null} />
                 <Row label="MRR" value={profile.mrrUsd ? `$${(profile.mrrUsd / 100).toLocaleString()}` : null} />
-                <Row label="Gross Margin" value={profile.grossMarginPct ? `${(profile.grossMarginPct / 100).toFixed(1)}%` : null} />
+                {/* WAVE 35 - ROW 8: the /100 here was the mirror of the write
+                    path's *100. With percent-as-written binding
+                    (spec/PERCENT_POLICY_v2.md, owner ruling OR-1), the stored
+                    number IS the percentage, so dividing here would render a
+                    70% margin as 0.7%. THIRD path for this defect, found by
+                    grepping every reader rather than only the two the review
+                    named. See the migration note in the wave report: rows
+                    written before this row may still hold the x100 form and
+                    are NOT silently reinterpreted. */}
+                <Row label="Gross Margin" value={profile.grossMarginPct ? `${profile.grossMarginPct.toFixed(1)}%` : null} />
                 <Row label="Runway" value={profile.runwayMonths ? `${profile.runwayMonths} months` : null} />
-                <Row label="Growth Rate" value={profile.growthRatePct ? `${(profile.growthRatePct / 100).toFixed(1)}%` : null} />
+                <Row label="Growth Rate" value={profile.growthRatePct ? `${profile.growthRatePct.toFixed(1)}%` : null} />
                 <Row label="Customers" value={profile.customerCount} />
               </CardContent>
             </Card>
@@ -358,10 +375,10 @@ export default function CollectiveDealRoomDetail() {
                 Read-only aggregate view. Per-shareholder detail is not disclosed.
               </div>
               <Row label="ESOP Pool %" value={capTableSummary.esopPoolPct ? `${capTableSummary.esopPoolPct}%` : null} testId="captable-esop" />
-              <Row label="Last Valuation" value={capTableSummary.lastValuationUsd ? `$${(capTableSummary.lastValuationUsd / 100).toLocaleString()}` : null} testId="captable-valuation" />
+              <Row label="Last Valuation" value={capTableSummary.lastValuationUsd ? `$${fromMinor(capTableSummary.lastValuationUsd, "USD").toLocaleString()}` : null} testId="captable-valuation" />
               <Row label="Stage" value={capTableSummary.stage} testId="captable-stage" />
               <Row label="Last Raise Date" value={capTableSummary.lastRaiseDate ? new Date(capTableSummary.lastRaiseDate).toLocaleDateString() : null} testId="captable-raise-date" />
-              <Row label="Last Raise Amount" value={capTableSummary.lastRaiseAmount ? `$${(capTableSummary.lastRaiseAmount / 100).toLocaleString()}` : null} testId="captable-raise-amount" />
+              <Row label="Last Raise Amount" value={capTableSummary.lastRaiseAmount ? `$${fromMinor(capTableSummary.lastRaiseAmount, "USD").toLocaleString()}` : null} testId="captable-raise-amount" />
               <p className="text-xs text-slate-400 mt-3">{capTableSummary.note}</p>
             </CardContent>
           </Card>

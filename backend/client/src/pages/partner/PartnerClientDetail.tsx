@@ -44,6 +44,40 @@ interface TeamMember {
   subRole: string;
 }
 
+/* WAVE 30 ENGINE 1 — partner_crm_contact_client_scope. A firm-wide CRM contact
+   (Layer 1) scoped onto THIS client engagement (Layer 2). The engine's DDL has
+   existed since migration 0134 with no reader, no writer and no surface; this
+   card is the surface. */
+interface ClientScope {
+  id: string;
+  partnerCrmContactId: string;
+  scopedByUserId: string;
+  scopedAt: string;
+  contactName: string;
+  contactEmail: string;
+  contactRole: string;
+  contactOrg: string;
+}
+interface ScopableContact {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  org: string;
+}
+interface ClientScopeData {
+  companyId: string;
+  scopes: ClientScope[];
+  availableContacts: ScopableContact[];
+}
+
+/* Scoping a contact onto a client is a pipeline-editing act, so it carries the
+   same three sub-roles the server gate asserts on POST/DELETE
+   /api/partner/me/crm-client-scope. Declared to MATCH the server, not to replace
+   it — the server refuses a viewer regardless of what this constant says. */
+const SCOPE_WRITE_ROLES = ["managing_partner", "associate", "bd"];
+const SCOPE_PICK_NONE = "__pick__";
+
 /* w-partner F3 — assigning the lead is a managing_partner/associate decision,
    matching the server guard on PATCH …/client-crm/:companyId/lead. */
 const LEAD_ASSIGN_ROLES = ["managing_partner", "associate"];
@@ -56,6 +90,8 @@ export default function PartnerClientDetail() {
   const qc = useQueryClient();
   const { toast } = useToast();
   const [note, setNote] = useState("");
+  /* WAVE 30 ENGINE 1 — selection state for the "scope a contact" picker. */
+  const [scopePick, setScopePick] = useState<string>(SCOPE_PICK_NONE);
 
   /* v25.12 NM4 — canonical queryKey convention (`["/api/partner/me/clients", id]`). */
   const q = useQuery({
@@ -94,6 +130,38 @@ export default function PartnerClientDetail() {
     onError: (e: Error) => toast({ variant: "destructive", title: "Could not assign lead", description: e.message }),
   });
 
+  /* WAVE 30 ENGINE 1 — contacts scoped to this client, plus the DB-driven
+     roster of this partner's contacts not yet scoped to it. Both come from the
+     server in one request; nothing here is a hardcoded or client-filtered list. */
+  const scopeQ = useQuery<ClientScopeData>({
+    queryKey: ["/api/partner/me/crm-client-scope/by-company", id],
+    enabled: role.ready && !!id,
+    queryFn: async () =>
+      (await apiRequest("GET", `/api/partner/me/crm-client-scope/by-company/${id}`)).json(),
+  });
+
+  const addScope = useMutation({
+    mutationFn: async (contactId: string) =>
+      (
+        await apiRequest("POST", "/api/partner/me/crm-client-scope", { contactId, companyId: id })
+      ).json(),
+    onSuccess: () => {
+      setScopePick(SCOPE_PICK_NONE);
+      qc.invalidateQueries({ queryKey: ["/api/partner/me/crm-client-scope/by-company", id] });
+    },
+    onError: (e: Error) =>
+      toast({ variant: "destructive", title: "Could not scope contact", description: e.message }),
+  });
+
+  const removeScope = useMutation({
+    mutationFn: async (scopeId: string) =>
+      (await apiRequest("DELETE", `/api/partner/me/crm-client-scope/${scopeId}`)).json(),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: ["/api/partner/me/crm-client-scope/by-company", id] }),
+    onError: (e: Error) =>
+      toast({ variant: "destructive", title: "Could not remove contact", description: e.message }),
+  });
+
   const addNote = useMutation({
     mutationFn: async (body: string) =>
       (await apiRequest("POST", `/api/partner/me/client-crm/${id}/activity`, { body })).json(),
@@ -112,6 +180,10 @@ export default function PartnerClientDetail() {
   const teamMembers = teamQ.data?.members ?? [];
   const activity = crmQ.data?.activity ?? [];
   const snapshot = q.data?.snapshot;
+  /* WAVE 30 ENGINE 1 — scoped-contact state. */
+  const canScope = SCOPE_WRITE_ROLES.includes(role.identity.subRole);
+  const scopes = scopeQ.data?.scopes ?? [];
+  const scopableContacts = scopeQ.data?.availableContacts ?? [];
   /* v25.49 Phase-3A — honest cap-table state. The partner surface has no
      ownership ledger read scope; instead we surface the real read-only company
      financials the engine already returns (valuation / last raise), so the card
@@ -225,6 +297,11 @@ export default function PartnerClientDetail() {
             </CardContent>
           </Card>
 
+          {/* WAVE 30 ENGINE 1 — client-scoped sub-CRM
+              (partner_crm_contact_client_scope). Which people from the firm's
+              Layer-1 CRM are contacts ON this specific client engagement.
+              Additive card; every card above it is unchanged. */}
+
           {/* v25.49 Phase-3A — activity timeline (stage changes + notes). */}
           <Card className="md:col-span-2" data-testid="client-activity">
             <CardHeader><CardTitle className="text-sm">Activity timeline</CardTitle></CardHeader>
@@ -269,6 +346,89 @@ export default function PartnerClientDetail() {
                   <li key={n.id} className="border-b pb-1">
                     <div className="font-medium">{n.title}</div>
                     <div className="text-[var(--cv-color-text-secondary)]">{n.body}</div>
+                  </li>
+                ))}
+              </ul>
+            </CardContent>
+          </Card>
+          <Card className="md:col-span-2" data-testid="client-scoped-contacts">
+            <CardHeader>
+              <CardTitle className="text-sm">Contacts on this client</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {canScope && (
+                <div className="flex gap-2 mb-3">
+                  <select
+                    value={scopePick}
+                    disabled={addScope.isPending || scopeQ.isLoading}
+                    onChange={(e) => setScopePick(e.target.value)}
+                    className="rounded-md border border-[var(--cv-color-border)] px-3 py-2 text-sm disabled:opacity-60"
+                    data-testid="client-scope-contact-select"
+                  >
+                    <option value={SCOPE_PICK_NONE}>— Choose a CRM contact —</option>
+                    {scopableContacts.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}{c.email ? ` (${c.email})` : ""}
+                      </option>
+                    ))}
+                  </select>
+                  <Button
+                    disabled={scopePick === SCOPE_PICK_NONE || addScope.isPending}
+                    onClick={() => addScope.mutate(scopePick)}
+                    data-testid="client-scope-add"
+                  >
+                    Add to client
+                  </Button>
+                </div>
+              )}
+              {!canScope && (
+                <div
+                  className="text-xs text-[var(--cv-color-text-muted)] mb-2"
+                  data-testid="client-scope-readonly"
+                >
+                  Your role has read-only access to this client's contact scope.
+                </div>
+              )}
+              {canScope && scopableContacts.length === 0 && !scopeQ.isLoading && (
+                <div
+                  className="text-xs text-[var(--cv-color-text-muted)] mb-2"
+                  data-testid="client-scope-no-candidates"
+                >
+                  Every contact in your firm's CRM is already on this client.
+                </div>
+              )}
+              {scopes.length === 0 && (
+                <div
+                  className="text-xs text-[var(--cv-color-text-muted)]"
+                  data-testid="client-scope-empty"
+                >
+                  No CRM contacts are scoped to this client yet.
+                </div>
+              )}
+              <ul className="text-xs space-y-2" data-testid="client-scope-list">
+                {scopes.map((s) => (
+                  <li
+                    key={s.id}
+                    className="border-b pb-1 flex items-center justify-between gap-2"
+                    data-testid={`client-scope-${s.id}`}
+                  >
+                    <span>
+                      <span className="font-medium text-[var(--cv-color-navy)] mr-2">{s.contactName}</span>
+                      <span className="text-[var(--cv-color-text-secondary)] mr-2">{s.contactEmail}</span>
+                      <span className="text-[var(--cv-color-text-faint)]">
+                        {[s.contactRole, s.contactOrg].filter(Boolean).join(" · ") || "—"}
+                      </span>
+                    </span>
+                    {canScope && (
+                      <Button
+                        variant="ghost"
+                        disabled={removeScope.isPending}
+                        onClick={() => removeScope.mutate(s.id)}
+                        data-testid={`client-scope-remove-${s.id}`}
+                      >
+                        Remove
+                      </Button>
+                    )}
                   </li>
                 ))}
               </ul>

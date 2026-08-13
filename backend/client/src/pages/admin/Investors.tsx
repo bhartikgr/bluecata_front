@@ -27,6 +27,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+/* WAVE 24 · ITEM 2 — admin manual investor-identity linkage (EN-3 admin half). */
+import { InvestorAliasAdminPanel } from "@/components/admin/InvestorAliasAdminPanel";
 import {
   Select,
   SelectContent,
@@ -55,6 +57,7 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient, ApiError } from "@/lib/queryClient";
+import { minorToMajorString } from "@/lib/moneyDisplay";
 import {
   Plus,
   Search,
@@ -130,7 +133,8 @@ interface ContactStats {
 
 function formatMinorUsd(minor: number | null, currency = "USD"): string {
   if (minor == null) return "—";
-  const major = minor / 100;
+  /* WAVE 21 ITEM 5: hardcoded /100 ignored the `currency` argument. */
+  const major = Number(minorToMajorString(minor, currency));
   if (major >= 1_000_000_000) return `${(major / 1_000_000_000).toFixed(1)}B ${currency}`;
   if (major >= 1_000_000) return `${(major / 1_000_000).toFixed(1)}M ${currency}`;
   if (major >= 1_000) return `${(major / 1_000).toFixed(0)}K ${currency}`;
@@ -872,6 +876,13 @@ export default function AdminInvestors() {
             </TabsContent>
           ))}
         </Tabs>
+
+        {/* WAVE 24 · ITEM 2 — EN-3's admin half. The three
+            /api/admin/investor-aliases endpoints had zero client callers; they
+            are rendered here as a SIBLING card (additive to the guard
+            fingerprint, never appended inside an existing node), on the page an
+            admin is already on when an investor's rows are under the wrong id. */}
+        <InvestorAliasAdminPanel />
       </PageBody>
 
       {/* New contact dialog */}

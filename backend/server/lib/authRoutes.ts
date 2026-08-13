@@ -54,6 +54,15 @@ import { clearRevocation } from "./sessionRevocation";
 // password is correct.
 import { authLoginRateLimit, authSignupRateLimit } from "./rateLimit";
 import { DEMO_SEED_ENABLED } from "./demoGate";
+/* WAVE 35 · F4 — STATIC import. The v25.19 block below used
+   a lazy require of `../partnerAttributionStore`, a module that never existed in
+   this repository, inside a swallowing try/catch: MODULE_NOT_FOUND threw on
+   the first line and every partner referral credit was silently discarded, in
+   dev, in tests and in the bundled build alike. See
+   `./provisionalPartnerAttribution` for why a static import ALONE would not
+   have fixed it (the shipped call passed `null` as companyId, which
+   `partnerAttributionStore.create()` rejects with COMPANY_ID_REQUIRED). */
+import { claimProvisionalAttributionsAtSignup } from "./provisionalPartnerAttribution";
 // v24.2 Bug 1+2 — legacy /api/auth/redeem persisted passwords only to the
 // in-memory RUNTIME_PASSWORDS map via registerPersona, so a redeemed password
 // stopped working after a server restart. /api/auth/login falls back to the
@@ -387,37 +396,27 @@ export function registerAuthShellRoutes(app: Express, redemption: {
       }
     } catch { /* non-fatal — do NOT block signup */ }
 
-    /* v25.19 Lane 4 NC1 (hard close) — promote any provisional partner
-       attribution for this email to a real partnerAttribution row. v25.16
-       persisted these rows at promotion-approve time but never read them, so
-       partners who referred founders by email never got credit. Read every
-       provisional row keyed by `${email}::${partnerId}`, create the real
-       attribution, then delete the provisional. Idempotent + non-fatal: if
-       anything goes wrong we still return the signup success. */
+    /* WAVE 35 · F4 — CLAIM, do not promote and do not delete.
+
+       An attribution is (partner, company). At signup NO COMPANY EXISTS, so
+       signup cannot be the sink: the v25.19 code passed `null` as companyId
+       and then soft-deleted the provisional row, which — had the require
+       resolved — would have destroyed a revenue-bearing referral claim on the
+       way out. Here we only STAMP the row with this founder's userId and KEEP
+       it. The real attribution is written at company creation
+       (`drainProvisionalAttributionsForCompany`), and only then is the
+       provisional row retired.
+
+       Non-fatal by design: a claim failure must not block signup, but unlike
+       v25.19 it is LOGGED inside the helper rather than swallowed. */
     try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { hydrateEntries, softDeleteEntry } = require("./storePersistenceShim");
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const partnerAttributionStore = require("../partnerAttributionStore");
-      const rows = hydrateEntries("provisionalPartnerAttributions") as Array<[string, {
-        email: string; partnerId: string; promotionId: string; source?: string;
-      }]>;
-      for (const [key, row] of rows) {
-        if (!row || row.email !== email) continue;
-        try {
-          // companyId is not known at signup time — the partnerAttributionStore
-          // accepts null and the founder's later workspace creation can backfill.
-          partnerAttributionStore.create?.(
-            row.partnerId,
-            null,
-            userId,
-            row.source ?? "partner_claim",
-            `Provisional referral promotion ${row.promotionId} promoted on founder signup (v25.19 NC1).`,
-          );
-        } catch { /* duplicate ok */ }
-        try { softDeleteEntry("provisionalPartnerAttributions", key); } catch { /* non-fatal */ }
-      }
-    } catch { /* non-fatal — do NOT block signup */ }
+      claimProvisionalAttributionsAtSignup(email, userId);
+    } catch (err) {
+      log.warn({
+        route: "POST /api/auth/signup",
+        message: `provisional partner attribution claim failed for ${userId}: ${(err as Error).message}`,
+      });
+    }
 
     const ctx = getUserContextForId(userId);
     return res.json({ ok: true, ctx });

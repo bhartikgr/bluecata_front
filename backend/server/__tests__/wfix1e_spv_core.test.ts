@@ -85,11 +85,80 @@ describe("SPV-CORE-2 — computeDistributionSplit (simple waterfall, no hurdle)"
     expect(r.tiered).toBe(false);
   });
 
-  it("accepts carry as a percent (20) same as fraction (0.2)", () => {
-    const a = computeDistributionSplit({ grossProceedsMinor: 300000, contributedMinor: 100000, carryPct: 20 });
-    const b = computeDistributionSplit({ grossProceedsMinor: 300000, contributedMinor: 100000, carryPct: 0.2 });
-    expect(a.gpTotalMinor).toBe(b.gpTotalMinor);
-    expect(a.lpTotalMinor).toBe(b.lpTotalMinor);
+  /* ══ WAVE 37 — THESE TWO CASES WERE STALE. THE CODE IS RIGHT. ══
+   *
+   * HISTORY. The original pin was "accepts carry as a percent (20) same as
+   * fraction (0.2)", which pinned `frac()`'s `n > 1 ? n/100 : n` guess. WAVE 4A
+   * correctly retired that guess, but replaced the expectation with SATURATION
+   * ("20 is clamped to 1 — a loud, visible result"). WAVE 10 / EN-5 then
+   * retired the clamp too, and it was right to: saturation IS the P-4 money
+   * defect. An unnormalised `8` becoming a 100% preferred return let the
+   * pref tier swallow an entire distribution before any LP profit was
+   * allocated (`server/lib/spvOfflineOps.ts:92-108`).
+   *
+   * THE RULING. `spec/PERCENT_POLICY_v2.md:851-852` — the `spvOfflineOps.ts`
+   * carry and hurdle sites "throw instead of silently clamping"; §2.4/P-4
+   * requires an out-of-domain rate to be REJECTED, never clamped. `n > 1 ?
+   * n/100 : n` is forbidden, and so is `Math.min(1, n)`.
+   *
+   * WHAT CHANGED HERE. The expectation is re-aimed from "clamps" to "rejects",
+   * and both cases are STRENGTHENED rather than loosened. Each now asserts
+   * BOTH poles in one body: the in-domain fraction still produces the exact
+   * split (a module that threw on everything would fail), and the
+   * out-of-domain value throws the NAMED policy error for the NAMED field
+   * with its declared domain, returning nothing at all. If the clamp is ever
+   * reinstated, the call returns a value and every one of these fails.
+   * The two domains are deliberately distinct — `spv.carryPct` and
+   * `spv.hurdleRateFraction` — so a single mis-wired field name is caught. */
+  it("treats carry as a FRACTION only — 20 is REJECTED, never rescaled and never clamped", () => {
+    // LOWER POLE — 0.2 still means 20% of the 200k profit, to the minor unit.
+    const asFraction = computeDistributionSplit({ grossProceedsMinor: 300000, contributedMinor: 100000, carryPct: 0.2 });
+    expect(asFraction.gpTotalMinor).toBe(40000);
+    expect(asFraction.lpTotalMinor).toBe(260000);
+
+    // UPPER POLE — 20 is neither 20% (the retired n/100 guess) nor 100% (the
+    // retired Math.min(1,n) clamp). It is refused, by name, with its domain.
+    let thrown: unknown = null;
+    let returned: unknown = "NOTHING_RETURNED";
+    try {
+      returned = computeDistributionSplit({ grossProceedsMinor: 300000, contributedMinor: 100000, carryPct: 20 });
+    } catch (e) { thrown = e; }
+    expect(thrown).toBeInstanceOf(Error);
+    const msg = String((thrown as Error).message);
+    expect(msg).toContain("PERCENT_FIELD_OUT_OF_DOMAIN");
+    expect(msg).toContain("spv.carryPct");
+    expect(msg).toContain("[0,1]");
+    // Neither the rescaled (40000) nor the saturated (200000) answer exists.
+    expect(returned).toBe("NOTHING_RETURNED");
+  });
+
+  it("treats the hurdle as a FRACTION only — 8 is REJECTED, never rescaled and never clamped", () => {
+    // LOWER POLE — 0.08 is an 8% preferred return on the 100k contributed.
+    const asFraction = computeDistributionSplit({
+      grossProceedsMinor: 300000, contributedMinor: 100000, carryPct: 0.2, hurdleRatePct: 0.08,
+    });
+    const pref = (r: typeof asFraction) =>
+      Object.fromEntries(r.tiers.map((t) => [t.tier, t.amountMinor]))["preferred_return"];
+    expect(pref(asFraction)).toBe(8000);
+
+    // UPPER POLE — THE P-4 DEFECT ITSELF. Under the retired clamp, 8 became a
+    // 100% preferred return and this tier took 100000, the whole contributed
+    // base, before any LP profit. It must throw instead.
+    let thrown: unknown = null;
+    let returned: unknown = "NOTHING_RETURNED";
+    try {
+      returned = computeDistributionSplit({
+        grossProceedsMinor: 300000, contributedMinor: 100000, carryPct: 0.2, hurdleRatePct: 8,
+      });
+    } catch (e) { thrown = e; }
+    expect(thrown).toBeInstanceOf(Error);
+    const msg = String((thrown as Error).message);
+    expect(msg).toContain("PERCENT_FIELD_OUT_OF_DOMAIN");
+    // The FRACTION domain, not the percent-as-written one — a mis-wired field
+    // name would let 8 through as a legal `spv.hurdleRatePct`.
+    expect(msg).toContain("spv.hurdleRateFraction");
+    expect(msg).toContain("[0,1]");
+    expect(returned).toBe("NOTHING_RETURNED");
   });
 });
 

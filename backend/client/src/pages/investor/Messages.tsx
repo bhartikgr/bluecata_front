@@ -37,7 +37,9 @@
 import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { MessagesPage } from "@/components/comms/MessagesPage";
+import { MessagingAudienceNotice } from "@/components/comms/MessagingAudienceNotice";
 import { CommsTiersTabs } from "@/components/comms/CommsTiersTabs";
+import { CommsTierActionsPanel } from "@/components/comms/CommsTierActionsPanel"; /* WAVE 18 ORP-043 */
 import { PageHeader } from "@/components/AppShell";
 import { useEntitlement } from "@/lib/entitlement";
 import { Button } from "@/components/ui/button";
@@ -60,6 +62,17 @@ export default function Messages() {
   const { data: entCtx, isLoading } = useEntitlement();
   const userId = entCtx?.userId;
   const { toast } = useToast();
+  /* WAVE 18 ORP-043 — the tier action surface is company- and round-scoped. This
+     page already documents `?roundId=` (see the header notes) and the same
+     `?companyId=`/`?company=` convention is used by investor/Portfolio.tsx, so
+     the scope is read from the URL rather than invented. Absent params render an
+     explicit "open a round"/"select a company" state, never a silent blank. */
+  const commsActionsParams = new URLSearchParams(
+    typeof window !== "undefined" ? window.location.search : "",
+  );
+  const commsActionsCompanyId =
+    commsActionsParams.get("companyId") ?? commsActionsParams.get("company") ?? undefined;
+  const commsActionsRoundId = commsActionsParams.get("roundId") ?? undefined;
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerQuery, setPickerQuery] = useState("");
 
@@ -200,7 +213,12 @@ export default function Messages() {
       </Dialog>
 
       <CommsTiersTabs userId={userId} />
+      {/* WAVE 18 ORP-043 — sibling element (guard rule 4), never text inside an existing node. */}
+      <CommsTierActionsPanel companyId={commsActionsCompanyId} roundId={commsActionsRoundId} />
       <MessagesPage role="investor" hideHeader />
+      {/* WAVE 33 CP-MSG-01 — sibling at the END; same shared audience notice as
+          the partner and founder Messages pages. */}
+      <MessagingAudienceNotice className="mt-4" />
     </div>
   );
 }

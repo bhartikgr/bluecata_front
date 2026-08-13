@@ -28,12 +28,32 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 
 import { createHash, randomBytes } from "node:crypto";
+/* WAVE 30 ENGINE 2 — the §3.3 PCR forward-write, hooked at the attribution sink
+ * (`writeTypedAttribution`). Static import: a runtime `require()` of a `.ts`
+ * module throws on the first type annotation, and the hook's fail-soft catch
+ * would swallow that into a silent no-op. No cycle — that module imports only
+ * `./db/connection` and `./lib/logger`. */
+import {
+  recordSurfacePresence as pcrRecordSurfacePresence,
+  recordSurfaceRemoval as pcrRecordSurfaceRemoval,
+} from "./partnerCompanyRelationshipStore";
+/* WAVE 33B · CP-MFC-20 — see the emit site in partnerPipelineStore.update. */
+import { emitMutation } from "./lib/eventBus";
+/* WAVE 35 · F5 — cross-currency minor-unit conversion that re-scales by BOTH
+ * ISO-4217 exponents and REFUSES rather than raw-summing across currencies.
+ * Static import (F4's lesson: a lazy require of a non-existent module is dead
+ * in the bundle and fails silently). `lib/money.ts` imports only
+ * `lib/currency.ts`, so there is no cycle. */
+import { convertMinorUnits } from "./lib/money";
 import { isNull, eq } from "drizzle-orm";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 import { appendAdminAudit } from "./adminPlatformStore";
-import { emitBridgeEvent } from "./bridgeStore";
+import { emitBridgeEvent, type OutboundEventType } from "./bridgeStore";
 import { getById as getContactById, _registerSeedPartner, TIER_RANK, TIER_SEAT_LIMITS, type PartnerTier, type PartnerSubRole } from "./adminContactsStoreShim";
 import { getDb, rawDb } from "./db/connection";
+/* WAVE 33 / CP-PIPE-06 — STATIC import (Wave 32B: a lazy `require` that threw
+   was swallowed into `[]`, dead in dev and live in the bundled build). */
+import { assessAdmission, type ProvenanceIncumbent } from "./lib/attributionProvenance";
 import { pAll } from "./db/portable"; /* Wave H Track A — Postgres compatibility */
 import { partnerDealPromotions as partnerDealPromotionsTable } from "@shared/schema";
 import { DEFAULT_CHAPTER_ID, DEFAULT_CHAPTER_TENANT_ID } from "./lib/chapterDefaults";
@@ -856,11 +876,14 @@ function audit(actor: string, target: string, action: string, details: Record<st
   try { appendAdminAudit(actor, target, action, details); } catch { /* non-fatal */ }
 }
 
-function emit(eventType: string, aggregateId: string, payload: Record<string, unknown>): void {
+/* WAVE 8 ORP-034 (BRG-03) — was `eventType: string` + `as any`; that cast hid
+   the fact that partner.spv_updated (:2455) was never registered on the
+   outbound bridge while all seven sibling events from this same wrapper were.
+   Typed against OutboundEventType so the next omission fails the build. */
+function emit(eventType: OutboundEventType, aggregateId: string, payload: Record<string, unknown>): void {
   try {
     emitBridgeEvent({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      eventType: eventType as any,
+      eventType,
       aggregateId,
       aggregateKind: "platform",
       payload,
@@ -967,9 +990,10 @@ export const partnerTeamStore = {
      * This store must not resolve emails itself — that would pull
      * displayNameResolver (→ userContext, userCredentialsStore) into a module
      * that runs during boot hydration. So the CALLER builds the map and passes
-     * it, and only DISPLAY call sites do. Enforcement (`countActiveSeats`,
-     * `seatReport`) deliberately omits it: a seat is a ROW, and email-collapsing
-     * the enforced number would hand affected partners free capacity.
+     * it, and only DISPLAY call sites do. v26.7.3 FIX-4 keeps enforcement on
+     * the canonical server-controlled `userId` grouping (never email), so
+     * duplicate active rows for one platform user consume one seat while
+     * email-based identity merges cannot alter a paid-seat decision.
      *
      * A blank/unknown email never groups — those rows fall back to `userId`, so
      * two members with no resolvable email are never merged into one.
@@ -1100,10 +1124,10 @@ export const partnerTeamStore = {
    * with the admin view of the same organisation. Reading the durable table
    * makes both agree with billing.
    *
-   * NOT DE-DUPLICATED. The count is of SEAT ROWS, because a seat row is what
-   * the tier limit is sold and enforced against — collapsing duplicates here
-   * would silently hand a partner free capacity. `duplicateSeatCount` on
-   * `seatReport()` is how a duplicate becomes visible and fixable.
+   * v26.7.3 FIX-4 — counted by the existing canonical `userId` collapse, not
+   * raw rows. A duplicate durable active row for the same server-assigned user
+   * is one human seat; the duplicate evidence remains surfaced by seatReport.
+   * Email-based collapse is deliberately not supplied to enforcement.
    *
    * Fail-SAFE, not fail-closed: if the durable read throws we fall back to the
    * RAM projection rather than returning 0, because a 0 here would UNBLOCK
@@ -1111,18 +1135,42 @@ export const partnerTeamStore = {
    */
   countActiveSeats(partnerId: string): number {
     requirePid(partnerId);
-    const ramCount = teamMembers.filter(
+    const ramActive = teamMembers.filter(
       (m) => m.partnerId === partnerId && m.status === "active",
-    ).length;
+    );
+    // v26.7.3 FIX-4 — reuse the established duplicate-seat logic for the RAM
+    // projection so enforcement and the dashboard share the exact identity
+    // definition. No email map is passed: userId is the authoritative key.
+    const ramCount = this.dedupeActiveTeamMembers(ramActive).members.length;
+    // v26.7.3 FIX-4 (R4) — the UNCOLLAPSED row projection. Deduplication is a
+    // LOOSENING of a paid limit, so it is only ever applied to a count we have
+    // actually read from the durable table. If that read fails we must not let
+    // the collapse lower enforcement at the moment the system is least healthy;
+    // the fallback below returns this stricter figure, exactly as baseline did.
+    const ramRowCount = ramActive.length;
     try {
-      const row = rawDb()
+      // v26.7.3 FIX-4 — fetch the same row shape seatReport already uses,
+      // then pass it through the one canonical collapse rather than maintain a
+      // second duplicate detector beside the raw SQL COUNT.
+      const raw = rawDb()
         .prepare(
-          `SELECT COUNT(*) AS n FROM partner_team_members
+          `SELECT id, partner_id, user_id, sub_role, status, joined_at, removed_at, created_by, is_seed
+             FROM partner_team_members
             WHERE partner_id = ? AND status = 'active'`,
         )
-        .get(partnerId) as { n?: number } | undefined;
-      const dbCount = Number(row?.n ?? 0);
-      if (!Number.isFinite(dbCount)) return ramCount;
+        .all(partnerId) as Record<string, unknown>[];
+      const rows = raw.map((r) => ({
+        id: String(r.id),
+        partnerId: String(r.partner_id),
+        userId: String(r.user_id),
+        subRole: String(r.sub_role) as SubRole,
+        status: "active" as const,
+        joinedAt: String(r.joined_at),
+        removedAt: r.removed_at ? String(r.removed_at) : null,
+        createdBy: String(r.created_by),
+        isSeed: Boolean(r.is_seed),
+      }));
+      const dbCount = this.dedupeActiveTeamMembers(rows).members.length;
       // Take the HIGHER of the two: a row written by a sibling process is not
       // yet in RAM, and a row created in this process is write-through so it is
       // in both. Neither source may lower the other.
@@ -1132,7 +1180,13 @@ export const partnerTeamStore = {
         "[partnerWorkspaceStore.countActiveSeats] durable read failed, using RAM projection:",
         (err as Error).message,
       );
-      return ramCount;
+      // v26.7.3 FIX-4 (R4) — fail SAFE, never looser than baseline. On a durable
+      // read failure we cannot confirm which active rows are duplicates of one
+      // server-assigned user, so we fall back to the raw RAM row projection
+      // (>= the deduplicated figure). A DB outage can therefore never hand a
+      // partner extra capacity; at worst it keeps the pre-FIX-4 strictness until
+      // the durable read recovers. `Math.max` preserves the invariant explicitly.
+      return Math.max(ramRowCount, ramCount);
     }
   },
 
@@ -1149,7 +1203,7 @@ export const partnerTeamStore = {
    * Review fix B5(c) — an earlier version of this comment claimed the report came
    * "from ONE read". It does not, and the distinction matters to an operator:
    * this function issues its own `SELECT id, partner_id, …` and then
-   * `countActiveSeats()` issues a second, independent `SELECT COUNT(*)`. They are
+   * `countActiveSeats()` issues a second, independent active-row read. They are
    * separate snapshots and CAN disagree — most visibly when the first read throws
    * (so `source` is `"ram_fallback"` and `distinctSeatUsers` comes from RAM) while
    * the second succeeds (so `activeSeats` comes from the DB). `source` exists
@@ -1361,6 +1415,91 @@ export const partnerInvitationStore = {
     return { invitation: inv, plainToken };
   },
 
+  /* WAVE 19 FE-19 / SEAT-04 — atomic "check the seat limit, then issue the
+     invitation".
+   *
+   * The route used to do this:
+   *
+   *     assertTierSeats(partnerId);            // read active + pending
+   *     partnerInvitationStore.create(...);    // write, unprotected
+   *
+   * Nothing held a lock across those two lines, so two requests arriving
+   * together both read the last free seat and both created an invitation. The
+   * limit is what the partner PAYS for; overselling it is a revenue defect.
+   *
+   * The fix is the same shape `redeem()` below already uses for the
+   * double-redeem race: one better-sqlite3 IMMEDIATE transaction, with the
+   * guard re-evaluated against the DURABLE counts inside it. IMMEDIATE takes
+   * the write lock at BEGIN (the SELECT ... FOR UPDATE equivalent), so the
+   * second caller reads counts that already include the first caller's row and
+   * its guard throws, rolling its own insert back.
+   *
+   * `guard` is supplied by the caller rather than implemented here because
+   * tier resolution and the per-partner seat override live in
+   * `server/lib/requirePartnerAuth.ts`; duplicating that policy in the store
+   * would create a second, divergent definition of the limit. The store owns
+   * atomicity, the caller owns policy.
+   *
+   * The RAM cache is touched ONLY after the transaction commits. If the guard
+   * throws, nothing is written and nothing is cached. */
+  createWithSeatGuard(
+    partnerId: string,
+    invitedEmail: string,
+    subRole: SubRole,
+    createdBy: string,
+    guard: (counts: { activeSeats: number; pending: number }) => void,
+    opts: { isSeed?: boolean; ip?: string; ua?: string; title?: string | null } = {},
+  ): { invitation: PartnerTeamInvitation; plainToken: string } {
+    requirePid(partnerId);
+    if (!invitedEmail) throw new Error("EMAIL_REQUIRED");
+
+    const plainToken = randomBytes(24).toString("hex");
+    const tokenHash = hashInviteToken(plainToken);
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const inv: PartnerTeamInvitation = {
+      id: newId("pinv"),
+      partnerId,
+      invitedEmail: invitedEmail.toLowerCase(),
+      subRole,
+      title: opts.title ?? null,
+      tokenHash,
+      expiresAt: new Date(now.getTime() + INVITE_TTL_MS).toISOString(),
+      redeemedAt: null,
+      redeemedUserId: null,
+      createdAt: nowIso,
+      createdBy,
+      ipLogged: opts.ip ?? null,
+      uaLogged: opts.ua ?? null,
+      isSeed: !!opts.isSeed,
+    };
+
+    const db: any = rawDb();
+    const run = db.transaction(() => {
+      /* Both counts are re-read HERE, under the write lock, not before it.
+         `countActiveSeats` already reads the durable table and takes the
+         higher of DB and RAM; `countPendingDurable` is the pure-SQL pending
+         read added for SEAT-02. Reading pending durably is what makes the
+         guard correct across processes as well as across requests. */
+      const activeSeats = partnerTeamStore.countActiveSeats(partnerId);
+      const pending = partnerInvitationStore.countPendingDurable(partnerId, nowIso);
+      guard({ activeSeats, pending });
+      db.prepare(
+        `INSERT INTO partner_team_invitations (id, partner_id, invitation_json, updated_at)
+         VALUES (?, ?, ?, ?)`,
+      ).run(inv.id, inv.partnerId, JSON.stringify(inv), nowIso);
+    });
+
+    /* IMMEDIATE takes the write lock at BEGIN rather than at the first write,
+       which is what serialises two concurrent invitations. Same call shape as
+       `redeem()` below. */
+    if (run.immediate) run.immediate(); else run();
+
+    teamInvitations.push(inv);
+    audit(createdBy, `partner:${partnerId}`, "partner.team_invitation.created", { email: inv.invitedEmail, subRole });
+    return { invitation: inv, plainToken };
+  },
+
   /* v25.16 NH5 — listByPartner now defaults to active invites only (not
      redeemed, not expired) so the team UI shows the correct pending count.
      Pass { includeRedeemed | includeExpired } to opt back into history. */
@@ -1378,12 +1517,60 @@ export const partnerInvitationStore = {
     });
   },
 
+  /* WAVE 19 FE-19 / SEAT-02 — this count enforces a PAID limit, so it may not
+     be read out of a process-local array.
+   *
+   * It used to filter `teamInvitations` and nothing else. That array is
+   * per-process: a freshly restarted server, or a second instance behind a
+   * load balancer, sees zero pending invitations and hands the partner a full
+   * tier's worth of extra seats. `countActiveSeats()` above was fixed for
+   * exactly this reason and is the pattern followed here — read the durable
+   * table, and take the HIGHER of the durable and RAM figures so that neither
+   * source can ever LOWER the other. A row written by a sibling process is not
+   * yet in RAM; a row written by this process is write-through and is in both.
+   *
+   * On a durable read failure we fall back to the RAM projection rather than
+   * to zero. Falling back to zero would remove the limit at the exact moment
+   * the system is least healthy — a DB outage must never mint free seats. */
   countPendingByPartner(partnerId: string): number {
     requirePid(partnerId);
     const now = Date.now();
-    return teamInvitations.filter(
+    const nowIso = new Date(now).toISOString();
+    const ramCount = teamInvitations.filter(
       (i) => i.partnerId === partnerId && i.redeemedAt === null && Date.parse(i.expiresAt) > now,
     ).length;
+    try {
+      return Math.max(this.countPendingDurable(partnerId, nowIso), ramCount);
+    } catch (err) {
+      log.warn(
+        "[partnerWorkspaceStore.countPendingByPartner] durable read failed, using RAM projection:",
+        (err as Error).message,
+      );
+      return ramCount;
+    }
+  },
+
+  /* The durable half of the pending count, factored out so the seat-limit
+     transaction below can re-run it INSIDE the write lock against the same
+     SQL. `expiresAt` and `redeemedAt` live inside `invitation_json`
+     (connection.ts:5088 — the table is id / partner_id / invitation_json /
+     updated_at), so both predicates are `json_extract`. ISO-8601 UTC strings
+     order correctly under `>`, which is what lets the expiry filter run in SQL
+     rather than in JS. Migration 0172 adds the matching expression index.
+   *
+   * Throws on failure — the caller decides the fallback, because "unknown" and
+   * "zero" must not be the same value in a limit check. */
+  countPendingDurable(partnerId: string, nowIso: string): number {
+    const row = rawDb()
+      .prepare(
+        `SELECT COUNT(*) AS n
+           FROM partner_team_invitations
+          WHERE partner_id = ?
+            AND json_extract(invitation_json, '$.redeemedAt') IS NULL
+            AND json_extract(invitation_json, '$.expiresAt') > ?`,
+      )
+      .get(partnerId, nowIso) as { n: number } | undefined;
+    return Number(row?.n ?? 0);
   },
 
   /* v25.23 NH-L — atomic invitation redeem.
@@ -1610,6 +1797,47 @@ function writeTypedAttribution(a: PartnerAttribution, recordedBy: string): void 
     a.prevRevisionHash ?? null, a.revisionHash, JSON.stringify(a),
     a.updatedAt, recordedBy ?? null,
   );
+  /* WAVE 30 ENGINE 2 — the §3.3 forward-write migration 0136 specified and
+   * never got. THIS is the sink: `writeTypedAttribution` is the single place
+   * every attribution create AND revoke lands in the DB (both branches of
+   * partnerAttributionStore call it, and the typed table is canonical per
+   * w-partner F1), so hooking it here covers both transitions with one edit
+   * instead of two half-covering ones at the callers.
+   *
+   * Without this the spine only ever contains what 0136's one-shot backfill saw
+   * on the day it ran, and silently drifts stale from then on.
+   *
+   * FAIL-SOFT, deliberately: the spine is a derived read model and must never
+   * be able to fail a real attribution write. `foreign_keys` is ON, so an
+   * unresolvable partner/company would otherwise roll back the caller's work —
+   * `ensurePcr` pre-flights both parents and skip-logs instead, and the whole
+   * call is wrapped besides. */
+  /* STATIC import, deliberately NOT `require()`.
+   *
+   * The first draft of this hook used `require("./partnerCompanyRelationshipStore")`,
+   * copying the `storePersistenceShim` line a few statements below. It threw
+   * `Unexpected identifier 'as'` on every call — a runtime `require` of a `.ts`
+   * module parses the file as plain JavaScript and chokes on the first type
+   * annotation. The fail-soft catch then swallowed it, so the hook was a TOTAL
+   * NO-OP that logged a warning nobody was reading.
+   *
+   * That is the "a check that passed while checking nothing" failure in its
+   * purest form, and it was caught only because case (10) of the ENGINE 2
+   * harness asserts the spine through a PRE-EXISTING caller instead of calling
+   * the new store directly. Leaving this note so the require() form is not
+   * reintroduced.
+   *
+   * No import cycle: `partnerCompanyRelationshipStore` imports only
+   * `./db/connection` and `./lib/logger`, never this file. */
+  try {
+    if (a.revokedAt) {
+      pcrRecordSurfaceRemoval(a.partnerId, a.companyId, "clients", a.id, a.revokedAt);
+    } else {
+      pcrRecordSurfacePresence(a.partnerId, a.companyId, "clients", a.id, a.attributedAt);
+    }
+  } catch (err) {
+    log.warn("[partnerWorkspaceStore] PCR spine forward-write failed (non-fatal):", (err as Error).message);
+  }
 }
 
 /** Map one partner_attributions row back into the in-memory shape. */
@@ -1762,6 +1990,43 @@ export const partnerAttributionStore = {
     // Unique (partnerId, companyId)
     const existing = attributions.find((a) => a.partnerId === partnerId && a.companyId === companyId && !a.revokedAt);
     if (existing) return existing;
+
+    /* ── WAVE 33 / CP-PIPE-06 — PROVENANCE CANNOT BE ACQUIRED ────────────────
+       THE SINK. Both admission paths that create an attribution land here, so
+       the rule is enforced once at the point the row is written rather than
+       twice at callers where one could later be added without the third.
+
+       The uniqueness check immediately above is per (partner, company) — and
+       so is the DB's `uq_partner_attributions_active` index. NOTHING anywhere
+       looked at the company ALONE, so partner B could attribute a company
+       already actively attributed to partner A through a self-service source
+       and both rows stood as equally valid provenance. Attribution is
+       revenue-bearing; that was a route to taking another partner's
+       originated relationship by asserting it.
+
+       Displacement is not forbidden — an incumbent claim can be wrong. It must
+       be ADJUDICATED (`admin_manual`) rather than self-asserted. */
+    const incumbents: ProvenanceIncumbent[] = attributions
+      .filter((a) => a.companyId === companyId && !a.revokedAt && a.partnerId !== partnerId)
+      .map((a) => ({
+        partnerId: a.partnerId,
+        attributionSource: a.attributionSource,
+        attributedAt: a.attributedAt,
+      }));
+    const assessment = assessAdmission({
+      requestedPartnerId: partnerId,
+      source,
+      actor: attributedBy,
+      incumbents,
+    });
+    if (!assessment.admit) {
+      /* FAIL CLOSED, and BEFORE any row exists. Nothing has been pushed to the
+         projection, nothing written to the typed table, no history entry — so
+         a refusal leaves no trace of a relationship that was never granted. */
+      const err = new Error(`PROVENANCE_REFUSED:${assessment.verdict}: ${assessment.copy}`);
+      (err as Error & { verdict?: string }).verdict = assessment.verdict;
+      throw err;
+    }
     const now = new Date().toISOString();
     const base: PartnerAttribution = {
       id: newId("patr"),
@@ -1863,6 +2128,20 @@ export const partnerAttributionStore = {
     audit(revokedBy, `partner:${partnerId}`, "partner.attribution.revoked", { companyId });
     emit("partner.attribution_revoked", partnerId, { partnerId, companyId, revokedAt: now, idempotencyKey: `${partnerId}|${companyId}|${now}` });
     return next;
+  },
+
+  /**
+   * WAVE 33 / CP-PIPE-06 — attributions on a COMPANY, across all partners.
+   *
+   * This lookup did not exist. Every read was per-partner, which is exactly why
+   * a competing claim was invisible: nothing in the codebase had ever asked
+   * "who else holds this company?". Revoked rows are excluded — a revoked claim
+   * is released, and counting it would freeze a company to whoever attributed
+   * it first, permanently.
+   */
+  listActiveByCompany(companyId: string): PartnerAttribution[] {
+    if (!companyId) return [];
+    return attributions.filter((a) => a.companyId === companyId && !a.revokedAt);
   },
 
   listByPartner(partnerId: string, opts: { includeRevoked?: boolean } = {}): PartnerAttribution[] {
@@ -2021,13 +2300,23 @@ export const partnerPipelineStore = {
      * learns of the change, via the untouched pre-existing `company` branch.
      *
      * `change: "update"` is one of the three existing legal literals — MutationEvent's
-     * union is NOT widened. Lazy `require` (the :28 createRequire shim) because
-     * eventBus.ts lazily requires THIS module, so a static import would close a
-     * module-init cycle. Non-fatal: a realtime emit must never fail a committed write.
+     * union is NOT widened. WAVE 33B: the import is now STATIC. The original
+     * lazy `require` was chosen to avoid closing a module-init cycle with
+     * eventBus.ts; the cycle is real and harmless (neither module reads the
+     * other at init, only inside functions), and the lazy form was resolving
+     * against `dist/index.cjs` in production, where the path does not exist.
+     * Non-fatal catch retained: a realtime emit must never fail a committed
+     * write — but it can no longer be the thing that hides the whole feature.
      * ════════════════════════════════════════════════════════════════════════════════ */
     if (patch.stage && patch.stage !== prevStage && d.companyId) {
       try {
-        const { emitMutation } = require("./lib/eventBus") as typeof import("./lib/eventBus");
+        /* WAVE 33B · CP-MFC-20 — STATIC import (see the block below the comment
+           above). The lazy `require("./lib/eventBus")` here resolved against
+           `dist/index.cjs` in production, where that path does not exist:
+           MODULE_NOT_FOUND, caught by the `log.warn` below, and NOT ONE
+           cross-pillar frame was ever emitted from the shipped build. The
+           consumer end of the same feature failed the same way and even more
+           quietly. Proven by execution in `wave33_mfc20_crosspillar.test.ts`. */
         emitMutation({ aggregate: "partnerRepresentation", id: `${partnerId}:${d.companyId}`, change: "update", tenantId: `tenant_pt_${partnerId}` });
         emitMutation({ aggregate: "company",               id: d.companyId,                   change: "update", tenantId: `tenant_co_${d.companyId}` });
       } catch (emitErr) {
@@ -2462,13 +2751,33 @@ export const partnerSpvStore = {
     };
     /* v25.16 NM3 — honour fxRateToSpvBase when provided so cross-currency
        positions are normalized into the SPV's base currency before being
-       added to the running committed total. If no rate is supplied we keep
-       the v1 behaviour (raw sum) for backward compatibility. */
-    const rateNum = data.fxRateToSpvBase ? Number(data.fxRateToSpvBase) : NaN;
-    const normalizedMinor =
-      Number.isFinite(rateNum) && rateNum > 0
-        ? Math.round(data.positionAmountMinor * rateNum)
-        : data.positionAmountMinor;
+       added to the running committed total.
+
+       WAVE 35 · F5 (LIVE WRITE PATH, site 1 of 4) — this was
+         `Math.round(data.positionAmountMinor * rateNum)`
+       which omits the 10^(expTo-expFrom) re-scale. A ¥1,000,000 position
+       converted into a USD SPV persisted `totalCommittedMinor` 100× too
+       small. EUR→USD (same exponent) was unaffected — that is why it hid.
+
+       AND the "v1 behaviour (raw sum) for backward compatibility" fallback
+       was the second half of the defect: with no rate it added a ¥ amount
+       straight into a $ total. That is not a rounding error, it is a
+       meaningless number, and it is now REFUSED. Same-currency positions are
+       unaffected and still need no rate. */
+    const conv = convertMinorUnits(
+      data.positionAmountMinor,
+      data.currency,
+      s.currency,
+      data.fxRateToSpvBase,
+    );
+    if (!conv.ok) {
+      throw new Error(
+        `partnerSpvs.addPosition: ${conv.message} ` +
+        `(spv=${s.id} base=${s.currency} position=${data.currency}). ` +
+        `Supply fxRateToSpvBase to record a cross-currency position.`,
+      );
+    }
+    const normalizedMinor = conv.minor;
     /* v25.24 NC-2 fix — SPV addPosition is the worst v25.23 NC-D miss:
      * the previous code did `s.totalCommittedMinor += normalizedMinor`
      * BEFORE the swallowed persistEntry, so a failed DB write left the RAM
@@ -2642,12 +2951,27 @@ export const partnerFundsStore = {
     };
     /* v25.16 NM3 — honour fxRateToFundBase when provided so cross-currency
        fund commitments contribute their normalized amount to committedSizeMinor.
-       v1 fallback retained when no rate supplied. */
-    const rate = data.fxRateToFundBase ? Number(data.fxRateToFundBase) : NaN;
-    const normalizedMinor =
-      Number.isFinite(rate) && rate > 0
-        ? Math.round(data.commitmentMinor * rate)
-        : data.commitmentMinor;
+
+       WAVE 35 · F5 (LIVE WRITE PATH, site 2 of 4) — same defect as
+       addPosition above: `Math.round(data.commitmentMinor * rate)` omits the
+       exponent re-scale (JPY→USD off by exactly 100×), and the "v1 fallback"
+       raw-summed across currencies when no rate was supplied. Both are now
+       handled by the shared `convertMinorUnits`, which refuses rather than
+       producing a meaningless mixed-currency total. */
+    const conv = convertMinorUnits(
+      data.commitmentMinor,
+      data.currency,
+      f.currency,
+      data.fxRateToFundBase,
+    );
+    if (!conv.ok) {
+      throw new Error(
+        `partnerFunds.addCommitment: ${conv.message} ` +
+        `(fund=${f.id} base=${f.currency} commitment=${data.currency}). ` +
+        `Supply fxRateToFundBase to record a cross-currency commitment.`,
+      );
+    }
+    const normalizedMinor = conv.minor;
     /* v25.16 NC3 — persist the new commitment record AND the updated parent
        fund so committedSizeMinor + the pledge survive restart.
        v25.23 NC-D (money surface) — fail closed. Build the candidate fund

@@ -12,6 +12,7 @@
  */
 import { useMemo, useRef, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { LoadFailedRefusal } from "@/components/LoadFailedRefusal"; /* WAVE 22 · ITEM 4 */
 import { PageBody, PageHeader } from "@/components/AppShell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -214,7 +215,26 @@ export default function Dataroom() {
 
               <Card>
                 <CardContent className="p-0">
-                  {activeFiles.length === 0 ? (
+                  {/* WAVE 22 · ITEM 4 (REVIEW B F-4) — `files = filesQ.data ?? []`
+                      turned a 403/500 into zero files, and this card then told a
+                      founder with a populated data room "No files yet" and
+                      invited them to re-upload documents that already exist —
+                      an inducement to duplicate confidential material. Sibling
+                      refusal first; the empty state is re-gated on isSuccess. */}
+                  {filesQ.isError ? (
+                    <div className="p-6">
+                      <LoadFailedRefusal
+                        what="your data-room files"
+                        testId="founder-dataroom-files-error"
+                        onRetry={() => void filesQ.refetch()}
+                        isRetrying={filesQ.isFetching}
+                      />
+                    </div>
+                  ) : !filesQ.isSuccess ? (
+                    <div className="p-12 text-center text-sm text-muted-foreground" data-testid="founder-dataroom-files-not-loaded">
+                      Files have not loaded. Check your connection.
+                    </div>
+                  ) : activeFiles.length === 0 ? (
                     <div className="p-12 text-center" data-testid="empty-files">
                       <FolderOpen className="h-10 w-10 mx-auto text-muted-foreground mb-3" />
                       <h3 className="font-semibold">No files yet</h3>
@@ -368,8 +388,28 @@ export default function Dataroom() {
                         })}
                       </tr>
                     ))}
-                    {investorIds.length === 0 && (
+                    {/* WAVE 22 · ITEM 4 — a failed permissions load is not
+                        "no permissions granted". Getting that wrong on an access
+                        matrix reads as "nobody can see this data room".
+                        The empty row keeps its ORIGINAL position (the guard
+                        identifies it as tbody>tr#3; inserting rows above it
+                        renumbers it and reads as a drop) and the two new rows
+                        are appended after it. */}
+                    {permsQ.isSuccess && investorIds.length === 0 && (
                       <tr><td colSpan={folders.length + 1} className="px-3 py-8 text-center text-muted-foreground">No investor permissions yet.</td></tr>
+                    )}
+                    {permsQ.isError && (
+                      <tr><td colSpan={folders.length + 1} className="px-3 py-4">
+                        <LoadFailedRefusal
+                          what="the investor permission matrix"
+                          testId="founder-dataroom-perms-error"
+                          onRetry={() => void permsQ.refetch()}
+                          isRetrying={permsQ.isFetching}
+                        />
+                      </td></tr>
+                    )}
+                    {!permsQ.isError && !permsQ.isSuccess && (
+                      <tr><td colSpan={folders.length + 1} className="px-3 py-8 text-center text-muted-foreground" data-testid="founder-dataroom-perms-not-loaded">Permissions have not loaded. Check your connection.</td></tr>
                     )}
                   </tbody>
                 </table>

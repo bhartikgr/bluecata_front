@@ -40,6 +40,11 @@ interface OverviewResp {
   inboundTotal: number;
   inboundHandlers: string[];
   eventTypes: { outbound: string[]; inbound: string[] };
+  /* WAVE 15 / A-5 (DEF-035) — additive. This page already showed
+     `inboundHandlers` (8) and had `eventTypes.inbound` (4) in the same payload;
+     nothing compared them, so four working handlers stayed unadvertised to the
+     peer across two sprints. The server now compares them. */
+  inboundRegistry?: { ok: boolean; handlersNotAdvertised: string[]; advertisedWithoutHandler: string[] };
 }
 interface DriftResp {
   rows: Array<{ entityKey: string; aggregateId: string; status: "clean" | "drifted" | "never_synced"; driftedFields?: string[]; lastSyncedAt?: string }>;
@@ -136,6 +141,9 @@ export default function AdminSync() {
           <div className="flex items-center gap-2 mb-3">
             <Activity className="h-4 w-4" />
             <h3 className="font-semibold text-sm">Inbound handlers ({ov.data?.inboundHandlers.length ?? 0})</h3>
+            <span className="text-[10px] text-muted-foreground" data-testid="text-inbound-advertised-count">
+              {ov.data?.eventTypes.inbound.length ?? 0} advertised to the peer
+            </span>
           </div>
           <div className="flex flex-wrap gap-1.5">
             {(ov.data?.inboundHandlers ?? []).map(h => (
@@ -144,6 +152,28 @@ export default function AdminSync() {
               </Badge>
             ))}
           </div>
+          {ov.data?.inboundRegistry && !ov.data.inboundRegistry.ok && (
+            <div className="mt-3 rounded-md border border-red-500/40 bg-red-500/5 p-2.5" data-testid="panel-inbound-registry-drift">
+              <p className="text-xs font-semibold text-red-500">Peer contract does not match the handler table</p>
+              {ov.data.inboundRegistry.handlersNotAdvertised.length > 0 && (
+                <p className="text-[11px] mt-1" data-testid="text-handlers-not-advertised">
+                  Handlers the peer is never told about, so it will never send them:{" "}
+                  <span className="font-mono">{ov.data.inboundRegistry.handlersNotAdvertised.join(", ")}</span>
+                </p>
+              )}
+              {ov.data.inboundRegistry.advertisedWithoutHandler.length > 0 && (
+                <p className="text-[11px] mt-1" data-testid="text-advertised-without-handler">
+                  Advertised to the peer with no handler, so an inbound event would be dropped:{" "}
+                  <span className="font-mono">{ov.data.inboundRegistry.advertisedWithoutHandler.join(", ")}</span>
+                </p>
+              )}
+            </div>
+          )}
+          {ov.data?.inboundRegistry?.ok && (
+            <p className="text-[10px] text-muted-foreground mt-2" data-testid="text-inbound-registry-ok">
+              Every handler is advertised on the peer contract and every advertised type has a handler.
+            </p>
+          )}
         </Card>
 
         {/* DLQ */}

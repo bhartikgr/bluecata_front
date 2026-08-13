@@ -36,8 +36,36 @@ export const SPV_TYPE_HELP: Record<SpvType, string> = {
   rolling_fund: "A subscription-style fund that raises and deploys in recurring quarterly cycles.",
 };
 
-export const SPV_JURISDICTIONS = ["delaware", "cayman", "bvi", "canadian_lp"] as const;
+/**
+ * WAVE 3C / J-1 — the strict legal-entity jurisdiction enum, WIDENED from the
+ * original four members to cover the whole 15-country ontology that already
+ * lived below at SPV_TOP_JURISDICTION_COUNTRIES / SPV_JURISDICTION_ENTITY_
+ * STRUCTURES.
+ *
+ * WHY: the four-member enum was the downstream choke point that defeated the
+ * ontology. Every country that was not US / Cayman / BVI / Canada was coerced
+ * to "delaware" (client deriveEngineJurisdiction, server canonicalJurisdiction
+ * fallbacks), which made a Dutch B.V. or a Mauritius GBC render US securities
+ * copy (Form D, blue-sky, 3(c)(1), EIN). Widening the enum is the ONLY way to
+ * keep the country a non-US GP chose all the way down to the compliance UI.
+ *
+ * The first four members are UNCHANGED in value and order so every existing
+ * row, fixture and test keeps validating. "other" is an explicit escape hatch
+ * for a free-text / unmapped country: it is a REAL value meaning "we do not
+ * know this jurisdiction", which is strictly better than silently claiming
+ * Delaware.
+ */
+export const SPV_JURISDICTIONS = [
+  /* pre-existing four — DO NOT reorder or rename (persisted values) */
+  "delaware", "cayman", "bvi", "canadian_lp",
+  /* WAVE 3C / J-1 — additive, one per remaining ontology country */
+  "united_kingdom", "singapore", "luxembourg", "ireland", "hong_kong",
+  "uae", "jersey", "guernsey", "netherlands", "mauritius", "australia",
+  /* explicit "we do not know" — never silently a US jurisdiction */
+  "other",
+] as const;
 export type SpvJurisdiction = (typeof SPV_JURISDICTIONS)[number];
+export const SPV_JURISDICTION_UNKNOWN: SpvJurisdiction = "other";
 
 export const SPV_STATUSES = [
   "draft", "open", "closed", "deployed", "distributing", "wound_down",
@@ -138,6 +166,273 @@ export const SPV_JURISDICTION_ENTITY_STRUCTURES: Record<string, string[]> = {
   "Australia": ["Proprietary Limited Company (Pty Ltd)", "Unit Trust", "Limited Partnership", "Other (specify)"],
 };
 
+/* ── WAVE 3C / J-1 — country ⇄ jurisdiction-enum bridge ─────────────────── *
+ *
+ * This is the missing join between the 15-country ontology above and the
+ * (now widened) SPV_JURISDICTIONS enum. It is declared as an EXHAUSTIVE
+ * Record<SpvJurisdiction, …>: adding a member to the enum without adding a
+ * country label here is a COMPILE ERROR, not a silent fall-through.
+ */
+
+/** Ontology country label for each enum member. `other` has none by design. */
+export const SPV_JURISDICTION_COUNTRY: Record<SpvJurisdiction, string | null> = {
+  delaware: "United States",
+  cayman: "Cayman Islands",
+  bvi: "British Virgin Islands",
+  canadian_lp: "Canada",
+  united_kingdom: "United Kingdom",
+  singapore: "Singapore",
+  luxembourg: "Luxembourg",
+  ireland: "Ireland",
+  hong_kong: "Hong Kong",
+  uae: "United Arab Emirates",
+  jersey: "Jersey",
+  guernsey: "Guernsey",
+  netherlands: "Netherlands",
+  mauritius: "Mauritius",
+  australia: "Australia",
+  other: null,
+};
+
+/** Short GP-facing label for each enum member (used wherever the raw value
+ *  would otherwise leak into the UI, e.g. the SPV accordion row). */
+export const SPV_JURISDICTION_LABELS: Record<SpvJurisdiction, string> = {
+  delaware: "United States (Delaware)",
+  cayman: "Cayman Islands",
+  bvi: "British Virgin Islands",
+  canadian_lp: "Canada",
+  united_kingdom: "United Kingdom",
+  singapore: "Singapore",
+  luxembourg: "Luxembourg",
+  ireland: "Ireland",
+  hong_kong: "Hong Kong",
+  uae: "United Arab Emirates",
+  jersey: "Jersey",
+  guernsey: "Guernsey",
+  netherlands: "Netherlands",
+  mauritius: "Mauritius",
+  australia: "Australia",
+  other: "Other / not specified",
+};
+
+/** Reverse index, lower-cased country label → enum member. Built from
+ *  SPV_JURISDICTION_COUNTRY so the two can never drift. */
+const COUNTRY_TO_JURISDICTION: Record<string, SpvJurisdiction> = (() => {
+  const out: Record<string, SpvJurisdiction> = {};
+  for (const code of SPV_JURISDICTIONS) {
+    const country = SPV_JURISDICTION_COUNTRY[code];
+    if (country) out[country.toLowerCase()] = code;
+  }
+  return out;
+})();
+
+/** Common spellings/abbreviations a legacy free-text row may carry. Kept
+ *  deliberately SMALL and unambiguous — anything not listed resolves to
+ *  "other", never to a guessed country. */
+const JURISDICTION_ALIASES: Record<string, SpvJurisdiction> = {
+  "us": "delaware",
+  "u.s.": "delaware",
+  "usa": "delaware",
+  "u.s.a.": "delaware",
+  "united states of america": "delaware",
+  "delaware, usa": "delaware",
+  "state of delaware": "delaware",
+  "state of delaware, usa": "delaware",
+  "uk": "united_kingdom",
+  "u.k.": "united_kingdom",
+  "great britain": "united_kingdom",
+  "england": "united_kingdom",
+  "cayman": "cayman",
+  "bvi": "bvi",
+  "uae": "uae",
+  "u.a.e.": "uae",
+  "the netherlands": "netherlands",
+  "holland": "netherlands",
+  "hong kong sar": "hong_kong",
+  "canadian lp": "canadian_lp",
+};
+
+/**
+ * WAVE 3C / J-1 — resolve ANY jurisdiction-ish string to a member of the
+ * widened enum. Accepts an enum member ("netherlands"), an ontology country
+ * label ("Netherlands"), or one of the small alias set above. Anything else —
+ * including empty/null — resolves to "other", NEVER to "delaware".
+ *
+ * This function replaces the four hard-coded `case` arms plus the
+ * `default: return "delaware"` in PartnerSpvEngine.deriveEngineJurisdiction
+ * and is the single place the coercion policy is expressed.
+ */
+export function resolveSpvJurisdiction(input: string | null | undefined): SpvJurisdiction {
+  const raw = String(input ?? "").trim();
+  if (!raw) return SPV_JURISDICTION_UNKNOWN;
+  const key = raw.toLowerCase();
+  if (isSpvJurisdiction(key)) return key;
+  const exact = COUNTRY_TO_JURISDICTION[key] ?? JURISDICTION_ALIASES[key];
+  if (exact) return exact;
+  return resolveCommaQualified(key);
+}
+
+/**
+ * WAVE 6 — the second of the two jurisdiction gaps carried into this wave:
+ * `"Ontario, Canada"` resolved to `"other"` because the tables are exact-match
+ * only, and Ontario is a province the ontology does not (and should not) list.
+ *
+ * WHY NOT SUBSTRING MATCHING. The obvious fix — `key.includes("canada")` — is
+ * the wrong tool and was refused deliberately. Substring matching over this
+ * table produces real false positives: `"Guernsey"` contains `"guernsey"` but
+ * `"New Jersey"` contains `"jersey"`, and a US state would silently become a
+ * Crown Dependency; `"British Virgin Islands"` contains neither `"uk"` nor
+ * `"us"` but `"Mauritius"` does contain `"us"`. Mis-resolving a jurisdiction is
+ * exactly the failure this project spent two waves removing, so the fix is
+ * STRUCTURAL instead.
+ *
+ * THE RULE. A free-text jurisdiction is treated as a comma-separated address,
+ * outermost-last (`"Ontario, Canada"`, `"Grand Cayman, Cayman Islands"`,
+ * `"Delaware, USA"`). Each component is trimmed and resolved with the SAME
+ * exact-match tables — no fuzzy matching anywhere. Then:
+ *
+ *   • zero components resolve                → "other"
+ *   • all resolving components AGREE         → that jurisdiction
+ *   • resolving components DISAGREE          → "other"
+ *
+ * The disagreement rule is the important half. `"Delaware, Cayman Islands"` is
+ * a contradictory row a human must look at; guessing one of the two would be
+ * inventing a legal domicile. It resolves to `"other"`, which is honest and is
+ * what the neutral counsel-referral content is for.
+ *
+ * Components that resolve to nothing (`"ontario"`, `"grand cayman"`, a street)
+ * are simply ignored — they are not evidence for or against anything, so they
+ * cannot outvote a component that did resolve.
+ */
+function resolveCommaQualified(lowerKey: string): SpvJurisdiction {
+  if (!lowerKey.includes(",")) return SPV_JURISDICTION_UNKNOWN;
+  let found: SpvJurisdiction | null = null;
+  for (const part of lowerKey.split(",")) {
+    const p = part.trim();
+    if (!p) continue;
+    const hit = isSpvJurisdiction(p)
+      ? p
+      : COUNTRY_TO_JURISDICTION[p] ?? JURISDICTION_ALIASES[p] ?? null;
+    if (!hit || hit === SPV_JURISDICTION_UNKNOWN) continue;
+    // Contradictory components: refuse to pick a winner.
+    if (found && found !== hit) return SPV_JURISDICTION_UNKNOWN;
+    found = hit;
+  }
+  return found ?? SPV_JURISDICTION_UNKNOWN;
+}
+
+/* ── WAVE 3C / J-3 — jurisdiction-conditional compliance content ────────── *
+ *
+ * CONTENT POLICY (deliberate, and the reason this table is small):
+ *   • US-specific items (Form D, blue-sky notices, the 3(c)(1) ~100 soft cap,
+ *     Tax ID / EIN) appear for "delaware" ONLY.
+ *   • Cayman and BVI carry the entity-identifier wording Capavate has already
+ *     shipped and reviewed ("Registered number" / "Company number").
+ *   • EVERY other jurisdiction gets a NEUTRAL checklist plus an explicit
+ *     "we do not hold verified requirements for this jurisdiction" notice.
+ *     We do NOT invent foreign securities filings. Showing nothing and saying
+ *     so is correct; inventing an AIFMD/VCC/GBC filing would be worse than the
+ *     bug we are fixing.
+ */
+
+export interface SpvJurisdictionCompliance {
+  /** the resolved enum member this content belongs to */
+  code: SpvJurisdiction;
+  /** GP-facing jurisdiction label */
+  label: string;
+  /** true only for the United States */
+  isUnitedStates: boolean;
+  /** formation-checklist entity/tax identifier line */
+  formationIdItem: string;
+  /** regulatory-filings checklist */
+  filings: readonly string[];
+  /** false ⇒ `filings` is the generic placeholder, show GENERIC_NOTICE */
+  filingsAreJurisdictionSpecific: boolean;
+  /** soft investor-count threshold, or null where we assert none */
+  investorCountLimit: number | null;
+  /** the sentence rendered next to the investor count */
+  investorCountNote: string;
+}
+
+/** Shown verbatim whenever `filingsAreJurisdictionSpecific` is false. */
+export const SPV_JURISDICTION_GENERIC_NOTICE =
+  "Capavate does not hold verified filing requirements for this jurisdiction, so the list below is generic. Confirm what actually applies with local counsel.";
+
+const GENERIC_FILINGS: readonly string[] = [
+  "Check local regulatory notice requirements with your counsel",
+];
+const GENERIC_FORMATION_ID = "Local entity registration / tax identification number obtained";
+const GENERIC_COUNT_NOTE =
+  "Capavate does not hold a verified investor-count threshold for this jurisdiction. Confirm any limit with local counsel.";
+
+/** Non-US default block, parameterised only by label. */
+function genericCompliance(code: SpvJurisdiction, formationIdItem = GENERIC_FORMATION_ID): SpvJurisdictionCompliance {
+  return {
+    code,
+    label: SPV_JURISDICTION_LABELS[code],
+    isUnitedStates: false,
+    formationIdItem,
+    filings: GENERIC_FILINGS,
+    filingsAreJurisdictionSpecific: false,
+    investorCountLimit: null,
+    investorCountNote: GENERIC_COUNT_NOTE,
+  };
+}
+
+/** EXHAUSTIVE over SpvJurisdiction — a new enum member without content here
+ *  fails the build rather than silently rendering someone else's law. */
+export const SPV_JURISDICTION_COMPLIANCE: Record<SpvJurisdiction, SpvJurisdictionCompliance> = {
+  delaware: {
+    code: "delaware",
+    label: SPV_JURISDICTION_LABELS.delaware,
+    isUnitedStates: true,
+    formationIdItem: "Tax ID / EIN obtained",
+    filings: [
+      "Form D filed with the SEC (if applicable)",
+      "Blue-sky / state notice filings (if applicable)",
+    ],
+    filingsAreJurisdictionSpecific: true,
+    investorCountLimit: 100,
+    investorCountNote: "US 3(c)(1) funds commonly cap at ~100 investors.",
+  },
+  cayman: genericCompliance("cayman", "Registered number obtained"),
+  bvi: genericCompliance("bvi", "Company number obtained"),
+  canadian_lp: genericCompliance("canadian_lp"),
+  united_kingdom: genericCompliance("united_kingdom"),
+  singapore: genericCompliance("singapore"),
+  luxembourg: genericCompliance("luxembourg"),
+  ireland: genericCompliance("ireland"),
+  hong_kong: genericCompliance("hong_kong"),
+  uae: genericCompliance("uae"),
+  jersey: genericCompliance("jersey"),
+  guernsey: genericCompliance("guernsey"),
+  netherlands: genericCompliance("netherlands"),
+  mauritius: genericCompliance("mauritius"),
+  australia: genericCompliance("australia"),
+  other: genericCompliance("other"),
+};
+
+/** Resolve any jurisdiction-ish string straight to its compliance content. */
+export function spvJurisdictionCompliance(input: string | null | undefined): SpvJurisdictionCompliance {
+  return SPV_JURISDICTION_COMPLIANCE[resolveSpvJurisdiction(input)];
+}
+
+/** Formation checklist (D1) for a jurisdiction. Only the identifier line is
+ *  jurisdiction-dependent; the first three steps are universal. */
+export function spvFormationChecklist(input: string | null | undefined): string[] {
+  return [
+    "Legal entity filed / registered",
+    "Registered agent appointed",
+    "Bank account opened",
+    spvJurisdictionCompliance(input).formationIdItem,
+  ];
+}
+
+/** Filings checklist (D7) for a jurisdiction. */
+export function spvFilingsChecklist(input: string | null | undefined): string[] {
+  return [...spvJurisdictionCompliance(input).filings];
+}
+
 /** Spec 3j — GP-facing distribution-scope labels (relabelled EXACTLY as the
  * spec requires) mapped to the existing SPV_DISTRIBUTION_SCOPES values. These
  * three are the only choices the wizard offers; enforcement is server-side
@@ -172,6 +467,58 @@ export const SPV_DOC_TYPES = [
   "formation", "operating_agreement", "subscription", "formd", "blue_sky", "kyc", "tax",
 ] as const;
 export type SpvDocType = (typeof SPV_DOC_TYPES)[number];
+
+/**
+ * WAVE 23 · ITEM 6 (FINAL REVIEW B) — JURISDICTION-FILTERED DOCUMENT TYPES.
+ *
+ * THE LEAK. `SPV_DOC_TYPES` is the raw, unfiltered enum, and the document
+ * registration dropdown rendered all seven entries for every vehicle. A Cayman
+ * or Singapore SPV was therefore offered **Form D** (a US SEC Regulation D
+ * notice) and **Blue-sky filing** (a US state securities notice). Six
+ * `"delaware"` write-site fallbacks were closed earlier in this build and the
+ * compliance CONTENT is already conditional on `isUnitedStates` — this dropdown
+ * was the one surface still leaking US law onto non-US vehicles.
+ *
+ * THE RULE, and its limit. `formd` and `blue_sky` are US-only and are offered
+ * only where the ontology says `isUnitedStates`. The remaining five types
+ * (formation, operating agreement, subscription, KYC, tax) are jurisdiction-
+ * NEUTRAL: every vehicle in every jurisdiction has a formation document and a
+ * subscription agreement. **No foreign document types are invented.** The
+ * ontology holds no verified filing list for any non-US jurisdiction
+ * (`genericCompliance()` sets `filingsAreJurisdictionSpecific: false`), so
+ * where we do not know, the honest answer is the neutral set — not a plausible-
+ * looking "CIMA notification" or "MAS Form 1" that nobody verified. That is the
+ * same ruling `SPV_JURISDICTION_GENERIC_NOTICE` already states in prose.
+ *
+ * `other` (the explicit we-do-not-know) is NOT United States and therefore gets
+ * the neutral set, which is the fail-closed direction: a vehicle whose domicile
+ * we could not resolve is never offered a US-specific filing.
+ *
+ * THIS IS A DISPLAY FILTER, NOT A NARROWING OF THE PERSISTED ENUM.
+ * `SPV_DOC_TYPES` and `SpvDocType` are unchanged, so existing rows of every
+ * type still read back, and a document registered before this filter existed is
+ * never orphaned.
+ */
+export const SPV_US_ONLY_DOC_TYPES: readonly SpvDocType[] = ["formd", "blue_sky"];
+
+/** The document types offered for a vehicle in the given jurisdiction. Accepts
+ *  the same free-text a GP may have typed; resolution goes through
+ *  `resolveSpvJurisdiction()` / the ontology, never a string comparison. */
+export function spvDocTypesForJurisdiction(
+  input: string | null | undefined,
+): readonly SpvDocType[] {
+  if (spvJurisdictionCompliance(input).isUnitedStates) return SPV_DOC_TYPES;
+  return SPV_DOC_TYPES.filter((t) => !SPV_US_ONLY_DOC_TYPES.includes(t));
+}
+
+/** True when a document type is offerable for a jurisdiction. Exported so a
+ *  write path can ask the same question the dropdown asks. */
+export function isSpvDocTypeAllowedForJurisdiction(
+  docType: string,
+  input: string | null | undefined,
+): boolean {
+  return (spvDocTypesForJurisdiction(input) as readonly string[]).includes(docType);
+}
 
 export const SPV_TRANSFER_STATUSES = [
   "proposed", "compliance_recheck", "gp_approved", "settled", "rejected",
@@ -311,6 +658,19 @@ export interface SpvDistributionDTO {
   id: string;
   spvId: string;
   event: string;
+  /**
+   * WAVE 6 / SC-3 — the tax/accounting classification of this distribution.
+   *
+   * `event` is free text describing WHAT happened ("Series B secondary").
+   * `distributionType` is the constrained classification the GP is legally
+   * making, and is the field the PLURAL legacy ledger has always carried
+   * (`spv_distributions.distribution_type`, server/db/connection.ts:4438)
+   * while the canonical SINGULAR ledger did not. Domain and semantics:
+   * server/lib/spvDistributionType.ts. Optional on the type ONLY so that rows
+   * hydrated from a database that has not yet run migration 0153 still parse;
+   * every write path resolves it to a real member.
+   */
+  distributionType?: SpvDistributionTypeValue;
   grossProceedsMinor: number;
   currency: string;
   waterfall: Array<Record<string, unknown>>;
@@ -322,6 +682,28 @@ export interface SpvDistributionDTO {
   createdBy: string | null;
   revisionHash: string;
 }
+
+/**
+ * WAVE 6 / SC-3 — mirrors `SPV_DISTRIBUTION_TYPES` in
+ * server/lib/spvDistributionType.ts. Declared here (and not imported) because
+ * `shared/` must not depend on `server/`; the two are pinned equal by
+ * server/__tests__/wave6_spv_distribution_type.test.ts.
+ */
+export const SPV_DISTRIBUTION_TYPE_VALUES = [
+  "return_of_capital",
+  "dividend",
+  "exit",
+  "other",
+] as const;
+export type SpvDistributionTypeValue = (typeof SPV_DISTRIBUTION_TYPE_VALUES)[number];
+
+/** GP-facing labels. `other` is named for what it is, never as "Dividend". */
+export const SPV_DISTRIBUTION_TYPE_DISPLAY: Record<SpvDistributionTypeValue, string> = {
+  return_of_capital: "Return of Capital",
+  dividend: "Dividend",
+  exit: "Exit Proceeds",
+  other: "Unclassified",
+};
 
 export interface SpvDocumentDTO {
   id: string;
@@ -367,12 +749,22 @@ export interface InvestorComplianceProfileDTO {
 /* Plain-language fee breakdown shown to an investor at subscription time. */
 export interface SpvFeeBreakdown {
   commitmentMinor: number;
-  managementFeeMinor: number;
-  platformFeeMinor: number;
-  netDeployedMinor: number;
+  /* WAVE 26 / S-3 SECOND PATH — these are `null`, NOT `0`, when the fee table
+     is not known to be loaded. Wave 5 fixed the FEES_UNPAID gate against a
+     failed `spv_fee` hydration but left every fee-DERIVED computation reading
+     the same empty map, so a read failure rendered a fee-free SPV: management
+     0, platform 0, net deployed = the whole commitment. A fabricated $0 on a
+     money surface is the exact shape the money rules forbid, so the amounts
+     are withheld and `feesUnknown` says why. */
+  managementFeeMinor: number | null;
+  platformFeeMinor: number | null;
+  netDeployedMinor: number | null;
   currency: string;
   managementCarryPct: number | null;
   platformCarryPct: number | null;
+  /** TRUE when the `spv_fee` view is not trustworthy; every amount above is
+   *  then `null` and MUST be rendered as a refusal, never as zero. */
+  feesUnknown: boolean;
 }
 
 /* ── fee obligations (money-movement-safe fee timing, Phase-4C / Blocker 3) ──

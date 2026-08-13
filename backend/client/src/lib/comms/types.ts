@@ -135,6 +135,8 @@ export const messageSchema = z.object({
   starredByUserIds: z.array(z.string()),
   reactions: z.array(z.object({ emoji: z.string(), userIds: z.array(z.string()) })),
   replyToMessageId: z.string().optional(),
+  /* WAVE 33 · CP-MSG-01 — see the note above messageEditSchema. */
+  onBehalfOfCompanyId: z.string().min(1).optional(),
   attachments: z
     .array(
       z.object({
@@ -152,6 +154,8 @@ export const messageSchema = z.object({
 export const messageCreateSchema = z.object({
   body: z.string().min(1).max(8_000),
   replyToMessageId: z.string().optional(),
+  /* WAVE 33 · CP-MSG-01 — see the note above messageEditSchema. */
+  onBehalfOfCompanyId: z.string().min(1).optional(),
   attachments: z
     .array(
       z.object({
@@ -165,6 +169,11 @@ export const messageCreateSchema = z.object({
     .optional(),
 });
 
+/* WAVE 33 · CP-MSG-01 — an OPTIONAL delegated-authority claim.
+   When present, the server proves it against `mf_engagement` and REFUSES the
+   send if it cannot (422 `delegated_authority_not_provable`). It never
+   downgrades an unprovable claim to a normal message: a partner who believes
+   they are writing on a client's behalf must not silently write as themselves. */
 export const messageEditSchema = z.object({
   body: z.string().min(1).max(8_000),
 });
@@ -294,6 +303,8 @@ export interface Visibility {
 
 export const dmStartSchema = z.object({
   targetUserId: z.string(),
+  /* WAVE 33 · CP-MSG-01 — see the note above messageEditSchema. */
+  onBehalfOfCompanyId: z.string().min(1).optional(),
 });
 
 /* ==================================================================== */

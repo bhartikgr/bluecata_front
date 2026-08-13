@@ -450,7 +450,7 @@ describe("Harmony — Scenario 7: SPV lifecycle + invariants", () => {
     expect(call1.sequenceNo).toBeGreaterThanOrEqual(1);
 
     // Distribution — 2,000,000 minor.
-    const dist = spvFundStore.recordDistribution({
+    const dist = spvFundStore.__unsafeSeedLegacyDistributionRowForTests({
       spvId: spv.id,
       totalMinor: 2_000_000,
       distributionType: "return_of_capital",

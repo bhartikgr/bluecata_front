@@ -25,13 +25,36 @@ import type { Express, Request, Response } from "express";
 import { createHash } from "crypto";
 import { z } from "zod";
 import { requirePartnerAuth, assertSubRole } from "./lib/requirePartnerAuth";
+/* WAVE 22 · ITEM 2 (REVIEW B F-3) — the SPV launch sign-off `ip` used to be the
+ * raw `x-forwarded-for` header, i.e. attacker-chosen text in an authorization
+ * record. Reuse the ONE hardened, fail-closed resolver instead of a local copy. */
+import { resolveRateLimitClientIp } from "./lib/rateLimit";
 import { requireSignedAgreement } from "./lib/requireSignedAgreement";
 import { getUserContext } from "./lib/userContext";
 import { requireCollectiveMember } from "./lib/requireCollectiveMember";
+// WAVE 1A / S-2 — the fee self-mark fix. See server/lib/feeSettlementAuthority.ts.
+import { authorizeGatewaySettlement, authorizePlatformAdminSettlement } from "./lib/feeSettlementAuthority";
 import { commitFunded, getLedger } from "./captableCommitStore";
 import { spvEngineStore } from "./spvEngineStore";
+import { normaliseSpvTermsHurdle } from "./lib/percentPolicy";
+// CP-SPV-31 — currency-aware minor-unit conversion. Static imports only.
+import { decimalStringToMinor, currencyExponent } from "./lib/money";
 import { resolveDisplayNames } from "./lib/displayNameResolver";
 import { listLpInvites, createLpInvite } from "./spvLpInviteStore";
+/* WAVE 25 / FE-3 — the rolling-close window comes from the DB policy ladder.
+ * `resolveCloseWindowDays` shipped in WAVE 6 with ZERO callers while the literal
+ * `30` stayed at this file's reopen route and at SpvDetailTabs.tsx. A policy
+ * resolver nothing consults is a dead promise, so this is the wiring. */
+import { resolveCloseWindowDays } from "./lib/spvFeeScheduleStore";
+/* WAVE 3F / ITEM 4 — durable pending/failed deployment-fee billing + the
+ * IDEMPOTENT retry the review found was missing everywhere in this file. */
+import {
+  listPendingEngineSpvDeploymentFees,
+  getEngineSpvDeploymentFeeBilling,
+  retryEngineSpvDeploymentFee,
+} from "./lib/spvEngineDeploymentFeeHook";
+/* WAVE 3F / ITEM 2 — admin remedy for a PARTNER_TIER_UNRESOLVED billing block. */
+import { setCanonicalPartnerTier, PartnerTierResolutionError } from "./lib/partnerTierResolver";
 // 1c — durable, verifiable launch sign-off recorded before an SPV is created.
 import { recordSignoff, linkSignoffToSpv, listSignoffsForSpv } from "./spvLaunchSignoffStore";
 import { createInvitation } from "./roundInvitationsStore";
@@ -45,6 +68,55 @@ import {
 
 const WRITE_ROLES = ["managing_partner", "associate", "bd"] as const;
 
+/* WAVE 1A / S-2 — the request-body WHITELIST for BOTH distribution routes.
+ *
+ * `spvEngineRoutes.ts:397` used to forward `req.body ?? {}` WHOLESALE into
+ * `recordDistribution`, where `data.collectionOutcome` (spvEngineStore.ts:1456)
+ * became the carry settlement outcome. Two independent defences now:
+ *
+ *   1. `assertNoSmuggledSettlement` — a LOUD 400 if any settlement-shaped key is
+ *      present, so a client cannot believe it set an outcome that was ignored.
+ *   2. `pickDistributionBody` — an allowlisting PROJECTION. Only these four
+ *      fields are ever constructed; anything else cannot reach the store even if
+ *      (1) missed it. Field-level validation stays in the store, so existing
+ *      error codes (EVENT_REQUIRED / INVALID_GROSS / DISTRIBUTION_BASIS_REQUIRED)
+ *      are unchanged. */
+const SETTLEMENT_SMUGGLING_KEYS = ["collectionOutcome", "outcome", "forceState", "state", "settlement", "paymentRef"] as const;
+
+function assertNoSmuggledSettlement(raw: unknown): void {
+  const b = (raw ?? {}) as Record<string, unknown>;
+  for (const k of SETTLEMENT_SMUGGLING_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(b, k)) throw new Error("SETTLEMENT_NOT_CLIENT_SUPPLIED");
+  }
+}
+
+function pickDistributionBody(raw: unknown): {
+  event: string; grossProceedsMinor: number; currency?: string; costBasisMinor?: number; distributionType?: string;
+} {
+  const b = (raw ?? {}) as Record<string, unknown>;
+  const out: { event: string; grossProceedsMinor: number; currency?: string; costBasisMinor?: number; distributionType?: string } = {
+    event: b.event as string,
+    grossProceedsMinor: b.grossProceedsMinor as number,
+  };
+  if (b.currency !== undefined) out.currency = b.currency as string;
+  if (b.costBasisMinor !== undefined) out.costBasisMinor = b.costBasisMinor as number;
+  /* WAVE 6 / SC-3 + SC-5 — FIFTH allowlisted field.
+
+     This projection is the reason SC-5 could not be done client-side alone.
+     It is an ALLOWLIST: a key absent from here is silently dropped, so adding
+     the GP's tax/accounting classification to the form without adding it here
+     would have produced exactly the project's recurring failure — a UI control
+     wired to nothing, on a path where the data does not flow. Both callers of
+     this function (:504 partner, :527 admin) reach the same single canonical
+     sink, spvEngineStore.recordDistribution, which validates the value
+     fail-closed and persists it to spv_distribution.distribution_type.
+
+     Allowlist discipline is preserved: this stays a five-field projection, and
+     no settlement key can ride in on it (WAVE 1A / S-2 SINK 2). */
+  if (b.distributionType !== undefined) out.distributionType = b.distributionType as string;
+  return out;
+}
+
 /* W1 C2 (v26.2.0) — strict schema for the investor compliance profile PUT.
  * Dates are validated as bounded non-empty strings (fixtures may not be RFC3339);
  * .strict() rejects any unknown key so a partner cannot smuggle arbitrary fields. */
@@ -57,12 +129,39 @@ const investorComplianceProfilePatchSchema = z.object({
   jurisdiction: z.string().trim().min(2).max(64).nullable().optional(),
 }).strict();
 
-/** minor units → decimal-as-string the ledger expects (2dp). */
-function minorToDecimal(minor: number): string {
+/* ── WAVE 33 / CP-SPV-31 · SINK 4 ─────────────────────────────────────────────
+ * WAS:
+ *
+ *     function minorToDecimal(minor: number): string {
+ *       const s = `${Math.floor(abs / 100)}.${String(abs % 100).padStart(2, "0")}`;
+ *       ...
+ *     }
+ *
+ * The EXACT INVERSE of sink 1, hardcoding exponent 2 in the other direction,
+ * and it sits on a worse path: its single caller is the deployment-commit
+ * handler, where the returned string is the `amount` written into the SACRED
+ * cap-table ledger via `commitFunded`. A ¥1,000,000 deployment (amountMinor =
+ * 1_000_000, JPY exponent 0) was written to the ledger as "10000.00" — a 100x
+ * UNDERSTATEMENT of capital deployed into a real company round, recorded in the
+ * one store the platform treats as authoritative and append-only.
+ *
+ * Sinks 1 and 4 therefore inflated the LP roster 100x and deflated the ledger
+ * 100x, in the same currency, in the same file. Neither had a test that used a
+ * non-2dp currency, so both were invisible.
+ *
+ * Now exponent-driven, and exact: BigInt only, no float ever holds the value.
+ */
+function minorToDecimal(minor: number, currency: string): string {
+  const exp = currencyExponent(currency);
   const neg = minor < 0;
-  const abs = Math.abs(Math.trunc(minor));
-  const s = `${Math.floor(abs / 100)}.${String(abs % 100).padStart(2, "0")}`;
-  return neg ? `-${s}` : s;
+  const abs = BigInt(Math.abs(Math.trunc(minor)));
+  if (exp <= 0) return `${neg ? "-" : ""}${abs.toString()}`;
+  // No `**` on bigint: the compile target predates ES2016 exponentiation.
+  let divisor = BigInt(1);
+  for (let i = 0; i < exp; i += 1) divisor *= BigInt(10);
+  const whole = abs / divisor;
+  const frac = (abs % divisor).toString().padStart(exp, "0");
+  return `${neg ? "-" : ""}${whole.toString()}.${frac}`;
 }
 
 function err(res: Response, e: unknown): Response {
@@ -71,19 +170,57 @@ function err(res: Response, e: unknown): Response {
     SPV_NOT_FOUND: 404, DEPLOYMENT_NOT_FOUND: 404, SUBSCRIPTION_NOT_FOUND: 404, NO_MANDATE: 404,
     CARRY_BASIS_REQUIRED: 400, INVALID_JURISDICTION: 400, INVALID_SPV_TYPE: 400, INVALID_SPV_STATUS: 400, SPV_NAME_REQUIRED: 400,
     INVALID_DISTRIBUTION_SCOPE: 400, INVALID_FEE_LAYER: 400, INVALID_FEE_TYPE: 400, FIXED_AMOUNT_REQUIRED: 400,
-    CARRY_PCT_REQUIRED: 400, FEES_EXCEED_RAISE: 400, RULE_TREE_REQUIRED: 400, INVALID_COMMITMENT: 400, INVALID_AMOUNT: 400,
+    CARRY_PCT_REQUIRED: 400, COMBINED_CARRY_EXCEEDS_CAP: 400, FEES_EXCEED_RAISE: 400, RULE_TREE_REQUIRED: 400, INVALID_COMMITMENT: 400, INVALID_AMOUNT: 400,
     INVALID_GROSS: 400, EVENT_REQUIRED: 400, BELOW_MIN_CHECK: 400, EXCEEDS_CAP: 400, ALREADY_SUBSCRIBED: 409,
     INVESTOR_ID_REQUIRED: 400, COMPANY_AND_ROUND_REQUIRED: 400, STORAGE_KEY_REQUIRED: 400,
     TRANSFER_PARTIES_REQUIRED: 400, PLATFORM_FEE_ADMIN_ONLY: 403,
+    // WAVE 25 / FE-4 — the transfer guards the store had no counterpart for.
+    // SPV_WOUND_DOWN is 409: the request is well-formed, the vehicle's state
+    // forbids it — exactly what the wind-down panel already promises the GP.
+    TRANSFER_SELF: 400, TRANSFER_CONSIDERATION_REQUIRED: 400,
+    INVALID_UNITS_PCT: 400, SPV_WOUND_DOWN: 409,
     INVESTOR_NOT_IN_PARTNER_TENANT: 403, INVESTOR_TENANT_CHECK_FAILED: 500,
     INVALID_LP_VISIBILITY: 400, NOT_AN_LP: 403,
     INVALID_MANDATE_MODE: 400, MANDATE_DESCRIPTION_REQUIRED: 400, MANDATE_DESCRIPTION_TOO_LONG: 400,
+    // WAVE 25 / FE-1 — mandate check-size bounds. An inverted or malformed
+    // range used to persist silently; it is now a loud 400 at the sink.
+    INVALID_CHECK_MIN: 400, INVALID_CHECK_MAX: 400, INVALID_CHECK_RANGE: 400,
     GATE_KYC_REQUIRED: 422, GATE_ACCREDITATION_REQUIRED: 422, GATE_SUBSCRIPTION_ESIGN_REQUIRED: 422,
     FEE_OBLIGATION_NOT_FOUND: 404, FEES_UNPAID: 409, FEE_COLLECTION_FAILED: 402,
     FOUNDER_NOT_CONFIRMED: 409, WIRE_PAYMENT_REF_REQUIRED: 409,
     NO_ACTIVE_ROUND: 409, COMPANY_NOT_ELIGIBLE: 409, INSUFFICIENT_COMMITTED_CAPITAL: 409,
     INSTRUMENT_NOT_IN_ROUND: 409, DISTRIBUTION_BASIS_REQUIRED: 400, NO_COMMITTED_LPS: 409,
     LP_INVITE_EMAIL_REQUIRED: 400, LP_INVITE_LAST_NAME_REQUIRED: 400, LP_INVITE_PERSIST_FAILED: 500,
+    // WAVE 1A / S-2 — settlement authority errors.
+    SETTLEMENT_AUTHORIZATION_REQUIRED: 403, SETTLEMENT_AUTHORIZATION_REPLAYED: 409,
+    SETTLEMENT_AUTHORIZATION_SCOPE_MISMATCH: 403, SETTLEMENT_OUTCOME_REQUIRED: 400,
+    SETTLEMENT_REASON_REQUIRED: 400, ADMIN_REQUIRED: 403,
+    // WAVE 3F / ITEM 2 — fail-closed partner tier resolution. Missing or
+    // inconsistent tier data BLOCKS billing (400) instead of selecting a tier.
+    PARTNER_TIER_UNRESOLVED: 400, PARTNER_TIER_INCONSISTENT: 409,
+    DEPLOYMENT_FEE_BILLING_NOT_FOUND: 404,
+    PAYMENT_GATEWAY_UNAVAILABLE: 503, SETTLEMENT_NOT_CLIENT_SUPPLIED: 400,
+    // WAVE 3E — the authority is a DURABLE ROW (migration 0151). These are the
+    // additional fail-closed rejections that a DB-backed authorization can
+    // produce. All of them DENY; none of them is a degraded "allow".
+    SETTLEMENT_AUTHORIZATION_EXPIRED: 403, SETTLEMENT_AUTHORIZATION_REVOKED: 403,
+    SETTLEMENT_AUTHORIZATION_NOT_TRANSACTIONAL: 500, SETTLEMENT_AUTHORITY_UNAVAILABLE: 503,
+    // WAVE 6 / SC-3 — an explicit distribution_type outside the domain is a
+    // client error, not a server error, and is rejected BEFORE any write.
+    SPV_DISTRIBUTION_TYPE_INVALID: 400,
+    // WAVE 6 / CP-SPV-16 + CP-SPV-34 — the fee resolver fails CLOSED. A missing
+    // schedule row is 503 ("we cannot price this right now"), never a silent 0.
+    SPV_FEE_SCHEDULE_MISSING: 503, SPV_FEE_SCHEDULE_INVALID: 500,
+    SPV_FEE_SCHEDULE_UNAVAILABLE: 503,
+    /* WAVE 26 / S-3 SECOND PATH — the `spv_fee` view is not known to be loaded.
+       503, matching SPV_FEE_SCHEDULE_UNAVAILABLE: the request is valid and the
+       vehicle is fine; the server simply cannot price it right now and will not
+       guess a zero. Retryable, and never a 400 the GP might try to "fix". */
+    FEE_STATE_UNKNOWN: 503,
+    // WAVE 6 / CP-SPV-25 — 1:1 subscription uniqueness.
+    SUBSCRIPTION_ALREADY_EXISTS: 409,
+    // WAVE 6 / FE-3 — the rolling-close window is DB-driven and fails closed.
+    SPV_CLOSE_WINDOW_POLICY_MISSING: 503, INVALID_CLOSE_WINDOW: 400,
   };
   return res.status(map[msg] ?? 500).json({ error: msg });
 }
@@ -119,7 +256,17 @@ export function registerSpvEngineRoutes(app: Express): void {
       const body = (req.body ?? {}) as Record<string, unknown>;
       // Preserve the original untyped payload for createSpv (its typed param is
       // satisfied by the store's own validation, as before this change).
-      const createBody = req.body ?? {};
+      // WAVE 5 / P-4 — normalise terms.hurdleRatePct from PERCENT-AS-WRITTEN to
+      // a FRACTION at the route boundary, BEFORE it reaches createSpv and is
+      // persisted into the terms blob. The wizard
+      // (client/src/pages/partner/PartnerSpvEngine.tsx:257, field labelled
+      // "Hurdle %" with placeholder "e.g. 8") posts the number 8 for an 8%
+      // hurdle; unconverted it hit Math.min(1, n) in spvOfflineOps and became a
+      // 100% preferred return. Out-of-domain values now REJECT (400) instead of
+      // clamping. This route and the PATCH below are the only two paths on which
+      // a client-supplied terms blob reaches the store.
+      const createBody = { ...((req.body ?? {}) as Record<string, unknown>) };
+      if ("terms" in createBody) createBody.terms = normaliseSpvTermsHurdle(createBody.terms);
       // 1c — a full launch sign-off is REQUIRED before an SPV can be created.
       // The signer must type their full legal name AND explicitly accept the
       // versioned attestation. Identity of record is the SESSION user, never a
@@ -145,14 +292,18 @@ export function registerSpvEngineRoutes(app: Express): void {
           userId: ctx.userId,
           signerLegalName: signoffLegalName,
           signerSubRole: ctx.partnerSubRole ?? null,
-          ip: (req.headers["x-forwarded-for"] as string) || req.socket?.remoteAddress || null,
+          ip: resolveRateLimitClientIp(req), /* WAVE 22 · ITEM 2 — trusted-hop resolution, never the raw header */
           userAgent: (req.headers["user-agent"] as string) ?? null,
         });
       } catch {
         return res.status(500).json({ error: "SIGNOFF_PERSIST_FAILED" });
       }
       // Sign-off is now durably recorded; create the SPV and link the two.
-      const spv = spvEngineStore.createSpv(ctx.partnerId, createBody, ctx.userId);
+      // The cast restores the pre-P-4 typing exactly: `req.body` was passed here
+      // untyped and validated by the store. Spreading it to normalise `terms`
+      // widened the static type to Record<string, unknown>, nothing more — the
+      // runtime payload and the store's own validation are unchanged.
+      const spv = spvEngineStore.createSpv(ctx.partnerId, createBody as Parameters<typeof spvEngineStore.createSpv>[1], ctx.userId);
       linkSignoffToSpv(signoff.id, spv.id);
       res.status(201).json({ spv, signoff: { id: signoff.id, signedAt: signoff.signedAt, attestationVersion: signoff.attestationVersion } });
     } catch (e) { err(res, e); }
@@ -194,7 +345,12 @@ export function registerSpvEngineRoutes(app: Express): void {
 
   app.patch("/api/partner/me/spv/:spvId", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
     try {
-      const spv = spvEngineStore.updateSpv(req.partnerContext!.partnerId, String(req.params.spvId), req.body ?? {}, req.partnerContext!.userId);
+      // WAVE 5 / P-4 — SECOND PATH to the same persisted terms blob. The POST
+      // above is not the only writer; a GP can edit the hurdle after creation
+      // through this PATCH. Both are normalised, or the defect simply moves.
+      const patchBody = { ...((req.body ?? {}) as Record<string, unknown>) };
+      if ("terms" in patchBody) patchBody.terms = normaliseSpvTermsHurdle(patchBody.terms);
+      const spv = spvEngineStore.updateSpv(req.partnerContext!.partnerId, String(req.params.spvId), patchBody, req.partnerContext!.userId);
       res.json({ spv });
     } catch (e) { err(res, e); }
   });
@@ -249,12 +405,61 @@ export function registerSpvEngineRoutes(app: Express): void {
     res.json({ obligations: spvEngineStore.listFeeObligations(pid, String(req.params.spvId)) });
   });
 
-  // Collect a fixed fee obligation THROUGH the existing payment ledger.
+  /* WAVE 1A / S-2 — SINK 1 CLOSED (was `:256`, `const outcome = (req.body ?? {}).outcome …`).
+   *
+   * The request body is NEVER READ on this route. There is no `outcome`
+   * parameter, no default, and no enum value a partner can send that reaches
+   * `state = "paid"`. The only settlement a partner can attempt is a REAL one,
+   * through the gateway — and `authorizeGatewaySettlement` throws
+   * `PAYMENT_GATEWAY_UNAVAILABLE` (503) until a gateway is wired, because there
+   * is none in this call graph (paymentGatewayAdapter.ts is sacred and
+   * unintegrated; paymentStore.ts:127 defaults `forceState` to "demo").
+   *
+   * Deliberately NOT hardcoded to `"succeeded"` here — that was Review A's exact
+   * finding against v7 (a hardcoded literal at `:257` passed all four v7 ACs and
+   * left the hole wide open). Note this route is partner-gated, NOT admin-gated;
+   * the admin settlement path is a separate route below. */
   app.post("/api/partner/me/spv/:spvId/fee-obligations/:obId/charge", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
     try {
       const pid = req.partnerContext!.partnerId;
-      const outcome = (req.body ?? {}).outcome === "failed" ? "failed" : "succeeded";
-      res.json({ obligation: spvEngineStore.chargeFeeObligation(pid, String(req.params.spvId), String(req.params.obId), pid, outcome) });
+      const spvId = String(req.params.spvId);
+      const obId = String(req.params.obId);
+      const ob = spvEngineStore.listFeeObligations(pid, spvId).find((o) => o.id === obId);
+      if (!ob) return res.status(404).json({ error: "FEE_OBLIGATION_NOT_FOUND" });
+      // Throws PAYMENT_GATEWAY_UNAVAILABLE today. When Airwallex lands, this call
+      // returns an authorization derived from the gateway's answer — not the body.
+      const settlement = authorizeGatewaySettlement({
+        purpose: "fee_obligation", spvId, obligationId: obId,
+        amountMinor: ob.amountMinor, currency: ob.currency, customerId: pid,
+      });
+      res.json({ obligation: spvEngineStore.chargeFeeObligation(pid, spvId, obId, pid, settlement) });
+    } catch (e) { err(res, e); }
+  });
+
+  /* WAVE 1A / S-2 — the ADMIN-ONLY settlement path (ASSUMPTION A-1).
+   *
+   * Closing S-2 makes `paid` unreachable until a gateway exists, which aborts
+   * every carry-bearing distribution via the fail-closed `_collectCarryObligation`
+   * and jams `hasUnsettledFixedFees` at spvEngineStore.ts:695. v6 shipped exactly
+   * that and was rejected for removing the only settlement outcome. This route
+   * restores a REAL settlement outcome for a Capavate platform admin
+   * (`tenant_admin_capavate`) and for nobody else. A partner session never
+   * carries `isAdmin`, so no partner role can reach it. */
+  app.post("/api/admin/consortium-spv/:spvId/fee-obligations/:obId/settle", (req: Request, res: Response) => {
+    try {
+      const spvId = String(req.params.spvId);
+      const spv = spvEngineStore.adminListAll().find((s) => s.id === spvId);
+      if (!spv) return res.status(404).json({ error: "SPV_NOT_FOUND" });
+      const obId = String(req.params.obId);
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      // Throws ADMIN_REQUIRED (403) for every non-platform-admin caller.
+      const settlement = authorizePlatformAdminSettlement(req, {
+        purpose: "fee_obligation", spvId, obligationId: obId,
+        outcome: body.outcome, reason: body.reason,
+      });
+      res.json({
+        obligation: spvEngineStore.chargeFeeObligation(spv.sponsorPartnerId, spvId, obId, spv.sponsorPartnerId, settlement),
+      });
     } catch (e) { err(res, e); }
   });
 
@@ -382,7 +587,8 @@ export function registerSpvEngineRoutes(app: Express): void {
       roundId: dep.companyRoundId,
       companyId: dep.companyId,
       investorId: spv.id,
-      amount: minorToDecimal(dep.amountMinor),
+      // CP-SPV-31 sink 4: the deployment's own currency, never an assumed 2dp.
+      amount: minorToDecimal(dep.amountMinor, dep.currency),
       currency: dep.currency,
       shares,
     });
@@ -392,9 +598,44 @@ export function registerSpvEngineRoutes(app: Express): void {
   });
 
   /* ── distributions / waterfall ─────────────────────────────────────────── */
+  /* WAVE 1A / S-2 — SINK 2 CLOSED (was `req.body ?? {}` forwarded WHOLESALE into
+   * recordDistribution, whose `data.collectionOutcome` at spvEngineStore.ts:1456
+   * reached `_collectCarryObligation:793` → `chargeFeeObligation` → `paid`).
+   *
+   * The body is now WHITELISTED to four fields by a `.strict()` schema, so no
+   * settlement key survives — and even if one did, `recordDistribution` no longer
+   * reads a settlement outcome out of `data` at all: the authorization is a
+   * separate argument this route never supplies. A partner-initiated distribution
+   * with non-zero carry therefore aborts fail-closed with
+   * SETTLEMENT_AUTHORIZATION_REQUIRED (403) and writes no distribution row. */
   app.post("/api/partner/me/spv/:spvId/distributions", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
     try {
-      res.status(201).json({ distribution: spvEngineStore.recordDistribution(req.partnerContext!.partnerId, String(req.params.spvId), req.body ?? {}, req.partnerContext!.userId) });
+      assertNoSmuggledSettlement(req.body);
+      res.status(201).json({ distribution: spvEngineStore.recordDistribution(req.partnerContext!.partnerId, String(req.params.spvId), pickDistributionBody(req.body), req.partnerContext!.userId) });
+    } catch (e) { err(res, e); }
+  });
+
+  /* WAVE 1A / S-2 — ADMIN-ONLY carry-bearing distribution (ASSUMPTION A-1).
+   *
+   * Keeps distributions operable and testable before Airwallex lands. Same body
+   * whitelist; the settlement outcome is minted from the ADMIN's session, never
+   * from the body's `collectionOutcome` (that key is stripped by `.strict()`). */
+  app.post("/api/admin/consortium-spv/:spvId/distributions", (req: Request, res: Response) => {
+    try {
+      const spvId = String(req.params.spvId);
+      const spv = spvEngineStore.adminListAll().find((s) => s.id === spvId);
+      if (!spv) return res.status(404).json({ error: "SPV_NOT_FOUND" });
+      const raw = (req.body ?? {}) as Record<string, unknown>;
+      assertNoSmuggledSettlement(raw);
+      // The admin states the outcome under its own explicit key, and it is minted
+      // into an authorization only after `isPlatformAdmin` passes. It is NEVER a
+      // field of the object handed to `recordDistribution`.
+      const settlement = authorizePlatformAdminSettlement(req, {
+        purpose: "distribution_carry", spvId, outcome: raw.settlementOutcome, reason: raw.settlementReason,
+      });
+      res.status(201).json({
+        distribution: spvEngineStore.recordDistribution(spv.sponsorPartnerId, spvId, pickDistributionBody(raw), getUserContext(req).userId, settlement),
+      });
     } catch (e) { err(res, e); }
   });
 
@@ -431,12 +672,40 @@ export function registerSpvEngineRoutes(app: Express): void {
   app.post("/api/partner/me/spv/:spvId/distributions/preview", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
     try {
       const b = req.body ?? {};
-      const split = spvEngineStore.previewDistributionSplit(req.partnerContext!.partnerId, String(req.params.spvId), {
+      const partnerId = req.partnerContext!.partnerId;
+      const spvId = String(req.params.spvId);
+      /* WAVE 14 / P-7 — `undefined`, NOT `null`, when the caller says nothing.
+         `?? null` here would have defeated the store-side default: null is an
+         explicit "no hurdle" and would suppress the SPV's own agreed term. */
+      const explicitHurdle =
+        b.hurdleRatePct === null || b.hurdleRatePct === undefined || b.hurdleRatePct === "" ? undefined : b.hurdleRatePct;
+      const stored = spvEngineStore.storedHurdleFraction(partnerId, spvId);
+      const split = spvEngineStore.previewDistributionSplit(partnerId, spvId, {
         grossProceedsMinor: Number(b.grossProceedsMinor),
-        hurdleRatePct: b.hurdleRatePct ?? null,
+        hurdleRatePct: explicitHurdle as number | null | undefined,
         gpCatchUpPct: b.gpCatchUpPct ?? null,
       });
-      res.json({ split });
+      /* The preview now SAYS which hurdle it used and where it came from, so a
+         GP can see that the SPV's agreed term was applied rather than guessing
+         from the tier amounts. */
+      res.json({
+        split,
+        hurdleUsed: {
+          fraction: explicitHurdle !== undefined ? Number(explicitHurdle) : stored.fraction,
+          source: explicitHurdle !== undefined ? "request" : stored.source,
+          termsAsWritten: stored.asWritten,
+        },
+      });
+    } catch (e) { err(res, e); }
+  });
+
+  /* WAVE 14 / P-7 — the READ that makes `terms.hurdleRatePct` reachable from
+     the UI. Before this, the only way to learn an SPV's agreed hurdle was to
+     read the raw terms blob, which no client did — so the launch wizard's Hurdle
+     field was write-only. Read-only route; it persists nothing. */
+  app.get("/api/partner/me/spv/:spvId/hurdle", requirePartnerAuth, (req: Request, res: Response) => {
+    try {
+      res.json({ hurdle: spvEngineStore.storedHurdleFraction(req.partnerContext!.partnerId, String(req.params.spvId)) });
     } catch (e) { err(res, e); }
   });
 
@@ -444,6 +713,18 @@ export function registerSpvEngineRoutes(app: Express): void {
   app.get("/api/partner/me/spv/:spvId/close-summary", requirePartnerAuth, (req: Request, res: Response) => {
     try {
       res.json({ summary: spvEngineStore.closeSummary(req.partnerContext!.partnerId, String(req.params.spvId)) });
+    } catch (e) { err(res, e); }
+  });
+
+  /* WAVE 25 / FE-3 — the resolved rolling-close policy, so the UI can RENDER
+     the real window (and render the fail-closed state) instead of printing a
+     literal 30 it invented client-side. */
+  app.get("/api/partner/me/spv/:spvId/close-window", requirePartnerAuth, (req: Request, res: Response) => {
+    try {
+      res.json({ closeWindow: resolveCloseWindowDays({
+        spvId: String(req.params.spvId),
+        partnerId: req.partnerContext!.partnerId,
+      }) });
     } catch (e) { err(res, e); }
   });
 
@@ -463,9 +744,22 @@ export function registerSpvEngineRoutes(app: Express): void {
   app.post("/api/partner/me/spv/:spvId/reopen", requirePartnerAuth, assertSubRole(...WRITE_ROLES), requireSignedAgreement, (req: Request, res: Response) => {
     try {
       const b = req.body ?? {};
-      const windowDays = Number.isFinite(Number(b.windowDays)) ? Number(b.windowDays) : 30;
-      const spv = spvEngineStore.reopenForRollingClose(req.partnerContext!.partnerId, String(req.params.spvId), windowDays, req.partnerContext!.userId);
-      res.json({ spv });
+      /* WAVE 25 / FE-3. The window is DB policy, resolved spv → partner →
+       * platform. It is NOT a literal and it is NOT client-chosen: a caller
+       * that supplies a `windowDays` disagreeing with policy gets a LOUD 400
+       * rather than a silently-ignored field. Equal is accepted so an existing
+       * client that echoes the resolved value keeps working. A missing policy
+       * row THROWS (503) — it never quietly restores 30. */
+      const policy = resolveCloseWindowDays({
+        spvId: String(req.params.spvId),
+        partnerId: req.partnerContext!.partnerId,
+      });
+      if (b.windowDays !== undefined && b.windowDays !== null) {
+        const asked = Number(b.windowDays);
+        if (!Number.isFinite(asked) || asked !== policy.windowDays) throw new Error("INVALID_CLOSE_WINDOW");
+      }
+      const spv = spvEngineStore.reopenForRollingClose(req.partnerContext!.partnerId, String(req.params.spvId), policy.windowDays, req.partnerContext!.userId);
+      res.json({ spv, closeWindow: policy });
     } catch (e) { err(res, e); }
   });
 
@@ -638,6 +932,64 @@ export function registerSpvEngineRoutes(app: Express): void {
         return res.status(400).json({ error: "INVALID_EMAIL", message: "A valid LP email is required." });
       }
 
+      /* ── WAVE 33 / CP-SPV-31 · SINK 1 ─────────────────────────────────────
+       * WAS, immediately below the ledger commit:
+       *
+       *     const amountMinor = Math.round(Number(amount) * 100);
+       *     ... commitmentMinor: Number.isFinite(amountMinor) ? amountMinor : 0
+       *
+       * TWO defects, and the second is the dangerous one.
+       *
+       * (1) HARDCODED EXPONENT 2. `spv.currency` is free-form and JPY vehicles
+       *     exist. A ¥250,000 commitment was projected as 25,000,000 minor
+       *     units — 100x. `decimalStringToMinor`'s own doc comment names this
+       *     exact expression as forbidden. It is not cosmetic: the projected
+       *     figure feeds `committedRegister`, which is the numerator of the
+       *     deployment coverage gate at spvEngineStore.ts:1600
+       *     (`INSUFFICIENT_COMMITTED_CAPITAL`). A 100x-inflated commitment
+       *     therefore authorises a GP to deploy up to 100x the capital the LPs
+       *     actually committed, into a real company round, through the sacred
+       *     ledger. That is the P0.
+       *
+       * (2) THE CONVERSION RAN AFTER THE LEDGER WRITE, and a non-finite result
+       *     was coerced to `0` rather than refused. So an amount this platform
+       *     cannot represent produced a committed LEDGER ENTRY paired with a
+       *     ZERO commitment on the roster — money charged with nothing
+       *     recording it, the same shape as the carry-before-distribution
+       *     defect. Silence, not an error.
+       *
+       * The conversion is now performed HERE, BEFORE any ledger write, and a
+       * value the currency cannot represent is REFUSED (400) rather than
+       * rounded or zeroed. Nothing is committed that cannot then be recorded.
+       */
+      let amountMinorExact: bigint;
+      try {
+        amountMinorExact = decimalStringToMinor(amount, currency, "amount");
+      } catch {
+        return res.status(400).json({
+          error: "INVALID_AMOUNT",
+          message:
+            `The amount ${amount} cannot be represented exactly in ${currency}. ` +
+            "Nothing has been committed. Enter an amount with no more decimal places than this currency allows.",
+        });
+      }
+      if (amountMinorExact <= BigInt(0)) {
+        return res.status(400).json({
+          error: "INVALID_AMOUNT",
+          message: "A commitment must be a positive amount. Nothing has been committed.",
+        });
+      }
+      // The roster projection carries `number`. Refuse rather than lose precision
+      // silently at the boundary — an amount past 2^53 minor units is not a
+      // rounding problem, it is an unrepresentable one.
+      if (amountMinorExact > BigInt(Number.MAX_SAFE_INTEGER)) {
+        return res.status(400).json({
+          error: "AMOUNT_TOO_LARGE",
+          message: "This amount is too large to record exactly. Nothing has been committed.",
+        });
+      }
+      const amountMinor = Number(amountMinorExact);
+
       // Deterministic per-LP + per-SPV keys → idempotent re-commit (no dup line).
       const stableKey = createHash("sha256").update(investorEmail, "utf8").digest("hex").slice(0, 16);
       const investorId = `ext_${stableKey}`;
@@ -674,12 +1026,14 @@ export function registerSpvEngineRoutes(app: Express): void {
       }
 
       // PROJECTION — reflect the authoritative commit onto the SPV roster.
-      const amountMinor = Math.round(Number(amount) * 100);
+      // `amountMinor` was converted and validated ABOVE, before the ledger
+      // write, so this can no longer fall back to a zero that would leave a
+      // committed ledger entry unrecorded on the roster.
       let subscription;
       try {
         subscription = spvEngineStore.projectLpCommitted(ctx.partnerId, spvId, {
           investorId,
-          commitmentMinor: Number.isFinite(amountMinor) ? amountMinor : 0,
+          commitmentMinor: amountMinor,
           currency,
           investorPersona: "partner",
         });
@@ -733,5 +1087,67 @@ export function registerSpvEngineRoutes(app: Express): void {
       );
       res.status(201).json({ fee });
     } catch (e) { err(res, e); }
+  });
+
+  /* ═════════════════════════════════════════════════════════════════════════ *
+   *  WAVE 3F / ITEM 4 — DEPLOYMENT-FEE BILLING: QUEUE, INSPECT, RETRY
+   * ═════════════════════════════════════════════════════════════════════════ *
+   * W10 REVIEW A, MAJOR: the deployment persists before the fee hook, the hook
+   * returns { charged:false } on failure, and the commit route above answers
+   * 409 ALREADY_COMMITTED on any replay (:506) — "No retry route exists
+   * anywhere", so a deployed SPV could be permanently unbilled.
+   *
+   * These three routes are that missing operation. The retry does NOT replay
+   * the blocked deployment commit; it re-runs collection off the durable
+   * `spv_deployment_fee_billing` row (migration 0162) and is idempotent at
+   * three independent layers (billing row state, partner_billing_entries,
+   * spv.deployment_fee_minor), so calling it repeatedly cannot double-charge.
+   *
+   * Adding routes is additive: the silent-drop guard checks for DROPS. */
+
+  /** The retry queue: every deployed engine SPV that still owes a fee. */
+  app.get("/api/admin/consortium-spv/deployment-fee/pending", (req: Request, res: Response) => {
+    const ctx = getUserContext(req);
+    if (!ctx?.isAuthed || !ctx.isAdmin) return res.status(403).json({ error: "ADMIN_REQUIRED" });
+    try {
+      res.json({ pending: listPendingEngineSpvDeploymentFees() });
+    } catch (e) { err(res, e); }
+  });
+
+  /** One SPV's billing record — state, attempts and the reason it is blocked. */
+  app.get("/api/admin/consortium-spv/:spvId/deployment-fee", (req: Request, res: Response) => {
+    const ctx = getUserContext(req);
+    if (!ctx?.isAuthed || !ctx.isAdmin) return res.status(403).json({ error: "ADMIN_REQUIRED" });
+    try {
+      const billing = getEngineSpvDeploymentFeeBilling(String(req.params.spvId));
+      if (!billing) return res.status(404).json({ error: "DEPLOYMENT_FEE_BILLING_NOT_FOUND" });
+      res.json({ billing });
+    } catch (e) { err(res, e); }
+  });
+
+  /** IDEMPOTENT retry. `{ charged:false, reason:"already_charged" }` is the
+   *  correct, successful answer for an SPV that has already paid. */
+  app.post("/api/admin/consortium-spv/:spvId/deployment-fee/retry", (req: Request, res: Response) => {
+    const ctx = getUserContext(req);
+    if (!ctx?.isAuthed || !ctx.isAdmin) return res.status(403).json({ error: "ADMIN_REQUIRED" });
+    const spvId = String(req.params.spvId);
+    try {
+      /* WAVE 3F / ITEM 2 remedy, optional: an admin may supply the canonical
+       * tier that was missing. It is validated against the DB-enforced domain
+       * and rejected outright if unknown — never coerced to a default. */
+      const tier = (req.body ?? {}).tier;
+      const partnerId = String((req.body ?? {}).partnerId ?? "");
+      if (tier !== undefined) {
+        if (!partnerId) return res.status(400).json({ error: "SPONSOR_PARTNER_ID_REQUIRED" });
+        setCanonicalPartnerTier(partnerId, tier, "admin");
+      }
+      const result = retryEngineSpvDeploymentFee(spvId);
+      res.json({ result, billing: getEngineSpvDeploymentFeeBilling(spvId) });
+    } catch (e) {
+      if (e instanceof PartnerTierResolutionError) {
+        return res.status(400).json({ error: e.code, detail: e.detail });
+      }
+      err(res, e);
+    }
   });
 }

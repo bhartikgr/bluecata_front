@@ -18,30 +18,50 @@
  */
 import crypto from "crypto";
 import { resolvePartnerFee, FeeResolutionError } from "./partnerFeeResolver";
-import type { PartnerTier } from "../adminContactsStoreShim";
+/* WAVE 3F / ITEM 2 — the tier comes from the canonical durable partner record
+ * and FAILS CLOSED. See server/lib/partnerTierResolver.ts and migration 0161. */
+import { resolveCanonicalPartnerTier } from "./partnerTierResolver";
 
 function nowIso(): string {
   return new Date().toISOString();
 }
 
-/**
- * DB-direct partner tier read. Tier is stored in contacts.metadata_json.tier
- * (see adminContactsStore). Defaults to 'catalyst' (the lowest tier) when
- * absent — matching partnerWorkspaceStore's fallback. Read inside the same
- * transaction via the supplied raw handle so it sees uncommitted writes.
- */
-function readPartnerTier(rawTx: any, partnerId: string): PartnerTier {
-  const row = rawTx
-    .prepare(`SELECT metadata_json FROM contacts WHERE id = ? AND kind = 'consortium_partner'`)
-    .get(partnerId) as { metadata_json: string | null } | undefined;
-  if (!row || !row.metadata_json) return "catalyst";
-  try {
-    const meta = JSON.parse(row.metadata_json) as { tier?: string };
-    const t = meta.tier;
-    if (t === "catalyst" || t === "builder" || t === "amplifier" || t === "nexus" || t === "founding_member") return t;
-  } catch { /* fall through */ }
-  return "catalyst";
-}
+/* ═══════════════════════════════════════════════════════════════════════════ *
+ *  WAVE 3F / ITEM 2 — THE HARDCODED `catalyst` TIER FALLBACK IS GONE.
+ * ═══════════════════════════════════════════════════════════════════════════ *
+ *
+ * WHAT WAS HERE (:27-44 in the frozen v26.10.0 artifact):
+ *
+ *     function readPartnerTier(rawTx: any, partnerId: string): PartnerTier {
+ *       const row = rawTx
+ *         .prepare(`SELECT metadata_json FROM contacts WHERE id = ? AND kind = 'consortium_partner'`)
+ *         .get(partnerId) as { metadata_json: string | null } | undefined;
+ *       if (!row || !row.metadata_json) return "catalyst";
+ *       try {
+ *         const meta = JSON.parse(row.metadata_json) as { tier?: string };
+ *         const t = meta.tier;
+ *         if (t === "catalyst" || t === "builder" || ...) return t;
+ *       } catch { }
+ *       return "catalyst";
+ *     }
+ *
+ * W10 REVIEW A proved that absent contact metadata on a canonical `builder`
+ * partner billed the CATALYST schedule (11100) instead of the BUILDER schedule
+ * (22200): a business tier — a PRICE — chosen by a string literal compiled into
+ * the artifact, read out of a JSON blob that WAVE 4B already found is not the
+ * canonical partner record.
+ *
+ * WHAT IS HERE NOW: `resolveCanonicalPartnerTier` (server/lib/
+ * partnerTierResolver.ts) reads `partner_tier_current` (migration 0161, typed
+ * and CHECK-constrained) cross-checked against the canonical partner record,
+ * and THROWS `PartnerTierResolutionError` when the tier is missing or the two
+ * disagree. Missing tier data now BLOCKS billing. The block is not lossy: the
+ * caller (server/lib/spvEngineDeploymentFeeHook.ts) records a durable `pending`
+ * billing row that an admin fixes and retries idempotently — WAVE 3F / ITEM 4.
+ *
+ * There is no fallback tier in this file, and `grep -n '"catalyst"'
+ * server/lib/spvDeploymentFee.ts` now returns nothing.
+ * ═══════════════════════════════════════════════════════════════════════════ */
 
 /**
  * Charge the SPV deployment fee inside an existing transaction.
@@ -52,7 +72,8 @@ function readPartnerTier(rawTx: any, partnerId: string): PartnerTier {
  * @param rawTx     raw better-sqlite3 handle bound to the SAME connection/txn.
  * @param spvId     the SPV id (spvs.id).
  * @param partnerId the sourcing partner (contacts.id, kind='consortium_partner').
- * @param tier      the partner's tier (caller supplies from partner context).
+ * The partner's tier is NOT a parameter: it is resolved fail-closed from the
+ * canonical durable partner record (WAVE 3F / ITEM 2).
  * @param committedMinor the SPV committed/target amount in minor units (drives band).
  */
 export function chargeSpvDeploymentFee(args: {
@@ -60,13 +81,32 @@ export function chargeSpvDeploymentFee(args: {
   spvId: string;
   partnerId: string;
   committedMinor: number;
+  /**
+   * WAVE 8 ORP-029 — which table carries the SPV row that gets the
+   * deployment_fee_* stamp.
+   *
+   * The original (v25.33) caller was spvFundStore, whose SPVs live in the
+   * LEGACY `spvs` table, so the table name was hardcoded. The canonical SPV
+   * engine (server/spvEngineStore.ts) writes an entirely different table,
+   * `spv`. Charging an engine SPV while stamping `spvs` would UPDATE zero rows
+   * — the fee would be billed but the SPV would never record that it was, and
+   * the first idempotency probe below would never fire again. Defaults to the
+   * legacy table so the existing caller is byte-equivalent in behaviour.
+   */
+  stampTable?: "spvs" | "spv";
 }): { charged: boolean; reason?: string; amountMinor?: number; currency?: string } {
   const { rawTx, spvId, partnerId, committedMinor } = args;
-  const tier = readPartnerTier(rawTx, partnerId);
+  // Whitelisted, never interpolated from caller input.
+  const stampTable: "spvs" | "spv" = args.stampTable === "spv" ? "spv" : "spvs";
+  /* Fail-closed. Throws PartnerTierResolutionError rather than returning a
+   * guessed tier; the caller turns that into a durable, retryable pending
+   * billing record. Reads through the caller's raw handle so it sees the same
+   * transaction's uncommitted writes, exactly as the old read did. */
+  const tier = resolveCanonicalPartnerTier(partnerId, rawTx);
 
   // ---- Idempotency: skip if already charged ----
   const spvRow = rawTx
-    .prepare(`SELECT deployment_fee_paid_at, deployment_fee_minor FROM spvs WHERE id = ?`)
+    .prepare(`SELECT deployment_fee_paid_at, deployment_fee_minor FROM ${stampTable} WHERE id = ?`)
     .get(spvId) as { deployment_fee_paid_at: string | null; deployment_fee_minor: number | null } | undefined;
   if (spvRow && (spvRow.deployment_fee_paid_at || spvRow.deployment_fee_minor !== null)) {
     return { charged: false, reason: "already_charged" };
@@ -98,7 +138,7 @@ export function chargeSpvDeploymentFee(args: {
 
   // ---- Stamp the spvs row (additive columns only) ----
   rawTx.prepare(
-    `UPDATE spvs
+    `UPDATE ${stampTable}
        SET deployment_fee_minor = ?, deployment_fee_currency = ?, deployment_fee_payer = 'partner',
            deployment_fee_paid_at = NULL, deployment_fee_schedule_id = ?
      WHERE id = ?`

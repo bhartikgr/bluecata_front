@@ -12,13 +12,19 @@ import { rawDb } from "../db/connection";
 import { appendAdminAudit } from "../adminPlatformStore";
 import { partnerSpvStore } from "../partnerWorkspaceStore"; /* v25.41 Bug-3 — admin-side SPV creation reuses the existing store (no store changes). */
 import { spvEngineStore } from "../spvEngineStore"; /* Blocker 1 (4D) — admin SPV create/read shim THROUGH the canonical engine so no SPV is ever created outside it. */
-import { isSpvJurisdiction } from "../../shared/spvEngine";
+import { resolveSpvJurisdiction } from "../../shared/spvEngine"; /* WAVE 4A follow-up 2 */
 import { sanitizeErrorMessage } from "./sanitize"; /* v25.33 — scrub raw err.message from the generic 500 path in prod (backlog item 33 extension). The UNIQUE-constraint 409 message is intentionally surfaced as safe admin feedback. */
 /* GROUP C (C6) — fixed per-partner rev-share: query the paid, rev-share-enabled
  * partner-attributed companies and materialise idempotent partner_billing_entries
  * rows (settled via the EXISTING mark-paid endpoint). Auto-trigger deferred. */
 import { listRevShareCandidates, materializeRevShareEntries } from "./partnerRevShare";
 import { resolveEffectiveSeatLimit, TIER_SEAT_LIMITS, type PartnerTier } from "../adminContactsStore"; /* W-V44 FIX R3 */
+/* WAVE 16 / CP-BRG-07 — every fee write in THIS file is an input to
+ * `buildFeeScheduleAggregate`, so each one publishes the invalidation frame the
+ * partner Fee Schedule tab listens for. The frame carries only the revision;
+ * prices are never put on the wire. Publishing is best-effort by construction
+ * (the publisher swallows its own failures) so it can never fail a repricing. */
+import { publishFeeScheduleChanged, publishFeeScheduleChangedForTier } from "./wave15FeeScheduleAggregate";
 
 const FEE_KINDS = new Set([
   "subscription_monthly",
@@ -89,6 +95,8 @@ export function registerPartnerFeeAdminRoutes(app: Express): void {
       return res.status(500).json({ ok: false, error: "insert_failed", message: sanitizeErrorMessage(err) });
     }
     appendAdminAudit(actorOf(req), `partner_fee_schedule:${id}`, "partner_fee_schedule.created", { id, ...b });
+    /* CP-BRG-07 — tier_default / platform_default leg changed. */
+    publishFeeScheduleChangedForTier(tier, "partner_fee_schedule.created");
     res.json({ ok: true, id });
   });
 
@@ -118,16 +126,32 @@ export function registerPartnerFeeAdminRoutes(app: Express): void {
        WHERE id = ?`
     ).run(next.amount_minor, next.currency, next.size_band_min, next.size_band_max, next.effective_from, next.effective_to, nowIso(), id);
     appendAdminAudit(actorOf(req), `partner_fee_schedule:${id}`, "partner_fee_schedule.updated", { id, ...b });
+    /* CP-BRG-07 — the tier is read off the EXISTING row, not the request body:
+     * this route cannot move a row between tiers, so `existing.tier` is the
+     * affected scope. `null` means the platform-default row. */
+    publishFeeScheduleChangedForTier(
+      existing.tier === null || existing.tier === undefined ? null : String(existing.tier),
+      "partner_fee_schedule.updated",
+    );
     res.json({ ok: true });
   });
 
   /* ---- Expire (soft-delete) a fee schedule by setting effective_to = now ---- */
   app.delete("/api/admin/partner-fees/:id", (req: Request, res: Response) => {
     const id = req.params.id;
-    const existing = rawDb().prepare(`SELECT id FROM partner_fee_schedules WHERE id = ?`).get(id);
+    /* CP-BRG-07 — `tier` is now selected as well as `id` because expiring a row
+     * changes the effective price for that tier and the fanout needs the scope.
+     * Read BEFORE the write, since after it the row is expired. */
+    const existing = rawDb().prepare(`SELECT id, tier FROM partner_fee_schedules WHERE id = ?`).get(id) as
+      | { id: string; tier: string | null }
+      | undefined;
     if (!existing) return res.status(404).json({ ok: false, error: "not_found" });
     rawDb().prepare(`UPDATE partner_fee_schedules SET effective_to = ?, updated_at = ? WHERE id = ?`).run(nowIso(), nowIso(), id);
     appendAdminAudit(actorOf(req), `partner_fee_schedule:${id}`, "partner_fee_schedule.expired", { id });
+    publishFeeScheduleChangedForTier(
+      existing.tier === null || existing.tier === undefined ? null : String(existing.tier),
+      "partner_fee_schedule.expired",
+    );
     res.json({ ok: true });
   });
 
@@ -193,6 +217,8 @@ export function registerPartnerFeeAdminRoutes(app: Express): void {
     params.push(partnerId);
     rawDb().prepare(`UPDATE contacts SET ${sets.join(", ")} WHERE id = ?`).run(...params);
     appendAdminAudit(actorOf(req), `contact:${partnerId}`, "partner_fee_override.set", { partnerId, ...b });
+    /* CP-BRG-07 — partner_override leg changed for exactly this one partner. */
+    publishFeeScheduleChanged(String(partnerId), "partner_fee_override.set");
     res.json({ ok: true });
   });
 
@@ -374,7 +400,9 @@ export function registerPartnerFeeAdminRoutes(app: Express): void {
       // admin-created SPV lands in the ONE canonical `spv` table and can never be
       // a non-canonical row. Free-text jurisdiction normalises to a valid enum;
       // legacy-only fields are preserved in `terms` provenance (nothing lost).
-      const canonicalJurisdiction = isSpvJurisdiction(b.jurisdiction) ? b.jurisdiction : "delaware";
+      /* WAVE 4A / follow-up 2 — resolveSpvJurisdiction() (Wave 3C) replaces the
+         hard-coded "delaware" fallback: unknown input becomes "other". */
+      const canonicalJurisdiction = resolveSpvJurisdiction(b.jurisdiction);
       const spv = spvEngineStore.createSpv(
         partnerId,
         {

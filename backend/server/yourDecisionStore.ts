@@ -615,6 +615,37 @@ export function totalSoftCircled(roundId: string): number {
   return total;
 }
 
+/**
+ * Wave 38 · Row 5 — the durable soft-circled-at timestamp.
+ *
+ * `DecisionRecord` has no dedicated `softCircledAt` column, but it does not
+ * need one: every transition is appended to `rec.history` with its `ts`, and
+ * `history` is persisted to `your_decision_records.history_json` (migration
+ * 0107), which is the SOURCE OF TRUTH for this store. The moment a soft-circle
+ * began is therefore already in the database — it is the `ts` of the most
+ * recent history entry whose `to` is `soft_circled`.
+ *
+ * Returns `null` — never a guess, never `Date.now()`, never a client-supplied
+ * value — when the record is not currently soft-circled, or when it is but the
+ * history carries no such entry (legacy rows written before history tracking).
+ * Callers must render nothing rather than show an investor a date we invented.
+ */
+export function deriveSoftCircledAt(rec: DecisionRecord | null | undefined): string | null {
+  if (!rec) return null;
+  if (rec.state !== "soft_circled") return null;
+  const history = Array.isArray(rec.history) ? rec.history : [];
+  for (let i = history.length - 1; i >= 0; i--) {
+    const h = history[i];
+    if (h && h.to === "soft_circled" && typeof h.ts === "string") {
+      // Reject a stored value that is not a usable instant rather than pass
+      // NaN downstream.
+      if (Number.isFinite(new Date(h.ts).getTime())) return h.ts;
+      return null;
+    }
+  }
+  return null;
+}
+
 export function getRecord(invitationId: string): DecisionRecord | null {
   return ensureRecord(invitationId);
 }
@@ -667,7 +698,11 @@ export function registerYourDecisionRoutes(app: Express): void {
     }
     const rec = ensureRecord(invId);
     if (!rec) return res.status(404).json({ error: "invitation_not_found" });
-    res.json(rec);
+    // Wave 38 · Row 5 — additive, derived from the durable history so the
+    // investor's expiry banner has a DB-backed timestamp instead of the
+    // client's in-memory zustand copy. `null` when unknown (see
+    // deriveSoftCircledAt); the UI renders no banner in that case.
+    res.json({ ...rec, softCircledAt: deriveSoftCircledAt(rec) });
   });
 
   // Defect 85: PATCH requires auth + investor must own the invitation.

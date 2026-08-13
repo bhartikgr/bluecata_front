@@ -8,6 +8,7 @@
 import { useState } from "react";
 import { formatMinor } from "@/lib/currency"; /* v25.38 currency sweep */
 import { useQuery } from "@tanstack/react-query";
+import { LoadFailedRefusal } from "@/components/LoadFailedRefusal"; /* WAVE 22 · ITEM 4 */
 import { PageBody, PageHeader } from "@/components/AppShell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -77,7 +78,14 @@ export default function AdminPayments() {
   if (stateFilter !== "__all__") qs.set("state", stateFilter);
   if (since) qs.set("since", new Date(since).toISOString());
 
-  const { data, isLoading, refetch, isFetching } = useQuery<AdminPaymentsResponse>({
+  /* WAVE 22 · ITEM 4 (REVIEW B F-4) — `isError`/`isSuccess` are now consumed.
+     `apiRequest` throws on a non-OK response, so the query DID know the load
+     failed; the table body simply never asked, gating its empty state on
+     `items.length === 0` where `items = data?.items ?? []`. A 403 or a 500 on
+     /api/admin/payments therefore rendered "No payments recorded yet" over a
+     live payment ledger — the worst possible false statement on a money
+     surface. No money is rendered by the refusal, and no count. */
+  const { data, isLoading, isError, isSuccess, refetch, isFetching } = useQuery<AdminPaymentsResponse>({
     queryKey: ["/api/admin/payments", stateFilter, since, offset],
     queryFn: async () => (await apiRequest("GET", `/api/admin/payments?${qs.toString()}`)).json(),
     retry: false,
@@ -155,7 +163,7 @@ export default function AdminPayments() {
               <TableBody>
                 {isLoading ? (
                   <TableRow><TableCell colSpan={10} className="text-center py-6"><div className="h-4 w-32 bg-muted animate-pulse rounded mx-auto" /></TableCell></TableRow>
-                ) : items.length === 0 ? (
+                ) : isSuccess && items.length === 0 ? (
                   /* v25.32 burndown — item 62: richer, filter-aware empty state.
                      The prior copy was a flat "No payments found." which gave an
                      admin no signal about WHY the ledger looked empty (genuinely
@@ -219,6 +227,34 @@ export default function AdminPayments() {
                 )}
               </TableBody>
             </Table>
+
+            {/* WAVE 22 · ITEM 4 — the refusal is a SIBLING of the table, placed
+                AFTER it, and deliberately NOT a <TableRow>. Two reasons:
+                (1) the silent-drop guard identifies panel bodies by positional
+                    path (e.g. TableBody>TableRow#7). Inserting rows ahead of
+                    existing ones renumbers every later row and the guard
+                    correctly reports the originals as DROPPED. The first
+                    attempt at this fix did exactly that and produced 22 drops.
+                (2) a refusal is not a row of the ledger; rendering it as one
+                    invites it to be read as data.
+                When the query errors, `isSuccess` is false so the body above
+                renders no rows at all — the table is genuinely empty of claims,
+                and the assertion about WHY lives here. */}
+            {isError && (
+              <div className="mt-4">
+                <LoadFailedRefusal
+                  what="the payment ledger"
+                  testId="admin-payments-error"
+                  onRetry={() => void refetch()}
+                  isRetrying={isFetching}
+                />
+              </div>
+            )}
+            {!isLoading && !isError && !isSuccess && (
+              <div className="mt-4 text-center text-muted-foreground text-sm" data-testid="admin-payments-not-loaded">
+                The payment ledger has not loaded. Check your connection.
+              </div>
+            )}
 
             {/* Pagination */}
             <div className="flex items-center justify-between mt-4 text-xs text-muted-foreground">

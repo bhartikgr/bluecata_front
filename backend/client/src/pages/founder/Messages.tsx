@@ -11,9 +11,11 @@ import { useMemo, useState, useEffect } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useLocation, useSearch } from "wouter";
 import { MessagesPage } from "@/components/comms/MessagesPage";
+import { MessagingAudienceNotice } from "@/components/comms/MessagingAudienceNotice";
 import { PageHeader } from "@/components/AppShell";
 import { useToast } from "@/hooks/use-toast";
 import { CommsTiersTabs } from "@/components/comms/CommsTiersTabs";
+import { CommsTierActionsPanel } from "@/components/comms/CommsTierActionsPanel"; /* WAVE 18 ORP-043 */
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -302,7 +304,12 @@ export default function Messages() {
 
       {/* Patch v4: only render tiers when we have a real session id. */}
       {meQ?.data?.id ? <CommsTiersTabs userId={meQ.data.id} /> : null}
+      {/* WAVE 18 ORP-043 — sibling element; showAdvocates is the founder-only CRM readback. */}
+      <CommsTierActionsPanel companyId={companyId ?? undefined} showAdvocates />
       <MessagesPage role="founder" hideHeader />
+      {/* WAVE 33 CP-MSG-01 — sibling at the END; same shared audience notice as
+          the partner and investor Messages pages. */}
+      <MessagingAudienceNotice className="mt-4" />
     </div>
   );
 }

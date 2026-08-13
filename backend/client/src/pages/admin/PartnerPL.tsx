@@ -22,6 +22,8 @@ import {
 import { BarChart3, CheckCircle2 } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+/* WAVE 3A (P-3) — shared fraction→percent display helper. */
+import { formatFractionAsPercent } from "@/lib/percentDisplay";
 
 interface PLEntry {
   id: string;
@@ -183,7 +185,17 @@ export default function PartnerPL() {
                       <TableCell className="text-xs text-muted-foreground">{e.dealRef || e.spvFundId || "—"}</TableCell>
                       <TableCell className="text-right text-xs">{e.amountFundedMinor ? fmtMoney(e.amountFundedMinor) : "—"}</TableCell>
                       <TableCell className="text-right text-xs">
-                        {e.commissionPct ? `${e.commissionPct}%` : <span className="text-muted-foreground">—</span>}
+                        {/* WAVE 3A (P-3) — `partner_billing_entries.commission_pct`
+                            is a REAL holding a FRACTION. Every writer proves it:
+                            partnerConsortiumRoutes.ts:285-295 inserts the same
+                            `pct` it multiplies by (`amount_minor * pct`),
+                            resolved from COMMISSION_RATE (0.02–0.06) at :57-60;
+                            spvDeploymentFee.ts:115 and partnerRevShare.ts:179
+                            insert literal 0 for flat fees. Rendering the bare
+                            value showed a 2% commission as "0.02%". Display-only
+                            fix — the column is untouched. 0 keeps falling through
+                            to "—" (flat-fee rows have no percentage). */}
+                        {e.commissionPct ? formatFractionAsPercent(e.commissionPct, { digits: 2 }) : <span className="text-muted-foreground">—</span>}
                       </TableCell>
                       <TableCell className="text-right font-medium">{fmtMoney(e.commissionMinor)}</TableCell>
                       <TableCell>

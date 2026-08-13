@@ -17,6 +17,7 @@ import { AppCard } from "@/components/ui/app-card";
 // no parallel backend.
 import { MessagesWidget } from "@/components/comms/MessagesWidget";
 import { PostsFeed } from "@/components/comms/PostsFeed";
+import { VentureMarketsCard } from "@/components/collective/widgets/VentureMarketsCard";
 
 /* GROUP C (C5) — the dynamic effective plan the server composes for THIS
    partner (price incl. per-partner override, commission, report-only quota,
@@ -47,6 +48,11 @@ interface PartnerMeResp {
   commissionPct?: number | null;
   partnerType?: string | null;
   region?: string | null;
+  /* WAVE 7B FE-14 (DEF-060) — additive, DISPLAY-only. Derived server-side from
+     contacts.subscription_id at server/partnerRoutes.ts. Absent on an older
+     server, which is why the label below treats undefined as "unknown" and
+     falls back to neutral wording rather than to the old false claim. */
+  subscriptionState?: "subscribed" | "unsubscribed" | "unknown" | null;
 }
 
 interface DashboardSnapshot {
@@ -211,7 +217,30 @@ export default function PartnerDashboard() {
                     )}
                 </div>
                 <div data-testid="plan-price">
-                  <div className="text-xs text-[var(--cv-color-text-muted)] mb-1">Your subscription</div>
+                  {/* WAVE 7B FE-14 (DEF-060) — the price below has always been
+                      DB-driven (partnerEffectivePlan resolves a partner
+                      override, else the tier's advertised platform_fees row);
+                      the WAVE 7 citation check confirmed that and found the
+                      residual defect to be this LABEL. It read "Your
+                      subscription" for every partner, including Path-1
+                      partners who hold no subscription at all — a false
+                      statement about money. The number is unchanged; only the
+                      heading now tells the truth about what it is. */}
+                  {/* The heading is written as TWO literal branches rather than
+                      one interpolated string on purpose. The silent-drop guard
+                      fingerprints copy by the TEXT of the node, so collapsing
+                      this into {cond ? "Your subscription" : …} reads as a
+                      REMOVED copy string and blocks the build — it did, on the
+                      first run of this change. Wave 7 §3.4 precedent: restore
+                      the expression byte-for-byte instead of allow-listing.
+                      The literal below is unchanged from the original line. */}
+                  {planQ.data.subscriptionState === "unsubscribed" ? (
+                    <div className="text-xs text-[var(--cv-color-text-muted)] mb-1" data-testid="plan-price-label-advertised">
+                      Tier price (no active subscription)
+                    </div>
+                  ) : (
+                    <div className="text-xs text-[var(--cv-color-text-muted)] mb-1">Your subscription</div>
+                  )}
                   <div className="text-xl font-semibold" data-testid="kpi-plan-price">
                     {formatMinor(
                       planQ.data.effectivePlan.effectivePrice.amountMinor,
@@ -222,6 +251,13 @@ export default function PartnerDashboard() {
                   </div>
                   {planQ.data.effectivePlan.effectivePrice.source === "partner_override" && (
                     <div className="text-xs mt-1 text-emerald-600" data-testid="price-custom-badge">Custom partner price</div>
+                  )}
+                  {/* FE-14 — say plainly that nothing is being billed, rather
+                      than leaving a price on screen that implies it is. */}
+                  {planQ.data.subscriptionState === "unsubscribed" && (
+                    <div className="text-xs mt-1 text-[var(--cv-color-text-faint)]" data-testid="plan-price-not-billed">
+                      You are not currently billed a subscription. This is the advertised price for your tier.
+                    </div>
                   )}
                 </div>
                 <div data-testid="plan-revshare">
@@ -264,6 +300,32 @@ export default function PartnerDashboard() {
               <div className="cv-card-title text-sm font-semibold mb-3">Network posts</div>
               <PostsFeed role="investor" basePath="/collective/partner" maxPosts={3} viewAllHref="/collective/partner/posts" />
             </AppCard>
+          </div>
+          {/* WAVE 20 / FE-20 — WIRING, not a build. The Global Venture &
+              Early-Stage Markets widget already existed
+              (client/src/components/collective/widgets/VentureMarketsCard.tsx),
+              reading GET /api/feeds/venture-markets
+              (server/ventureMarketsStore.ts:321), and the admin-driven provider
+              selection behind it already shipped too
+              (GET/POST /api/admin/market-data-integrations,
+              server/collectiveAdminSettingsRoutes.ts:133,:146, with the UI at
+              client/src/pages/admin/AdminIntegrations.tsx). What was missing was
+              a door on the PARTNER side: the card was mounted at exactly ONE
+              place, client/src/pages/collective/CollectiveDashboard.tsx:281.
+              Partners — the audience for early-stage market context — had no
+              way to see it. Mounting the SAME component against the SAME
+              endpoint adds no second door onto the data and no second source of
+              truth.
+
+              The feed is gated by requireCollectiveMember
+              (server/lib/requireCollectiveMember.ts:93). A partner who is not an
+              active Collective member therefore gets a 403, and the card renders
+              that refusal as copy via collectiveWidgetErrorText
+              ("Collective membership required.") — never a fabricated figure and
+              never a silent empty table. That is the correct visible outcome,
+              not a reason to leave the widget unmounted. */}
+          <div className="md:col-span-3" data-testid="card-venture-markets">
+            <VentureMarketsCard />
           </div>
           {tierAtLeast(role.identity.tier, "nexus") && (
             <AppCard className="md:col-span-3 border-dashed" data-testid="card-cross-portfolio">

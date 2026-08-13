@@ -25,7 +25,12 @@ import type { Express, Request, Response } from "express";
 import { requirePartnerAuth, assertSubRole } from "./lib/requirePartnerAuth";
 import { getUserContext } from "./lib/userContext";
 import { partnerAttributionStore } from "./partnerWorkspaceStore";
-import { managedFounderStore, GateError, type EngagementMode } from "./managedFounderStore";
+import {
+  managedFounderStore,
+  GateError,
+  SEEDABLE_PARTNER_TYPES,
+  type EngagementMode,
+} from "./managedFounderStore";
 
 /** Returns true iff companyId is attributed to this partner (partner-scoped). */
 function isAttributed(partnerId: string, companyId: string): boolean {
@@ -168,6 +173,30 @@ export function registerMfcrmRoutes(app: Express): void {
       } catch (e) { sendError(res, e); }
     },
   );
+
+  /**
+   * WAVE 17 ORP-031 — LIST hand-overs for the calling partner.
+   *
+   * THE GAP THIS CLOSES. `POST .../handover` (above) returns an id and
+   * `POST .../handovers/:handoverId/confirm` (below) needs one, but nothing could
+   * read a hand-over back: the client held the id in React state, so a refresh, a
+   * second operator, or a founder-initiated hand-over left a durable
+   * `mf_handover` row that no surface could reach or confirm. Partner-scoped by
+   * `req.partnerContext.partnerId` — the id is never taken from the client.
+   *
+   * Read-only, so it carries `requirePartnerAuth` but no `assertSubRole` write
+   * gate, matching every other GET in this file.
+   */
+  app.get("/api/partner/me/mfcrm/handovers", requirePartnerAuth, (req: Request, res: Response) => {
+    const pid = req.partnerContext!.partnerId;
+    try {
+      const handovers = managedFounderStore.listHandovers(pid, {
+        engagementId: req.query.engagementId ? String(req.query.engagementId) : null,
+        status: req.query.status ? String(req.query.status) : null,
+      });
+      res.json({ handovers });
+    } catch (e) { sendError(res, e); }
+  });
 
   /* Hand-over confirm (partner-initiated). Confirming into Mode A re-runs GATE 6. */
   app.post(
@@ -400,14 +429,36 @@ export function registerMfcrmRoutes(app: Express): void {
 
   app.get("/api/admin/mfcrm/capability/:partnerId", (req: Request, res: Response) => {
     if (!requireAdminCtx(req, res)) return;
-    res.json({ capability: managedFounderStore.getCapabilityProfile(String(req.params.partnerId)) });
+    /* WAVE 17 ORP-031 — `seedableTypes` is returned alongside the profile so the
+       admin capability surface renders the seed choices from the ONE server-side
+       declaration (`SEEDABLE_PARTNER_TYPES`, server/managedFounderStore.ts:222)
+       that `seedCapabilityProfile` validates against, instead of a second copy
+       hardcoded in the client that could drift out of agreement with the
+       validator and produce INVALID_CAPABILITY_SEED_TYPE from a dropdown. */
+    res.json({
+      capability: managedFounderStore.getCapabilityProfile(String(req.params.partnerId)),
+      seedableTypes: SEEDABLE_PARTNER_TYPES,
+    });
   });
 
   app.post("/api/admin/mfcrm/capability/:partnerId/seed", (req: Request, res: Response) => {
     if (!requireAdminCtx(req, res)) return;
     const actor = getUserContext(req)?.userId ?? "admin";
+    /* WAVE 7B DA-1 — an engine with no route is not shipped. The store now
+       accepts an explicit capability seed type; without this the new parameter
+       would be unreachable and the defect (a silently UNCLASSIFIED profile for
+       every partner classified after Wave 4B, because contacts.partner_type is
+       read-only and no longer written) would remain unfixable from the admin
+       UI. Optional, so an existing caller that posts no body behaves exactly as
+       before. Invalid values are REJECTED by the store rather than seeding an
+       all-false profile — sendError maps the GateError to a 4xx. */
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const explicitType =
+      typeof body.partnerType === "string" && body.partnerType.trim()
+        ? (body.partnerType.trim() as Parameters<typeof managedFounderStore.seedCapabilityProfile>[2])
+        : undefined;
     try {
-      res.status(201).json({ capability: managedFounderStore.seedCapabilityProfile(String(req.params.partnerId), actor) });
+      res.status(201).json({ capability: managedFounderStore.seedCapabilityProfile(String(req.params.partnerId), actor, explicitType) });
     } catch (e) { sendError(res, e); }
   });
 
@@ -420,6 +471,22 @@ export function registerMfcrmRoutes(app: Express): void {
     } catch (e) { sendError(res, e); }
   });
 
+  /**
+   * WAVE 17 ORP-031 — admin engagement listing. Same defect class as the hand-over
+   * listing: `POST /api/admin/mfcrm/engagements/:partnerId/:engagementId/trial-override`
+   * (below) takes an `:engagementId` that no admin-scoped read returned — the only
+   * engagement listing was `GET /api/partner/me/mfcrm/engagements`, which resolves
+   * the partner from the PARTNER session and is therefore unusable by an
+   * administrator. Reuses `listEngagements`, the same store read the partner
+   * surface uses; no new store method, no migration.
+   */
+  app.get("/api/admin/mfcrm/engagements/:partnerId", (req: Request, res: Response) => {
+    if (!requireAdminCtx(req, res)) return;
+    try {
+      res.json({ engagements: managedFounderStore.listEngagements(String(req.params.partnerId)) });
+    } catch (e) { sendError(res, e); }
+  });
+
   /* Admin: extend/override a Mode-A trial (RF-5 reversible). */
   app.post("/api/admin/mfcrm/engagements/:partnerId/:engagementId/trial-override", (req: Request, res: Response) => {
     if (!requireAdminCtx(req, res)) return;
@@ -429,6 +496,25 @@ export function registerMfcrmRoutes(app: Express): void {
     try {
       managedFounderStore.overrideTrial(String(req.params.partnerId), String(req.params.engagementId), newExpiry, actor);
       res.json({ ok: true });
+    } catch (e) { sendError(res, e); }
+  });
+
+  /**
+   * WAVE 17 ORP-031 — admin hand-over listing. The override route immediately
+   * below takes a `:handoverId` that, before this, an administrator had no way to
+   * obtain: there was no admin listing and the partner-side list did not exist
+   * either. An override endpoint whose only argument is unobtainable is not
+   * shipped.
+   */
+  app.get("/api/admin/mfcrm/handovers/:partnerId", (req: Request, res: Response) => {
+    if (!requireAdminCtx(req, res)) return;
+    try {
+      res.json({
+        handovers: managedFounderStore.listHandovers(String(req.params.partnerId), {
+          engagementId: req.query.engagementId ? String(req.query.engagementId) : null,
+          status: req.query.status ? String(req.query.status) : null,
+        }),
+      });
     } catch (e) { sendError(res, e); }
   });
 

@@ -48,6 +48,7 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { minorToMajorString } from "@/lib/moneyDisplay";
 import {
   ArrowLeft,
   ShieldCheck,
@@ -133,9 +134,11 @@ interface ChainResult {
  * Helpers
  * ============================================================ */
 
+/* WAVE 21 ITEM 5: took a `currency` argument and then ignored it, dividing
+   by a hardcoded 100. JPY (exponent 0) read 100x low. */
 function formatMinorUsd(minor: number | null, currency = "USD"): string {
   if (minor == null) return "";
-  return String(minor / 100);
+  return minorToMajorString(minor, currency);
 }
 
 // v25.38 round-2 (per Opus): the parse partner of `fromMinor` must scale by the

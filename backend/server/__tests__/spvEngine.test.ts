@@ -55,7 +55,8 @@ function get(path: string, user: string) {
 /** Create a launched (non-draft) SPV for the test partner and return its id. */
 async function createSpv(name: string, extra: Record<string, unknown> = {}): Promise<string> {
   const r = await post("/api/partner/me/spv", MANAGING, {
-    name, jurisdiction: "delaware", carryBasis: "whole_spv", status: "open", ...extra,
+    name, jurisdiction: "delaware", carryBasis: "whole_spv", status: "open",
+    signoffLegalName: "Avi Managing", signoffAccepted: true, ...extra,
   });
   expect(r.status).toBe(201);
   return r.body.spv.id as string;
@@ -485,8 +486,13 @@ describe("SPV Engine — distribution waterfall + carry", () => {
       layer: "management", feeType: "carry", carryPct: 0.2,
     });
     await commitLp(id, "inv_lp1", 100000); // Blocker 4 — only committed LPs allocate
-    const r = await post(`/api/partner/me/spv/${id}/distributions`, MANAGING, {
+    // WAVE 1A / S-2 — a CARRY-bearing distribution now requires an unforgeable
+    // settlement authorization. A partner cannot mint one (that was the fee
+    // self-mark hole); until a gateway is wired, the Capavate platform-admin
+    // distributions route is the operable path.
+    const r = await post(`/api/admin/consortium-spv/${id}/distributions`, ADMIN, {
       event: "exit", grossProceedsMinor: 1000000, costBasisMinor: 0,
+      settlementOutcome: "succeeded", settlementReason: "engine carry fixture",
     });
     expect(r.status).toBe(201);
     expect(r.body.distribution.gpCarryMinor).toBe(200000);

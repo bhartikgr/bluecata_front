@@ -68,6 +68,19 @@ interface MessageView {
  authorLabel: string;
  authorIsAnonymous: boolean;
  authorRoleBadge: string;
+ /* WAVE 33 · CP-MSG-01 — present only when the author wrote under PROVEN
+    delegated authority (an ACTIVE mf_engagement at the moment of the send).
+    `partnerName` is nullable because `partner_organizations` is unpopulated on
+    every database inspected in Wave 33 (OQ-33-3); a missing org name renders a
+    stated fallback and is never invented. */
+ delegatedContext?: {
+   partnerId: string;
+   partnerName: string | null;
+   companyId: string;
+   companyName: string | null;
+   engagementId: string;
+   actingUserId: string;
+ };
 }
 
 type FilterTab = "all" | "starred" | "newest" | "dms" | "cap_table" | "soft_circle";
@@ -109,12 +122,42 @@ export function MessagesPage({ role, hideHeader = false }: { role: "founder" | "
   const [activeId, setActiveId] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterTab>(initialFilter ?? "all");
  const [search, setSearch] = useState("");
- const [draft, setDraft] = useState("");
+ const [draft, setDraftState] = useState("");
+ /* WAVE 27 · CP-MSG-05 — mirror of `draft` readable synchronously, without
+    waiting for a render. See the `sendMessage` facade below for why. Wrapping
+    the setter (rather than syncing in a `useEffect`) keeps the ref exact at the
+    moment of the click: an effect would only run after commit, which is the
+    very ordering the silent drop depended on. The wrapper is `setDraft`, so
+    every existing `setDraft(...)` call site — including the Textarea `onChange`
+    expression the guard fingerprints — is untouched. */
+ const draftRef = useRef("");
+ const setDraft = useCallback((v: string | ((prev: string) => string)) => {
+   /* The updater form is real — the `fileRef` deep-link at :222 calls
+      `setDraft((d) => d || ...)`. Resolving it against `draftRef.current`
+      rather than ignoring it keeps the ref and the state in agreement; an
+      earlier version of this wrapper took `string` only, which `tsc` caught.
+      Had it not, the ref would have gone stale exactly on the deep-link path
+      and the send would have posted the wrong body. */
+   const next = typeof v === "function" ? v(draftRef.current) : v;
+   draftRef.current = next;
+   setDraftState(next);
+ }, []);
  const [replyTo, setReplyTo] = useState<MessageView | null>(null);
  // W-FIX1b A7 — channels the server has told us the caller may NOT message
  // (DM policy 403). We surface a clear reason + disable Send instead of the
  // previous silent no-op. Keyed by channelId → human-readable reason.
  const [blockedChannels, setBlockedChannels] = useState<Record<string, string>>({});
+ /* WAVE 27 · CP-MSG-05 — `POST /api/comms/channels/:id/messages` can now answer
+    429 (`server/commsStore.ts`, call-only `collectiveRateLimit`). Before this
+    wave it could not, so this composer had no 429 branch and a limited send
+    would have fallen through to the generic "Send failed" toast — which is the
+    wrong story (the message is fine; the window is full) and a toast is not a
+    rendered state: it expires while the condition persists. Held as state and
+    rendered as a SIBLING element next to the existing blocked banner, never as
+    text spliced into it. `null` = not limited; `0` = limited but the server did
+    not give us a usable `retryAfterMs`, in which case we refuse to invent a
+    countdown. */
+ const [rateLimitedUntil, setRateLimitedUntil] = useState<number | null>(null);
  const [attachDialog, setAttachDialog] = useState(false);
  const [attachment, setAttachment] = useState<{ fileId: string; name: string } | null>(null);
  const { toast } = useToast();
@@ -295,19 +338,45 @@ export function MessagesPage({ role, hideHeader = false }: { role: "founder" | "
    }, 500);
  }, [activeId]);
 
- const sendMessage = useMutation({
- mutationFn: async () => {
- if (!activeId || !draft.trim()) return;
+ const sendMessageMutation = useMutation({
+ /* WAVE 27 · CP-MSG-05 — SILENT MESSAGE DROP, found while making the 429 path
+    reachable. `mutationFn` used to close over `draft` and open with
+    `if (!activeId || !draft.trim()) return;`. But `onMutate` below calls
+    `setDraft("")` (optimistic send) and awaits `cancelQueries` — and React
+    Query reads `mutationFn` from the CURRENT options object, so if the
+    re-render from that `setDraft("")` commits during the await, `mutationFn`
+    is re-created closing over the now-EMPTY draft, hits the guard, and returns
+    without ever calling the API. No request, no error, no toast — while the
+    optimistic bubble is already on screen, so the sender watches their message
+    appear and then silently vanish on the next refetch.
+
+    This is observed, not theorised: instrumenting the old `mutationFn` in
+    `client/src/components/comms/__tests__/wave27_cpmsg05_composer_rate_limited.test.tsx`
+    recorded one invocation with `draft === ""` and zero `apiRequest` calls
+    (WAVE27_REPORT.md §2.3). Whether the race also wins under a browser's
+    scheduler is timing-dependent and NOT claimed here — but a send path whose
+    delivery depends on render scheduling is a defect either way.
+
+    The fix removes the race rather than narrowing it: the text is captured at
+    click time and passed as the mutation VARIABLE, so the value in flight can
+    no longer be edited out from under the request. Behaviour is otherwise
+    unchanged — both call sites (:760 Enter key, :774 Send button) already
+    refuse to fire on an empty draft. */
+ mutationFn: async (text: string) => {
+ if (!activeId || !text.trim()) return;
  const res = await apiRequest("POST", `/api/comms/channels/${encodeURIComponent(activeId)}/messages`, {
- body: draft.trim(),
+ body: text.trim(),
  replyToMessageId: replyTo?.id,
  attachments: attachment ? [attachment] : undefined,
  });
  return res.json();
  },
- onMutate: async () => {
+ onMutate: async (text: string) => {
    // Sprint 19 D — Optimistic send: append temp message immediately.
-   if (!activeId || !draft.trim()) return;
+   /* WAVE 27 · CP-MSG-05 — reads the passed-in `text`, not `draft`, so the
+      optimistic bubble and the request that backs it are guaranteed to carry
+      the same string. */
+   if (!activeId || !text.trim()) return;
    await queryClient.cancelQueries({ queryKey: ["/api/comms/channels", activeId] });
    const prev = queryClient.getQueryData<{ channel: ChannelView; messages: MessageView[] }>(["/api/comms/channels", activeId]);
    // Sprint 22 Wave 1 — DEF-006 fix: use entitlement context as primary identity, not hardcoded fallback.
@@ -316,7 +385,7 @@ export function MessagesPage({ role, hideHeader = false }: { role: "founder" | "
      id: `_temp_${Date.now()}`,
      channelId: activeId,
      authorUserId: currentMeId,
-     body: draft.trim(),
+     body: text.trim(),
      createdAt: new Date().toISOString(),
      starredByUserIds: [],
      reactions: [],
@@ -331,13 +400,15 @@ export function MessagesPage({ role, hideHeader = false }: { role: "founder" | "
        messages: [...prev.messages, tempMsg],
      });
    }
-   const savedDraft = draft;
+   const savedDraft = text;
    setDraft("");
    setReplyTo(null);
    setAttachment(null);
    return { prev, savedDraft };
  },
  onSuccess: () => {
+ /* WAVE 27 · CP-MSG-05 — a send that got through means the window reopened. */
+ setRateLimitedUntil(null);
  queryClient.invalidateQueries({ queryKey: ["/api/comms/channels", activeId] });
  queryClient.invalidateQueries({ queryKey: ["/api/comms/channels"] });
  },
@@ -345,6 +416,19 @@ export function MessagesPage({ role, hideHeader = false }: { role: "founder" | "
    // Rollback and restore draft.
    if (ctx?.prev) queryClient.setQueryData(["/api/comms/channels", activeId], ctx.prev);
    if (ctx?.savedDraft) setDraft(ctx.savedDraft);
+   /* WAVE 27 · CP-MSG-05 — handled BEFORE the 403 branch below, because that
+      branch would otherwise be the only specific one and 429 would land in the
+      generic else. The draft has already been restored above, so the operator
+      can simply resend. */
+   if ((e as any)?.status === 429) {
+     const payload = (e as any)?.payload as { retryAfterMs?: unknown } | null;
+     const ms =
+       payload && typeof payload.retryAfterMs === "number" && payload.retryAfterMs > 0
+         ? payload.retryAfterMs
+         : null;
+     setRateLimitedUntil(ms === null ? 0 : Date.now() + ms);
+     return;
+   }
    // W-FIX1b A7 — never fail silently on a DM permission block. Detect the
    // policy 403 (CANNOT_DM_RECIPIENT / not-authorized) and show a clear,
    // specific reason, and mark this channel blocked so Send is disabled with
@@ -361,6 +445,31 @@ export function MessagesPage({ role, hideHeader = false }: { role: "founder" | "
    }
  },
  });
+
+ /* WAVE 27 · CP-MSG-05 — the seam that lets the silent-drop fix above coexist
+    with the drop guard.
+
+    The fix needs the outgoing text captured BEFORE `onMutate`'s `setDraft("")`
+    can re-render it away. Passing it at the call sites (`mutate(draft)`) does
+    that, but it also rewrites two event-handler expressions the guard
+    fingerprints by text — `Button|onClick|expr:44e630ac3ea3` and
+    `Textarea|onKeyDown|expr:522584fe64ec` — which reads as a removal. Rule 6:
+    restore verbatim, never allowlist.
+
+    So the capture moves off the call sites and behind this facade. Both sites
+    keep their byte-identical `sendMessage.mutate()` / `sendMessage.isPending`
+    text, while `mutate` snapshots `draftRef.current` SYNCHRONOUSLY at click
+    time — before React can process any state update — and hands it to the
+    mutation as a variable. `draftRef` is written by the `setDraft` wrapper on
+    every keystroke, so it is never stale, and `onMutate` clearing the draft
+    afterwards can no longer reach the value already in flight. */
+ const sendMessage = useMemo(
+   () => ({
+     mutate: () => sendMessageMutation.mutate(draftRef.current),
+     isPending: sendMessageMutation.isPending,
+   }),
+   [sendMessageMutation],
+ );
 
  const starMsg = useMutation({
  mutationFn: async ({ id, on }: { id: string; on: boolean }) =>
@@ -425,7 +534,33 @@ export function MessagesPage({ role, hideHeader = false }: { role: "founder" | "
  </div>
  <div className="overflow-auto flex-1">
  {channels.isLoading && <div className="p-3"><Skeleton className="h-32 w-full" /></div>}
- {!channels.isLoading && filteredList.length === 0 && (
+ {/* WAVE 19 FE-13 — A FAILED LOAD IS NOT AN EMPTY INBOX.
+     `filteredList` is derived through `asArray(channels.data)`, which turns a
+     403/500 into `[]`. The empty branch below was gated only on `!isLoading`,
+     so a partner (or founder, or investor) with live threads saw
+     "No conversations yet" plus advice on how to acquire the threads they
+     already have. This is the Wave 18 W-4 defect on a second surface: the
+     refusal must be RENDERED, never rewritten as an absence.
+     `isSuccess` is load-bearing — a PAUSED (offline) query is neither loading
+     nor errored, so `!isLoading && !isError` alone still fabricates the zero
+     for a merely disconnected user. Sibling element; no text node touched. */}
+ {channels.isError && (
+ <div className="p-6 text-center text-sm" role="alert" data-testid="channels-load-failed">
+ <div className="font-medium text-destructive">Conversations could not be loaded</div>
+ <div className="mt-1 text-xs text-muted-foreground">
+ This is a loading failure, not an empty inbox. Your existing conversations are unaffected.
+ </div>
+ <button
+ type="button"
+ className="mt-3 rounded-md border border-border px-3 py-1 text-xs hover-elevate"
+ data-testid="button-retry-channels"
+ onClick={() => { void channels.refetch(); }}
+ >
+ Try again
+ </button>
+ </div>
+ )}
+ {!channels.isLoading && !channels.isError && channels.isSuccess && filteredList.length === 0 && (
  <div className="p-6 text-center text-sm text-muted-foreground" data-testid="empty-channels">
  No conversations yet.
  <div className="mt-3 text-xs">
@@ -557,7 +692,26 @@ export function MessagesPage({ role, hideHeader = false }: { role: "founder" | "
  {/* Messages */}
  <div className="flex-1 overflow-auto p-4 space-y-3 bg-muted/20" data-testid="messages-list">
  {channelDetail.isLoading && <Skeleton className="h-24 w-full" />}
- {!channelDetail.isLoading && msgs.length === 0 && (
+ {/* WAVE 19 FE-13 — same defect on the thread body. `msgs` resolves to `[]`
+     on a failed detail fetch, so a 403 on a channel the viewer just lost
+     access to printed "Be the first to say hi" over a live conversation. */}
+ {channelDetail.isError && (
+ <div className="text-sm text-center py-12" role="alert" data-testid="channel-detail-load-failed">
+ <div className="font-medium text-destructive">This conversation could not be loaded</div>
+ <div className="mt-1 text-xs text-muted-foreground">
+ The messages in it have not been deleted. Try again in a moment.
+ </div>
+ <button
+ type="button"
+ className="mt-3 rounded-md border border-border px-3 py-1 text-xs hover-elevate"
+ data-testid="button-retry-channel-detail"
+ onClick={() => { void channelDetail.refetch(); }}
+ >
+ Try again
+ </button>
+ </div>
+ )}
+ {!channelDetail.isLoading && !channelDetail.isError && channelDetail.isSuccess && msgs.length === 0 && (
  <div className="text-sm text-muted-foreground text-center py-12">
  No messages yet. Be the first to say hi.
  </div>
@@ -594,6 +748,20 @@ export function MessagesPage({ role, hideHeader = false }: { role: "founder" | "
  )}
  {me && m.readByUserIds.length <= 1 && <span>✓</span>}
  </div>
+ {m.delegatedContext && (
+   /* Appended as a SIBLING at the end of the header row's parent, never
+      inserted into an existing text node. */
+   <div
+     data-testid={`msg-delegated-${m.id}`}
+     className={`text-[10px] mb-1 rounded px-1.5 py-0.5 inline-block ${me ? "bg-primary-foreground/15 text-primary-foreground/90" : "bg-amber-50 border border-amber-200 text-amber-900"}`}
+   >
+     On behalf of{" "}
+     <span className="font-medium">
+       {m.delegatedContext.companyName ?? m.delegatedContext.companyId}
+     </span>{" "}
+     · {m.delegatedContext.partnerName ?? "Consortium Partner (organisation name not on file)"}
+   </div>
+ )}
  <div className="leading-relaxed whitespace-pre-wrap">{m.body}</div>
  {m.editedAt && <div className="text-[10px] mt-1 italic opacity-70">edited</div>}
  </div>
@@ -646,6 +814,25 @@ export function MessagesPage({ role, hideHeader = false }: { role: "founder" | "
  <div className="flex items-start gap-2 px-2 py-1.5 rounded bg-amber-50 border border-amber-200 text-[11px] text-amber-900" data-testid="composer-blocked-banner">
  <Lock className="h-3.5 w-3.5 mt-0.5 shrink-0" />
  <span>{blockedChannels[activeId]}</span>
+ </div>
+ )}
+ {/* WAVE 27 · CP-MSG-05 — sibling of the blocked banner, never nested inside
+     it: the two conditions are independent and the guard reads an appended
+     text node as a removal plus an addition. */}
+ {rateLimitedUntil !== null && (
+ <div
+ className="flex items-start gap-2 px-2 py-1.5 rounded bg-destructive/10 border border-destructive/40 text-[11px] text-destructive"
+ role="status"
+ data-testid="composer-rate-limited-banner"
+ >
+ <Lock className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+ <span>
+ You&rsquo;ve sent too many messages in a short time. Your draft has been kept — your
+ next message will go through
+ {rateLimitedUntil > 0
+ ? ` in about ${Math.max(1, Math.ceil((rateLimitedUntil - Date.now()) / 1000))} seconds.`
+ : " shortly."}
+ </span>
  </div>
  )}
  {replyTo && (
@@ -707,7 +894,13 @@ export function MessagesPage({ role, hideHeader = false }: { role: "founder" | "
  </DialogHeader>
  <div className="space-y-2 max-h-64 overflow-y-auto">
  {dataroomFiles.isLoading && <Skeleton className="h-16 w-full" />}
- {!dataroomFiles.isLoading && (dataroomFiles.data ?? []).length === 0 && (
+ {/* WAVE 19 FE-13 — third instance of the same `?? []` sink in this file. */}
+ {dataroomFiles.isError && (
+ <div className="text-sm text-center py-4" role="alert" data-testid="dataroom-files-load-failed">
+ <span className="font-medium text-destructive">Dataroom files could not be loaded.</span>
+ </div>
+ )}
+ {!dataroomFiles.isLoading && !dataroomFiles.isError && dataroomFiles.isSuccess && (dataroomFiles.data ?? []).length === 0 && (
  <div className="text-sm text-muted-foreground text-center py-4">No dataroom files found.</div>
  )}
  {(dataroomFiles.data ?? []).map((f) => (

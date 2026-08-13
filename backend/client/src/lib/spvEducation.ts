@@ -40,8 +40,23 @@ export const SPV_EDU = {
     "A secondary transfer moves an investor's position to someone else. You approve each transfer as the GP; the incoming holder does a one-time accreditation self-declaration if they haven't already, and they count toward your investor-count awareness.",
   actingOnBehalf:
     "You administer this SPV as the GP on behalf of your investors. When you deploy into a company, the founder sees ONE aggregated line — your SPV — on their cap table, never the individual investor list. You keep track of each investor inside the SPV; the founder's round and your vehicle run in parallel.",
+  /* WAVE 36 / ROW 9 — this string used to promise "TVPI/DPI/IRR". Only DPI was
+     ever produced at capital-account granularity, and even that was not shown;
+     the sentence was a dead promise the grid could never keep.
+
+     WHAT CHANGED, EXACTLY:
+       · DPI  — WIRED, not reworded. It is realised (distributions ÷ paid-in),
+                needs no mark, and now comes from the canonical producer in
+                server/lib/spvOfflineOps.ts computeCapitalAccounts, rendered as
+                the appended last column of the grid.
+       · TVPI — COPY CORRECTED. It needs each LP's share of a current NAV mark;
+                no producer exists at this granularity. Vehicle-level TVPI does
+                exist and is on the Performance page, so the copy points there
+                rather than inventing a per-LP number.
+       · IRR  — COPY CORRECTED, same reason: IRR needs dated per-LP flows, which
+                nothing produces. Vehicle-level IRR is on the Performance page. */
   capitalAccounts:
-    "A capital account tracks, per investor: what they committed, what you've confirmed as actually funded, and what they've been paid in distributions. Valuation-based metrics (TVPI/DPI/IRR) appear only once there's data — otherwise we show 'not yet reported.'",
+    "A capital account tracks, per investor: what they committed, what you've confirmed as actually funded, what they've been paid in distributions, and their realised DPI (distributions divided by paid-in capital). DPI reads 'not reported' until capital has actually been called — an investor who has paid in nothing has no DPI, rather than a DPI of zero. TVPI and IRR are NOT shown per investor: both need a current valuation mark or dated per-investor cash flows that this vehicle does not produce. Vehicle-level IRR, DPI and TVPI live on the SPV's Performance page.",
 } as const;
 
 /* D6 — jurisdiction-aware, NON-BLOCKING investor-count awareness. Returns a

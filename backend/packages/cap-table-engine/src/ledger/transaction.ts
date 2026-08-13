@@ -66,8 +66,26 @@ export type RoundClosePayload = {
   roundId: string;
   primaryHash: string;
   referenceHash: string;
-  founderSignoff: { actorId: string; ts: string; ipAddress?: string; identityHash: string };
-  adminSignoff: { actorId: string; ts: string; ipAddress?: string; identityHash: string };
+  /* WAVE 22 · ITEM 1 (REVIEW B F-2) — `ipAddress` and `identityHash` are
+   * NULLABLE. `null` is the explicit "not captured" state, carried with a
+   * reason string, and is the only permitted alternative to a real observed
+   * value. Writers must never synthesise a placeholder address or hash. */
+  founderSignoff: {
+    actorId: string;
+    ts: string;
+    ipAddress?: string | null;
+    ipAddressUnavailableReason?: string;
+    identityHash: string | null;
+    identityHashUnavailableReason?: string;
+  };
+  adminSignoff: {
+    actorId: string;
+    ts: string;
+    ipAddress?: string | null;
+    ipAddressUnavailableReason?: string;
+    identityHash: string | null;
+    identityHashUnavailableReason?: string;
+  };
 };
 
 export type LedgerPayload =

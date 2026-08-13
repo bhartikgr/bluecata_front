@@ -149,13 +149,13 @@ describe("CP Phase A — spvFundStore (DB-backed)", () => {
     expect(spvFundStore.getById(spv.id)?.calledMinor).toBe(400_000);
 
     // OK distribution of $1k: committed(10M) >= distributed(1k) + called(400k) → 10M >= 401k ✓
-    const ok = spvFundStore.recordDistribution({ spvId: spv.id, totalMinor: 100_000 });
+    const ok = spvFundStore.__unsafeSeedLegacyDistributionRowForTests({ spvId: spv.id, totalMinor: 100_000 });
     expect(ok.totalMinor).toBe(100_000);
 
     // Violating distribution: distribute $20M when committed is only $10M
     // committed(10M) >= existing_distributed(100k) + new(20M) + called(400k) → 10M >= 20.5M ✗
     expect(() =>
-      spvFundStore.recordDistribution({ spvId: spv.id, totalMinor: 20_000_000 }),
+      spvFundStore.__unsafeSeedLegacyDistributionRowForTests({ spvId: spv.id, totalMinor: 20_000_000 }),
     ).toThrowError(/INVARIANT_DISTRIBUTION_EXCEEDS_COMMITMENTS/);
   });
 
@@ -314,7 +314,7 @@ describe("CP Phase A — spvFundStore (DB-backed)", () => {
     // GP calls $100k
     spvFundStore.recordCapitalCall({ spvId: spv.id, amountMinor: 10_000_000 });
     // GP distributes $30k dividend
-    spvFundStore.recordDistribution({ spvId: spv.id, totalMinor: 3_000_000, distributionType: "dividend" });
+    spvFundStore.__unsafeSeedLegacyDistributionRowForTests({ spvId: spv.id, totalMinor: 3_000_000, distributionType: "dividend" });
     const r = spvFundStore.reconcile(spv.id);
     expect(r.committedMinor.toString()).toBe("25000000");
     expect(r.calledMinor.toString()).toBe("10000000");

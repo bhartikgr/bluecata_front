@@ -19,6 +19,12 @@ import { updateCompanyProfile } from "../companyProfileStore";
 import { createRound } from "../roundsStore";
 
 const MANAGING = "u_avi_managing";
+// WAVE 1A / S-2 — a CARRY-bearing distribution now needs an unforgeable
+// settlement authorization. The partner route can no longer supply one (that was
+// the fee self-mark hole); the operable path until Airwallex lands is the
+// Capavate platform-admin distributions route.
+const ADMIN = "u_admin";
+const SETTLE = { settlementOutcome: "succeeded", settlementReason: "waterfall math fixture" };
 let app: express.Express;
 
 function post(path: string, user: string, body?: unknown) {
@@ -49,7 +55,7 @@ async function commitLp(spvId: string, investorId: string, commitmentMinor: numb
 
 async function createSpv(name: string, extra: Record<string, unknown> = {}): Promise<string> {
   const r = await post("/api/partner/me/spv", MANAGING, {
-    name, jurisdiction: "delaware", carryBasis: "whole_spv", status: "open", ...extra,
+    name, jurisdiction: "delaware", carryBasis: "whole_spv", status: "open", signoffLegalName: "Avi Managing", signoffAccepted: true, ...extra,
   });
   expect(r.status).toBe(201);
   return r.body.spv.id as string;
@@ -110,8 +116,8 @@ describe("Blocker 4 — waterfall math", () => {
     expect(sub.status).toBe(201);
     expect(sub.body.subscription.status).toBe("review");
     // Even with a valid basis, an uncommitted sub allocates over NOBODY.
-    const r = await post(`/api/partner/me/spv/${id}/distributions`, MANAGING, {
-      event: "exit", grossProceedsMinor: 1000000, costBasisMinor: 600000,
+    const r = await post(`/api/admin/consortium-spv/${id}/distributions`, ADMIN, {
+      event: "exit", grossProceedsMinor: 1000000, costBasisMinor: 600000, ...SETTLE,
     });
     expect(r.status).toBe(409);
     expect(r.body.error).toBe("NO_COMMITTED_LPS");
@@ -136,8 +142,8 @@ describe("Blocker 4 — waterfall math", () => {
     await mgmtCarry(id, 0.2);
     await commitLp(id, "inv_a", 75000);
     await commitLp(id, "inv_bb", 25000);
-    const r = await post(`/api/partner/me/spv/${id}/distributions`, MANAGING, {
-      event: "exit", grossProceedsMinor: 1000000, costBasisMinor: 600000, // profit 400000
+    const r = await post(`/api/admin/consortium-spv/${id}/distributions`, ADMIN, {
+      event: "exit", grossProceedsMinor: 1000000, costBasisMinor: 600000, ...SETTLE, // profit 400000
     });
     expect(r.status).toBe(201);
     expect(r.body.distribution.gpCarryMinor).toBe(80000); // 20% of 400000 profit only
@@ -153,8 +159,8 @@ describe("Blocker 4 — waterfall math", () => {
     const perDep = await createSpv("WF PerDep SPV", { carryBasis: "per_deployment" });
     await mgmtCarry(perDep, 0.2);
     await commitLp(perDep, "inv_pd", 100000);
-    const rPd = await post(`/api/partner/me/spv/${perDep}/distributions`, MANAGING, {
-      event: "exit", grossProceedsMinor: 1000000, costBasisMinor: 600000,
+    const rPd = await post(`/api/admin/consortium-spv/${perDep}/distributions`, ADMIN, {
+      event: "exit", grossProceedsMinor: 1000000, costBasisMinor: 600000, ...SETTLE,
     });
     // per_deployment: carry on THIS deal's profit (1,000,000 − 600,000 = 400,000).
     expect(rPd.body.distribution.gpCarryMinor).toBe(80000);
@@ -162,8 +168,8 @@ describe("Blocker 4 — waterfall math", () => {
     const whole = await createSpv("WF Whole SPV", { carryBasis: "whole_spv" });
     await mgmtCarry(whole, 0.2);
     await commitLp(whole, "inv_ws", 100000);
-    const rWs = await post(`/api/partner/me/spv/${whole}/distributions`, MANAGING, {
-      event: "exit", grossProceedsMinor: 1000000, costBasisMinor: 600000,
+    const rWs = await post(`/api/admin/consortium-spv/${whole}/distributions`, ADMIN, {
+      event: "exit", grossProceedsMinor: 1000000, costBasisMinor: 600000, ...SETTLE,
     });
     // whole_spv: no capital DEPLOYED yet → nets against portfolio contributed
     // capital (0) → the whole gain is above basis (1,000,000).
@@ -182,8 +188,8 @@ describe("Blocker 4 — waterfall math", () => {
     const dep = await post(`/api/partner/me/spv/${id}/deployments`, MANAGING, { companyId, companyRoundId: roundId, amountMinor: 500000 });
     expect(dep.status).toBe(201);
 
-    const r = await post(`/api/partner/me/spv/${id}/distributions`, MANAGING, {
-      event: "exit", grossProceedsMinor: 600000, costBasisMinor: 600000,
+    const r = await post(`/api/admin/consortium-spv/${id}/distributions`, ADMIN, {
+      event: "exit", grossProceedsMinor: 600000, costBasisMinor: 600000, ...SETTLE,
     });
     expect(r.status).toBe(201);
     // carry base = max(0, 600000 − 500000 contributed) = 100000 → 20% = 20000,

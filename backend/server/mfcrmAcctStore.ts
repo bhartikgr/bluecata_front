@@ -18,6 +18,16 @@
 import { randomUUID } from "crypto";
 import { rawDb } from "./db/connection";
 import { log } from "./lib/logger";
+/* WAVE 23 · ITEM 3 — shared cross-currency contract (server/lib/currencyScalar.ts).
+ * Minor units are only ever added WITHIN one currency; a scalar is emitted only
+ * when exactly one currency is present. See fundAdminReport() below. */
+import {
+  addToBucket,
+  bucketsToArray,
+  singleCurrencyScalar,
+  type CurrencyBuckets,
+  type MoneyScalar,
+} from "./lib/currencyScalar";
 import { managedFounderStore, GateError, type CapabilityKey } from "./managedFounderStore";
 
 let ensured = false;
@@ -152,12 +162,61 @@ export const mfcrmAcctStore = {
     ensureAcctTables();
     const engagements = managedFounderStore.listEngagements(partnerId);
     const rebills = this.listRebills(partnerId);
-    const pendingMinor = rebills.filter((r: any) => r.status === "pending").reduce((s: number, r: any) => s + (r.amount_minor ?? 0), 0);
+
+    /* ============================================================
+     * WAVE 23 · ITEM 3 (REVIEW A MAJOR) — the FOURTH cross-currency sum.
+     *
+     * THE DEFECT. `pendingAmountMinor` was
+     *   rebills.filter(pending).reduce((s, r) => s + r.amount_minor, 0)
+     * with NO grouping by `mf_acct_rebill.currency`. 100 USD minor units plus
+     * 100 JPY minor units produced the scalar `200`, which is not 200 of
+     * anything. The first-party UI deliberately does not render the field, but
+     * this is returned verbatim by the authenticated production API
+     * `GET /api/partner/me/mfcrm/acct/fund-admin-report`
+     * (server/managedFounderPersonaRoutes.ts:139-142), so every non-first-party
+     * API consumer was misled.
+     *
+     * THE FIX — identical treatment to the three sites Wave 21 closed
+     * (partnerConsortiumRoutes, partnerBillingStore.commissionPositionByKind,
+     * reportingEngineRoutes): accumulate PER CURRENCY via the shared
+     * `server/lib/currencyScalar` contract, always emit the authoritative
+     * per-currency breakdown, and emit the single scalar only when exactly one
+     * currency is present. Mixed input ⇒ `pendingAmountMinor: null` plus an
+     * explicit `pendingAmount` MoneyScalar carrying
+     * `reason: "needs_fx_conversion"` and the currencies involved.
+     *
+     * NO FX RATE IS INVENTED. There is no rate source in this repository; a
+     * converted total would need net-new rate ingestion, as-of-date semantics
+     * and an audit trail. We signal and stop.
+     *
+     * BACKWARD COMPATIBILITY. The `rebills.pendingAmountMinor` KEY is kept
+     * (consumers index it) and is unchanged for the single-currency case,
+     * which is every existing installation with one currency. It becomes
+     * `null` — never a substitute number — only when the data is genuinely
+     * mixed, which is precisely the case where the old value was wrong.
+     * ============================================================ */
+    const pendingBuckets: CurrencyBuckets = {};
+    for (const r of rebills as any[]) {
+      if (r.status !== "pending") continue;
+      addToBucket(pendingBuckets, r.currency, r.amount_minor ?? 0);
+    }
+    // Genuinely nothing pending ⇒ 0, which is 0 in every currency. Only a
+    // MIXED set is unavailable.
+    const pendingAmount: MoneyScalar = singleCurrencyScalar(pendingBuckets, "USD");
+
     return {
       engagements: engagements.length,
       activeEngagements: engagements.filter((e) => e.status === "ACTIVE").length,
       custodyDocs: this.listCustody(partnerId).length,
-      rebills: { total: rebills.length, pendingAmountMinor: pendingMinor },
+      rebills: {
+        total: rebills.length,
+        /** null when the pending rebills span more than one currency. */
+        pendingAmountMinor: pendingAmount.available ? pendingAmount.minor : null,
+        /** Explicit availability state — render this, never a substitute number. */
+        pendingAmount,
+        /** Authoritative shape. Always present, sorted by currency code. */
+        pendingByCurrency: bucketsToArray(pendingBuckets),
+      },
     };
   },
 };

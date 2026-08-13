@@ -291,12 +291,23 @@ describe("v19 Phase B — Partner workspace DB migration", () => {
     expect(ids).toContain(publicPortfolioId);
   });
 
-  it("GET /api/partner/portfolio/:id: 403 on Partner A's private row when called by Partner B (cross-tenant rejection)", async () => {
+  /* WAVE 35 · F9 — was `403 / NOT_OWNER`. The refusal itself (the point this
+     test exists to protect) is unchanged and still asserted; only the STATUS
+     changed, because 403-vs-404 told Partner B that this id is a real private
+     row belonging to somebody. The assertion is strengthened, not weakened: it
+     now also pins that the refusal is byte-identical to the one an id that has
+     never existed produces, which is the actual property being defended. */
+  it("GET /api/partner/portfolio/:id: 404 (indistinguishable from unknown-id) on Partner A's private row when called by Partner B", async () => {
     const r = await call("GET", `/api/partner/portfolio/${privatePortfolioId}`, {
       userId: MANAGING_B,
     });
-    expect(r.status).toBe(403);
-    expect(r.body.error).toBe("NOT_OWNER");
+    expect(r.status).toBe(404);
+    expect(r.body.error).toBe("NOT_FOUND");
+    const unknown = await call("GET", "/api/partner/portfolio/ppc_no_such_row_at_all", {
+      userId: MANAGING_B,
+    });
+    expect(unknown.status).toBe(r.status);
+    expect(unknown.body).toEqual(r.body);
   });
 
   it("GET /api/partner/portfolio/:id: 200 on Partner A's COLLECTIVE row when called by Partner B (cross-tenant ALLOWED)", async () => {
@@ -332,13 +343,21 @@ describe("v19 Phase B — Partner workspace DB migration", () => {
     expect(r.body.portfolio.currHash).toMatch(/^[a-f0-9]{64}$/);
   });
 
-  it("PATCH /api/partner/portfolio/:id: 403 when non-owner partner tries to update", async () => {
+  /* WAVE 35 · F9 — see the GET case above. The write is still refused; the
+     status no longer discloses that the id exists. The mutation must ALSO not
+     have landed, which the old test never checked — asserted here. */
+  it("PATCH /api/partner/portfolio/:id: 404 (no existence disclosure) when non-owner partner tries to update, and nothing is written", async () => {
     const r = await call("PATCH", `/api/partner/portfolio/${privatePortfolioId}`, {
       userId: MANAGING_B,
       body: { sector: "hacked" },
     });
-    expect(r.status).toBe(403);
-    expect(r.body.error).toBe("NOT_OWNER");
+    expect(r.status).toBe(404);
+    expect(r.body.error).toBe("NOT_FOUND");
+    const asOwner = await call("GET", `/api/partner/portfolio/${privatePortfolioId}`, {
+      userId: MANAGING_A,
+    });
+    expect(asOwner.status).toBe(200);
+    expect(asOwner.body.portfolio.sector).not.toBe("hacked");
   });
 
   it("PATCH /api/partner/portfolio/:id: 404 for unknown id", async () => {
@@ -409,11 +428,20 @@ describe("v19 Phase B — Partner workspace DB migration", () => {
     expect(ids).not.toContain(crmContactId);
   });
 
-  it("GET /api/partner/crm/contacts/:id: 403 cross-partner", async () => {
+  /* WAVE 35 · F9 — was `403`. The refusal is unchanged and still asserted;
+     only the status moved, because 403-vs-404 disclosed that this contact id
+     is a real row belonging to another partner. Strengthened: the refusal must
+     now be indistinguishable from one for an id that never existed. */
+  it("GET /api/partner/crm/contacts/:id: 404 cross-partner, indistinguishable from an unknown id", async () => {
     const r = await call("GET", `/api/partner/crm/contacts/${crmContactId}`, {
       userId: MANAGING_B,
     });
-    expect(r.status).toBe(403);
+    expect(r.status).toBe(404);
+    const unknown = await call("GET", "/api/partner/crm/contacts/pcc_no_such_contact", {
+      userId: MANAGING_B,
+    });
+    expect(unknown.status).toBe(r.status);
+    expect(unknown.body).toEqual(r.body);
   });
 
   it("PATCH /api/partner/crm/contacts/:id: updates own contact", async () => {
@@ -507,17 +535,29 @@ describe("v19 Phase B — Partner workspace DB migration", () => {
     expect(ids).not.toContain(dealId);
   });
 
-  it("GET /api/partner/deals/:id: 403 cross-partner", async () => {
+  /* WAVE 35 · F9 — see the CRM case above. */
+  it("GET /api/partner/deals/:id: 404 cross-partner, indistinguishable from an unknown id", async () => {
     const r = await call("GET", `/api/partner/deals/${dealId}`, { userId: MANAGING_B });
-    expect(r.status).toBe(403);
+    expect(r.status).toBe(404);
+    const unknown = await call("GET", "/api/partner/deals/pdl_no_such_deal", {
+      userId: MANAGING_B,
+    });
+    expect(unknown.status).toBe(r.status);
+    expect(unknown.body).toEqual(r.body);
   });
 
-  it("PATCH /api/partner/deals/:id: 403 cross-partner mutation", async () => {
+  /* WAVE 35 · F9 — the write is still refused; the status no longer discloses
+     that the deal exists. The owner must also still be able to read the deal
+     unchanged, which is the pole that stops this becoming "refuse everyone". */
+  it("PATCH /api/partner/deals/:id: 404 cross-partner mutation, and the deal is untouched", async () => {
     const r = await call("PATCH", `/api/partner/deals/${dealId}`, {
       userId: MANAGING_B,
       body: { stage: "closed" },
     });
-    expect(r.status).toBe(403);
+    expect(r.status).toBe(404);
+    const asOwner = await call("GET", `/api/partner/deals/${dealId}`, { userId: MANAGING_A });
+    expect(asOwner.status).toBe(200);
+    expect(asOwner.body?.deal?.stage).not.toBe("closed");
   });
 
   it("POST /api/partner/deals: 400 on invalid stage", async () => {

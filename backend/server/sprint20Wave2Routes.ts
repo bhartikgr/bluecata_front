@@ -31,6 +31,15 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { registerInvestorCrmRoutes } from "./investorCrmStore";
 import { registerCollectiveNetworkRoutes } from "./collectiveNetworkStore";
+/* WAVE 31 · W31-A1 — STATIC import, deliberately, in a file that otherwise
+   leans on the createRequire shim above. Wave 30 lost time to a runtime
+   `require("./someStore.ts")` that threw `Unexpected identifier 'as'` on a TS
+   type-import and was then swallowed whole by a fail-soft catch, so the wiring
+   looked present and did nothing. A static import fails at load, loudly. */
+import {
+  investorHoldsCompany,
+  markHistoryForCompany,
+} from "./lib/investorMarkHistory";
 
 // ---------------------------------------------------------------------------
 // Multer — in-memory storage for KYC uploads (files are not persisted in dev)
@@ -120,14 +129,45 @@ export function registerSprint20Wave2Routes(app: Express): void {
 
   // ── Portfolio marks ─────────────────────────────────────────────────────
   /**
-   * GET /api/investor/portfolio/:id/marks
-   * Returns an array of fair-value mark snapshots for the holding.
-   * Wave 3 will populate from a real marks table.
+   * GET /api/investor/portfolio/:id/marks   —   WAVE 31 · W31-A1
+   *
+   * `:id` is a COMPANY id. That is what `valuation_event` keys company marks
+   * on (`vehicle_kind='company', vehicle_id=<companyId>`), and the client was
+   * already passing a holding id into a handler that ignored its argument
+   * entirely, so nothing was depending on the old meaning. The caller may
+   * narrow to one lot with `?holdingId=`.
+   *
+   * WAS: `return res.json({ holdingId: id, marks: [] })` — a literal, with a
+   * comment promising Wave 3 would populate it. Twenty-eight waves later the
+   * chart still said "No mark history yet", and no data anyone entered could
+   * ever have changed that.
+   *
+   * AUTHORIZATION. The prefix gate on this mount is `investor.hasAnyCapTable`,
+   * an ENTITLEMENT check meaning "holds something, somewhere". It says nothing
+   * about the company in the path, so this handler carries its own
+   * per-company predicate. A caller who does not hold this company gets the
+   * SAME response as one who names a company that does not exist — a 404 with
+   * an identical body (rule 7). A 403 here, or a distinguishable message,
+   * would let any investor enumerate which companies carry marks.
    */
   app.get("/api/investor/portfolio/:id/marks", (req: Request, res: Response) => {
-    const { id } = req.params;
-    // Stub — empty marks array; UI falls back gracefully.
-    return res.json({ holdingId: id, marks: [] });
+    const companyId = String(req.params.id ?? "");
+    const ctx = (req as any).userContext;
+    if (!ctx?.isAuthed) return res.status(401).json({ message: "Unauthorized" });
+
+    // One refusal, built once and returned from both arms, so the "unheld" and
+    // "nonexistent" responses cannot drift apart in a later edit. The harness
+    // asserts they are byte-identical, not merely both 404.
+    const notFound = () => res.status(404).json({ message: "Not found" });
+
+    if (!investorHoldsCompany(String(ctx.userId ?? ""), companyId)) return notFound();
+
+    const rawHolding = req.query?.holdingId;
+    const holdingId =
+      typeof rawHolding === "string" && rawHolding.trim() ? rawHolding.trim() : null;
+
+    const history = markHistoryForCompany(companyId, { holdingId });
+    return res.json(history);
   });
 
   // ── Tax export ──────────────────────────────────────────────────────────

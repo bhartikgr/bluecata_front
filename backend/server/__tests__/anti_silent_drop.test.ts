@@ -40,9 +40,23 @@ describe("anti-silent-drop (rule #8) — live baseline vs current tree", () => {
     const allowlist = fs.existsSync(path.join(GUARD_DIR, "allowlist.json"))
       ? readJson<any>(path.join(GUARD_DIR, "allowlist.json"))
       : { removedRoutes: [], removedClientRoutes: [], removedNav: [] };
+    /* WAVE 2B / BLOCKER 3 — read the same deferral register the CLI reads, or
+       this test and `npm run guard` would disagree about what "passing" means.
+       A deferral does NOT forgive a drop: it is a real loss with a named owner
+       (RS-1, RS-2), still printed in the report below. Only NEW, unowned drops
+       fail here — which is exactly rule #8. */
+    const deferralsPath = path.join(GUARD_DIR, "deferrals.json");
+    const deferrals = fs.existsSync(deferralsPath)
+      ? readJson<any>(deferralsPath)
+      : { version: 1, deferrals: [] };
     const current = buildInventory(REPO_ROOT);
 
-    const { code, report } = runGuard({ baseline, current, allowlist });
+    const { code, report, deferred } = runGuard({ baseline, current, allowlist, deferrals });
+
+    if (deferred) {
+      // Never silent: the tracked losses are printed on every green run too.
+      console.warn(report);
+    }
 
     if (code !== 0) {
       // Surface exactly what dropped so the failure is actionable.

@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { UserCircle, Calendar, TrendingUp } from "lucide-react";
+import { formatMinor } from "@/lib/currency";
 
 interface Subscription {
   companyId: string;
@@ -126,7 +127,8 @@ export default function CollectiveMembership() {
                   Annual amount
                 </span>
                 <span className="text-sm text-slate-800" data-testid="text-annual-amount">
-                  {subscription.currency} {(subscription.annualAmountMinor / 100).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  {/* WAVE 21 ITEM 5: was `/ 100` with a forced 2 fraction digits. */}
+                  {formatMinor(subscription.annualAmountMinor, subscription.currency || "USD")}
                 </span>
               </div>
               {subscription.cardLast4 && (

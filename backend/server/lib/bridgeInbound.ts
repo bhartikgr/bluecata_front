@@ -128,17 +128,17 @@ export function dispatchInbound(env: BridgeEnvelope): InboundResult {
       return { applied: true, handler, eventId: env.eventId };
     }
     // Sprint 13 NEW
-    case "member.application_decision" as never: {
+    case "member.application_decision": {
       const p = env.payload as { applicationId?: string; decision?: string; memberTier?: string };
       inboundState.memberDecisions.set(env.aggregateId, p);
       return { applied: true, handler: "member.application_decision", eventId: env.eventId };
     }
-    case "membership.renewal_status" as never: {
+    case "membership.renewal_status": {
       const p = env.payload as { renewalStatus?: string; lapsed?: boolean; expiresAt?: string };
       inboundState.membershipRenewals.set(env.aggregateId, p);
       return { applied: true, handler: "membership.renewal_status", eventId: env.eventId };
     }
-    case "kyc.status_decision" as never: {
+    case "kyc.status_decision": {
       const p = env.payload as { kycStatus?: string; decidedAt?: string };
       const prev = inboundState.kycDecisions.get(env.aggregateId) ?? {};
       const merged = resolveConflicts({
@@ -150,7 +150,7 @@ export function dispatchInbound(env: BridgeEnvelope): InboundResult {
       return { applied: true, handler: "kyc.status_decision", eventId: env.eventId };
     }
     // Sprint 16 G2 — idempotent apply of soft_circle.submitted from Collective members
-    case "soft_circle.submitted" as never: {
+    case "soft_circle.submitted": {
       const p = env.payload as { softCircleId?: string; roundId?: string; companyId?: string; investorId?: string; amountUsd?: string; status?: string };
       const key = `${p.roundId ?? "_"}:${p.investorId ?? "_"}`;
       // Idempotent: replace prior record for same (round, investor) pair
@@ -173,3 +173,44 @@ export const ALL_INBOUND_HANDLERS = [
   // Sprint 16 G2
   "soft_circle.submitted",
 ];
+
+/**
+ * WAVE 15 / A-5 (DEF-035) — the drift fence.
+ *
+ * THE DEFECT. Four of the eight handlers above worked, were idempotent, and
+ * were unreachable in practice: `POST /api/bridge/inbound` dispatches on
+ * `env.eventType` without consulting any registry, so the code ran — but the
+ * peer discovers what it is allowed to send from `ALL_INBOUND_EVENT_TYPES`
+ * (`server/bridgeStore.ts`), published by `GET /api/bridge/event-types` and by
+ * `GET /api/admin/bridge/inbox`. That array listed four types. A handler nobody
+ * is told about is a handler nobody calls.
+ *
+ * WHY A FENCE AND NOT JUST A LONGER ARRAY. The two lists drifted apart
+ * silently across Sprint 13 and Sprint 16 — twice. Nothing compared them,
+ * because `case "…" as never` suppressed the only signal TypeScript could have
+ * given. Both lists are now compared by this function, which is asserted in
+ * BOTH directions by `server/__tests__/wave15_bridge_registry.test.ts`:
+ * an unadvertised handler AND an advertised type with no handler are both
+ * reported. The test proves the fence FAILS when it should by mutating each
+ * list in turn.
+ *
+ * This is a diagnostic, not a boot-time throw: refusing to start a running
+ * bridge because a peer contract list is one entry short would trade a
+ * discoverability bug for an outage.
+ */
+export function assertInboundRegistryComplete(
+  advertised: readonly string[],
+): { ok: boolean; handlersNotAdvertised: string[]; advertisedWithoutHandler: string[] } {
+  const adv = new Set(advertised);
+  const han = new Set(ALL_INBOUND_HANDLERS);
+  const handlersNotAdvertised = ALL_INBOUND_HANDLERS.filter(h => !adv.has(h)).sort();
+  /* Array.from, not spread: this tsconfig targets a level without
+     downlevelIteration, so `[...set]` is a TS2802 and would put a net-new error
+     on the type budget for no behavioural gain. */
+  const advertisedWithoutHandler = Array.from(adv).filter(a => !han.has(a)).sort();
+  return {
+    ok: handlersNotAdvertised.length === 0 && advertisedWithoutHandler.length === 0,
+    handlersNotAdvertised,
+    advertisedWithoutHandler,
+  };
+}

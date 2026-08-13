@@ -37,9 +37,26 @@ import {
   currentInvestor,
 } from "./mockData";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
+import { toMinor } from "./lib/currency"; /* WAVE 33 OQ-33-2 — ISO 4217 exponent, never a hardcoded *100 */
+/* WAVE 35 F6/F7/F8/F9 — the ONE shared decision for every cap-table sink that
+   authorises with a `capTablePositions.some(...)` equality check. An SPV is a
+   company in the sacred ledger, so an LP PASSES `gate("investor.onCapTableOf")`
+   for their own vehicle: the gate is not the control, the sink is. Static
+   import — a lazily-required privacy guard is a guard that vanishes on the
+   runtime where it was tested. See server/lib/capTableSinkScope.ts. */
+import {
+  decideCapTableSinkAccess,
+  scopeCapTableRows,
+  CAP_TABLE_SINK_NOT_FOUND,
+  CAP_TABLE_SINK_NOT_FOUND_STATUS,
+} from "./lib/capTableSinkScope";
 // v25.45 F13a/F13b — durable user-privacy store + resolveDisplayName helper.
 import { writeUserPrivacy as f13WriteUserPrivacy, readUserPrivacyRaw as f13ReadUserPrivacyRaw } from "./lib/userPrivacyResolver";
 import { sanitizeErrorMessage } from "./lib/sanitize"; /* v25.32 burndown — item 33 */
+/* WAVE 35 · F4 — SECOND company-creation path. `POST /api/founder/companies`
+   (below) also calls addCompanyForFounder, so a founder who arrives through
+   this route must get their referring partner credited too. Static import. */
+import { drainProvisionalAttributionsForCompany } from "./lib/provisionalPartnerAttribution";
 // v17 Phase A — chapter scoping store (used by /api/me/chapters).
 import { listChaptersForUser as v17ListChaptersForUser } from "./chaptersStore";
 import { registerProfileRoutes } from "./profileStore";
@@ -50,7 +67,9 @@ import { registerWave25InvestorProfileRoutes } from "./wave25InvestorProfileRout
 import { registerInvestorMediaRoutes } from "./investorMediaRoutes"; /* v25.56 Avi item 1a — missing avatar upload route */
 import { registerCommsRoutes } from "./commsStore";
 import { registerCommsTiersRoutes } from "./commsTiersStore";
-import { resetDemoState } from "../scripts/reset-demo";
+/* WAVE 22 · ITEM 5(b) — the `resetDemoState` import was removed with the dead
+   duplicate handler below; the live handler in server/bridgeStore.ts imports it
+   dynamically itself. */
 import { registerYourDecisionRoutes } from "./yourDecisionStore";
 import { registerMaIntelligenceRoutes } from "./maIntelligenceStore";
 import { registerCrmRoutes } from "./crmStore";
@@ -81,6 +100,9 @@ import { registerDataroomRoutes, listFilesForCompany as dataroomStoreListForComp
 import { registerCompanyLogoRoutes } from "./lib/companyLogoRoutes";
 import { registerReportsRoutes, listAllReportsFromDb as reportsStoreGetAll } from "./reportsStore"; // v25.48 DATA-2 (V-5, strict) — DB-direct all-reports reader (not the in-memory cache)
 import { registerFounderCrmRoutes, listByFounder as crmListByFounder, crmMarkInvitedRegistered } from "./founderCrmStore";
+// WAVE 28 ITEM 2 / CP-CRM-04 — admin queue for the crm_dedup_review table that
+// migration 0097 has been filling since v25.52 with no reader anywhere.
+import { registerCrmDedupReviewRoutes } from "./crmDedupReviewStore";
 import { registerCaptableCommitRoutes, getLedger } from "./captableCommitStore";
 import { registerFounderOpsRoutes } from "./founderOpsRoutes";
 import { registerCaptableCommitV2548Routes } from "./lib/captableCommitV2548"; /* v25.48 B2 + B5 — parallel batch commit (per-entry founder amount) + attestation */
@@ -150,10 +172,38 @@ import { configureInvoiceStore, registerInvoiceRoutes } from "./invoiceStore";
 import { registerAdminContactsRoutes } from "./adminContactsStore";
 // Patch v6 — Partner CRM
 import { registerPartnerRoutes } from "./partnerRoutes";
+/* WAVE 7 W-8 (DEF-057) + W-5 (DEF-056) — the /api/partner/me/tasks* and
+   /api/partner/me/files* surfaces deleted by v25.50.0 Phase 6 (the deletion is
+   still recorded at partnerRoutes.ts:1525-1530). The stores were retained; only
+   the routes were gone. Registered AFTER registerPartnerRoutes so the path
+   families sit alongside the rest of /api/partner/me/*; they shadow nothing —
+   partnerRoutes registers no /tasks or /files path. */
+import { registerPartnerTasksFilesRoutes } from "./partnerTasksFilesRoutes";
+/* WAVE 7 AD-1 / AD-2 / AD-4 — admin-side READ surface for the partner
+   lifecycle actions that already exist in partnerRoutes.ts but had no UI.
+   Read-only + metrics; it registers NO write route, so partner lifecycle
+   state keeps exactly one writer. */
+import { registerAdminPartnerLifecycleRoutes } from "./adminPartnerLifecycleRoutes";
 // v25.0 Track 3 — Consortium Partner endpoints C1–C5 + subrole enforcement C6
 import { registerPartnerConsortiumRoutes } from "./partnerConsortiumRoutes";
 // v25.49 Phase-3A — separate Partner Clients CRM (durable stages + activity).
 import { registerPartnerClientCrmRoutes } from "./partnerClientCrmRoutes";
+// WAVE 30 ENGINE 1 — partner_crm_contact_client_scope (Layer-1 CRM contact ->
+// Layer-2 client attribution scoping). DDL existed since migration 0134 with
+// zero read/write sites tree-wide; this is its first surface.
+import { registerPartnerCrmContactClientScopeRoutes } from "./partnerCrmContactClientScopeRoutes";
+// WAVE 30 ENGINE 2 — partner_company_relationship spine (migration 0136's
+// schema shipped in Wave C-2.h with no reader, writer, route or UI).
+import { registerPartnerCompanyRelationshipRoutes } from "./partnerCompanyRelationshipRoutes";
+import { registerSpvTemplateRoutes } from "./spvTemplateRoutes";
+import { registerSpvK1Routes } from "./spvK1Routes";
+import { registerSpvSideLetterRoutes } from "./spvSideLetterRoutes";
+import { registerLpPositionsRoutes } from "./lpPositionsRoutes";
+import { registerSpvNavRoutes } from "./spvNavRoutes";
+import { registerSpvDiscoveryRoutes } from "./spvDiscoveryRoutes";
+import { registerSpvShareDerivationRoutes } from "./spvShareDerivationRoutes";
+import { registerAttributionProvenanceRoutes } from "./attributionProvenanceRoutes";
+import { registerLockTextRoutes } from "./lockTextRoutes";
 import { registerSpvEngineRoutes } from "./spvEngineRoutes";
 import { registerMfcrmRoutes } from "./managedFounderRoutes";
 import { registerMfcrmPersonaRoutes } from "./managedFounderPersonaRoutes";
@@ -183,6 +233,7 @@ import { registerAdminCollectiveRoutes } from "./adminCollectiveRoutes";
 import { registerAdminCollectiveFeeRoutes } from "./adminCollectiveFeeRoutes"; /* v25.39 — admin write endpoints for fee/commission config */
 import { registerAdminPlatformFeesRoutes } from "./adminPlatformFeesRoutes"; /* v25.45.4 L-2 — DB-backed Platform Fees admin (foundation for v25.46) */
 import { registerAdminFeeTierRoutes } from "./adminFeeTierRoutes"; /* v25.46.1 — multi-section fee admin: collective member-subscription + consortium subscription tiers + SPV deployment flat fee */
+import { registerPartnerClassificationRoutes } from "./partnerClassificationRoutes"; /* WAVE 4B PT-2 — partner classification read/write + admin CRUD over the DB-driven Sector // Sub-sector taxonomy (reporting/filtering only) */
 import { registerCollectiveSubscriptionAdminRoutes } from "./collectiveSubscriptionAdminRoutes"; /* W4 — Collective dynamic subscription-package admin CRUD */
 import { registerCollectiveEnvFallbackAdminRoutes } from "./lib/collectiveEnvFallbackAdminRoutes"; /* D2.5 R1 fix B-5 — use_env_fallback write path */
 import { configureCollectiveSubscriptionConfigStore } from "./collectiveSubscriptionConfigStore"; /* W4 */
@@ -221,8 +272,19 @@ import {
   classifyRoundCommit as captableClassifyRoundCommit,
   isValidShares as captableIsValidShares,
   getFundedQueue as captableGetFundedQueue,
+  /* WAVE 18 ORP-040 — the investor activity feed resolved this with a runtime
+     `require("./captableCommitStore")` inside a `try { … } catch { return [] }`.
+     A `.ts` require is invisible to the test runner's module graph, so the catch
+     silently answered an EMPTY feed and no test could see it. Static import; the
+     sacred file is still only READ (no new exports added there). */
+  listCommitsForUser as captableListCommitsForUser,
 } from "./captableCommitStore";
 import { getRoundById as roundsGetById } from "./roundsStore";
+/* WAVE 18 ORP-040 — money conversion for the three orphaned investor read
+   surfaces. `toMinor` is exponent-aware (ISO-4217) and `decimalStringToMinor` is
+   pure BigInt, so neither path hardcodes a `/100` or `*100`. */
+import { decimalStringToMinor } from "./lib/money";
+import { isDiscoverableForInvestor, projectDiscoverRound } from "./lib/investorDiscoverProjection";
 /* W-FIX1a (A1/A2) — cap-table DISPLAY resolver (read-only; sacred files only CALLED). */
 import { resolveHolderDisplay, resolveRoundName, computeOwnershipPct } from "./lib/captableDisplayResolver";
 import { exerciseWarrant, computeExercise, type ExerciseMode } from "./lib/warrantExercise";
@@ -281,6 +343,11 @@ import { registerTrack4Routes, setSoftCircleSource } from "./track4Routes";
 import { registerRoundCarryForwardRoutes } from "./roundCarryForwardRoutes";
 // Avi 22-May Issue 2 — PPS derivation helper routes.
 import { registerRoundPriceDerivationRoutes } from "./lib/roundPriceDerivation";
+/* WAVE 10 EN-1/EN-2/EN-3 — the reporting engine's routes. WAVE 9 built the
+ * engine (server/wave9ReportingStore.ts) and gave it no HTTP surface at all:
+ * twelve exported functions had ZERO non-test callers. An engine with no route
+ * is not shipped. See server/lib/reportingEngineRoutes.ts for the full list. */
+import { registerReportingEngineRoutes } from "./lib/reportingEngineRoutes";
 import { registerSecureAuthRoutes } from "./lib/secureAuthRoutes";
 import { registerAdminUsersRoutes } from "./lib/adminUsersRoutes";
 /* v25.33 — Consortium Partner Payment Model admin fee/agreement/tax routes. */
@@ -288,6 +355,16 @@ import { registerPartnerFeeAdminRoutes } from "./lib/partnerFeeAdminRoutes";
 /* v25.33 Consortium Partner Payment Model — partner self-service endpoints
    (subscription / spv-fees / tax-forms / agreement). Additive; separate file. */
 import { registerPartnerSelfServiceRoutes } from "./lib/partnerSelfServiceRoutes";
+/* WAVE 11 / EN-9 — e-signature execution surface (an engine with no route is not shipped). */
+import { registerEsignatureRoutes } from "./lib/esignatureRoutes";
+import { registerWave14MoneyRoutes } from "./lib/wave14MoneyRoutes";
+/* WAVE 15 — M-1d footnote binding + M-5 accrued-carry engine. Both engines
+   existed with no HTTP surface (renderFootnotes had zero callers tree-wide;
+   spv_carry_accrual had zero writers). See server/lib/wave15ReportingRoutes.ts. */
+import { registerWave15ReportingRoutes } from "./lib/wave15ReportingRoutes";
+/* WAVE 15 — ORP-033/053/062, A-2, A-3b, CP-BRG-07. Reachability for engines that
+ * existed with no route (and, for ORP-062, an inventory computed from THIS app). */
+import { registerWave15Routes } from "./lib/wave15Routes";
 /* v25.34 Collective Payment Model — parallel/additive to v25.33. Admin CRUD +
    member quote-only self-service. Separate files; touches no Avi write path. */
 import { registerCollectivePaymentAdminRoutes } from "./lib/collectivePaymentAdminRoutes";
@@ -310,7 +387,7 @@ import { getOutbox } from "./bridgeStore";
 /* W-COLLECTIVE Wave 1 (v4 §1.5) — /api/healthz bridge-config telemetry. */
 import { inspectBridgeEnv } from "./lib/bridgeEnvAssert";
 import { getCommsOverflowCounts } from "./commsStore";
-import { loadUserContext, requireEntitlement } from "./lib/requireEntitlement";
+import { loadUserContext, requireEntitlement, entitlementGate } from "./lib/requireEntitlement";
 // D2.5 Slice 2 — public marketing-site pricing (NO auth). Reads the safe
 // subset of pricing_models / collective_subscription_configs so admin price
 // edits automatically reach capavate.com/#pricing. Zero Airwallex touches.
@@ -512,6 +589,101 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
    * registerPaymentGatewayRoutes / registerAdminContactsRoutes — making the
    * guard a no-op for those routers' admin endpoints. ------------ */
   app.use("/api/admin", requireAdmin);
+
+  /* ============================================================
+   * WAVE 28 ITEM 1 — the collective/partner/messages rate limiters were
+   * RELOCATED HERE from `:1045-1047`. They are unchanged middleware on
+   * unchanged prefixes with unchanged limits; ONLY the registration position
+   * moved, because the position WAS the defect.
+   *
+   * THE DEFECT (measured, not read). Express dispatches `app.use(path, mw)`
+   * strictly in registration order, so a prefix middleware registered BELOW
+   * the routes it names never runs for them. All eleven `/api/partner`
+   * registrars ran at `:978-1022`, i.e. ABOVE the old `:1046` mount. Booting
+   * the real `registerRoutes` stack and firing 70 authenticated
+   * `POST /api/partner/me/pipeline` requests produced 70 × 201, ZERO 429s and
+   * — decisively — ZERO `X-RateLimit-*` response headers, which
+   * `collectiveRateLimit` sets before it decides anything. The limiter was
+   * never entered. 165 of the 205 `/api/partner` routes were unprotected while
+   * the source read as protected. Same structural miss cost `/api/collective`
+   * 16 of its 115 routes.
+   *
+   * WHY HERE AND NOT ANYWHERE ELSE. This position is (a) strictly AFTER
+   * `app.use(loadUserContext)` at `:534`, which the limiter's per-user keying
+   * depends on (see the WAVE 19 WAIVER-2 note in `server/lib/rateLimit.ts` —
+   * Wave 18's harness omitted it and measured its own construction), and
+   * (b) strictly BEFORE every route registrar in this file. It mirrors the
+   * `/api/admin` guard immediately above, which was moved here for exactly
+   * this reason in v25.17 Lane C NC2 and whose comment documents the same trap.
+   *
+   * NOTHING IS WEAKENED AND NOTHING IS DOUBLE-COUNTED. The old mounts are
+   * REMOVED rather than duplicated: leaving both would tick the bucket twice
+   * for the 40 `/api/partner` routes registered after `:1046`, silently HALVING
+   * their effective limit. `CollectiveBucketLimits` (write 60 / read 600 /
+   * sse 30) and `RATE_LIMIT_BYPASS_PATHS` (`/api/health`, `/api/healthz`) are
+   * untouched. `server/lib/rateLimit.ts` is SACRED and was not opened.
+   *
+   * OVER-REACH WAS CHECKED, NOT ASSUMED. Wave 27 deliberately left the comms
+   * typing indicator and read receipts OUT of a bucket limiter because a
+   * 500 ms-debounced typing ping is ~120/min against a 60/min write budget.
+   * The same question was asked of these three prefixes: grepping `server/`
+   * for `/api/partner*`/`/api/collective*` paths containing sse, stream, poll,
+   * typing, read, heartbeat or ping returns NOTHING, so no high-frequency
+   * signalling endpoint is newly caught here. `pickBucket` already routes any
+   * future `/sse` path to the long-lived 30/min bucket.
+   *
+   * Falsified both ways in `server/__tests__/wave28_item1_prefix_middleware_ordering.test.ts`:
+   * a burst past the budget now 429s on the REAL stack, a normal request still
+   * passes, and a generic router-stack sweep asserts NO prefix middleware in
+   * this file claims a route registered above it.
+   * ============================================================ */
+  app.use("/api/collective", collectiveRateLimit);
+  app.use("/api/partner", collectiveRateLimit);
+  app.use("/api/messages", collectiveRateLimit);
+
+  /* ============================================================
+   * WAVE 29 ITEM 1 — `gate("investor.onCapTableOf")` RELOCATED HERE from
+   * `:1688` (Wave 28 report §1.6 row H). Same middleware, same prefix, same
+   * predicate; ONLY the registration index changed, for the same reason as the
+   * three limiters above: both `co-members` handlers register at stack indices
+   * 117 and 661, far ABOVE the old `:1688` mount, so the gate never ran for
+   * them. `gate` is a hoisted function declaration further down this function,
+   * so calling it here is legal and resolves to the identical middleware.
+   *
+   * WHY THIS ONE MOVED WHEN SEVEN OF ITS EIGHT SIBLINGS DID NOT. Wave 29
+   * investigated all nine inert mounts by execution before touching any of
+   * them. Seven turned out to be redundant belt-and-braces: every route
+   * underneath already refuses an unauthenticated caller on its own, so the
+   * inert mount exposed nothing and moving it buys nothing. This one is
+   * different, and the difference is only visible to a probe that uses a real
+   * but WRONG identity:
+   *
+   *   GET /api/investor/companies/co_novapay/co-members
+   *     as u_no_position (no cap table anywhere)  -> 200   <-- before this move
+   *     as u_avi_viewer  (a partner, not an LP)   -> 200   <-- before this move
+   *
+   * Both handlers (`sprint21Routes.ts:217`, `collectiveNetworkStore.ts:91`)
+   * check `isAuthed` and then never ask the cap-table question. The second one
+   * returns `amount`, `currency` and `shares` per investor — not just who is on
+   * a cap table but how much each of them committed. `investor.onCapTableOf` is
+   * exactly the control for that, and it had never executed once.
+   *
+   * WHY MOVING IT IS SAFE, checked rather than assumed. The mount claims 4
+   * routes. The two `promotion-status` / `updates` routes
+   * (`sprint21PortfolioRoutes.ts:350,373`) already registered BELOW the old
+   * mount, so they were already gated and this move does not change them. The
+   * two it newly covers are the two co-members reads, whose legitimate caller
+   * is by definition someone on the cap table — precisely the population the
+   * predicate admits.
+   *
+   * Falsified both ways in
+   * `server/__tests__/wave29_item1_comembers_captable_gate.test.ts`: an
+   * outsider and a partner get 403 NOT_ON_CAP_TABLE, an anonymous caller is
+   * still refused, AND a real cap-table member still gets 200 with their
+   * co-investors — including the per-company pole, where the same investor is
+   * allowed on the company she is on and refused on the one she is not.
+   * ============================================================ */
+  app.use("/api/investor/companies/:companyId", gate("investor.onCapTableOf"));
 
   /* ------------ v25.23 SHIP-BLOCKER ROOT-CAUSE HANDLING (CSRF) ------------
    *
@@ -739,6 +911,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
     }
 
+    /* WAVE 35 · F4 — SINK (second path). Promote any provisional partner
+       referral for this founder now that a company exists. A failed write
+       retains the provisional claim; non-fatal to company creation. */
+    if (userId) {
+      try {
+        drainProvisionalAttributionsForCompany({
+          userId,
+          companyId,
+          email: ctx?.identity?.email ?? null,
+        });
+      } catch (e) {
+        log.warn({
+          route: "POST /api/founder/companies",
+          message: `provisional partner attribution drain failed for ${companyId}: ${(e as Error).message}`,
+        });
+      }
+    }
+
     const result = createSubscriptionForNewCompany(companyId, { plan, actor });
     res.status(201).json({ ok: true, companyId, companyName, subscription: result.subscription, subscriptionCreated: result.created });
   });
@@ -748,6 +938,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   registerCompanyLogoRoutes(app);
   registerReportsRoutes(app);
   registerFounderCrmRoutes(app);
+  registerCrmDedupReviewRoutes(app); /* WAVE 28 / CP-CRM-04 — CRM duplicate-contact review queue (admin) */
   registerCaptableCommitRoutes(app);
   registerFounderOpsRoutes(app); /* v25.54 G0-1 seed-founder-shares + G0-2 round archive */
   registerCaptableCommitV2548Routes(app); /* v25.48 B2 + B5 — parallel commit wrapper */
@@ -938,15 +1129,75 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // v25.33 — additive partner self-service endpoints. Registered after the
   // consortium routes; uses distinct paths so it shadows nothing Avi owns.
   registerPartnerSelfServiceRoutes(app);
+  registerEsignatureRoutes(app); /* WAVE 11 / EN-9 */
+  /* WAVE 14 — the routes for the Wave 5 partner money engine, which until now
+     had exactly one live caller across its entire API surface. Registered right
+     after the partner self-service module because it extends the same
+     /api/partner/me/* namespace with distinct paths (invoices,
+     subscription-history, money-events, checkout/status, commission-summary,
+     promotions/quote) and shadows nothing. */
+  registerWave14MoneyRoutes(app);
   // v25.34 — member-facing Collective payment quote-only endpoints. Each route
   // is individually gated requireCollectiveMember; distinct /api/collective/me/*
   // paths shadow nothing Avi owns.
   registerCollectiveMemberSelfServiceRoutes(app);
   registerPartnerRoutes(app);
+  /* WAVE 7 W-5 / W-8 — see the import comment. */
+  registerPartnerTasksFilesRoutes(app);
+  /* WAVE 7 AD-1/AD-2/AD-4 — SHADOW CHECK, done by reading the order rather
+     than assuming it: this call sits at ~:965 and registerPartnerFeeAdminRoutes
+     (which owns the existing GET /api/admin/partners) sits at ~:1280, i.e.
+     LATER. A roster route here would therefore have won the match and shadowed
+     the real one — which is why this module deliberately registers no roster
+     route at all (see the comment in adminPartnerLifecycleRoutes.ts). The three
+     paths it does register (/:id/attributions, /:id/seat-report,
+     /metrics/funnel) return zero hits anywhere else under server/. */
+  registerAdminPartnerLifecycleRoutes(app);
   // v25.49 Phase-3A — separate Partner Clients CRM engine (durable stages +
   // client activity timeline). Distinct /api/partner/me/client-crm* paths;
   // shadows nothing. Registered after legacy partnerRoutes.
   registerPartnerClientCrmRoutes(app);
+  // WAVE 30 ENGINE 1 — partner_crm_contact_client_scope surface. Distinct
+  // /api/partner/me/crm-client-scope* paths; shadows nothing. Every route
+  // carries its OWN requirePartnerAuth (session-derived partnerId), so this
+  // registration position is not load-bearing for authorization.
+  registerPartnerCrmContactClientScopeRoutes(app);
+  // WAVE 30 ENGINE 2 — /api/partner/me/relationships*
+  registerPartnerCompanyRelationshipRoutes(app);
+  // WAVE 30 · ENGINE 3 — `spv_template`. Registered BELOW the `/api/partner`
+  // collectiveRateLimit mount, like Engines 1 and 2, so these endpoints are
+  // rate-limited by default. Five of the seven are writes.
+  registerSpvTemplateRoutes(app);
+  /* WAVE 32 · CP-SPV-30 capability 1 — SPV NAV (GP + LP-scoped surfaces). */
+  registerSpvNavRoutes(app);
+  /* WAVE 32 / CP-SPV-30 capability 3 — K-1 tax statements (GP + LP surfaces). */
+  registerSpvK1Routes(app);
+  /* WAVE 32 / CP-SPV-30 capability 4 — per-LP side letters (GP write + LP read). */
+  registerSpvSideLetterRoutes(app);
+  /* WAVE 32 / CP-SPV-30 capability 5 — LP positions inside the EXISTING investor
+     portal (ruling A-23: no second portal, no LP account type). */
+  registerLpPositionsRoutes(app);
+  /* WAVE 33 / CP-SPV-53 — SPV discoverability. `invite_only` was excluded from
+     every discovery context for every viewer, including the invited one, so it
+     was a silent synonym for `private`. These routes add the VIEWER-SCOPED
+     half; the existing broadcast routes /api/collective/spvs and
+     /api/capavate/spvs are untouched and keep their live consumer. */
+  registerSpvDiscoveryRoutes(app);
+
+  /* WAVE 33 / CP-SPV-31 — share derivation for the deployment ladder. The GP
+     typed a share count into a free text box and it went straight into the
+     sacred cap-table ledger with no comparison against the round's own price.
+     This route states the derived figure and the ladder the store accepts
+     (including `docs_sent`, which the UI omitted entirely). Read-only. */
+  registerSpvShareDerivationRoutes(app);
+
+  /* WAVE 33 / CP-PIPE-06 — provenance cannot be omitted or acquired. Makes the
+     rule visible: which of my attributions have complete provenance, and
+     whether a company can be claimed at all — asked BEFORE the write, so a
+     partner learns a company is contested by asking rather than by rejection.
+     Read-only; the incumbent's identity is deliberately not disclosed. */
+  registerAttributionProvenanceRoutes(app);
+  registerLockTextRoutes(app); // WAVE 33 · CP-PIPE-10 — LOCK 1 wording (OQ-5)
   // W-MFCRM — Managed Founder CRM engine + persona routes. Distinct
   // /api/partner/me/mfcrm* and /api/admin/mfcrm* paths; shadows nothing.
   // Registered after the /api/admin requireAdmin mount guard (L469) so the
@@ -982,9 +1233,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   /* ------------ Wave C-3 + C-4: Collective Shell + M&A Intelligence ------------ */
   // v19 Phase C — per-(user, bucket) sliding-window rate limits on the three
   // post-v17 surface areas. NOT gated by COLLECTIVE_ENABLED — always-on.
-  app.use("/api/collective", collectiveRateLimit);
-  app.use("/api/partner", collectiveRateLimit);
-  app.use("/api/messages", collectiveRateLimit);
+  //
+  // WAVE 28 ITEM 1 — the three `collectiveRateLimit` mounts that used to sit
+  // HERE have MOVED UP to just after the `/api/admin` guard (~:556). They were
+  // inert at this position: every `/api/partner` registrar runs at :978-1022
+  // and 16 `/api/collective` routes register at :678-685, all ABOVE this line,
+  // and Express only runs prefix middleware for routes added AFTER it. Do NOT
+  // re-add them here — see the block comment at the new site for the executable
+  // proof, and `server/__tests__/wave28_item1_prefix_middleware_ordering.test.ts`
+  // for the sweep that fails if any prefix middleware drifts back below its routes.
   // Patch v5 — every /api/collective/* endpoint requires an authenticated
   // session. Anonymous callers get 401 {"error":"AUTH_REQUIRED"}.
   app.use("/api/collective", requireAuthenticated);
@@ -1029,6 +1286,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   registerAdminCollectiveFeeRoutes(app);
   registerAdminPlatformFeesRoutes(app); /* v25.45.4 L-2 — /api/admin/platform-fees read+update */
   registerAdminFeeTierRoutes(app); /* v25.46.1 — /api/admin/collective/member-subscription-tiers + /api/admin/consortium/subscription-tiers + /api/admin/consortium/spv-deployment-fee */
+  /* ------------ WAVE 4B PT-2 — partner classification (Sector // Sub-sector) ------------
+     /api/partner-taxonomy, /api/admin/partners/:id/classifications,
+     /api/partner/me/classifications, /api/admin/partner-taxonomy/{sectors,subsectors}.
+     REPORTING AND FILTERING ONLY — no guard, route or menu reads a classification. */
+  registerPartnerClassificationRoutes(app);
   /* W4 — Collective dynamic subscription-package admin CRUD (10 routes under
      /api/admin/collective-subscriptions). Wire audit/bridge to the admin audit log. */
   try {
@@ -1404,11 +1666,30 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
   });
 
-  /* ------------ Sprint 16 A4: Admin demo reset — requireAdmin gate ------------ */
-  app.post("/api/admin/sync/reset-demo", requireAdmin, (req, res) => {
-    const summary = resetDemoState();
-    return res.status(summary.ok ? 200 : 207).json(summary);
-  });
+  /* ------------ Sprint 16 A4: Admin demo reset — REMOVED (dead duplicate) ------
+   * WAVE 22 · ITEM 5(b) (REVIEW B, MINOR — dead duplicate route handler).
+   *
+   * A second `app.post("/api/admin/sync/reset-demo", ...)` handler lived here.
+   * It was UNREACHABLE: `registerBridgeRoutes(app)` is called at routes.ts:853,
+   * several hundred lines ABOVE this point, and it registers the same method +
+   * path (server/bridgeStore.ts:1553). Express dispatches to the FIRST matching
+   * handler, so every request has always been served by the bridgeStore one.
+   *
+   * Why this mattered rather than being harmless clutter: the two handlers did
+   * not agree. This one returned `res.status(summary.ok ? 200 : 207)` with the
+   * summary as the top-level body; the live one always returns 200 with
+   * `{ ok, summary, outbox, inbox }`. Anyone reading routes.ts would conclude
+   * that a partial reset yields HTTP 207 and would write a client, a runbook,
+   * or a test against a status code the server has never emitted. Deleting the
+   * shadowed copy makes the file describe what actually runs.
+   *
+   * The live handler is NOT touched. The route identity
+   * "POST /api/admin/sync/reset-demo" is still present in the guard inventory
+   * via bridgeStore.ts, so the route count does not drop (routes are collected
+   * into a Set of "METHOD path" across all server files —
+   * scripts/silent-drop-guard/extract-inventory.ts:485,1309).
+   * Falsification: scripts/__tests__/wave22_item5_dead_route_falsify.sh
+   * ------------------------------------------------------------------------ */
 
   /* v25.48.3 Q-J1 — team-invite redeem interceptor. MUST be registered BEFORE
    * registerAuthShellRoutes so a team token is handled here and every other
@@ -1526,21 +1807,35 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
    * disable the gate. This closes the launch-blocker where a hostile
    * caller could append ?enforce=0 to bypass entitlement enforcement.
    */
-  function gate(...required: Parameters<typeof requireEntitlement>): import("express").RequestHandler {
-    const mw = requireEntitlement(...required);
-    return (req, res, next) => {
-      const isDevBypass =
-        process.env.NODE_ENV === "development" &&
-        process.env.ALLOW_GATE_BYPASS === "1";
-      if (isDevBypass) return next();
-      return mw(req, res, next);
-    };
+  /* WAVE 36 · ROW 7 — the body of this factory now lives in
+   * server/lib/requireEntitlement.ts as the exported `entitlementGate`, so the
+   * entitlement test suite can execute THE SHIPPED GATE instead of a local
+   * re-implementation that still carried the removed `?enforce` bypass.
+   * Behaviour is identical; this alias keeps every mount below unchanged. */
+  /* A hoisted function declaration, not `const gate = entitlementGate`: the
+     WAVE 29 ITEM 1 mount at line ~686 registers ABOVE this point, and a const
+     binding there is a temporal-dead-zone error (tsc TS2448/TS2454, caught by
+     typecheck immediately after the extraction). It delegates — there is still
+     exactly ONE implementation, in lib/requireEntitlement.ts. */
+  function gate(...required: Parameters<typeof entitlementGate>): import("express").RequestHandler {
+    return entitlementGate(...required);
   }
   app.use("/api/investor/portfolio", gate("investor.hasAnyCapTable"));
   app.use("/api/investor/crm", gate("investor.hasAnyCapTable"));
   app.use("/api/investor/messages", gate("investor.hasAnyCapTable"));
   app.use("/api/investor/portfolio2", gate("investor.hasAnyCapTable"));
-  app.use("/api/investor/companies/:companyId", gate("investor.onCapTableOf"));
+  /* WAVE 29 ITEM 1 — `app.use("/api/investor/companies/:companyId",
+   * gate("investor.onCapTableOf"))` USED TO BE HERE. It was INERT for the two
+   * `co-members` reads, which register at stack indices 117 and 661 — above
+   * this line — and which authenticate but never check cap-table membership.
+   * It has been MOVED to the block just below the `/api/admin` guard (search
+   * for "WAVE 29 ITEM 1" near the collectiveRateLimit mounts), which is after
+   * `loadUserContext` and before every route registrar.
+   *
+   * DO NOT RE-ADD IT HERE. A duplicate would run the entitlement check twice
+   * per request for the two routes that register below this point, which is
+   * merely wasteful today but is the same shape of silent double-application
+   * that halves a rate-limit budget. One mount, at the top. */
   app.use("/api/collective/applications", (req, res, next) => {
     if (req.method !== "POST") return next();
     return gate("investor.hasAnyCapTable")(req, res, next);
@@ -1655,8 +1950,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     let canSeeTermSheet = canSeeRound;
 
     if (role === "investor") {
-      const invited = !!(ctx?.investor?.invitedRounds?.some(r => r.companyId === req.params.id) ||
-        ctx?.investor?.capTablePositions?.some(p => p.companyId === req.params.id));
+      /* WAVE 35 · F6/F7/F8 — the FOURTH `capTablePositions.some` site. This one
+         already refuses correctly (404, see below) and emits no per-member
+         ledger rows, so it does not leak today. It is routed through the SAME
+         shared decision anyway: Review A's point is that six sinks appeared
+         because each site re-derived its own authorisation from this predicate.
+         Sharing the decision is what stops a seventh. */
+      const access = decideCapTableSinkAccess(ctx as any, String(req.params.id));
+      const invited = access.outcome !== "refuse";
       canSeeRound = invited;
       canSeeDataroom = invited;
       canSeeSoftCircle = invited;
@@ -1740,11 +2041,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const cid = req.params.id;
     const ctx = req.userContext ?? getUserContext(req);
     if (!ctx?.isAuthed) return res.status(401).json({ ok: false, error: "missing_identity" });
-    const isFounder = ctx.founder.companies.some((c) => c.companyId === cid);
-    const isInvestorInCompany = ctx.investor.capTablePositions.some((p) => p.companyId === cid)
-      || ctx.investor.invitedRounds.some((i) => i.companyId === cid);
-    if (!ctx.isAdmin && !isFounder && !isInvestorInCompany) {
-      return res.status(403).json({ ok: false, error: "not_authorized" });
+    /* WAVE 35 · F8 (the SIXTH cap-table sink) + F9.
+       Was: `capTablePositions.some(...)` → 403 on refusal. Both halves were
+       wrong. (a) The equality check is the same predicate as the gate, and an
+       SPV LP satisfies it for their own vehicle, so the W-SAFE / priced ledger
+       bridges below projected every OTHER LP's subscription — name, email,
+       amount — to a co-LP (proven by execution, Review A F8). (b) A 403 for an
+       unrelated company distinguishes "exists" from "does not exist" and so
+       enumerates SPV ids; the policy this file already states at the
+       /api/companies/:id handler is 404. */
+    const access = decideCapTableSinkAccess(ctx as any, String(cid));
+    if (access.outcome === "refuse") {
+      return res.status(CAP_TABLE_SINK_NOT_FOUND_STATUS).json(CAP_TABLE_SINK_NOT_FOUND);
     }
     const baseSecurities = securities.filter(s => s.companyId === cid);
     /* W-SAFE (2026-07-14) — ledger->display bridge for UNPRICED positions.
@@ -1885,7 +2193,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (pricedBridgeErr) {
       // Fail-open: a priced-bridge failure must never break the cap-table read.
     }
-    res.json(baseSecurities);
+    /* WAVE 35 · F8 — apply the scope decision to what is EMITTED, not merely to
+       what is consulted. For an SPV-backed company reached through an investor
+       relationship the caller sees THEIR OWN rows and nothing else (unless the
+       vehicle's own `spv.lp_visibility` is the explicit `co_investors` opt-in).
+       A genuine counterparty of a real operating company is unaffected — that
+       pole is asserted in the harness. */
+    res.json(scopeCapTableRows(access, baseSecurities as any[], (r: any) => r?.investorId));
   });
 
   /* W-CAP (2026-07-17) — read-only INTERIM (pro-forma) cap-table endpoint.
@@ -1899,11 +2213,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const cid = req.params.id;
     const ctx = req.userContext ?? getUserContext(req);
     if (!ctx?.isAuthed) return res.status(401).json({ ok: false, error: "missing_identity" });
-    const isFounder = ctx.founder.companies.some((c) => c.companyId === cid);
-    const isInvestorInCompany = ctx.investor.capTablePositions.some((p) => p.companyId === cid)
-      || ctx.investor.invitedRounds.some((i) => i.companyId === cid);
-    if (!ctx.isAdmin && !isFounder && !isInvestorInCompany) {
-      return res.status(403).json({ ok: false, error: "not_authorized" });
+    /* WAVE 35 · F7 (the FIFTH cap-table sink) + F9 — see the securities handler
+       above. This row shape is strictly worse: it carries `holderEmail` and the
+       vehicle's subtotals. Same shared decision, same 404 refusal. */
+    const access = decideCapTableSinkAccess(ctx as any, String(cid));
+    if (access.outcome === "refuse") {
+      return res.status(CAP_TABLE_SINK_NOT_FOUND_STATUS).json(CAP_TABLE_SINK_NOT_FOUND);
     }
     type InterimKind = "committed" | "funded" | "soft_circle";
     type InterimRow = { investorId: string; holderName: string; holderEmail?: string; roundId: string; roundName?: string; amount: number; currency: string; shares: number; ownershipPct?: number | null; kind: InterimKind; invitationId?: string | null; softCircleId?: string | null; status?: string | null };
@@ -1978,15 +2293,47 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         });
       }
     } catch { /* fail-open */ }
-    const subtotal = (rows: InterimRow[]) => ({
-      count: rows.length,
-      amount: rows.reduce((a, r) => a + (Number.isFinite(r.amount) ? r.amount : 0), 0),
-      shares: rows.reduce((a, r) => a + (Number.isFinite(r.shares) ? r.shares : 0), 0),
-    });
+    /* WAVE 35 · F7 — scope what is EMITTED. For an SPV-backed company reached
+       through an investor relationship the caller sees only their OWN rows, so
+       a co-LP's identity, email and amount can no longer be read out of any of
+       the three arrays. A genuine counterparty of a real operating company sees
+       exactly what they saw before (`allow` passes the list through). */
+    const scopedCommitted = scopeCapTableRows(access, committed, (r) => r.investorId);
+    const scopedFunded = scopeCapTableRows(access, funded, (r) => r.investorId);
+    const scopedSoftCircle = scopeCapTableRows(access, soft_circle, (r) => r.investorId);
+    /* WAVE 35 · F7 secondary — `subtotals.*.amount` summed `amount` across rows
+       that each carry their OWN `currency`: ¥ + $ in one scalar. Money is never
+       summed across currencies. Partition by currency, and emit the legacy
+       scalar as null (a rendered refusal, not a fake zero) when the set is
+       mixed. The idiom matches `singleCurrencyScalar` in
+       partnerConsortiumRoutes.ts (WAVE 21 · ITEM 2). */
+    const subtotal = (rows: InterimRow[]) => {
+      const byCurrency: Record<string, number> = {};
+      for (const r of rows) {
+        const cur = String(r.currency ?? "").trim().toUpperCase() || "USD";
+        const amt = Number.isFinite(r.amount) ? r.amount : 0;
+        byCurrency[cur] = (byCurrency[cur] ?? 0) + amt;
+      }
+      const currencies = Object.keys(byCurrency);
+      return {
+        count: rows.length,
+        /* null, not 0, when mixed — the client must refuse to render a single
+           figure rather than show a number that means nothing. */
+        amount: currencies.length === 1 ? byCurrency[currencies[0]] : (currencies.length === 0 ? 0 : null),
+        amountCurrency: currencies.length === 1 ? currencies[0] : null,
+        amountByCurrency: byCurrency,
+        amountIsMixedCurrency: currencies.length > 1,
+        shares: rows.reduce((a, r) => a + (Number.isFinite(r.shares) ? r.shares : 0), 0),
+      };
+    };
     res.json({
       companyId: String(cid),
-      committed, funded, soft_circle,
-      subtotals: { committed: subtotal(committed), funded: subtotal(funded), soft_circle: subtotal(soft_circle) },
+      committed: scopedCommitted, funded: scopedFunded, soft_circle: scopedSoftCircle,
+      subtotals: {
+        committed: subtotal(scopedCommitted),
+        funded: subtotal(scopedFunded),
+        soft_circle: subtotal(scopedSoftCircle),
+      },
     });
   });
 
@@ -2179,13 +2526,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // the change without a wide refactor. The DB row written above is the durable
     // source of truth; this is only a hot-read mirror.
     Object.assign(r, updates);
-    void BridgeOutbound;
+    /* WAVE 8 / ORP-050 (DEF-050) — was a duck-typed `(BridgeOutbound as any)
+       .roundTermsUpdated ? … : auditLogAppended(…)`. The helper did not exist on
+       BridgeOutbound, so the ternary ALWAYS took the fallback and the platform
+       never once emitted a real `round.terms_updated`; it emitted
+       `audit_log.appended` with the intended type as a payload field. The
+       helper now exists (server/lib/bridgeOutbound.ts) and the type is
+       registered in ALL_OUTBOUND_EVENT_TYPES, so this is a direct typed call
+       with no cast and no fallback branch to hide behind. */
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (BridgeOutbound as any).roundTermsUpdated
-        ? (BridgeOutbound as any).roundTermsUpdated(persisted.id, { roundId: persisted.id, companyId: persisted.companyId, updates })
-        : (BridgeOutbound as any).auditLogAppended?.(persisted.companyId, { eventType: "round.terms_updated", roundId: persisted.id, updates });
-    } catch { /* non-fatal */ }
+      BridgeOutbound.roundTermsUpdated(persisted.id, {
+        roundId: persisted.id,
+        companyId: persisted.companyId,
+        updates,
+      });
+    } catch { /* non-fatal — a bridge failure must never fail the mutation */ }
     emitMutation({ aggregate: "round", id: persisted.id, change: "update" });
     res.json({ ok: true, round: { ...persisted, company: companies.find(c => c.id === persisted.companyId)?.name }, eventType: "round.terms_updated" });
   });
@@ -2653,6 +3008,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         companyId: r.companyId,
         amount: r.amount,
         currency: r.currency,
+        /* WAVE 18 ORP-040 — `amount` here is a MAJOR-unit float straight off the
+           row (softCircleStore.mapRow:362). The row also carries the exact
+           integer minor-unit column `amount_minor` (:363) and no reader was
+           projecting it, so every client was forced to re-derive money from a
+           float. Additive field; `amount` is left verbatim for existing callers. */
+        amountMinor: r.amountMinor ?? null,
         state: r.state ?? r.status,
         investorEmail: r.investorEmail,
         investorName: r.investorName,
@@ -2677,13 +3038,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const ctx = req.userContext;
       if (!ctx?.userId) return res.json([]);
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { listForInvestor } = require("./softCircleStore");
-      const rows = listForInvestor(ctx.userId) ?? [];
+      /* WAVE 18 ORP-040 — was `require("./softCircleStore")` inside the catch
+         below. `listForInvestor` is ALREADY statically imported at the top of
+         this file as `softCircleListForInvestor`; the runtime require added a
+         second, module-graph-invisible resolution path whose only failure mode
+         was a silent empty watchlist. */
+      const rows = softCircleListForInvestor(ctx.userId) ?? [];
       const items = rows.map((r: any) => ({
         roundId: r.roundId,
         companyId: r.companyId ?? null,
         amount: r.amount ?? null,
+        /* Exact integer minor units from the `amount_minor` column. */
+        amountMinor: r.amountMinor ?? null,
         currency: r.currency ?? null,
         addedAt: r.createdAt ?? r.softCircledAt ?? null,
       }));
@@ -2699,26 +3065,34 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/investor/discover", requireAuth, (req, res) => {
     try {
       const ctx = req.userContext;
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { listRounds } = require("./roundsStore");
-      const all = (listRounds() as Array<any>) ?? [];
-      const invitedRoundIds = new Set((ctx?.investor?.invitedRounds ?? []).map((r: any) => r.roundId));
+      /* WAVE 18 ORP-040 — TWO defects on this line, both measured.
+         (1) It was `require("./roundsStore")` — the same invisible-module-graph
+             hazard as the watchlist above.
+         (2) FIX WHERE THE DATA FLOWS. `roundsStoreList()` alone is NOT the round
+             read path this codebase uses: every other round route goes through
+             `mergeLegacyAndDbRounds()` (:480), because the seeded/legacy rounds —
+             including every round an investor is INVITED to, e.g.
+             `rnd_novapay_seed` — are not in `roundsStore`. Measured: with
+             `roundsStoreList()` the store answered 0 rounds while the persona had
+             5 invitations, so the discover feed was structurally guaranteed to be
+             empty for exactly the investors it exists to serve. The filter below
+             already keys off `invitedRoundIds`, so it was filtering a set that
+             could never contain them. Now reads the SAME merged path as the rest
+             of the file. */
+      const all = (mergeLegacyAndDbRounds() as Array<any>) ?? [];
+      const invitedRoundIds = new Set<string>(
+        (ctx?.investor?.invitedRounds ?? []).map((r: any) => String(r.roundId)),
+      );
+      /* WAVE 18 ORP-040 — the filter and the money conversion now live in
+         `server/lib/investorDiscoverProjection.ts` as pure functions. Not for
+         tidiness: through this route the conversion can only ever be exercised in
+         USD (every seeded invitation is USD, and nothing in the codebase ever sets
+         `discoverable`), and USD is the one exponent where a hardcoded ×100 and a
+         correct conversion print the same. Extracted so the JPY/KWD poles are
+         actually reachable by a test. */
       const items = all
-        .filter((r) => {
-          if (r?.status && String(r.status).toLowerCase() === "closed") return false;
-          if (r?.deletedAt) return false;
-          // Show invited rounds first; also show any rounds explicitly flagged public.
-          return invitedRoundIds.has(r.id) || r?.discoverable === true;
-        })
-        .map((r) => ({
-          id: r.id,
-          companyId: r.companyId,
-          name: r.name ?? null,
-          status: r.status ?? "open",
-          targetAmount: r.targetAmount ?? null,
-          currency: r.currency ?? null,
-          invited: invitedRoundIds.has(r.id),
-        }));
+        .filter((r) => isDiscoverableForInvestor(r, invitedRoundIds))
+        .map((r) => projectDiscoverRound(r, invitedRoundIds));
       return res.json(items);
     } catch {
       return res.json([]);
@@ -2763,20 +3137,50 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const ctx = req.userContext;
       if (!ctx?.userId) return res.json([]);
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const captable = require("./captableCommitStore");
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const sc = require("./softCircleStore");
-      const commits = (captable.listCommitsForUser?.(ctx.userId) ?? []) as Array<any>;
-      const softs = (sc.listForInvestor?.(ctx.userId) ?? []) as Array<any>;
-      const events: Array<{ ts: string; kind: string; roundId?: string; companyId?: string; amount?: string | null }> = [];
+      /* WAVE 18 ORP-040 — BOTH stores were resolved by runtime `require()` of a
+         `.ts` module, inside a try whose catch returns `[]`. That is the exact
+         shape recorded in the rules: a module the test graph cannot see, plus a
+         swallow that turns any resolution failure into "this investor has no
+         history". Both are now static imports (see the top of this file). The
+         sacred ledger is still only READ. */
+      const commits = (captableListCommitsForUser(ctx.userId) ?? []) as Array<any>;
+      const softs = (softCircleListForInvestor(ctx.userId) ?? []) as Array<any>;
+      const events: Array<{
+        ts: string; kind: string; roundId?: string; companyId?: string;
+        amount?: string | null; amountMinor?: number | null; currency?: string | null;
+      }> = [];
       for (const c of commits) {
+        /* The ledger's `amount` is a decimal STRING in major units and the feed
+           previously projected it with NO currency at all — unrenderable as money
+           without guessing an exponent. Convert exactly (pure BigInt) and carry
+           the currency. A value too precise for the currency is REJECTED by
+           `decimalStringToMinor`; we surface `null` rather than a rounded lie, and
+           the client renders the row without an amount. */
+        let minor: number | null = null;
+        const ccy = typeof c.currency === "string" && c.currency ? c.currency : null;
+        if (typeof c.amount === "string" && c.amount !== "" && ccy) {
+          try {
+            minor = Number(decimalStringToMinor(c.amount, ccy, "investor_activity_commit"));
+          } catch {
+            minor = null;
+          }
+        }
         events.push({
-          ts: c.updatedAt ?? c.createdAt ?? new Date(0).toISOString(),
+          /* WAVE 18 ORP-040 — SECOND defect on this same line, measured not assumed:
+             a ledger row is a `LedgerEntry`, whose timestamp field is `ts`
+             (server/captableCommitStore.ts rowToLedgerEntry). It has NO
+             `updatedAt`/`createdAt`, so EVERY commit event was dated
+             1970-01-01T00:00:00.000Z and sorted to the bottom of the feed, below
+             every soft circle, regardless of when it happened. Invisible until
+             now only because the route had no caller. `ts` is read first; the old
+             names are kept as fallbacks so no other row shape regresses. */
+          ts: c.ts ?? c.updatedAt ?? c.createdAt ?? new Date(0).toISOString(),
           kind: `captable.${c.state ?? "commit"}`,
           roundId: c.roundId,
           companyId: c.companyId,
           amount: c.amount ?? null,
+          amountMinor: minor,
+          currency: ccy,
         });
       }
       for (const s of softs) {
@@ -2786,6 +3190,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           roundId: s.roundId,
           companyId: s.companyId,
           amount: s.amount ?? null,
+          /* Exact integer minor units already on the row (`amount_minor`). */
+          amountMinor: typeof s.amountMinor === "number" ? s.amountMinor : null,
+          currency: s.currency ?? null,
         });
       }
       events.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
@@ -3801,12 +4208,41 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // B6 (v24.0 LOCKDOWN) — ownership/visibility check on the company.
     const access = requireCanAccessCompany(req, res, id);
     if (!access.ok) return;
+    /* ── WAVE 36 · ROW 2 — THE SEVENTH CAP-TABLE SINK ─────────────────────────
+     * `requireCanAccessCompany` is company VISIBILITY, not sink scope. It admits
+     * anyone in `investorVisibleCompanyIds(ctx)` — which includes an SPV LP for
+     * their own vehicle. Review 2A proved by execution that LP Alpha downloading
+     * this PDF received LP Beta's exact $7,500,000 position, the blended
+     * $7,750,000 vehicle total, `Holders: 2`, and Beta's user id rendered as the
+     * Shareholder label. Five prior sweeps missed it because PDF content streams
+     * are Flate-compressed: a plain-text grep over the response bytes finds
+     * nothing. The falsification harness inflates every `stream…endstream`.
+     *
+     * Same shared decision as the three JSON sinks, so an eighth cannot be
+     * introduced by copying a route that merely looks authorised. NOTE: the
+     * summary block (`Total invested`, `Holders`, `pctOwnership`) is computed
+     * from the SCOPED rows below — scoping only the holder table would still
+     * disclose the blended total and the holder count. */
+    const sinkAccess = decideCapTableSinkAccess(
+      (req.userContext ?? getUserContext(req)) as any,
+      id,
+    );
+    if (sinkAccess.outcome === "refuse") {
+      return res.status(CAP_TABLE_SINK_NOT_FOUND_STATUS).json(CAP_TABLE_SINK_NOT_FOUND);
+    }
     /* v25.10 — real cap-table PDF generator. Reads the SACRED cap-table
      * commit ledger (captableCommitStore.listMembersForCompany) so the PDF
      * is a true snapshot of committed holders. Computes ownership % from
      * shares totals. Closes the v24.0 "flagged for v24.1" gap. */
     try {
-      const ledger = captableMembersForCompany(id);
+      /* WAVE 36 · ROW 2 — scope BEFORE aggregation, so every downstream number
+       * (totals, holder count, ownership %) is derived from rows the caller is
+       * entitled to see. */
+      const ledger = scopeCapTableRows(
+        sinkAccess,
+        captableMembersForCompany(id),
+        (r: any) => r?.investorId,
+      );
       /* Resolve company name */
       let companyName = id;
       try {
@@ -5473,6 +5909,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   /* ------------ Avi 22-May Issue 2: PPS derivation helpers (UI advisory) ------------ */
   registerRoundPriceDerivationRoutes(app);
 
+  /* ------------ WAVE 10 EN-1/EN-2/EN-3: ILPA cash-flow ledger, valuation
+   * marks and LP identity aliasing. Wires the orphaned Wave 9 engine. ------ */
+  registerReportingEngineRoutes(app);
+
+  /* ------------ WAVE 15 M-1d / M-5: footnote binding + accrued carry -------- */
+  registerWave15ReportingRoutes(app);
+  registerWave15Routes(app);
+
   // C4 (v24.0): these endpoints were never implemented — they returned a
   // fake `{ ok: true }` to the client, silently swallowing the request and
   // making the UI appear to succeed while nothing was persisted. Per the
@@ -5825,7 +6269,11 @@ interface AdminCompanyFullRow {
   subscription: Subscription | null;
 }
 
-function registerAdminCompaniesFullRoute(app: Express) {
+/* WAVE 33 OQ-33-2 — exported (was module-local) so the money-exponent harness
+ * can register these two routes on a bare express app and assert on the
+ * EMITTED body. No behaviour change: the shipped registration below is
+ * unchanged and this is the same function it always called. */
+export function registerAdminCompaniesFullRoute(app: Express) {
   const adminCompaniesFullHandler = (_req: Request, res: Response) => {
     const now = Date.now();
     const THIRTY_DAYS = 30 * 86_400_000;
@@ -5884,15 +6332,20 @@ function registerAdminCompaniesFullRoute(app: Express) {
       const activeRounds = companyRounds.filter((r) => r.state !== "closed" && r.state !== "funded");
 
       const roundCurrency = (companyRounds[0] as { currency?: string } | undefined)?.currency ?? "USD";
+      /* WAVE 33 OQ-33-2 sinks 2 and 3 — both reductions below used to hardcode
+       * `Math.round(x * 100)`, an ISO 4217 exponent of 2. `roundCurrency` is
+       * the currency this very row EMITS alongside both figures, so the
+       * exponent is derived from it. For JPY (exponent 0) the old form
+       * reported every admin raise and soft-circle total 100x too large. */
       const totalRaisedMinor = closedRounds.reduce((sum, r) => {
         const raw = (r as { raisedAmount?: number }).raisedAmount ?? 0;
-        return sum + Math.round(raw * 100);
+        return sum + toMinor(raw, roundCurrency);
       }, 0);
 
       const allSoftCircles = softCircleListForCompany(c.id);
       const softCircles30d = allSoftCircles.filter((sc) => now - new Date(sc.createdAt).getTime() < THIRTY_DAYS);
       const softCircle30dAmountMinor = softCircles30d.reduce(
-        (sum, sc) => sum + Math.round((sc.amount ?? 0) * 100),
+        (sum, sc) => sum + toMinor(sc.amount ?? 0, roundCurrency),
         0,
       );
 

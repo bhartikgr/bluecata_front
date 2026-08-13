@@ -22,7 +22,20 @@ const require = createRequire(import.meta.url);
 import type { Express, Request, Response } from "express";
 import { randomBytes } from "node:crypto";
 import { getUserContext, getUserContextForId, resolvePersonaId } from "./lib/userContext";
+/* WAVE 32 · CP-SPV-30 capability 5 — STATIC, deliberately. The lazy
+   `require("./captableCommitStore")` this replaces resolves to a .ts file under
+   `tsx` AND under Vitest and throws `Unexpected token '{'`, swallowed by the
+   handler's catch into an empty list. The ledger-derived co-members path was
+   therefore dead in dev and unobservable in every test, and live only in the
+   bundled JS build. A privacy guard on an unexecutable path proves nothing, so
+   the dependency is static and the path now runs where it is tested. */
+import { listMembersForCompany } from "./captableCommitStore";
+import { isSpvBackedCompany } from "./lib/spvBackedCompanies";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
+/* WAVE 36 · ROW 6 — STATIC import of the real comms core (was a lazy require
+ * of two names commsStore never exported, guarded by typeof so it silently did
+ * nothing). */
+import { openDmChannelCore, postChannelMessageCore } from "./commsStore";
 
 /* ---------------------------------------------------------------------------
  * Seed data — co-members per portfolio company
@@ -227,6 +240,16 @@ export function registerSprint21Routes(app: Express): void {
         return res.status(401).json({ message: "Unauthorised" });
       }
       const companyId = String(req.params.companyId ?? "");
+      /* WAVE 32 · CP-SPV-30 capability 5 — SPV-BACKED EXCLUSION. The second of
+         the two co-members handlers, and it must carry the same guard: a fix
+         applied to one of a mirrored pair is a fix that gets undone a wave
+         later. An SPV is a company in the ledger and every LP is written into
+         it with `company_id = spv.id`, so an LP of a vehicle passes
+         `gate("investor.onCapTableOf")` FOR THAT VEHICLE. Without this, one LP
+         asking for their own vehicle is handed the identities of every other LP
+         in it. Empty list, identical to a company with no other holders — no
+         enumeration oracle. See `lib/spvBackedCompanies.ts`. */
+      if (isSpvBackedCompany(companyId)) return res.json([]);
       let raw = CO_MEMBERS_BY_COMPANY[companyId] ?? [];
       /* v25.10 fix M9 — the static CO_MEMBERS_BY_COMPANY seed is only populated
        * when DEMO_SEED_ENABLED=true. For real companies (post-demo or in prod),
@@ -236,9 +259,9 @@ export function registerSprint21Routes(app: Express): void {
        * excluding the caller. */
       if (raw.length === 0) {
         try {
-          // eslint-disable-next-line @typescript-eslint/no-var-requires
-          const { listMembersForCompany } = require("./captableCommitStore");
-          const ledger = listMembersForCompany(companyId) as Array<{ investorId: string }>;
+          /* No cast: the static import gives the real `LedgerEntry` type, and a cast
+             here would have hidden a shape change in the ledger. */
+          const ledger = listMembersForCompany(companyId);
           /* De-dupe by investorId. Exclude the caller. */
           const seen = new Set<string>();
           const derived: CoMember[] = [];
@@ -325,41 +348,74 @@ export function registerSprint21Routes(app: Express): void {
       } catch {
         /* non-fatal */
       }
+      /* WAVE 36 · ROW 6 — REAL delivery.
+       *
+       * This block used to lazily `require("./commsStore")` and destructure
+       * `startDmChannel` / `postMessageToChannel`, neither of which that module
+       * has ever exported, then guard the whole thing with `typeof … ===
+       * "function"`. The guards made it a no-op that could never throw, so the
+       * v25.10 "fix M8" claim that ma-discuss reaches recipients through
+       * commsStore was false on every request. It now calls the SAME core the
+       * `POST /api/comms/dm/start` and message routes call, so the identical
+       * authorisation applies, and a per-recipient refusal is REPORTED rather
+       * than swallowed. */
+      const delivery: Array<{
+        recipientId: string;
+        delivered: boolean;
+        channelId?: string;
+        error?: string;
+      }> = [];
       if (mode === "message" && record.recipientIds.length > 0) {
-        try {
-          // eslint-disable-next-line @typescript-eslint/no-var-requires
-          const { startDmChannel, postMessageToChannel } = require("./commsStore");
-          for (const recipientId of record.recipientIds) {
-            if (!recipientId || typeof recipientId !== "string") continue;
-            if (typeof startDmChannel === "function" && typeof postMessageToChannel === "function") {
-              const ch = startDmChannel({
-                senderId: ctx.userId,
-                recipientId,
-                topic: `ma_discuss:${companyId}`,
-              });
-              if (ch && (ch.id || ch.channelId)) {
-                postMessageToChannel({
-                  channelId: ch.id || ch.channelId,
-                  authorId: ctx.userId,
-                  body: record.body,
-                });
-              }
-            }
+        for (const recipientId of record.recipientIds) {
+          if (!recipientId || typeof recipientId !== "string") continue;
+          const opened = openDmChannelCore({
+            actorId: ctx.userId,
+            targetUserId: recipientId,
+          });
+          if (!opened.ok) {
+            delivery.push({
+              recipientId,
+              delivered: false,
+              error: String((opened.body as any)?.error ?? (opened.body as any)?.reason ?? "dm_refused"),
+            });
+            continue;
           }
-        } catch {
-          /* commsStore exports may not match exactly; persistence shim above
-           * still records the message so the admin can audit it. */
+          const posted = postChannelMessageCore({
+            actorId: ctx.userId,
+            channelId: opened.channelId,
+            body: record.body,
+          });
+          delivery.push(
+            posted.ok
+              ? { recipientId, delivered: true, channelId: opened.channelId }
+              : {
+                  recipientId,
+                  delivered: false,
+                  channelId: opened.channelId,
+                  error: String((posted.body as any)?.error ?? (posted.body as any)?.message ?? "post_refused"),
+                },
+          );
         }
       }
 
       if (mode === "message") {
         // Simulate per-recipient message creation (reuses commsStore pattern without coupling)
+        /* WAVE 36 · ROW 6 — report what was actually DELIVERED, not what was
+         * requested. The old response said "Sent to N recipient(s)" while N
+         * messages had been sent to nobody. */
+        const deliveredCount = delivery.filter((d) => d.delivered).length;
+        const refused = delivery.filter((d) => !d.delivered);
         return res.status(201).json({
           ok: true,
           id,
           mode: "message",
           recipientCount: record.recipientIds.length,
-          message: `Sent to ${record.recipientIds.length} recipient(s)`,
+          deliveredCount,
+          delivery,
+          message:
+            refused.length === 0
+              ? `Sent to ${deliveredCount} recipient(s)`
+              : `Sent to ${deliveredCount} of ${record.recipientIds.length} recipient(s); ${refused.length} could not be messaged`,
         });
       } else {
         // mode === "post"

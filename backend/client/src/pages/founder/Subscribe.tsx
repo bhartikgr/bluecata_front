@@ -41,6 +41,7 @@ import { useEntitlement } from "@/lib/entitlement";
 import { useRef } from "react";
 import { LegalConsentCheckbox, type LegalConsentCheckboxRef } from "@/components/LegalConsentCheckbox";
 import capavateLogoUrl from "@/assets/capavate-logo.png";
+import { formatMinor } from "@/lib/currency";
 
 /* ---------- Types ---------- */
 interface Subscription {
@@ -104,12 +105,12 @@ function loadAirwallexSDK(): Promise<void> {
   return _airwallexSdkPromise;
 }
 
+/* WAVE 21 ITEM 5: /100 with 0 fraction digits. The 0 was a deliberate
+   "whole prices only" choice for USD plan tiers, but combined with /100
+   it rendered JPY 100x low AND truncated. formatMinor uses the currency
+   exponent, so USD tiers keep their cents and JPY shows whole yen. */
 function fmtMoney(minor: number, currency = "USD"): string {
-  try {
-    return new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 0 }).format(minor / 100);
-  } catch {
-    return `${currency} ${(minor / 100).toFixed(0)}`;
-  }
+  return formatMinor(minor, currency, { locale: "en-US" });
 }
 
 function isFreeTier(t: BillingTier): boolean {

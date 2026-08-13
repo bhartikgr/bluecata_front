@@ -29,6 +29,11 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CheckCircle2, ExternalLink } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+/* WAVE 17 ORP-039 — member-facing fees, charges and invoices. */
+import { MemberBillingPanel } from "@/components/collective/MemberBillingPanel";
+import { minorToMajorString } from "@/lib/moneyDisplay";
+/* WAVE 24 · ITEM 3a — a failed price fetch must not render a buyable card. */
+import { LoadFailedRefusal } from "@/components/LoadFailedRefusal";
 
 // ----- Types --------------------------------------------------------------
 
@@ -86,7 +91,8 @@ interface MeChaptersResponse {
 
 function formatMoneyMinor(amountMinor: number | null, currency: string | null): string {
   if (amountMinor === null || currency === null) return "—";
-  const dollars = amountMinor / 100;
+  /* WAVE 21 ITEM 5: hardcoded /100; the currency was already in scope. */
+  const dollars = Number(minorToMajorString(amountMinor, currency));
   try {
     return new Intl.NumberFormat("en-US", {
       style: "currency",
@@ -416,10 +422,27 @@ export default function MembershipPage(): JSX.Element | null {
                 <Button
                   className="w-full"
                   onClick={() => checkoutMut.mutate(p.packageId)}
-                  disabled={checkoutMut.isPending || !p.available || !p.packageId}
+                  /* WAVE 24 · ITEM 3a, second path. Same defect one branch over:
+                     an admin package whose `unitAmount`/`currency` is null also
+                     renders "—" through `formatMoneyMinor`, and its Subscribe
+                     button was live. A package with no stated price cannot be
+                     bought. */
+                  disabled={
+                    checkoutMut.isPending ||
+                    !p.available ||
+                    !p.packageId ||
+                    p.unitAmount === null ||
+                    p.currency === null
+                  }
                   data-testid={`subscribe-btn-${p.slug}`}
                 >
-                  {checkoutMut.isPending ? "Redirecting…" : p.available ? "Subscribe" : "Unavailable"}
+                  {checkoutMut.isPending
+                    ? "Redirecting…"
+                    : p.unitAmount === null || p.currency === null
+                      ? "Price unavailable"
+                      : p.available
+                        ? "Subscribe"
+                        : "Unavailable"}
                 </Button>
               </CardContent>
             </Card>
@@ -427,8 +450,36 @@ export default function MembershipPage(): JSX.Element | null {
         </div>
       )}
 
-      {useAdminCatalog ? null : tierQ.isLoading ? (
+      {/* WAVE 24 · ITEM 3a (FINAL REVIEW B, E-1). This block had NO `isError`
+          branch. When the price fetch failed, `formatMoneyMinor(null, null)`
+          returned "—" and the card rendered anyway with a LIVE Subscribe
+          button: a user could start a recurring charge against a price the
+          page could not state. A price that failed to load is not a price.
+          Gated on `isSuccess` and not on `!isLoading && !isError`, because a
+          PAUSED query (offline) is neither — the exact caveat in
+          LoadFailedRefusal's own header. */}
+      {useAdminCatalog ? null : tierQ.isError || catalogQ.isError ? (
+        <LoadFailedRefusal
+          what="membership pricing"
+          onRetry={() => {
+            void tierQ.refetch();
+            void catalogQ.refetch();
+          }}
+          isRetrying={tierQ.isFetching || catalogQ.isFetching}
+          testId="membership-pricing-load-failed"
+        />
+      ) : tierQ.isLoading || catalogQ.isLoading ? (
         <Skeleton className="h-80 w-full" />
+      ) : !tierQ.isSuccess || !catalogQ.isSuccess ? (
+        <LoadFailedRefusal
+          what="membership pricing"
+          onRetry={() => {
+            void tierQ.refetch();
+            void catalogQ.refetch();
+          }}
+          isRetrying={tierQ.isFetching || catalogQ.isFetching}
+          testId="membership-pricing-unavailable"
+        />
       ) : (
         <Card
           className={isCurrent ? "border-primary" : ""}
@@ -474,6 +525,12 @@ export default function MembershipPage(): JSX.Element | null {
           </CardContent>
         </Card>
       )}
+
+      {/* WAVE 17 ORP-039 — self-service billing. The three
+          /api/collective/me/* billing reads had zero client callers; they are
+          rendered here as a sibling CARD (additive to the guard fingerprint,
+          never appended inside an existing node). */}
+      <MemberBillingPanel />
     </div>
   );
 }

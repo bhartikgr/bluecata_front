@@ -10,6 +10,7 @@ import {
   PARTNER_CLIENT_DEFAULT_STAGE,
   type PartnerClientStage,
 } from "@shared/crmStages";
+import AttributionProvenancePanel from "@/components/partner/AttributionProvenancePanel";
 
 interface ClientRow { id: string; companyId: string; companyName?: string | null; attributionSource: string; attributedAt: string }
 
@@ -155,6 +156,13 @@ export default function PartnerClients() {
           </table>
         </div>
       )}
+      {/* WAVE 33 / CP-PIPE-06 — APPENDED as the LAST sibling inside the shell,
+          never inserted mid-list (insertion renumbers a sibling's positional
+          path and the guard reads that as a drop). The table above shows
+          `attributionSource` as a bare string; it cannot say whether a row is
+          missing the person or the date behind it, and there was no way at all
+          to ask whether a company is already claimed. */}
+      <AttributionProvenancePanel />
     </PartnerShell>
   );
 }

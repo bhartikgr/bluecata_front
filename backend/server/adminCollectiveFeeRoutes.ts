@@ -31,6 +31,8 @@ import {
   listCommissionRates,
   isCommissionRateTier,
 } from "./lib/partnerCommissionRateResolver";
+/* WAVE 16 / CP-BRG-07 */
+import { publishFeeScheduleChangedForTier } from "./lib/wave15FeeScheduleAggregate";
 
 function actorOf(req: Request): string {
   const ctx = (req as Request & {
@@ -166,6 +168,12 @@ export function registerAdminCollectiveFeeRoutes(app: Express): void {
         "commission_rate.updated",
         { tier, fromRate, toRate: rate },
       );
+      /* WAVE 16 / CP-BRG-07 — SECOND PATH to the fee aggregate. The commission
+       * rate is one of the aggregate's three legs (`resolveCommissionRate`), and
+       * it is written HERE, not in partnerFeeAdminRoutes. Publishing only from
+       * the fee-schedule routes would have left every partner on this tier
+       * showing a stale commission rate. Tier-scoped fanout, revision only. */
+      publishFeeScheduleChangedForTier(tier, "commission_rate.updated");
       res.json({ ok: true, tier, rate, source: "db", rates: listCommissionRates() });
     },
   );

@@ -43,6 +43,16 @@ type Props = {
   maScore: number;
 };
 
+/* WAVE 21 ITEM 6: when `topBuyer` is absent this composed the literal string
+   "top buyer TBD" into a message body that is SENT TO OTHER USERS. A placeholder
+   is acceptable in a draft field; asserting an unknown value to a recipient is
+   not. The clause is now omitted when there is nothing to report. */
+export function composeDiscussBody(companyName: string, topBuyer: string | null | undefined, maScore: number): string {
+  const buyer = (topBuyer ?? "").trim();
+  const buyerClause = buyer ? ` — top buyer ${buyer}` : "";
+  return `Discussing M&A signal on ${companyName}${buyerClause} — M&A score ${maScore}/100.`;
+}
+
 export function DiscussWithCapTableDialog({
   open,
   onOpenChange,
@@ -53,7 +63,7 @@ export function DiscussWithCapTableDialog({
 }: Props) {
   const { toast } = useToast();
 
-  const defaultBody = `Discussing M&A signal on ${companyName} — top buyer ${topBuyer || "TBD"}, M&A score ${maScore}/100.`;
+  const defaultBody = composeDiscussBody(companyName, topBuyer, maScore);
 
   const [messageBody, setMessageBody] = useState(defaultBody);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -62,7 +72,7 @@ export function DiscussWithCapTableDialog({
   // Reset state when dialog opens with new company context
   useEffect(() => {
     if (open) {
-      setMessageBody(`Discussing M&A signal on ${companyName} — top buyer ${topBuyer || "TBD"}, M&A score ${maScore}/100.`);
+      setMessageBody(composeDiscussBody(companyName, topBuyer, maScore));
       setMode("message");
       // v25.13 NM2 — clear stale recipient selection from a prior open so
       // a rapid reopen-then-submit can't fire at the previous company's list.

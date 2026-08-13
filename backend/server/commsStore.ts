@@ -124,6 +124,25 @@ import { log } from "./lib/logger";
 import * as collectiveMembershipStore from "./collectiveMembershipStore";
 // v24.0 E7: partner detection for role-aware DM notification links.
 import { partnerTeamStore } from "./partnerWorkspaceStore";
+/* WAVE 33 · CP-MSG-01 — DB-driven messaging audience + delegated context.
+   STATIC imports: a call-time `require` of either module would resolve under
+   tsx and throw MODULE_NOT_FOUND inside the bundled production build (proved by
+   execution in item 5 of this wave). */
+import {
+  readRules as readAudienceRules,
+  isAudienceRuleEnabled,
+  pendingOwnerDecisions,
+  setAudienceRuleEnabled,
+} from "./lib/commsAudienceRules";
+import {
+  engagementFor,
+  resolveDelegatedContext,
+  delegatedCompanyPeopleIds,
+  partnerTeamPeerIds,
+  stampDelegatedContext,
+  readDelegatedContext,
+} from "./lib/partnerDelegatedContext";
+import { resolveDmRole } from "./messagingPolicy";
 import { getUserContextForId } from "./lib/userContext";
 /* ────────────────────────────────────────────────────────────────────────────
    W-COLLECTIVE Wave 2 STAGE D — DURABLE RE-SOURCING (D1/D2/D3/D4/D5)
@@ -1790,12 +1809,32 @@ interface ChannelView extends Channel {
   starred: boolean;
   /** Channel-kind badge label. */
   kindBadge: string;
+  /** WAVE 33 · CP-MSG-01 — the delegated authority this THREAD was opened
+      under, when it was. Read from the stamp, never recomputed. */
+  delegatedContext?: {
+    partnerId: string;
+    partnerName: string | null;
+    companyId: string;
+    companyName: string | null;
+    engagementId: string;
+    actingUserId: string;
+  };
 }
 
 interface MessageView extends Message {
   authorLabel: string;
   authorIsAnonymous: boolean;
   authorRoleBadge: string;
+  /** WAVE 33 · CP-MSG-01 — present only on a message sent under proven
+      delegated authority (see server/lib/partnerDelegatedContext.ts). */
+  delegatedContext?: {
+    partnerId: string;
+    partnerName: string | null;
+    companyId: string;
+    companyName: string | null;
+    engagementId: string;
+    actingUserId: string;
+  };
 }
 
 interface PostView extends Post {
@@ -1919,6 +1958,8 @@ function projectChannel(channel: Channel, viewerUserId: string): ChannelView {
     unread: unreadCount(channel.id, viewerUserId),
     starred,
     kindBadge: channelKindBadge(channel.kind, channel),
+    /* WAVE 33 · CP-MSG-01 — the thread's own delegated-authority stamp. */
+    delegatedContext: readDelegatedContext("channel", channel.id) ?? undefined,
   };
 }
 
@@ -1937,6 +1978,12 @@ function projectMessage(msg: Message, channel: Channel | undefined, viewerUserId
     authorLabel: r.displayName,
     authorIsAnonymous: r.isAnonymous,
     authorRoleBadge: roleBadge,
+    /* WAVE 33 · CP-MSG-01 — read from the STAMP written when the message was
+       sent, never recomputed from today's engagements: a message sent under an
+       authority that has since lapsed still says so, and one sent without
+       delegation can never acquire it retroactively. `undefined` when absent,
+       so the key does not appear on ordinary personal messages. */
+    delegatedContext: readDelegatedContext("message", msg.id) ?? undefined,
   };
 }
 
@@ -2098,6 +2145,229 @@ function projectPost(post: Post, viewerUserId: string): PostView {
   };
 }
 
+/* ====================================================================== */
+/* WAVE 36 · ROW 6 — DM CORE, callable from server-side code.             */
+/*                                                                        */
+/* `server/sprint21Routes.ts:350` did:                                    */
+/*     const { startDmChannel, postMessageToChannel } = require("./commsStore");
+/*     if (typeof startDmChannel === "function" && …)                     */
+/* Neither name has ever been exported by this module. The typeof guards  */
+/* made the whole block a no-op that could not fail, so the v25.10 "fix   */
+/* M8" comment claiming ma-discuss now reaches recipients through         */
+/* commsStore was false for every request since it was written: the DM    */
+/* was never created and the message was never delivered.                 */
+/*                                                                        */
+/* These two functions are the SINGLE implementation. The HTTP routes     */
+/* below delegate to them, so a server-side caller cannot drift from the  */
+/* authorisation the HTTP path enforces — no second copy of canDM, no     */
+/* second copy of the channel-visibility gate.                            */
+/* ====================================================================== */
+
+export type DmCoreResult =
+  | { ok: true; channelId: string; created: boolean }
+  | { ok: false; status: number; body: Record<string, unknown> };
+
+/** Open (or reuse) the DM channel between `actorId` and `targetUserId`. */
+export function openDmChannelCore(args: {
+  actorId: string;
+  targetUserId: string;
+  onBehalfOfCompanyId?: string;
+  ip?: string;
+  ua?: string;
+}): DmCoreResult {
+  const { actorId, ip, ua } = args;
+  const dmDelegatedCompanyId = (args.onBehalfOfCompanyId ?? "").trim();
+  if (dmDelegatedCompanyId && !engagementFor(actorId, dmDelegatedCompanyId)) {
+    return {
+      ok: false,
+      status: 422,
+      body: {
+        ok: false,
+        error: "delegated_authority_not_provable",
+        message: "No live engagement authorises you to open this thread on behalf of that company.",
+        companyId: dmDelegatedCompanyId,
+      },
+    };
+  }
+  let target: UserRef | DurableCommsUserRef | undefined = commsUserRef(args.targetUserId);
+  let authorizedViaCrm = false;
+  if (!target) {
+    const crm = findCrmContactByInvestorId(args.targetUserId);
+    if (crm && crm.email) {
+      const provisioned: UserRef = {
+        id: args.targetUserId,
+        legalName: crm.name && crm.name.trim().length > 0 ? crm.name : "Invited contact",
+        email: crm.email,
+        visibility: {
+          screenName: crm.firmName && crm.firmName !== "—" ? crm.firmName : crm.name,
+          visibleToCoMembers: true,
+          visibleToCollectiveNetwork: false,
+        },
+        capTables: crm.companyId ? [crm.companyId] : [],
+        collectiveChapters: [],
+        roles: ["investor"],
+      };
+      COMMS_USERS[args.targetUserId] = provisioned;
+      target = provisioned;
+      authorizedViaCrm = true;
+    }
+  }
+  if (!target) {
+    return {
+      ok: false,
+      status: 422,
+      body: {
+        ok: false,
+        error: "contact_not_provisioned",
+        message: "Cannot start DM until this contact accepts their invitation.",
+      },
+    };
+  }
+  const me = viewerOf(actorId);
+  const shared = sharedContextBetween(me, target);
+  const policy = canDM(actorId, target.id);
+  const r = resolveDisplayIdentity({
+    viewerUserId: actorId,
+    authorUserId: target.id,
+    authorLegalName: target.legalName,
+    authorVisibility: target.visibility,
+    context: { sharedCapTables: shared.capTables, sharedCollectiveChapters: shared.chapters },
+  });
+  const allowedByPolicy = policy.allowed || r.canSendDm || authorizedViaCrm;
+  if (!allowedByPolicy) {
+    emitOutbox("dm.channel.blocked", actorId, ip, ua, {
+      fromUserId: actorId,
+      toUserId: target.id,
+      reason:
+        policy.reason ??
+        (shared.capTables.length === 0 && shared.chapters.length === 0
+          ? "no_shared_context"
+          : "no_visibility"),
+    });
+    return {
+      ok: false,
+      status: 403,
+      body: { ok: false, reason: policy.reason ?? r.reason, privacyMode: policy.privacyMode },
+    };
+  }
+  const id = dmChannelId(actorId, target.id);
+  let ch = channels.get(id);
+  const created = !ch;
+  if (!ch) {
+    ch = {
+      id,
+      kind: "dm",
+      participantUserIds: [actorId, target.id],
+      createdAt: nowIso(),
+      metadata: { title: "Direct message" },
+    };
+    channels.set(id, ch);
+    persistChannel(ch);
+  }
+  if (dmDelegatedCompanyId) stampDelegatedContext("channel", id, actorId, dmDelegatedCompanyId);
+  emitOutbox("dm.channel.opened", actorId, ip, ua, {
+    channelId: id,
+    fromUserId: actorId,
+    toUserId: target.id,
+    sharedContext: shared,
+  });
+  emitMutation({ aggregate: "commsThread", id, change: created ? "create" : "update" });
+  try {
+    emitNotification({
+      userId: target.id,
+      kind: "message.received",
+      title: `${resolveCommsDisplayName(target.id, actorId)} opened a DM`,
+      body: "A new direct message thread was started with you.",
+      link: messagesPathForUser(target.id, id),
+    });
+  } catch { /* noop */ }
+  return { ok: true, channelId: id, created };
+}
+
+export type PostMessageCoreResult =
+  | { ok: true; message: Message }
+  | { ok: false; status: number; body: Record<string, unknown> };
+
+/**
+ * Write one message into a channel the actor may write to. Runs the SAME
+ * visibility gate, followers-channel write gate and delegated-authority proof
+ * the HTTP route runs, because the HTTP route calls this function.
+ */
+export function postChannelMessageCore(args: {
+  actorId: string;
+  channelId: string;
+  body: string;
+  replyToMessageId?: string;
+  attachments?: Message["attachments"];
+  onBehalfOfCompanyId?: string;
+  membershipCtx?: CommsMembershipCtx;
+  ip?: string;
+  ua?: string;
+}): PostMessageCoreResult {
+  const { actorId, ip, ua } = args;
+  const ch = channels.get(args.channelId);
+  if (!ch) return { ok: false, status: 404, body: { message: "Channel not found" } };
+  if (!channelIsVisibleToViewer(ch, actorId, args.membershipCtx))
+    return { ok: false, status: 403, body: { message: "Not a member of this channel" } };
+  if (ch.kind === "company_followers" && !mayWriteToFollowersChannel(ch, actorId)) {
+    return {
+      ok: false,
+      status: 403,
+      body: { message: "Not a member of this channel", error: "followers_channel_read_only" },
+    };
+  }
+  const delegatedCompanyId = (args.onBehalfOfCompanyId ?? "").trim();
+  if (delegatedCompanyId && !engagementFor(actorId, delegatedCompanyId)) {
+    return {
+      ok: false,
+      status: 422,
+      body: {
+        ok: false,
+        error: "delegated_authority_not_provable",
+        message: "No live engagement authorises you to write on behalf of this company.",
+        companyId: delegatedCompanyId,
+      },
+    };
+  }
+  const id = `msg_${randomBytes(8).toString("hex")}`;
+  const msg: Message = {
+    id,
+    channelId: ch.id,
+    authorUserId: actorId,
+    body: args.body,
+    createdAt: nowIso(),
+    starredByUserIds: [],
+    reactions: [],
+    readByUserIds: [actorId],
+    replyToMessageId: args.replyToMessageId,
+    attachments: args.attachments,
+  };
+  messages.set(id, msg);
+  persistMessage(msg);
+  if (delegatedCompanyId) stampDelegatedContext("message", id, actorId, delegatedCompanyId);
+  emitOutbox("message.sent", actorId, ip, ua, {
+    messageId: id,
+    channelId: ch.id,
+    channelKind: ch.kind,
+    authorUserId: actorId,
+    recipientCount: ch.participantUserIds.filter((u) => u !== actorId).length,
+  });
+  emitMutation({ aggregate: "commsThread", id: ch.id, change: "update" });
+  for (const uid of ch.participantUserIds.filter((u) => u !== actorId)) {
+    const link = messagesPathForUser(uid, ch.id);
+    try {
+      emitNotification({
+        userId: uid,
+        kind: "message.received",
+        title: "New message in thread",
+        body: msg.body.slice(0, 100),
+        link,
+      });
+    } catch { /* noop — notif store may not have this kind */ }
+  }
+  return { ok: true, message: msg };
+}
+
 /* ==================================================================== */
 /* ROUTE REGISTRATION                                                   */
 /* ==================================================================== */
@@ -2160,73 +2430,73 @@ export function registerCommsRoutes(app: Express): void {
   });
 
   /* ---- Send message ---- */
-  app.post("/api/comms/channels/:id/messages", (req, res) => {
+  /* WAVE 27 · CP-MSG-05 — MSG-05 "Rate limiting", the half that was never built.
+
+     WHAT THE PRIOR CITATION GOT WRONG. Wave 18 recorded MSG-05 as "WIRING, not
+     BUILD-NEW" on the grounds that `app.use("/api/messages", collectiveRateLimit)`
+     already covers the messaging surface (`server/routes.ts:1047`). The partner
+     messaging page does not use `/api/messages`. `client/src/pages/partner/
+     PartnerMessages.tsx:53,61` calls `GET /api/comms/users` and
+     `POST /api/comms/dm/start`, and `client/src/components/comms/MessagesPage.tsx`
+     sends through `POST /api/comms/channels/:id/messages` — i.e. THIS handler, on
+     the `/api/comms` prefix, which carries no prefix limiter at all. The client
+     half Wave 18 shipped (`PartnerMessages.tsx:120-131`, the `retryAfterMs`
+     429 banner) could therefore never be reached by a message send: a render for
+     a response the server had no way to produce.
+
+     WHY A PREFIX `app.use` WOULD NOT HAVE WORKED EITHER. `registerCommsRoutes` is
+     called at `server/routes.ts:672`; the limiter block sits at `:1045-1047`.
+     Express dispatches in registration order, so a prefix `app.use` added down
+     there is INERT for every route registered above it — proved executably in
+     `server/__tests__/wave27_cpmsg05_comms_rate_limit.test.ts` ("pole A"). This is
+     a call-only mount for that reason, following the W2B B3 precedent already in
+     this file at `:2729`.
+
+     THE SINK, NAMED. `messages.set(id, msg)` + `persistMessage(msg)` below — a
+     durable write — plus an `emitNotification` fan-out to every other participant.
+     That fan-out is what makes an unlimited send an abuse vector rather than a
+     nuisance. Every OTHER writer of the same message/channel state is mounted the
+     same way in this wave: `dm/start` (:3001, mints channels), message edit
+     (:2229), reactions (:2281, notification-adjacent) and post creation (:2421 —
+     W2B B3 limited like/comment/share but left CREATION open).
+
+     DELIBERATELY NOT LIMITED, so this is a choice and not an oversight:
+     `POST .../typing` (:3303) is debounced to 500 ms client-side
+     (`MessagesPage.tsx:288-296`), i.e. up to 120/min of sustained typing against a
+     60/min write bucket — limiting it would break the typing indicator for a fast
+     typist. `POST .../channels/:id/read` (:2308) is a read-receipt, not content.
+     GETs are untouched. No existing functionality is removed. */
+  app.post("/api/comms/channels/:id/messages", collectiveRateLimit, (req: Request<{ id: string }>, res: Response) => {
     const { actorId, ip, ua } = actorOf(req);
     const ctx = membershipCtxOf(req); // v24.1 Bug H
-    const ch = channels.get(req.params.id);
-    if (!ch) return res.status(404).json({ message: "Channel not found" });
-    if (!channelIsVisibleToViewer(ch, actorId, ctx))
-      return res.status(403).json({ message: "Not a member of this channel" });
-    /* STAGE-D BLOCKER FIX B4b - a company's followers feed is AUTHOR-RESTRICTED.
-       D5 made `followers__<companyId>` exist on live for the first time, and
-       because following is open self-service, any authenticated investor who
-       followed a company could POST into it (200; pre-Stage-D it was 404) -
-       an unmoderated broadcast channel into the founder's and every follower's
-       inbox. Followers READ; only the company's own active founders WRITE.
-       Fails closed: an unresolvable company id denies. The read path above is
-       untouched. */
-    if (ch.kind === "company_followers" && !mayWriteToFollowersChannel(ch, actorId)) {
-      return res.status(403).json({
-        message: "Not a member of this channel",
-        error: "followers_channel_read_only",
-      });
-    }
     const parsed = messageCreateSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: "Invalid message", issues: parsed.error.issues });
-    return withIdempotency(req, res, `POST /api/comms/channels/${ch.id}/messages`, () => {
-      const id = `msg_${randomBytes(8).toString("hex")}`;
-      const msg: Message = {
-        id,
-        channelId: ch.id,
-        authorUserId: actorId,
+    return withIdempotency(req, res, `POST /api/comms/channels/${req.params.id}/messages`, () => {
+      /* WAVE 36 · ROW 6 — thin wrapper over postChannelMessageCore. The channel
+         404, the participant gate, the followers-channel write gate and the
+         delegated-authority proof all live in the core so a server-side caller
+         cannot bypass them. Ordering note: the 400 for an invalid body is
+         raised BEFORE the core so an unparsed body never reaches a gate. */
+      const outcome = postChannelMessageCore({
+        actorId,
+        channelId: req.params.id,
         body: parsed.data.body,
-        createdAt: nowIso(),
-        starredByUserIds: [],
-        reactions: [],
-        readByUserIds: [actorId],
         replyToMessageId: parsed.data.replyToMessageId,
         attachments: parsed.data.attachments,
-      };
-      messages.set(id, msg);
-      // v25.1 Bug 2 fix — persist to DB so PM2 workers and restarts can read it.
-      persistMessage(msg);
-      emitOutbox("message.sent", actorId, ip, ua, {
-        messageId: id, channelId: ch.id, channelKind: ch.kind, authorUserId: actorId,
-        recipientCount: ch.participantUserIds.filter((u) => u !== actorId).length,
+        onBehalfOfCompanyId: parsed.data.onBehalfOfCompanyId,
+        membershipCtx: ctx,
+        ip,
+        ua,
       });
-      // Sprint 19 A — emit SSE mutation so all clients see new message.
-      emitMutation({ aggregate: "commsThread", id: ch.id, change: "update" });
-      // Sprint 19 A / defect 8 — emit in-app notification for each non-author participant.
-      // DEF-031: Use role-aware link so investors are not sent to /founder/ path.
-      for (const uid of ch.participantUserIds.filter((u) => u !== actorId)) {
-        // v24.0 E7: use the shared role-aware resolver (founder/investor/partner).
-        const link = messagesPathForUser(uid, ch.id);
-        try {
-          emitNotification({
-            userId: uid,
-            kind: "message.received",
-            title: "New message in thread",
-            body: msg.body.slice(0, 100),
-            link,
-          });
-        } catch { /* noop — notif store may not have this kind */ }
-      }
-      return res.json(projectMessage(msg, ch, actorId));
+      if (!outcome.ok) return res.status(outcome.status).json(outcome.body);
+      const ch = channels.get(req.params.id);
+      return res.json(projectMessage(outcome.message, ch, actorId));
     });
   });
 
   /* ---- Edit message ---- */
-  app.patch("/api/comms/messages/:id", (req, res) => {
+  /* WAVE 27 · CP-MSG-05 — second writer of message state (see the send handler). */
+  app.patch("/api/comms/messages/:id", collectiveRateLimit, (req: Request<{ id: string }>, res: Response) => {
     const { actorId, ip, ua } = actorOf(req);
     const m = messages.get(req.params.id);
     if (!m) return res.status(404).json({ message: "Not found" });
@@ -2278,7 +2548,8 @@ export function registerCommsRoutes(app: Express): void {
   });
 
   /* ---- Reactions ---- */
-  app.post("/api/comms/messages/:id/reactions", (req, res) => {
+  /* WAVE 27 · CP-MSG-05 — third writer; reactions notify the message author. */
+  app.post("/api/comms/messages/:id/reactions", collectiveRateLimit, (req: Request<{ id: string }>, res: Response) => {
     const { actorId, ip, ua } = actorOf(req);
     if (!canMutateMessage(res, req.params.id, actorId)) return; // B14
     const m = messages.get(req.params.id)!;
@@ -2418,7 +2689,9 @@ export function registerCommsRoutes(app: Express): void {
   });
 
   /* ---- Posts: create ---- */
-  app.post("/api/comms/posts", (req, res) => {
+  /* WAVE 27 · CP-MSG-05 — W2B B3 rate-limited post LIKE/COMMENT/SHARE (:2729+)
+     but left post CREATION open, which is the higher-fan-out write of the two. */
+  app.post("/api/comms/posts", collectiveRateLimit, (req, res) => {
     const { actorId, ip, ua } = actorOf(req);
     const parsed = postCreateSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: "Invalid", issues: parsed.error.issues });
@@ -2998,121 +3271,29 @@ export function registerCommsRoutes(app: Express): void {
   });
 
   /* ---- DM start ---- */
-  app.post("/api/comms/dm/start", (req, res) => {
+  /* WAVE 27 · CP-MSG-05 — the partner "New message" button lands here
+     (`client/src/pages/partner/PartnerMessages.tsx:61`). Unlimited, it mints
+     channels — and a channel is durable state, not just a message. */
+  app.post("/api/comms/dm/start", collectiveRateLimit, (req, res) => {
     let actorId: string; let ip: string | undefined; let ua: string | undefined;
     try { ({ actorId, ip, ua } = actorOf(req)); } catch { return res.status(401).json({ message: "Unauthenticated" }); }
     const parsed = dmStartSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: "Invalid", issues: parsed.error.issues });
-    /* D3 — re-sourced. A real platform member with a `users` row is no longer
-       treated as "not provisioned" just because the demo seed is off. The CRM
-       auto-provision path below stays as the fallback for CRM-only contacts. */
-    let target: UserRef | DurableCommsUserRef | undefined = commsUserRef(parsed.data.targetUserId);
-    // B-505 fix v23.6.1 — CRM-only contacts (e.g. invited investors who haven't
-    // fully onboarded into the comms layer) are absent from COMMS_USERS. The
-    // founder owns the CRM record, so a founder-initiated DM is authorized by
-    // that ownership relationship. Auto-provision a minimal comms identity from
-    // the REAL stored name + email (no mock/placeholder data) so the thread
-    // opens instead of 404-ing.
-    let authorizedViaCrm = false;
-    if (!target) {
-      const crm = findCrmContactByInvestorId(parsed.data.targetUserId);
-      if (crm && crm.email) {
-        const provisioned: UserRef = {
-          id: parsed.data.targetUserId,
-          // W2M B5 (rule #13) — NEVER use email as a display name. When the CRM
-          // record has a real name, use it; when only an email exists, fall back
-          // to a safe generic label. The email is retained below in `email` for
-          // non-display metadata only, never surfaced as the name.
-          legalName: crm.name && crm.name.trim().length > 0 ? crm.name : "Invited contact",
-          email: crm.email,
-          visibility: { screenName: crm.firmName && crm.firmName !== "—" ? crm.firmName : crm.name, visibleToCoMembers: true, visibleToCollectiveNetwork: false },
-          capTables: crm.companyId ? [crm.companyId] : [],
-          collectiveChapters: [],
-          roles: ["investor"],
-        };
-        COMMS_USERS[parsed.data.targetUserId] = provisioned;
-        target = provisioned;
-        // The CRM ownership relationship itself authorizes the DM, independent
-        // of the visibility resolver's shared-cap-table / collective rules
-        // (which may not be populated for this actor outside demo-seed mode).
-        authorizedViaCrm = true;
-      }
-    }
-    if (!target) {
-      // No comms identity and no CRM record to provision from — structured 422
-      // (not a silent 404) so the client renders an actionable message.
-      return res.status(422).json({
-        ok: false,
-        error: "contact_not_provisioned",
-        message: "Cannot start DM until this contact accepts their invitation.",
-      });
-    }
-    const me = viewerOf(actorId);
-    const shared = sharedContextBetween(me, target);
-    // v25.46 Track 1 — canonical DM permission gate (single source of truth).
-    // canDM enforces the LOCKED permission matrix from auth_users.role + the
-    // sacred cap-table ledger. A founder who owns the CRM record (authorizedViaCrm)
-    // is authorized by that ownership relationship independent of the matrix.
-    const policy = canDM(actorId, target.id);
-    const r = resolveDisplayIdentity({
-      viewerUserId: actorId,
-      authorUserId: target.id,
-      authorLegalName: target.legalName,
-      authorVisibility: target.visibility,
-      context: { sharedCapTables: shared.capTables, sharedCollectiveChapters: shared.chapters },
+    /* WAVE 36 · ROW 6 — this route is now a THIN wrapper over openDmChannelCore.
+       All of the authorisation that used to live here (delegated-authority
+       proof, CRM auto-provision, canDM ∪ shared-context ∪ CRM-ownership) lives
+       in the core, so the server-side ma-discuss caller runs exactly the same
+       gate rather than a second copy of it. */
+    const outcome = openDmChannelCore({
+      actorId,
+      targetUserId: parsed.data.targetUserId,
+      onBehalfOfCompanyId: parsed.data.onBehalfOfCompanyId,
+      ip,
+      ua,
     });
-    // v25.46 Track 1 — the LOCKED role matrix (canDM) is an ADDITIVE allow
-    // layer: it OPENS DM for role pairs the matrix permits, but it must never
-    // REVOKE a DM that the existing comms shared-context resolver already
-    // permits (co-member cap table / collective-visible / founder passthrough),
-    // nor a CRM-ownership-authorized DM. A DM is blocked only when ALL of
-    // {role matrix, shared-context visibility, CRM ownership} deny it. This is
-    // fail-closed at the union level while honouring Tier 5 (no silent drops of
-    // previously-valid relationships).
-    const allowedByPolicy = policy.allowed || r.canSendDm || authorizedViaCrm;
-    if (!allowedByPolicy) {
-      emitOutbox("dm.channel.blocked", actorId, ip, ua, {
-        fromUserId: actorId, toUserId: target.id,
-        reason: policy.reason ?? (shared.capTables.length === 0 && shared.chapters.length === 0 ? "no_shared_context" : "no_visibility"),
-      });
-      return res.status(403).json({ ok: false, reason: policy.reason ?? r.reason, privacyMode: policy.privacyMode });
-    }
-    const id = dmChannelId(actorId, target.id);
-    let ch = channels.get(id);
-    if (!ch) {
-      ch = {
-        id, kind: "dm",
-        participantUserIds: [actorId, target.id],
-        createdAt: nowIso(),
-        // v25.45 R9 — never persist raw legal names in DM channel metadata.
-        // The viewer-resolved displayTitle is computed at render time by
-        // projectChannel() via resolveIdentity(); persisting raw names here
-        // would leak them through the channel JSON regardless of resolver.
-        metadata: { title: "Direct message" },
-      };
-      channels.set(id, ch);
-      /* v25.9 — persist DM channel so it survives restart */
-      persistChannel(ch);
-    }
-    emitOutbox("dm.channel.opened", actorId, ip, ua, {
-      channelId: id, fromUserId: actorId, toUserId: target.id,
-      sharedContext: shared,
-    });
-    // Sprint 19 A — emit SSE so messages list refreshes on both sides.
-    emitMutation({ aggregate: "commsThread", id, change: ch ? "update" : "create" });
-    // Sprint 19 A — notify target about the new DM.
-    try {
-      emitNotification({
-        userId: target.id,
-        kind: "message.received",
-        title: `${resolveCommsDisplayName(target.id, actorId)} opened a DM`,
-        body: "A new direct message thread was started with you.",
-        // v24.0 E7: role-aware link — was hard-coded to /founder regardless of
-        // the recipient's role.
-        link: messagesPathForUser(target.id, id),
-      });
-    } catch { /* noop */ }
-    res.json({ ok: true, channelId: id, channel: projectChannel(ch, actorId) });
+    if (!outcome.ok) return res.status(outcome.status).json(outcome.body);
+    const ch = channels.get(outcome.channelId)!;
+    res.json({ ok: true, channelId: outcome.channelId, channel: projectChannel(ch, actorId) });
   });
 
   /* ---- Cap-table channel access (per-company) ---- */
@@ -3216,15 +3397,46 @@ export function registerCommsRoutes(app: Express): void {
     if (!viewerId) return res.json([]);
 
     const isAdmin = ctx?.isAdmin === true;
-    /* Peer set from DURABLE relations, not from a seed array. */
+    /* WAVE 33 · CP-MSG-01 — the peer sources are now DATA (`comms_audience_rules`),
+       not four hardcoded blocks. The four legacy sources are seeded ENABLED by
+       migration 0181 and the reader falls back to them when the table cannot be
+       read, so this is behaviour-preserving by construction; what changes is
+       that the owner can now switch a source on or off — including the two
+       partner sources this item adds — with no code change and no deploy.
+       Every rule is re-read from SQLite on every request: no cache, so a
+       toggle is live on the very next call. */
+    const viewerRole = resolveDmRole(viewerId);
     const peers = new Set<string>([viewerId]);
-    for (const ch of channels.values()) {
-      if (!ch.participantUserIds.includes(viewerId)) continue;
-      for (const p of ch.participantUserIds) peers.add(p);
+    if (isAudienceRuleEnabled("channel_participant", viewerRole)) {
+      for (const ch of channels.values()) {
+        if (!ch.participantUserIds.includes(viewerId)) continue;
+        for (const p of ch.participantUserIds) peers.add(p);
+      }
     }
-    for (const p of durableCapTablePeerIds(viewerId)) peers.add(p);
-    for (const p of durableChapterPeerIds(viewerId)) peers.add(p);
-    for (const p of durableFollowPeerIds(viewerId)) peers.add(p);
+    if (isAudienceRuleEnabled("cap_table_peer", viewerRole)) {
+      for (const p of durableCapTablePeerIds(viewerId)) peers.add(p);
+    }
+    if (isAudienceRuleEnabled("chapter_peer", viewerRole)) {
+      for (const p of durableChapterPeerIds(viewerId)) peers.add(p);
+    }
+    if (isAudienceRuleEnabled("follow_peer", viewerRole)) {
+      for (const p of durableFollowPeerIds(viewerId)) peers.add(p);
+    }
+    /* The two partner sources ship DISABLED pending an owner ruling on who a
+       delegated partner may message. They are wired, tested and one UPDATE away
+       from live — the code is not the thing that is missing. */
+    if (isAudienceRuleEnabled("partner_engaged_company_people", viewerRole)) {
+      for (const p of delegatedCompanyPeopleIds(viewerId)) {
+        peers.add(p);
+        candidateIds.add(p);
+      }
+    }
+    if (isAudienceRuleEnabled("partner_team_peers", viewerRole)) {
+      for (const p of partnerTeamPeerIds(viewerId)) {
+        peers.add(p);
+        candidateIds.add(p);
+      }
+    }
 
     const out: Array<Record<string, unknown>> = [];
     for (const id of Array.from(candidateIds)) {
@@ -3265,6 +3477,67 @@ export function registerCommsRoutes(app: Express): void {
       });
     }
     res.json(out);
+  });
+
+  /* ---- WAVE 33 · CP-MSG-01 — the audience POLICY behind the picker -------
+     `GET /api/comms/users` returns an ARRAY and must keep returning an array,
+     so the reason a list is empty cannot be carried on it. This companion
+     endpoint states the reason: which rules are on, which are off, and which
+     are off because THE OWNER HAS NOT YET DECIDED. The client renders that
+     third case as an explicit notice, so an undecided commercial question
+     never again looks like a broken picker. */
+  app.get("/api/comms/audience-policy", (req, res) => {
+    const ctx = (req as unknown as { userContext?: { isAuthed?: boolean; userId?: string } }).userContext;
+    const viewerId = ctx?.userId || (() => { try { return actorOf(req).actorId; } catch { return ""; } })();
+    if (ctx && ctx.isAuthed === false) return res.status(401).json({ message: "Unauthenticated" });
+    if (!viewerId) return res.status(401).json({ message: "Unauthenticated" });
+    const viewerRole = resolveDmRole(viewerId);
+    const delegated = resolveDelegatedContext(viewerId);
+    res.json({
+      viewerRole,
+      rules: readAudienceRules().map((r) => ({
+        ruleKey: r.ruleKey,
+        appliesToViewerRole: r.appliesToViewerRole,
+        enabled: r.enabled,
+        requiresOwnerDecision: r.requiresOwnerDecision,
+        description: r.description,
+        recommendedDefault: r.recommendedDefault,
+      })),
+      pendingOwnerDecision: pendingOwnerDecisions(viewerRole).map((r) => ({
+        ruleKey: r.ruleKey,
+        description: r.description,
+        recommendedDefault: r.recommendedDefault,
+      })),
+      /* NULL for everyone who is not an active partner team member — never an
+         empty object, which a client could mistake for "a partner with no
+         engagements". */
+      delegatedContext: delegated
+        ? {
+            partnerId: delegated.partnerId,
+            partnerName: delegated.partnerName,
+            engagements: delegated.engagements,
+          }
+        : null,
+    });
+  });
+
+  /* Owner/admin decision sink. This is the "no code change" half of the
+     promise: the owner rules on a pending audience rule here and the picker
+     changes on the next request. `requireAdmin` is the same guard the other
+     privileged comms routes use. */
+  app.post("/api/comms/audience-rules/:key", requireAdmin, (req, res) => {
+    const key = String(req.params.key ?? "");
+    const body = req.body as { enabled?: unknown } | undefined;
+    if (typeof body?.enabled !== "boolean") {
+      return res.status(400).json({ ok: false, error: "enabled_required" });
+    }
+    let decidedBy = "admin";
+    try { decidedBy = actorOf(req).actorId || "admin"; } catch { /* keep default */ }
+    const result = setAudienceRuleEnabled(key, body.enabled, decidedBy);
+    if (!result.ok) {
+      return res.status(result.error === "unknown_rule" ? 404 : 500).json(result);
+    }
+    return res.json(result);
   });
 
   /* ---- Current viewer (mock auth) ---- */

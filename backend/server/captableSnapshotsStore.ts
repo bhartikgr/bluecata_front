@@ -23,6 +23,18 @@ import { listMembersForCompany } from "./captableCommitStore";
 import { getRoundsForCompany, getRoundById, ACTIVE_LIVE_ROUND_STATES } from "./roundsStore";
 import { getUserContext } from "./lib/userContext";
 import { log } from "./lib/logger";
+/* WAVE 35 · F6 — THE FOURTH CAP-TABLE SINK. This route authorised with the same
+   `capTablePositions.some(...)` equality check as the gate, then enumerated the
+   ledger with no SPV exclusion. Review A probed it as a real-but-wrong LP and
+   LP Alpha received LP Beta's name and a $7,500,000 position. Shared decision,
+   static import — see server/lib/capTableSinkScope.ts. */
+import {
+  decideCapTableSinkAccess,
+  scopeCapTableRows,
+  CAP_TABLE_SINK_NOT_FOUND,
+  CAP_TABLE_SINK_NOT_FOUND_STATUS,
+  type CapTableSinkAccess,
+} from "./lib/capTableSinkScope";
 
 /** The client engine consumes this shape (subset of ApiSecurity). */
 export interface SnapshotPosition {
@@ -232,19 +244,16 @@ export function registerCaptableSnapshotsRoutes(app: Express, getSecurities: Sec
     const cid = String(req.params.id);
     const ctx = (req as any).userContext ?? getUserContext(req);
     if (!ctx?.isAuthed) return res.status(401).json({ ok: false, error: "missing_identity" });
-    // Same ownership/visibility check as GET /api/companies/:id/securities:
-    // caller must be a company member OR an investor in a round of that company
-    // OR admin.
-    const isFounder = ctx.founder?.companies?.some((c: any) => c.companyId === cid);
-    const isInvestorInCompany =
-      ctx.investor?.capTablePositions?.some((p: any) => p.companyId === cid) ||
-      ctx.investor?.invitedRounds?.some((i: any) => i.companyId === cid);
-    if (!ctx.isAdmin && !isFounder && !isInvestorInCompany) {
-      return res.status(403).json({ ok: false, error: "not_authorized" });
+    /* WAVE 35 · F6 + F9. Was: a local `capTablePositions.some(...)` check and a
+       403 refusal. Both were wrong — the predicate is the gate's, which an SPV
+       LP passes for their own vehicle, and the 403 enumerated SPV ids. */
+    const access = decideCapTableSinkAccess(ctx as any, cid);
+    if (access.outcome === "refuse") {
+      return res.status(CAP_TABLE_SINK_NOT_FOUND_STATUS).json(CAP_TABLE_SINK_NOT_FOUND);
     }
     try {
       const snapshots = computeCaptableSnapshots(cid, getSecurities);
-      return res.json(snapshots);
+      return res.json(scopeSnapshotsResponse(access, snapshots));
     } catch (err) {
       log.warn("[captableSnapshotsStore] compute failed:", (err as Error).message);
       // Fail-soft: empty snapshots never break the existing cap-table page.
@@ -257,4 +266,42 @@ export function registerCaptableSnapshotsRoutes(app: Express, getSecurities: Sec
   });
 
   log.info("[captableSnapshotsStore] registered W-CT read-only cap-table snapshots route");
+}
+
+/**
+ * WAVE 35 · F6 — apply the shared scope decision to what this route EMITS.
+ *
+ * Exported so the falsification harness can assert on the EMISSION rather than
+ * on what the handler merely consults: a Wave-34-era harness asserted the
+ * latter and was wrong twice. `allow` returns the response untouched (the
+ * genuine-counterparty pole); `scope_to_self` keeps only the caller's own
+ * positions in BOTH buckets and recomputes `hasPending` / `hasPrevious` from
+ * what actually survives, so the booleans cannot contradict the arrays.
+ */
+export function scopeSnapshotsResponse(
+  access: CapTableSinkAccess,
+  snapshots: CaptableSnapshotsResponse,
+): CaptableSnapshotsResponse {
+  if (access.outcome === "allow") return snapshots;
+  const investorIdOf = (p: SnapshotPosition) => p?.investorId ?? null;
+  const pendingPositions = scopeCapTableRows(access, snapshots.pending?.positions ?? [], investorIdOf);
+  const previousPositions = scopeCapTableRows(access, snapshots.previous?.positions ?? [], investorIdOf);
+  const pendingRoundIds = Array.from(
+    new Set(pendingPositions.map((p) => String(p?.roundId ?? "")).filter(Boolean)),
+  );
+  return {
+    ok: true,
+    pending: {
+      hasPending: pendingPositions.length > 0,
+      roundIds: pendingRoundIds,
+      positions: pendingPositions,
+    },
+    previous: {
+      hasPrevious: previousPositions.length > 0,
+      roundId: previousPositions.length > 0 ? snapshots.previous?.roundId ?? null : null,
+      roundName: previousPositions.length > 0 ? snapshots.previous?.roundName ?? null : null,
+      committedAt: previousPositions.length > 0 ? snapshots.previous?.committedAt ?? null : null,
+      positions: previousPositions,
+    },
+  };
 }

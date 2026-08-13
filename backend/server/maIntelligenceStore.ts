@@ -37,6 +37,13 @@ import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 import { getUserContext } from "./lib/userContext";
 import { decideMaAccess, type MaAccessDecision } from "./lib/maAuthzGate";
 import { buildMaParityEnvelope } from "./lib/maIntelParity"; /* W7 — unified redacted/no-data envelope */
+/* WAVE 17 ORP-044 — milestone auto-trigger registry (leaf module; the broadcast
+   store cannot be imported from an emit point without closing a cycle). */
+import {
+  fireAutoBroadcast,
+  maInitiativeStartedBody,
+  maInitiativeKey,
+} from "./lib/wave17MilestoneAutoTriggers";
 import {
   deriveMaIntelFromProfile,
   readMaReadinessNarrative,
@@ -413,6 +420,23 @@ export function registerMaIntelligenceRoutes(app: Express): void {
       },
       req,
     });
+
+    /* WAVE 17 ORP-044 — AUTO-TRIGGER `ma_initiative_started`.
+       This is the ONLY producer of that event type tree-wide (the emitSync above),
+       so it is the trigger's real emit point. Fired only for `lead_initiative`;
+       `ma_discussion_started` is a different event and is NOT a declared broadcast
+       trigger, so it stays unclaimed. The body deliberately carries NO topic, NO
+       buyer shortlist and NO initiator identity — see maInitiativeStartedBody. */
+    if (eventType === "ma_initiative_started") {
+      fireAutoBroadcast({
+        companyId: parsed.data.companyId,
+        actorUserId: initiative.investorUserId,
+        trigger: "ma_initiative_started",
+        body: maInitiativeStartedBody(),
+        dedupeKey: maInitiativeKey(id),
+      });
+    }
+
     res.json({ ok: true, initiative, telemetry: env });
   });
 

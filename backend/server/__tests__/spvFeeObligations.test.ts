@@ -35,7 +35,10 @@ function get(path: string, user: string) {
 
 async function createSpv(name: string, extra: Record<string, unknown> = {}): Promise<string> {
   const r = await post("/api/partner/me/spv", MANAGING, {
-    name, jurisdiction: "delaware", carryBasis: "whole_spv", status: "open", ...extra,
+    name, jurisdiction: "delaware", carryBasis: "whole_spv", status: "open",
+    // 1c sign-off gate (added by a later wave) — required on every create.
+    signoffLegalName: "Avi Managing", signoffAccepted: true,
+    ...extra,
   });
   expect(r.status).toBe(201);
   return r.body.spv.id as string;
@@ -90,8 +93,15 @@ describe("Blocker 3 — fixed fee obligation accrued at funding + blocks commit"
     expect(adv.status).toBe(409);
     expect(adv.body.error).toBe("FEES_UNPAID");
 
-    // Charge the obligation through the payment ledger → paid → commit allowed.
-    const charge = await post(`/api/partner/me/spv/${id}/fee-obligations/${fixed.id}/charge`, MANAGING, { outcome: "succeeded" });
+    // WAVE 1A / S-2 — the partner may no longer name the settlement outcome.
+    // The partner charge route now attempts a REAL gateway settlement, which is
+    // 503 until Airwallex is wired; the only way to record a real outcome today
+    // is the Capavate platform-admin settle route.
+    const selfMark = await post(`/api/partner/me/spv/${id}/fee-obligations/${fixed.id}/charge`, MANAGING, { outcome: "succeeded" });
+    expect(selfMark.status).toBe(503);
+    expect(selfMark.body.error).toBe("PAYMENT_GATEWAY_UNAVAILABLE");
+
+    const charge = await post(`/api/admin/consortium-spv/${id}/fee-obligations/${fixed.id}/settle`, ADMIN, { outcome: "succeeded", reason: "wire received off-platform" });
     expect(charge.status).toBe(200);
     expect(charge.body.obligation.state).toBe("paid");
     expect(charge.body.obligation.paymentRef).toBeTruthy();
@@ -182,8 +192,11 @@ describe("Blocker 3 — carry collected at distribution (fail-closed)", () => {
     await post(`/api/partner/me/spv/${id}/fees`, MANAGING, { layer: "management", feeType: "carry", carryPct: 0.2 });
     await commitLp(id, "inv_carry1", 100000);
 
-    const dist = await post(`/api/partner/me/spv/${id}/distributions`, MANAGING, {
+    // WAVE 1A / S-2 — carry settlement now requires an unforgeable authorization,
+    // so the operable path today is the admin distributions route.
+    const dist = await post(`/api/admin/consortium-spv/${id}/distributions`, ADMIN, {
       event: "exit", grossProceedsMinor: 1000000, costBasisMinor: 500000, // realized profit 500000
+      settlementOutcome: "succeeded", settlementReason: "carry collected off-platform",
     });
     expect(dist.status).toBe(201);
     expect(dist.body.distribution.gpCarryMinor).toBe(100000); // 20% of 500000 profit
@@ -203,8 +216,16 @@ describe("Blocker 3 — carry collected at distribution (fail-closed)", () => {
     await post(`/api/partner/me/spv/${id}/fees`, MANAGING, { layer: "management", feeType: "carry", carryPct: 0.2 });
     await commitLp(id, "inv_carry2", 100000);
 
-    const dist = await post(`/api/partner/me/spv/${id}/distributions`, MANAGING, {
+    // A partner may not smuggle the outcome in at all any more.
+    const smuggle = await post(`/api/partner/me/spv/${id}/distributions`, MANAGING, {
       event: "exit", grossProceedsMinor: 1000000, costBasisMinor: 500000, collectionOutcome: "failed",
+    });
+    expect(smuggle.status).toBe(400);
+    expect(smuggle.body.error).toBe("SETTLEMENT_NOT_CLIENT_SUPPLIED");
+
+    const dist = await post(`/api/admin/consortium-spv/${id}/distributions`, ADMIN, {
+      event: "exit", grossProceedsMinor: 1000000, costBasisMinor: 500000,
+      settlementOutcome: "failed", settlementReason: "gateway declined",
     });
     expect(dist.status).toBe(402);
     expect(dist.body.error).toBe("FEE_COLLECTION_FAILED");

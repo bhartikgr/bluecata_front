@@ -13,7 +13,10 @@ import {
   collectSqlStatementsFromSqlFile,
   collectSqlStatementsFromTsFile,
   extractCreateTable,
+  extractTableLifecycle,
   isUnparsed,
+  type CreateTable,
+  type ParsedStatement,
 } from "./_wave0_ast_lint";
 
 const ROOT = path.resolve(__dirname, "../..");
@@ -71,19 +74,86 @@ function requiredCols(table: string): readonly string[] {
 
 const NOT_NULL_COLS = ["actor_id", "seq", "created_at"] as const;
 
+/**
+ * WAVE 38 ROW 4 — files come back in MIGRATION ORDER, not directory order.
+ *
+ * The previous version pushed all of `migrations/` and then all of
+ * `server/db/migrations/` in raw `readdirSync` order. That was harmless while
+ * the lint only ever looked at `CREATE TABLE` statements as an unordered set,
+ * and is wrong the moment the corpus is folded into an effective schema: a
+ * 0153 declaration read after a 0183 rebuild would resurrect the shape 0183
+ * replaced. Sort by numeric id first, then by directory, which is the order
+ * `db/migrate.ts` applies them in.
+ */
 function collectProgramMigrationFiles(): string[] {
-  const out: string[] = [];
-  for (const subdir of ["migrations", "server/db/migrations"]) {
-    const dir = path.join(ROOT, subdir);
+  const out: Array<{ id: number; dirRank: number; file: string }> = [];
+  const subdirs = ["migrations", "server/db/migrations"];
+  for (let dirRank = 0; dirRank < subdirs.length; dirRank++) {
+    const dir = path.join(ROOT, subdirs[dirRank]);
     if (!fs.existsSync(dir)) continue;
     for (const f of fs.readdirSync(dir)) {
       const idM = /^(\d{4})_/.exec(f);
       if (!idM || !f.endsWith(".sql")) continue;
       if (Number(idM[1]) < PROGRAM_MIGRATION_MIN) continue;
-      out.push(path.join(dir, f));
+      out.push({ id: Number(idM[1]), dirRank, file: path.join(dir, f) });
     }
   }
-  return out;
+  out.sort((a, b) => (a.id - b.id) || (a.dirRank - b.dirRank) || a.file.localeCompare(b.file));
+  return out.map((e) => e.file);
+}
+
+/**
+ * WAVE 38 ROW 4 — fold an ORDERED statement stream into the EFFECTIVE schema.
+ *
+ * WHY THIS EXISTS, AND WHY IT IS NOT A LOOSENING.
+ *
+ * This lint used to iterate every `CREATE TABLE` statement ever written and
+ * demand that each one, individually, declared the canonical event shape. That
+ * is an assertion about the HISTORY OF DECLARATIONS, not about the schema a
+ * database ends up with — and history is append-only. Five event tables
+ * (partner_money_event 0153, valuation_event 0159, partner_subscription_event
+ * 0167, esign_event 0168, spv_discovery_event 0179) shipped without the shape.
+ * Under the old rule the ONLY way to green was to edit those already-applied
+ * files, i.e. to backdate history beneath every deployed database's high-water
+ * mark. The rule was therefore unsatisfiable by correct means, which is exactly
+ * how a check ends up being "fixed" by weakening it.
+ *
+ * The rule enforced here is STRICTLY STRONGER on the thing that matters: the
+ * shape a database actually has after every migration has run. `DROP TABLE`
+ * removes an entry, `ALTER TABLE ... RENAME TO` moves one, and
+ * `CREATE TABLE IF NOT EXISTS` does not overwrite a live entry — precisely
+ * SQLite's own semantics. A table that is created wrong and never repaired is
+ * still an offender; a table created wrong and rebuilt correctly by a forward
+ * migration is not, because the database is not wrong.
+ *
+ * The `positive anti-vacuity` block below proves the rules still fire, and
+ * `effective-schema fold` proves the fold itself is not a rubber stamp: it must
+ * report an offender when the LAST word on a table is a bad shape.
+ */
+export function foldEffectiveSchema(stmts: ParsedStatement[]): Map<string, CreateTable> {
+  const live = new Map<string, CreateTable>();
+  for (const s of stmts) {
+    const created = extractCreateTable(s);
+    if (created) {
+      // `IF NOT EXISTS` against a table that already exists is a no-op in
+      // SQLite. Honour that, or a self-heal re-declaration in connection.ts
+      // would appear to overwrite a migration's repaired shape.
+      if (created.ifNotExists && live.has(created.table)) continue;
+      live.set(created.table, created);
+      continue;
+    }
+    const lifecycle = extractTableLifecycle(s);
+    if (!lifecycle) continue;
+    if (lifecycle.kind === "drop") {
+      live.delete(lifecycle.table);
+      continue;
+    }
+    const moving = live.get(lifecycle.table);
+    if (!moving || !lifecycle.renameTo) continue;
+    live.delete(lifecycle.table);
+    live.set(lifecycle.renameTo, { ...moving, table: lifecycle.renameTo });
+  }
+  return live;
 }
 
 describe("Wave 0-3 v3: append-only ledger primitives lint (AST-based)", () => {
@@ -95,7 +165,10 @@ describe("Wave 0-3 v3: append-only ledger primitives lint (AST-based)", () => {
   const allTables = allStmts
     .map((s) => extractCreateTable(s))
     .filter((c): c is NonNullable<typeof c> => c !== null);
-  const eventTables = allTables.filter((t) => isEventTable(t.table));
+  // The canonical-shape rules below run against the EFFECTIVE schema (see
+  // `foldEffectiveSchema`), not against every historical declaration.
+  const effective = foldEffectiveSchema(allStmts);
+  const eventTables = [...effective.values()].filter((t) => isEventTable(t.table));
 
   it("anti-vacuity: parses tables", () => {
     expect(allTables.length).toBeGreaterThan(5);
@@ -248,6 +321,116 @@ describe("Wave 0-3 v3: append-only ledger primitives lint (AST-based)", () => {
     });
     it("deleted_at exception: capital_call_receipt must NOT have deleted_at (from fixture)", () => {
       expect(NO_DELETED_AT_TABLES.has("capital_call_receipt")).toBe(true);
+    });
+  });
+
+  /**
+   * WAVE 38 ROW 4 — falsification harness for the fold itself.
+   *
+   * The fold is the only thing standing between "the schema is canonical" and
+   * "we stopped looking". Every case below asserts BOTH POLES: the shape the
+   * fold must accept AND the shape it must still reject. If the fold ever
+   * degenerates into "the newest CREATE always wins" or "anything with a repair
+   * migration is fine", these go red.
+   */
+  describe("WAVE 38 ROW 4 — effective-schema fold asserts BOTH poles", () => {
+    function stmtsOf(sql: string): ParsedStatement[] {
+      const dir = fs.mkdtempSync("/tmp/w38_fold_");
+      const f = path.join(dir, "x.sql");
+      fs.writeFileSync(f, sql);
+      return collectSqlStatementsFromSqlFile(f);
+    }
+    const BAD = `CREATE TABLE demo_event (id TEXT PRIMARY KEY, amount_minor INTEGER);`;
+    const GOOD_SCRATCH = `CREATE TABLE demo__scratch (
+        id TEXT PRIMARY KEY NOT NULL,
+        amount_minor INTEGER,
+        actor_id TEXT NOT NULL,
+        request_id TEXT,
+        idempotency_key TEXT,
+        source_event_type TEXT,
+        source_event_id TEXT,
+        reverses_id TEXT,
+        seq INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        deleted_at TEXT
+      ) STRICT;`;
+
+    function verdict(sql: string): { present: boolean; strict: boolean; missing: string[] } {
+      const live = foldEffectiveSchema(stmtsOf(sql));
+      const t = live.get("demo_event");
+      if (!t) return { present: false, strict: false, missing: ["<table absent>"] };
+      const cols = new Set(t.columns.map((c) => c.name));
+      return {
+        present: true,
+        strict: t.isStrict,
+        missing: requiredCols(t.table).filter((n) => !cols.has(n)),
+      };
+    }
+
+    it("NEGATIVE POLE: a bad table with no repair is still an offender", () => {
+      const v = verdict(BAD);
+      expect(v.present).toBe(true);
+      expect(v.strict).toBe(false);
+      expect(v.missing).toEqual([...CANONICAL_COLS_WITH_SOURCE_EVENT]);
+    });
+
+    it("POSITIVE POLE: rebuild-then-rename retires the bad shape", () => {
+      const v = verdict(`${BAD}\n${GOOD_SCRATCH}\nDROP TABLE demo_event;\nALTER TABLE demo__scratch RENAME TO demo_event;`);
+      expect(v.present).toBe(true);
+      expect(v.strict).toBe(true);
+      expect(v.missing).toEqual([]);
+    });
+
+    it("NEGATIVE POLE: a rename that lands a STILL-BAD shape is an offender", () => {
+      const v = verdict(`${BAD}\nCREATE TABLE demo__scratch (id TEXT PRIMARY KEY);\nDROP TABLE demo_event;\nALTER TABLE demo__scratch RENAME TO demo_event;`);
+      expect(v.present).toBe(true);
+      expect(v.strict).toBe(false);
+      expect(v.missing).toEqual([...CANONICAL_COLS_WITH_SOURCE_EVENT]);
+    });
+
+    it("NEGATIVE POLE: a LATER bad declaration overrides an EARLIER good one", () => {
+      const v = verdict(`${GOOD_SCRATCH}\nALTER TABLE demo__scratch RENAME TO demo_event;\nDROP TABLE demo_event;\n${BAD}`);
+      expect(v.strict).toBe(false);
+      expect(v.missing).toEqual([...CANONICAL_COLS_WITH_SOURCE_EVENT]);
+    });
+
+    it("CREATE TABLE IF NOT EXISTS does NOT overwrite a live good shape", () => {
+      const v = verdict(`${GOOD_SCRATCH}\nALTER TABLE demo__scratch RENAME TO demo_event;\nCREATE TABLE IF NOT EXISTS demo_event (id TEXT PRIMARY KEY);`);
+      expect(v.strict).toBe(true);
+      expect(v.missing).toEqual([]);
+    });
+
+    it("an unguarded DROP with no replacement removes the table entirely", () => {
+      expect(verdict(`${BAD}\nDROP TABLE demo_event;`).present).toBe(false);
+    });
+
+    it("RENAME COLUMN is not mistaken for RENAME TABLE", () => {
+      const live = foldEffectiveSchema(stmtsOf(`${BAD}\nALTER TABLE demo_event RENAME COLUMN id TO id2;`));
+      expect([...live.keys()]).toEqual(["demo_event"]);
+    });
+
+    it("anti-vacuity: the five WAVE 38 tables really are in the folded corpus and really are canonical", () => {
+      const repaired = [
+        "partner_money_event",
+        "valuation_event",
+        "partner_subscription_event",
+        "esign_event",
+        "spv_discovery_event",
+      ];
+      const verdicts = repaired.map((name) => {
+        const t = effective.get(name);
+        if (!t) return { name, verdict: "ABSENT FROM FOLDED CORPUS" };
+        const cols = new Set(t.columns.map((c) => c.name));
+        const missing = requiredCols(name).filter((n) => !cols.has(n));
+        if (!t.isStrict) return { name, verdict: "NOT STRICT" };
+        if (missing.length) return { name, verdict: `MISSING ${missing.join(",")}` };
+        if (!cols.has("deleted_at")) return { name, verdict: "MISSING deleted_at" };
+        return { name, verdict: "canonical" };
+      });
+      expect(verdicts).toEqual(repaired.map((name) => ({ name, verdict: "canonical" })));
+      // And the scratch tables migration 0183 builds must NOT survive the fold.
+      const scratch = [...effective.keys()].filter((k) => k.endsWith("__w38"));
+      expect(scratch).toEqual([]);
     });
   });
 });

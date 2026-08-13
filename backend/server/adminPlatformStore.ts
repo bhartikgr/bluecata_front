@@ -10,6 +10,8 @@
  * preview demo works without external infra.
  */
 import type { Express, Request, Response } from "express";
+/* WAVE 34 · TASK 2 — ISO-4217 exponent for the founder-tier displayPrice string. */
+import { fromMinor } from "./lib/currency";
 import { createHash, randomBytes } from "node:crypto";
 import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import { companies, rounds, softCircles, dataroomFiles, reports } from "./mockData";
@@ -46,6 +48,7 @@ import {
   platformConfig as platformConfigTable,
 } from "../shared/schema";
 import { log } from "./lib/logger";
+import { resolveRateLimitClientIp } from "./lib/rateLimit"; /* WAVE 22 · ITEM 1 — shared hardened client-IP resolver for audit stamping */
 // v25.42h round-2 (Blocker 2) — DB read failures must surface as 503, never as
 // an empty/default literal payload.
 import { DbUnavailableError } from "./lib/errors";
@@ -112,8 +115,16 @@ function computeKpis() {
 
   const outbox = getOutbox();
   const queues = {
-    eligibilityRecompute: 0,
-    emailQueue: 0,
+    /* WAVE 24 · ITEM 3b (FINAL REVIEW B, F-1). These two were hardcoded `0`,
+       which on the dashboard is indistinguishable from a real measurement of
+       an empty queue. Neither has a backing store: there is no eligibility
+       recompute queue table, and outbound email goes through the bridge outbox
+       (counted separately, just below) rather than a queue of its own. `null`
+       renders as "—" at Dashboard.tsx:454 (`{value ?? "—"}`), which is the
+       honest claim — unmeasured, not empty. The two figures beneath ARE
+       measured, from `getOutbox()`, and stay numeric. */
+    eligibilityRecompute: null,
+    emailQueue: null,
     bridgeOutbox: outbox.filter(e => e.status === "queued").length,
     deadLetter: outbox.filter(e => e.status === "dead_letter").length,
     /* W-COLLECTIVE Wave 1 (v5 §A.2) — additive; archived envelopes are retained
@@ -152,7 +163,30 @@ function computeKpis() {
   // MRR/ARR: sum of `annualAmountMinor` across active subscriptions, in dollars.
   const subs = listSubscriptions();
   const activeSubs = subs.filter((s) => s.status === "active" || s.status === "trialing");
-  const arrUsd = Math.round(activeSubs.reduce((sum, s) => sum + (s.annualAmountMinor ?? 0), 0) / 100);
+  /* WAVE 34 · TASK 2 — was:
+   *   const arrUsd = Math.round(activeSubs.reduce((sum, s) => sum + (s.annualAmountMinor ?? 0), 0) / 100);
+   * TWO defects in one line. (1) It summed `annualAmountMinor` ACROSS
+   * currencies: `Subscription.currency` is a real per-row ISO-4217 code, and a
+   * scalar total of ¥ + $ is not a number that means anything. (2) It then
+   * divided that mixed total by a hardcoded 100 and labelled the result `Usd`.
+   * A single ¥1,200,000 subscription added 12,000 to "ARR in USD".
+   *
+   * The fix aggregates PER CURRENCY in minor units (never summing across), and
+   * `arrUsd`/`mrrUsd` keep their exact contract — they are now honestly the USD
+   * slice, converted at USD's own exponent via `fromMinor`. Nothing is dropped:
+   * the full per-currency picture is ADDED alongside as
+   * `arrByCurrencyMinor` / `mrrByCurrencyMinor`, the same Record<currency,minor>
+   * shape the SPV tiles already use. */
+  const arrByCurrencyMinor: Record<string, number> = Object.create(null);
+  for (const s of activeSubs) {
+    const ccy = String(s.currency || "USD").toUpperCase();
+    arrByCurrencyMinor[ccy] = (arrByCurrencyMinor[ccy] ?? 0) + (s.annualAmountMinor ?? 0);
+  }
+  const mrrByCurrencyMinor: Record<string, number> = Object.create(null);
+  for (const ccy of Object.keys(arrByCurrencyMinor)) {
+    mrrByCurrencyMinor[ccy] = Math.round(arrByCurrencyMinor[ccy] / 12);
+  }
+  const arrUsd = Math.round(fromMinor(arrByCurrencyMinor["USD"] ?? 0, "USD"));
   const mrrUsd = Math.round(arrUsd / 12);
 
   // Wave B v26.4.0-fix (BLOCK-K) — SPV KPIs. Per-currency maps so the UI can
@@ -170,6 +204,9 @@ function computeKpis() {
       totalFunded,
       mrrUsd,
       arrUsd,
+      /* WAVE 34 · TASK 2 — the full multi-currency picture, added not swapped. */
+      arrByCurrencyMinor,
+      mrrByCurrencyMinor,
       momGrowthPct,
       churnPct,
       nrr,
@@ -1167,8 +1204,18 @@ export async function hydrateAdminPlatformStore(): Promise<void> {
           // v19 Wave A / Change 2 — read optional billing cycle annotations.
           if (r.billingCycle) tier.billingCycle = r.billingCycle as FounderTier["billingCycle"];
           if (typeof r.annualPriceCents === "number") tier.annualPriceCents = r.annualPriceCents;
+          /* WAVE 35 · F1 (second path, Review A "SUSPICIONS" #1) — this hydrate
+           * path also hardcodes a `/100` and a literal "$". Unlike the route at
+           * :2276 this one IS genuinely USD-only, and that is verifiable from
+           * the SCHEMA rather than asserted: `founder_tiers`
+           * (shared/schema.ts:1300-1311) has NO currency column and its money
+           * columns are literally named `usd_monthly` and `annual_price_cents`.
+           * There is no currency to be wrong about. The divisor is nonetheless
+           * routed through `fromMinor(..., "USD")` so the exponent is named, not
+           * assumed, and so a future currency column has exactly one place to
+           * change. Output is byte-identical to before. */
           if (tier.annualPriceCents != null) {
-            tier.displayPrice = `$${(tier.annualPriceCents / 100).toLocaleString("en-US")} USD/year per company`;
+            tier.displayPrice = `$${fromMinor(tier.annualPriceCents, "USD").toLocaleString("en-US")} USD/year per company`;
           }
           founderTiers.push(tier);
         } catch { /* skip malformed row */ }
@@ -2077,7 +2124,22 @@ export function registerAdminPlatformRoutes(app: Express): void {
     const { entity, eventType, payload } = req.body ?? {};
     if (!entity || !eventType) return res.status(400).json({ error: "missing_fields" });
     const actor = (req as Request & { userContext?: { userId?: string } }).userContext?.userId ?? "system:admin";
-    res.json(appendAudit(actor, entity, eventType, payload ?? {}));
+    /* WAVE 22 · ITEM 1 (REVIEW B F-2) — same rule as `actor` above, applied to
+     * the address. The client cannot observe its own public address, so
+     * `CloseRoundPanel` now sends `ipAddress: null` with a documented reason
+     * instead of the `203.0.113.x` value it used to invent. THE SERVER is the
+     * only party that can state the address truthfully, so it stamps the peer
+     * it actually observed — resolved through the one hardened trusted-hop
+     * resolver (fail-closed to the socket peer; the raw `x-forwarded-for`
+     * header is never trusted). Any client-supplied `ipAddress` key is
+     * OVERWRITTEN, never merged: a caller must not be able to write an address
+     * into the forensic chain. */
+    const stampedPayload = {
+      ...(payload && typeof payload === "object" ? payload as Record<string, unknown> : {}),
+      serverObservedIp: resolveRateLimitClientIp(req),
+      ipAddress: null,
+    };
+    res.json(appendAudit(actor, entity, eventType, stampedPayload));
   });
 
   /* ====== Reconciliation ====== */
@@ -2208,14 +2270,37 @@ export function registerAdminPlatformRoutes(app: Express): void {
         const monthlyOpt = m.cadenceOptions?.find((c) => c.cadence === "monthly");
         const annualMinor = annualOpt?.priceMinor ?? (m.cadence === "annual" ? m.basePriceMinor : (m.basePriceMinor || 0) * 12);
         const monthlyMinor = monthlyOpt?.priceMinor ?? (m.cadence === "monthly" ? m.basePriceMinor : Math.round(annualMinor / 12));
+        /* WAVE 35 · F1 — `usdMonthly` was `Math.round(monthlyMinor / 100)` in
+         * the SAME object literal as the currency-aware `displayPrice` that
+         * Wave 34 fixed. Wave 34 classified this field "USD by contract"
+         * (category 3); Review A falsified that by execution — the model
+         * carries its own `m.currency`, and a ¥100,000/month tier was served
+         * to founders as `usdMonthly: 1000`. The USD-named field is now null
+         * for non-USD tiers (a refusal the client renders), and the truth is
+         * carried alongside in `currency` + integer minor units. */
+        const tierCurrency = String(m.currency || "USD").toUpperCase();
+        const isUsd = tierCurrency === "USD";
         return {
           id: m.slug,
           name: m.name,
-          usdMonthly: Math.round((monthlyMinor || 0) / 100),
+          usdMonthly: isUsd ? Math.round(fromMinor(monthlyMinor || 0, tierCurrency)) : null,
+          currency: tierCurrency,
+          monthlyMinor: monthlyMinor || 0,
+          annualMinor: annualMinor || 0,
           billingCycle: m.cadence,
           annualPriceCents: annualMinor,
+          /* WAVE 34 · TASK 2 — the SECOND PATH of the adminPricingStore.ts:64
+           * defect: a byte-for-byte copy of the same string on a different
+           * endpoint. Was:
+           *   `$${Math.round(annualMinor / 100).toLocaleString()} ${m.currency || "USD"}/year per company`
+           * Fixing only the first copy would have left this one live — which is
+           * exactly how this class kept regenerating. USD output unchanged. */
           displayPrice: annualMinor > 0
-            ? `$${Math.round(annualMinor / 100).toLocaleString()} ${m.currency || "USD"}/year per company`
+            ? (() => {
+                const tierCurrency = m.currency || "USD";
+                const symbol = tierCurrency === "USD" ? "$" : "";
+                return `${symbol}${fromMinor(annualMinor, tierCurrency).toLocaleString()} ${tierCurrency}/year per company`;
+              })()
             : "Free",
           features: m.features.map((f) => ({ key: f.key, label: f.label, included: f.included })),
         };

@@ -37,6 +37,12 @@ import {
   LADDER_EVENT_LABEL,
   type SpineActivityEvent,
 } from "@/lib/investor/investorSpine";
+import {
+  useLpVehicleInterests,
+  lpOnlyBodyDashboard,
+  LP_ONLY_HEADLINE,
+  LP_INTERESTS_UNAVAILABLE_COPY,
+} from "@/lib/investor/lpVehicleInterests";
 
 /* -------------------------------------------------------------------- */
 /* Typed views over the spine's raw shapes (render-only, no derivation). */
@@ -95,6 +101,14 @@ export function PortfolioStandingPanel() {
   const holdings = spine.holdings as HoldingView[];
   const hasFunded = spine.hasFundedPosition;
 
+  // WAVE 35 · ROW 7 — SECOND INSTANCE of "Your portfolio is empty".
+  // `spine.hasFundedPosition` is cap-table-only, and unlike the Portfolio page
+  // this panel has no <LpPositions /> beneath it, so the sentence stood
+  // completely unqualified for an LP who had wired real capital. Same hook,
+  // same endpoint, same query key as the Portfolio surface — one answer, so the
+  // two screens cannot contradict each other.
+  const lp = useLpVehicleInterests();
+
   const totals = useMemo(() => {
     let invested = 0;
     let currentValue = 0;
@@ -123,7 +137,39 @@ export function PortfolioStandingPanel() {
         </Button>
       </CardHeader>
       <CardContent>
-        {!hasFunded ? (
+        {!hasFunded && !lp.isResolved ? (
+          /* Do not assert "empty" while the LP question is still open. */
+          <div className="py-8" data-testid="spine-portfolio-pending-lp">
+            <div className="h-5 w-56 bg-muted rounded animate-pulse mx-auto" />
+          </div>
+        ) : !hasFunded && (lp.count ?? 0) > 0 ? (
+          /* WAVE 35 · ROW 7 — no cap-table holding, but a real vehicle interest.
+             Honest on both halves, and it points at the surface that lists it. */
+          <div
+            className="flex flex-col items-center text-center gap-3 py-8"
+            data-testid="spine-portfolio-lp-only"
+          >
+            <div className="h-11 w-11 rounded-full bg-muted flex items-center justify-center">
+              <Layers className="h-5 w-5 text-muted-foreground" />
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold" data-testid="spine-portfolio-lp-only-headline">
+                {LP_ONLY_HEADLINE}
+              </h3>
+              <p
+                className="text-sm text-muted-foreground mt-1 max-w-md"
+                data-testid="spine-portfolio-lp-only-body"
+              >
+                {lpOnlyBodyDashboard(lp.count ?? 0)}
+              </p>
+            </div>
+            <Button size="sm" variant="outline" data-testid="spine-portfolio-lp-only-view" asChild>
+              <Link href="/investor/portfolio">
+                View vehicle interests <ArrowRight className="h-3.5 w-3.5 ml-1.5" />
+              </Link>
+            </Button>
+          </div>
+        ) : !hasFunded ? (
           /* Educational empty-state — reuses the Wave-2 #8 ladder copy so the
              message is byte-consistent with PortfolioCompanySwitcher. */
           <div
@@ -141,6 +187,17 @@ export function PortfolioStandingPanel() {
                 analytics.
               </p>
             </div>
+            {/* Appended as the LAST sibling, never spliced into an existing text
+                node: an unanswerable LP question is not evidence of emptiness. */}
+            {lp.isUnavailable && (
+              <p
+                className="text-sm max-w-md"
+                style={{ color: "#8a5a06" }}
+                data-testid="spine-portfolio-lp-unavailable"
+              >
+                {LP_INTERESTS_UNAVAILABLE_COPY}
+              </p>
+            )}
           </div>
         ) : (
           <>
@@ -186,6 +243,29 @@ export function PortfolioStandingPanel() {
                 </li>
               ))}
             </ul>
+            {/* WAVE 35 · ROW 7 — the DUAL-POSITION case. This panel is
+                cap-table-only by design (SPINE-0), so an investor who holds
+                BOTH direct positions and vehicle interests saw only half of
+                what they own with nothing saying so. APPENDED as the last
+                sibling after the holdings list — never inserted mid-list and
+                never spliced into an existing text node — and it does not
+                fold vehicle interests into the cap-table totals above, which
+                would misstate both. */}
+            {(lp.count ?? 0) > 0 && (
+              <div
+                className="mt-3 pt-3 border-t border-border flex flex-wrap items-center justify-between gap-2"
+                data-testid="spine-portfolio-also-lp"
+              >
+                <p className="text-[11px] text-muted-foreground max-w-md">
+                  {lpOnlyBodyDashboard(lp.count ?? 0)}
+                </p>
+                <Button size="sm" variant="outline" data-testid="spine-portfolio-also-lp-view" asChild>
+                  <Link href="/investor/portfolio">
+                    View vehicle interests <ArrowRight className="h-3.5 w-3.5 ml-1.5" />
+                  </Link>
+                </Button>
+              </div>
+            )}
           </>
         )}
       </CardContent>

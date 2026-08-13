@@ -64,6 +64,8 @@ import { createHash } from "node:crypto";
 // vocabulary (draft|open|closed|deployed|distributing|wound_down) plus
 // explicit carry_basis (which the engine requires — legacy default was implicit).
 import { spvEngineStore } from "../spvEngineStore";
+/* WAVE 4A / REVIEW-C — one coercion policy for every write path (Wave 3C). */
+import { resolveSpvJurisdiction } from "../../shared/spvEngine";
 import { storeCredential } from "../userCredentialsStore";
 // 23-May Fix 7 — partner seed helpers (Consortium Partner login demo persona)
 import { _registerSeedPartner } from "../adminContactsStoreShim";
@@ -741,6 +743,9 @@ export async function seedDemoData(db: Db): Promise<{
       // spvEngineStore.mapFundStatus (NOT migrateLegacyPartnerSpvAndFunds).
       // The migration and the seed live intentionally in separate vocabularies;
       // this comment previously conflated them.
+      /* WAVE 4A / REVIEW-C — the seed's own free-text jurisdiction, if any. */
+      const seedJurRaw = (seed.terms as Record<string, unknown> | undefined)?.jurisdiction;
+      const seedJurText = typeof seedJurRaw === "string" ? seedJurRaw.trim() : "";
       const engineSpvType = seed.structureType === "fund" ? "fund"
         : seed.structureType === "syndicate" ? "syndicate"
         : "spv";
@@ -753,14 +758,31 @@ export async function seedDemoData(db: Db): Promise<{
         seed.partnerId,
         {
           name: seed.name,
-          jurisdiction: "delaware",       // engine default (legacy demo had free-text jur)
+          // WAVE 4A / REVIEW-C — a SIXTH hard-coded "delaware" the review did not
+          // list. The demo seed carries real free text (`terms.jurisdiction`,
+          // e.g. "Ontario, Canada") and then stamped every seeded vehicle
+          // `delaware`, so the demo dataset itself reproduced the Form D / blue-sky
+          // / 3(c)(1) / EIN leak on a Canadian SPV — the exact scenario the review
+          // calls demo-killing. Same policy as every other write path now: unknown
+          // free text resolves to "other" (neutral content), never to a US state.
+          jurisdiction: resolveSpvJurisdiction(seedJurText),
           carryBasis: "whole_spv",         // engine requires explicit carry
           spvType: engineSpvType,
           status: engineStatus,
           targetRaiseMinor: seed.targetMinor,
           targetCompanyId: seed.leadCompanyId ?? null,
           gpUserId: seed.gpUserId ?? null,
-          terms: seed.terms ? { legacyTerms: seed.terms } : null,
+          // Preserve the original free text at the TOP level of terms as well as
+          // inside legacyTerms: scripts/backfill_spv_jurisdiction.ts only reads
+          // `terms.jurisdictionCountry` / `terms.legacyJurisdiction`, so a value
+          // buried in `legacyTerms` would still be `skip-no-country`.
+          terms:
+            seed.terms || seedJurText
+              ? {
+                  ...(seed.terms ? { legacyTerms: seed.terms } : {}),
+                  ...(seedJurText ? { legacyJurisdiction: seedJurText } : {}),
+                }
+              : null,
         },
         seed.gpUserId ?? "seed:demo",
       );

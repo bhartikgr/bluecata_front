@@ -14,23 +14,83 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
+import { SPV_JURISDICTION_LABELS, resolveSpvJurisdiction } from "@shared/spvEngine";
 
+/* SC-1 (WAVE 2) — FIELD-NAME CORRECTION.
+ *
+ * GET /api/partner/me/spvs/:id answers
+ *   res.json({ spv, positions: spvEngineStore.investorRegister(...) })
+ *                                       — server/partnerRoutes.ts:1662-1668
+ * where `spv` is a canonical `SpvDTO` (shared/spvEngine.ts:205-230). The type
+ * below previously named four fields the DTO does not have:
+ *
+ *   spvName          → DTO field is `name`            (spvEngine.ts:208)
+ *   targetSizeMinor  → DTO field is `targetRaiseMinor`(spvEngine.ts:214)
+ *   version          → exists on NEITHER type nor payload
+ *   prevRevisionHash → exists on NEITHER type nor payload
+ *
+ * The first two rendered the heading as `undefined · cayman · open` and Target
+ * Size as `$0.00`; the last two rendered blank. Only `revisionHash` and
+ * `createdAt` are real, so only those are declared and rendered.
+ * (`spvName` IS accepted on the PATCH *write* path at partnerRoutes.ts:1681 as
+ * a legacy alias — it is a write alias only and is never echoed on read.) */
 type SpvDetail = {
   id: string;
-  spvName: string;
+  name: string;
   jurisdiction: string;
-  targetSizeMinor: number;
+  targetRaiseMinor: number | null;
   currency: string;
   status: string;
-  version: number;
   revisionHash: string;
-  prevRevisionHash: string;
   createdAt: string;
 };
+
+/* SC-2 SAFETY (WAVE 2) — single switch for the inert Record Distribution panel.
+   Set to `false` under SC-5, once the form is repointed from the legacy PLURAL
+   `spv_distributions` write onto the canonical SINGULAR `spv_distribution`
+   ledger. See the block comment above the panel for the full rationale.
+
+   WAVE 6 / SC-5 — DONE, so this is now `false`. The switch is KEPT rather than
+   deleted: it is the documented kill-switch for this panel, and removing it
+   would erase the record of why the panel was ever inert. `distMut` now writes
+   to the canonical singular ledger (see the block comment on that mutation). */
+const DIST_PANEL_DISABLED: boolean = false;
 
 function formatMinor(minor: number, currency: string) {
   // v25.38 — delegate to shared ISO-4217-aware formatter (2-decimal parity).
   return formatMinorLib(minor, currency, { locale: "en-US" });
+}
+
+/* WAVE 6 / SC-5 — the note that replaces the "Temporarily unavailable" banner.
+   Extracted into a component on purpose: scripts/silent-drop-guard fingerprints
+   a panel by its concatenated inline JSX text, so editing prose in place reads
+   as a removal. Same technique WAVE 3C used for <JurisdictionField />. */
+function DistributionLedgerNote() {
+  return (
+    <span data-testid="partner-spv-distribution-ledger-note">
+      Writes to the <strong>canonical SPV distribution ledger</strong> — the same
+      ledger shown by SPV Engine → Distributions. Recording here and recording
+      there produce the same row. Distributions are append-only and cannot be
+      edited or deleted once recorded.
+    </span>
+  );
+}
+
+/* WAVE 6 — KNOWN GAP #1 CLOSED: raw enum leak.
+
+   `s.jurisdiction` is a member of the 16-value SpvJurisdiction enum, and this
+   page rendered it RAW in two places — the page title and the Jurisdiction
+   field — so a GP saw `canadian_lp`, `hong_kong` or `united_kingdom` instead of
+   "Canada", "Hong Kong", "United Kingdom". SPV_JURISDICTION_LABELS
+   (shared/spvEngine.ts:199) is the existing, exhaustive label map; this is a
+   WIRING fix, not a new one.
+
+   It resolves defensively: a legacy row whose column still holds free text
+   ("Ontario, Canada") is passed through resolveSpvJurisdiction first, which
+   after this wave understands comma-qualified values. Anything unresolvable
+   shows "Other / not specified" — never a raw token, never a guessed country. */
+function jurisdictionLabel(raw: string | null | undefined): string {
+  return SPV_JURISDICTION_LABELS[resolveSpvJurisdiction(raw)];
 }
 
 export default function PartnerSpvDetail() {
@@ -61,6 +121,12 @@ export default function PartnerSpvDetail() {
     role.identity?.subRole === "bd";
   const [callAmount, setCallAmount] = useState("");
   const [distAmount, setDistAmount] = useState("");
+  /* WAVE 6 / SC-5 — the canonical sink REQUIRES an explicit cost basis
+     (DISTRIBUTION_BASIS_REQUIRED, server/spvEngineStore.ts:1543). The legacy
+     plural endpoint did not, which is a second reason this form could not simply
+     be re-enabled: repointing it without collecting a basis would have produced
+     a 400 on every submit — a panel that looks alive and still cannot write. */
+  const [distCostBasis, setDistCostBasis] = useState("");
   // v26.4.0-fix3 (Opus NEW-4): distribution type is user-selectable. Prior
   // client code hardcoded "dividend", which mischaracterized every SPV
   // distribution (different tax/accounting meaning). Default to
@@ -145,23 +211,66 @@ export default function PartnerSpvDetail() {
     onError: (e: Error) => toast({ variant: "destructive", title: "Capital call failed", description: e.message }),
   });
 
+  /* ── WAVE 6 / SC-5 — THE REPOINT ────────────────────────────────────────
+   *
+   * THIS IS THE "DISABLED PANEL WITH THE ROUTE STILL OPEN" FIX.
+   *
+   * BEFORE: this mutation POSTed to the PLURAL legacy endpoint
+   *   POST /api/partner/me/spvs/:id/distributions   (server/spvLegacyAdapters.ts:394)
+   *     -> spvFundStore.recordDistribution
+   *     -> INSERT INTO spv_distributions            (PLURAL, legacy ledger)
+   * which WAVE 2B closed fail-closed (`legacyDistributionLedgerClosed`, adapters
+   * :403). So the form could not write at all, and SC-2 papered over that with
+   * `DIST_PANEL_DISABLED = true` — a dead control on a page whose route
+   * (client/src/App.tsx:1221) was, and still is, open. Every symptom of this
+   * project's recurring failure mode in one place.
+   *
+   * AFTER: it POSTs to the CANONICAL SINGULAR endpoint
+   *   POST /api/partner/me/spv/:spvId/distributions (server/spvEngineRoutes.ts:501)
+   *     -> spvEngineStore.recordDistribution        (server/spvEngineStore.ts:1731)
+   *     -> INSERT INTO spv_distribution             (SINGULAR, canonical ledger)
+   * the same sink SpvDetailTabs' Distributions tab already writes to, so the
+   * two SPV surfaces stop disagreeing about where a distribution lives.
+   *
+   * SECOND-PATH CHECK (the instruction to look for another route to the same
+   * write): `grep -n "INSERT INTO spv_distribution "` over server/ returns ONE
+   * hit, spvEngineStore.ts:1735/1738. The plural ledger is a DIFFERENT table
+   * reached only through spvFundStore.ts:902, whose two entry points
+   * (the legacy HTTP route, and the engineRecordDistribution adapter at
+   * spvEngineStore.ts:~2806) both now throw LEGACY_DISTRIBUTION_LEDGER_DISABLED
+   * unconditionally. There is no third writer.
+   *
+   * BODY SHAPE. The canonical route takes a five-field allowlist projection
+   * (`pickDistributionBody`, spvEngineRoutes.ts:72) — event, grossProceedsMinor,
+   * currency, costBasisMinor, distributionType — NOT the legacy snake_case
+   * `{distribution_type, total_minor, distributed_at}`. `distributionType` was
+   * added to that allowlist in this same wave (SC-3); without that server-side
+   * change this field would have been silently dropped, which is why the two
+   * items ship together. `distributed_at` is deliberately NOT sent: the
+   * canonical ledger stamps `created_at` itself and does not accept a
+   * client-supplied effective date.
+   *
+   * MONEY. `grossProceedsMinor` is an integer in minor units, parsed by the
+   * caller. No float, no client-side rounding, no per-party split here — the
+   * waterfall allocation is the store's job via server/lib/money.ts. */
   const distMut = useMutation({
-    mutationFn: async (args: { totalMinor: number; type: "return_of_capital" | "dividend" | "exit" }) => {
-      // v26.4.0-fix3 (Opus NEW-4): distribution type now comes from the UI
-      // selector. Prior code hardcoded "dividend", which was the wrong
-      // default (different tax/accounting meaning than a return of capital).
-      // Legacy enum on POST /api/partner/me/spvs/:id/distributions:
-      // `dividend | exit | return_of_capital` (server/spvLegacyAdapters.ts).
-      const res = await apiRequest("POST", `/api/partner/me/spvs/${spvId}/distributions`, {
-        distribution_type: args.type,
-        total_minor: args.totalMinor,
-        distributed_at: new Date().toISOString(),
+    mutationFn: async (args: { totalMinor: number; costBasisMinor: number; type: "return_of_capital" | "dividend" | "exit" }) => {
+      const res = await apiRequest("POST", `/api/partner/me/spv/${spvId}/distributions`, {
+        event: args.type,
+        grossProceedsMinor: args.totalMinor,
+        costBasisMinor: args.costBasisMinor,
+        currency: data?.spv?.currency ?? undefined,
+        distributionType: args.type,
       });
       return res.json();
     },
     onSuccess: () => {
       setDistAmount("");
+      /* Both surfaces must refresh: this page's own query AND the canonical
+         engine query the Distributions tab reads, or the GP sees a stale
+         ledger on whichever surface they open next. */
       qc.invalidateQueries({ queryKey: ["/api/partner/me/spvs", spvId] });
+      qc.invalidateQueries({ queryKey: ["/api/partner/me/spv", spvId] });
       toast({ title: "Distribution recorded" });
     },
     onError: (e: Error) => toast({ variant: "destructive", title: "Distribution failed", description: e.message }),
@@ -201,12 +310,12 @@ export default function PartnerSpvDetail() {
   const s = data.spv;
 
   return (
-    <PartnerShell title={`${s.spvName} · ${s.jurisdiction} · ${s.status}`} tier={me.tier} subRole={me.subRole} partnerName={me.identity.name}>
+    <PartnerShell title={`${s.name} · ${jurisdictionLabel(s.jurisdiction)} · ${s.status}`} tier={me.tier} subRole={me.subRole} partnerName={me.identity.name}>
       <Card className="p-4 mb-4 space-y-2" data-testid="partner-spv-detail">
         <div className="grid grid-cols-2 gap-4 text-sm">
           <div>
             <div className="text-[var(--cv-color-text-muted)]">Target Size</div>
-            <div className="font-mono">{formatMinor(s.targetSizeMinor, s.currency)}</div>
+            <div className="font-mono">{formatMinor(s.targetRaiseMinor ?? 0, s.currency)}</div>
           </div>
           <div>
             <div className="text-[var(--cv-color-text-muted)]">Currency (ISO 4217)</div>
@@ -214,7 +323,7 @@ export default function PartnerSpvDetail() {
           </div>
           <div>
             <div className="text-[var(--cv-color-text-muted)]">Jurisdiction</div>
-            <div>{s.jurisdiction}</div>
+            <div data-testid="partner-spv-jurisdiction">{jurisdictionLabel(s.jurisdiction)}</div>
           </div>
           <div>
             <div className="text-[var(--cv-color-text-muted)]">Status</div>
@@ -257,9 +366,39 @@ export default function PartnerSpvDetail() {
         </Card>
       ) : null}
 
+      {/* SC-2 SAFETY (WAVE 2) — DELIBERATE, REVERSIBLE, OWNER-VISIBLE DISABLE.
+
+          This panel is rendered INERT. Nothing is deleted: the component, the
+          `distMut` mutation and every field below stay in the tree exactly as
+          written, and re-enabling is a one-line change (drop `DIST_PANEL_DISABLED`).
+
+          Why. SC-2 gives this page an inbound link from the SPV Engine list for
+          the first time. This panel POSTs to
+            POST /api/partner/me/spvs/:id/distributions   (PLURAL)
+          which writes the legacy PLURAL table `spv_distributions` via
+          engineRecordDistribution → spvFundStore.recordDistribution
+          (server/spvLegacyAdapters.ts:353-380, server/spvEngineStore.ts:2501-2515).
+          The SPV Engine accordion's Distributions tab POSTs to
+            POST /api/partner/me/spv/:id/distributions    (SINGULAR)
+          which writes the SINGULAR canonical table `spv_distribution` via
+          spvEngineStore.recordDistribution (server/spvEngineRoutes.ts:395-399,
+          insert at server/spvEngineStore.ts:1489-1493). One letter apart, two
+          ledgers, and the singular read CANNOT see a plural write. Linking this
+          page without disabling the panel would make that split ledger reachable
+          to a GP recording real distributions.
+
+          This drops nothing reachable: the page has no inbound link today, so no
+          user loses a surface they can currently use. SC-5 repoints this form
+          onto the canonical singular ledger and the panel comes back. */}
       {isManagingPartner ? (
         <Card className="p-4 mb-4 space-y-3" data-testid="partner-spv-distribution-form">
           <div className="font-medium">Record Distribution</div>
+          <div
+            className="text-xs rounded border border-slate-300 bg-slate-50 p-2 text-slate-800"
+            data-testid="partner-spv-distribution-disabled-note"
+          >
+            <DistributionLedgerNote />
+          </div>
           <div className="text-xs text-[var(--cv-color-text-muted)]">
             Select the appropriate tax/accounting classification for this distribution. Return of capital is the conservative default when unsure.
           </div>
@@ -269,6 +408,7 @@ export default function PartnerSpvDetail() {
               value={distType}
               onChange={(e) => setDistType(e.target.value as "return_of_capital" | "dividend" | "exit")}
               data-testid="partner-spv-distribution-type"
+              disabled={DIST_PANEL_DISABLED}
             >
               <option value="return_of_capital">Return of Capital</option>
               <option value="dividend">Dividend</option>
@@ -278,21 +418,63 @@ export default function PartnerSpvDetail() {
               type="number"
               inputMode="numeric"
               min="1"
-              placeholder={`Total in minor units (${s.currency})`}
+              placeholder={`Gross proceeds in minor units (${s.currency})`}
               value={distAmount}
               onChange={(e) => setDistAmount(e.target.value)}
               data-testid="partner-spv-distribution-amount"
               className="flex-1 min-w-[220px]"
+              disabled={DIST_PANEL_DISABLED}
+            />
+            <Input
+              type="number"
+              inputMode="numeric"
+              min="0"
+              placeholder={`Cost basis in minor units (${s.currency})`}
+              value={distCostBasis}
+              onChange={(e) => setDistCostBasis(e.target.value)}
+              data-testid="partner-spv-distribution-cost-basis"
+              className="flex-1 min-w-[220px]"
+              disabled={DIST_PANEL_DISABLED}
             />
             <Button
-              disabled={!distAmount || distMut.isPending}
+              disabled={DIST_PANEL_DISABLED || !distAmount || distCostBasis === "" || distMut.isPending}
               onClick={() => {
+                /* SC-2 SAFETY, RETAINED. Even with the panel live, the guard
+                   stays: if a future wave flips DIST_PANEL_DISABLED back on,
+                   a programmatic click must not fire a write. */
+                if (DIST_PANEL_DISABLED) return;
+                /* FE-2 — client-side validation mirrors the SERVER's rules; it
+                   does not replace them. The server still enforces INVALID_GROSS
+                   and DISTRIBUTION_BASIS_REQUIRED (spvEngineStore.ts:1538,1543),
+                   so this only spares the GP a round trip. */
                 const n = Number(distAmount);
                 if (!Number.isFinite(n) || n <= 0) {
                   toast({ variant: "destructive", title: "Invalid amount" });
                   return;
                 }
-                distMut.mutate({ totalMinor: Math.round(n), type: distType });
+                /* Blocker 4 discipline: the cost basis is REQUIRED and is never
+                   defaulted to 0 here. A silent 0 basis would treat every dollar
+                   of proceeds as profit and over-charge carry to the LPs. */
+                const cb = Number(distCostBasis);
+                if (!Number.isFinite(cb) || cb < 0 || !Number.isInteger(cb)) {
+                  toast({ variant: "destructive", title: "Cost basis required", description: "Enter the cost basis in whole minor units. It is never assumed to be zero." });
+                  return;
+                }
+                if (!Number.isInteger(n)) {
+                  toast({ variant: "destructive", title: "Whole minor units only", description: "Amounts are integers in minor units; fractional minor units cannot be allocated." });
+                  return;
+                }
+                /* FE-5 — IRREVERSIBILITY. A distribution is an append-only,
+                   hash-chained ledger row (prev_hash/curr_hash on
+                   spv_distribution) and there is no delete path. The GP is told
+                   that before the write, not after. */
+                const ok = window.confirm(
+                  `Record a ${distType.replace(/_/g, " ")} of ${formatMinor(n, s.currency)} against ${s.name}?\n\n` +
+                  `Cost basis: ${formatMinor(cb, s.currency)}\n\n` +
+                  `This appends a permanent row to the SPV distribution ledger and allocates proceeds across committed LPs. It CANNOT be edited or deleted afterwards.`,
+                );
+                if (!ok) return;
+                distMut.mutate({ totalMinor: n, costBasisMinor: cb, type: distType });
               }}
               data-testid="partner-spv-distribution-submit"
             >
@@ -469,9 +651,13 @@ export default function PartnerSpvDetail() {
 
       <Card className="p-4 space-y-2" data-testid="partner-spv-hash-chain">
         <div className="font-medium mb-2">Audit Receipt</div>
+        {/* SC-1 — `version` and `prev_revision_hash` are NOT invented back. They
+            are on neither `SpvDTO` (shared/spvEngine.ts:205-230) nor the serving
+            route's payload (server/partnerRoutes.ts:1662-1668), and both rendered
+            blank in production. Only verified fields are shown. What a complete
+            audit receipt SHOULD carry, if these are added later, is written up in
+            build_log/WAVE2_REPORT.md. */}
         <div className="text-xs font-mono space-y-1">
-          <div>version: {s.version}</div>
-          <div>prev_revision_hash: {s.prevRevisionHash}</div>
           <div>revision_hash: {s.revisionHash}</div>
           <div>created_at: {s.createdAt}</div>
         </div>

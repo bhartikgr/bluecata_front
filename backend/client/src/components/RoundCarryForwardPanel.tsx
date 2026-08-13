@@ -22,6 +22,9 @@
  *   - Audit digest shown in monospace at the bottom
  */
 import { useState, useEffect, useCallback } from "react";
+/* WAVE 3F / ITEM 5 — percent rendering goes through THE ONE percent module,
+ * never through an inline ×100 or a magnitude guess. */
+import { formatFractionAsPercent } from "@/lib/percentDisplay";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -127,10 +130,31 @@ function formatSuggestedValue(fieldName: string, value: unknown): string {
     const n = Number(value);
     if (!isNaN(n) && n > 100) return currencyFmt(n);
   }
+  /* ═══════════════════════════════════════════════════════════════════════ *
+   *  WAVE 3F / ITEM 5 — THE PERCENT GUESS IS REMOVED.
+   * ═══════════════════════════════════════════════════════════════════════ *
+   * WHAT WAS HERE (:130-133 in the frozen artifact):
+   *
+   *     if (!isNaN(n) && n > 0 && n <= 1)   return pctFmt(n);
+   *     if (!isNaN(n) && n > 1 && n <= 100) return pctFmt(n / 100);
+   *
+   * That is the forbidden `n > 1 ? n / 100 : n` heuristic wearing a different
+   * hat: a carry-forward suggestion of `1` was rendered as 100.00% and a
+   * suggestion of `20` as 20.00%, with the SAME field able to take either
+   * branch depending only on the magnitude of the number. 1% and 100% are
+   * indistinguishable to it — the exact defect W10 REVIEW A flagged.
+   *
+   * Carry-forward suggestions are FRACTIONAL, like every other percent in the
+   * artifact (client/src/lib/percentDisplay.ts, WAVE 3A: storage stays
+   * fractional; 1 genuinely IS 100%). Rendering therefore delegates to
+   * `formatFractionAsPercent`, the ONE place the ×100 happens, and a value
+   * outside [0,1] is NOT rescaled: it is surfaced verbatim as a suspect wire
+   * value rather than silently reinterpreted as percent-units. */
   if (f.includes("rate") || f.includes("pct") || f.includes("percent") || f.includes("discount")) {
     const n = Number(value);
-    if (!isNaN(n) && n > 0 && n <= 1) return pctFmt(n);
-    if (!isNaN(n) && n > 1 && n <= 100) return pctFmt(n / 100);
+    if (!isNaN(n) && n >= 0 && n <= 1) return formatFractionAsPercent(n, { digits: 2 });
+    // Out of the fractional domain — show the raw value, guess nothing.
+    if (!isNaN(n)) return `${String(value)} (invalid: expected a fraction in [0,1])`;
   }
   if (f.includes("shares")) {
     const n = Number(value);

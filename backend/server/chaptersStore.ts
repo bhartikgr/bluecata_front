@@ -381,5 +381,45 @@ export function revokeChapterMembership(opts: {
   return revokeChapterMembershipGuarded(opts.chapterId, opts.userId, opts.actor);
 }
 
+/**
+ * WAVE 36 · ROW 6 — the quorum DENOMINATOR for a chapter-scoped DSC vote.
+ *
+ * `server/dscVoteStore.ts:347` destructured `countActiveChapterMembers` from
+ * this module through a lazy `require()`. **This module never exported it.**
+ * The destructure yielded `undefined`, the call threw, the `catch` swallowed it
+ * into `memberCount = 0`, and `quorumReached = memberCount > 0 && …` was then
+ * permanently `false`. Every chapter-scoped DSC vote computed quorum against a
+ * denominator of ZERO: a governance gate that passed while checking nothing.
+ * The un-scoped path reached quorum with the same votes and the same members;
+ * the scoped path could not, ever. Proven by execution (Review 2A).
+ *
+ * This is the real function, static-imported by the caller. It fails in the
+ * REFUSING direction: an unreadable roster THROWS rather than returning 0,
+ * because a zero denominator must be an error, not a default — returning 0 is
+ * what made the defect invisible for as long as it lived.
+ *
+ * Counts rows that are `status = 'active'` and not soft-deleted, cross-tenant
+ * for the same reason every other read in this file is: `chapter_memberships`
+ * is the table that ESTABLISHES chapter scope.
+ */
+export function countActiveChapterMembers(chapterId: string): number {
+  const id = String(chapterId ?? "").trim();
+  if (!id) throw new Error("countActiveChapterMembers: chapterId is required");
+  const db = getDb();
+  // CROSS-TENANT (admin) — see the module header.
+  const rows = db
+    .select({ id: chapterMemberships.id })
+    .from(chapterMemberships)
+    .where(
+      and(
+        eq(chapterMemberships.chapterId, id),
+        eq(chapterMemberships.status, "active"),
+        isNull(chapterMemberships.deletedAt),
+      ),
+    )
+    .all() as Array<{ id: string }>;
+  return rows.length;
+}
+
 /** Re-exported so callers can branch on the shared codes without a second import. */
 export { GUARD_ERRORS };

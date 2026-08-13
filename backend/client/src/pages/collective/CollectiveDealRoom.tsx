@@ -55,7 +55,7 @@ export default function CollectiveDealRoom() {
   const [stageFilter, setStageFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
 
-  const { data, isLoading, error } = useQuery<{ companies: DealRoomCompany[]; total: number }>({
+  const { data, isLoading, isSuccess, error, refetch } = useQuery<{ companies: DealRoomCompany[]; total: number }>({
     queryKey: ["/api/collective/dealroom/companies"],
     queryFn: () => apiRequest("GET", "/api/collective/dealroom/companies").then((r) => r.json()),
     refetchInterval: 30_000,
@@ -140,11 +140,44 @@ export default function CollectiveDealRoom() {
               Failed to load Deal Room data. Please refresh.
             </div>
           )}
+          {/* WAVE 19 FE-11 — sibling clarifier + retry alongside the existing
+              refusal. Added as SEPARATE elements so the existing copy node
+              ("Failed to load Deal Room data. Please refresh.") is byte-identical
+              and the guard sees an addition, never a removal-plus-addition. */}
+          {error && !isCollectiveMembershipError(error) && (
+            <div className="px-6 pb-6 -mt-2" role="alert" data-testid="dealroom-load-failed">
+              <p className="text-xs text-slate-500">
+                This is a loading failure, not an empty Deal Room. No company has been removed.
+              </p>
+              <button
+                type="button"
+                className="mt-3 rounded-md border border-slate-300 px-3 py-1 text-xs"
+                data-testid="button-retry-dealroom"
+                onClick={() => { void refetch(); }}
+              >
+                Try again
+              </button>
+            </div>
+          )}
           {isLoading ? (
             <div className="p-6 space-y-3">
               {[...Array(5)].map((_, i) => (
                 <Skeleton key={i} className="h-10 w-full" />
               ))}
+            </div>
+          ) : /* WAVE 19 FE-11 — THE EMPTY STATE WAS NOT GATED ON `error`.
+                 `companies = data?.companies ?? []`, so a 403/500 produced
+                 `filtered.length === 0` and this branch rendered UNDERNEATH the
+                 error notice above: a partner or member with live deals saw
+                 "No companies in Deal Room" together with a paragraph explaining
+                 which statuses "will appear here" — a fabricated zero in
+                 explanatory copy. `isSuccess` is required, not decorative: an
+                 offline-PAUSED query is neither loading nor errored and would
+                 otherwise still fall into the empty branch. Additive gate + a
+                 sibling retry control; the existing copy nodes are untouched. */
+            error ? null : !isSuccess ? (
+            <div className="py-16 text-center text-slate-500" data-testid="dealroom-not-loaded">
+              <p className="text-sm">Deal Room data is not available right now.</p>
             </div>
           ) : filtered.length === 0 ? (
             <div className="py-16 text-center text-slate-500" data-testid="empty-dealroom">

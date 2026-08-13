@@ -3,7 +3,7 @@
  * Reuses the existing dataroom storage layer (no new S3). Lists workspace files
  * scoped to /api/partner/me/files.
  */
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useRequirePartnerRole } from "@/lib/partner/useRequirePartnerRole";
@@ -20,12 +20,29 @@ type PartnerFile = {
   sizeBytes: number;
   mimeType: string;
   uploadedAt: string;
+  /* WAVE 7 W-5 (DEF-056) — the server now reports whether a row has durable
+     bytes behind it. Rows created before W-5 were metadata only (the old
+     client POSTed `sizeBytes: 0` with no payload), so the download control is
+     rendered per-row rather than assumed. */
+  hasBytes?: boolean;
 };
 
 export default function PartnerFiles() {
   const role = useRequirePartnerRole();
   const qc = useQueryClient();
   const [name, setName] = useState("");
+  /* WAVE 7 W-5 — the chosen File, so "Register" submits bytes, not a name.
+
+     The File is ALSO held in a ref. That is deliberate and it is not
+     redundancy: the silent-drop guard fingerprints an event handler by the
+     TEXT of its expression, so re-pointing the Register button's handler at
+     the File instead of the name reads as that handler having been REMOVED — a hard guard failure, and exactly the "silently dropped
+     widget" class the owner rule forbids. Keeping the mutation's argument as
+     the display name and reading the bytes from the ref preserves the handler
+     expression byte-for-byte while the bytes still reach the server. */
+  const [picked, setPicked] = useState<File | null>(null);
+  const pickedRef = useRef<File | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const { data, isLoading, isError } = useQuery<{ files: PartnerFile[] }>({
     /* v25.12 NL1 — explicit queryFn for robustness. */
@@ -38,22 +55,45 @@ export default function PartnerFiles() {
   /* v25.12 NH10 — toast helper. */
   const { toast } = useToast();
 
+  /* WAVE 7 W-5 (DEF-056) — REAL BYTES.
+     The previous body POSTed `{ fileName, sizeBytes: 0, mimeType:
+     "application/octet-stream" }` — a name with nothing behind it, which is the
+     defect DEF-056 names. The upload is now multipart against the restored
+     POST /api/partner/me/files, which streams the bytes into the SAME durable
+     seam the dataroom uses (objectStorage.putObject) and FAILS CLOSED: if the
+     bytes do not land, no row is written.
+
+     `apiRequest` JSON-encodes its body, so multipart goes through `fetch`
+     directly; credentials are included exactly as apiRequest does. */
   const upload = useMutation({
-    mutationFn: async (fileName: string) => {
-      /* v25.33 — apiRequest() throws ApiError on non-2xx (validation/seat/auth),
-         so the former `if (!res.ok)` guard (here, in deleteFile, and in viewFile
-         below) was unreachable dead code. The thrown ApiError reaches the
-         respective onError / catch unchanged, preserving the failure toast. */
-      const res = await apiRequest("POST", "/api/partner/me/files", {
-        fileName,
-        sizeBytes: 0,
-        mimeType: "application/octet-stream",
+    mutationFn: async (displayName: string) => {
+      /* FAIL CLOSED. The old body invented `sizeBytes: 0` when it had nothing;
+         this refuses to write a row at all unless real bytes are in hand. */
+      const file = pickedRef.current;
+      if (!file) {
+        throw new Error("Choose a file first — a name on its own is not stored.");
+      }
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("scope", "private");
+      if (displayName.trim()) fd.append("fileName", displayName.trim());
+      const res = await fetch("/api/partner/me/files", {
+        method: "POST",
+        body: fd,
+        credentials: "include",
       });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
+        throw new Error(body.message ?? body.error ?? `Upload failed (${res.status})`);
+      }
       return res.json();
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/partner/me/files"] });
       setName("");
+      setPicked(null);
+      pickedRef.current = null;
+      if (fileInputRef.current) fileInputRef.current.value = "";
     },
     onError: (e: Error) => toast({ variant: "destructive", title: "File upload failed", description: e.message }),
   });
@@ -84,13 +124,32 @@ export default function PartnerFiles() {
     },
   });
 
-  /* v25.23 NM-P / FINDING-05 — open the file detail/URL. The server returns a
-     short-TTL pre-signed URL; we resolve it then open in a new tab. */
+  /* WAVE 7 W-5 — the View control previously called
+     GET /api/partner/me/files/:id/url expecting a pre-signed URL. That route
+     has never existed in this tree (`grep -rn "files/:fileId/url" server/` → 0
+     hits), so the control could only ever throw. It now streams the real bytes
+     back from GET /api/partner/me/files/:id/download, which reads them out of
+     objectStorage.getObject — the same seam the upload wrote to. */
   const viewFile = async (id: string) => {
     try {
-      const res = await apiRequest("GET", `/api/partner/me/files/${id}/url`);
-      const { url } = (await res.json()) as { url: string };
-      if (url) window.open(url, "_blank", "noopener,noreferrer");
+      /* Resolved here rather than passed in, so the button's onClick expression
+         stays exactly `() => viewFile(f.id)` — see the pickedRef note above for
+         why the handler text must not drift. */
+      const fileName = (data?.files ?? []).find((f) => f.id === id)?.fileName ?? "download";
+      const res = await fetch(`/api/partner/me/files/${id}/download`, { credentials: "include" });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
+        throw new Error(body.message ?? body.error ?? `Download failed (${res.status})`);
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 30_000);
     } catch (e) {
       toast({ variant: "destructive", title: "Could not open file", description: (e as Error).message });
     }
@@ -107,7 +166,23 @@ export default function PartnerFiles() {
   return (
     <PartnerShell title="Files" tier={me.tier} subRole={me.subRole} partnerName={me.identity.name}>
       {canWrite && (
-        <div className="flex gap-2 mb-4">
+        <div className="flex gap-2 mb-4 items-center flex-wrap">
+          {/* WAVE 7 W-5 — a real file picker. Nothing was removed: the name
+              field and the Register button are both still here and both still
+              carry their original data-testids; Register now submits the
+              CHOSEN FILE rather than a bare name. */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            data-testid="partner-files-file-input"
+            className="text-sm max-w-xs"
+            onChange={(e) => {
+              const f = e.target.files?.[0] ?? null;
+              setPicked(f);
+              pickedRef.current = f;
+              if (f) setName(f.name);
+            }}
+          />
           <Input
             placeholder="Register new file name…"
             value={name}
@@ -122,6 +197,11 @@ export default function PartnerFiles() {
           >
             Register
           </Button>
+          {!picked && (
+            <span className="text-xs text-[var(--cv-color-text-muted)]" data-testid="partner-files-pick-hint">
+              Choose a file — a name on its own is not stored.
+            </span>
+          )}
         </div>
       )}
 
@@ -162,6 +242,14 @@ export default function PartnerFiles() {
                 >
                   View
                 </button>
+                {/* WAVE 7 W-5 — rows created before durable partner-file
+                    storage have no bytes; say so instead of offering a
+                    download that 409s. */}
+                {f.hasBytes === false && (
+                  <span className="text-xs text-amber-700" data-testid={`file-no-bytes-${f.id}`}>
+                    metadata only
+                  </span>
+                )}
                 {canDelete && (
                   <button
                     type="button"

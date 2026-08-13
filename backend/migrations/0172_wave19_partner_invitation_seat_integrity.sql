@@ -1,0 +1,87 @@
+-- =========================================================================
+-- 0172_wave19_partner_invitation_seat_integrity.sql
+--
+-- WAVE 19 — FE-19 (SEAT-02 / SEAT-04): the DB half of the partner seat-limit
+-- fix.
+--
+-- WHAT WAS WRONG
+-- --------------
+-- `POST /api/partner/me/team/invitations` (server/partnerRoutes.ts:1420)
+-- called `assertTierSeats()` and then, in a SEPARATE step, called
+-- `partnerInvitationStore.create()`. Two problems, both real:
+--
+--   SEAT-04 (TOCTOU) — nothing held a lock between the check and the insert,
+--   so two concurrent invitations could both observe the last free seat and
+--   both be created. The seat limit is a PAID limit; overselling it is a
+--   revenue defect, not a cosmetic one.
+--
+--   SEAT-02 (in-memory enforcement) — `assertTierSeats` summed
+--   `countActiveSeats()` (already durable: it reads partner_team_members and
+--   takes the higher of DB and RAM) with `countPendingByPartner()`, which
+--   filtered a process-local `teamInvitations` ARRAY and nothing else. A
+--   freshly started process, or a second process behind a load balancer, sees
+--   an empty pending list and therefore issues invitations a full tier over
+--   the limit. That also violates the standing "no in-memory anywhere" rule.
+--
+-- WHAT THIS MIGRATION DOES
+-- ------------------------
+-- Exactly one thing: it gives the now-durable pending-invitation count an
+-- index it can actually use. The count has to answer
+--
+--     partner_id = ?  AND  redeemedAt IS NULL  AND  expiresAt > now
+--
+-- and both predicates live inside the `invitation_json` blob (the table is
+-- `id, partner_id, invitation_json, updated_at` — connection.ts:5088). The
+-- only existing index is `idx_pti_partner` on `partner_id` alone, so every
+-- seat check would scan and JSON-parse every invitation the partner has ever
+-- been sent, redeemed and expired ones included. This is an EXPRESSION index
+-- over the two extracted fields, so the predicate is answered from the index.
+--
+-- NO NEW TABLE. Waves 13 and 14 both lost a day to a second file redeclaring a
+-- table where `IF NOT EXISTS` silently discarded the incompatible definition
+-- and install order picked the winner. Not creating a table is the strongest
+-- available defence against a third instance.
+--
+-- WHY NOT A UNIQUE INDEX — a decision, not an omission
+-- ----------------------------------------------------
+-- The obvious stronger move is a PARTIAL UNIQUE index on
+-- (partner_id, lower(invitedEmail)) WHERE redeemedAt IS NULL, which would make
+-- duplicate pending invitations impossible at the storage layer. It is
+-- deliberately NOT taken here:
+--
+--   1. `partner_team_invitations` has never had that constraint, so existing
+--      installations may already hold duplicate pending rows. `CREATE UNIQUE
+--      INDEX` fails on those rows, and a migration that fails on real data is
+--      worse than the defect it fixes. Silently de-duplicating first would be
+--      destroying an audit record to make a schema change fit.
+--   2. Duplicate pending invitations to the SAME email are not the reported
+--      defect. The defect is overselling SEATS, and that is now enforced
+--      inside a single better-sqlite3 IMMEDIATE transaction which re-reads the
+--      durable counts under the write lock — the same pattern
+--      `partnerInvitationStore.redeem()` already uses for double-redeem.
+--
+-- If the owner wants the uniqueness constraint, it needs its own migration
+-- preceded by a duplicate report, and that is recorded as an open question
+-- rather than smuggled in here.
+--
+-- IDEMPOTENT: `CREATE INDEX IF NOT EXISTS` only, no data written, no shape
+-- changed. Safe to re-run.
+-- =========================================================================
+
+-- -------------------------------------------------------------------------
+-- FE-19 / SEAT-02 — index the durable pending-invitation predicate.
+--
+-- `json_extract` is deterministic, so SQLite permits it in an index
+-- expression. The stored shape is written by `persistTeamInvitation`
+-- (server/partnerWorkspaceStore.ts) as the JSON serialisation of
+-- `PartnerTeamInvitation`, whose fields are `redeemedAt` (ISO string or null)
+-- and `expiresAt` (ISO string). ISO-8601 UTC strings compare correctly with
+-- `>` lexicographically, which is why the durable query can filter on the
+-- expiry in SQL instead of in JavaScript.
+-- -------------------------------------------------------------------------
+CREATE INDEX IF NOT EXISTS idx_pti_partner_pending
+  ON partner_team_invitations (
+    partner_id,
+    json_extract(invitation_json, '$.redeemedAt'),
+    json_extract(invitation_json, '$.expiresAt')
+  );

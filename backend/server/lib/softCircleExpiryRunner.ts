@@ -10,8 +10,18 @@
 import { withTrace } from "./trace";
 import { emitSync } from "../sprint10Telemetry";
 import { BridgeOutbound } from "./bridgeOutbound";
+import {
+  SOFT_CIRCLE_EXPIRY_DAYS,
+  daysRemaining,
+  expiryBannerCopy,
+} from "@shared/softCircleExpiry";
 
-export const SOFT_CIRCLE_EXPIRY_DAYS = 14;
+/**
+ * Wave 38 · Row 5 — the expiry arithmetic and the banner copy now live in
+ * `shared/softCircleExpiry.ts` so the investor-facing banner and this runner
+ * cannot drift apart. Re-exported here so existing importers are unaffected.
+ */
+export { SOFT_CIRCLE_EXPIRY_DAYS, daysRemaining, expiryBannerCopy };
 
 export interface SoftCircleRecord {
   invitationId: string;
@@ -53,15 +63,4 @@ export function runExpirySweep(records: SoftCircleRecord[], now: Date = new Date
     }
     return { scanned: records.length, lapsed, ts: now.toISOString() };
   });
-}
-
-/** Compute remaining days for a soft-circle. */
-export function daysRemaining(softCircledAt: string, now: Date = new Date()): number {
-  const expiresAt = new Date(softCircledAt).getTime() + SOFT_CIRCLE_EXPIRY_DAYS * 24 * 60 * 60 * 1000;
-  return Math.max(0, Math.ceil((expiresAt - now.getTime()) / (24 * 60 * 60 * 1000)));
-}
-
-export function expiryBannerCopy(softCircledAt: string, now: Date = new Date()): string {
-  const n = daysRemaining(softCircledAt, now);
-  return `Your soft-circle expires in ${n} day${n === 1 ? "" : "s"} — confirm or release`;
 }

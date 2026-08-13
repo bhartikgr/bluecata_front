@@ -59,6 +59,15 @@ import * as _storePersist from "./lib/storePersistenceShim";
  * sandbox, in which case we degrade to the in-memory Map only. */
 import { rawDb } from "./db/connection";
 import { log } from "./lib/logger";
+/* WAVE 17 ORP-044 — the milestone auto-trigger registry. A LEAF module (logger +
+   currency only) precisely so this file can import it: importing
+   `milestoneBroadcastStore` here would close the cycle
+   milestoneBroadcastStore → captableCommitStore → roundsStore → this file. */
+import {
+  fireAutoBroadcast,
+  roundClosedBody,
+  roundClosedKey,
+} from "./lib/wave17MilestoneAutoTriggers";
 
 // ─── Audit log ────────────────────────────────────────────────────────────
 
@@ -908,6 +917,35 @@ export function registerRoundCarryForwardRoutes(app: Express): void {
 
       /* Post-commit SSE for lapsed rows (only after the close tx committed). */
       if (lapsedItems.length > 0) emitLapsedMutations(lapsedItems);
+
+      /* WAVE 17 ORP-044 — AUTO-TRIGGER `round_closed`.
+         WHY HERE. `closeRound` (server/roundsStore.ts:872) is the durable sink
+         and this route is its ONLY caller tree-wide (verified by grep), so this
+         is the manual close path end to end. It runs POST-COMMIT, after
+         `result.ok`, and is skipped when `alreadyClosed` — a repeated close must
+         not re-notify the cap table. It cannot throw (fireAutoBroadcast never
+         does), so a broadcast failure can never turn a committed close into a
+         500. The SECOND close path (the sweeper / cascade) is wired separately
+         in server/lib/roundCloseCascade.ts — see notifyCascadeSideEffects. */
+      if (!result.alreadyClosed) {
+        fireAutoBroadcast({
+          companyId: String(result.round?.companyId ?? ""),
+          actorUserId: owned.actor,
+          trigger: "round_closed",
+          body: roundClosedBody({
+            roundName: result.round?.name ?? null,
+            finalState: result.round?.state ?? null,
+            /* Integer MINOR units straight from the request the closer supplied;
+               omitted entirely when absent, never defaulted to zero. */
+            finalAmountMinor: typeof body.finalAmount === "number" ? body.finalAmount : null,
+            currency:
+              (typeof body.finalCurrency === "string" ? body.finalCurrency : null) ??
+              result.round?.currency ??
+              null,
+          }),
+          dedupeKey: roundClosedKey(String(id)),
+        });
+      }
 
       return res.status(200).json({
         ok: true,

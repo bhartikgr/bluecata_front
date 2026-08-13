@@ -13,6 +13,7 @@ import { useState } from "react";
 import { formatMinor } from "@/lib/currency"; /* v25.38 currency sweep */
 import { Link, useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { LoadFailedRefusal } from "@/components/LoadFailedRefusal"; /* WAVE 22 · ITEM 4 */
 import { PageBody, PageHeader } from "@/components/AppShell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -146,7 +147,8 @@ function PricingModelsTab() {
   const [lineFilter, setLineFilter] = useState<string>("all");
   const [createOpen, setCreateOpen] = useState(false);
 
-  const { data, isLoading, refetch } = useQuery<{ models: PricingModel[] }>({
+  /* WAVE 22 · ITEM 4 (REVIEW B F-4) — consume isError/isSuccess. */
+  const { data, isLoading, isError, isSuccess, isFetching, refetch } = useQuery<{ models: PricingModel[] }>({
     queryKey: ["/api/admin/pricing-models"],
     queryFn: async () => (await apiRequest("GET", "/api/admin/pricing-models")).json(),
     refetchInterval: 30_000,
@@ -288,8 +290,28 @@ function PricingModelsTab() {
             </CardContent>
           </Card>
         ))}
-        {!isLoading && filtered.length === 0 && (
+        {/* WAVE 22 · ITEM 4 (REVIEW B F-4) — a failed load is not "no models".
+            `all = data?.models ?? []`, so a 403/500 collapsed to zero rows and
+            the line below stated, as fact, that nothing matched. The empty
+            line is re-gated on isSuccess; the refusal is appended AFTER it.
+            The ordering is not cosmetic: the guard identifies panel bodies by
+            positional path (Card#2 here), so inserting a Card AHEAD of this one
+            renumbers it and registers as a DROP. Append, never insert. */}
+        {!isLoading && isSuccess && filtered.length === 0 && (
           <Card className="col-span-full"><CardContent className="py-10 text-center text-muted-foreground">No models match filters.</CardContent></Card>
+        )}
+        {isError && (
+          <div className="col-span-full">
+            <LoadFailedRefusal
+              what="pricing models"
+              testId="admin-pricing-models-error"
+              onRetry={() => void refetch()}
+              isRetrying={isFetching}
+            />
+          </div>
+        )}
+        {!isLoading && !isError && !isSuccess && (
+          <div className="col-span-full py-10 text-center text-muted-foreground text-sm" data-testid="admin-pricing-models-not-loaded">Pricing models have not loaded. Check your connection.</div>
         )}
       </div>
     </div>
@@ -433,7 +455,9 @@ function InvoicesTab() {
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
   const [refundReason, setRefundReason] = useState("");
 
-  const { data, isLoading, refetch } = useQuery<{ invoices: Invoice[]; total: number }>({
+  /* WAVE 22 · ITEM 4 (REVIEW B F-4) — consume isError/isSuccess; an invoice
+     list that failed to load must never read as "No invoices found." */
+  const { data, isLoading, isError, isSuccess, isFetching, refetch } = useQuery<{ invoices: Invoice[]; total: number }>({
     queryKey: ["/api/admin/invoices", statusFilter, companyFilter],
     queryFn: async () => {
       const params = new URLSearchParams();
@@ -528,8 +552,26 @@ function InvoicesTab() {
                 </TableCell>
               </TableRow>
             ))}
-            {!isLoading && invoices.length === 0 && (
+            {/* WAVE 22 · ITEM 4 — empty state re-gated on isSuccess; the
+                refusal rows are APPENDED after it so no existing TableRow
+                ordinal shifts (see the guard note in the models tab above). */}
+            {!isLoading && isSuccess && invoices.length === 0 && (
               <TableRow><TableCell colSpan={8} className="text-center text-muted-foreground py-8">No invoices found.</TableCell></TableRow>
+            )}
+            {isError && (
+              <TableRow>
+                <TableCell colSpan={8} className="py-6">
+                  <LoadFailedRefusal
+                    what="invoices"
+                    testId="admin-invoices-error"
+                    onRetry={() => void refetch()}
+                    isRetrying={isFetching}
+                  />
+                </TableCell>
+              </TableRow>
+            )}
+            {!isLoading && !isError && !isSuccess && (
+              <TableRow><TableCell colSpan={8} className="text-center text-muted-foreground py-8" data-testid="admin-invoices-not-loaded">Invoices have not loaded. Check your connection.</TableCell></TableRow>
             )}
           </TableBody>
         </Table>
@@ -657,7 +699,8 @@ function PaymentGatewayTab() {
     queryFn: async () => (await apiRequest("GET", "/api/admin/payment-gateway/config")).json(),
   });
 
-  const { data: eventsData } = useQuery<{ ok: boolean; events: Array<{ id: string; type: string; intentId: string; status: string; receivedAt: string }> }>({
+  /* WAVE 22 · ITEM 4 (REVIEW B F-4) — consume isError/isSuccess. */
+  const { data: eventsData, isError: eventsIsError, isSuccess: eventsIsSuccess, isFetching: eventsIsFetching, refetch: eventsRefetch } = useQuery<{ ok: boolean; events: Array<{ id: string; type: string; intentId: string; status: string; receivedAt: string }> }>({
     queryKey: ["/api/admin/payment-gateway/webhook-events"],
     queryFn: async () => (await apiRequest("GET", "/api/admin/payment-gateway/webhook-events")).json(),
     refetchInterval: 15_000,
@@ -725,7 +768,20 @@ function PaymentGatewayTab() {
           <CardTitle className="text-sm flex items-center gap-2"><Webhook className="h-4 w-4" />Recent webhook events</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
-          {events.length === 0 ? (
+          {eventsIsError ? (
+            /* WAVE 22 · ITEM 4 — "No webhook events yet." on a failed load would
+               tell an admin the gateway is silent when it may be very loud. */
+            <div className="p-4">
+              <LoadFailedRefusal
+                what="recent webhook events"
+                testId="admin-webhook-events-error"
+                onRetry={() => void eventsRefetch()}
+                isRetrying={eventsIsFetching}
+              />
+            </div>
+          ) : !eventsIsSuccess ? (
+            <div className="py-8 text-center text-sm text-muted-foreground" data-testid="admin-webhook-events-not-loaded">Webhook events have not loaded. Check your connection.</div>
+          ) : events.length === 0 ? (
             <div className="py-8 text-center text-sm text-muted-foreground">No webhook events yet.</div>
           ) : (
             <div className="divide-y">

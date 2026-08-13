@@ -16,7 +16,7 @@ import { describe, it, expect } from "vitest";
 import express, { type Express } from "express";
 import http from "node:http";
 
-import { loadUserContext, requireEntitlement } from "../lib/requireEntitlement";
+import { loadUserContext, requireEntitlement, entitlementGate } from "../lib/requireEntitlement";
 import { registerAuthShellRoutes, type RedemptionPreview, type RedemptionResult } from "../lib/authRoutes";
 import { getUserContextForId } from "../lib/userContext";
 import { shouldShowToggleFromCtx } from "../../client/src/components/CapCollectiveToggle";
@@ -65,10 +65,11 @@ function buildApp(invites: FakeInvite[] = []): Express {
     },
   });
 
-  function gate(...args: Parameters<typeof requireEntitlement>): import("express").RequestHandler {
-    const mw = requireEntitlement(...args);
-    return (req, res, next) => (String(req.query.enforce ?? "") !== "1" ? next() : mw(req, res, next));
-  }
+  /* WAVE 36 · ROW 7 SWEEP — this file carried the SAME defect as
+   * entitlementGates.test.ts: a local `gate()` re-implementing the `?enforce`
+   * bypass that v15 P0-14 removed from production. One assertion (the lapsed-LP
+   * collective check below) ran against it. Now uses the SHIPPED factory. */
+  const gate = entitlementGate;
   app.use("/api/collective/network", gate("collective.active"));
   app.all("/api/collective/network", (_req, res) => res.json({ ok: true }));
   app.use("/api/investor/messages", gate("investor.hasAnyCapTable"));
@@ -235,7 +236,7 @@ describe("Sprint 15 D9 — Edge cases (design Part 9)", () => {
   /* 9. Lapsed Collective member hits /collective/network → 403 + renewal CTA reason. */
   it("(9) lapsed member is 403'd at /api/collective/network with COLLECTIVE_INACTIVE", async () => {
     const app = buildApp([]);
-    const r = await call(app, "GET", "/api/collective/network?enforce=1&as=investor&userId=u_lapsed_lp");
+    const r = await call(app, "GET", "/api/collective/network?as=investor&userId=u_lapsed_lp");
     expect(r.status).toBe(403);
     expect(r.body.error).toBe("COLLECTIVE_INACTIVE");
   });

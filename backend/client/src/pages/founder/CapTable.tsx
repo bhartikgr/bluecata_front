@@ -28,6 +28,7 @@ import type { View, Region } from "@capavate/cap-table-engine";
 import { GlossaryLink } from "@/components/Glossary";
 import { useLocation } from "wouter"; /* v25.48.3 Q-F1 — redirect "Add security" to Rounds */
 import { HelpTip } from "@/components/HelpTip";
+import { MilestoneBroadcastPanel } from "@/components/founder/MilestoneBroadcastPanel";
 import { currencySymbol } from "@/lib/currency";
 import CapTableSnapshots from "@/components/founder/CapTableSnapshots"; /* W-CT — projected + previous snapshots */
 import { CapTableInterim } from "@/components/founder/CapTableInterim"; /* W-CAP — interim (pro-forma) additive view */
@@ -501,6 +502,12 @@ export default function CapTable() {
  {/* W-CT — projected (pending) + previous (last committed) cap-table snapshots.
     Read-only; hidden when neither a pending round nor a prior committed snapshot exists. */}
  <CapTableSnapshots companyId={companyId} sym={sym} />
+
+ {/* WAVE 16 ORP-044 — the founder-side surface for the milestone broadcast
+    engine (server/milestoneBroadcastStore.ts:183,:196, registered at
+    server/routes.ts:1271), which had no client caller anywhere in the tree.
+    Placed here because recipients ARE the committed holders on this table. */}
+ <MilestoneBroadcastPanel companyId={companyId} />
 
  {/* Totals */}
  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">

@@ -51,19 +51,25 @@ import { Label } from "@/components/ui/label";
 import { ExternalLink, Info, Plus, Trash2 } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { currencyExponent, formatMinor, toMinor } from "@/lib/currency";
+import { minorToMajorString } from "@/lib/moneyDisplay";
 
 type TabKey = "capavate" | "collective" | "consortium";
 
 /** Convert minor units (cents) to a major-unit string for display. */
-function minorToMajor(minor: number): string {
-  return (minor / 100).toFixed(2);
+/* WAVE 21 ITEM 5: exponent-aware; USD default preserves existing callers. */
+function minorToMajor(minor: number, currency = "USD"): string {
+  return minorToMajorString(minor, currency);
 }
 
 /** Parse a major-unit dollar string to minor units (cents). Returns null on invalid. */
-function majorToMinor(s: string): number | null {
+function majorToMinor(s: string, currency = "USD"): number | null {
   const raw = (s ?? "").trim();
-  if (!/^\d+(\.\d{1,2})?$/.test(raw)) return null;
-  const cents = Math.round(Number(raw) * 100);
+  /* WAVE 21 ITEM 5: was a hardcoded 2-decimal guard. */
+  const _exp = currencyExponent(currency);
+  if (!new RegExp(_exp > 0 ? `^\\d+(\\.\\d{1,${_exp}})?$` : "^\\d+$").test(raw)) return null;
+  /* WAVE 21 ITEM 5: parse partner scales by the same exponent. */
+  const cents = toMinor(Number(raw), currency);
   if (!Number.isSafeInteger(cents) || cents < 0) return null;
   return cents;
 }
@@ -207,7 +213,7 @@ function FlatFeeCard(props: {
 
   const preview = (() => {
     const c = majorToMinor(amountMajor);
-    return c === null ? "—" : fmtUSD(c / 100, { fractionDigits: 2 });
+    return c === null ? "—" : formatMinor(c, "USD");
   })();
 
   return (
@@ -260,7 +266,7 @@ function FlatFeeCard(props: {
               className="h-9 flex items-center text-sm font-medium"
               data-testid={`text-${props.testid}-current`}
             >
-              {props.fee ? fmtUSD(props.fee.amountMinor / 100, { fractionDigits: 2 }) : "—"}
+              {props.fee ? formatMinor(props.fee.amountMinor, (props.fee as { currency?: string }).currency || "USD") : "—"}
             </div>
           </div>
           <div className="md:col-span-3 flex items-center gap-3">

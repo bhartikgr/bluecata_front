@@ -16,14 +16,13 @@
  * they paid for; an under-count on the display path makes the workspace
  * disagree with the admin view of the same organisation.
  *
- * Two deliberate asymmetries are pinned here because they are easy to "tidy"
+ * Two deliberate safeguards are pinned here because they are easy to "tidy"
  * into a bug:
  *
- *   1. The count is of SEAT ROWS and is NOT de-duplicated. A seat row is what
- *      the tier limit is sold and enforced against; collapsing duplicates in
- *      `countActiveSeats`/`seatReport` would silently hand a partner free
- *      capacity. The duplicate-email collapse is DISPLAY-only and the caller
- *      must opt in by passing `emailByUserId`.
+ *   1. v26.7.3 FIX-4 — duplicate active rows for the same server-issued userId
+ *      count as one seat everywhere: dashboard, Team banner, and enforcement.
+ *      The Team roster's optional email collapse remains DISPLAY-only; distinct
+ *      platform accounts are never collapsed by the enforced userId key.
  *   2. The read is fail-SAFE, not fail-closed: a durable read error falls back
  *      to the RAM projection rather than returning 0, because 0 here would
  *      UNBLOCK `assertTierSeats` for every partner.
@@ -247,14 +246,14 @@ describe("v5 §F — ONE number: enforcement and display cannot disagree", () =>
   });
 });
 
-describe("v5 §F — a duplicate seat is COUNTED, and separately made visible", () => {
-  it("two rows for the SAME userId are two seats, reported as one distinct user", () => {
+describe("v26.7.3 FIX-4 — a duplicate seat is collapsed consistently and remains visible", () => {
+  it("two rows for the SAME userId are one seat, with duplicate evidence retained", () => {
     insertDurableSeat("ptm_dup_1", U_A, { subRole: "viewer" });
     insertDurableSeat("ptm_dup_2", U_A, { subRole: "managing_partner" });
 
     const r = partnerTeamStore.seatReport(PID);
-    // Enforcement counts ROWS — collapsing here would be free capacity.
-    expect(r.activeSeats).toBe(2);
+    // v26.7.3 FIX-4 — the canonical userId grouping is shared with enforcement.
+    expect(r.activeSeats).toBe(1);
     // Display evidence: one human, one hidden row, and WHICH row was hidden.
     expect(r.distinctSeatUsers).toBe(1);
     expect(r.duplicateSeatCount).toBe(1);
@@ -263,12 +262,13 @@ describe("v5 §F — a duplicate seat is COUNTED, and separately made visible", 
     expect(durableRows().length).toBe(2);
   });
 
-  it("a duplicate still consumes the paid tier — the limit is not widened by it", () => {
+  it("a duplicate does not consume an extra seat in the enforced tier limit", () => {
     insertDurableSeat("ptm_dupenf_1", U_A);
     insertDurableSeat("ptm_dupenf_2", U_A);
     expect(partnerTeamStore.seatReport(PID).distinctSeatUsers).toBe(1);
-    // One HUMAN, but two paid rows: the catalyst cap of 2 is reached.
-    expect(() => assertTierSeats(PID)).toThrow("PARTNER_TIER_SEAT_LIMIT_REACHED");
+    // v26.7.3 FIX-4 — one human occupies one seat after the canonical collapse.
+    expect(partnerTeamStore.countActiveSeats(PID)).toBe(1);
+    expect(() => assertTierSeats(PID)).not.toThrow();
   });
 
   it("the DUPLICATE-EMAIL case (two userIds, one human) collapses for DISPLAY only", () => {

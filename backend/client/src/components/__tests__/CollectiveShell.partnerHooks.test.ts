@@ -67,6 +67,10 @@ import { Router } from "wouter";
 import { CollectiveShell } from "@/components/CollectiveShell";
 import { RoleProvider } from "@/lib/role";
 import { LegalDrawerProvider } from "@/lib/legalDrawer";
+/* WAVE 37 — static imports (never dynamic) for the source-side pole of the
+ * brand-label assertion; see the note in the test body. */
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 function renderShell() {
   const queryClient = new QueryClient({
@@ -116,7 +120,44 @@ describe("CollectiveShell partner hooks-order (React #310 regression)", () => {
       { timeout: 4000 },
     );
     expect(dashNav).toBeTruthy();
-    // Sanity: partner-only mode is active (CONSORTIUM brand chip).
-    expect(screen.getByTestId("brand-chip").textContent).toContain("CONSORTIUM");
+
+    /* WAVE 37 — STALE SELECTOR. The code is right; the probe named a element
+     * that no longer exists.
+     *
+     * The sanity check read `[data-testid="brand-chip"]` and looked for the
+     * string "CONSORTIUM". W-LOGO replaced the old "C" tile plus inline
+     * CONSORTIUM/COLLECTIVE badge with the real Capavate logo and the product
+     * name written underneath — `client/src/components/CollectiveShell.tsx:369-383`,
+     * where the comment records the swap. The element is now
+     * `brand-block` / `brand-product-label`, and a partner-only session reads
+     * "Consortium Partner" rather than the shouted "CONSORTIUM".
+     *
+     * STRENGTHENED. The old line was a one-sided substring check: a shell that
+     * hard-coded the consortium wording for EVERY session would have satisfied
+     * it, and mislabelling a Collective member's sidebar is precisely the
+     * dual-role confusion the branch exists to prevent. This now pins the
+     * exact rendered label, asserts the OTHER pole's wording is absent from
+     * the brand block, and — because a single render can only exercise one
+     * branch — confirms from source that the label is driven by `partnerOnly`
+     * and that the two arms are genuinely different strings. */
+    const brand = screen.getByTestId("brand-block");
+    const label = screen.getByTestId("brand-product-label");
+    expect(brand).toBeTruthy();
+    // Partner-only session: this pole, exactly.
+    expect(label.textContent?.trim()).toBe("Consortium Partner");
+    // ...and NOT the Collective pole. A hard-coded label fails one of these.
+    expect(brand.textContent).not.toContain("Collective");
+    // The retired chip must not come back alongside the new block.
+    expect(screen.queryByTestId("brand-chip")).toBeNull();
+
+    // Both arms exist and differ — a single render cannot show this.
+    const shellSrc = readFileSync(
+      resolve(__dirname, "../CollectiveShell.tsx"),
+      "utf8",
+    );
+    expect(shellSrc).toContain('data-testid="brand-product-label"');
+    expect(shellSrc).toMatch(
+      /partnerOnly\s*\?\s*"Consortium Partner"\s*:\s*"Collective"/,
+    );
   });
 });

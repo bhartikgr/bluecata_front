@@ -65,6 +65,13 @@ import { emitNotification, type NotificationKind } from "../notificationsStore";
 import { emitMutation } from "./eventBus";
 import { publish as ssePublish } from "./sseHub";
 import { log } from "./logger";
+/* WAVE 17 ORP-044 — the milestone auto-trigger registry (a leaf module; see its
+   header for why the emit points cannot import the broadcast store directly). */
+import {
+  fireAutoBroadcast,
+  roundClosedBody,
+  roundClosedKey,
+} from "./wave17MilestoneAutoTriggers";
 
 /** Internal sha256 chain hash. Identical algorithm to collectiveOffersStore. */
 function computeHash(prevHash: string | null, payload: Record<string, unknown>): string {
@@ -91,6 +98,13 @@ export interface CloseRoundCascadeResult {
   }>;
   /** Companies whose rounds we touched (deduped). */
   companyId: string | null;
+  /**
+   * WAVE 17 ORP-044 — the round's human name, read from the same row the cascade
+   * already SELECTs, so the auto-triggered broadcast can name the round instead
+   * of publishing an opaque id to the whole cap table. Null when the row carries
+   * no name.
+   */
+  roundName?: string | null;
 }
 
 /**
@@ -134,6 +148,7 @@ export function closeRoundCascade(
       offersLapsed: 0,
       lapsedOffers: [],
       companyId,
+      roundName: round.name ?? null,
     };
   }
 
@@ -200,6 +215,7 @@ export function closeRoundCascade(
     offersLapsed: lapsed.length,
     lapsedOffers: lapsed,
     companyId,
+    roundName: round.name ?? null,
   };
 }
 
@@ -299,6 +315,38 @@ export function notifyCascadeSideEffects(
       change: "update",
     });
   } catch { /* non-fatal */ }
+
+  /* 4. WAVE 17 ORP-044 — AUTO-TRIGGER `round_closed`, SECOND PATH.
+
+     THIS IS THE PATH A ONE-SITE FIX WOULD HAVE MISSED. The manual close goes
+     through `closeRound` (server/roundsStore.ts:872, wired at
+     server/roundCarryForwardRoutes.ts:921), but this cascade sets
+     `rounds.state = 'closed'` with its OWN UPDATE (`:157`) and never calls
+     `closeRound`. It is reached from the sweeper (`sweepClosedRounds`, used by
+     server/jobs/roundSweeper.ts:20) and from `closeRoundCascadeStandalone`
+     (server/routes.ts:90). A round auto-closed on its close date or on reaching
+     target would therefore have notified nobody.
+
+     Placed in `notifyCascadeSideEffects` because that is this path's declared
+     post-commit side-effect sink — the same function that audits the close and
+     notifies lapsed offers — and it already returns early on `alreadyClosed`,
+     which is exactly the idempotency the sweeper needs. NO AMOUNT is published:
+     the cascade has no final-amount input, and `roundClosedBody` omits the figure
+     rather than inventing one. */
+  try {
+    fireAutoBroadcast({
+      companyId: result.companyId,
+      actorUserId: actor,
+      trigger: "round_closed",
+      body: roundClosedBody({ roundName: result.roundName ?? null, finalState: "closed" }),
+      dedupeKey: roundClosedKey(result.roundId),
+    });
+  } catch (err) {
+    /* fireAutoBroadcast does not throw; this belt is here because every other
+       side effect in this function is individually guarded and a future change
+       must not be able to break the sweeper loop. */
+    log.warn("[notifyCascadeSideEffects] milestone broadcast failed:", (err as Error).message);
+  }
 }
 
 /**

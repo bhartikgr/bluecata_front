@@ -19,6 +19,7 @@
 import { asArray } from "@/lib/safeArray";
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { LoadFailedRefusal } from "@/components/LoadFailedRefusal"; /* WAVE 22 · ITEM 5(a) */
 import { useEntitlement } from "@/lib/entitlement";
 import { useToast } from "@/hooks/use-toast";
 import { Link, useRoute } from "wouter";
@@ -61,8 +62,43 @@ interface CommentResolved {
   parentCommentId?: string;
 }
 
-export default function PostDetail({ role }: { role: "founder" | "investor" }) {
-  const [, params] = useRoute(`/${role}/posts/:id`);
+/**
+ * WAVE 19 FE-12 — the partner post-detail deeplink.
+ *
+ * `/collective/partner/posts/:id` was registered in App.tsx but rendered
+ * `<PartnerPosts />`, i.e. the FEED — so clicking a post in the partner shell
+ * (PostsFeed navigates to `${postsBase}/posts/${id}`, PostsFeed.tsx:532) and
+ * every shared partner link (`:523`, `:649`) landed back on the list with the
+ * `:id` silently discarded. This page could not simply be mounted there either:
+ * `useRoute` was hard-coded to `/${role}/posts/:id` with role ∈ founder|investor,
+ * so at the partner path it matches nothing, `postId` is `""`, the query is
+ * `enabled: false` and the page renders forever-blank — a silent drop rather
+ * than a visible refusal.
+ *
+ * The three props below are ADDITIVE and every one defaults to the exact prior
+ * expression, so the founder and investor mounts are behaviour-identical.
+ *
+ * GUARD NOTE: the breadcrumb LABEL is deliberately NOT parameterised. Turning
+ * the literal `Network Posts` text node into `{backLabel ?? "Network Posts"}`
+ * reads to the copy fingerprinter as a removal plus an addition (the Wave 7B
+ * §5.5 / FE-14 precedent). The literal stays a literal; the partner wrapper
+ * supplies its own breadcrumb as a SIBLING element instead.
+ */
+export default function PostDetail({
+  role,
+  routePattern,
+  backHref,
+  shareBase,
+}: {
+  role: "founder" | "investor";
+  /** Wouter pattern this page is mounted at. Default `/${role}/posts/:id`. */
+  routePattern?: string;
+  /** Breadcrumb target. Default `/${role}/network-posts`. */
+  backHref?: string;
+  /** Origin-relative prefix for the copied share URL. Default `/#/${role}`. */
+  shareBase?: string;
+}) {
+  const [, params] = useRoute<{ id: string }>(routePattern ?? `/${role}/posts/:id`);
   const postId = params?.id ?? "";
   const [draft, setDraft] = useState("");
   const [replyTo, setReplyTo] = useState<string | null>(null);
@@ -85,6 +121,14 @@ export default function PostDetail({ role }: { role: "founder" | "investor" }) {
   // Sprint 22 Wave 1 — DEF-005 fix: use entitlement context as primary source; block actions until identity confirmed.
   const { data: entCtx } = useEntitlement();
   const meId = entCtx?.userId ?? me.data?.id;
+
+  /* WAVE 22 · ITEM 5(a) — 404 and 403 are the only two statuses that justify
+     the "no longer available, or you do not have visibility into it" copy: the
+     first says the record is gone, the second says it exists but is not yours.
+     Every other failure is a statement about the REQUEST and must not be
+     dressed up as a statement about the RECORD. */
+  const detailErrStatus = (detailQ.error as { status?: number } | null)?.status;
+  const postAbsenceIsReal = detailErrStatus === 404 || detailErrStatus === 403;
 
   const post = detailQ.data?.post;
   const comments = useMemo(() => asArray(detailQ.data?.comments), [detailQ.data]);
@@ -158,7 +202,7 @@ export default function PostDetail({ role }: { role: "founder" | "investor" }) {
     onSuccess: async () => {
       queryClient.invalidateQueries({ queryKey: ["/api/comms/posts", postId] });
       // Sprint 22 Wave 1 — DEF-008 fix: copy post URL to clipboard after share.
-      const url = `${window.location.origin}/#/${role}/posts/${postId}`;
+      const url = `${window.location.origin}${shareBase ?? `/#/${role}`}/posts/${postId}`;
       try {
         if (typeof navigator?.share === "function") {
           await navigator.share({ title: "Post", url });
@@ -189,7 +233,7 @@ export default function PostDetail({ role }: { role: "founder" | "investor" }) {
       <div className="flex items-center gap-2 text-xs text-muted-foreground mb-3">
         {/* Sprint 19 G — role-aware nav: investor gets /investor/network-posts if available, else dashboard. */}
         <Button variant="ghost" size="sm" className="-ml-2 h-7 text-xs" data-testid="link-back-network-posts" asChild>
-          <Link href={role === "founder" ? "/founder/network-posts" : "/investor/network-posts"}>
+          <Link href={backHref ?? (role === "founder" ? "/founder/network-posts" : "/investor/network-posts")}>
             <ArrowLeft className="h-3.5 w-3.5 mr-1" /> Network Posts
           </Link>
         </Button>
@@ -199,10 +243,45 @@ export default function PostDetail({ role }: { role: "founder" | "investor" }) {
 
       {detailQ.isLoading && <Skeleton className="h-48 w-full" data-testid="loading-post" />}
 
-      {!detailQ.isLoading && !post && (
+      {/* WAVE 22 · ITEM 5(a) (REVIEW B, MINOR — PostDetail error conflation).
+          This branch previously ran on `!detailQ.isLoading && !post`, which is
+          true for FOUR distinct situations that mean different things:
+            · 404 — the post really is gone;
+            · 403 — the post exists and the viewer is not entitled to it;
+            · 500 / network / timeout — a server or transport failure;
+            · query paused (offline) — nothing was ever attempted.
+          All four rendered "That post is no longer available, or you do not have
+          visibility into it." A transient 500 therefore told a member their
+          colleague's post had been deleted, with no retry offered — and on a
+          confidential network-post surface, "no longer available" is a claim
+          about the record, not about the request. 404/403 keep the original
+          copy VERBATIM (it is correct for exactly those two, and the guard
+          requires restoration rather than rewording). Everything else gets an
+          explicit load-failure refusal with a retry.
+
+          STRUCTURE NOTE: the discriminator is computed above the JSX and the
+          new branches are plain elements appended AFTER the original <Card>.
+          The first attempt wrapped all of this in an IIFE, which moved the
+          post-detail <Card> out of its static position and the guard reported
+          twelve dropped panel bodies under PostDetail:div>Card#2. Compute in
+          TS, append in JSX, never re-parent an existing node. */}
+      {!detailQ.isLoading && !post && (detailQ.isSuccess || postAbsenceIsReal) && (
         <Card><CardContent className="p-6 text-sm text-muted-foreground" data-testid="empty-post">
           That post is no longer available, or you do not have visibility into it.
         </CardContent></Card>
+      )}
+      {!detailQ.isLoading && !post && detailQ.isError && !postAbsenceIsReal && (
+        <LoadFailedRefusal
+          what="this post"
+          testId="post-detail-error"
+          onRetry={() => void detailQ.refetch()}
+          isRetrying={detailQ.isFetching}
+        />
+      )}
+      {!detailQ.isLoading && !post && !detailQ.isError && !detailQ.isSuccess && (
+        <div className="p-6 text-sm text-muted-foreground" data-testid="post-detail-not-loaded">
+          This post has not loaded. Check your connection.
+        </div>
       )}
 
       {post && (

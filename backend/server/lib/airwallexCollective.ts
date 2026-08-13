@@ -36,6 +36,7 @@ import { log } from "./logger";
 // override. Imports the raw connection (not collectiveSubscriptionConfigStore.ts,
 // which imports FROM this module and would create a cycle).
 import { rawDb } from "../db/connection";
+import { ensureWave5MoneySchema } from "./applyWave5MoneySchema";
 import {
   createPaymentIntent as awCreatePaymentIntent,
   retrievePaymentIntent as awRetrievePaymentIntent,
@@ -186,6 +187,36 @@ function priceConfigFromEnv(tier: CollectiveTier): TierPriceConfig | null {
  * boot), or no matching row — the caller (`priceConfigForTier`) falls back to
  * env in every one of those cases, so a DB hiccup can never break checkout.
  */
+/**
+ * WAVE 5 / MON-1 — durable record of a price row the mirror refused to use.
+ *
+ * Best-effort by design: a failure to WRITE the rejection must never turn into
+ * a checkout failure, so this swallows and logs. The rejection is also logged
+ * at warn level, so the signal survives even if the table write fails.
+ */
+function recordMirrorReject(tier: string, raw: unknown, reason: string): void {
+  log.warn(
+    `[airwallexCollective] MON-1: refusing to mirror price for tier=${tier} ` +
+      `(${reason}, raw=${String(raw)}). Falling back to env. Fix the configured row.`,
+  );
+  try {
+    const db = rawDb() as any;
+    ensureWave5MoneySchema(db);
+    db.prepare(
+      `INSERT INTO collective_fee_mirror_reject (id, tier, raw_amount, reason, rejected_at)
+       VALUES (?,?,?,?,?)`,
+    ).run(
+      `cfmr_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+      String(tier),
+      String(raw),
+      reason,
+      new Date().toISOString(),
+    );
+  } catch (err) {
+    log.warn("[airwallexCollective] MON-1 reject-record write failed:", (err as Error).message);
+  }
+}
+
 function priceConfigFromDb(tier: CollectiveTier): (TierPriceConfig & { useEnvFallback: boolean }) | null {
   try {
     const row = rawDb()
@@ -207,8 +238,35 @@ function priceConfigFromDb(tier: CollectiveTier): (TierPriceConfig & { useEnvFal
     if (row.interval === "annual") interval = "year";
     else if (row.interval === "monthly") interval = "month";
     else return null;
+    /* ── WAVE 5 / MON-1 — REJECT, DO NOT ROUND. ────────────────────────────
+     * This line used to read `amountMinor: Math.round(row.amount_minor)`.
+     * `collective_subscription_configs.amount_minor` is ALREADY an integer
+     * minor-unit column, so the round is a no-op on every well-formed row —
+     * which is precisely what makes it dangerous. It is the exact shape of the
+     * cent-conservation defect the money rules ban: if a fractional value ever
+     * reached the column (a REAL-typed write, a bad import, a hand-edited row),
+     * this would SILENTLY round it and the amount actually charged at the
+     * Airwallex boundary would differ from the amount an admin authored and can
+     * see in the admin UI. Nobody would ever learn of it.
+     *
+     * The mirror now REJECTS a non-integer and records the rejection in
+     * `collective_fee_mirror_reject` (migration 0153) so the misconfigured
+     * price is VISIBLE rather than quietly charged. Returning null routes the
+     * caller to its existing env fallback, which is the established, tested
+     * behaviour for every other unusable-row case in this function (no row,
+     * non-finite amount, unmappable interval) — so this fails safe and cannot
+     * break checkout.
+     *
+     * SINK: `priceConfigFromDb` is called only by `priceConfigForTier`, which is
+     * the single amount source for `createCollectiveIntent` — the real charge
+     * boundary. There is no second reader of this table on the charge path
+     * (verified by grep for `collective_subscription_configs`). */
+    if (!Number.isInteger(row.amount_minor)) {
+      recordMirrorReject(tier, row.amount_minor, "amount_minor_not_integer");
+      return null;
+    }
     return {
-      amountMinor: Math.round(row.amount_minor),
+      amountMinor: row.amount_minor,
       currency: (row.currency || "USD").trim().toUpperCase(),
       interval,
       useEnvFallback: !!row.use_env_fallback,

@@ -985,6 +985,33 @@ function publishCollectiveVisibilityFanout(portfolio: PortfolioRow): void {
  * Read helpers
  * ============================================================ */
 
+/* ============================================================
+ * WAVE 35 · F9 (THIRD instance of the enumeration-oracle class)
+ * ============================================================
+ * Review A named three cap-table sinks that answered 403 for a company the
+ * caller has no relationship to, while the codebase's own stated policy
+ * (`server/routes.ts`) is 404 precisely so the id's EXISTENCE is not leaked.
+ * The same oracle lived here, on eight partner-tenant sinks keyed on
+ * `*ByIdAnyTenant` lookups (portfolio rows, CRM contacts, deals):
+ *
+ *     row missing            -> 404 NOT_FOUND
+ *     row exists, other partner -> 403 NOT_OWNER      <-- the leak
+ *
+ * A partner walking an id space could therefore read off exactly which
+ * portfolio-company, CRM-contact and deal ids are real across EVERY other
+ * partner on the platform — the deal-flow surface is the most commercially
+ * sensitive data a partner holds. Both branches now answer 404 NOT_FOUND;
+ * "exists but forbidden" is indistinguishable from "does not exist".
+ *
+ * This is a DELIBERATE contract change, not a silent one: two assertions in
+ * `server/__tests__/partnerWorkspaceMigration.test.ts` pinned the old 403 and
+ * were updated in the same change, with the cross-tenant-isolation intent they
+ * were written to protect preserved (the row is still refused, and the
+ * OWNER's 200 and the collective-visibility 200 are both still asserted).
+ * ============================================================ */
+export const PARTNER_TENANT_REFUSAL = { error: "NOT_FOUND" as const };
+export const PARTNER_TENANT_REFUSAL_STATUS = 404;
+
 function findPortfolioByIdAnyTenant(id: string): PortfolioRow | null {
   const cached = portfolioCache.get(id);
   if (cached) return cached;
@@ -1254,7 +1281,7 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
     const isOwner = partnerId && row.partnerId === partnerId;
     if (!isOwner) {
       if (row.visibility === "private") {
-        res.status(403).json({ error: "NOT_OWNER" });
+        res.status(PARTNER_TENANT_REFUSAL_STATUS).json(PARTNER_TENANT_REFUSAL); // WAVE 35 · F9
         return;
       }
       // public / collective allowed
@@ -1271,7 +1298,7 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
       return;
     }
     if (row.partnerId !== ctx.partnerId) {
-      res.status(403).json({ error: "NOT_OWNER" });
+      res.status(PARTNER_TENANT_REFUSAL_STATUS).json(PARTNER_TENANT_REFUSAL); // WAVE 35 · F9
       return;
     }
     const parsed = portfolioUpdateSchema.safeParse(req.body);
@@ -1344,7 +1371,7 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
       return;
     }
     if (row.partnerId !== ctx.partnerId) {
-      res.status(403).json({ error: "NOT_OWNER" });
+      res.status(PARTNER_TENANT_REFUSAL_STATUS).json(PARTNER_TENANT_REFUSAL); // WAVE 35 · F9
       return;
     }
     const now = nowIso();
@@ -1539,7 +1566,7 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
       return;
     }
     if (row.partnerId !== ctx.partnerId) {
-      res.status(403).json({ error: "NOT_OWNER" });
+      res.status(PARTNER_TENANT_REFUSAL_STATUS).json(PARTNER_TENANT_REFUSAL); // WAVE 35 · F9
       return;
     }
     res.json({ contact: row });
@@ -1554,7 +1581,7 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
       return;
     }
     if (row.partnerId !== ctx.partnerId) {
-      res.status(403).json({ error: "NOT_OWNER" });
+      res.status(PARTNER_TENANT_REFUSAL_STATUS).json(PARTNER_TENANT_REFUSAL); // WAVE 35 · F9
       return;
     }
     const parsed = crmUpdateSchema.safeParse(req.body);
@@ -1691,7 +1718,7 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
       return;
     }
     if (row.partnerId !== ctx.partnerId) {
-      res.status(403).json({ error: "NOT_OWNER" });
+      res.status(PARTNER_TENANT_REFUSAL_STATUS).json(PARTNER_TENANT_REFUSAL); // WAVE 35 · F9
       return;
     }
     const now = nowIso();
@@ -1831,7 +1858,7 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
       return;
     }
     if (row.partnerId !== ctx.partnerId) {
-      res.status(403).json({ error: "NOT_OWNER" });
+      res.status(PARTNER_TENANT_REFUSAL_STATUS).json(PARTNER_TENANT_REFUSAL); // WAVE 35 · F9
       return;
     }
     res.json({ deal: row });
@@ -1846,7 +1873,7 @@ export function registerPartnerWorkspaceV19Routes(app: Express): void {
       return;
     }
     if (row.partnerId !== ctx.partnerId) {
-      res.status(403).json({ error: "NOT_OWNER" });
+      res.status(PARTNER_TENANT_REFUSAL_STATUS).json(PARTNER_TENANT_REFUSAL); // WAVE 35 · F9
       return;
     }
     const parsed = dealUpdateSchema.safeParse(req.body);

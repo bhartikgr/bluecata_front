@@ -178,8 +178,52 @@ describe("CP Phase A — partner deal pipeline unification (CP-019)", () => {
     expect(ids).not.toContain(dealAId);
   });
 
-  it("cross-tenant: Partner B cannot GET Partner A's deal detail (403)", async () => {
-    const r = await call("GET", `/api/partner/deals/${dealAId}`, { userId: MANAGING_B });
-    expect(r.status).toBe(403);
+  /* WAVE 37 — STALE TEST. The code implements the RULING; the test pinned the
+   * behaviour the ruling replaced.
+   *
+   * THE RULING. Review A `FINAL_REVIEW_v26_16_A.md` §F9 — a cross-tenant refusal
+   * that answers 403 while a nonexistent id answers 404 is an ENUMERATION
+   * ORACLE: the status code alone tells an outsider that the id is real.
+   * `server/routes.ts` already carried the platform's own stated policy in a
+   * comment — 404 "so we don't even leak the existence of the company id".
+   * WAVE 35 Row 6 extended that to the partner-tenant sinks, of which this
+   * route is one: `server/partnerWorkspaceV19Store.ts` now answers
+   * `PARTNER_TENANT_REFUSAL_STATUS` / `PARTNER_TENANT_REFUSAL`, marked
+   * `// WAVE 35 · F9`. So 404 here is correct and 403 would be the regression.
+   *
+   * STRENGTHENED, not loosened. Asserting `toBe(404)` alone would be WEAKER
+   * than the old 403 pin, because a route that 404s on everything — including
+   * the owner's own deal — would pass it. The case therefore asserts the
+   * property the ruling is actually about: the refusal for "exists, but not
+   * yours" must be INDISTINGUISHABLE from the refusal for "does not exist",
+   * while the owner still gets their deal. Three poles:
+   *   (1) the legitimate owner gets 200 and the real row — so a blanket-404
+   *       route fails;
+   *   (2) the cross-tenant caller and a ghost-id caller get byte-identical
+   *       status AND body — so a 403, a distinct error code, or a distinct
+   *       message all fail;
+   *   (3) the refusal body carries no trace of the real deal.
+   * The probe is a REAL-BUT-WRONG identity (MANAGING_B, a genuine managing
+   * partner of another firm), never anonymous and never a demo persona: an
+   * anonymous caller would be refused by `requirePartnerAuth` before the
+   * tenant predicate is ever reached, and would prove nothing. */
+  it("cross-tenant: Partner B's refusal for Partner A's deal is 404 and byte-identical to a ghost id (F9 — no enumeration oracle)", async () => {
+    // POLE 1 — the route is not simply broken: its real owner still gets it.
+    const owner = await call("GET", `/api/partner/deals/${dealAId}`, { userId: MANAGING_A });
+    expect(owner.status).toBe(200);
+    expect(owner.body?.deal?.id).toBe(dealAId);
+
+    // POLE 2 — "exists but not yours" vs "does not exist": same answer.
+    const ghostId = `deal_w37_does_not_exist_${Date.now()}`;
+    const crossTenant = await call("GET", `/api/partner/deals/${dealAId}`, { userId: MANAGING_B });
+    const ghost = await call("GET", `/api/partner/deals/${ghostId}`, { userId: MANAGING_B });
+
+    expect(crossTenant.status).toBe(404);
+    expect(ghost.status).toBe(404);
+    expect(crossTenant.status).toBe(ghost.status);
+    expect(JSON.stringify(crossTenant.body)).toBe(JSON.stringify(ghost.body));
+
+    // POLE 3 — and the refusal leaks nothing about the deal it is hiding.
+    expect(JSON.stringify(crossTenant.body)).not.toContain(dealAId);
   });
 });

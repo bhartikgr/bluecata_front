@@ -31,6 +31,10 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Pencil, CheckCircle2 } from "lucide-react";
+/* WAVE 24 · ITEM 2 — EN-2 company mark: compute + freeze (previously no UI caller). */
+import { CompanyMarkPanel } from "@/components/admin/CompanyMarkPanel";
+/* WAVE 36 · ROW 9 — GET /api/admin/founder-channels/:companyId had no client caller. */
+import { FounderChannelsPanel } from "@/components/admin/FounderChannelsPanel";
 
 /* ============================================================
  * Types
@@ -402,6 +406,21 @@ export default function AdminCompanyDetail() {
               </CardContent>
             </Card>
           )}
+
+          {/* WAVE 24 · ITEM 2 — EN-2. The company mark GET and its persist POST
+              had zero client callers. Rendered as a SIBLING card inside the
+              existing detail grid, on the record it describes. Gated on `c`
+              because the mark is meaningless without a resolved company id. */}
+          {c && <CompanyMarkPanel companyId={c.id} />}
+
+          {/* WAVE 36 · ROW 9 — the founder-channels endpoint's first client
+              caller. APPENDED after CompanyMarkPanel, never inserted above it:
+              the silent-drop guard reads a card inserted mid-list as a
+              renumbering of its siblings' positional paths and would report the
+              untouched cards as removed. Gated on `c` for the same reason the
+              mark panel is — the breakdown is meaningless without a resolved
+              company id. */}
+          {c && <FounderChannelsPanel companyId={c.id} />}
         </div>
 
         {/* ── Edit Drawers ────────────────────────────── */}

@@ -34,6 +34,7 @@ import {
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useEntitlement } from "@/lib/entitlement";
+import { formatMinor } from "@/lib/currency"; /* WAVE 34 — ISO 4217 exponent, never a hardcoded /100 */
 
 /* ---------- Types ---------- */
 interface Subscription {
@@ -72,12 +73,19 @@ interface Invoice {
 }
 
 /* ---------- Helpers ---------- */
+/* WAVE 34 — was:
+ *   new Intl.NumberFormat("en-US", { style: "currency", currency,
+ *     maximumFractionDigits: 2 }).format(minor / 100)
+ *   ...catch: `${currency} ${(minor / 100).toFixed(2)}`
+ * Both branches hardcoded an ISO 4217 exponent of 2 while handing the
+ * subscription's / invoice's real currency to Intl as the CODE. On the
+ * founder's own billing screen a ¥1,200,000 annual plan rendered as ¥12,000
+ * and a ¥1,050,000 invoice as ¥10,500 — wrong by a factor of 100. `formatMinor`
+ * derives the divisor and the fraction-digit count from the currency, keeps the
+ * same `en-US` locale pin, and carries the same Intl-throws fallback. Same
+ * numeric type in (integer minor units), same string out. */
 function fmtMoney(minor: number, currency = "USD"): string {
-  try {
-    return new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 2 }).format(minor / 100);
-  } catch {
-    return `${currency} ${(minor / 100).toFixed(2)}`;
-  }
+  return formatMinor(minor, currency, { locale: "en-US" });
 }
 function fmtDate(iso: string): string {
   if (!iso || iso === "—") return "—";

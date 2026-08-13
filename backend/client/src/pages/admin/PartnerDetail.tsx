@@ -13,6 +13,12 @@ import { useParams } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 /* v25.12 NL4 — explicit queryFn for the two queries below. */
 import { apiRequest, queryClient } from "@/lib/queryClient";
+/* WAVE 3A (P-3) — shared percent input helpers. This editor was VERIFIED to
+   ALREADY convert correctly (seed ×100 at :242, save ÷100 at :274), so this is
+   a behaviour-preserving refactor onto the one helper — NOT a second
+   conversion. The only observable change is that float dust disappears:
+   String(0.12 * 100) was "12.000000000000002". */
+import { fractionToPercentInput, parsePercentInputToFraction } from "@/lib/percentDisplay";
 import { PageBody, PageHeader } from "@/components/AppShell";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -23,8 +29,35 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select"; /* v25.41 Bug-3 */
 import { useToast } from "@/hooks/use-toast"; /* v25.41 Bug-3 */
-import { ArrowLeft, Building2, Users, FileText, CheckSquare, FolderOpen, Layers, Plus, Archive, Sliders } from "lucide-react";
+/* WAVE 7 AD-1/AD-2 — admin lifecycle controls (tier, status, attributions).
+   Extracted into its own component so PartnerDetail stays readable and the
+   panel can be mounted from the operations page too if that is ever wanted. */
+import { PartnerLifecyclePanel } from "@/components/admin/PartnerLifecyclePanel";
+/* WAVE 17 ORP-031 — the admin capability surface Wave 16 recorded as missing
+   (client/src/pages/partner/PartnerManagedFounders.tsx:79-85). Mounted as its own
+   CARD for the same reason as the lifecycle panel above: additive to the guard
+   fingerprint. */
+import { MfcrmCapabilityPanel } from "@/components/admin/MfcrmCapabilityPanel";
+import { ArrowLeft, Building2, Users, FileText, CheckSquare, FolderOpen, Layers, Plus, Archive, Sliders, Tags } from "lucide-react";
 import { Link } from "wouter";
+/* WAVE 4B (PT-3/PT-4) — partner classification. Before this wave the summary
+   header rendered TWO unlabelled badges: `partner.tier` ("catalyst") and
+   `partner.partnerType` ("syndicate"). The second came from
+   contacts.metadata_json.partnerType — a single free string written once at
+   consortium-application approval, never labelled and never editable. It is
+   kept below, READ-ONLY and now labelled "Legacy type", for grandfathered
+   rows; the real, mandatory, two-level `Sector // Sub-sector` classification
+   is the editor card added under the summary. */
+import {
+  ClassificationChips,
+  ClassificationEditor,
+  usePartnerTaxonomy,
+} from "@/components/partner/PartnerClassificationSelect";
+import {
+  validateClassifications,
+  type PartnerClassificationDto,
+  type PartnerClassificationInput,
+} from "@shared/partnerClassification";
 
 /* GROUP C (C4) — consolidated per-partner Arrangement editor response shape
    (GET /api/admin/partners/:id/fee-override). The per-partner PRICE lives in
@@ -105,15 +138,36 @@ interface WorkspaceAuditResp {
   }>;
 }
 
-/* v25.41 Bug-3 — admin-created SPV row (subset of PartnerSpv surfaced to admin). */
+/* v25.41 Bug-3 — admin-created SPV row (subset of PartnerSpv surfaced to admin).
+ *
+ * MAJOR 3 (WAVE 2B) — FIELD-NAME CORRECTION, sibling of the SC-1 detail-page fix.
+ * GET /api/admin/partners/:partnerId/spvs reads THROUGH the canonical engine
+ *   const spvs = spvEngineStore.listByPartner(partnerId);
+ *   res.json({ ok: true, spvs, total: spvs.length });
+ *                                  — server/lib/partnerFeeAdminRoutes.ts:333-346
+ * so every row is a canonical `SpvDTO` (shared/spvEngine.ts:205-230). Two fields
+ * read here did not exist on it:
+ *   spvName → DTO field is `name`   (spvEngine.ts:208) — the Name column was blank
+ *   vintage → not a DTO field; the admin create route stores it in the `terms`
+ *             JSON blob (server/lib/partnerFeeAdminRoutes.ts:388)
+ * `spvName` IS still the correct WRITE key on POST /api/admin/partners/:id/spvs
+ * (partnerFeeAdminRoutes.ts:360) — the create form below is unchanged. */
 interface AdminPartnerSpv {
   id: string;
-  spvName: string;
+  name: string;
   jurisdiction: string;
-  vintage: number;
   currency: string;
   status: string;
+  /** Legacy-only values (incl. `vintage`) are preserved here as provenance. */
+  terms?: Record<string, unknown> | null;
   recordedAt?: string;
+}
+
+/** MAJOR 3 — `terms` is `Record<string, unknown>`; render defensively.
+ *  Mirrors `termsValue` in client/src/pages/partner/PartnerFundDetail.tsx. */
+function spvTermsValue(terms: Record<string, unknown> | null | undefined, key: string): string {
+  const v = terms?.[key];
+  return typeof v === "string" || typeof v === "number" ? String(v) : "\u2014";
 }
 interface AdminPartnerSpvsResp {
   ok: boolean;
@@ -175,6 +229,58 @@ export default function AdminPartnerDetail() {
     onError: (e: any) => toast({ title: "Create SPV failed", description: e?.message, variant: "destructive" }),
   });
 
+  /* ── WAVE 4B (PT-3/PT-4) — classification state ─────────────────────────
+     REPORTING AND FILTERING ONLY. Nothing on this page changes what the
+     partner or the admin can reach based on the value chosen here. */
+  const taxonomyQ = usePartnerTaxonomy();
+  const classificationsQ = useQuery<{ ok: boolean; classifications: PartnerClassificationDto[] }>({
+    queryKey: [`/api/admin/partners/${partnerId}/classifications`],
+    enabled: !!partnerId,
+    queryFn: async () =>
+      (await apiRequest("GET", `/api/admin/partners/${partnerId}/classifications`)).json(),
+    retry: false,
+  });
+  const savedClassifications = classificationsQ.data?.classifications ?? [];
+  const [editingClassification, setEditingClassification] = useState(false);
+  const [classificationDraft, setClassificationDraft] = useState<PartnerClassificationInput[]>([]);
+
+  function beginClassificationEdit() {
+    setClassificationDraft(
+      savedClassifications.map((c) => ({
+        sectorSlug: c.sectorSlug,
+        subsectorSlug: c.subsectorSlug,
+        otherText: c.otherText,
+        isPrimary: c.isPrimary,
+      })),
+    );
+    setEditingClassification(true);
+  }
+
+  const classificationErrors = validateClassifications(
+    classificationDraft,
+    taxonomyQ.data ?? { sectors: [], subsectors: [] },
+    { mandatory: true },
+  );
+
+  const saveClassificationMut = useMutation({
+    mutationFn: async () => {
+      const r = await apiRequest("PUT", `/api/admin/partners/${partnerId}/classifications`, {
+        classifications: classificationDraft,
+      });
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || "save_failed");
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: [`/api/admin/partners/${partnerId}/classifications`],
+      });
+      setEditingClassification(false);
+      toast({ title: "Classification saved" });
+    },
+    onError: (e: any) =>
+      toast({ title: "Save classification failed", description: e?.message, variant: "destructive" }),
+  });
+
   const partnerQ = useQuery<PartnerDetailResp>({
     /* v25.12 NL4 — explicit queryFn. */
     queryKey: [`/api/admin/partners/${partnerId}`],
@@ -218,7 +324,7 @@ export default function AdminPartnerDetail() {
     setArr({
       priceOverrideEnabled: typeof monthly?.amountMinor === "number",
       subscriptionMonthlyMinor: typeof monthly?.amountMinor === "number" ? String(monthly.amountMinor) : "",
-      commissionPct: d.commissionOverridePct != null ? String(d.commissionOverridePct * 100) : "",
+      commissionPct: fractionToPercentInput(d.commissionOverridePct),
       subscriptionModel: d.arrangement?.subscriptionModel ?? "",
       quotaThreshold: typeof q?.threshold === "number" ? String(q.threshold) : "",
       quotaEnforcement: q?.enforcement === "warn" ? "warn" : "report",
@@ -249,9 +355,9 @@ export default function AdminPartnerDetail() {
       if (arr.commissionPct.trim() === "") {
         body.commissionOverridePct = null;
       } else {
-        const pct = Number(arr.commissionPct);
-        if (!Number.isFinite(pct) || pct < 0 || pct > 100) throw new Error("Commission must be a percent between 0 and 100");
-        body.commissionOverridePct = pct / 100;
+        const parsed = parsePercentInputToFraction(arr.commissionPct, { label: "Commission" });
+        if (!parsed.ok) throw new Error("Commission must be a percent between 0 and 100");
+        body.commissionOverridePct = parsed.fraction;
       }
       // Non-price arrangement (subscription model, report-only quota, fixed rev-share).
       const threshold = arr.quotaThreshold.trim() === "" ? undefined : parseInt(arr.quotaThreshold, 10);
@@ -353,8 +459,25 @@ export default function AdminPartnerDetail() {
                 <div className="flex items-center gap-2 flex-wrap">
                   <h2 className="text-lg font-semibold truncate">{name}</h2>
                   <Badge variant={statusColor(partner.status)}>{partner.status ?? "unknown"}</Badge>
-                  {partner.tier && <Badge variant="outline">{partner.tier}</Badge>}
-                  {partner.partnerType && <Badge variant="outline">{partner.partnerType}</Badge>}
+                  {/* WAVE 4B — both badges were previously unlabelled, so
+                      "catalyst" and "syndicate" sat side by side with no way
+                      to tell what either meant. Labelled in place. */}
+                  {partner.tier && (
+                    <Badge variant="outline" data-testid="badge-partner-tier">Tier: {partner.tier}</Badge>
+                  )}
+                  {partner.partnerType && (
+                    <Badge
+                      variant="outline"
+                      className="text-muted-foreground"
+                      title="Legacy free-text type from contacts.metadata_json, set once at application approval. Read-only and retained for grandfathered rows — use Classification below."
+                      data-testid="badge-partner-legacy-type"
+                    >
+                      Legacy type: {partner.partnerType}
+                    </Badge>
+                  )}
+                </div>
+                <div className="mt-2">
+                  <ClassificationChips classifications={savedClassifications} />
                 </div>
                 <div className="mt-1 text-sm text-muted-foreground space-y-0.5">
                   {partner.email && <p>Email: {partner.email}</p>}
@@ -363,6 +486,94 @@ export default function AdminPartnerDetail() {
                 </div>
               </div>
             </div>
+          </Card>
+        )}
+
+        {/* ── WAVE 7 (AD-1/AD-2) — Lifecycle & attributions ─────────
+            Rendered as its own CARD, deliberately: the same ruling that kept
+            WAVE 4B's classification out of the roster as a 7th column applies
+            here. A card is additive to the guard fingerprint; a column changes
+            an existing table's header/cell shape and trips drop-detection.
+            AdminFeesConsolidated.tsx:1000 already tells the admin that tier
+            promotion happens "from the partner detail page" — as of this wave
+            that sentence is true. */}
+        {partner && (
+          <PartnerLifecyclePanel
+            partnerId={partnerId}
+            status={partner.status ?? null}
+            tier={partner.tier ?? null}
+          />
+        )}
+
+        {/* ── WAVE 17 (ORP-031) — Managed-founder capability ────────── */}
+        {partner && <MfcrmCapabilityPanel partnerId={partnerId} />}
+
+        {/* ── WAVE 4B (PT-3/PT-4) — Classification ─────────────────── */}
+        {partner && (
+          <Card className="p-5 mb-6" data-testid="admin-partner-classification">
+            <div className="flex items-center justify-between gap-2 mb-1">
+              <div className="flex items-center gap-2">
+                <Tags className="h-4 w-4 text-muted-foreground" />
+                <h3 className="font-semibold text-sm">Classification</h3>
+              </div>
+              {!editingClassification && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={beginClassificationEdit}
+                  data-testid="button-edit-classification"
+                >
+                  {savedClassifications.length === 0 ? "Set classification" : "Edit"}
+                </Button>
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground mb-4">
+              Two levels, rendered as <span className="font-mono">Sector // Sub-sector</span>. A
+              hybrid partner may hold several; the starred one is the primary and is what
+              single-value contexts (roster column, exports) show. Used for reporting and
+              filtering only — it grants and removes nothing.
+            </p>
+
+            {editingClassification ? (
+              <div className="space-y-3">
+                <ClassificationEditor
+                  value={classificationDraft}
+                  onChange={setClassificationDraft}
+                  mandatory
+                  showErrors
+                  disabled={saveClassificationMut.isPending}
+                />
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    onClick={() => saveClassificationMut.mutate()}
+                    disabled={classificationErrors.length > 0 || saveClassificationMut.isPending}
+                    data-testid="button-save-classification"
+                  >
+                    {saveClassificationMut.isPending ? "Saving…" : "Save classification"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setEditingClassification(false)}
+                    disabled={saveClassificationMut.isPending}
+                    data-testid="button-cancel-classification"
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            ) : classificationsQ.isLoading ? (
+              <p className="text-xs text-muted-foreground">Loading classification…</p>
+            ) : savedClassifications.length === 0 ? (
+              <p className="text-xs text-muted-foreground" data-testid="text-classification-unset">
+                Unclassified. This partner predates the classification field and is
+                grandfathered — nothing is broken, but setting it makes the partner appear in
+                sector reports and filters.
+              </p>
+            ) : (
+              <ClassificationChips classifications={savedClassifications} />
+            )}
           </Card>
         )}
 
@@ -657,9 +868,9 @@ export default function AdminPartnerDetail() {
                   <tbody>
                     {spvsQ.data.spvs.map((s) => (
                       <tr key={s.id} className="border-b last:border-0" data-testid={`spv-row-${s.id}`}>
-                        <td className="py-2 pr-4">{s.spvName}</td>
+                        <td className="py-2 pr-4">{s.name}</td>
                         <td className="py-2 pr-4">{s.jurisdiction}</td>
-                        <td className="py-2 pr-4">{s.vintage}</td>
+                        <td className="py-2 pr-4">{spvTermsValue(s.terms, "vintage")}</td>
                         <td className="py-2 pr-4">{s.currency}</td>
                         <td className="py-2">
                           <Badge variant="outline" className="text-xs">{s.status}</Badge>

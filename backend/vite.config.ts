@@ -33,6 +33,13 @@ export default defineConfig({
       "@capavate/cap-table-engine": path.resolve(import.meta.dirname, "packages/cap-table-engine/src/index.ts"),
       "@capavate/cap-table-engine-ref": path.resolve(import.meta.dirname, "packages/cap-table-engine-ref/src/index.ts"),
       "@capavate/telemetry": path.resolve(import.meta.dirname, "packages/telemetry/src/index.ts"),
+      // WAVE 9 M-1a. tsconfig.json:24 already mapped @capavate/math-fns, so
+      // `tsc` resolved it and the type-checker was happy — but Vite has its own
+      // resolver and did NOT, so any client import of the CANONICAL fund-math
+      // package (ENGINE_REGISTRY C-4) failed at bundle time. That asymmetry is
+      // why the package sat orphaned with zero consumers. Both trees now agree.
+      "@capavate/math-fns": path.resolve(import.meta.dirname, "packages/math-fns/src/index.ts"),
+      "@capavate/math-fns-ref": path.resolve(import.meta.dirname, "packages/math-fns-ref/src/index.ts"),
     },
   },
   root: path.resolve(import.meta.dirname, "client"),

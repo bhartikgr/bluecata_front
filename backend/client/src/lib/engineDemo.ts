@@ -51,6 +51,61 @@ export type ApiSecurity = {
   fmv?: number | null;
 };
 
+/* ═══════════════════════════════════════════════════════════════════════════ *
+ *  WAVE 3F / ITEM 5 — THE FORBIDDEN PERCENT GUESS IS REMOVED FROM THIS FILE.
+ * ═══════════════════════════════════════════════════════════════════════════ *
+ *
+ * WHAT WAS HERE (:118, :152, :190 in the frozen artifact):
+ *
+ *     s.discount != null ? (s.discount > 1 ? (s.discount / 100).toString()
+ *                                          : s.discount.toString()) : undefined
+ *     const discountFrac = s.discount != null
+ *       ? (s.discount > 1 ? s.discount / 100 : s.discount) : 0;
+ *
+ * `n > 1 ? n / 100 : n` CANNOT DISTINGUISH 1% FROM 100%. Both arrive as a
+ * number the heuristic reads as a fraction: a wire value of `1` meant as "1%"
+ * is silently priced as a 100% discount, and every value in (0,1] is
+ * indistinguishable from a correctly-fractional one. The magnitude of a number
+ * is not evidence of its unit. This is the heuristic the owner forbade, and
+ * W10 REVIEW A found it still shipping in the artifact.
+ *
+ * THE RULE NOW (identical to client/src/lib/percentDisplay.ts, WAVE 3A):
+ *   • STORAGE AND WIRE ARE FRACTIONAL. 0.2 is 20%. 1 is 100%. Full stop.
+ *   • A value outside [0,1] is not re-interpreted, re-scaled or clamped — it
+ *     is REJECTED, because a `20` on the wire is a producer bug and guessing
+ *     which of 20% and 2000% was meant is exactly the defect.
+ *   • DISPLAY goes through percentDisplay.formatFractionAsPercent, never
+ *     through an inline ×100 here.
+ */
+
+/** Raised instead of guessing the unit of an out-of-domain discount. */
+export class InvalidDiscountWireValueError extends Error {
+  readonly securityId: string;
+  readonly received: unknown;
+  constructor(securityId: string, received: unknown) {
+    super(
+      `INVALID_DISCOUNT_FRACTION: security ${securityId} sent discount=${JSON.stringify(received)}; ` +
+        `discounts are FRACTIONAL on the wire and must be within [0,1] (0.2 = 20%). ` +
+        `The value is rejected rather than rescaled: 1 means 100%, not 1%.`,
+    );
+    this.name = "InvalidDiscountWireValueError";
+    this.securityId = securityId;
+    this.received = received;
+  }
+}
+
+/**
+ * Read a discount that is FRACTIONAL BY CONTRACT.
+ * Returns undefined when absent. Throws on anything outside [0,1] or
+ * non-finite. Never divides, never multiplies, never clamps.
+ */
+export function readDiscountFraction(raw: unknown, securityId: string): number | undefined {
+  if (raw === null || raw === undefined || raw === "") return undefined;
+  const n = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(n) || n < 0 || n > 1) throw new InvalidDiscountWireValueError(securityId, raw);
+  return n;
+}
+
 export function adaptSecuritiesToEngine(secs: ApiSecurity[]): { holders: Holder[]; transactions: Transaction[] } {
   const holders: Holder[] = [];
   const seen = new Set<string>();
@@ -115,7 +170,8 @@ export function adaptSecuritiesToEngine(secs: ApiSecurity[]): { holders: Holder[
           safe: {
             type: "post_money_cap",
             cap: s.cap?.toString(),
-            discount: s.discount != null ? (s.discount > 1 ? (s.discount / 100).toString() : s.discount.toString()) : undefined,
+            // WAVE 3F / ITEM 5 — fractional-only, rejected if out of domain.
+            discount: readDiscountFraction(s.discount, s.id)?.toString(),
           },
         },
       };
@@ -149,7 +205,8 @@ export function adaptSecuritiesToEngine(secs: ApiSecurity[]): { holders: Holder[
           note: {
             principal: (s.investmentAmount ?? 0).toString(),
             cap: s.cap?.toString(),
-            discount: s.discount != null ? (s.discount > 1 ? (s.discount / 100).toString() : s.discount.toString()) : undefined,
+            // WAVE 3F / ITEM 5 — fractional-only, rejected if out of domain.
+            discount: readDiscountFraction(s.discount, s.id)?.toString(),
             interestRate: "0.05",
             interestKind: "simple",
             issueDate: s.issuedAt ?? "2025-01-01",
@@ -187,7 +244,8 @@ function safeConvertedShares(
 ): number {
   const purchase = s.investmentAmount ?? 0;
   if (!purchase) return 0;
-  const discountFrac = s.discount != null ? (s.discount > 1 ? s.discount / 100 : s.discount) : 0;
+  // WAVE 3F / ITEM 5 — same fractional contract on the conversion-price path.
+  const discountFrac = readDiscountFraction(s.discount, s.id) ?? 0;
   const candidates: number[] = [estimatedPps];
   if (s.cap && estimatedFdShares > 0) candidates.push(s.cap / estimatedFdShares);
   if (discountFrac > 0) candidates.push(estimatedPps * (1 - discountFrac));

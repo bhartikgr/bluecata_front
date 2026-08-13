@@ -8,6 +8,7 @@
 
 import { useState, useMemo, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { LoadFailedRefusal } from "@/components/LoadFailedRefusal"; /* WAVE 22 · ITEM 4 */
 import { Link } from "wouter";
 import { PageBody, PageHeader } from "@/components/AppShell";
 import { Card, CardContent } from "@/components/ui/card";
@@ -190,10 +191,25 @@ export default function Invitations() {
               <Skeleton className="h-40 w-full rounded-lg" />
             </>
           )}
+          {/* WAVE 22 · ITEM 4 (REVIEW B F-4) — a failed load is not an empty
+              inbox. The empty state below was gated on `!inv.isLoading` alone,
+              so a 403 or a 500 on /api/investor/invitations told an LP with
+              live invitations "No invitations yet. Apply to the Capavate
+              Collective to discover deals." — encouraging copy inviting them to
+              apply for access they already have. Sibling refusal + retry,
+              following Wave 18 W-4; the empty state is re-gated on isSuccess. */}
+          {inv.isError && (
+            <LoadFailedRefusal
+              what="your invitations"
+              testId="investor-invitations-error"
+              onRetry={() => void inv.refetch()}
+              isRetrying={inv.isFetching}
+            />
+          )}
           {/* Cards */}
-          {!inv.isLoading && filtered.map((i) => <InvitationCard key={i.id} inv={i} />)}
+          {!inv.isLoading && !inv.isError && filtered.map((i) => <InvitationCard key={i.id} inv={i} />)}
           {/* Empty state */}
-          {!inv.isLoading && filtered.length === 0 && (
+          {!inv.isLoading && !inv.isError && inv.isSuccess && filtered.length === 0 && (
             <div className="text-sm text-muted-foreground py-12 text-center">
               {activeTab === "all"
                 ? "No invitations yet. Apply to the Capavate Collective to discover deals."

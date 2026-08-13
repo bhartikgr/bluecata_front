@@ -98,6 +98,10 @@ import { z } from "zod";
 
 import { requirePartnerAuth, assertSubRole } from "./lib/requirePartnerAuth"; /* v25.14 NH3 */
 import { requireSignedAgreement } from "./lib/requireSignedAgreement"; /* W2-I override — fail-closed sign gate on partner writes */
+import {
+  legacyDistributionLedgerClosed,
+  LEGACY_DISTRIBUTION_LEDGER_DISABLED,
+} from "./lib/legacyDistributionLedger"; /* WAVE 2B / BLOCKER 1; WAVE 3D / ITEM 1 */
 import { getDb, rawDb } from "./db/connection";
 /* v25.33 — additive SPV deployment-fee charge (NEW server/lib/ module; does
  * NOT modify any SPV/cap-table BigInt math). Called once, additively, at the
@@ -112,6 +116,8 @@ import {
 } from "@shared/schema";
 import { publish as ssePublish } from "./lib/sseHub";
 import { log, errorMeta } from "./lib/logger";
+/* WAVE 10 / EN-1 — project capital calls into the ILPA cash-flow ledger. */
+import { projectCapitalCall, tryProject } from "./lib/ilpaCashflowLedger";
 
 /* ============================================================
  * Types
@@ -521,6 +527,104 @@ export function reconcileSpv(spvId: string): SpvReconciliation {
  * Public store API (programmatic — used by seedDemoData + tests)
  * ============================================================ */
 
+/* ══════════════════════════════════════════════════════════════════════════
+ * WAVE 3D / ITEM 1 — THE SINGLE `spv_distributions` INSERT, MADE PRIVATE.
+ *
+ * W3 REVIEW A, CRITICAL: "A second exported distribution writer bypasses the
+ * new allocator and guard." The insert below used to be the body of the
+ * EXPORTED `spvFundStore.recordDistribution`, reachable from
+ * `spvEngineStore.engineRecordDistribution`, from the retired registrar in this
+ * file, and from any future import/batch/admin job. It applies NO allocator, NO
+ * combined-carry cap, NO per-LP allocation and NO settlement authorization, and
+ * it writes the LEGACY PLURAL ledger that the canonical singular read cannot
+ * see.
+ *
+ * The statement is UNCHANGED — the fix is reachability, not arithmetic. This
+ * function is module-private: it is not exported, not a property of
+ * `spvFundStore`, and its only caller is the NODE_ENV-guarded test fixture
+ * `spvFundStore.__unsafeSeedLegacyDistributionRowForTests`. The production
+ * distribution write API (`spvFundStore.recordDistribution`) is
+ * unconditionally fail-closed.
+ *
+ * The ONE authoritative guarded distribution transaction is
+ * `spvEngineStore.recordDistribution`, which writes the canonical singular
+ * `spv_distribution`.
+ *
+ * Repository-wide proof that exactly one insert path into `spv_distributions`
+ * exists, that it is private, and that no production caller reaches it:
+ *   server/__tests__/wave3d_single_distribution_write_path.test.ts
+ * ══════════════════════════════════════════════════════════════════════════ */
+function writeLegacyDistributionRow(args: {
+  spvId: string;
+  distributionType?: DistributionType;
+  totalMinor: number;
+  distributedAt?: string;
+}): SpvDistributionRow {
+  const spv = spvsCache.get(args.spvId);
+  if (!spv || spv.deletedAt) throw new Error("SPV_NOT_FOUND");
+
+  // I-2 invariant check using BigInt math (math-sacred boundary).
+  const committed = BigInt(spv.committedMinor);
+  const called = BigInt(spv.calledMinor);
+  const distributedExisting = BigInt(spv.distributedMinor);
+  const distributedNew = distributedExisting + BigInt(args.totalMinor);
+  if (committed < distributedNew + called) {
+    throw new Error("INVARIANT_DISTRIBUTION_EXCEEDS_COMMITMENTS");
+  }
+
+  const id = newId("scd");
+  const now = nowIso();
+  const distributedAt = args.distributedAt ?? now;
+  const distributionType = args.distributionType ?? "dividend";
+  const payload = {
+    id,
+    spvId: args.spvId,
+    distributionType,
+    totalMinor: args.totalMinor,
+    distributedAt,
+  };
+  const db: any = getDb();
+  let row: SpvDistributionRow | null = null;
+  db.transaction((tx: any) => {
+    const prevHash = chainTipForSpvScoped(tx, spvDistributionsTable as any, args.spvId);
+    const currHash = computeHash(prevHash, payload);
+    row = {
+      id,
+      tenantId: spv.tenantId,
+      spvId: args.spvId,
+      distributionType,
+      totalMinor: args.totalMinor,
+      distributedAt,
+      prevHash,
+      currHash,
+      createdAt: now,
+    };
+    tx.insert(spvDistributionsTable).values({
+      id: row.id,
+      tenantId: row.tenantId,
+      spvId: row.spvId,
+      distributionType: row.distributionType,
+      totalMinor: row.totalMinor,
+      distributedAt: row.distributedAt,
+      prevHash: row.prevHash,
+      currHash: row.currHash,
+      createdAt: row.createdAt,
+    }).run();
+    const nextDistributed = spv.distributedMinor + args.totalMinor;
+    tx.update(spvsTable)
+      .set({ distributedMinor: nextDistributed, updatedAt: now })
+      .where(eq((spvsTable as any).id, spv.id))
+      .run();
+    spv.distributedMinor = nextDistributed;
+    spv.updatedAt = now;
+  });
+  const finalRow = row as SpvDistributionRow | null;
+  if (!finalRow) throw new Error("DISTRIBUTION_FAILED");
+  distributionsCache.set(finalRow.id, finalRow);
+  spvsCache.set(spv.id, spv);
+  return finalRow;
+}
+
 export const spvFundStore = {
   /** List all SPVs owned by partnerId, sorted by created_at desc. */
   listByPartner(partnerId: string): SpvRow[] {
@@ -888,86 +992,119 @@ export const spvFundStore = {
     if (!finalRow) throw new Error("CAPITAL_CALL_FAILED");
     capitalCallsCache.set(finalRow.id, finalRow);
     spvsCache.set(spv.id, spv);
+
+    /* ------------------------------------------------------------------
+     * WAVE 10 / EN-1 — PROJECT THE CALL INTO THE ILPA CASH-FLOW LEDGER.
+     *
+     * THE SINK. This is the only place in the tree that inserts into
+     * `spv_capital_calls` (verified: `grep -rn "INSERT INTO .*capital_call"`
+     * over server/ returns this write and one backup-table copy in the sacred
+     * connection.ts bootstrap). Every capital call therefore passes here, so
+     * this is the correct seam for the projection. THE SECOND PATH to the same
+     * money: `spvEngineStore` records distributions rather than calls, and is
+     * projected separately at its own insert; there is no third writer.
+     *
+     * SIGN. A call is a CONTRIBUTION — LP money INTO the vehicle — so the
+     * ledger stores it NEGATIVE (XIRR convention, migration 0159:70-73). The
+     * sign is applied inside `projectCapitalCall`, in one place, not here.
+     *
+     * IDEMPOTENT. Keyed on (source_kind='spv_capital_call', source_ref=id), so
+     * a replay cannot double an LP's contributions and halve the IRR.
+     *
+     * NON-FATAL BY DESIGN. `tryProject` swallows and logs. A reporting row that
+     * will not write must not roll back a capital call that has already been
+     * recorded and denormalised onto `spv.called_minor`; the partner's money
+     * operation succeeds and the gap is visible at
+     * GET /api/reporting/vehicles/spv/:id/cashflows/verify.
+     * ---------------------------------------------------------------- */
+    tryProject(
+      () =>
+        projectCapitalCall({
+          tenantId: finalRow.tenantId,
+          vehicleKind: "spv",
+          vehicleId: finalRow.spvId,
+          capitalCallId: finalRow.id,
+          calledAmountMinor: finalRow.amountMinor,
+          /* SpvRow has no `currency` column; the vehicle currency lives in the
+           * JSON `terms` blob. Falling back to USD would silently mix
+           * currencies inside one IRR, so the ledger's own per-vehicle
+           * single-currency check (ilpaCashflowLedger) is the backstop. */
+          currency: String((spv.terms as Record<string, unknown> | undefined)?.currency ?? "USD"),
+          valueDate: String(finalRow.calledAt).slice(0, 10),
+          purpose: "investment",
+          createdBy: "spvFundStore.recordCapitalCall",
+        }),
+      `capital_call ${finalRow.id}`,
+    );
+
     return finalRow;
   },
 
   /**
-   * Record a distribution. Enforces invariant I-2 BEFORE writing.
+   * WAVE 3D / ITEM 1 — THE PLURAL-LEDGER DISTRIBUTION WRITE API IS CLOSED.
    *
-   *    committedMinor >= distributedMinor (incl. new total_minor) + calledMinor
+   * W3 REVIEW A, CRITICAL. This function used to perform the
+   * `spv_distributions` INSERT directly — no `allocateDistributionMinor`, no
+   * `COMBINED_CARRY_EXCEEDS_CAP`, no per-LP allocation, no settlement — and it
+   * stayed callable from `spvEngineStore.engineRecordDistribution`, from the
+   * retired registrar below, and from any future import/batch/admin job.
+   * Closing only the HTTP route (`spvLegacyAdapters.ts:393-403`) left the API
+   * open; the review counted that as the sixth fix placed where money does not
+   * flow. This one is placed at the writer.
    *
-   * Throws `INVARIANT_DISTRIBUTION_EXCEEDS_COMMITMENTS` if violated;
-   * the HTTP layer maps this to 422.
+   * THE ONE AUTHORITATIVE GUARDED TRANSACTION is
+   * `spvEngineStore.recordDistribution`: it resolves the DB-driven
+   * combined-carry cap (`spv_carry_cap_policy`, migration 0150), runs the
+   * nested integer allocator, requires a minted settlement authorization for
+   * any carry leg, and writes the CANONICAL SINGULAR ledger `spv_distribution`.
+   * The plural `spv_distributions` table is the legacy split ledger the
+   * canonical read cannot see — see server/lib/legacyDistributionLedger.ts.
+   *
+   * This entry point is therefore UNCONDITIONALLY FAIL-CLOSED. It is retained
+   * rather than deleted so that any present or future caller fails LOUDLY at
+   * the write instead of silently binding to `undefined` or re-adding its own
+   * INSERT. The insert itself moved to the module-private
+   * `writeLegacyDistributionRow` above.
+   *
+   * @throws {Error} `LEGACY_DISTRIBUTION_LEDGER_DISABLED` — always.
    */
-  recordDistribution(args: {
+  recordDistribution(_args: {
     spvId: string;
     distributionType?: DistributionType;
     totalMinor: number;
     distributedAt?: string;
   }): SpvDistributionRow {
-    const spv = spvsCache.get(args.spvId);
-    if (!spv || spv.deletedAt) throw new Error("SPV_NOT_FOUND");
+    throw new Error(LEGACY_DISTRIBUTION_LEDGER_DISABLED);
+  },
 
-    // I-2 invariant check using BigInt math (math-sacred boundary).
-    const committed = BigInt(spv.committedMinor);
-    const called = BigInt(spv.calledMinor);
-    const distributedExisting = BigInt(spv.distributedMinor);
-    const distributedNew = distributedExisting + BigInt(args.totalMinor);
-    if (committed < distributedNew + called) {
-      throw new Error("INVARIANT_DISTRIBUTION_EXCEEDS_COMMITMENTS");
+  /**
+   * WAVE 3D / ITEM 1 — TEST FIXTURE ONLY. Seeds one legacy plural-ledger row.
+   *
+   * Legitimate uses preserved from before the closure: tests that need a
+   * pre-existing `spv_distributions` row to exercise the GET contract, the
+   * reconcile arithmetic, or the I-2 invariant itself. None of those uses
+   * wanted the money path; they wanted a fixture row.
+   *
+   * FAIL-CLOSED OUTSIDE TESTS: throws `LEGACY_DISTRIBUTION_WRITE_FORBIDDEN`
+   * unless `NODE_ENV === "test"`, so this is not a re-opened back door. The
+   * deliberately ugly name is part of the defence — it cannot be mistaken for a
+   * production API in review, and the repository-wide test asserts no
+   * production file calls it.
+   *
+   * Invariant I-2 is enforced before the write, unchanged:
+   *    committedMinor >= distributedMinor (incl. new total_minor) + calledMinor
+   * Throws `INVARIANT_DISTRIBUTION_EXCEEDS_COMMITMENTS` if violated.
+   */
+  __unsafeSeedLegacyDistributionRowForTests(args: {
+    spvId: string;
+    distributionType?: DistributionType;
+    totalMinor: number;
+    distributedAt?: string;
+  }): SpvDistributionRow {
+    if (process.env.NODE_ENV !== "test") {
+      throw new Error("LEGACY_DISTRIBUTION_WRITE_FORBIDDEN");
     }
-
-    const id = newId("scd");
-    const now = nowIso();
-    const distributedAt = args.distributedAt ?? now;
-    const distributionType = args.distributionType ?? "dividend";
-    const payload = {
-      id,
-      spvId: args.spvId,
-      distributionType,
-      totalMinor: args.totalMinor,
-      distributedAt,
-    };
-    const db: any = getDb();
-    let row: SpvDistributionRow | null = null;
-    db.transaction((tx: any) => {
-      const prevHash = chainTipForSpvScoped(tx, spvDistributionsTable as any, args.spvId);
-      const currHash = computeHash(prevHash, payload);
-      row = {
-        id,
-        tenantId: spv.tenantId,
-        spvId: args.spvId,
-        distributionType,
-        totalMinor: args.totalMinor,
-        distributedAt,
-        prevHash,
-        currHash,
-        createdAt: now,
-      };
-      tx.insert(spvDistributionsTable).values({
-        id: row.id,
-        tenantId: row.tenantId,
-        spvId: row.spvId,
-        distributionType: row.distributionType,
-        totalMinor: row.totalMinor,
-        distributedAt: row.distributedAt,
-        prevHash: row.prevHash,
-        currHash: row.currHash,
-        createdAt: row.createdAt,
-      }).run();
-      const nextDistributed = spv.distributedMinor + args.totalMinor;
-      tx.update(spvsTable)
-        .set({ distributedMinor: nextDistributed, updatedAt: now })
-        .where(eq((spvsTable as any).id, spv.id))
-        .run();
-      spv.distributedMinor = nextDistributed;
-      spv.updatedAt = now;
-    });
-    const finalRow = row as SpvDistributionRow | null;
-    if (!finalRow) throw new Error("DISTRIBUTION_FAILED");
-    distributionsCache.set(finalRow.id, finalRow);
-    spvsCache.set(spv.id, spv);
-    return finalRow;
+    return writeLegacyDistributionRow(args);
   },
 
   /** Record a held position. */
@@ -1530,6 +1667,21 @@ export function registerSpvFundRoutes(app: Express): void {
 
   // v25.23 NC-A + NH-F fix — see capital-calls above; same gate-preservation rationale.
   app.post("/api/partner/me/spvs/:id/distributions", requirePartnerAuth, assertSubRole("managing_partner"), requireSignedAgreement, (req: Request, res: Response) => {
+    /* WAVE 2B / BLOCKER 1 — fail closed BEFORE parsing or writing.
+
+       This registrar is RETIRED in production (server/routes.ts:1134 mounts
+       server/spvLegacyAdapters.ts instead; asserted by
+       server/__tests__/waveB_retirement_guard.test.ts G-2), but it is still an
+       exported function that tests and any future caller can mount. The same
+       closure is therefore applied here, so the plural-ledger write is
+       unreachable through EVERY registrar, not just the live one.
+
+       Split ledger: this path writes the PLURAL `spv_distributions`
+       (recordDistribution below, :902) while the canonical engine writes the
+       SINGULAR `spv_distribution` (server/spvEngineStore.ts:1538). The singular
+       read cannot see a plural write. Full rationale and the reversal
+       instruction live at server/spvLegacyAdapters.ts:114-159. */
+    if (legacyDistributionLedgerClosed(res)) return;
     if (!gate(req, res)) return;
     const ctx = req.partnerContext!;
     const spv = spvFundStore.getById(String(req.params.id));
@@ -1543,6 +1695,11 @@ export function registerSpvFundRoutes(app: Express): void {
       return;
     }
     try {
+      /* WAVE 3D / ITEM 1 — this call site is retained verbatim in shape but
+         now targets the FAIL-CLOSED entry point. It was already unreachable
+         (the `legacyDistributionLedgerClosed(res)` return above fires first,
+         and this whole registrar is retired), so this changes no behaviour;
+         it removes the last production reference to the unguarded writer. */
       const row = spvFundStore.recordDistribution({
         spvId: spv.id,
         distributionType: parsed.data.distribution_type,

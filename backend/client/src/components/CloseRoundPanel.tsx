@@ -31,16 +31,54 @@ type Props = {
  founderName?: string;
 };
 
-function fakeIp(): string { return "203.0.113." + Math.floor(Math.random() * 255); }
-function identityHash(actor: string, ts: string): string {
- // Demo-grade FNV — same algorithm as the rest of the preview.
- let h = 0xcbf29ce4 >>> 0;
- const input = actor + "|" + ts;
- for (let i = 0; i < input.length; i++) {
- h ^= input.charCodeAt(i);
- h = Math.imul(h, 16777619) >>> 0;
- }
- return "id-" + h.toString(16).padStart(8, "0");
+/* ============================================================
+ * WAVE 22 · ITEM 1 (REVIEW B F-2) — NO FABRICATED AUDIT METADATA.
+ *
+ * THE DEFECT. This file used to carry two generators:
+ *   • `fakeIp()`        → `"203.0.113." + Math.floor(Math.random() * 255)`
+ *   • `identityHash()`  → a "demo-grade FNV" of `actor + "|" + ts`
+ * Their output was written into the founder and admin round-close sign-offs,
+ * into the `signoff.requested` / `signoff.granted` / `round.closed` telemetry
+ * context, into the appended `round_close` ledger transaction, and — via
+ * `setCloseState` → `mirrorSignoffToAuditLog` — into the durable server-side
+ * audit log. An invented IP inside an evidence record is strictly worse than
+ * an absent one: absent is honest, invented is a false statement that reads
+ * as fact to anyone auditing the close.
+ *
+ * THE RULE APPLIED. Record the real value, or record an explicit
+ * "not captured". Never synthesise, and never silently drop the field.
+ *
+ * WHAT IS ACTUALLY AVAILABLE HERE. A browser cannot observe its own public
+ * address, and this component has no identity-attestation service to hash
+ * against. Both values are therefore genuinely unavailable AT THIS POINT, so
+ * both are persisted as `null` carrying a machine-readable reason
+ * (`ipAddressUnavailableReason` / `identityHashUnavailableReason`), and the
+ * UI renders "not captured" instead of a value.
+ *
+ * WHERE THE REAL IP NOW COMES FROM. The server stamps the address it actually
+ * observed on the socket: `POST /api/admin/audit-log/append`
+ * (`server/adminPlatformStore.ts`) overwrites any client-supplied `ipAddress`
+ * with `serverObservedIp`, resolved through the same hardened trusted-hop
+ * resolver as Wave 22 ITEM 2. The canonical close is likewise recorded
+ * server-side by `POST /api/founder/rounds/:id/close`. The client no longer
+ * claims to know something it cannot know.
+ * ============================================================ */
+
+/** Persisted in place of a value the client genuinely cannot observe. Never a
+ *  synthesised stand-in; consumers must render it as "not captured". */
+const AUDIT_VALUE_NOT_CAPTURED = null;
+
+const IP_NOT_CAPTURED_REASON =
+ "client-side capture unavailable: a browser cannot observe its own public address. " +
+ "The server stamps the peer address it observed (serverObservedIp) on the durable audit record.";
+
+const IDENTITY_HASH_NOT_CAPTURED_REASON =
+ "no identity-attestation service is wired to this surface; a locally computed hash would attest to nothing.";
+
+/** Display text for an audit field that was not captured. Used only for
+ *  rendering — the persisted value stays `null`. */
+function auditDisplay(value: string | null | undefined): string {
+ return value == null || value === "" ? "not captured" : value;
 }
 
 export default function CloseRoundPanel({ roundId, companyId = "co-acme", roundName = "this round", founderName = "Avi Barnes" }: Props) {
@@ -71,7 +109,10 @@ export default function CloseRoundPanel({ roundId, companyId = "co-acme", roundN
  actorId: role === "admin" ? "admin-platform" : "founder-avi",
  actorRole: role === "admin" ? "admin" : "founder",
  companyId,
- ipAddress: fakeIp(),
+ /* WAVE 22 · ITEM 1 — was `fakeIp()`. Undefined here means the telemetry
+    context carries no address at all rather than an invented one; the
+    durable record's address is stamped server-side. */
+ ipAddress: undefined,
  });
  setCloseState({ ...state, reconciliation: r });
  setRunning(false);
@@ -91,13 +132,16 @@ export default function CloseRoundPanel({ roundId, companyId = "co-acme", roundN
  actorName: founderName,
  actorRole: "founder" as const,
  ts,
- ipAddress: fakeIp(),
- identityHash: identityHash("founder-avi", ts),
+ /* WAVE 22 · ITEM 1 — explicit not-captured, never a synthesised address. */
+ ipAddress: AUDIT_VALUE_NOT_CAPTURED,
+ ipAddressUnavailableReason: IP_NOT_CAPTURED_REASON,
+ identityHash: AUDIT_VALUE_NOT_CAPTURED,
+ identityHashUnavailableReason: IDENTITY_HASH_NOT_CAPTURED_REASON,
  };
  setCloseState({ ...state, founderSignoff: sig });
- emit({ type: "signoff.requested", payload: { signoffId: `so-${roundId}-f`, roundId, signerRole: "founder" } }, { companyId, roundId, actorId: "founder-avi", actorRole: "founder", ipAddress: sig.ipAddress });
- emit({ type: "signoff.granted", payload: { signoffId: `so-${roundId}-f`, roundId, signerRole: "founder", identityHash: sig.identityHash } }, { companyId, roundId, actorId: "founder-avi", actorRole: "founder", ipAddress: sig.ipAddress });
- toast({ title: "Founder sign-off captured", description: `Identity ${sig.identityHash} · ${new Date(sig.ts).toLocaleTimeString()}` });
+ emit({ type: "signoff.requested", payload: { signoffId: `so-${roundId}-f`, roundId, signerRole: "founder" } }, { companyId, roundId, actorId: "founder-avi", actorRole: "founder", ipAddress: sig.ipAddress ?? undefined });
+ emit({ type: "signoff.granted", payload: { signoffId: `so-${roundId}-f`, roundId, signerRole: "founder", identityHash: sig.identityHash } }, { companyId, roundId, actorId: "founder-avi", actorRole: "founder", ipAddress: sig.ipAddress ?? undefined });
+ toast({ title: "Founder sign-off captured", description: `Identity ${auditDisplay(sig.identityHash)} · ${new Date(sig.ts).toLocaleTimeString()}` });
  }
 
  function adminSign() {
@@ -107,13 +151,16 @@ export default function CloseRoundPanel({ roundId, companyId = "co-acme", roundN
  actorName: "Capavate Admin",
  actorRole: "admin" as const,
  ts,
- ipAddress: fakeIp(),
- identityHash: identityHash("admin-platform", ts),
+ /* WAVE 22 · ITEM 1 — explicit not-captured, never a synthesised address. */
+ ipAddress: AUDIT_VALUE_NOT_CAPTURED,
+ ipAddressUnavailableReason: IP_NOT_CAPTURED_REASON,
+ identityHash: AUDIT_VALUE_NOT_CAPTURED,
+ identityHashUnavailableReason: IDENTITY_HASH_NOT_CAPTURED_REASON,
  };
  setCloseState({ ...state, adminSignoff: sig });
- emit({ type: "signoff.requested", payload: { signoffId: `so-${roundId}-a`, roundId, signerRole: "admin" } }, { companyId, roundId, actorId: "admin-platform", actorRole: "admin", ipAddress: sig.ipAddress });
- emit({ type: "signoff.granted", payload: { signoffId: `so-${roundId}-a`, roundId, signerRole: "admin", identityHash: sig.identityHash } }, { companyId, roundId, actorId: "admin-platform", actorRole: "admin", ipAddress: sig.ipAddress });
- toast({ title: "Admin counter-signature captured", description: `Identity ${sig.identityHash}` });
+ emit({ type: "signoff.requested", payload: { signoffId: `so-${roundId}-a`, roundId, signerRole: "admin" } }, { companyId, roundId, actorId: "admin-platform", actorRole: "admin", ipAddress: sig.ipAddress ?? undefined });
+ emit({ type: "signoff.granted", payload: { signoffId: `so-${roundId}-a`, roundId, signerRole: "admin", identityHash: sig.identityHash } }, { companyId, roundId, actorId: "admin-platform", actorRole: "admin", ipAddress: sig.ipAddress ?? undefined });
+ toast({ title: "Admin counter-signature captured", description: `Identity ${auditDisplay(sig.identityHash)}` });
  }
 
  function commitClose() {
@@ -130,7 +177,9 @@ export default function CloseRoundPanel({ roundId, companyId = "co-acme", roundN
  timestamp: new Date().toISOString(),
  actorId: admin.actorId,
  actorRole: "admin",
- ipAddress: admin.ipAddress,
+ /* WAVE 22 · ITEM 1 — the field is KEPT (not silently dropped) and carries
+    an explicit null; the reason lives on the sign-off record below. */
+ ipAddress: admin.ipAddress ?? undefined,
  idempotencyKey: `close-${roundId}`,
  payload: {
  type: "round_close",
@@ -138,8 +187,8 @@ export default function CloseRoundPanel({ roundId, companyId = "co-acme", roundN
  roundId,
  primaryHash: r.primaryHash,
  referenceHash: r.referenceHash,
- founderSignoff: { actorId: founder.actorId, ts: founder.ts, ipAddress: founder.ipAddress, identityHash: founder.identityHash },
- adminSignoff: { actorId: admin.actorId, ts: admin.ts, ipAddress: admin.ipAddress, identityHash: admin.identityHash },
+ founderSignoff: { actorId: founder.actorId, ts: founder.ts, ipAddress: founder.ipAddress, identityHash: founder.identityHash, ipAddressUnavailableReason: founder.ipAddressUnavailableReason, identityHashUnavailableReason: founder.identityHashUnavailableReason },
+ adminSignoff: { actorId: admin.actorId, ts: admin.ts, ipAddress: admin.ipAddress, identityHash: admin.identityHash, ipAddressUnavailableReason: admin.ipAddressUnavailableReason, identityHashUnavailableReason: admin.identityHashUnavailableReason },
  },
  },
  });
@@ -147,7 +196,7 @@ export default function CloseRoundPanel({ roundId, companyId = "co-acme", roundN
  const closedAt = new Date().toISOString();
  setCloseState({ ...state, closed: true, closedAt });
  // Emit telemetry events for the close
- emit({ type: "round.closed", payload: { roundId, primaryHash: r.primaryHash, referenceHash: r.referenceHash, finalAmount: "0" } }, { companyId, roundId, actorId: admin.actorId, actorRole: "admin", ipAddress: admin.ipAddress });
+ emit({ type: "round.closed", payload: { roundId, primaryHash: r.primaryHash, referenceHash: r.referenceHash, finalAmount: "0" } }, { companyId, roundId, actorId: admin.actorId, actorRole: "admin", ipAddress: admin.ipAddress ?? undefined });
  emit({ type: "cap_table.mutated", payload: { beforeHash: r.referenceHash, afterHash: r.primaryHash, reason: `round close: ${roundId}` } }, { companyId, roundId, actorId: admin.actorId, actorRole: "admin" });
  /* v25.20 Lane 4 — PERSIST the close to the server. Previously commitClose
     only mutated the client-local sprint3 ledger + telemetry, so the round
@@ -315,9 +364,17 @@ export default function CloseRoundPanel({ roundId, companyId = "co-acme", roundN
  <div className="font-semibold text-emerald-900 ">Round closed and sealed</div>
  <p className="text-sm text-emerald-800 mt-1">
  Ledger entry written at {state.closedAt ? new Date(state.closedAt).toLocaleString() : "—"}.
- Founder hash <span className="font-mono text-xs">{state.founderSignoff?.identityHash}</span>,
- admin hash <span className="font-mono text-xs">{state.adminSignoff?.identityHash}</span>.
+ Founder hash <span className="font-mono text-xs">{auditDisplay(state.founderSignoff?.identityHash)}</span>,
+ admin hash <span className="font-mono text-xs">{auditDisplay(state.adminSignoff?.identityHash)}</span>.
  Audit trail in <span className="font-mono text-xs">/admin/audit-log</span>.
+ </p>
+ {/* WAVE 22 · ITEM 1 — sibling paragraph (never text appended into the node
+     above). States plainly why the client-side evidence fields are empty, so a
+     "not captured" is never mistaken for a lost value. */}
+ <p className="text-xs text-emerald-800/80 mt-2" data-testid="close-audit-capture-note">
+ Client-side IP and identity hash are recorded as <strong>not captured</strong>: a browser cannot observe its own
+ public address and no identity-attestation service is wired to this surface. The address the server actually
+ observed is stamped on the durable audit record.
  </p>
  </div>
  </CardContent>
@@ -342,7 +399,16 @@ function HashCard({ label, hash, total }: { label: string; hash: string; total: 
 function SignoffRow({ label, role, sig, onSign, canSign, hint, testid }: {
  label: string;
  role: "founder" | "admin";
- sig?: { actorName: string; ts: string; ipAddress?: string; identityHash: string };
+ /* WAVE 22 · ITEM 1 — both evidence fields are nullable: `null` means "not
+    captured", carried with a machine-readable reason. */
+ sig?: {
+ actorName: string;
+ ts: string;
+ ipAddress?: string | null;
+ ipAddressUnavailableReason?: string;
+ identityHash: string | null;
+ identityHashUnavailableReason?: string;
+ };
  onSign: () => void;
  canSign: boolean;
  hint?: string;
@@ -357,7 +423,14 @@ function SignoffRow({ label, role, sig, onSign, canSign, hint, testid }: {
  <div className="text-xs text-muted-foreground mt-1">
  Signed by <strong className="text-foreground">{sig.actorName}</strong> at {new Date(sig.ts).toLocaleString()}
  {sig.ipAddress && <span> · IP <span className="font-mono">{sig.ipAddress}</span></span>}
- <span> · identity <span className="font-mono">{sig.identityHash}</span></span>
+ {/* WAVE 22 · ITEM 1 — SIBLING element, deliberately not text appended inside
+     the node above (that reads to the silent-drop guard as a removal plus an
+     addition). Renders the explicit not-captured state instead of a
+     synthesised address; `title` carries the documented reason. */}
+ {!sig.ipAddress && (
+ <span data-testid={`${testid}-ip-not-captured`} title={sig.ipAddressUnavailableReason}> · IP <span className="font-mono">{auditDisplay(sig.ipAddress)}</span></span>
+ )}
+ <span> · identity <span className="font-mono" title={sig.identityHash ? undefined : sig.identityHashUnavailableReason}>{auditDisplay(sig.identityHash)}</span></span>
  </div>
  ) : hint ? (
  <div className="text-xs text-muted-foreground italic mt-1">{hint}</div>

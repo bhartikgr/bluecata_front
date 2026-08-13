@@ -36,6 +36,56 @@
  * immediately on the next read; DB-direct keeps it canonical and restart-safe.
  */
 import { rawDb } from "./db/connection";
+import { ensureWave7AliasRetired } from "./lib/applyWave7AliasRetirement";
+import { ensureWave7bAliasesRetired } from "./lib/applyWave7bAliasRetirement";
+
+/* ==========================================================================
+ * WAVE 7 X-C3 — bootstrap heal for the stale `partner_enterprise` alias row.
+ *
+ * THIS IS THE SINK. `listTiers()` below is the ONLY thing that decides which
+ * partner subscription tiers the admin editor shows: the page renders one
+ * editable amount field per row it returns (AdminFeesConsolidated.tsx:1005).
+ * So "remove the alias row AND its display" is one change here, not two —
+ * there is no hardcoded tier list anywhere to also edit, which is the payoff
+ * of the all-DB-driven rule.
+ *
+ * The heal is needed because the SACRED bootstrap (connection.ts:1920) re-seeds
+ * the alias row into every fresh database, so migration 0163 alone would fix
+ * upgraded databases and silently regress new ones. Memoised, fail-soft, same
+ * shape as server/wave9ReportingStore.ts:42-51.
+ * ======================================================================== */
+
+/* WAVE 7B A-21 extends the SAME heal to `partner_basic` and `partner_pro`,
+ * which connection.ts:1918-1919 re-seeds from the same v25.46.1 block. Owner
+ * ruling: "partner_basic and partner_pro are stale exactly like
+ * partner_enterprise … fix all three." Wired HERE, at the one sink, and not at
+ * a second one — a second heal site would be the duplicate-writer shape. */
+
+let _aliasRetirementEnsured = false;
+function ensureAliasRetirement(): void {
+  if (_aliasRetirementEnsured) return;
+  _aliasRetirementEnsured = true;
+  try {
+    ensureWave7AliasRetired(rawDb() as never);
+  } catch {
+    /* fail-soft: the migration runner is the primary path */
+  }
+  try {
+    ensureWave7bAliasesRetired(rawDb() as never);
+  } catch {
+    /* fail-soft: the migration runner is the primary path */
+  }
+}
+
+/** Test hook — lets a suite re-run the heal against a fresh :memory: db. */
+export function _resetWave7AliasRetirementGuardForTests(): void {
+  _aliasRetirementEnsured = false;
+}
+
+/** WAVE 7B A-21 alias — same latch, named for the item that also uses it. */
+export function _resetWave7bAliasRetirementGuardForTests(): void {
+  _aliasRetirementEnsured = false;
+}
 
 /** Canonical family prefixes. The trailing dot is part of the key namespace. */
 export const COLLECTIVE_MEMBER_SUBSCRIPTION_PREFIX = "collective.member_subscription.";
@@ -79,6 +129,7 @@ export function isValidTierSlug(slug: unknown): slug is string {
 
 /** List the LIVE (not soft-deleted) tiers for one family, ordered by key. */
 export function listTiers(prefix: TierFamily): SubscriptionTier[] {
+  ensureAliasRetirement();
   try {
     const rows: any[] = rawDb()
       .prepare(
@@ -95,6 +146,7 @@ export function listTiers(prefix: TierFamily): SubscriptionTier[] {
 
 /** Read one tier by full key (LIVE only). Returns null if missing/deleted. */
 export function getTier(prefix: TierFamily, slug: string): SubscriptionTier | null {
+  ensureAliasRetirement();
   if (!isValidTierSlug(slug)) return null;
   const key = `${prefix}${slug}`;
   try {

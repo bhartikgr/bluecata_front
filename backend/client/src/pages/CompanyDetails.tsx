@@ -156,8 +156,13 @@ function CompanyDetailsView({
 
  // Sprint 20 Wave 2 — co-members from API; hardcoded list removed (defect 88)
  // Co-member list is fetched in the investor-specific CompanyDetail page.
- // In this shared shell, show Coming Soon placeholder.
- const coMembers: CoMember[] = []; // Coming soon — fetched per-role in the role-specific view
+ // WAVE 21 ITEM 6: this is permanently [] in the shared shell, and the card
+ // below rendered a title, a gating explanation and then an EMPTY list — a
+ // viewer could not tell "nobody qualifies" from "this view never loads it".
+ // The list stays empty (fetching it here is net-new and out of scope); the
+ // card now states which view does show it.
+ const coMembers: CoMember[] = [];
+ const coMembersLoadedInThisView = false;
 
  const dealBreakerLabel = (v: string) => DEAL_BREAKER_OPTIONS.find(o => o.value === v)?.label ?? v;
  const txInterestLabel = (v: string) => TRANSACTION_INTEREST_OPTIONS.find(o => o.value === v)?.label ?? v;
@@ -494,7 +499,12 @@ function CompanyDetailsView({
  <div className="text-[11px] text-muted-foreground mb-2">
  Visible only when both you and the holder have opted in to co-member visibility (R200.gating §6).
  </div>
- <ul className="space-y-2" data-testid="section-co-members">
+ {!coMembersLoadedInThisView && (
+                    <div className="text-xs text-muted-foreground italic border border-dashed border-border rounded-md px-2.5 py-3" data-testid="co-members-not-in-this-view">
+                      The cap-table co-member list is not loaded in this shared company view. Open this company from your investor dashboard to see it.
+                    </div>
+                  )}
+                  <ul className="space-y-2" data-testid="section-co-members">
  {coMembers.map(m => {
  const visible = m.visibility.visibleToCoMembers && !!m.visibility.screenName;
  return (

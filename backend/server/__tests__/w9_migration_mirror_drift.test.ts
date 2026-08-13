@@ -130,6 +130,92 @@ describe("W9.1 migration mirror / drift check", () => {
     // this assertion pins the MAX id (0137), not the migration COUNT (9). A count-based
     // assertion would be wrong here.
     // Pin will advance further as Wave 0 completes.
-    expect(maxId).toBe(137);
+    // Consortium Partner build advanced the tip 0137 -> 0151:
+    //   0149_partner_classification.sql        — Wave 4B, PT-1 sector/sub-sector taxonomy
+    //   0150_spv_carry_cap_policy.sql          — Wave 3D, moves the combined-carry cap
+    //                                            out of hardcoded source into DB config
+    //   0151_fee_settlement_authorization.sql  — Wave 3E, durable settlement authority
+    //                                            replacing process-memory WeakSet/WeakMap
+    // Still pins the MAX id, not the COUNT, so a gap or an out-of-order add fails.
+    //
+    // Concurrent-wave build advanced the tip 0151 -> 0160. Five waves were live
+    // in this tree at once and TWO of them claimed 0152, so the numbering here
+    // is deliberately sparse:
+    //   0152_wave8_orp029_engine_spv_deployment_fee.sql — Wave 8 (first claim)
+    //   0153_wave5_money_captable.sql                   — Wave 5
+    //   0156_wave6_spv_distribution_type.sql            — Wave 6
+    //   0157_wave6_spv_fee_schedule.sql                 — Wave 6
+    //   0159_wave9_reporting_audit.sql                  — Wave 9, RENUMBERED from
+    //                                                     0152 after the collision
+    //                                                     with Wave 8 was found
+    //   0160_wave8_orp029_engine_spv_deployment_fee.sql — Wave 8, renumbered
+    // 0154, 0155 and 0158 are UNUSED. They are burnt by the collision fallout
+    // and must stay unused: re-issuing a skipped id to a later migration would
+    // make deploy order ambiguous against any environment that already applied
+    // the original. Pinning MAX rather than COUNT is what makes that safe.
+    //
+    // WAVE 3F advanced the tip 0160 -> 0162 (review-gate-2 fixes):
+    //   0161_wave3f_partner_tier_canon.sql        — ITEM 2, canonical durable
+    //                                               partner tier; kills the
+    //                                               hardcoded `catalyst` fee
+    //                                               fallback and fails closed
+    //   0162_wave3f_deployment_fee_billing.sql    — ITEM 4, durable pending/
+    //                                               failed deployment-fee
+    //                                               billing record behind the
+    //                                               idempotent retry
+    // 0152, 0154, 0155 and 0158 remain BURNT (ruling A-17) and were NOT reused.
+    // Both new files are mirrored byte-identically into server/db/migrations/,
+    // which the mirror half of this same suite verifies.
+    /* PARENT FIX 2026-08-11 — this literal has now gone stale FOUR times
+       (137 -> 151 -> 160 -> 162, and the tree is at 0177). Every wave that adds a
+       migration inherits a red test it did not break, and the standing temptation is
+       to bump the number, which silently adopts every intervening wave's drift under
+       the current wave's name. Wave 30 refused to do that and escalated instead —
+       correctly.
+
+       The root problem is that "what is the newest migration" is a fact about the
+       WHOLE REPO and about every FUTURE wave, not an invariant of migration mirroring.
+       This suite already asserts the things that can actually break:
+       byte-identical mirrors, no duplicate ids, and no gaps other than the reserved
+       ones. Those are pinned below and stay pinned.
+
+       What this assertion is replaced with is the invariant that a real collision
+       WOULD break, and that nearly bit us: 0152 was double-claimed by two concurrent
+       waves, and 0152/0154/0155/0158 were burnt in the reconciliation. If any of
+       those is ever reused, the runner would apply a different body under an id
+       another environment has already recorded as applied. */
+    const BURNT_IDS = [152, 154, 155, 158];
+    const allIds = canon.map((f) => idOf(f)).filter((n): n is number => n !== null);
+    for (const burnt of BURNT_IDS) {
+      expect(
+        allIds.filter((n) => n === burnt).length,
+        `migration ${String(burnt).padStart(4, "0")} is BURNT (double-claimed by ` +
+          `concurrent waves on 2026-08-10) and must never be reused`,
+      ).toBe(0);
+    }
+    /* Ids are unique — the collision that started all this.
+
+       ONE PRE-EXISTING EXCEPTION, found by this very assertion when it was added:
+       id 0002 is held by THREE files — 0002_glorious_nomad.sql,
+       0002_slow_medusa.sql and 0002_v12_tenants_softdelete.sql. Two are
+       drizzle-generated names, so this predates the Consortium Partner build by a
+       long way and no wave caused it. It is pinned rather than "fixed": renumbering
+       a migration that production has already applied is exactly the kind of
+       back-dating this test exists to prevent.
+       The exception is EXACTLY 3 files at id 0002. A fourth, or a duplicate at any
+       other id, still fails. */
+    const KNOWN_DUP_ID = 2;
+    const KNOWN_DUP_COUNT = 3;
+    expect(allIds.filter((n) => n === KNOWN_DUP_ID).length).toBe(KNOWN_DUP_COUNT);
+    const idsExcludingKnownDup = allIds.filter((n) => n !== KNOWN_DUP_ID);
+    expect(
+      new Set(idsExcludingKnownDup).size,
+      "a migration id is used twice — two waves have claimed the same number, and " +
+        "the runner would apply a different body under an id another environment " +
+        "already recorded as applied",
+    ).toBe(idsExcludingKnownDup.length);
+    // And the tip only ever moves FORWARD, so a migration can never be back-dated
+    // beneath one an environment has already applied.
+    expect(maxId).toBeGreaterThanOrEqual(162);
   });
 });

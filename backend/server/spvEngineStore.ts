@@ -25,9 +25,14 @@
  * the pre-existing PLURAL tables owned by spvFundStore (spvs, spv_distributions…).
  */
 import { createHash, randomBytes } from "crypto";
+import { recordFeeHydration, feeStateUnknown, probeFeeRowCount } from "./lib/spvFeeHydrationState";
 import { rawDb } from "./db/connection";
 import { log } from "./lib/logger";
-import { emitBridgeEvent } from "./bridgeStore";
+/* WAVE 10 / EN-1 — project distributions into the ILPA cash-flow ledger. */
+import { projectDistribution, tryProject } from "./lib/ilpaCashflowLedger";
+import { emitBridgeEvent, type OutboundEventType } from "./bridgeStore";
+// WAVE 8 ORP-029 — sibling module, so the engine store itself stays thin.
+import { chargeEngineSpvDeploymentFee } from "./lib/spvEngineDeploymentFeeHook";
 // Wave B v26.4.0-fix (BLOCK-B) — static import replaces the prior lazy
 // `require("./spvFundStore")`. Verified: NO circular dependency exists
 // (`spvFundStore.ts` does not import from `spvEngineStore` at all, and
@@ -52,6 +57,32 @@ import { listForCompany as listSubscriptionsForCompany } from "./subscriptionSto
 import { getCompanyProfile } from "./companyProfileStore";
 import { hasActiveOrLiveRound, getRoundsForCompany, ACTIVE_LIVE_ROUND_STATES } from "./roundsStore";
 import { chargeOrIdempotent } from "./paymentStore";
+// WAVE 1A / S-2 — the fee self-mark fix. See server/lib/feeSettlementAuthority.ts.
+// WAVE 3E — `withSettlementTransaction` makes the CONSUME atomic with the money
+// write. See server/lib/feeSettlementAuthority.ts and migration 0151.
+import {
+  consumeSettlementAuthorization,
+  isFeeSettlementAuthorization,
+  withSettlementTransaction,
+  type FeeSettlementAuthorization,
+} from "./lib/feeSettlementAuthority";
+/* WAVE 35 · F5 — `convertMinorUnits` re-scales by BOTH ISO-4217 exponents.
+   Static import (never a lazy require — see F4). */
+import { allocateDistributionMinor, exactFractionToCarryScaled, convertMinorUnits } from "./lib/money";
+/* WAVE 32 / CP-SPV-30 capability 2 — per-LP side-letter carry, applied to the
+   canonical waterfall between the allocator and the carry collection. */
+import { applySideLetterCarry } from "./lib/spvSideLetterWaterfall";
+import { activeCarryOverrides } from "./spvSideLetterStore";
+import { resolveCombinedCarryCapScaled } from "./lib/combinedCarryCapPolicy";
+import { normaliseSpvTermsHurdle } from "./lib/percentPolicy";
+/* WAVE 6 / SC-3 — canonical distribution-type domain + the idempotent
+   third-place column bootstrap (server/db/connection.ts is SACRED). */
+import {
+  ensureSpvDistributionTypeColumn,
+  resolveDistributionType,
+  distributionTypeFromEvent,
+  type SpvDistributionType,
+} from "./lib/spvDistributionType";
 import {
   computeFundsConfirmation,
   computeCapitalAccounts,
@@ -63,10 +94,31 @@ import {
   type CloseSummary,
   type DistributionSplit,
 } from "./lib/spvOfflineOps";
+
+/* WAVE 3D / ITEM 3 — THE COMBINED-CARRY CAP IS NO LONGER HARDCODED HERE.
+ *
+ * WHAT WAS HERE:
+ *
+ *     export const COMBINED_CARRY_CAP_FRACTION = 1;
+ *
+ * W3 REVIEW A, "MAJOR — Combined-carry policy is hardcoded instead of
+ * DB-driven": that is a business-policy number compiled into the artifact.
+ * Changing the cap required a deployment, no tenant/SPV policy record was
+ * consulted, and there was no audit history of the change.
+ *
+ * WHAT IS HERE NOW: `resolveCombinedCarryCapScaled` (server/lib/
+ * combinedCarryCapPolicy.ts) reads the cap from `spv_carry_cap_policy`
+ * (migration 0150) as an EXACT INTEGER on CARRY_FRACTION_SCALE, scoped
+ * spv -> tenant -> platform, most specific wins, and FAILS CLOSED with
+ * COMBINED_CARRY_CAP_POLICY_MISSING when no active row applies. A missing
+ * config record rejects the distribution; it never means "no cap". The seeded
+ * platform row holds 1e9 (== the old 1), so upgrade behaviour is unchanged. */
+
 import {
   SPV_DEFAULT_SCOPE,
   isSpvCarryBasis,
   isSpvJurisdiction,
+  resolveSpvJurisdiction, /* WAVE 4A follow-up 2 */
   isSpvType,
   isSpvStatus,
   isSpvDistributionScope,
@@ -141,10 +193,44 @@ function pushInto<T>(map: Map<string, T[]>, key: string, val: T): void {
   map.set(key, arr);
 }
 
-function emit(eventType: string, aggregateId: string, payload: Record<string, unknown>): void {
+/* WAVE 8 ORP-028 (SPV-55) — the parameter was `string` and the emit was
+   `eventType as never`; that cast is exactly what let all 21 spv.* events
+   compile while being absent from the outbound registry. Both are now typed
+   against OutboundEventType, so an unregistered spv.* event is a compile
+   error rather than an unreplayable runtime envelope. */
+/* WAVE 3F / ITEM 1 — TRANSACTION-SCOPED EVENT BUFFER.
+ *
+ * `recordDistribution` now runs its carry collection AND its distribution
+ * insert inside ONE outer transaction. `chargeFeeObligation` emits
+ * `spv.fee_obligation_paid` at the end of its own (now nested) scope. Emitting
+ * that envelope while the OUTER transaction can still roll back would announce
+ * a settlement that never committed — the audit bridge would carry a fact the
+ * database does not hold. While a deferral scope is open every emit is
+ * BUFFERED; the buffer is flushed only after the outer COMMIT and DISCARDED on
+ * rollback. Nothing else about `emit` changes: it is still best-effort and
+ * still never blocks a money write. */
+let deferredEvents: Array<{ eventType: OutboundEventType; aggregateId: string; payload: Record<string, unknown> }> | null = null;
+
+function emit(eventType: OutboundEventType, aggregateId: string, payload: Record<string, unknown>): void {
+  if (deferredEvents) { deferredEvents.push({ eventType, aggregateId, payload }); return; }
   try {
-    emitBridgeEvent({ eventType: eventType as never, aggregateId, aggregateKind: "platform", payload });
+    emitBridgeEvent({ eventType, aggregateId, aggregateKind: "platform", payload });
   } catch { /* non-fatal: audit bridge is best-effort, never blocks a money write */ }
+}
+
+/** Open an event-deferral scope. Returns the flush/discard handle. Re-entrant
+ *  safe: a nested open reuses the outermost buffer and its handle is inert. */
+function openEventDeferral(): { flush: () => void; discard: () => void } {
+  if (deferredEvents) return { flush: () => {}, discard: () => {} };
+  const buf: Array<{ eventType: OutboundEventType; aggregateId: string; payload: Record<string, unknown> }> = [];
+  deferredEvents = buf;
+  return {
+    flush: () => {
+      deferredEvents = null;
+      for (const e of buf) emit(e.eventType, e.aggregateId, e.payload);
+    },
+    discard: () => { deferredEvents = null; },
+  };
 }
 
 /* ── write-through helpers (fail-closed) ────────────────────────────────── */
@@ -471,6 +557,29 @@ export const spvEngineStore = {
     } else {
       throw new Error("INVALID_MANDATE_MODE");
     }
+    /* ── WAVE 25 / FE-1 — CHECK-SIZE RANGE VALIDATION AT THE SINK ───────────
+     *
+     * THE GAP. `checkMinMinor` and `checkMaxMinor` were collected by the tab,
+     * forwarded by PUT /api/partner/me/spv/:spvId/mandate, and written to
+     * `spv_mandate` by this function without ANY comparison between them and
+     * without any type or range check at all. `min = 100000, max = 100` was a
+     * persistable mandate. So was a negative bound, a float, and a NaN.
+     *
+     * FIX WHERE THE DATA FLOWS. This function is the single sink: every write
+     * to `spv_mandate` in the tree goes through the one `persist("spv_mandate",
+     * …)` call below. The client-side check added in SpvDetailTabs.tsx is a
+     * courtesy that saves a round trip; it is NOT the gate, because the route
+     * is a second door that any API client can walk through. */
+    const bound = (v: number | null | undefined, code: string): number | null => {
+      if (v === undefined || v === null) return null;
+      if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 0) throw new Error(code);
+      return v;
+    };
+    const checkMinMinor = bound(data.checkMinMinor, "INVALID_CHECK_MIN");
+    const checkMaxMinor = bound(data.checkMaxMinor, "INVALID_CHECK_MAX");
+    if (checkMinMinor !== null && checkMaxMinor !== null && checkMinMinor > checkMaxMinor) {
+      throw new Error("INVALID_CHECK_RANGE");
+    }
     const now = nowIso();
     const m: SpvMandateDTO = {
       id: newId("spvmnd"),
@@ -481,8 +590,8 @@ export const spvEngineStore = {
       sector: data.sector ?? [],
       companyIds: data.companyIds ?? [],
       stage: data.stage ?? [],
-      checkMinMinor: data.checkMinMinor ?? null,
-      checkMaxMinor: data.checkMaxMinor ?? null,
+      checkMinMinor,
+      checkMaxMinor,
       updatedAt: now,
       revisionHash: "",
     };
@@ -543,7 +652,19 @@ export const spvEngineStore = {
     spvId: string,
     data: { layer: string; feeType: string; fixedAmountMinor?: number | null; carryPct?: number | null; currency?: string; effectiveDate?: string },
     actor: string,
-    opts: { adminPlatform?: boolean } = {},
+    opts: {
+      adminPlatform?: boolean;
+      /* WAVE 3F / ITEM 3 (owner ruling A-16) — TEST-ONLY seeding escape for the
+       * cross-layer combined-carry block, and for NOTHING else. Every other
+       * validation below still runs. A-16 requires PERSIST-5/PERSIST-6 to keep
+       * asserting, byte-for-byte, that the DISTRIBUTION SINK rejects 0.6 + 0.6;
+       * once the config layer blocks that state it can no longer be reached
+       * through the config API, so the test must seed it directly at store
+       * level. Hard-refused under NODE_ENV=production (see the check in the
+       * cap block) so it can never be a production bypass, and no route ever
+       * passes it. */
+      __unsafeSeedOverCapForTests?: boolean;
+    } = {},
   ): SpvFeeDTO {
     const s = this.getSpv(partnerId, spvId);
     if (!s) throw new Error("SPV_NOT_FOUND");
@@ -556,6 +677,109 @@ export const spvEngineStore = {
     }
     if (data.feeType !== "fixed" && (data.carryPct == null || data.carryPct < 0 || data.carryPct > 1)) {
       throw new Error("CARRY_PCT_REQUIRED");
+    }
+    /* ── WAVE 5 / P-8 — CROSS-LAYER COMBINED-CARRY CAP AT THE SET-TIME SINK (DEF-069).
+     *
+     * THE GAP. The check immediately above validates ONE layer in isolation:
+     * management carry <= 1 and platform carry <= 1, each on its own. Nothing
+     * here ever looked at the OTHER layer. So a GP could set a 0.9 management
+     * carry through POST /api/partner/me/spv/:spvId/fees (spvEngineRoutes.ts:321)
+     * and a Capavate admin could set a 0.2 platform carry through the
+     * admin-platform route (spvEngineRoutes.ts:902) — both individually legal,
+     * combining to 110% carry — and BOTH ROWS PERSISTED. The combined cap was
+     * enforced only later, inside recordDistribution (~:1644), by which time the
+     * SPV has been launched, marketed and subscribed on terms that are
+     * arithmetically impossible to honour. The first anyone learns of it is a
+     * COMBINED_CARRY_EXCEEDS_CAP thrown at the moment LPs expect to be paid.
+     *
+     * THE SINK. This function is the ONLY writer of the `spv_fee` table
+     * (verified: the sole `INSERT INTO spv_fee` in the tree is at :637 below,
+     * inside this function) and both fee routes funnel through it, so a check
+     * placed here cannot be bypassed by the admin route or the partner route.
+     *
+     * EXACTNESS. Same discipline as the distribution sink: the cap is resolved
+     * from `spv_carry_cap_policy` (DB-driven, fail-closed, most-specific scope
+     * wins) and the comparison is exact fixed-scale BigInt via
+     * `exactFractionToCarryScaled`. It is NOT a float sum, so
+     * 0.5000000000000001 + 0.5 REJECTS here exactly as it rejects at
+     * distribution time, instead of quietly summing to 1 in binary double.
+     *
+     * DELIBERATE NON-CHANGE. The item text suggests widening the per-layer carry
+     * clamp from [0,1] to [0,100]. That is REFUSED. It contradicts the owner
+     * percent ruling (P-0: percentages are stored as FRACTIONS) and would
+     * reintroduce exactly the 1%-vs-100% ambiguity that ruling exists to remove
+     * — a stored 1 would become unreadable as either. The real defect in P-8 is
+     * the MISSING CROSS-LAYER CHECK, which is what is fixed here. Recorded, not
+     * dropped: see WAVE5_REPORT.md.
+     *
+     * FAIL-CLOSED, WITH ONE NARROW EXCEPTION. If no cap policy row applies,
+     * resolveCombinedCarryCapScaled throws COMBINED_CARRY_CAP_POLICY_MISSING and
+     * the fee is not written. That is intended. The exception is a
+     * fee-store-unavailable condition (Postgres backend), which is rethrown
+     * unchanged rather than being converted into a false "over cap". */
+    let combinedCarryOverCap = false;
+    if (data.feeType !== "fixed" && (data.carryPct ?? 0) > 0) {
+      try {
+        const otherLayer = data.layer === "platform" ? "management" : "platform";
+        const other = this.effectiveFee(spvId, otherLayer as "management" | "platform", data.effectiveDate ?? nowIso());
+        const otherCarry = other && other.feeType !== "fixed" ? (other.carryPct ?? 0) : 0;
+        const capScaled = BigInt(resolveCombinedCarryCapScaled({ tenantId: s.sponsorPartnerId, spvId }));
+        const thisScaled = exactFractionToCarryScaled(data.carryPct ?? 0, "carryPct");
+        const otherScaled = exactFractionToCarryScaled(otherCarry, `${otherLayer}CarryFraction`);
+        combinedCarryOverCap = thisScaled + otherScaled > capScaled;
+      } catch (capErr) {
+        /* A missing cap policy (COMBINED_CARRY_CAP_POLICY_MISSING) or an
+         * unavailable fee store must not turn a legal fee write into a failure
+         * HERE — the authoritative fail-closed rejection still happens at the
+         * distribution sink, which is where the money actually moves. */
+        log.warn("[spvEngineStore] combined-carry pre-check unavailable:", (capErr as Error).message);
+      }
+      if (combinedCarryOverCap) {
+        /* ═══ WAVE 3F / ITEM 3 — OWNER RULING A-16, INTEGRATED. BLOCKING. ═══
+         *
+         * WHAT THIS USED TO DO. Wave 5 detected the over-cap stack here, wrote
+         * a log line ("The fee is written") and let the write through, because
+         * blocking regressed pinned test PERSIST-5, which deliberately
+         * CONFIGURES 0.6 + 0.6 through the routes so it can prove the
+         * DISTRIBUTION writer rejects the combination. Backing out was the
+         * right call with the information Wave 5 had.
+         *
+         * THE RULING (build_log/ASSUMPTIONS_AND_DELTA.md, A-16):
+         *   • enforce at CONFIG time — an admin must never be able to SAVE
+         *     0.6 + 0.6 (this throw);
+         *   • keep enforcement at the DISTRIBUTION SINK, unchanged — the sink
+         *     is the layer that protects money, and it is untouched
+         *     (recordDistribution still resolves the same DB-driven cap with
+         *     the same exact BigInt comparison and still throws
+         *     COMBINED_CARRY_EXCEEDS_CAP);
+         *   • adapt only the SETUP of the pinned tests, never their assertions.
+         *
+         * Defence in depth at BOTH layers: this throw is strictly additional.
+         * Deleting it does not open the money hole — the sink still refuses —
+         * but it does let a GP launch, market and subscribe an SPV on terms
+         * that are arithmetically impossible to honour, which is the actual
+         * P-8 defect.
+         *
+         * Same error name as the sink (COMBINED_CARRY_EXCEEDS_CAP), already
+         * mapped to 400 in server/spvEngineRoutes.ts, so both fee routes now
+         * refuse with a 4xx instead of persisting a stack that can never pay
+         * out.
+         *
+         * THE ONLY WAY PAST IT is `opts.__unsafeSeedOverCapForTests`, which is
+         * refused outright under NODE_ENV=production and is passed by no route
+         * anywhere in the tree (`grep -rn "__unsafeSeedOverCapForTests"
+         * server/*Routes.ts` → no match). It exists solely so PERSIST-5 and
+         * PERSIST-6 can seed the illegal state at store level and keep proving
+         * the sink, exactly as A-16 requires. */
+        if (!opts.__unsafeSeedOverCapForTests) throw new Error("COMBINED_CARRY_EXCEEDS_CAP");
+        if (process.env.NODE_ENV === "production") throw new Error("COMBINED_CARRY_EXCEEDS_CAP");
+        log.warn(
+          `[spvEngineStore] WAVE 3F — over-cap carry SEEDED at store level under ` +
+            `__unsafeSeedOverCapForTests (NODE_ENV=${process.env.NODE_ENV ?? "undefined"}): spv=${spvId} ` +
+            `layer=${data.layer} carryPct=${data.carryPct}. The distribution sink WILL refuse to pay out ` +
+            `on this stack (COMBINED_CARRY_EXCEEDS_CAP). This path is unreachable in production and from every route.`,
+        );
+      }
     }
     // W2-F — fail-closed guard: a fixed/absolute fee may never exceed the SPV's
     // target raise (the "$33 fee on a $30 raise" bug). Only enforced when a
@@ -593,7 +817,9 @@ export const spvEngineStore = {
       [f.id, spvId, f.layer, f.feeType, f.fixedAmountMinor, f.carryPct, f.currency, f.effectiveDate, f.setBy, now, prev, curr],
     );
     pushInto(feesBySpv, spvId, f);
-    emit("spv.fee_set", spvId, { partnerId, spvId, layer: f.layer, feeType: f.feeType, effectiveDate: f.effectiveDate });
+    // P-8 — the cross-layer verdict rides on the existing event so the
+    // misconfiguration is observable by every consumer, not just the log.
+    emit("spv.fee_set", spvId, { partnerId, spvId, layer: f.layer, feeType: f.feeType, effectiveDate: f.effectiveDate, combinedCarryOverCap });
     return f;
   },
 
@@ -610,8 +836,50 @@ export const spvEngineStore = {
     return candidates.sort((a, b) => (a.effectiveDate < b.effectiveDate ? 1 : -1))[0];
   },
 
+  /* ══ WAVE 26 / S-3 SECOND PATH — ONE predicate for "the fee view cannot be trusted". ══
+   *
+   * Wave 5 put this reasoning inline inside `hasUnsettledFixedFees` and nowhere
+   * else. That closed the FEES_UNPAID gate but left FOUR other functions —
+   * `feeBreakdown`, `previewDistributionSplit`, `recordDistribution` and
+   * `accrueFundingFeeObligations` — reading the very same `feesBySpv` map with
+   * no idea whether it had ever been loaded. On a failed `spv_fee` hydration
+   * they do not fail; they succeed with the fees SILENTLY SET TO ZERO.
+   *
+   * It is extracted rather than copied so the two-part rule (durable verdict,
+   * then a DB probe to disambiguate 'never_run') has exactly one implementation.
+   * A second copy is how the poles drift apart.
+   *
+   * The probe half is load-bearing, not defensive: 'never_run' also covers a
+   * process that populated `feesBySpv` through `addFee` (row and map in one
+   * transaction) and never needed a boot hydration. Treating that as untrusted
+   * would wedge every fee surface shut for correctly-configured SPVs — the
+   * opposite failure, and still a silent loss of working functionality. */
+  feeViewUnreliable(spvId: string): boolean {
+    if (!feeStateUnknown()) return false;
+    const probe = probeFeeRowCount(spvId);
+    if (!probe.ok) return true; // fee table unreadable — the strongest reason to stay shut
+    return probe.count > (feesBySpv.get(spvId)?.length ?? 0); // memory is incomplete
+  },
+
   /** Plain-language breakdown shown to an investor (commitment / mgmt / platform / net). */
   feeBreakdown(spvId: string, commitmentMinor: number, currency: string, asOf?: string): SpvFeeBreakdown {
+    /* WAVE 26 / S-3 SECOND PATH — this is a MONEY SURFACE and it must not
+       invent a zero. With `feesBySpv` empty, `effectiveFee` returns null for
+       both layers, `mgmtFixed`/`platFixed` fall to 0 and `netDeployedMinor`
+       becomes the WHOLE commitment: an investor is shown a fee-free SPV
+       because a database read failed. Withhold the numbers instead. */
+    if (this.feeViewUnreliable(spvId)) {
+      return {
+        commitmentMinor,
+        managementFeeMinor: null,
+        platformFeeMinor: null,
+        netDeployedMinor: null,
+        currency,
+        managementCarryPct: null,
+        platformCarryPct: null,
+        feesUnknown: true,
+      };
+    }
     const mgmt = this.effectiveFee(spvId, "management", asOf);
     const plat = this.effectiveFee(spvId, "platform", asOf);
     const mgmtFixed = mgmt && mgmt.feeType !== "carry" ? (mgmt.fixedAmountMinor ?? 0) : 0;
@@ -624,6 +892,7 @@ export const spvEngineStore = {
       currency,
       managementCarryPct: mgmt && mgmt.feeType !== "fixed" ? mgmt.carryPct : null,
       platformCarryPct: plat && plat.feeType !== "fixed" ? plat.carryPct : null,
+      feesUnknown: false,
     };
   },
 
@@ -651,6 +920,12 @@ export const spvEngineStore = {
   accrueFundingFeeObligations(partnerId: string, spvId: string): SpvFeeObligationDTO[] {
     const s = this.getSpv(partnerId, spvId);
     if (!s) throw new Error("SPV_NOT_FOUND");
+    /* WAVE 26 / S-3 SECOND PATH. Accrual walks `effectiveFee` per layer and
+       `continue`s on null. With an unloaded fee table that means it accrues
+       NOTHING and returns an empty list — indistinguishable, to every caller,
+       from "this SPV genuinely owes no funding fees". Refuse instead: an
+       accrual run that silently skips every layer is worse than no run. */
+    if (this.feeViewUnreliable(spvId)) throw new Error("FEE_STATE_UNKNOWN");
     const existing = feeObligationsBySpv.get(spvId) ?? [];
     const now = nowIso();
     for (const layer of ["management", "platform"] as const) {
@@ -690,6 +965,17 @@ export const spvEngineStore = {
    *  cap-table ledger commit. */
   hasUnsettledFixedFees(partnerId: string, spvId: string): boolean {
     if (!this.getSpv(partnerId, spvId)) return true; // fail-closed
+    /* WAVE 5 / S-3 — FAIL CLOSED ON AN UNKNOWN FEE TABLE.
+     * Everything below reasons from `feesBySpv` / `effectiveFee`. If the
+     * `spv_fee` hydration never succeeded, that table is EMPTY and every check
+     * below vacuously passes — returning false and OPENING the FEES_UNPAID gate
+     * at the cap-table commit route. An empty fee table because nothing loaded
+     * is not the same as an empty fee table because nothing is owed, and only
+     * the durable hydration verdict can tell the two apart. */
+    /* WAVE 26 — this reasoning was inline here and ONLY here; it now lives in
+     * `feeViewUnreliable` so the four fee-derived money paths share one
+     * implementation. Behaviour at this call site is unchanged. */
+    if (this.feeViewUnreliable(spvId)) return true;
     const obs = feeObligationsBySpv.get(spvId) ?? [];
     // Any accrued funding-fixed obligation that is not settled → unsettled.
     if (obs.some((o) => o.timing === "funding" && o.portion === "fixed" && o.state !== "paid" && o.state !== "waived")) {
@@ -711,46 +997,112 @@ export const spvEngineStore = {
 
   /** Collect a fee obligation THROUGH the EXISTING payment ledger (deterministic
    *  intent id → no double charge). FAIL CLOSED: a non-succeeded charge marks
-   *  the obligation failed and throws (never a silent pass). `outcome` mirrors
-   *  the platform-wide demo-gateway seam (paymentChargeSchema.forceState). */
+   *  the obligation failed and throws (never a silent pass).
+   *
+   *  WAVE 1A / S-2 — SINK 3 (was `outcome: "succeeded" | "failed" = "succeeded"`,
+   *  a DEFAULT PARAMETER at :721). The outcome is no longer a value any caller
+   *  may supply or omit: it is derived from an UNFORGEABLE authorization minted
+   *  only by `server/lib/feeSettlementAuthority.ts` (gateway, or Capavate
+   *  platform admin). `settlement` is REQUIRED and has NO DEFAULT — omitting it
+   *  throws `SETTLEMENT_AUTHORIZATION_REQUIRED`, it does not succeed. */
   chargeFeeObligation(
     partnerId: string,
     spvId: string,
     obligationId: string,
     customerId: string,
-    outcome: "succeeded" | "failed" = "succeeded",
+    settlement: FeeSettlementAuthorization,
   ): SpvFeeObligationDTO {
     const s = this.getSpv(partnerId, spvId);
     if (!s) throw new Error("SPV_NOT_FOUND");
     const o = (feeObligationsBySpv.get(spvId) ?? []).find((x) => x.id === obligationId);
     if (!o) throw new Error("FEE_OBLIGATION_NOT_FOUND");
     if (o.state === "paid" || o.state === "waived") return o; // idempotent no-op
-    let entryState: string;
-    let entryId: string;
+    // ── WAVE 3E — ONE TRANSACTION spans the CONSUME and the MONEY WRITE. ──
+    //
+    // Pre-3E the consume mutated a process-local WeakMap and the money write
+    // followed it outside any transaction, so a crash in between could leave an
+    // authorization spent with no settlement (or, after a restart, a settlement
+    // whose authorization looked unspent). Consumption is now a conditional
+    // UPDATE on `fee_settlement_authorization` (migration 0151) and it commits
+    // together with the payment-ledger entry and the obligation row, or not at
+    // all. `consumeSettlementAuthorization` REFUSES to run outside a transaction
+    // (SETTLEMENT_AUTHORIZATION_NOT_TRANSACTIONAL), so this wrapper is not
+    // optional and cannot be quietly dropped.
+    //
+    // The FAILED outcome is a settlement too, so it is written INSIDE the
+    // transaction and the FEE_COLLECTION_FAILED throw is raised AFTER the commit
+    // — otherwise a genuine recorded failure would roll back with its own error.
+    // The in-memory projection must not survive a rolled-back transaction:
+    // WAVE 3E rolls the DB back on any throw, so the RAM copy is restored to
+    // exactly what it was. "ZERO in-memory canonical state" (file header) means
+    // the Maps are a projection of the DB, and a projection may never be ahead
+    // of it.
+    const priorProjection = { state: o.state, paymentRef: o.paymentRef, updatedAt: o.updatedAt, revisionHash: o.revisionHash };
+    let settled: { ok: boolean };
     try {
-      const result = chargeOrIdempotent({
-        intentId: `spvfee_${o.id}`,
-        kind: "company_billing",
-        amountCents: o.amountMinor,
-        currency: o.currency,
-        customerId: customerId || s.sponsorPartnerId,
-        description: `SPV ${o.layer} ${o.portion} fee (${o.timing})`,
-        forceState: outcome,
+      settled = withSettlementTransaction((): { ok: boolean } => {
+        // WAVE 1A / S-2 — the derivation. Verifies provenance (in-process brand,
+        // defence in depth) AND the durable row: purpose, SPV binding, obligation
+        // binding, amount binding, expiry, revocation and single use, in ONE
+        // conditional UPDATE whose affected-row count must be exactly 1. Throws on
+        // anything a partner could have constructed. Nothing below this line can
+        // reach `paid` without it.
+        const { outcome } = consumeSettlementAuthorization(settlement, {
+          purpose: o.portion === "carry" ? "distribution_carry" : "fee_obligation",
+          spvId,
+          obligationId,
+          amountMinor: o.amountMinor,
+          currency: o.currency,
+        });
+        let entryState: string;
+        let entryId: string;
+        try {
+          const result = chargeOrIdempotent({
+            intentId: `spvfee_${o.id}`,
+            kind: "company_billing",
+            amountCents: o.amountMinor,
+            currency: o.currency,
+            customerId: customerId || s.sponsorPartnerId,
+            description: `SPV ${o.layer} ${o.portion} fee (${o.timing})`,
+            // WAVE 1A / S-2 — SINK 1b, THE DERIVATION SITE (:738). `outcome` is now a
+            // local const produced by `consumeSettlementAuthorization` above; it can
+            // no longer be a caller-chosen parameter value.
+            forceState: outcome,
+          });
+          entryState = result.entry.state;
+          entryId = result.entry.id;
+        } catch {
+          o.state = "failed"; o.updatedAt = nowIso();
+          this._persistFeeObligation(o);
+          return { ok: false };
+        }
+        // WAVE 1A / S-2 — SINK 4 (was `entryState !== "succeeded" && entryState !==
+        // "demo"`). `"demo"` is the paymentStore default (paymentStore.ts:127) written
+        // straight to `state` at :214; accepting it meant an unsettled demo entry
+        // resolved to `paid`. Only a genuine "succeeded" ledger entry settles now.
+        if (entryState !== "succeeded") {
+          o.state = "failed"; o.paymentRef = entryId; o.updatedAt = nowIso();
+          this._persistFeeObligation(o);
+          return { ok: false };
+        }
+        // WAVE 1A / S-2 — SINK 5: the ONE AND ONLY assignment of `state = "paid"` in
+        // this object graph (`grep -rn 'state = "paid"' server/` → this line alone).
+        // It is now gated behind `consumeSettlementAuthorization` above, in the same
+        // transaction as the consume.
+        o.state = "paid"; o.paymentRef = entryId; o.updatedAt = nowIso();
+        this._persistFeeObligation(o);
+        return { ok: true };
       });
-      entryState = result.entry.state;
-      entryId = result.entry.id;
-    } catch {
-      o.state = "failed"; o.updatedAt = nowIso();
-      this._persistFeeObligation(o);
-      throw new Error("FEE_COLLECTION_FAILED");
+    } catch (e) {
+      // The transaction rolled back. Undo the RAM projection so it cannot claim
+      // a state the database does not hold, then re-throw unchanged.
+      o.state = priorProjection.state;
+      o.paymentRef = priorProjection.paymentRef;
+      o.updatedAt = priorProjection.updatedAt;
+      o.revisionHash = priorProjection.revisionHash;
+      throw e;
     }
-    if (entryState !== "succeeded" && entryState !== "demo") {
-      o.state = "failed"; o.paymentRef = entryId; o.updatedAt = nowIso();
-      this._persistFeeObligation(o);
-      throw new Error("FEE_COLLECTION_FAILED");
-    }
-    o.state = "paid"; o.paymentRef = entryId; o.updatedAt = nowIso();
-    this._persistFeeObligation(o);
+    if (!settled.ok) throw new Error("FEE_COLLECTION_FAILED");
     emit("spv.fee_obligation_paid", spvId, { partnerId, spvId, obligationId: o.id, paymentRef: o.paymentRef });
     return o;
   },
@@ -777,7 +1129,7 @@ export const spvEngineStore = {
     amountMinor: number,
     currency: string,
     distributionId: string,
-    outcome: "succeeded" | "failed",
+    settlement: FeeSettlementAuthorization,
   ): SpvFeeObligationDTO {
     const now = nowIso();
     const o: SpvFeeObligationDTO = {
@@ -790,7 +1142,10 @@ export const spvEngineStore = {
     this._persistFeeObligation(o);
     pushInto(feeObligationsBySpv, spvId, o);
     // Collect through the existing payment ledger; fail-closed on failure.
-    return this.chargeFeeObligation(partnerId, spvId, o.id, spvId, outcome);
+    // WAVE 1A / S-2 — SINK 2: this used to forward a route-supplied `outcome`
+    // straight into chargeFeeObligation. It now forwards an authorization that
+    // only the settlement authority can mint.
+    return this.chargeFeeObligation(partnerId, spvId, o.id, spvId, settlement);
   },
 
   /* ---- Compliance profile (reusable, investor-level) ---- */
@@ -1347,6 +1702,15 @@ export const spvEngineStore = {
     d.updatedAt = d.deployedAt;
     this._persistDeployment(d);
     emit("spv.deployed", spvId, { partnerId, spvId, deploymentId, ledgerRef });
+    /* WAVE 8 ORP-029 / DEF-029 — CHARGE THE DEPLOYMENT FEE. This is the engine's
+       deploy transition and the only path to status "deployed"; the legacy
+       trigger (spvFundStore.ts:1204) keys on a status "active" that the
+       canonical SPV_STATUSES enum does not contain, so the fee had never once
+       been charged for an engine SPV. Idempotent and fail-open by contract:
+       see server/lib/spvEngineDeploymentFeeHook.ts. Deliberately AFTER the
+       persist + emit so a fee-config gap can never roll back a completed
+       cap-table deployment. */
+    chargeEngineSpvDeploymentFee(spvId, this.getSpv(partnerId, spvId)?.sponsorPartnerId ?? partnerId);
     return d;
   },
 
@@ -1377,7 +1741,24 @@ export const spvEngineStore = {
     );
   },
 
-  /* ---- Distributions / waterfall ---- */
+  /* ---- Distributions / waterfall ----
+   * ── XT-C5 · WATERFALL BOUNDARY (3 of 3) ───────────────────────────────
+   * THIS IS THE CANONICAL ONE for moving money to SPV limited partners:
+   * 5 tiers, per-LP allocations, carry collected through the payment ledger
+   * BEFORE the row persists (fail-closed), hash-chained into `spv_distribution`
+   * (singular — see C-2; the plural table is a projection).
+   *
+   * The other two "waterfalls" in this tree are different capabilities, not
+   * rivals, and neither may stand in for this one:
+   *   · `spvOfflineOps.computeDistributionSplit` — non-persisting PREVIEW.
+   *   · `computeWaterfall` from `@capavate/cap-table-engine`
+   *     (`server/track1Routes.ts:215`) — founder-side EXIT modelling by share
+   *     class. Answers a different question: what if the COMPANY is sold.
+   *
+   * The dangerous direction is writing through the legacy plural route
+   * instead of this one: it silently drops the waterfall, the per-LP
+   * allocations and the carry collection. Money loss, no error (C-2).
+   */
   recordDistribution(
     partnerId: string,
     spvId: string,
@@ -1386,13 +1767,41 @@ export const spvEngineStore = {
       grossProceedsMinor: number;
       currency?: string;
       costBasisMinor?: number;
-      collectionOutcome?: "succeeded" | "failed";
+      /* WAVE 6 / SC-3 — the GP's tax/accounting classification. Optional on the
+         wire; when omitted it is DERIVED from `event` by exactly the same rule
+         the 0153 backfill uses, so a legacy caller keeps working and a modern
+         caller's explicit choice is never overwritten. An explicit value
+         outside the domain THROWS (SPV_DISTRIBUTION_TYPE_INVALID) rather than
+         degrading to 'other' — a client typo must not silently mislabel a
+         distribution the GP is legally characterising. */
+      distributionType?: string;
     },
     actor: string,
+    /** WAVE 1A / S-2 — SINK 5. The carry settlement authorization. It is a
+     *  SEPARATE ARGUMENT, deliberately NOT a field of `data`, because `data` is
+     *  the request body at spvEngineRoutes.ts:397. A body can no longer carry a
+     *  settlement outcome into this function under any key name. Omitting it is
+     *  legal only for a distribution with ZERO carry. */
+    settlement?: FeeSettlementAuthorization,
   ): SpvDistributionDTO {
     const s = this.getSpv(partnerId, spvId);
     if (!s) throw new Error("SPV_NOT_FOUND");
+    /* ══ WAVE 26 / S-3 SECOND PATH — THE MONEY WRITE. ══
+     * This is the sink the Wave 5 fix did not reach. `recordDistribution`
+     * carries NO fee gate (`hasUnsettledFixedFees` guards advanceSubscription,
+     * createDeployment and advanceDeployment — not this), and it derives BOTH
+     * carry percentages from `effectiveFee` further down. On an unloaded fee
+     * table both resolve to 0, so the waterfall runs with ZERO GP and ZERO
+     * platform carry and pays 100% of the proceeds to the LPs — a persisted,
+     * hash-chained money movement computed from fees the process never read.
+     * Placed FIRST, before every other precondition, so there is no ordering
+     * in which any part of this function runs on an untrusted fee view. */
+    if (this.feeViewUnreliable(spvId)) throw new Error("FEE_STATE_UNKNOWN");
     if (!data.event) throw new Error("EVENT_REQUIRED");
+    /* WAVE 6 / SC-3 — resolve BEFORE any write so an invalid type aborts the
+       distribution with nothing persisted, matching the fail-closed shape the
+       carry-cap resolver already established (WAVE 3D). */
+    const distributionType: SpvDistributionType = resolveDistributionType(data.distributionType, data.event);
     if (!Number.isFinite(data.grossProceedsMinor) || data.grossProceedsMinor < 0) throw new Error("INVALID_GROSS");
 
     // Blocker 4 — EXPLICIT basis required. We NEVER silently assume cost basis 0
@@ -1437,30 +1846,214 @@ export const spvEngineStore = {
       returnOfCapitalMinor = gross - carryBaseMinor;
     }
 
-    const gpCarryMinor = Math.round(carryBaseMinor * gpCarryPct);
-    const platformCarryMinor = Math.round(carryBaseMinor * platCarryPct);
-    const totalCarryMinor = gpCarryMinor + platformCarryMinor;
-    const distributable = gross - totalCarryMinor;
+    /* ══ WAVE 3B / MC-1 + P-5 — THE MONEY SINK. ═════════════════════════
+     *
+     * WHAT WAS HERE (the defect, both halves of it):
+     *
+     *     const gpCarryMinor       = Math.round(carryBaseMinor * gpCarryPct);
+     *     const platformCarryMinor = Math.round(carryBaseMinor * platCarryPct);
+     *     const totalCarryMinor    = gpCarryMinor + platformCarryMinor;
+     *     const distributable      = gross - totalCarryMinor;
+     *     const allocations = register.map((r) => {
+     *       const grossShare = Math.round(gross * r.ownershipPct);
+     *       const carryShare = Math.round(totalCarryMinor * r.ownershipPct);
+     *       ...
+     *     });
+     *
+     *   1. CENTS WERE NOT CONSERVED. Every LP's gross and carry were rounded
+     *      INDEPENDENTLY off a float ownershipPct, so the parts did not sum to
+     *      the whole: sum(grossMinor) could differ from `gross` and
+     *      sum(carryMinor) from `totalCarryMinor`. Cents appeared or vanished
+     *      on a persisted distribution row.
+     *   2. COMBINED CARRY COULD EXCEED GROSS. `addFee` (:557 in this file)
+     *      validates each carryPct in [0,1] SEPARATELY and never checks the
+     *      SUM, so 0.6 GP + 0.6 platform made `distributable` negative and
+     *      every LP's `netMinor` with it.
+     *
+     * WHAT IS HERE NOW: ONE nested integer largest-remainder pass covering
+     * gross, GP carry, platform carry and LP net together
+     * (`allocateDistributionMinor`, server/lib/money.ts), built on the existing
+     * `allocateResidualCents` with the documented, DDL-pinned tie-break
+     * (remainder DESC, index ASC). It asserts every component sums EXACTLY to
+     * its total and that no LP's net is negative, and it THROWS on violation.
+     *
+     * THIS IS THE PERSISTED PATH, NOT A PREVIEW. `previewDistributionSplit`
+     * (:1626 below) says in its own comment that it "does NOT persist or move
+     * money"; a guard there protects nothing. Every statement in this function
+     * that writes — `_collectCarryObligation` (a payment-ledger write) and
+     * `persist("spv_distribution", ...)` — runs strictly AFTER this call, so a
+     * throw here aborts with NOTHING written. Production caller:
+     * server/spvEngineRoutes.ts:499 (partner) and :522 (admin).
+     *
+     * Percentages are FRACTIONS in storage per the owner's ruling (0.2 = 20%).
+     * Nothing below multiplies or divides by 100.
+     * ═══════════════════════════════════════════════════════════════════ */
 
-    // Per-LP gross/carry/net — net = gross − carry (NEVER 0 when carry applies).
-    const allocations: SpvDistributionAllocation[] = register.map((r) => {
-      const grossShare = Math.round(gross * r.ownershipPct);
-      const carryShare = Math.round(totalCarryMinor * r.ownershipPct);
-      return { investorId: r.investorId, grossMinor: grossShare, carryMinor: carryShare, netMinor: grossShare - carryShare };
+    // P-5 — the summed-carry rejection, stated explicitly in the PERSISTED
+    // path before any allocation and before any row is written. The allocator
+    // re-asserts the same cap, so removing this line does not open the hole;
+    // it is here so the rejection is legible at the sink it protects.
+    //
+    // WAVE 3D / ITEM 3 — the cap comes from DURABLE DB CONFIGURATION
+    // (`spv_carry_cap_policy`, migration 0150), scoped spv -> tenant ->
+    // platform, most specific wins. This resolve FAILS CLOSED: if no active
+    // policy row applies it throws COMBINED_CARRY_CAP_POLICY_MISSING and the
+    // distribution aborts with nothing written. A missing record never means
+    // "no cap".
+    //
+    // WAVE 3D / ITEM 4 — the comparison is EXACT FIXED-SCALE INTEGER
+    // arithmetic, not a binary-float sum. `0.5000000000000001 + 0.5` used to
+    // be accepted here because JavaScript evaluates that sum as exactly 1;
+    // `exactFractionToCarryScaled` now converts each rate through its shortest
+    // exact decimal and REJECTS precision finer than 1e-9
+    // (DISTRIBUTION_ALLOCATION_RATE_PRECISION_UNSUPPORTED) rather than
+    // silently rounding it away.
+    const combinedCarryCapScaled = resolveCombinedCarryCapScaled({
+      tenantId: s.sponsorPartnerId,
+      spvId,
     });
+    const gpCarryScaled = exactFractionToCarryScaled(gpCarryPct, "gpCarryFraction");
+    const platCarryScaled = exactFractionToCarryScaled(platCarryPct, "platformCarryFraction");
+    if (gpCarryScaled + platCarryScaled > BigInt(combinedCarryCapScaled)) {
+      throw new Error("COMBINED_CARRY_EXCEEDS_CAP");
+    }
+
+    const alloc = allocateDistributionMinor({
+      grossMinor: gross,
+      carryBaseMinor: carryBaseMinor,
+      gpCarryFraction: gpCarryPct,
+      platformCarryFraction: platCarryPct,
+      // Register order is the allocation index order; the tie-break is
+      // (remainder DESC, weight DESC, index ASC) over exactly this order
+      // (WAVE 3D / ITEM 5, owner ruling 2026-08-10).
+      lpWeightsMinor: register.map((r) => r.commitmentMinor),
+      combinedCarryCapScaled,
+    });
+
+    /* ══ WAVE 32 / CP-SPV-30 CAPABILITY 2 — SIDE-LETTER ECONOMICS. ═════════
+     *
+     * XT-C5 shipped this waterfall's boundary handling; this EXTENDS it and
+     * does not rebuild it. The base allocation above is still the one
+     * canonical `allocateDistributionMinor` pass; what follows re-rates the
+     * carry for LPs who negotiated their own rate, and returns the base
+     * result BY IDENTITY when no active side letter carries an override — so
+     * a vehicle without side letters computes exactly what it computed before
+     * Wave 32, down to the rounding decisions.
+     *
+     * PLACED HERE ON PURPOSE. Wave 3B's pinned CALL-GRAPH-1 test asserts the
+     * source-text order guard < allocateDistributionMinor( <
+     * _collectCarryObligation( < persist("spv_distribution", which is the
+     * proof that a throw aborts with nothing written. This call sits strictly
+     * between the allocator and the collection: every pinned relative
+     * position is preserved, and the re-rating must precede the collection
+     * because it changes HOW MUCH carry is collected. Any refusal it raises
+     * (cap breach, non-conservation, negative LP net) therefore aborts the
+     * distribution with no money moved and no row persisted.
+     *
+     * The overrides are read from `spv_side_letter` — the DB, per request,
+     * never a cached map — so revoking a letter takes effect on the very next
+     * distribution. */
+    const sideLetterOverrides = activeCarryOverrides(spvId);
+    const rerated = applySideLetterCarry({
+      perLp: alloc.perLp.map((p, i) => ({
+        investorId: register[i].investorId,
+        grossMinor: p.grossMinor,
+        carryMinor: p.carryMinor,
+        netMinor: p.netMinor,
+      })),
+      lpWeightsMinor: register.map((r) => r.commitmentMinor),
+      grossMinor: gross,
+      carryBaseMinor,
+      gpCarryMinor: alloc.gpCarryMinor,
+      platformCarryMinor: alloc.platformCarryMinor,
+      fundCombinedCarryScaled: Number(gpCarryScaled + platCarryScaled),
+      combinedCarryCapScaled,
+      overrides: sideLetterOverrides,
+    });
+
+    const gpCarryMinor = rerated.gpCarryMinor;
+    const platformCarryMinor = rerated.platformCarryMinor;
+    const totalCarryMinor = rerated.totalCarryMinor;
+    const distributable = rerated.distributableMinor;
+
+    // Per-LP gross/carry/net — net = gross − carry, non-negative by assertion,
+    // and each column sums EXACTLY to its total. When side letters applied,
+    // these are the re-rated lines; otherwise they are the base allocation
+    // unchanged.
+    const allocations: SpvDistributionAllocation[] = register.map((r, i) => ({
+      investorId: r.investorId,
+      grossMinor: rerated.perLp[i].grossMinor,
+      carryMinor: rerated.perLp[i].carryMinor,
+      netMinor: rerated.perLp[i].netMinor,
+    }));
     const distId = newId("spvdist");
 
     // Collect carry THROUGH the existing payment ledger BEFORE persisting the
     // distribution — fail-closed: a collection failure aborts (throws) and the
     // distribution is never recorded.
-    const outcome = data.collectionOutcome === "failed" ? "failed" : "succeeded";
+    // WAVE 1A / S-2 — SINK 5 CLOSED. This line used to read
+    // `data.collectionOutcome`, i.e. the request body, and hand it to
+    // `_collectCarryObligation` → `chargeFeeObligation` → `state = "paid"`.
+    // A carry-bearing distribution now REQUIRES a minted authorization; without
+    // one it aborts fail-closed and no distribution row is written.
+    /* ══════════════════════════════════════════════════════════════════════ *
+     *  WAVE 3F / ITEM 1 — ONE OUTER TRANSACTION SPANS THE CHARGE AND THE ROW
+     * ══════════════════════════════════════════════════════════════════════ *
+     *
+     * WHAT WAS WRONG (W10 REVIEW A, CRITICAL). `chargeFeeObligation` opened and
+     * COMMITTED its own settlement transaction (WAVE 3E), and the distribution
+     * INSERT happened afterwards, outside it. A trigger/constraint/driver/disk
+     * failure at the final insert therefore left:
+     *     distributionCount: 0, obligation state='paid', payment state='succeeded'
+     * Money taken, no distribution recorded. Reproduced by
+     * `server/__tests__/w10_atomicity_repro.test.ts`.
+     *
+     * THE FIX. Authorization consumption, the payment-ledger entry, the fee
+     * obligation row AND the `spv_distribution` insert now commit together or
+     * not at all. `withSettlementTransaction` nests through better-sqlite3
+     * SAVEPOINTs, so WAVE 3E's inner scope inside `chargeFeeObligation` becomes
+     * a savepoint of THIS transaction rather than an independent commit. The
+     * 3E guarantee is WIDENED, never weakened:
+     *   • `consumeSettlementAuthorization` still refuses to run outside a
+     *     transaction (SETTLEMENT_AUTHORIZATION_NOT_TRANSACTIONAL) — it is now
+     *     inside two nested ones;
+     *   • the consume UPDATE is still atomic with the money write;
+     *   • nothing about minting, scope, expiry, revocation or single use moved.
+     *
+     * THE RAM PROJECTION MUST NOT SURVIVE A ROLLBACK. "ZERO in-memory canonical
+     * state" (file header): the Maps are a projection and may never be ahead of
+     * the DB. On rollback we restore the fee-obligation array, every obligation
+     * field WAVE 3E's inner catch may have already restored (idempotent), and
+     * the hash-chain tips — and the distribution is pushed into the projection
+     * only AFTER the commit returns.
+     *
+     * BRIDGE EVENTS ARE DEFERRED for the same reason (see `openEventDeferral`).
+     *
+     * SOURCE-TEXT NOTE — the transaction body below is DELIBERATELY NOT
+     * RE-INDENTED. Wave 3B's pinned CALL-GRAPH-1 test asserts the literal text
+     * `persist(\n      "spv_distribution"` and the ordering
+     * guard < allocator < _collectCarryObligation < persist inside this
+     * function's source slice. Re-indenting would silently break that proof, so
+     * the statements keep their original column and only the wrapper moves. */
+    const feeObSnapshot = (feeObligationsBySpv.get(spvId) ?? []).slice();
+    const feeObFields = feeObSnapshot.map((o) => ({
+      o, state: o.state, paymentRef: o.paymentRef, updatedAt: o.updatedAt, revisionHash: o.revisionHash,
+    }));
+    const chainTipSnapshot: Record<string, string> = { ...chainTip };
+    const deferral = openEventDeferral();
+    let recorded: SpvDistributionDTO;
+    try {
+      recorded = withSettlementTransaction((): SpvDistributionDTO => {
     let gpCarryRef: string | null = null;
     let platformCarryRef: string | null = null;
+    if (gpCarryMinor > 0 || platformCarryMinor > 0) {
+      if (!isFeeSettlementAuthorization(settlement)) throw new Error("SETTLEMENT_AUTHORIZATION_REQUIRED");
+    }
     if (gpCarryMinor > 0) {
-      gpCarryRef = this._collectCarryObligation(partnerId, spvId, "management", gpCarryMinor, data.currency ?? s.currency, distId, outcome).paymentRef;
+      gpCarryRef = this._collectCarryObligation(partnerId, spvId, "management", gpCarryMinor, data.currency ?? s.currency, distId, settlement!).paymentRef;
     }
     if (platformCarryMinor > 0) {
-      platformCarryRef = this._collectCarryObligation(partnerId, spvId, "platform", platformCarryMinor, data.currency ?? s.currency, distId, outcome).paymentRef;
+      platformCarryRef = this._collectCarryObligation(partnerId, spvId, "platform", platformCarryMinor, data.currency ?? s.currency, distId, settlement!).paymentRef;
     }
 
     const waterfall = [
@@ -1470,6 +2063,18 @@ export const spvEngineStore = {
       { tier: "platform_carry", pct: platCarryPct, amountMinor: platformCarryMinor, paymentRef: platformCarryRef },
       { tier: "pro_rata_lp", amountMinor: distributable },
     ];
+    /* WAVE 32 — the side-letter tier is APPENDED AT THE END of the waterfall,
+       never spliced between existing tiers: readers (and the guard) treat tier
+       position as identity, and renumbering `gp_carry` would read as a removal.
+       It is recorded ONLY when it actually did something, so a vehicle without
+       side letters keeps a byte-identical five-tier waterfall_json. */
+    if (rerated.adjusted) {
+      waterfall.push({
+        tier: "side_letter_adjustment",
+        amountMinor: totalCarryMinor - alloc.totalCarryMinor,
+        adjustments: rerated.adjustments,
+      } as any);
+    }
     const now = nowIso();
     const dist: SpvDistributionDTO = {
       id: distId,
@@ -1485,21 +2090,93 @@ export const spvEngineStore = {
       createdAt: now,
       createdBy: actor ?? null,
       revisionHash: "",
+      distributionType,
     };
     const { prev, curr } = chain("spv_distribution", { ...dist, revisionHash: undefined });
     dist.revisionHash = curr;
+    /* WAVE 6 / SC-3 — third place. Idempotent, and a no-op once the migration
+       runner has applied 0153. Needed for the `:memory:` test database, whose
+       schema comes from connection.ts's inline bootstrap (SACRED, unedited)
+       and therefore predates this column. */
+    const hasTypeColumn = ensureSpvDistributionTypeColumn();
     persist(
       "spv_distribution",
-      `INSERT INTO spv_distribution (id, spv_id, event, gross_proceeds_minor, currency, waterfall_json,
-         allocations_json, gp_carry_minor, platform_carry_minor, status, created_at, created_by, prev_hash, curr_hash)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [dist.id, spvId, dist.event, dist.grossProceedsMinor, dist.currency, JSON.stringify(dist.waterfall),
-       JSON.stringify(dist.allocations), dist.gpCarryMinor, dist.platformCarryMinor, dist.status, now, actor ?? null, prev, curr],
+      hasTypeColumn
+        ? `INSERT INTO spv_distribution (id, spv_id, event, distribution_type, gross_proceeds_minor, currency, waterfall_json,
+             allocations_json, gp_carry_minor, platform_carry_minor, status, created_at, created_by, prev_hash, curr_hash)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+        : `INSERT INTO spv_distribution (id, spv_id, event, gross_proceeds_minor, currency, waterfall_json,
+             allocations_json, gp_carry_minor, platform_carry_minor, status, created_at, created_by, prev_hash, curr_hash)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      hasTypeColumn
+        ? [dist.id, spvId, dist.event, distributionType, dist.grossProceedsMinor, dist.currency, JSON.stringify(dist.waterfall),
+           JSON.stringify(dist.allocations), dist.gpCarryMinor, dist.platformCarryMinor, dist.status, now, actor ?? null, prev, curr]
+        : [dist.id, spvId, dist.event, dist.grossProceedsMinor, dist.currency, JSON.stringify(dist.waterfall),
+           JSON.stringify(dist.allocations), dist.gpCarryMinor, dist.platformCarryMinor, dist.status, now, actor ?? null, prev, curr],
     );
-    pushInto(distributionsBySpv, spvId, dist);
     // Collect platform carry (audit + bridge; actual charge handled by fee runtime).
     emit("spv.distribution_recorded", spvId, { partnerId, spvId, distributionId: dist.id, gpCarryMinor, platformCarryMinor });
     return dist;
+      });
+    } catch (e) {
+      /* WAVE 3F / ITEM 1 — the transaction rolled back: NOTHING committed, so no
+       * charge stands and no distribution exists. Rewind the projection to the
+       * pre-call state and re-throw unchanged. */
+      deferral.discard();
+      feeObligationsBySpv.set(spvId, feeObSnapshot);
+      for (const f of feeObFields) {
+        f.o.state = f.state; f.o.paymentRef = f.paymentRef; f.o.updatedAt = f.updatedAt; f.o.revisionHash = f.revisionHash;
+      }
+      for (const k of Object.keys(chainTip)) delete chainTip[k];
+      Object.assign(chainTip, chainTipSnapshot);
+      throw e;
+    }
+    /* Committed. Only now may the projection and the audit bridge learn of it. */
+    pushInto(distributionsBySpv, spvId, recorded);
+    deferral.flush();
+
+    /* ------------------------------------------------------------------
+     * WAVE 10 / EN-1 — PROJECT THE DISTRIBUTION INTO THE ILPA CASH-FLOW LEDGER.
+     *
+     * THE SINK. `INSERT INTO spv_distribution` happens in exactly one place in
+     * the tree — the `persist(...)` call ~50 lines above — and this is the
+     * post-commit point for it. THE SECOND PATH to the same money is the LEGACY
+     * plural table `spv_distributions` (server/spvFundStore.ts:902), whose
+     * write API was CLOSED in WAVE 3D / ITEM 1: it now throws rather than
+     * inserting, and `server/lib/legacyDistributionLedger.ts` documents the
+     * closure. So there is one live writer, and it is this one. If the plural
+     * ledger is ever reopened it must project here too, and
+     * server/__tests__/waveW10_en1_cashflow_ledger.test.ts asserts the closure
+     * still holds so that reopening cannot happen silently.
+     *
+     * WHY AFTER `deferral.flush()` AND NOT INSIDE THE TRANSACTION. The tx above
+     * rewinds `chainTip` and the fee-obligation projection on failure. A
+     * cash-flow row appended inside it would be rolled back by SQLite but the
+     * ledger's own chain tip is read fresh on every append, so no rewind is
+     * needed — and appending post-commit means a projection failure can never
+     * be the reason a settled distribution disappears.
+     *
+     * SIGN. A distribution is money OUT to LPs, so POSITIVE. Gross proceeds are
+     * used, not the net-of-carry figure: DPI is a gross-distribution measure and
+     * carry is modelled as its own flow when it is called.
+     * ---------------------------------------------------------------- */
+    tryProject(
+      () =>
+        projectDistribution({
+          tenantId: (recorded as any).tenantId ?? partnerId,
+          vehicleKind: "spv",
+          vehicleId: spvId,
+          distributionId: recorded.id,
+          grossAmountMinor: recorded.grossProceedsMinor,
+          currency: recorded.currency,
+          valueDate: String(recorded.createdAt).slice(0, 10),
+          distributionType: (recorded as any).distributionType ?? null,
+          createdBy: actor ?? "spvEngineStore.recordDistribution",
+        }),
+      `distribution ${recorded.id}`,
+    );
+
+    return recorded;
   },
 
   listDistributions(partnerId: string, spvId: string): SpvDistributionDTO[] {
@@ -1575,6 +2252,50 @@ export const spvEngineStore = {
     return computeCapitalAccounts(register, this.confirmedByInvestor(partnerId, spvId), this.listDistributions(partnerId, spvId));
   },
 
+  /** ═══ WAVE 14 / P-7 — READ THE HURDLE THE OPERATOR ALREADY AGREED TO. ═══
+   *
+   * THE DEFECT. `terms.hurdleRatePct` is collected by the launch wizard
+   * (client/src/pages/partner/PartnerSpvEngine.tsx:684, "Hurdle % (optional)")
+   * and normalised to a FRACTION at the route boundary by
+   * `normaliseSpvTermsHurdle` (P-4). It is then persisted into the terms blob
+   * and READ BY NOBODY: `grep -rn "\.terms\b" server/ client/src` returns
+   * jurisdiction, `_fundsConfirmations`, currency and legacy-shim reads, and no
+   * hurdle read anywhere. Every consumer of the waterfall takes the hurdle from
+   * its OWN caller instead — so the offline preview asked the GP to retype a
+   * number the SPV already carried, and any mismatch between the retyped value
+   * and the agreed term was silent. That is a write-only money term.
+   *
+   * WHY A READ AND NOT A DELETION. The value is on the SPV's terms because the
+   * LPs subscribed on it. Deleting the field would drop functionality; the
+   * correct close is to make the agreed term the DEFAULT and to say so.
+   *
+   * LEGACY BLOBS. Rows written before P-4 hold percent-as-written (8, not 0.08)
+   * and carry no `_hurdleRatePctForm` marker. Those are put through
+   * `normaliseSpvTermsHurdle` on READ, which is idempotent (it no-ops on a
+   * marked blob) and REJECTS out-of-domain values rather than clamping them. A
+   * legacy 8 therefore reads as 0.08 and a nonsense 8000 throws — it does not
+   * become a 100% preferred return, which was the P-4 defect.
+   *
+   * NOT A WRITER. This does not persist the normalised value back. Repairing
+   * stored rows is a migration's job, not a read path's, and a read that
+   * silently rewrites money terms is worse than the defect. */
+  storedHurdleFraction(partnerId: string, spvId: string): { fraction: number | null; source: "spv_terms" | "none"; asWritten: number | null } {
+    const s = this.getSpv(partnerId, spvId);
+    if (!s) throw new Error("SPV_NOT_FOUND");
+    const terms = (s.terms ?? null) as Record<string, unknown> | null;
+    if (!terms || terms.hurdleRatePct === null || terms.hurdleRatePct === undefined || terms.hurdleRatePct === "") {
+      return { fraction: null, source: "none", asWritten: null };
+    }
+    const normalised = normaliseSpvTermsHurdle(terms) as Record<string, unknown>;
+    const frac = Number(normalised.hurdleRatePct);
+    if (!Number.isFinite(frac)) return { fraction: null, source: "none", asWritten: null };
+    return {
+      fraction: frac,
+      source: "spv_terms",
+      asWritten: typeof normalised._hurdleRatePctAsWritten === "number" ? (normalised._hurdleRatePctAsWritten as number) : null,
+    };
+  },
+
   /** SPV-CORE-2 — OFFLINE distribution preview (return of capital + carry, with
    *  the OPTIONAL preferred-return / GP-catch-up tiers engaging only when a
    *  hurdle is set). This is a planning affordance; it does NOT persist or move
@@ -1586,6 +2307,10 @@ export const spvEngineStore = {
   ): DistributionSplit {
     const s = this.getSpv(partnerId, spvId);
     if (!s) throw new Error("SPV_NOT_FOUND");
+    /* WAVE 26 / S-3 SECOND PATH. The preview persists nothing, but a GP reads
+       it to decide what to distribute. An unloaded fee table would show a
+       carry-free split that the real write would never produce. */
+    if (this.feeViewUnreliable(spvId)) throw new Error("FEE_STATE_UNKNOWN");
     const contributedMinor = this.committedRegister(partnerId, spvId).reduce((a, r) => a + r.commitmentMinor, 0);
     const mgmt = this.effectiveFee(spvId, "management");
     const plat = this.effectiveFee(spvId, "platform");
@@ -1595,7 +2320,12 @@ export const spvEngineStore = {
       grossProceedsMinor: input.grossProceedsMinor,
       contributedMinor,
       carryPct: gpCarryPct + platCarryPct,
-      hurdleRatePct: input.hurdleRatePct ?? null,
+      /* P-7 — an EXPLICIT caller value still wins (a GP previewing a
+         what-if scenario must be able to override), but a caller who supplies
+         nothing now gets the SPV's own agreed hurdle instead of zero. Zero is
+         NOT treated as absent: `0` is a real answer ("no preferred return") and
+         `?? ` only falls through on null/undefined. */
+      hurdleRatePct: input.hurdleRatePct ?? this.storedHurdleFraction(partnerId, spvId).fraction,
       gpCatchUpPct: input.gpCatchUpPct ?? null,
     });
   },
@@ -1692,6 +2422,43 @@ export const spvEngineStore = {
     const s = this.getSpv(partnerId, spvId);
     if (!s) throw new Error("SPV_NOT_FOUND");
     if (!data.fromInvestorId || !data.toInvestorId) throw new Error("TRANSFER_PARTIES_REQUIRED");
+    /* ── WAVE 25 / FE-4 — THE TRANSFER GUARD, AT THE SINK ──────────────────
+     *
+     * Before this, the ONLY server-side condition on recording a secondary
+     * transfer was "both party ids are non-empty". Three checks the UI made
+     * (SpvDetailTabs.tsx `TransferPanel`) had NO server counterpart, so the
+     * route was a second door straight past all of them:
+     *
+     *   1. from === to. The panel refuses it; POST /transfers accepted it and
+     *      persisted a self-transfer.
+     *   2. neither an amount nor a units percentage. The panel demands one;
+     *      the store wrote a transfer conveying nothing, `unitsPct` and
+     *      `amountMinor` both NULL.
+     *   3. the vehicle is wound down. The wind-down panel tells the GP, in
+     *      those words, that after wind-down "no further capital calls,
+     *      distributions, or transfers can be recorded" — and nothing in the
+     *      engine enforced it for transfers. A UI promise the engine did not
+     *      keep is the same defect class as a resolver with no callers.
+     *
+     * `createTransfer` is the single sink: the one `persist("spv_transfer", …)`
+     * in the tree is below, and `grep -rn createTransfer` finds exactly one
+     * live caller (spvEngineRoutes.ts POST /transfers). Fixing it here covers
+     * the route, the panel and any future caller. */
+    if (data.fromInvestorId === data.toInvestorId) throw new Error("TRANSFER_SELF");
+    if (s.status === "wound_down") throw new Error("SPV_WOUND_DOWN");
+    const hasUnits = data.unitsPct != null;
+    const hasAmount = data.amountMinor != null;
+    if (!hasUnits && !hasAmount) throw new Error("TRANSFER_CONSIDERATION_REQUIRED");
+    /* Money rule: integer minor units, never a float, never negative. Percent
+     * rule: `unitsPct` is a FRACTION (0.25 = 25%), never a 0-100 number — the
+     * `n > 1 ? n/100 : n` coercion is forbidden project-wide, so a value above
+     * 1 is rejected rather than silently reinterpreted. */
+    if (hasAmount && (!Number.isSafeInteger(data.amountMinor) || (data.amountMinor as number) < 0)) {
+      throw new Error("INVALID_AMOUNT");
+    }
+    if (hasUnits && (!Number.isFinite(data.unitsPct) || (data.unitsPct as number) <= 0 || (data.unitsPct as number) > 1)) {
+      throw new Error("INVALID_UNITS_PCT");
+    }
     const now = nowIso();
     const t: SpvTransferDTO = {
       id: newId("spvxfer"),
@@ -1772,7 +2539,29 @@ export function migrateLegacyPartnerSpvAndFunds(): { spvs: number; funds: number
       default: return "draft";
     }
   };
-  const normJur = (j: string): string => (isSpvJurisdiction(j) ? j : "delaware");
+  /* WAVE 4A / follow-up 2 — no more hard-coded "delaware". Wave 3C widened the
+     enum and made resolveSpvJurisdiction() the ONE coercion policy: an enum
+     member or a known country/alias resolves to itself, anything unknown
+     (including empty) resolves to "other", never to a US state the vehicle
+     was never formed in. The UI already used it; the server now agrees. */
+  const normJur = (j: string): string => resolveSpvJurisdiction(j);
+  /* WAVE 4A / REVIEW-C — PRESERVE THE ORIGINAL FREE TEXT. The coercion above is
+     lossy by nature (15 countries in, 16 enum members out), and until now these
+     boot-migrated rows kept NO copy of what the GP actually typed. That is what
+     made them permanently unrepairable: scripts/backfill_spv_jurisdiction.ts
+     classifies a row with no country as `skip-no-country` and leaves it alone
+     forever. Stashing the raw text on `terms.legacyJurisdiction` — the SAME key
+     the legacy shims at partnerRoutes.ts:1653/:1775 already use, and the SAME
+     key the backfill already reads (backfill_spv_jurisdiction.ts:126-127) —
+     makes every migrated row repairable with no new column and no migration. */
+  const withLegacyJur = (
+    base: Record<string, unknown> | null,
+    raw: unknown,
+  ): Record<string, unknown> | null => {
+    const text = typeof raw === "string" ? raw.trim() : "";
+    if (!text) return base;
+    return { ...(base ?? {}), legacyJurisdiction: text };
+  };
 
   try {
     for (const legacy of partnerSpvStore._listAll()) {
@@ -1797,7 +2586,10 @@ export function migrateLegacyPartnerSpvAndFunds(): { spvs: number; funds: number
         lpVisibility: SPV_DEFAULT_LP_VISIBILITY,
         targetCompanyId: legacy.targetCompanyId ?? null,
         closeDate: null,
-        terms: legacy.entityStructure ? { entityStructure: legacy.entityStructure } : null,
+        terms: withLegacyJur(
+          legacy.entityStructure ? { entityStructure: legacy.entityStructure } : null,
+          legacy.jurisdiction,
+        ),
         migratedFrom: legacy.id,
         createdAt: legacy.recordedAt ?? now,
         createdBy: legacy.recordedBy ?? null,
@@ -1832,7 +2624,7 @@ export function migrateLegacyPartnerSpvAndFunds(): { spvs: number; funds: number
         lpVisibility: SPV_DEFAULT_LP_VISIBILITY,
         targetCompanyId: null,
         closeDate: null,
-        terms: { fundType: legacy.fundType },
+        terms: withLegacyJur({ fundType: legacy.fundType }, legacy.jurisdiction),
         migratedFrom: legacy.id,
         createdAt: legacy.recordedAt ?? now,
         createdBy: legacy.recordedBy ?? null,
@@ -1918,9 +2710,12 @@ export function shadowPersistPartnerSpvToEngine(input: {
 }): void {
   const id = _migId(input.legacyId);
   const now = nowIso();
-  const jur = input.jurisdiction && isSpvJurisdiction(input.jurisdiction)
-    ? (input.jurisdiction as SpvDTO["jurisdiction"])
-    : "delaware";
+  /* WAVE 4A / follow-up 2 — same policy as normJur above. */
+  const jur = resolveSpvJurisdiction(input.jurisdiction) as SpvDTO["jurisdiction"];
+  /* WAVE 4A / REVIEW-C — preserve the GP's original free text alongside the
+     coerced enum (same key + rationale as withLegacyJur in the boot migration
+     above), so a shadow-persisted row is never `skip-no-country`. */
+  const rawJurText = typeof input.jurisdiction === "string" ? input.jurisdiction.trim() : "";
   const s: SpvDTO = {
     id,
     sponsorPartnerId: input.partnerId,
@@ -1938,7 +2733,13 @@ export function shadowPersistPartnerSpvToEngine(input: {
     lpVisibility: SPV_DEFAULT_LP_VISIBILITY,
     targetCompanyId: input.targetCompanyId ?? null,
     closeDate: null,
-    terms: input.entityStructure ? { entityStructure: input.entityStructure } : null,
+    terms:
+      rawJurText || input.entityStructure
+        ? {
+            ...(input.entityStructure ? { entityStructure: input.entityStructure } : {}),
+            ...(rawJurText ? { legacyJurisdiction: rawJurText } : {}),
+          }
+        : null,
     migratedFrom: input.legacyId,
     createdAt: input.recordedAt ?? now,
     createdBy: input.recordedBy ?? null,
@@ -2270,11 +3071,43 @@ export function backfillLegacyChildCommitments(): { positions: number; fundCommi
           // Skip cancelled positions — they must not be recreated as active
           // `review` subscriptions.
           if (p.positionStatus === "cancelled" || p.positionStatus === "withdrawn") continue;
-          // BLOCK-H: apply FX normalization if the position carries a rate.
-          const rateNum = p.fxRateToSpvBase ? Number(p.fxRateToSpvBase) : NaN;
-          const normalizedMinor = Number.isFinite(rateNum) && rateNum > 0
-            ? Math.round(p.positionAmountMinor * rateNum)
-            : p.positionAmountMinor;
+          /* BLOCK-H: apply FX normalization if the position carries a rate.
+           * WAVE 35 · F5 (backfill site 3 of 4) — was
+           * `Math.round(p.positionAmountMinor * rateNum)`, which omits the
+           * 10^(expTo-expFrom) re-scale and is therefore off by exactly 100×
+           * for JPY→USD. Same-exponent pairs (EUR→USD) were unaffected, which
+           * is why it hid. The SPV's base currency comes from the parent engine
+           * record; a position that cannot be converted is QUARANTINED, never
+           * raw-summed into a total denominated in another currency. */
+          const spvBaseCurrency =
+            spvById.get(`spv_mig_${sha256Hex(p.partnerSpvId).slice(0, 24)}`)?.currency ?? null;
+          /* If a rate is present we MUST know both currencies to pick the
+           * exponent scale. A legacy row carrying a rate but no `currency` is
+           * unconvertible — quarantine it (durable, drainable, logged) rather
+           * than guessing. Guessing is what produced the 100× error. */
+          if (p.fxRateToSpvBase && (!p.currency || !spvBaseCurrency)) {
+            log.warn?.(
+              `[spvEngineStore] backfill: position ${r.id} carries an FX rate but ` +
+              `currency=${String(p.currency)} / spvBase=${String(spvBaseCurrency)} — ` +
+              `cannot determine the ISO-4217 exponent scale; quarantining.`,
+            );
+            quarantined++;
+            continue;
+          }
+          const conv = convertMinorUnits(
+            p.positionAmountMinor,
+            p.currency ?? spvBaseCurrency,
+            spvBaseCurrency ?? p.currency,
+            p.fxRateToSpvBase,
+          );
+          if (!conv.ok) {
+            log.warn?.(
+              `[spvEngineStore] backfill: position ${r.id} refused — ${conv.message}`,
+            );
+            quarantined++;
+            continue;
+          }
+          const normalizedMinor = conv.minor;
           // v26.4.0-fix2 (Opus DEFECT-17): resolve partnerId from the engine
           // parent first (authoritative post-migration); fall back to the
           // legacy spvs row only if the engine hasn't been populated yet.
@@ -2333,11 +3166,37 @@ export function backfillLegacyChildCommitments(): { positions: number; fundCommi
           // Skip cancelled / withdrawn commitments — they must not be recreated
           // as active `review` subscriptions.
           if (c.status === "cancelled" || c.status === "withdrawn") continue;
-          // FX normalization if a rate is present on the source row.
-          const rateNum = c.fxRateToFundBase ? Number(c.fxRateToFundBase) : NaN;
-          const normalizedMinor = Number.isFinite(rateNum) && rateNum > 0
-            ? Math.round(c.commitmentMinor * rateNum)
-            : c.commitmentMinor;
+          /* WAVE 35 · F5 (backfill site 4 of 4) — identical defect to the
+           * position backfill above: the exponent re-scale was missing, so a
+           * JPY commitment landed in a USD fund 100× too small. A commitment
+           * that cannot be converted is quarantined, never raw-summed. */
+          const fundBaseCurrency =
+            spvById.get(`spv_mig_${sha256Hex(c.partnerFundId).slice(0, 24)}`)?.currency ?? null;
+          /* Same rule as the position backfill above: a rate with an unknown
+           * currency pair is unconvertible, so quarantine rather than guess. */
+          if (c.fxRateToFundBase && (!c.currency || !fundBaseCurrency)) {
+            log.warn?.(
+              `[spvEngineStore] backfill: fund commitment ${r.id} carries an FX rate ` +
+              `but currency=${String(c.currency)} / fundBase=${String(fundBaseCurrency)} — ` +
+              `cannot determine the ISO-4217 exponent scale; quarantining.`,
+            );
+            quarantined++;
+            continue;
+          }
+          const conv = convertMinorUnits(
+            c.commitmentMinor,
+            c.currency ?? fundBaseCurrency,
+            fundBaseCurrency ?? c.currency,
+            c.fxRateToFundBase,
+          );
+          if (!conv.ok) {
+            log.warn?.(
+              `[spvEngineStore] backfill: fund commitment ${r.id} refused — ${conv.message}`,
+            );
+            quarantined++;
+            continue;
+          }
+          const normalizedMinor = conv.minor;
           // Resolve partnerId from the parent fund. Funds share the `spvs`
           // table (funds are spv_type='fund' in the engine, but the workspace
           // layer stores them separately). Try the parent engine record
@@ -2494,10 +3353,33 @@ export function engineRecordCapitalCall(args: {
 }
 
 /** Wave B Stage 2 — recordDistribution adapter (spv_distributions).
- *  I-2 invariant (distribution ≤ commitment) is enforced inside
- *  spvFundStore.recordDistribution and throws
- *  INVARIANT_DISTRIBUTION_EXCEEDS_COMMITMENTS. The adapter route re-maps
- *  that to a 422 (see spvLegacyAdapters). */
+ *
+ *  WAVE 3D / ITEM 1 — THIS ADAPTER IS NOW FAIL-CLOSED, at the writer.
+ *
+ *  W3 REVIEW A, CRITICAL: this exported function was the reachable head of a
+ *  SECOND distribution write path. It delegated to the old
+ *  `spvFundStore.recordDistribution`, which inserted straight into the legacy
+ *  plural `spv_distributions` with NO allocator, NO COMBINED_CARRY_EXCEEDS_CAP,
+ *  NO per-LP allocation and NO settlement authorization. The HTTP route was
+ *  closed at spvLegacyAdapters.ts:393-403, but the API stayed callable from
+ *  code — which is exactly the class of hole this wave exists to remove.
+ *
+ *  The delegation target is unchanged in SHAPE and now throws
+ *  `LEGACY_DISTRIBUTION_LEDGER_DISABLED` unconditionally, so this adapter fails
+ *  closed too. It is intentionally NOT deleted: it stays an exported function
+ *  (server/__tests__/waveB_retirement_guard.test.ts:217 pins that export) and a
+ *  loud throw here is strictly safer than a caller silently binding to
+ *  `undefined` or a later wave re-adding its own INSERT.
+ *
+ *  MIGRATE TO: `spvEngineStore.recordDistribution` — the one authoritative
+ *  guarded transaction, which resolves the DB-driven combined-carry cap, runs
+ *  the nested integer allocator, requires a settlement authorization for any
+ *  carry leg, and writes the canonical singular `spv_distribution`.
+ *
+ *  Tests that need a legacy plural fixture row use
+ *  `spvFundStore.__unsafeSeedLegacyDistributionRowForTests` (NODE_ENV-guarded),
+ *  which still enforces I-2 and throws
+ *  INVARIANT_DISTRIBUTION_EXCEEDS_COMMITMENTS. */
 export function engineRecordDistribution(args: {
   partnerId: string;
   spvId: string;
@@ -2586,9 +3468,25 @@ export async function hydrateSpvEngineStore(): Promise<void> {
       mandateBySpv.set(r.spv_id, rowToMandate(r));
       chainTip["spv_mandate"] = r.curr_hash;
     }
-    for (const r of db.prepare(`SELECT * FROM spv_fee ORDER BY created_at ASC`).all() as any[]) {
-      pushInto(feesBySpv, r.spv_id, rowToFee(r));
-      chainTip["spv_fee"] = r.curr_hash;
+    /* WAVE 5 / S-3 — the fee load gets its OWN try/catch and records a durable
+     * verdict. Previously it sat inside the one big try whose handler just
+     * log.warn'd and continued, leaving `feesBySpv` EMPTY; `effectiveFee` then
+     * returned null for every layer, `hasUnsettledFixedFees` skipped every
+     * layer and returned FALSE, and the FEES_UNPAID gate at the cap-table
+     * commit route silently OPENED. A read failure must degrade to "fees
+     * unknown, stay shut", never to "all settled". */
+    try {
+      let feeRows = 0;
+      for (const r of db.prepare(`SELECT * FROM spv_fee ORDER BY created_at ASC`).all() as any[]) {
+        pushInto(feesBySpv, r.spv_id, rowToFee(r));
+        chainTip["spv_fee"] = r.curr_hash;
+        feeRows++;
+      }
+      recordFeeHydration("ok", feeRows, null);
+    } catch (feeErr) {
+      recordFeeHydration("failed", 0, (feeErr as Error).message);
+      log.warn("[spvEngineStore] spv_fee hydration FAILED — fee gates fail closed:", (feeErr as Error).message);
+      throw feeErr;
     }
     for (const r of db.prepare(`SELECT * FROM spv_subscription ORDER BY created_at ASC`).all() as any[]) {
       pushInto(subsBySpv, r.spv_id, rowToSub(r));
@@ -2701,6 +3599,10 @@ function rowToDeployment(r: any): SpvDeploymentDTO {
 function rowToDistribution(r: any): SpvDistributionDTO {
   return {
     id: r.id, spvId: r.spv_id, event: r.event, grossProceedsMinor: r.gross_proceeds_minor, currency: r.currency,
+    /* WAVE 6 / SC-3 — read back the classification. A row written before 0153
+       has no column at all; deriving from `event` here matches exactly what the
+       migration's backfill will write, so the UI never differs before/after. */
+    distributionType: r.distribution_type ?? distributionTypeFromEvent(r.event),
     waterfall: jparse(r.waterfall_json, []), allocations: jparse(r.allocations_json, []),
     gpCarryMinor: r.gp_carry_minor, platformCarryMinor: r.platform_carry_minor, status: r.status,
     createdAt: r.created_at, createdBy: r.created_by, revisionHash: r.curr_hash,

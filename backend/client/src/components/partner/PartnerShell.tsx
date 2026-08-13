@@ -7,6 +7,9 @@
  * badges and the page body. The sidebar nav lives in CollectiveShell.
  */
 import { ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { apiRequest } from "@/lib/queryClient";
+import { resolvePersona, type MfcrmCapability } from "@/lib/partner/mfcrmPersona";
 import type { PartnerTier, PartnerSubRole, PartnerStatus } from "@/lib/partner/useRequirePartnerRole";
 // v25.46 BLOCKER FIX #4 (Tier 9 #73) — Consortium Partner workspace consumes the
 // canonical Capavate primitives (PageHeader + AppCard) instead of ad-hoc chrome.
@@ -68,6 +71,52 @@ function PartnerStatusBanner({ status }: { status: PartnerStatus }) {
   );
 }
 
+/**
+ * WAVE 20 / FE-15 — the partner's Managed-Founder PERSONA, shown beside tier and
+ * sub-role on every partner page header.
+ *
+ * Tier and sub-role describe the partner's COMMERCIAL standing. Neither says
+ * what KIND of firm this is, yet firm type is what decides which of the 17
+ * persona routes the partner may call at all
+ * (`server/managedFounderPersonaRoutes.ts`). A user moving between the Managed
+ * Founders workspace and the persona tools had no persistent indication of
+ * which persona the server would resolve for them.
+ *
+ * DB-driven: the label comes from `GET /api/partner/me/mfcrm/capability`
+ * (`server/managedFounderRoutes.ts:70`) through the shared resolver, which is
+ * the same function the persona PAGE uses — so the header can never disagree
+ * with the surface it introduces.
+ *
+ * RENDERS NOTHING when there is no persona (loading, error, unclassified, or a
+ * firm type with no persona surface). That is deliberate and is NOT the
+ * fabricated-empty-state failure rule 3 forbids: this badge is an identity
+ * label, not a data surface, and inventing a persona for a firm that has none —
+ * or showing a stale one when the profile cannot be read — would be actively
+ * misleading. The refusal ITSELF is rendered, in full, on the persona page
+ * (`PartnerMfcrmPersonas.tsx`), which is where a partner goes to act.
+ */
+function PartnerPersonaBadge() {
+  const capQ = useQuery<{ capability: MfcrmCapability }>({
+    queryKey: ["/api/partner/me/mfcrm/capability"],
+    queryFn: async () => (await apiRequest("GET", "/api/partner/me/mfcrm/capability")).json(),
+    /* Shares the persona page's cache key, so navigating between them costs no
+     * extra request and the two can never show different personas. */
+    staleTime: 60_000,
+    retry: false,
+  });
+  const persona = resolvePersona(capQ.data?.capability ?? null);
+  if (!persona) return null;
+  return (
+    <span
+      className="rounded-full px-2 py-0.5 text-xs font-medium bg-teal-100 text-teal-900"
+      data-testid="partner-persona-badge"
+      title={persona.blurb}
+    >
+      {persona.label}
+    </span>
+  );
+}
+
 export function PartnerShell({
   children,
   title,
@@ -101,6 +150,12 @@ export function PartnerShell({
               <span className="text-sm font-medium text-[var(--cv-color-text)]" data-testid="partner-name">{partnerName}</span>
               <TierBadge tier={tier} />
               <SubRoleBadge subRole={subRole} />
+              {/* WAVE 20 / FE-15 — persona badge. Added as a SIBLING element in
+                  the actions slot, never by appending text inside TierBadge or
+                  SubRoleBadge: the silent-drop guard diffs text nodes, so text
+                  appended inside an existing node reads as a REMOVAL plus an
+                  addition. A new sibling is purely additive. */}
+              <PartnerPersonaBadge />
             </>
           }
         />

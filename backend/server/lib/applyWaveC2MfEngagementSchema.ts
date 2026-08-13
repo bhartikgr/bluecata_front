@@ -167,6 +167,40 @@ export function applyWaveC2MfEngagementSchema(db: DbLike): void {
           `ALTER TABLE mf_engagement_event ADD COLUMN partner_attribution_id TEXT REFERENCES partner_attributions(id);`,
         ],
         ["event_data_json", `ALTER TABLE mf_engagement_event ADD COLUMN event_data_json TEXT;`],
+
+        // ── WAVE 38 · FINAL GATE RUN — the ledger primitives 0183 added. ──
+        // Row 4's migration rebuilt `mf_engagement_event` to the canonical
+        // Wave 0 event shape and `managedFounderStore.recordEvent` now writes
+        // `actor_id` and `seq`. But TWO OTHER PLACES create this table with
+        // the pre-0183 8-column shape: `server/db/connection.ts` (SACRED —
+        // read, never edit) and `server/lib/mfcrmSchema.ts`, both with
+        // CREATE TABLE IF NOT EXISTS. On any database that never runs
+        // `migrations/` — i.e. every test fixture, and any dev DB where
+        // connection.ts's DDL block wins the race — the writer therefore hit
+        // `table mf_engagement_event has no column named actor_id` and every
+        // engagement write failed fail-closed (STRICT_PERSIST_FAILED). The
+        // full-suite gate run caught it in mfcrm_gates / mfcrm_isolation /
+        // mfcrm_moneypath / mfcrm_persona; it was NOT caught by the row-4
+        // schema test, which asserts against a migrated database only.
+        // This is the correct home for the repair: connection.ts is sacred,
+        // and this function is already the additive self-heal that
+        // connection.ts:503 calls immediately after its own DDL block. On a
+        // 0183-migrated database every column below already exists and each
+        // ALTER is skipped.
+        //
+        // The DEFAULTs exist ONLY because SQLite forbids adding a NOT NULL
+        // column without one to a table that may already hold rows; they are
+        // the same values 0183's backfill uses ('system', 1). No caller relies
+        // on them — `recordEvent` always supplies both explicitly, and the
+        // seq it supplies is the real per-parent MAX(seq)+1.
+        ["actor_id", `ALTER TABLE mf_engagement_event ADD COLUMN actor_id TEXT NOT NULL DEFAULT 'system';`],
+        ["request_id", `ALTER TABLE mf_engagement_event ADD COLUMN request_id TEXT;`],
+        ["idempotency_key", `ALTER TABLE mf_engagement_event ADD COLUMN idempotency_key TEXT;`],
+        ["source_event_type", `ALTER TABLE mf_engagement_event ADD COLUMN source_event_type TEXT;`],
+        ["source_event_id", `ALTER TABLE mf_engagement_event ADD COLUMN source_event_id TEXT;`],
+        ["reverses_id", `ALTER TABLE mf_engagement_event ADD COLUMN reverses_id TEXT;`],
+        ["seq", `ALTER TABLE mf_engagement_event ADD COLUMN seq INTEGER NOT NULL DEFAULT 1;`],
+        ["deleted_at", `ALTER TABLE mf_engagement_event ADD COLUMN deleted_at TEXT;`],
       ];
 
       for (const [col, ddl] of eventAdds) {

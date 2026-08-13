@@ -40,6 +40,12 @@ import {
  type MaIntelligence,
 } from "@shared/schema";
 import { useMaIntelligence } from "@/hooks/useMaIntelligence"; /* W7 — shared M&A intel hook */
+/* WAVE 18 ORP-040 — DSC submit + cap-table-scoped read-back. POST
+   /api/investor/dsc/submit (server/adminDscRoutes.ts:332) had zero client callers.
+   Mounted here because the route's own authorisation predicate is "caller is on
+   THIS company's cap table", so the company page is the only surface where the
+   control is meaningful. */
+import { InvestorDscSubmitPanel } from "@/components/investor/InvestorDscSubmitPanel";
 import NotFound from "@/pages/not-found";
 
 type Inv = {
@@ -429,6 +435,8 @@ export default function InvestorCompanyDetail({
  {/* Sprint 23 — MESSAGES (cap-table-gated public threads only) */}
  <TabsContent value="messages" className="space-y-4">
  <CapTableMessagesPanel companyId={id} companyName={c?.name ?? ""} />
+ {/* WAVE 18 ORP-040 — additive sibling element inside the same tab panel. */}
+ <InvestorDscSubmitPanel companyId={id} />
  </TabsContent>
 
  {/* YOUR DECISION */}

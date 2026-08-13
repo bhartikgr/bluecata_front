@@ -73,23 +73,45 @@ import {
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { fmtUSD } from "@/lib/format";
+/* WAVE 4A (RS-1/RS-2) — ISO-4217-aware minor-unit helpers. The restored
+   schedule editors below convert MAJOR→minor with toMinor(), never a
+   hardcoded ×100, preserving the v25.37/v25.40 currency fixes. */
+import {
+  labelFor,
+  FEE_KIND_LABELS,
+  CADENCE_LABELS,
+  SCOPE_KIND_LABELS,
+} from "@/lib/collectiveLabels";
+/* WAVE 3A (P-1) — the ONE shared fraction→percent display helper. Storage is
+   unchanged and stays fractional; only the render gains the missing ×100. */
+import { formatFractionAsPercent } from "@/lib/percentDisplay";
+import { currencyExponent, formatMinor, fromMinor, toMinor } from "@/lib/currency";
+import { minorToMajorString } from "@/lib/moneyDisplay";
 
 /* ==========================================================================
  * Money helpers (single implementation for the whole fee area — the audit's
  * 2.1 finding was that every page re-implemented its own unit conversion).
  * ======================================================================== */
 
-/** minor units (cents) → major-unit string for an <Input value>. */
-export function minorToMajor(minor: number | null | undefined): string {
+/** minor units → major-unit string for an <Input value>.
+ *  WAVE 21 ITEM 5: `currency` is now a parameter and the exponent comes
+ *  from ISO 4217. Defaulting to USD preserves every existing call site
+ *  byte-for-byte while making a JPY form correct once the currency is
+ *  threaded through (see the report for the call sites still to thread). */
+export function minorToMajor(minor: number | null | undefined, currency = "USD"): string {
   if (minor === null || minor === undefined || !Number.isFinite(minor)) return "";
-  return (minor / 100).toFixed(2);
+  return minorToMajorString(minor, currency);
 }
 
 /** major-unit dollar string → minor units (cents). null when invalid. */
-export function majorToMinor(s: string): number | null {
+export function majorToMinor(s: string, currency = "USD"): number | null {
   const raw = (s ?? "").trim();
-  if (!/^\d+(\.\d{1,2})?$/.test(raw)) return null;
-  const cents = Math.round(Number(raw) * 100);
+  /* WAVE 21 ITEM 5: was a hardcoded 2-decimal guard. */
+  const _exp = currencyExponent(currency);
+  if (!new RegExp(_exp > 0 ? `^\\d+(\\.\\d{1,${_exp}})?$` : "^\\d+$").test(raw)) return null;
+  /* WAVE 21 ITEM 5: parse partner must scale by the SAME exponent the
+     display side used, or an edit round-trip silently rescales. */
+  const cents = toMinor(Number(raw), currency);
   if (!Number.isSafeInteger(cents) || cents < 0) return null;
   return cents;
 }
@@ -104,6 +126,11 @@ export type SourceOfTruthUnit =
   | "fraction (0.10 = 10%)"
   | "integer (days)"
   | "integer (count)"
+  /* WAVE 3A (P-1) — `pricing_models.discount_codes_json.amount` is polymorphic:
+     its unit depends on the row's `kind`. It was previously signed as "text",
+     which told an admin nothing and let the percent/fraction ambiguity survive.
+     00_SHARED_STANDARDS.md §1.1 requires the convention to be named. */
+  | "discount amount — percent: fraction (1 = 100%, 0.3 = 30%) · flat_minor: currency_minor (cents) · trial_extension_days: integer (days)"
   | "text";
 
 export interface SourceOfTruthProps {
@@ -250,6 +277,187 @@ function FieldWithSource({
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
       <div className="min-w-0 space-y-3">{children}</div>
       <SourceOfTruth {...source} />
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * WAVE 14 / FE-16 — RENEWAL WORKER CONFIG EDITOR.
+ *
+ * REPLACES a read-only list that printed four environment-variable NAMES and the
+ * word "hard-coded" as its account of how Collective renewal billing is
+ * controlled. Those four values decide whether members are charged, how often,
+ * how far ahead, and how many gateway failures precede a `past_due` flip — so
+ * "not editable anywhere in the product" was the defect, not a documentation gap.
+ *
+ * The bounds on each input are the SAME bounds the table's CHECK constraints
+ * enforce. The database remains the fence; these are only there so an admin gets
+ * a sentence instead of a constraint error.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+interface RenewalWorkerConfigWire {
+  enabled: boolean;
+  pollIntervalMs: number;
+  leadWindowSec: number;
+  maxConsecutiveFailures: number;
+  quietAfterWriteMin: number;
+  envOverrideAllowed: boolean;
+  source: "db_row" | "env_override" | "missing_row_fail_closed";
+  updatedAt: string | null;
+  updatedBy: string | null;
+}
+
+const RENEWAL_FIELD_BOUNDS: Record<string, { min: number; max: number; label: string; help: string }> = {
+  pollIntervalMs: { min: 1000, max: 86_400_000, label: "Poll interval (ms)", help: "How often the worker sweeps for due renewals." },
+  leadWindowSec: { min: 0, max: 2_592_000, label: "Lead window (seconds)", help: "How far before period end a renewal is minted." },
+  maxConsecutiveFailures: { min: 1, max: 100, label: "Failures before past_due", help: "Consecutive gateway errors on one row before it is escalated." },
+  quietAfterWriteMin: { min: 0, max: 1440, label: "Quiet window (minutes)", help: "A row just touched by a renewal is skipped for this long, so a slow webhook does not cause repeat intents." },
+};
+
+function RenewalWorkerConfigEditor() {
+  const { toast } = useToast();
+  const [draft, setDraft] = useState<Partial<RenewalWorkerConfigWire> | null>(null);
+
+  const cfgQuery = useQuery<{ ok: boolean; config: RenewalWorkerConfigWire; envValue: string | null; running: boolean }>({
+    queryKey: ["/api/admin/collective/renewal-worker-config"],
+    retry: false,
+    queryFn: async () => (await apiRequest("GET", "/api/admin/collective/renewal-worker-config")).json(),
+  });
+
+  const save = useMutation({
+    mutationFn: async (body: Partial<RenewalWorkerConfigWire>) =>
+      (await apiRequest("PUT", "/api/admin/collective/renewal-worker-config", body)).json(),
+    onSuccess: (data: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/collective/renewal-worker-config"] });
+      setDraft(null);
+      toast({
+        title: "Renewal worker configuration saved",
+        description: data?.overridden
+          ? "Saved — but the environment variable is still overriding the stored value. Turn off env override to make the database final."
+          : (data?.appliesAt ?? "Applies on the next sweep."),
+        variant: data?.overridden ? "destructive" : undefined,
+      });
+    },
+    onError: (e: unknown) =>
+      toast({ title: "Not saved", description: e instanceof Error ? e.message : String(e), variant: "destructive" }),
+  });
+
+  if (cfgQuery.isLoading) {
+    return <div className="h-4 w-48 animate-pulse rounded bg-muted" data-testid="renewal-worker-config-loading" />;
+  }
+  if (cfgQuery.isError || !cfgQuery.data) {
+    return (
+      <p className="text-sm text-muted-foreground" data-testid="renewal-worker-config-error">
+        Could not read the renewal worker configuration. The worker treats an unreadable configuration row as DISABLED, so
+        no renewals are being minted while this is the case.
+      </p>
+    );
+  }
+  const cfg = cfgQuery.data.config;
+  const eff = <K extends keyof RenewalWorkerConfigWire>(k: K): RenewalWorkerConfigWire[K] =>
+    (draft && k in draft ? (draft[k] as RenewalWorkerConfigWire[K]) : cfg[k]);
+  const dirty = draft !== null && Object.keys(draft).length > 0;
+
+  return (
+    <div className="space-y-4" data-testid="renewal-worker-config-editor">
+      {cfg.source === "env_override" && (
+        <div className="rounded-md border border-amber-500 bg-amber-500/10 p-3 text-sm" data-testid="renewal-worker-env-override">
+          <strong>The environment is overriding the stored setting.</strong> <code>COLLECTIVE_RENEWAL_WORKER_ENABLED</code> is{" "}
+          <code>{cfgQuery.data.envValue ?? "unset"}</code>, and this row permits env override, so the effective state is{" "}
+          <strong>{cfg.enabled ? "ENABLED" : "DISABLED"}</strong> regardless of what is saved below. Clear "allow environment
+          override" to make the database final.
+        </div>
+      )}
+      {cfg.source === "missing_row_fail_closed" && (
+        <div className="rounded-md border border-destructive bg-destructive/10 p-3 text-sm" data-testid="renewal-worker-fail-closed">
+          <strong>No configuration row.</strong> The worker fails closed and is minting no renewals. Run the pending
+          migrations to restore the singleton row.
+        </div>
+      )}
+
+      <label className="flex items-start gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={!!eff("enabled")}
+          onChange={(e) => setDraft((d) => ({ ...(d ?? {}), enabled: e.target.checked }))}
+          data-testid="input-renewal-worker-enabled"
+        />
+        <span>
+          <strong>Renewal worker enabled</strong>
+          <span className="block text-xs text-muted-foreground">
+            When off, no Collective renewal intents are minted at all. Effective state is shown above if the environment is
+            overriding this.
+          </span>
+        </span>
+      </label>
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        {(Object.keys(RENEWAL_FIELD_BOUNDS) as Array<keyof typeof RENEWAL_FIELD_BOUNDS>).map((key) => {
+          const b = RENEWAL_FIELD_BOUNDS[key];
+          const value = eff(key as keyof RenewalWorkerConfigWire) as number;
+          const invalid = !Number.isSafeInteger(Number(value)) || Number(value) < b.min || Number(value) > b.max;
+          return (
+            <div key={key}>
+              <Label htmlFor={`renewal-${key}`} className="text-xs">
+                {b.label}
+              </Label>
+              <Input
+                id={`renewal-${key}`}
+                value={String(value ?? "")}
+                inputMode="numeric"
+                className={invalid ? "border-destructive" : ""}
+                onChange={(e) =>
+                  setDraft((d) => ({ ...(d ?? {}), [key]: e.target.value === "" ? "" : Number(e.target.value) }))
+                }
+                data-testid={`input-renewal-${key}`}
+              />
+              <p className="mt-1 text-xs text-muted-foreground">{b.help}</p>
+              {invalid && (
+                <p className="mt-1 text-xs text-destructive" data-testid={`renewal-${key}-invalid`}>
+                  Must be a whole number between {b.min} and {b.max} — the same range the database enforces.
+                </p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <label className="flex items-start gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={!!eff("envOverrideAllowed")}
+          onChange={(e) => setDraft((d) => ({ ...(d ?? {}), envOverrideAllowed: e.target.checked }))}
+          data-testid="input-renewal-env-override-allowed"
+        />
+        <span>
+          <strong>Allow environment override</strong>
+          <span className="block text-xs text-muted-foreground">
+            Kept deliberately: it is the emergency off-switch for an operator without console access. While this is on, the
+            environment variable can flip the worker regardless of the setting above — and every such override is logged by
+            name so it is never silent.
+          </span>
+        </span>
+      </label>
+
+      <div className="flex items-center gap-3">
+        <Button
+          size="sm"
+          disabled={!dirty || save.isPending}
+          onClick={() => save.mutate(draft ?? {})}
+          data-testid="button-save-renewal-worker-config"
+        >
+          Save
+        </Button>
+        {dirty && (
+          <Button size="sm" variant="ghost" onClick={() => setDraft(null)} data-testid="button-reset-renewal-worker-config">
+            Discard changes
+          </Button>
+        )}
+        <span className="text-xs text-muted-foreground" data-testid="renewal-worker-config-provenance">
+          Stored {cfg.updatedAt ? new Date(cfg.updatedAt).toLocaleString() : "never"}
+          {cfg.updatedBy ? ` by ${cfg.updatedBy}` : ""} · applies on the next sweep, no restart
+        </span>
+      </div>
     </div>
   );
 }
@@ -664,7 +872,7 @@ function CapavateAnnualTab() {
                     </Badge>
                   </TableCell>
                   <TableCell className="text-right">
-                    {fmtUSD(m.basePriceMinor / 100, { currency: m.currency })}
+                    {formatMinor(m.basePriceMinor, m.currency || "USD")}
                   </TableCell>
                   <TableCell>v{m.version}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">
@@ -900,7 +1108,7 @@ function CollectiveTiersTab() {
               >
                 <div className="text-sm">
                   <code>collective.member_subscription.{t.slug}</code> —{" "}
-                  {fmtUSD(t.amountMinor / 100, { currency: t.currency })}{" "}
+                  {formatMinor(t.amountMinor, t.currency || "USD")}{" "}
                   <Badge variant="outline">deprecated</Badge>
                 </div>
               </FieldWithSource>
@@ -1046,7 +1254,22 @@ function ConsortiumPromotionsTab() {
             Legacy slug aliases still resolve for back-compat:{" "}
             <code>partner_basic → catalyst</code>, <code>partner_pro → builder</code>,{" "}
             <code>partner_enterprise → amplifier</code>. Unknown slugs fail closed.
-            Source: <code>server/lib/partnerTiers.ts</code>.
+            Source: <code>server/lib/partnerTiers.ts</code>.{" "}
+            {/* WAVE 7 X-C3 — the alias RESOLVES but no longer has a price row of
+                its own. Said out loud here because an admin who remembers the
+                $2,499 line disappearing from the list above deserves to know it
+                was retired on purpose and what legacy partners are billed now. */}
+            {/* WAVE 7B A-21 — owner ruling: all three legacy rows are stale in
+                the same way, so all three are now retired. The alias MAP above
+                is deliberately kept; only the duplicate price rows are gone. */}
+            None of the three legacy slugs has its own subscription-tier row any
+            more: <strong>partner_enterprise</strong> was retired by migration
+            0163, and <strong>partner_basic</strong> and{" "}
+            <strong>partner_pro</strong> by migration 0164, because each merely
+            duplicated the price of the canonical tier it aliases
+            (<code>amplifier</code> $1,499, <code>catalyst</code> $499,{" "}
+            <code>builder</code> $999). A partner still carrying a legacy slug is
+            billed at its canonical tier's price — no partner's price changed.
           </span>
         </div>
       </AppCard>
@@ -1142,7 +1365,19 @@ function ConsortiumPromotionsTab() {
           <FieldWithSource
             source={{
               table: "partner_fee_schedules",
-              column: "amount_minor / pct_bps",
+              /* WAVE 5 / P-9 — `pct_bps` was a PHANTOM COLUMN. It does not exist
+               * on partner_fee_schedules (server/db/connection.ts:1964-1983
+               * declares `amount_minor INTEGER NOT NULL` and no percent column at
+               * all) and appears in no migration. This provenance label is the
+               * admin's map of where a number comes from, so a column named here
+               * that does not exist sends an operator hunting for a rate that is
+               * not stored — or, worse, invites someone to "restore" a basis-point
+               * column and split the fee representation in two. The percent-shaped
+               * partner number lives in a DIFFERENT table,
+               * partner_commission_rate_config.rate, and is already rendered
+               * correctly as a FRACTION × 100 a few lines above (:1146). Corrected
+               * to the columns that actually exist. */
+              column: "amount_minor (fixed fee, integer minor units)",
               unit: "currency_minor (cents)",
               editableHere: false,
               editableVia:
@@ -1291,7 +1526,7 @@ function ApplicationFeeTab() {
                   <code>{f.key}</code>
                 </TableCell>
                 <TableCell className="text-right">
-                  {fmtUSD(f.amountMinor / 100, { currency: f.currency })}
+                  {formatMinor(f.amountMinor, f.currency || "USD")}
                 </TableCell>
                 <TableCell>{f.currency}</TableCell>
                 <TableCell>{f.billingPeriod ?? "—"}</TableCell>
@@ -1345,7 +1580,7 @@ function DiscountCodesTab() {
       </AppCard>
 
       <AppCard>
-        <SectionTitle hint="Admin-authored discount codes across every pricing model.">
+        <SectionTitle hint="Admin-authored discount codes across every pricing model. Percent codes are STORED AS A FRACTION (1 = 100% off, 0.3 = 30% off) — the same fraction server/paymentStore.ts multiplies the charge by — and are DISPLAYED as a percent. Enter a percent code as percent-as-written: type 100 for 100%.">
           Discount codes
         </SectionTitle>
         <div className="mt-4 space-y-6">
@@ -1362,7 +1597,12 @@ function DiscountCodesTab() {
                 source={{
                   table: "pricing_models",
                   column: "discount_codes_json",
-                  unit: "text",
+                  /* WAVE 3A (P-1) — the unit is now named, per
+                     00_SHARED_STANDARDS.md §1.1 ("any spec that states a
+                     percentage unit must name which convention it means").
+                     `amount` for kind=percent is a FRACTION; kind=flat_minor is
+                     currency minor units; kind=trial_extension_days is days. */
+                  unit: "discount amount — percent: fraction (1 = 100%, 0.3 = 30%) · flat_minor: currency_minor (cents) · trial_extension_days: integer (days)",
                   lastEditedAt: m.updatedAt ?? null,
                   lastEditedBy: m.updatedBy ?? null,
                   editableHere: true,
@@ -1394,10 +1634,17 @@ function DiscountCodesTab() {
                         </TableCell>
                         <TableCell>{c.kind}</TableCell>
                         <TableCell className="text-right">
+                          {/* WAVE 3A (P-1, DEF-007) — `c.amount` is stored as a
+                              FRACTION (VIP = 1 is 100% off, YC2025 = 0.3 is 30%)
+                              and the charge path multiplies by it directly
+                              (server/paymentStore.ts:166). This render printed
+                              the raw fraction with a % sign, so a 100%-off code
+                              read "1%" on screen. Storage is untouched; the ×100
+                              belongs here, in the display. */}
                           {c.kind === "percent"
-                            ? `${c.amount}%`
+                            ? formatFractionAsPercent(c.amount)
                             : c.kind === "flat_minor"
-                              ? fmtUSD(c.amount / 100, { currency: m.currency })
+                              ? formatMinor(c.amount, m.currency || "USD")
                               : `${c.amount} days`}
                         </TableCell>
                         <TableCell>{c.expiresOn ?? "—"}</TableCell>
@@ -1441,11 +1688,33 @@ function DiscountCodesTab() {
               testId: "legacy-coupon-compat",
             }}
           >
+            {/* WAVE 3A (P-1) — THE SELF-CONTRADICTION, RESOLVED.
+
+                Until this wave the discount-codes table above printed the raw
+                stored fraction ("0.1%", "0.2%", "0.05%") while THIS paragraph,
+                directly below it on the same screen, said 10% / 20% / 5%. The
+                page contradicted itself.
+
+                THIS PARAGRAPH WAS ALWAYS THE CORRECT ONE — CP10 really is 10%
+                off, and the charge path has always applied 10%
+                (server/paymentStore.ts:166 multiplies by the stored 0.1). So it
+                is CORRECTED IN PLACE, not deleted: the numbers stay, and the
+                sentence beneath now states the storage unit explicitly so the
+                two surfaces can never be read as disagreeing again. Deleting
+                these figures would have thrown away the only text that was
+                telling the truth. */}
             <p className="text-sm" data-testid="hardcoded-coupon-list">
               <code>CP10</code> = 10% · <code>FOUNDER20</code> = 20% ·{" "}
               <code>COLLECTIVE5</code> = 5%. This carrier model is kept as{" "}
               <code>status: draft</code> on purpose so it never appears on public pricing
               or admin “live plan” surfaces — only the coupon lookup sees it.
+            </p>
+            <p className="mt-2 text-xs text-muted-foreground" data-testid="legacy-coupon-unit-note">
+              These are the same three codes listed in the discount-codes table above,
+              where they are stored as fractions (0.1, 0.2, 0.05) and now displayed as
+              percentages. The percentages here and the percentages there are the same
+              numbers; before this wave the table showed the unscaled fraction and the two
+              disagreed on screen.
             </p>
           </FieldWithSource>
         </div>
@@ -1584,14 +1853,14 @@ function LedgerInvoicesTab() {
                         <code>{p.id}</code>
                       </TableCell>
                       <TableCell className="text-right">
-                        {fmtUSD((p.amountCents ?? 0) / 100)}
+                        {formatMinor(p.amountCents ?? 0, "USD")}
                       </TableCell>
                       <TableCell className="text-right">
-                        {fmtUSD((p.discountCents ?? 0) / 100)}
+                        {formatMinor(p.discountCents ?? 0, "USD")}
                         {p.couponCode ? ` (${p.couponCode})` : ""}
                       </TableCell>
                       <TableCell className="text-right">
-                        {fmtUSD((p.netCents ?? 0) / 100)}
+                        {formatMinor(p.netCents ?? 0, "USD")}
                       </TableCell>
                       <TableCell>{p.state ?? "—"}</TableCell>
                     </TableRow>
@@ -1756,9 +2025,7 @@ function LedgerInvoicesTab() {
                           )}
                         </TableCell>
                         <TableCell className="text-right">
-                          {fmtUSD((inv.amountMinor ?? 0) / 100, {
-                            currency: inv.currency ?? "USD",
-                          })}
+                          {formatMinor(inv.amountMinor ?? 0, inv.currency ?? "USD")}
                         </TableCell>
                         <TableCell>{inv.status ?? "—"}</TableCell>
                         <TableCell className="text-xs text-muted-foreground">
@@ -1771,9 +2038,7 @@ function LedgerInvoicesTab() {
                             disabled={!isPaid || refund.isPending}
                             data-testid={`button-refund-invoice-${inv.id}`}
                             onClick={() => {
-                              const amt = fmtUSD((inv.amountMinor ?? 0) / 100, {
-                                currency: inv.currency ?? "USD",
-                              });
+                              const amt = formatMinor(inv.amountMinor ?? 0, inv.currency ?? "USD");
                               if (
                                 window.confirm(
                                   `Refund invoice ${inv.id} for ${amt}? This moves real money and cannot be undone from this screen.`,
@@ -1922,39 +2187,67 @@ function ConfigTab() {
       </AppCard>
 
       <AppCard>
-        <SectionTitle hint="The only dunning worker on the platform is Collective-only and env-gated OFF by default.">
+        <SectionTitle hint="WAVE 14 / FE-16 — the renewal worker is now configured from collective_renewal_worker_config and is editable here. The environment variable survives only as an emergency override, and only while the row permits it.">
           Dunning schedule
         </SectionTitle>
         <div className="mt-4 space-y-6">
           <FieldWithSource
             source={{
-              table: "— none (environment variables)",
+              table: "collective_renewal_worker_config",
               column:
-                "COLLECTIVE_RENEWAL_WORKER_ENABLED, COLLECTIVE_RENEWAL_POLL_MS, COLLECTIVE_RENEWAL_LEAD_SEC",
+                "enabled, poll_interval_ms, lead_window_sec, max_consecutive_failures, quiet_after_write_min, env_override_allowed",
               unit: "integer (count)",
-              editableHere: false,
-              editableVia: "deploy environment — server/lib/collectiveRenewalWorker.ts",
+              editableHere: true,
+              editableVia: "this panel — PUT /api/admin/collective/renewal-worker-config",
+              readEndpoint: "GET /api/admin/collective/renewal-worker-config",
               testId: "dunning-schedule",
             }}
           >
-            <ul className="text-sm space-y-1" data-testid="dunning-schedule-values">
-              <li>
-                Worker enabled: gated on{" "}
-                <code>COLLECTIVE_RENEWAL_WORKER_ENABLED === "1"</code> (OFF by default).
-              </li>
-              <li>
-                Poll interval: <code>COLLECTIVE_RENEWAL_POLL_MS</code> (default 60000 ms).
-              </li>
-              <li>
-                Lead window: <code>COLLECTIVE_RENEWAL_LEAD_SEC</code> (default 86400 s).
-              </li>
-              <li>
-                Failures before <code>past_due</code>:{" "}
-                <strong>3</strong> — hard-coded{" "}
-                <code>MAX_CONSECUTIVE_FAILURES</code>.
-              </li>
-              <li>Capavate founder equivalent: none.</li>
-            </ul>
+            <RenewalWorkerConfigEditor />
+
+            {/* NOTHING IS DROPPED. This list was the WHOLE of this panel before
+                Wave 14 — the environment-variable names and their defaults. Those
+                names still exist (the env var remains the emergency override, and
+                the poll/lead vars remain the seed values), so the reference stays,
+                now clearly labelled as the pre-FE-16 mechanism rather than as the
+                answer to "where is this configured". */}
+            <details className="rounded-md border p-3 text-sm" data-testid="dunning-schedule-env-reference">
+              <summary className="cursor-pointer text-xs uppercase tracking-wide text-muted-foreground">
+                Pre-FE-16 environment reference (kept for operators)
+              </summary>
+              <ul className="mt-2 space-y-1" data-testid="dunning-schedule-values">
+                <li>
+                  Worker enabled: gated on{" "}
+                  <code>COLLECTIVE_RENEWAL_WORKER_ENABLED === "1"</code> (OFF by default).
+                  {/* The follow-on note is its OWN node so the original text node
+                      "(OFF by default)." survives byte-identically — the drop guard
+                      fingerprints text nodes, and appending to one reads as a
+                      removal plus an addition. */}
+                  <span className="ml-1 text-xs text-muted-foreground">
+                    Now the stored <code>enabled</code> column, with this variable acting only as an override while the row
+                    allows it.
+                  </span>
+                </li>
+                <li>
+                  Poll interval: <code>COLLECTIVE_RENEWAL_POLL_MS</code> (default 60000 ms).
+                  <span className="ml-1 text-xs text-muted-foreground">
+                    Now <code>poll_interval_ms</code>.
+                  </span>
+                </li>
+                <li>
+                  Lead window: <code>COLLECTIVE_RENEWAL_LEAD_SEC</code> (default 86400 s).
+                  <span className="ml-1 text-xs text-muted-foreground">
+                    Now <code>lead_window_sec</code>.
+                  </span>
+                </li>
+                <li>
+                  Failures before <code>past_due</code>: <strong>3</strong> — hard-coded{" "}
+                  <code>MAX_CONSECUTIVE_FAILURES</code> until Wave 14; now the stored
+                  <code className="mx-1">max_consecutive_failures</code> column.
+                </li>
+                <li>Capavate founder equivalent: none.</li>
+              </ul>
+            </details>
           </FieldWithSource>
         </div>
       </AppCard>
@@ -2030,6 +2323,880 @@ function ConfigTab() {
 }
 
 /* ==========================================================================
+ * TAB 8 — Fee Schedules   (WAVE 4A, spec items RS-1 + RS-2)
+ *
+ * WHY THIS TAB EXISTS
+ * -------------------
+ * The July D2.5 consolidation folded 15 admin fee routes into `/admin/fees`.
+ * Two write surfaces did not survive the fold:
+ *
+ *   RS-1  `collective_payment_schedules` — full CRUD is served at
+ *         `server/lib/collectivePaymentAdminRoutes.ts:44/61/118/176` and had
+ *         ZERO client callers. Admins could not create, edit or expire a
+ *         Collective fee schedule from anywhere in the routed app.
+ *   RS-2  `partner_fee_schedules` — the consolidation kept the READ (the
+ *         row count in the Consortium Partner Promotions tab) and dropped the
+ *         WRITES. `POST/PATCH/DELETE /api/admin/partner-fees` were called only
+ *         from `client/src/pages/admin/PartnerFeeSchedules.tsx`, a page that is
+ *         on disk but NOT routed from `App.tsx`.
+ *
+ * The restoration finishes the consolidation instead of reversing it: the lost
+ * capability is rebuilt HERE, inside the one consolidated page, rather than by
+ * re-routing the two orphan pages (which would re-fragment the admin surface).
+ * The two legacy URLs still resolve — `App.tsx` aliases them onto this tab —
+ * so no bookmark, sidebar entry or deep link is lost.
+ *
+ * NO NEW ENDPOINTS. NO SCHEMA CHANGE. Every call below is a pre-existing,
+ * `requireAdmin`-guarded `/api/admin/*` route.
+ *
+ * UNIT CONTRACT: both tables store TRUE minor units. Inputs here take MAJOR
+ * units and convert through the shared ISO-4217-aware `toMinor()` — NOT a
+ * hardcoded ×100 — preserving the v25.37/v25.40 currency fixes that the orphan
+ * pages carried (JPY/KRW are 0-decimal, BHD/JOD/KWD are 3-decimal).
+ * ======================================================================== */
+
+interface CollectiveScheduleRow {
+  id: string;
+  scope_kind: string;
+  member_id: string | null;
+  tier: string | null;
+  chapter_id: string | null;
+  fee_kind: string;
+  amount_minor: number;
+  currency: string;
+  cadence: string;
+  effective_from: string;
+  effective_to: string | null;
+}
+
+interface PartnerFeeScheduleRow {
+  id: string;
+  tier: string | null;
+  fee_kind: string;
+  amount_minor: number;
+  currency: string;
+  size_band_min: number | null;
+  size_band_max: number | null;
+  effective_from: string;
+  effective_to: string | null;
+}
+
+/* Option sets mirror the server-side validators verbatim:
+ * collectivePaymentAdminRoutes.ts FEE_KINDS/SCOPES/TIERS/CADENCES and
+ * partnerFeeAdminRoutes.ts VALID_FEE_KINDS. */
+const CPS_FEE_KINDS = [
+  "membership_dues",
+  "event_fee",
+  "sponsorship_fee",
+  "chapter_dues",
+  "late_fee",
+] as const;
+const CPS_SCOPES = [
+  { value: "platform", label: "Platform default (all members)" },
+  { value: "tier", label: "Per-tier default" },
+  { value: "member", label: "Per-member override" },
+] as const;
+const CPS_TIERS = ["basic", "standard", "premium"] as const;
+const CPS_CADENCES = ["one_time", "monthly", "quarterly", "annual"] as const;
+
+const PFS_FEE_KINDS = [
+  "subscription_monthly",
+  "subscription_annual",
+  "spv_deployment",
+  "spv_management_per_lp_quarter",
+  "spv_closing_bonus",
+] as const;
+const PFS_TIERS = ["", "catalyst", "builder", "amplifier", "nexus", "founding_member"] as const;
+
+/** Shared <select> styling — matches the shadcn <Input> the other tabs use. */
+const SELECT_CLASS =
+  "h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
+function fmtBand(min: number | null, max: number | null, currency: string): string {
+  if (min === null && max === null) return "—";
+  const lo = min === null ? "0" : formatMinor(min, currency, { locale: "en-US" });
+  const hi = max === null ? "∞" : formatMinor(max, currency, { locale: "en-US" });
+  return `${lo} – ${hi}`;
+}
+
+/** major-unit string → integer minor units, or throw a legible error. */
+function majorStringToMinor(major: string, currency: string): number {
+  const n = parseFloat(major || "0");
+  if (!Number.isFinite(n) || n < 0) throw new Error("invalid_amount");
+  return toMinor(n, currency);
+}
+
+/* ---------- RS-1: Collective payment schedules ------------------------- */
+
+function CollectiveScheduleSection() {
+  const { toast } = useToast();
+  const [feeKindFilter, setFeeKindFilter] = useState("__all__");
+  const [showCreate, setShowCreate] = useState(false);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState({ amountMajor: "", cadence: "annual", effectiveTo: "" });
+  const [form, setForm] = useState({
+    scopeKind: "platform",
+    feeKind: "membership_dues",
+    tier: "basic",
+    memberId: "",
+    chapterId: "",
+    amountMajor: "",
+    currency: "USD",
+    cadence: "annual",
+  });
+
+  const qs = new URLSearchParams({ includeExpired: "false" });
+  if (feeKindFilter !== "__all__") qs.set("feeKind", feeKindFilter);
+  const listUrl = `/api/admin/collective-payments/schedules?${qs.toString()}`;
+  const q = useAdminQuery<{ ok?: boolean; schedules?: CollectiveScheduleRow[]; total?: number }>(listUrl);
+  const rows = q.data?.schedules ?? [];
+
+  const invalidate = () =>
+    queryClient.invalidateQueries({
+      predicate: (query) =>
+        String(query.queryKey?.[0] ?? "").startsWith("/api/admin/collective-payments/schedules"),
+    });
+
+  const createMut = useMutation({
+    mutationFn: async () => {
+      const currency = (form.currency || "USD").trim().toUpperCase();
+      const body: Record<string, unknown> = {
+        scopeKind: form.scopeKind,
+        feeKind: form.feeKind,
+        amountMinor: majorStringToMinor(form.amountMajor, currency),
+        currency,
+        cadence: form.cadence,
+        chapterId: form.chapterId || null,
+      };
+      if (form.scopeKind === "tier") body.tier = form.tier;
+      if (form.scopeKind === "member") body.memberId = form.memberId;
+      const res = await apiRequest("POST", "/api/admin/collective-payments/schedules", body);
+      const j = await res.json();
+      if (!res.ok || j?.ok === false) throw new Error(j?.error || `create_failed_${res.status}`);
+      return j;
+    },
+    onSuccess: () => {
+      invalidate();
+      setShowCreate(false);
+      toast({ title: "Schedule created" });
+    },
+    onError: (e: unknown) =>
+      toast({ title: "Create failed", description: String((e as Error)?.message ?? e), variant: "destructive" }),
+  });
+
+  const updateMut = useMutation({
+    mutationFn: async (row: CollectiveScheduleRow) => {
+      const body: Record<string, unknown> = {
+        amountMinor: majorStringToMinor(editDraft.amountMajor, row.currency),
+        cadence: editDraft.cadence,
+        effectiveTo: editDraft.effectiveTo ? editDraft.effectiveTo : null,
+      };
+      const res = await apiRequest("PATCH", `/api/admin/collective-payments/schedules/${row.id}`, body);
+      const j = await res.json();
+      if (!res.ok || j?.ok === false) throw new Error(j?.error || `update_failed_${res.status}`);
+      return j;
+    },
+    onSuccess: () => {
+      invalidate();
+      setEditId(null);
+      toast({ title: "Schedule updated" });
+    },
+    onError: (e: unknown) =>
+      toast({ title: "Update failed", description: String((e as Error)?.message ?? e), variant: "destructive" }),
+  });
+
+  const expireMut = useMutation({
+    mutationFn: async (id: string) => {
+      /* W5.2 precedent, preserved from the retired page: confirm before the
+         destructive expire. Cancelling is a silent no-op. */
+      if (
+        typeof window !== "undefined" &&
+        !window.confirm(
+          "Expire this fee schedule? It will no longer apply to members. This cannot be undone.",
+        )
+      ) {
+        throw new Error("cancelled");
+      }
+      const res = await apiRequest("DELETE", `/api/admin/collective-payments/schedules/${id}`);
+      const j = await res.json();
+      if (!res.ok || j?.ok === false) throw new Error(j?.error || `expire_failed_${res.status}`);
+      return j;
+    },
+    onSuccess: () => {
+      invalidate();
+      toast({ title: "Schedule expired" });
+    },
+    onError: (e: unknown) => {
+      if ((e as Error)?.message === "cancelled") return;
+      toast({ title: "Action failed", description: String((e as Error)?.message ?? e), variant: "destructive" });
+    },
+  });
+
+  return (
+    <AppCard>
+      <SectionTitle hint="collective_payment_schedules — the Collective fee catalogue. Precedence: per-member override → per-tier default → platform default.">
+        Collective payment schedules
+      </SectionTitle>
+      <div className="mt-4">
+        <FieldWithSource
+          source={{
+            table: "collective_payment_schedules",
+            column: "amount_minor / cadence / effective_from / effective_to",
+            unit: "currency_minor (cents)",
+            editableHere: true,
+            readEndpoint: "GET /api/admin/collective-payments/schedules",
+            writeEndpoint:
+              "POST · PATCH /:id · DELETE /:id /api/admin/collective-payments/schedules",
+            testId: "collective-payment-schedules",
+          }}
+        >
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="w-64">
+              <Label htmlFor="cps-filter">Fee kind</Label>
+              <select
+                id="cps-filter"
+                className={SELECT_CLASS}
+                value={feeKindFilter}
+                onChange={(e) => setFeeKindFilter(e.target.value)}
+                data-testid="select-cps-filter"
+              >
+                <option value="__all__">All fee kinds</option>
+                {CPS_FEE_KINDS.map((k) => (
+                  <option key={k} value={k}>
+                    {labelFor(FEE_KIND_LABELS, k)}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <Button
+              size="sm"
+              onClick={() => setShowCreate((v) => !v)}
+              data-testid="button-new-cps"
+            >
+              {showCreate ? "Cancel" : "New schedule"}
+            </Button>
+          </div>
+
+          {showCreate ? (
+            <div className="rounded-lg border border-border p-3 space-y-3" data-testid="card-create-cps">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                <div>
+                  <Label htmlFor="cps-scope">Scope</Label>
+                  <select
+                    id="cps-scope"
+                    className={SELECT_CLASS}
+                    value={form.scopeKind}
+                    onChange={(e) => setForm({ ...form, scopeKind: e.target.value })}
+                    data-testid="select-cps-scope"
+                  >
+                    {CPS_SCOPES.map((s) => (
+                      <option key={s.value} value={s.value}>
+                        {s.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {form.scopeKind === "tier" ? (
+                  <div>
+                    <Label htmlFor="cps-tier">Tier</Label>
+                    <select
+                      id="cps-tier"
+                      className={SELECT_CLASS}
+                      value={form.tier}
+                      onChange={(e) => setForm({ ...form, tier: e.target.value })}
+                      data-testid="select-cps-tier"
+                    >
+                      {CPS_TIERS.map((t) => (
+                        <option key={t} value={t}>
+                          {t}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ) : null}
+                {form.scopeKind === "member" ? (
+                  <div>
+                    <Label htmlFor="cps-member">Member ID</Label>
+                    <Input
+                      id="cps-member"
+                      value={form.memberId}
+                      onChange={(e) => setForm({ ...form, memberId: e.target.value })}
+                      data-testid="input-cps-member"
+                    />
+                  </div>
+                ) : null}
+                <div>
+                  <Label htmlFor="cps-kind">Fee kind</Label>
+                  <select
+                    id="cps-kind"
+                    className={SELECT_CLASS}
+                    value={form.feeKind}
+                    onChange={(e) => setForm({ ...form, feeKind: e.target.value })}
+                    data-testid="select-cps-fee-kind"
+                  >
+                    {CPS_FEE_KINDS.map((k) => (
+                      <option key={k} value={k}>
+                        {labelFor(FEE_KIND_LABELS, k)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <Label htmlFor="cps-amount">Amount (major units)</Label>
+                  <Input
+                    id="cps-amount"
+                    inputMode="decimal"
+                    value={form.amountMajor}
+                    onChange={(e) => setForm({ ...form, amountMajor: e.target.value })}
+                    data-testid="input-cps-amount"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="cps-currency">Currency</Label>
+                  <Input
+                    id="cps-currency"
+                    value={form.currency}
+                    onChange={(e) => setForm({ ...form, currency: e.target.value })}
+                    data-testid="input-cps-currency"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="cps-cadence">Cadence</Label>
+                  <select
+                    id="cps-cadence"
+                    className={SELECT_CLASS}
+                    value={form.cadence}
+                    onChange={(e) => setForm({ ...form, cadence: e.target.value })}
+                    data-testid="select-cps-cadence"
+                  >
+                    {CPS_CADENCES.map((c) => (
+                      <option key={c} value={c}>
+                        {labelFor(CADENCE_LABELS, c)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <Label htmlFor="cps-chapter">Chapter ID (optional)</Label>
+                  <Input
+                    id="cps-chapter"
+                    value={form.chapterId}
+                    onChange={(e) => setForm({ ...form, chapterId: e.target.value })}
+                    data-testid="input-cps-chapter"
+                  />
+                </div>
+              </div>
+              <Button
+                size="sm"
+                onClick={() => createMut.mutate()}
+                disabled={createMut.isPending}
+                data-testid="button-save-cps"
+              >
+                <Save className="h-3.5 w-3.5 mr-1.5" />
+                Create schedule
+              </Button>
+            </div>
+          ) : null}
+
+          {q.isError ? (
+            <p className="text-sm text-destructive" data-testid="error-cps">
+              Could not load Collective payment schedules.
+            </p>
+          ) : rows.length === 0 ? (
+            <p className="text-sm text-muted-foreground" data-testid="empty-cps">
+              No active Collective payment schedules.
+            </p>
+          ) : (
+            <Table data-testid="table-cps">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Scope</TableHead>
+                  <TableHead>Fee kind</TableHead>
+                  <TableHead>Amount</TableHead>
+                  <TableHead>Cadence</TableHead>
+                  <TableHead>Effective</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.map((r) => {
+                  const editing = editId === r.id;
+                  return (
+                    <TableRow key={r.id} data-testid={`row-cps-${r.id}`}>
+                      <TableCell>
+                        <Badge variant="secondary">{labelFor(SCOPE_KIND_LABELS, r.scope_kind)}</Badge>{" "}
+                        {r.tier ?? r.member_id ?? ""}
+                      </TableCell>
+                      <TableCell>{labelFor(FEE_KIND_LABELS, r.fee_kind)}</TableCell>
+                      <TableCell>
+                        {editing ? (
+                          <Input
+                            value={editDraft.amountMajor}
+                            onChange={(e) => setEditDraft({ ...editDraft, amountMajor: e.target.value })}
+                            data-testid={`input-cps-edit-amount-${r.id}`}
+                          />
+                        ) : (
+                          formatMinor(r.amount_minor, r.currency)
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        {editing ? (
+                          <select
+                            className={SELECT_CLASS}
+                            value={editDraft.cadence}
+                            onChange={(e) => setEditDraft({ ...editDraft, cadence: e.target.value })}
+                            data-testid={`select-cps-edit-cadence-${r.id}`}
+                          >
+                            {CPS_CADENCES.map((c) => (
+                              <option key={c} value={c}>
+                                {labelFor(CADENCE_LABELS, c)}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          labelFor(CADENCE_LABELS, r.cadence)
+                        )}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {editing ? (
+                          <Input
+                            placeholder="effective to (ISO, blank = open)"
+                            value={editDraft.effectiveTo}
+                            onChange={(e) => setEditDraft({ ...editDraft, effectiveTo: e.target.value })}
+                            data-testid={`input-cps-edit-effective-to-${r.id}`}
+                          />
+                        ) : (
+                          `${String(r.effective_from).slice(0, 10)} → ${
+                            r.effective_to ? String(r.effective_to).slice(0, 10) : "open"
+                          }`
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right space-x-2 whitespace-nowrap">
+                        {editing ? (
+                          <>
+                            <Button
+                              size="sm"
+                              onClick={() => updateMut.mutate(r)}
+                              disabled={updateMut.isPending}
+                              data-testid={`button-save-cps-edit-${r.id}`}
+                            >
+                              Save
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => setEditId(null)}
+                              data-testid={`button-cancel-cps-edit-${r.id}`}
+                            >
+                              Cancel
+                            </Button>
+                          </>
+                        ) : (
+                          <>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                setEditId(r.id);
+                                setEditDraft({
+                                  amountMajor: String(fromMinor(r.amount_minor, r.currency)),
+                                  cadence: r.cadence,
+                                  effectiveTo: r.effective_to ? String(r.effective_to).slice(0, 10) : "",
+                                });
+                              }}
+                              data-testid={`button-edit-cps-${r.id}`}
+                            >
+                              Edit
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="destructive"
+                              onClick={() => expireMut.mutate(r.id)}
+                              disabled={expireMut.isPending}
+                              data-testid={`button-expire-cps-${r.id}`}
+                            >
+                              Expire
+                            </Button>
+                          </>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          )}
+        </FieldWithSource>
+      </div>
+    </AppCard>
+  );
+}
+
+/* ---------- RS-2: Consortium partner fee schedules --------------------- */
+
+function PartnerFeeScheduleSection() {
+  const { toast } = useToast();
+  const [feeKindFilter, setFeeKindFilter] = useState("__all__");
+  const [showCreate, setShowCreate] = useState(false);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState({ amountMajor: "", effectiveTo: "" });
+  const [form, setForm] = useState({
+    feeKind: "subscription_monthly",
+    tier: "",
+    amountMajor: "",
+    currency: "USD",
+    sizeBandMinMajor: "",
+    sizeBandMaxMajor: "",
+  });
+
+  const qs = new URLSearchParams({ includeExpired: "false" });
+  if (feeKindFilter !== "__all__") qs.set("feeKind", feeKindFilter);
+  const listUrl = `/api/admin/partner-fees?${qs.toString()}`;
+  const q = useAdminQuery<{ ok?: boolean; schedules?: PartnerFeeScheduleRow[]; total?: number }>(listUrl);
+  const rows = q.data?.schedules ?? [];
+
+  const invalidate = () =>
+    queryClient.invalidateQueries({
+      predicate: (query) => String(query.queryKey?.[0] ?? "").startsWith("/api/admin/partner-fees"),
+    });
+
+  const createMut = useMutation({
+    mutationFn: async () => {
+      const currency = (form.currency || "USD").trim().toUpperCase();
+      if (!currency) throw new Error("invalid_currency");
+      const body: Record<string, unknown> = {
+        feeKind: form.feeKind,
+        tier: form.tier || null,
+        amountMinor: majorStringToMinor(form.amountMajor, currency),
+        currency,
+      };
+      if (form.feeKind === "spv_deployment") {
+        body.sizeBandMin = form.sizeBandMinMajor
+          ? majorStringToMinor(form.sizeBandMinMajor, currency)
+          : null;
+        body.sizeBandMax = form.sizeBandMaxMajor
+          ? majorStringToMinor(form.sizeBandMaxMajor, currency)
+          : null;
+      }
+      const res = await apiRequest("POST", "/api/admin/partner-fees", body);
+      const j = await res.json();
+      if (!res.ok || j?.ok === false) throw new Error(j?.error || `create_failed_${res.status}`);
+      return j;
+    },
+    onSuccess: () => {
+      invalidate();
+      setShowCreate(false);
+      toast({ title: "Fee schedule created" });
+    },
+    onError: (e: unknown) =>
+      toast({ title: "Create failed", description: String((e as Error)?.message ?? e), variant: "destructive" }),
+  });
+
+  const updateMut = useMutation({
+    mutationFn: async (row: PartnerFeeScheduleRow) => {
+      const body: Record<string, unknown> = {
+        amountMinor: majorStringToMinor(editDraft.amountMajor, row.currency),
+        effectiveTo: editDraft.effectiveTo ? editDraft.effectiveTo : null,
+      };
+      const res = await apiRequest("PATCH", `/api/admin/partner-fees/${row.id}`, body);
+      const j = await res.json();
+      if (!res.ok || j?.ok === false) throw new Error(j?.error || `update_failed_${res.status}`);
+      return j;
+    },
+    onSuccess: () => {
+      invalidate();
+      setEditId(null);
+      toast({ title: "Fee schedule updated" });
+    },
+    onError: (e: unknown) =>
+      toast({ title: "Update failed", description: String((e as Error)?.message ?? e), variant: "destructive" }),
+  });
+
+  const expireMut = useMutation({
+    mutationFn: async (id: string) => {
+      if (
+        typeof window !== "undefined" &&
+        !window.confirm("Expire this partner fee schedule? It will stop applying to partners.")
+      ) {
+        throw new Error("cancelled");
+      }
+      const res = await apiRequest("DELETE", `/api/admin/partner-fees/${id}`);
+      const j = await res.json();
+      if (!res.ok || j?.ok === false) throw new Error(j?.error || `expire_failed_${res.status}`);
+      return j;
+    },
+    onSuccess: () => {
+      invalidate();
+      toast({ title: "Fee schedule expired" });
+    },
+    onError: (e: unknown) => {
+      if ((e as Error)?.message === "cancelled") return;
+      toast({ title: "Action failed", description: String((e as Error)?.message ?? e), variant: "destructive" });
+    },
+  });
+
+  return (
+    <AppCard>
+      <SectionTitle hint="partner_fee_schedules — OVERRIDES for consortium-partner fees. Precedence: per-partner override → per-tier default → platform default (tier = —). If no override exists the tier base price from Consortium Partner Promotions applies. SPV deployment fees use stepped size bands.">
+        Consortium partner fee schedules
+      </SectionTitle>
+      <div className="mt-4">
+        <FieldWithSource
+          source={{
+            table: "partner_fee_schedules",
+            column: "amount_minor / size_band_min / size_band_max / effective_to",
+            unit: "currency_minor (cents)",
+            editableHere: true,
+            readEndpoint: "GET /api/admin/partner-fees",
+            writeEndpoint: "POST · PATCH /:id · DELETE /:id /api/admin/partner-fees",
+            testId: "partner-fee-schedules-editor",
+          }}
+        >
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="w-64">
+              <Label htmlFor="pfs-filter">Fee kind</Label>
+              <select
+                id="pfs-filter"
+                className={SELECT_CLASS}
+                value={feeKindFilter}
+                onChange={(e) => setFeeKindFilter(e.target.value)}
+                data-testid="select-pfs-filter"
+              >
+                <option value="__all__">All fee kinds</option>
+                {PFS_FEE_KINDS.map((k) => (
+                  <option key={k} value={k}>
+                    {labelFor(FEE_KIND_LABELS, k)}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <Button
+              size="sm"
+              onClick={() => setShowCreate((v) => !v)}
+              data-testid="button-new-fee-schedule"
+            >
+              {showCreate ? "Cancel" : "New fee schedule"}
+            </Button>
+          </div>
+
+          {showCreate ? (
+            <div className="rounded-lg border border-border p-3 space-y-3" data-testid="card-create-fee">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                <div>
+                  <Label htmlFor="pfs-kind">Fee kind</Label>
+                  <select
+                    id="pfs-kind"
+                    className={SELECT_CLASS}
+                    value={form.feeKind}
+                    onChange={(e) => setForm({ ...form, feeKind: e.target.value })}
+                    data-testid="select-new-fee-kind"
+                  >
+                    {PFS_FEE_KINDS.map((k) => (
+                      <option key={k} value={k}>
+                        {labelFor(FEE_KIND_LABELS, k)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <Label htmlFor="pfs-tier">Tier (blank = platform default)</Label>
+                  <select
+                    id="pfs-tier"
+                    className={SELECT_CLASS}
+                    value={form.tier}
+                    onChange={(e) => setForm({ ...form, tier: e.target.value })}
+                    data-testid="select-new-fee-tier"
+                  >
+                    {PFS_TIERS.map((t) => (
+                      <option key={t || "__platform__"} value={t}>
+                        {t === "" ? "— (platform default)" : t}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <Label htmlFor="pfs-amount">Amount (major units)</Label>
+                  <Input
+                    id="pfs-amount"
+                    inputMode="decimal"
+                    value={form.amountMajor}
+                    onChange={(e) => setForm({ ...form, amountMajor: e.target.value })}
+                    data-testid="input-new-fee-amount"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="pfs-currency">Currency</Label>
+                  <Input
+                    id="pfs-currency"
+                    value={form.currency}
+                    onChange={(e) => setForm({ ...form, currency: e.target.value })}
+                    data-testid="input-new-fee-currency"
+                  />
+                </div>
+                {form.feeKind === "spv_deployment" ? (
+                  <>
+                    <div>
+                      <Label htmlFor="pfs-band-min">Size band min (major)</Label>
+                      <Input
+                        id="pfs-band-min"
+                        inputMode="decimal"
+                        value={form.sizeBandMinMajor}
+                        onChange={(e) => setForm({ ...form, sizeBandMinMajor: e.target.value })}
+                        data-testid="input-new-fee-band-min"
+                      />
+                    </div>
+                    <div>
+                      <Label htmlFor="pfs-band-max">Size band max (major)</Label>
+                      <Input
+                        id="pfs-band-max"
+                        inputMode="decimal"
+                        value={form.sizeBandMaxMajor}
+                        onChange={(e) => setForm({ ...form, sizeBandMaxMajor: e.target.value })}
+                        data-testid="input-new-fee-band-max"
+                      />
+                    </div>
+                  </>
+                ) : null}
+              </div>
+              <Button
+                size="sm"
+                onClick={() => createMut.mutate()}
+                disabled={createMut.isPending}
+                data-testid="button-save-fee-schedule"
+              >
+                <Save className="h-3.5 w-3.5 mr-1.5" />
+                Create fee schedule
+              </Button>
+            </div>
+          ) : null}
+
+          {q.isError ? (
+            <p className="text-sm text-destructive" data-testid="error-pfs">
+              Could not load partner fee schedules.
+            </p>
+          ) : rows.length === 0 ? (
+            <p className="text-sm text-muted-foreground" data-testid="empty-pfs">
+              No active partner fee schedules.
+            </p>
+          ) : (
+            <Table data-testid="table-pfs">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Fee kind</TableHead>
+                  <TableHead>Tier</TableHead>
+                  <TableHead>Amount</TableHead>
+                  <TableHead>Size band</TableHead>
+                  <TableHead>Effective</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.map((r) => {
+                  const editing = editId === r.id;
+                  return (
+                    <TableRow key={r.id} data-testid={`row-pfs-${r.id}`}>
+                      <TableCell>{labelFor(FEE_KIND_LABELS, r.fee_kind)}</TableCell>
+                      <TableCell>
+                        {r.tier ? <Badge variant="secondary">{r.tier}</Badge> : "—"}
+                      </TableCell>
+                      <TableCell>
+                        {editing ? (
+                          <Input
+                            value={editDraft.amountMajor}
+                            onChange={(e) => setEditDraft({ ...editDraft, amountMajor: e.target.value })}
+                            data-testid={`input-pfs-edit-amount-${r.id}`}
+                          />
+                        ) : (
+                          formatMinor(r.amount_minor, r.currency, { locale: "en-US" })
+                        )}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {fmtBand(r.size_band_min, r.size_band_max, r.currency)}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {editing ? (
+                          <Input
+                            placeholder="effective to (ISO, blank = open)"
+                            value={editDraft.effectiveTo}
+                            onChange={(e) => setEditDraft({ ...editDraft, effectiveTo: e.target.value })}
+                            data-testid={`input-pfs-edit-effective-to-${r.id}`}
+                          />
+                        ) : (
+                          `${String(r.effective_from).slice(0, 10)} → ${
+                            r.effective_to ? String(r.effective_to).slice(0, 10) : "open"
+                          }`
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right space-x-2 whitespace-nowrap">
+                        {editing ? (
+                          <>
+                            <Button
+                              size="sm"
+                              onClick={() => updateMut.mutate(r)}
+                              disabled={updateMut.isPending}
+                              data-testid={`button-save-fee-edit-${r.id}`}
+                            >
+                              Save
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => setEditId(null)}
+                              data-testid={`button-cancel-fee-edit-${r.id}`}
+                            >
+                              Cancel
+                            </Button>
+                          </>
+                        ) : (
+                          <>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                setEditId(r.id);
+                                setEditDraft({
+                                  amountMajor: String(fromMinor(r.amount_minor, r.currency)),
+                                  effectiveTo: r.effective_to ? String(r.effective_to).slice(0, 10) : "",
+                                });
+                              }}
+                              data-testid={`button-edit-fee-${r.id}`}
+                            >
+                              Edit
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="destructive"
+                              onClick={() => expireMut.mutate(r.id)}
+                              disabled={expireMut.isPending}
+                              data-testid={`button-expire-fee-${r.id}`}
+                            >
+                              Expire
+                            </Button>
+                          </>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          )}
+        </FieldWithSource>
+      </div>
+    </AppCard>
+  );
+}
+
+function FeeSchedulesTab() {
+  return (
+    <div className="space-y-6" data-testid="tab-fee-schedules">
+      <CollectiveScheduleSection />
+      <PartnerFeeScheduleSection />
+    </div>
+  );
+}
+
+/* ==========================================================================
  * Shell
  * ======================================================================== */
 
@@ -2040,11 +3207,18 @@ const TABS = [
   { key: "application-fee", label: "Application Fee" },
   { key: "discount-codes", label: "Discount Codes" },
   { key: "ledger-invoices", label: "Ledger & Invoices" },
+  { key: "fee-schedules", label: "Fee Schedules" },
   { key: "config", label: "Config" },
 ] as const;
 
-export default function AdminFeesConsolidated() {
-  const [tab, setTab] = useState<string>(TABS[0].key);
+/** WAVE 4A — `initialTab` lets the two preserved legacy admin URLs
+ *  (`/admin/collective-payment-schedules`, `/admin/partner-fees`) deep-link
+ *  straight into the Fee Schedules tab of THIS one consolidated page instead
+ *  of re-routing the retired standalone pages. See App.tsx. */
+export default function AdminFeesConsolidated({ initialTab }: { initialTab?: string } = {}) {
+  const [tab, setTab] = useState<string>(
+    TABS.some((t) => t.key === initialTab) ? (initialTab as string) : TABS[0].key,
+  );
 
   return (
     <div data-testid="admin-fees-consolidated">
@@ -2080,6 +3254,9 @@ export default function AdminFeesConsolidated() {
           </TabsContent>
           <TabsContent value="ledger-invoices" className="mt-4">
             <LedgerInvoicesTab />
+          </TabsContent>
+          <TabsContent value="fee-schedules" className="mt-4">
+            <FeeSchedulesTab />
           </TabsContent>
           <TabsContent value="config" className="mt-4">
             <ConfigTab />

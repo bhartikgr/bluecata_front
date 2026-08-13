@@ -20,6 +20,7 @@ import { startBridgeWorker } from "./bridgeWorker";
 import { isBridgeEnabled, bridgeDisabledReason } from "./lib/bridgeEnabled"; /* v25.48 HIGH-8 — legacy outbound bridge default-OFF in prod */
 import { maySendOutboundBridge } from "./lib/bridgeOutboundGuard"; /* v25.48.2 MF1 — gate worker-start on the centralized predicate (real receiver, non-placeholder secret) */
 import { startCollectiveRenewalWorker, isRenewalWorkerEnabled } from "./lib/collectiveRenewalWorker";
+import { startSubscriptionEnforcementWorker } from "./lib/subscriptionEnforcementWorker";
 import { hydrateBridgeStore } from "./bridgeStore";
 import { hydrateAllStores } from "./lib/hydrateStores";
 // W3 #9 — privacy resolver bridge (NON-SACRED). Mirrors
@@ -525,6 +526,16 @@ app.use((req, res, next) => {
         startCollectiveRenewalWorker();
         log("collective renewal worker started", "collective-renewal");
       }
+
+      /* WAVE 11 / EN-8 — subscription grace + non-payment enforcement sweep.
+       * Deliberately NOT gated behind isRenewalWorkerEnabled(): that flag gates
+       * a worker that MOVES MONEY at a gateway. This sweep only advances
+       * subscription status and appends audit rows, so gating it the same way
+       * would leave the grace window unenforced in exactly the environments the
+       * owner tests in. It fails closed on its own when the grace config row is
+       * unreadable (see readGraceConfig), and skips itself under NODE_ENV=test. */
+      startSubscriptionEnforcementWorker();
+      log("subscription enforcement worker started", "wave11-en8");
     },
   );
 })();

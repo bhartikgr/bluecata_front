@@ -34,6 +34,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { AdminPageIntro } from "@/components/AdminPageIntro";
 import { HelpTip } from "@/components/HelpTip";
 import { apiRequest } from "@/lib/queryClient";
+import { minorToMajorString } from "@/lib/moneyDisplay";
 
 /* ---------- types matching server payload ---------- */
 type SubscriptionStatus = "active" | "trialing" | "past_due" | "unpaid" | "cancelled";
@@ -92,7 +93,8 @@ const STATUS_TONE: Record<SubscriptionStatus, { label: string; bg: string; text:
 
 /** Format integer minor units as a localised currency string. */
 function fmtMoney(minor: number, currency = "USD"): string {
-  const amount = minor / 100;
+  /* WAVE 21 ITEM 5: hardcoded /100 ignored the `currency` argument. */
+  const amount = Number(minorToMajorString(minor, currency));
   try {
     if (amount >= 1_000_000) {
       return new Intl.NumberFormat(undefined, { style: "currency", currency, maximumFractionDigits: 1 }).format(amount / 1_000_000) + "M";

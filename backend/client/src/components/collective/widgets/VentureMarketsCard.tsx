@@ -68,6 +68,16 @@ export function VentureMarketsCard() {
           <div className="text-sm text-red-700" data-testid="widget-venture-error">
             {collectiveWidgetErrorText(q.error, 'Couldn\'t load venture markets.')}
           </div>
+        ) : !notConfigured && records.length === 0 ? (
+          /* WAVE 20 / FE-20 — a distinct branch for "the provider IS configured
+             and returned nothing". Previously this case fell into the branch
+             below and told the operator to configure a provider they had
+             already configured, which sends them to fix a setting that is not
+             broken. Additive: the original branch and its copy are untouched
+             and still render for a genuinely unconfigured provider. */
+          <div className="text-center py-6 text-slate-500" data-testid="widget-venture-none-returned">
+            <p className="text-sm">The configured market data provider returned no venture market rows.</p>
+          </div>
         ) : notConfigured || records.length === 0 ? (
           <div className="text-center py-6 text-slate-500" data-testid="widget-venture-empty">
             <p className="text-sm">Configure a market data provider to populate venture markets.</p>

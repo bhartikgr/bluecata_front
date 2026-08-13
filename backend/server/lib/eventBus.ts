@@ -12,16 +12,36 @@ import { EventEmitter } from "node:events";
 import type { Request, Response } from "express";
 import { getUserContext } from "./userContext";
 import { founderOwnedCompanyIds, investorVisibleCompanyIds, companyIdForRound } from "./tenantAuth";
-/* D2 LOCK 4 (§15.4) — ESM-safe lazy CommonJS require. `package.json:5` sets
- * "type": "module", so a BARE require() in this file's scope throws
- * `ReferenceError: require is not defined` (documented production incident:
- * yourDecisionStore.ts:30-46). Precedent for this exact shim: chapterResourcesStore.ts:27-34,
- * sprint22Routes.ts:14-20, collectiveDscVoteRoutes.ts:51-58. Declared ONCE, at module
- * scope, above eventVisibleToCaller's definition; used for every lazy pull in this file.
- * Lazy (not static) because eventBus <- partnerWorkspaceStore <- db/connection is a
- * module-init cycle if imported eagerly. */
-import { createRequire } from "node:module";
-const requireCjs = createRequire(import.meta.url);
+/* ── WAVE 33B · CP-MFC-20 — STATIC IMPORTS, AND WHY ──────────────────────────
+ * This block used to be `createRequire(import.meta.url)` plus two lazy requires
+ * inside `eventVisibleToCaller`. Both were resolved at CALL time against the
+ * file the module was loaded from — which in production is the single bundled
+ * `dist/index.cjs`, where neither `./eventBusPillarHelpers` nor
+ * `../partnerWorkspaceStore` exists as a file. Proven by execution (see
+ * `wave33_mfc20_crosspillar.test.ts`, group B): esbuild leaves an aliased
+ * `requireCjs("./eventBusPillarHelpers")` call untouched — it does NOT bundle
+ * what it cannot see as a static dependency — and resolving that specifier from
+ * a bundle path throws MODULE_NOT_FOUND.
+ *
+ * The throw landed inside `try { … } catch { /* client gone *\/ }` in the
+ * fan-out at the bottom of this file, so it was SWALLOWED: every
+ * `partnerRepresentation` frame was dropped, on all four pillars, in production
+ * only, with no log line. The Wave 32B `co-members` defect exactly — dev-green,
+ * test-green, dead where it ships.
+ *
+ * Static imports now. The cycle the old comment feared
+ * (eventBus → partnerWorkspaceStore → eventBus) is real but harmless in both
+ * runtimes, because neither module touches the other's bindings at module-init
+ * time — only inside functions. That is asserted BY EXECUTION in group C, in
+ * both import orders and in a CJS bundle, rather than assumed. */
+import {
+  parsePartnerRepresentationId,
+  hasActivePartnerAttribution,
+  hasActivePartnerEngagement,
+  isCapavatePortfolioCompany,
+  isCollectiveMemberCompany,
+} from "./eventBusPillarHelpers";
+import { partnerTeamStore } from "../partnerWorkspaceStore";
 
 export interface MutationEvent {
   aggregate: string;     // "company" | "round" | "softCircle" | etc.
@@ -103,15 +123,6 @@ export function realtimeStreamHandler(req: Request, res: Response) {
      * observed by the very next tick.
      * ============================================================================ */
     if (evt.aggregate === "partnerRepresentation") {
-      /* Two lazy requires, one per MODULE (not one per export) — the multi-export
-       * pattern documented at yourDecisionStore.ts:33-44. */
-      const {
-        parsePartnerRepresentationId,
-        hasActivePartnerAttribution,
-        hasActivePartnerEngagement,
-        isCapavatePortfolioCompany,
-        isCollectiveMemberCompany,
-      } = requireCjs("./eventBusPillarHelpers") as typeof import("./eventBusPillarHelpers");
 
       // Fail closed on a malformed id (missing ':', empty half, or 3+ segments).
       const parsed = parsePartnerRepresentationId(evt.id);
@@ -119,8 +130,6 @@ export function realtimeStreamHandler(req: Request, res: Response) {
       const { partnerId: emittedPartnerId, companyId: emittedCompanyId } = parsed;
 
       /* ---- pillar 3: the emitting Consortium Partner's own dashboard ---------- */
-      const { partnerTeamStore } = requireCjs("../partnerWorkspaceStore") as
-        typeof import("../partnerWorkspaceStore");
       // Real method: partnerWorkspaceStore.ts:1035 (object exported at :875).
       const teamMember = partnerTeamStore.findByUserId(ctx.userId);
       if (teamMember) {

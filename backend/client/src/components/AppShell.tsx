@@ -8,8 +8,9 @@ import {
   Sparkles, Bell, Search, Menu, X, ChevronDown, LogOut,
   ShieldCheck, Calculator, History, SlidersHorizontal, Building,
   GitCompareArrows, BarChart3, Mail, Network, DollarSign, RefreshCw, Database, Handshake,
-  Rss, HelpCircle, Globe, CreditCard, Plug,
+  Rss, HelpCircle, Globe, CreditCard, Plug, Tags,
 } from "lucide-react";
+import { LegalFooterLinks } from "@/components/LegalFooterLinks";
 import { CapavateLogo } from "./CapavateLogo";
 import { CompanySwitcher } from "@/components/CompanySwitcher";
 import { useLegalDrawer } from "@/lib/legalDrawer";
@@ -113,9 +114,21 @@ function useFounderNav(): NavGroup[] {
       items: [
         { href: "/founder/activity", label: "Activity Log", icon: Activity },
         { href: "/founder/settings", label: "Settings", icon: Settings },
-        // v25.45 F10c — Billing left-nav item removed; the full Billing surface
-        // is now Settings → Billing & Subscription. /founder/billing redirects
-        // there (App.tsx).
+        /* WAVE 8 / ORP-027 (DEF-027) — Billing left-nav item RESTORED.
+           v25.45 F10c removed it on the belief that Settings → Billing &
+           Subscription was "the full Billing surface". Verified against this
+           tree: it is not. founder/Billing.tsx is the ONLY caller of
+           PATCH /api/founder/subscription/payment-method,
+           POST /api/founder/invoices/:invoiceId/email,
+           PATCH /api/founder/subscription (cancel_at_period_end) and
+           POST /api/founder/subscription/resume — none of which appear anywhere
+           in founder/Settings.tsx. Removing the nav item and redirecting the
+           route silently dropped change-payment-method, email-invoice, cancel
+           and resume from the product. The nav item is the SINK for
+           reachability: without it the page has no entry point.
+           Placed here (not inside the Settings tab strip) deliberately, so no
+           existing tab fingerprint or copy string is disturbed. */
+        { href: "/founder/billing", label: "Billing", icon: CreditCard, testId: "nav-founder-billing" },
         { href: "/founder/collective", label: "Capavate Collective", icon: Sparkles },
         { href: "/founder/apply-to-collective", label: "Apply to Collective", icon: FileSignature },
       ],
@@ -145,6 +158,15 @@ function useInvestorNav(): NavGroup[] {
       items: [
         { href: "/investor/invitations", label: "Invitations", icon: Inbox, badge: inviteCount },
         { href: "/investor/portfolio", label: "Portfolio", icon: Target },
+        /* WAVE 22 · ITEM 3 (REVIEW B F-1) — `/investor/earlier-investments`
+         * (ClaimPositions, Wave 10 EN-3) was a ROUTED ORPHAN: zero inbound
+         * links anywhere in the client tree, while its own route comment in
+         * App.tsx claimed it was linked. By this project's rule
+         * (WAVE7_REPORT.md:130) a page no user can reach is NOT shipped. It
+         * belongs in DEALS next to Portfolio: the LP who needs it is the one
+         * staring at an empty portfolio. A second inbound link is in the
+         * portfolio empty state (PortfolioCompanySwitcher). */
+        { href: "/investor/earlier-investments", label: "Earlier Investments", icon: History },
         // Sprint 21 Wave G — "Capavate Collective" removed; /investor/collective redirects to apply-to-collective.
         { href: "/investor/apply-to-collective", label: "Apply to Collective", icon: FileSignature },
       ],
@@ -196,6 +218,8 @@ const adminNav: NavGroup[] = [
       { href: "/admin/lifecycle-policies", label: "Lifecycle Policies", icon: SlidersHorizontal },
       { href: "/admin/audit-log", label: "Audit Log", icon: History },
       { href: "/admin/audit-chain-verify", label: "Audit Chain Verify", icon: ShieldCheck },
+      /* WAVE 28 / CP-CRM-04 — CRM duplicate-contact review queue. */
+      { href: "/admin/crm-dedup-review", label: "CRM Duplicate Review", icon: Users },
       /* W-V44 FIX K — market-data provider Integrations (DB-driven, admin-config). */
       { href: "/admin/integrations", label: "Integrations", icon: Plug },
     ],
@@ -210,6 +234,18 @@ const adminNav: NavGroup[] = [
          this single link now, one tab per concern, with a source-of-truth
          panel next to every editable field. */
       { href: "/admin/fees", label: "Fees & Billing", icon: DollarSign, testId: "nav-admin-fees" },
+      /* WAVE 7 R-1 — pricing-model administration RESTORED.
+         /admin/fees does manage pricing models, but only for ONE product line
+         (CAPAVATE_ANNUAL_PRODUCT_LINE, AdminFeesConsolidated.tsx:405) and only
+         create/patch/promote. Clone, migrate-legacy, bootstrap-founder-tiers,
+         price-preview, version history and the pricing-tier editor have had NO
+         client caller anywhere since D2.5 — computed over the whole client
+         tree, see build_log/wave7_r1_disposition.json. Those are capabilities,
+         not URLs, so they are restored as pages rather than aliases.
+         This does NOT reopen the "one fee entry point" ruling: fees still live
+         only behind /admin/fees. Pricing MODELS are a different object. */
+      { href: "/admin/pricing", label: "Pricing & Subscriptions", icon: DollarSign, testId: "nav-admin-pricing" },
+      { href: "/admin/pricing-models", label: "Pricing Models", icon: DollarSign, testId: "nav-admin-pricing-models" },
       { href: "/admin/companies", label: "Companies", icon: Building },
       { href: "/admin/investors", label: "Investors", icon: Users },
       { href: "/admin/formulas", label: "Formula Registry", icon: Calculator },
@@ -230,11 +266,30 @@ const adminNav: NavGroup[] = [
       { href: "/admin/collective/members", label: "Collective Members", icon: Users },
       { href: "/admin/collective/settings", label: "Collective Settings", icon: Settings },
       /* D2.5 SLICE 1 — DELETED: /admin/application-fee, /admin/platform-fees,
-         /admin/collective-payment-schedules, /admin/collective-payment-pl,
-         /admin/collective-subscriptions. All five are tabs/sections of
-         /admin/fees. The duplicate application-fee editor is gone entirely:
-         there is now exactly ONE editor for that fee, writing
-         platform_fees['collective_application_fee'] in TRUE minor units. */
+         /admin/collective-payment-pl, /admin/collective-subscriptions. All four
+         are tabs/sections of /admin/fees. The duplicate application-fee editor
+         is gone entirely: there is now exactly ONE editor for that fee, writing
+         platform_fees['collective_application_fee'] in TRUE minor units.
+
+         WAVE 4A (RS-1) — /admin/collective-payment-schedules is RESTORED as a
+         DEEP LINK, not as a second page. The D2.5 fold dropped the standalone
+         page without rebuilding its CRUD anywhere, so admins lost the ability
+         to create/edit/expire a Collective fee schedule entirely. The
+         capability now lives in the "Fee Schedules" tab of /admin/fees and this
+         entry routes there (App.tsx aliases the URL onto that tab). One
+         implementation, one page — the consolidation is finished, not undone. */
+      { href: "/admin/collective-payment-schedules", label: "Collective Payment Schedules", icon: DollarSign, testId: "nav-admin-collective-payment-schedules" },
+      /* WAVE 7 R-1 — /admin/collective-subscriptions is RESTORED as a real
+         page, not a deep link. Unlike RS-1's fee schedules, the capability it
+         carries is absent from /admin/fees entirely: promote, clone,
+         bootstrap-from-env and the Airwallex price-ref editor are called from
+         NO other file in client/src (computed — see
+         build_log/wave7_r1_disposition.json). There is no tab to deep-link to.
+
+         The /admin/application-fee and /admin/platform-fees entries stay
+         DELETED: their editor was removed deliberately for unit-correctness,
+         and the "exactly ONE editor" statement above still holds. */
+      { href: "/admin/collective-subscriptions", label: "Collective Subscriptions", icon: DollarSign, testId: "nav-admin-collective-subscriptions" },
     ],
   },
   {
@@ -246,11 +301,44 @@ const adminNav: NavGroup[] = [
       /* v25.33 Consortium Partner Payment Model — admin surfaces for partner roster,
          fee catalogue, and partner P&L (all DB-driven via /api/admin/*). */
       { href: "/admin/partners", label: "Partners", icon: Users },
-      /* D2.5 SLICE 1 — DELETED: /admin/partner-fees, /admin/commission-rates,
-         /admin/partner-pl. All three are sections of the /admin/fees
-         "Consortium Partner Promotions" and "Ledger & Invoices" tabs. */
+      /* WAVE 4B (PT-2) — admin CRUD for the `Sector // Sub-sector` lookup
+         tables, so a type can be added or retired without a migration.
+         This entry is IDENTICAL for every admin; the classification a
+         partner holds never adds, removes or reorders a nav item. */
+      { href: "/admin/partner-taxonomy", label: "Partner Taxonomy", icon: Tags, testId: "nav-admin-partner-taxonomy" },
+      /* WAVE 7 R-1 — /admin/commission-rates RESTORED. /admin/fees READS the
+         commission rates but its own copy (AdminFeesConsolidated.tsx:1140)
+         says the editor "lands with the partner-override component" — i.e. the
+         PUT was never rebuilt there. PUT /api/admin/partner/commission-rates/
+         :tier has had no client caller since D2.5, so partner commission rates
+         have been UNEDITABLE. This page is that editor and is unchanged. */
+      { href: "/admin/commission-rates", label: "Partner Commission Rates", icon: DollarSign, testId: "nav-admin-commission-rates" },
+      /* D2.5 SLICE 1 — DELETED: /admin/partner-pl. It is a section of the
+         /admin/fees "Ledger & Invoices" tab, and WAVE 7 R-1 re-confirmed that
+         computationally: every endpoint PartnerPL.tsx calls is reachable from a
+         still-routed page.
+
+         (This note used to name /admin/commission-rates too. WAVE 7 R-1
+         restored that one — see the entry directly above — because the fold
+         kept its READ and dropped its WRITE. The claim that it is "a section
+         of" the Promotions tab was true of the table, not of the editor.)
+
+         WAVE 4A (RS-2) — /admin/partner-fees is RESTORED as a DEEP LINK. The
+         fold kept the READ (the schedule-row count on the Promotions tab) and
+         dropped the WRITES; POST/PATCH/DELETE /api/admin/partner-fees had no
+         caller in any routed page. The writes now live in the "Fee Schedules"
+         tab of /admin/fees and this entry routes there. */
+      { href: "/admin/partner-fees", label: "Partner Fees", icon: DollarSign, testId: "nav-admin-partner-fees" },
       /* W6 — Ask-an-Expert partner-responder registry. */
       { href: "/admin/partner-responders", label: "Partner Responders", icon: Handshake },
+      /* WAVE 14 — /admin/partner-billing-ops. NOT a duplicate of /admin/fees:
+         that page reads the partner PROMOTIONS table and the commission rates,
+         and has no surface at all for `partner_tier_price`,
+         `partner_promotion` moderation, the roster reconciliation, or the
+         build's open pricing decisions. Verified by grep before adding this
+         entry — every endpoint this page calls was registered in Wave 14 and has
+         no other client caller, so nothing here shadows an existing screen. */
+      { href: "/admin/partner-billing-ops", label: "Partner Billing Ops", icon: DollarSign, testId: "nav-admin-partner-billing-ops" },
     ],
   },
   {
@@ -261,6 +349,10 @@ const adminNav: NavGroup[] = [
          which was registered at /admin/bridge-history but never linked. */
       { href: "/admin/bridge-history", label: "Bridge History", icon: History },
       { href: "/admin/sync", label: "Sync Status", icon: RefreshCw },
+      /* WAVE 15 — the live route inventory, the DDL column rulings, the audit
+         incident record and the bridge-mode disclosure. Linked, not merely
+         registered: a page reachable only by typing its URL is not in the UI. */
+      { href: "/admin/platform-surfaces", label: "Platform Surfaces", icon: ShieldCheck, testId: "nav-admin-platform-surfaces" },
       { href: "/admin/migration", label: "Migration", icon: Database },
       { href: "/admin/email", label: "Email System", icon: Mail },
       { href: "/admin/notifications", label: "Notifications", icon: Bell },
@@ -641,6 +733,9 @@ export function AppShell({ children }: { children: ReactNode }) {
           {/* v25.47 APD-029 — audit-chain P0 banner on admin pages (renders only on incident). */}
           {location.startsWith("/admin") && <AuditChainP0Banner />}
           {children}
+          {/* WAVE 8 / ORP-047 — the routed Terms/Privacy pages had no link
+              anywhere in the tree. This is their entry point. */}
+          <LegalFooterLinks />
         </main>
       </div>
     </div>

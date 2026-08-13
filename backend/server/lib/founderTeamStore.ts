@@ -33,6 +33,12 @@ import type { Express, Request, Response } from "express";
 import { createHash, randomBytes } from "node:crypto";
 import { rawDb } from "../db/connection";
 import { log } from "./logger";
+/* WAVE 36 · ROW 6 — STATIC import of the REAL export. The lazy
+ * `require("../bridgeStore")` here destructured `emitBridge`, which bridgeStore
+ * has never exported; the call threw and a bare catch that dismissed the bridge
+ * as "optional" swallowed it, so this event was emitted zero times. */
+import { emitBridgeEvent } from "../bridgeStore";
+
 
 const VALID_ROLES = ["owner", "admin", "member", "viewer"] as const;
 type TeamRole = (typeof VALID_ROLES)[number];
@@ -190,15 +196,20 @@ export function registerFounderTeamRoutes(app: Express): void {
 
       /* Bridge event so other components (e.g. notification campaign worker,
        * partner sync) can react. */
-      try {
-        const { emitBridge } = require("../bridgeStore");
-        emitBridge("founderTeam.invitation_sent", id, "founderTeamInvitation", {
+      /* WAVE 36 · ROW 6 — real emit. No try/catch swallow: a bridge event that
+       * silently never fires is indistinguishable from one that fires, which is
+       * exactly how this stayed dead. */
+      emitBridgeEvent({
+        eventType: "founderTeam.invitation_sent",
+        aggregateId: id,
+        aggregateKind: "invitation",
+        payload: {
           invitationId: id,
           companyId,
           invitedEmail: email,
           role: roleRaw,
-        });
-      } catch { /* bridge optional */ }
+        },
+      });
 
       return res.status(201).json({
         ok: true,
@@ -279,12 +290,13 @@ export function registerFounderTeamRoutes(app: Express): void {
       db.prepare(
         "UPDATE founder_team_members SET removed_at = ? WHERE id = ?",
       ).run(new Date().toISOString(), memberId);
-      try {
-        const { emitBridge } = require("../bridgeStore");
-        emitBridge("founderTeam.member_removed", memberId, "founderTeamMember", {
-          memberId, companyId: row.company_id, userId: row.user_id,
-        });
-      } catch { /* bridge optional */ }
+      /* WAVE 36 · ROW 6 — real emit (was a dead `emitBridge` require). */
+      emitBridgeEvent({
+        eventType: "founderTeam.member_removed",
+        aggregateId: memberId,
+        aggregateKind: "company",
+        payload: { memberId, companyId: row.company_id, userId: row.user_id },
+      });
       return res.json({ ok: true, memberId, removed: true });
     } catch (err) {
       return res

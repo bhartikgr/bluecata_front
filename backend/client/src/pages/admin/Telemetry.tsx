@@ -15,6 +15,7 @@ import {
  Search, Filter, Sparkles, TrendingUp, AlertCircle, Flame,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
+import { LoadFailedRefusal } from "@/components/LoadFailedRefusal"; /* WAVE 22 · ITEM 4 */
 import type { ApiRound } from "@/lib/types";
 import type { ApiSecurity } from "@/lib/engineDemo";
 import {
@@ -80,11 +81,16 @@ export default function AdminTelemetry() {
  // Pick the first company id from the loaded rounds for the securities pull;
  // if no rounds (fresh tenant), the securities query is disabled and we render empty state.
  const selectedCompanyId = roundsQ.data?.[0]?.companyId ?? "";
+ /* WAVE 22 · ITEM 4 (REVIEW B F-4) — `if (!res.ok) return []` swallowed a
+    403/500 into an empty securities array, and the investor-concentration
+    widget then drew a concentration picture from NO holdings: not an empty
+    state but a wrong analysis presented as an analysis. Throw instead, and
+    render a refusal for the widgets that depend on it. */
  const securitiesQ = useQuery<ApiSecurity[]>({
   queryKey: ["/api/companies", selectedCompanyId, "securities"],
   queryFn: async () => {
    const res = await fetch(`/api/companies/${selectedCompanyId}/securities`);
-   if (!res.ok) return [] as ApiSecurity[];
+   if (!res.ok) throw new Error(`Failed to load securities: ${res.status}`);
    return res.json();
   },
   enabled: Boolean(selectedCompanyId),
@@ -171,9 +177,29 @@ export default function AdminTelemetry() {
  </TabsContent>
  <TabsContent value="intelligence">
  {/* Sprint 5 — M&A intelligence widgets */}
+ {/* WAVE 22 · ITEM 4 (REVIEW B F-4) — sibling refusals. `?? []` below turned
+     a failed fetch into an empty input and the widgets rendered a confident
+     analysis of nothing. Each widget is now shown only when its own source
+     actually loaded. */}
+ {roundsQ.isError && (
+ <LoadFailedRefusal
+ what="round data for these widgets"
+ testId="admin-telemetry-rounds-error"
+ onRetry={() => void roundsQ.refetch()}
+ isRetrying={roundsQ.isFetching}
+ />
+ )}
+ {securitiesQ.isError && (
+ <LoadFailedRefusal
+ what="securities for the concentration widget"
+ testId="admin-telemetry-securities-error"
+ onRetry={() => void securitiesQ.refetch()}
+ isRetrying={securitiesQ.isFetching}
+ />
+ )}
  <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
- <ValuationStepUpWidget rounds={roundsQ.data ?? []} />
- <InvestorConcentrationWidget securities={securitiesQ.data ?? []} />
+ {roundsQ.isSuccess && <ValuationStepUpWidget rounds={roundsQ.data ?? []} />}
+ {securitiesQ.isSuccess && <InvestorConcentrationWidget securities={securitiesQ.data ?? []} />}
  <BurnVsRaiseWidget />
  </div>
  </TabsContent>

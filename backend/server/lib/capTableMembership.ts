@@ -29,6 +29,7 @@
  * Fail-closed: any DB error, missing table, or malformed input returns FALSE
  * (treated as "not co-members" → the resolver masks to "Private Investor").
  */
+import { notSpvBackedSql } from "./spvBackedCompanies";
 import { rawDb } from "../db/connection";
 
 const isValidId = (v: unknown): v is string =>
@@ -62,6 +63,19 @@ export function areCoMembersOnAnyCapTable(userIdA: string, userIdB: string): boo
             AND cb.state = 'committed'
             AND ca.deleted_at IS NULL
             AND cb.deleted_at IS NULL
+            -- X-C1 / P1-8 (WAIVER-4, owner-signed 2026-08-11). SPVs are stored as
+            -- companies in this ledger by design (ENGINE_REGISTRY C-1), so two passive
+            -- LPs who merely subscribed to the same vehicle were resolving as
+            -- "co-members" and could discover each other. The policy this gate
+            -- implements (see the header, Ozan 2026-06-25) is about KNOWN
+            -- COUNTERPARTIES collaborating on portfolio companies — not co-investors
+            -- in a syndicate, who frequently must not learn of one another at all.
+            -- SPV-hood is asked of the DB, never inferred from an id prefix, so a new
+            -- SPV is excluded on insert with no code change. Fails in the DENYING
+            -- direction: a missing spv table hides real counterparties rather than
+            -- introducing strangers. Same predicate as the list-form second path in
+            -- commsUserDirectory.ts, shared from spvBackedCompanies.ts so they cannot drift.
+            AND ${notSpvBackedSql("ca")}
           LIMIT 1`,
       )
       .get(a, b) as { hit?: number } | undefined;

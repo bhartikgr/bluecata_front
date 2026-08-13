@@ -12,6 +12,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { CheckCircle2, Lock } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
+import { minorToMajorString } from "@/lib/moneyDisplay";
 
 interface PricingTier {
   slug: string;
@@ -28,7 +29,8 @@ interface PricingResponse {
 }
 
 function formatMoneyMinor(amountMinor: number, currency: string): string {
-  const dollars = amountMinor / 100;
+  /* WAVE 21 ITEM 5: hardcoded /100; the currency was already in scope. */
+  const dollars = Number(minorToMajorString(amountMinor, currency));
   try {
     return new Intl.NumberFormat("en-US", {
       style: "currency",

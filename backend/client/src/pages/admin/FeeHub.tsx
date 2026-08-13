@@ -161,13 +161,19 @@ export function PartnerFeesHub() {
     <FeeHub
       title="Partner Fees"
       breadcrumbLabel="Partner Fees"
-      intro="The single place to manage all Consortium Partner pricing, commissions, and reporting. The BASE subscription price per tier (e.g. Catalyst = $499/mo) is set on 'Partner Subscription Tiers' (Platform Fees -> Consortium tab) and is the source of truth the public pricing page + partner dashboard read. Per-partner overrides (individual discounts, seat allowances) are set on each partner's detail page. Commission % is set on Commission Rates. Everything is DB-driven and dynamic; nothing is hardcoded."
+      /* WAVE 21 ITEM 6: this paragraph ended with "Everything is DB-driven and
+         dynamic; nothing is hardcoded" while itself hardcoding "$499/mo". The
+         moment an admin edits the Catalyst price, the help text contradicts the
+         screen it is explaining. The figures are removed rather than
+         re-hardcoded; the page they point at shows the live value. */
+      intro="The single place to manage all Consortium Partner pricing, commissions, and reporting. The BASE subscription price per tier is set on 'Partner Subscription Tiers' (Platform Fees -> Consortium tab) and is the source of truth the public pricing page + partner dashboard read. Per-partner overrides (individual discounts, seat allowances) are set on each partner's detail page. Commission % is set on Commission Rates. Everything is DB-driven and dynamic; nothing is hardcoded — including the figures shown on those pages, which is why none are quoted here."
       entries={[
         {
           href: "/admin/platform-fees",
           title: "Partner Subscription Tiers (Catalyst/Builder/…)",
           badge: "Source of truth",
-          controls: "The BASE monthly subscription price for each partner tier (Catalyst, Builder, Amplifier, Nexus, Founding Member). Edited on the 'Consortium' tab. This is where e.g. the Catalyst $499/mo price lives — fully DB-driven and admin-editable.",
+          /* WAVE 21 ITEM 6: dropped the hardcoded "$499/mo" example. */
+          controls: "The BASE monthly subscription price for each partner tier (Catalyst, Builder, Amplifier, Nexus, Founding Member). Edited on the 'Consortium' tab. This is where the live per-tier price lives — fully DB-driven and admin-editable.",
           shownIn: "Public /consortium/pricing page (advertised == charged) AND the partner dashboard 'Your subscription' + billing tier quote.",
         },
         {
@@ -181,7 +187,8 @@ export function PartnerFeesHub() {
           href: "/admin/commission-rates",
           title: "Commission Rates",
           badge: "Source of truth",
-          controls: "Per-tier commission % (catalyst 2%, builder 3%, etc.). Commission ONLY — the subscription price lives on Partner Subscription Tiers above.",
+          /* WAVE 21 ITEM 6: dropped the hardcoded "catalyst 2%, builder 3%" rates. */
+          controls: "Per-tier commission %, set and stored per tier. Commission ONLY — the subscription price lives on Partner Subscription Tiers above.",
           shownIn: "Partner dashboard 'Plan & quota' commission line and commission calculations.",
         },
         {

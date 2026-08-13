@@ -10,6 +10,8 @@
  * consistent with how the rest of this suite isolates logic from transport.
  */
 import { describe, it, expect, afterEach } from "vitest";
+/* WAVE 38 · ROW 5 — the SHIPPED label module, imported rather than copied. */
+import { labelFor, FEE_KIND_LABELS, CADENCE_LABELS } from "@/lib/collectiveLabels";
 import {
   hideSeedDataEnabled,
   isQaEmail,
@@ -189,49 +191,49 @@ describe("W3.5 — partner team duplicate-seat dedupe", () => {
 });
 
 describe("W3.6 — snake_case enum label humanizer", () => {
-  // Re-implemented locally (client/src/lib/collectiveLabels.ts is a
-  // browser-side module using import.meta/process.env.NODE_ENV branches not
-  // meant for server-side import); this test asserts the SAME contract:
-  // known values resolve via the map, unknown snake_case values are
-  // title-cased, and it never throws.
-  function titleCaseToken(raw: string): string {
-    return raw
-      .replace(/[_-]+/g, " ")
-      .trim()
-      .replace(/\b\w/g, (c) => c.toUpperCase());
-  }
-  function labelFor(map: Record<string, string>, value: string | null | undefined): string {
-    if (!value) return "\u2014";
-    return map[value] ?? titleCaseToken(String(value));
-  }
+  /* WAVE 38 · ROW 5 — this block used to RE-IMPLEMENT `labelFor`,
+   * `titleCaseToken` and a hand-written two-entry `FEE_KIND_LABELS`, then
+   * assert on its own copy. Its stated reason — that
+   * `client/src/lib/collectiveLabels.ts` is "a browser-side module using
+   * import.meta" — is not true of that file: it uses `process.env.NODE_ENV`
+   * only, and the `@` alias resolves in this runner. So the copy proved
+   * nothing about the module every admin/partner surface actually renders
+   * through, and a defect shipped in the real `labelFor` (or a label deleted
+   * from the real map) would have left this suite green.
+   *
+   * It now imports the SHIPPED module: the real function and the real maps.
+   */
 
-  const FEE_KIND_LABELS: Record<string, string> = {
-    membership_dues: "Membership dues",
-    event_fee: "Event fee",
-  };
-
-  it("resolves known enum values through the map", () => {
+  it("resolves known enum values through the SHIPPED map", () => {
     expect(labelFor(FEE_KIND_LABELS, "membership_dues")).toBe("Membership dues");
     expect(labelFor(FEE_KIND_LABELS, "event_fee")).toBe("Event fee");
+    // Entries a local two-key copy silently omitted, each rendered by a real surface.
+    expect(labelFor(FEE_KIND_LABELS, "spv_deployment")).toBe("SPV deployment (banded)");
+    expect(labelFor(FEE_KIND_LABELS, "subscription_annual")).toBe("Subscription — Annual");
   });
 
   it("title-cases unknown snake_case values instead of throwing", () => {
     expect(labelFor(FEE_KIND_LABELS, "some_future_fee_kind")).toBe("Some Future Fee Kind");
     expect(() => labelFor(FEE_KIND_LABELS, "brand_new_value")).not.toThrow();
+    // The raw machine token must never reach a human unhumanized.
+    expect(labelFor(FEE_KIND_LABELS, "brand_new_value")).not.toBe("brand_new_value");
   });
 
-  it("handles nullish/empty values gracefully", () => {
+  it("handles nullish/empty values gracefully with an em dash", () => {
     expect(labelFor(FEE_KIND_LABELS, undefined)).toBe("\u2014");
     expect(labelFor(FEE_KIND_LABELS, null)).toBe("\u2014");
     expect(labelFor(FEE_KIND_LABELS, "")).toBe("\u2014");
   });
 
-  it("humanizes carry-basis and distribution-scope style values", () => {
-    const CARRY_BASIS_LABELS: Record<string, string> = {
-      per_deployment: "Per deployment",
-      whole_spv: "Whole SPV",
-    };
-    expect(labelFor(CARRY_BASIS_LABELS, "per_deployment")).toBe("Per deployment");
-    expect(labelFor(CARRY_BASIS_LABELS, "whole_spv")).toBe("Whole SPV");
+  it("humanizes the OTHER shipped maps too — cadence and status", () => {
+    expect(labelFor(CADENCE_LABELS, "one_time")).toBe("One-time");
+    expect(labelFor(CADENCE_LABELS, "quarterly")).toBe("Quarterly");
+    expect(labelFor(CADENCE_LABELS, "not_a_cadence")).toBe("Not A Cadence");
+  });
+
+  it("never mutates the shipped map it is handed", () => {
+    const before = JSON.stringify(FEE_KIND_LABELS);
+    labelFor(FEE_KIND_LABELS, "a_value_not_in_the_map");
+    expect(JSON.stringify(FEE_KIND_LABELS)).toBe(before);
   });
 });

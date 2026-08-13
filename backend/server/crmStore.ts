@@ -516,20 +516,76 @@ export function registerCrmRoutes(app: Express): void {
     res.json({ ok: true, removed: c });
   });
 
+  /* ==========================================================================
+   * WAVE 29 ITEM 1 — these six handlers had NO AUTHENTICATION AND NO TENANT
+   * SCOPING. This is the category (b) live exposure of Wave 29; see
+   * `build_log/WAVE29_REPORT.md` §1.
+   *
+   * WHAT WAS WRONG, measured by execution (not read):
+   *   With DISABLE_DEV_BYPASS=1 — i.e. PRODUCTION identity semantics, cookie
+   *   only, no demo-persona fallback — an anonymous request got:
+   *     GET    /api/investor/crm/notes     -> 200 with EVERY owner's notes
+   *     POST   /api/investor/crm/notes     -> 200, row written
+   *     GET    /api/investor/crm/tasks     -> 200 with EVERY owner's tasks
+   *     POST   /api/investor/crm/tasks     -> 200, row written
+   *     PATCH  /api/investor/crm/tasks/:id -> 200, ANY task mutated by id
+   *     DELETE /api/investor/crm/tasks/:id -> 200, ANY task deleted by id
+   *   The other 19 routes under this prefix already refused with their own 401.
+   *   The `app.use("/api/investor/crm", gate(...))` mount at routes.ts:1685 is
+   *   inert (registered below these routes), but it was never the right fix
+   *   here anyway: it is an ENTITLEMENT gate (investor.hasAnyCapTable), not an
+   *   authentication check, so moving it would both fail to authenticate and
+   *   newly lock out cap-table-less investors on the other 19 routes.
+   *
+   * TWO DEFECTS, TWO FIXES — authentication was only half of it:
+   *   1. AUTHENTICATION. `if (!ctx.isAuthed) return 401`, matching the contacts
+   *      handlers directly above, which had it all along.
+   *   2. TENANT SCOPING. `getNotes()` / `getTasks()` return the WHOLE array
+   *      across all owners, so authenticating alone would still have let any
+   *      logged-in investor read every other investor's diligence notes. Notes
+   *      and tasks are reachable only through a contact the caller owns.
+   *
+   * The hardcoded `ownerId = ... : "u_aisha_patel"` write fallback is REMOVED.
+   * An unauthenticated write no longer happens at all, so there is nothing left
+   * to attribute to a hardcoded tenant.
+   *
+   * Cross-tenant refusals are 404, not 403: a 403 confirms the id exists and is
+   * an enumeration oracle over other investors' task ids.
+   *
+   * Falsified both ways in
+   * `server/__tests__/wave29_item1_investor_crm_open_routes.test.ts`: anonymous
+   * is refused on all six AND the owning investor can still read, create,
+   * complete and delete. All ten cases failed before this change.
+   * ========================================================================== */
+
+  /** The caller's own contact ids. Tenancy is derived from the contact store,
+   *  never from a literal and never from client input. */
+  function ownContactIds(userId: string): Set<string> {
+    return new Set(getContactsForUser(userId).map((c) => c.id));
+  }
+
   /* ---------- notes ---------- */
   app.get("/api/investor/crm/notes", (req: Request, res: Response) => {
+    const ctx = getUserContext(req);
+    if (!ctx.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
+    const owned = ownContactIds(ctx.userId);
     const contactId = typeof req.query.contactId === "string" ? req.query.contactId : undefined;
-    res.json(getNotes(contactId));
+    // A ?contactId= the caller does not own must not be answerable at all;
+    // filtering the (already scoped) result set makes that automatic.
+    res.json(getNotes(contactId).filter((n) => owned.has(n.contactId)));
   });
 
   app.post("/api/investor/crm/notes", (req: Request, res: Response) => {
+    const ctx = getUserContext(req);
+    if (!ctx.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
     const parsed = pcrmNoteSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: "validation_failed", issues: parsed.error.format() });
+    if (!ownContactIds(ctx.userId).has(parsed.data.contactId)) {
+      return res.status(404).json({ error: "contact_not_found" });
+    }
     const n: StoredNote = { ...parsed.data, id: newId("nt"), createdAt: new Date().toISOString() };
     notes.push(n);
-    // Use the requester's ownerId for tenant; fall back to "u_aisha_patel" for legacy clients.
-    const ctx = getUserContext(req);
-    const ownerId = ctx.isAuthed ? ctx.userId : "u_aisha_patel";
+    const ownerId = ctx.userId;
     persistNote(n, ownerId);
     const env = emitSync({
       eventType: "crm_note_added",
@@ -543,30 +599,42 @@ export function registerCrmRoutes(app: Express): void {
 
   /* ---------- tasks ---------- */
   app.get("/api/investor/crm/tasks", (req: Request, res: Response) => {
+    const ctx = getUserContext(req);
+    if (!ctx.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
+    const owned = ownContactIds(ctx.userId);
     const contactId = typeof req.query.contactId === "string" ? req.query.contactId : undefined;
-    res.json(getTasks(contactId));
+    res.json(getTasks(contactId).filter((t) => owned.has(t.contactId)));
   });
 
   app.post("/api/investor/crm/tasks", (req: Request, res: Response) => {
+    const ctx = getUserContext(req);
+    if (!ctx.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
     const parsed = pcrmTaskSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: "validation_failed", issues: parsed.error.format() });
+    if (!ownContactIds(ctx.userId).has(parsed.data.contactId)) {
+      return res.status(404).json({ error: "contact_not_found" });
+    }
     const t: StoredTask = { ...parsed.data, id: newId("tk"), createdAt: new Date().toISOString() };
     tasks.push(t);
-    const ctx = getUserContext(req);
-    const ownerId = ctx.isAuthed ? ctx.userId : "u_aisha_patel";
+    const ownerId = ctx.userId;
     persistTask(t, ownerId);
     res.json({ ok: true, task: t });
   });
 
   app.patch("/api/investor/crm/tasks/:id", (req: Request, res: Response) => {
+    const ctx = getUserContext(req);
+    if (!ctx.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
     const t = tasks.find((x) => x.id === req.params.id);
-    if (!t) return res.status(404).json({ error: "task_not_found" });
+    // 404 for both "no such task" and "not yours" — a 403 on the second would
+    // confirm the id exists and hand an attacker an enumeration oracle.
+    if (!t || !ownContactIds(ctx.userId).has(t.contactId)) {
+      return res.status(404).json({ error: "task_not_found" });
+    }
     const { status, completedAt } = req.body ?? {};
     if (status) t.status = status;
     if (completedAt) t.completedAt = completedAt;
     else if (status === "done" && !t.completedAt) t.completedAt = new Date().toISOString();
-    const ctx = getUserContext(req);
-    const ownerId = ctx.isAuthed ? ctx.userId : "u_aisha_patel";
+    const ownerId = ctx.userId;
     persistTask(t, ownerId);
     let env;
     if (status === "done") {
@@ -582,7 +650,10 @@ export function registerCrmRoutes(app: Express): void {
   });
 
   app.delete("/api/investor/crm/tasks/:id", (req: Request, res: Response) => {
-    const idx = tasks.findIndex((t) => t.id === req.params.id);
+    const ctx = getUserContext(req);
+    if (!ctx.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
+    const owned = ownContactIds(ctx.userId);
+    const idx = tasks.findIndex((t) => t.id === req.params.id && owned.has(t.contactId));
     if (idx === -1) return res.status(404).json({ error: "task_not_found" });
     const [t] = tasks.splice(idx, 1);
     softDeleteTaskRow(t.id);

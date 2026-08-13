@@ -21,6 +21,8 @@ import { Badge } from "@/components/ui/badge";
 import { PartnerEmptyState } from "@/components/partner/PartnerShell";
 import { AppCard } from "@/components/ui/app-card";
 import { PartnerPortfolioProfileDialog } from "@/components/partner/PartnerPortfolioProfileDialog";
+import { PartnerPipelineActivityDialog } from "@/components/partner/PartnerPipelineActivityDialog"; /* WAVE 27 · CP-PIPE-04 */
+import Lock1NoticePanel from "@/components/partner/Lock1NoticePanel"; /* WAVE 33 · CP-PIPE-10 */
 import { canWritePortfolioProfile } from "@shared/partnerRoles"; /* w-partner F-new2 — one source of truth with the server guard */
 import {
   PARTNER_PIPELINE_STAGES,
@@ -126,6 +128,8 @@ export default function PartnerPipeline() {
   const [referEmail, setReferEmail] = useState("");
   // v25.50.0 Phase 3 — Private Portfolio profile editor target (deal w/ companyId).
   const [profileDeal, setProfileDeal] = useState<Deal | null>(null);
+  /* WAVE 27 · CP-PIPE-04 — deal whose activity log is open. Null = closed. */
+  const [activityDeal, setActivityDeal] = useState<Deal | null>(null);
 
   const createMut = useMutation({
     /* v25.33 — apiRequest() throws ApiError on non-2xx, so the prior `if (!res.ok)`
@@ -382,6 +386,20 @@ export default function PartnerPipeline() {
                           ))}
                         </select>
                       )}
+                      {/* WAVE 27 · CP-PIPE-04 — read the deal's activity log. A
+                          SIBLING button, not extra text inside an existing node.
+                          Unconditional: every deal has a history the moment it
+                          changes stage, and unlike Profile it needs no
+                          `companyId`. Read-only, so it is offered to every
+                          sub-role that can see the board — the append route
+                          stays narrower. */}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-6 text-[10px] px-2 mt-2 w-full"
+                        data-testid={`pipeline-activity-btn-${d.id}`}
+                        onClick={() => setActivityDeal(d)}
+                      >History</Button>
                       {/* v25.50.0 Phase 3 — open this company's private portfolio profile. */}
                       {d.companyId && (
                         <Button
@@ -697,6 +715,19 @@ export default function PartnerPipeline() {
           onOpenChange={(o) => { if (!o) setProfileDeal(null); }}
         />
       )}
+
+      {/* WAVE 27 · CP-PIPE-04 — the read surface for the write-only activity log. */}
+      <PartnerPipelineActivityDialog
+        deal={activityDeal}
+        onOpenChange={(o) => { if (!o) setActivityDeal(null); }}
+      />
+
+      {/* WAVE 33 · CP-PIPE-10 — LOCK 1. APPENDED as the LAST sibling inside the
+          shell, never inserted mid-list. The lock governs the provenance of
+          partner-sourced soft circles, which originate on this surface, so this
+          is where it is stated. Its wording is OQ-5 and ships NOT SUPPLIED; the
+          panel says so explicitly rather than approximating it. */}
+      <Lock1NoticePanel />
     </PartnerShell>
   );
 }

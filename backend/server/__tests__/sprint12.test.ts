@@ -11,7 +11,7 @@
  * These tests are additive (Sprint 12 work) — math-critical cap-table tests stay in
  * packages/cap-table-engine and are NOT modified.
  */
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { installV14TestIdentity } from "./_v14TestIdentity"; /* v14 Tier-1 Fix 1 — restores u_admin default identity for legacy tests */
 import express from "express";
 import http from "node:http";
@@ -44,6 +44,7 @@ import {
   tickQueue,
 } from "../emailStore";
 import { registerAdminPlatformRoutes } from "../adminPlatformStore";
+import { createModel, promoteModel, deleteModel } from "../pricingModelStore";
 import { shouldShowToggle } from "../../client/src/components/CapCollectiveToggle";
 
 /* ---------- helpers ---------- */
@@ -57,6 +58,23 @@ function makeApp() {
   registerAdminPlatformRoutes(app);
   return app;
 }
+/**
+ * WAVE 38 · ROW 3 — the bridge/admin route tests below now drive the REAL
+ * `requireAdmin` gate instead of relying on `installV14TestIdentity`'s default
+ * persona. That shim writes `req.userContext`, but `requireAdmin` calls
+ * `getUserContext(req)` itself, so the shim never reached the gate: the tests
+ * had been asserting `200` against a route that answers `403`, and had simply
+ * been re-pinned. Identity is now supplied the way the real resolver reads it
+ * (`?as=admin` / `?as=investor` → `resolvePersonaIdWithFallback`), and every
+ * gated route asserts BOTH poles.
+ */
+type Persona = "admin" | "investor";
+
+/** Append the persona selector the real identity resolver reads. */
+function as(path: string, persona: Persona): string {
+  return `${path}${path.includes("?") ? "&" : "?"}as=${persona}`;
+}
+
 async function req(app: express.Express, method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> {
   return new Promise((resolve, reject) => {
     const server = http.createServer(app).listen(0, () => {
@@ -85,43 +103,204 @@ async function req(app: express.Express, method: string, path: string, body?: un
 /* Bridge store                                                                */
 /* =========================================================================== */
 describe("Sprint 12 / Bridge — outbound + inbound catalogs", () => {
-  it("declares 16 outbound event types per audit §13.2", () => {
-    // Audit lists 11 named events; safe.converted + note.converted count
-    // separately so the live catalog has 12. Test locks the canonical list.
-    // Sprint 16 G1 — added "soft_circle.submitted" → 13 outbound types
-    // Sprint 28 Wave 3 — added "subscription.updated" → 14 outbound types
-    // Sprint 28 Pricing — added "pricing_model.updated" + "pricing_model.published" → 16 outbound types
-    // Sprint 28 Billing — added invoice.issued + invoice.paid + invoice.refunded + invoice.voided → 20
-    // Sprint 28 Wave 5 — added region.proposed + region.review_submitted + region.approved + region.gone_live + region.rejected → 29
-    // Sprint 28 Wave 6 — added notification_campaign.created/scheduled/sent/canceled → 33
-    // Sprint 28 Wave 7 — added email_campaign.created/scheduled/sent/canceled/test_sent → 38
-    // Sprint 29 KL-01 — added company_profile.updated → 41
-    expect(ALL_OUTBOUND_EVENT_TYPES.length).toBe(58) // Sprint 29 KL-01 added company_profile.updated;
-    expect(ALL_OUTBOUND_EVENT_TYPES).toContain("subscription.updated");
-    expect(ALL_OUTBOUND_EVENT_TYPES).toContain("pricing_model.updated");
-    expect(ALL_OUTBOUND_EVENT_TYPES).toContain("pricing_model.published");
-    expect(ALL_OUTBOUND_EVENT_TYPES).toContain("company.profile.updated");
-    expect(ALL_OUTBOUND_EVENT_TYPES).toContain("company_profile.updated"); // KL-01 Sprint 29
-    expect(ALL_OUTBOUND_EVENT_TYPES).toContain("company.ma_intelligence.updated");
-    expect(ALL_OUTBOUND_EVENT_TYPES).toContain("investor.profile.updated");
-    expect(ALL_OUTBOUND_EVENT_TYPES).toContain("cap_table.mutated");
-    expect(ALL_OUTBOUND_EVENT_TYPES).toContain("eligibility.recomputed");
-    expect(ALL_OUTBOUND_EVENT_TYPES).toContain("lifecycle_policy.changed");
-    expect(ALL_OUTBOUND_EVENT_TYPES).toContain("formula.published");
-    expect(ALL_OUTBOUND_EVENT_TYPES).toContain("audit_log.appended");
-    expect(ALL_OUTBOUND_EVENT_TYPES).toContain("safe.converted");
-    expect(ALL_OUTBOUND_EVENT_TYPES).toContain("note.converted");
-    expect(ALL_OUTBOUND_EVENT_TYPES).toContain("round.closed");
-    expect(ALL_OUTBOUND_EVENT_TYPES).toContain("governance_metric.published");
+  /* WAVE 38 · ROW 3 — these two pins used to read `.toBe(58)` and `.toBe(4)`
+   * against live catalogs of 117 and 8. A bare length is the weakest possible
+   * pin on a catalog: it is blind to a RENAME, blind to a REORDER, and blind to
+   * one event being deleted while another is added — and when it goes red the
+   * only visible repair is to type the new number, which is how it drifted 59
+   * entries behind reality. Both now pin the FULL ORDERED CATALOG, so any
+   * addition, removal, rename or reorder fails by name, and the repair forces
+   * you to look at what changed. */
+  it("pins the ENTIRE outbound event catalog, in order — additions, removals, renames and reorders all fail here", () => {
+    expect(ALL_OUTBOUND_EVENT_TYPES).toEqual([
+      "company.profile.updated",
+      "company.ma_intelligence.updated",
+      "investor.profile.updated",
+      "cap_table.mutated",
+      "eligibility.recomputed",
+      "lifecycle_policy.changed",
+      "formula.published",
+      "audit_log.appended",
+      "safe.converted",
+      "note.converted",
+      "round.closed",
+      "round.terms_updated",
+      "governance_metric.published",
+      "soft_circle.submitted",
+      "subscription.updated",
+      "subscription.auto_created_on_company_create",
+      "pricing_model.updated",
+      "pricing_model.published",
+      "invoice.issued",
+      "invoice.paid",
+      "invoice.refunded",
+      "invoice.voided",
+      "contact.created",
+      "contact.updated",
+      "contact.verified",
+      "contact.archived",
+      "region.proposed",
+      "region.review_submitted",
+      "region.approved",
+      "region.gone_live",
+      "region.rejected",
+      "notification_campaign.created",
+      "notification_campaign.scheduled",
+      "notification_campaign.sent",
+      "notification_campaign.canceled",
+      "email_campaign.created",
+      "email_campaign.scheduled",
+      "email_campaign.sent",
+      "email_campaign.canceled",
+      "email_campaign.test_sent",
+      "legal_consent.recorded",
+      "company_profile.updated",
+      "financial.accountant_request_sent",
+      "financial.accountant_filled",
+      "transaction_prep.updated",
+      "profile.completion_changed",
+      "collective.member.updated",
+      "collective.deal_room.opened",
+      "collective.interest.created",
+      "dsc.score.recomputed",
+      "partner.onboarded",
+      "partner.tier_changed",
+      "partner.attribution_created",
+      "partner.attribution_revoked",
+      "partner.team_member_added",
+      "partner.team_member_removed",
+      "partner.spv_recorded",
+      "partner.fund_commitment_pledged",
+      "partner.deal.promoted_to_collective",
+      "partner.deal.referred_to_capavate",
+      "collective.chapter_admin.promoted",
+      "collective.chapter_admin.demoted",
+      "partner.referral.approved",
+      "partner.promotion.approved",
+      "partner.promotion.rejected",
+      "partner.promotion.changes_requested",
+      "partner.company_linked",
+      "partner.company_unlinked",
+      "partner.suspended",
+      "partner.reactivated",
+      "partner.archived",
+      "partner.application_submitted",
+      "partner.application_approved",
+      "partner.application_rejected",
+      "founderTeam.invitation_sent",
+      "founderTeam.member_removed",
+      "maInitiative.response_recorded",
+      "round.invitation_sent",
+      "spv.created",
+      "spv.updated",
+      "spv.scope_changed",
+      "spv.wound_down",
+      "spv.mandate_set",
+      "spv.fee_set",
+      "spv.fee_obligation_accrued",
+      "spv.fee_obligation_paid",
+      "spv.fee_obligation_waived",
+      "spv.subscription_created",
+      "spv.subscription_advanced",
+      "spv.lp_committed",
+      "spv.deployment_created",
+      "spv.deployment_advanced",
+      "spv.deployed",
+      "spv.distribution_recorded",
+      "spv.funds_confirmed",
+      "spv.closed_to_new_lps",
+      "spv.reopened_rolling_close",
+      "spv.document_added",
+      "spv.transfer_proposed",
+      "partner.spv_updated",
+      "cap_table_broadcast_sent",
+      "captable_commit",
+      "collective_application_submitted",
+      "collective_company_application_submitted",
+      "collective_company_nomination_submitted",
+      "crm_contact_added",
+      "crm_intro_requested",
+      "crm_note_added",
+      "crm_pipeline_moved",
+      "crm_task_completed",
+      "dsc.review_received",
+      "founder_crm_broadcast",
+      "payment_charged",
+      "report_sent",
+      "soft_circle.lapsed",
+      "transaction_prep_channel_archived",
+      "transaction_prep_channel_created",
+    ]);
   });
 
-  it("declares 4 inbound event types per audit §13.3", () => {
-    expect(ALL_INBOUND_EVENT_TYPES.length).toBe(4);
+  it("every outbound event type is a well-formed, unique `namespace.verb` name", () => {
+    // Structural invariants that survive legitimate catalog growth, so a new
+    // event still has to be well-formed even though the pin above was updated.
+    expect(ALL_OUTBOUND_EVENT_TYPES.length).toBeGreaterThan(0);
+    expect(new Set(ALL_OUTBOUND_EVENT_TYPES).size).toBe(ALL_OUTBOUND_EVENT_TYPES.length);
+    /* The house convention is dotted snake_case (`namespace.verb`). Two groups
+     * of live types predate it: 15 that carry no namespace at all, and one that
+     * is camelCase. Renaming a shipped wire event is a consumer-breaking change
+     * and is NOT in Wave 38's scope, so both exception sets are pinned BY NAME.
+     * A new event that breaks the convention fails here; the pin cannot be
+     * satisfied by quietly widening a regex. */
+    const LEGACY_NAMESPACELESS = [
+      "cap_table_broadcast_sent",
+      "captable_commit",
+      "collective_application_submitted",
+      "collective_company_application_submitted",
+      "collective_company_nomination_submitted",
+      "crm_contact_added",
+      "crm_intro_requested",
+      "crm_note_added",
+      "crm_pipeline_moved",
+      "crm_task_completed",
+      "founder_crm_broadcast",
+      "payment_charged",
+      "report_sent",
+      "transaction_prep_channel_archived",
+      "transaction_prep_channel_created",
+    ];
+    const LEGACY_CAMEL_CASE = [
+      "founderTeam.invitation_sent",
+      "founderTeam.member_removed",
+      "maInitiative.response_recorded",
+    ];
+
+    const dotted = /^[a-z0-9_]+(\.[a-z0-9_]+)+$/;
+    const offenders = ALL_OUTBOUND_EVENT_TYPES.filter((t) => !dotted.test(t));
+    expect(
+      [...offenders].sort(),
+      "a NEW outbound event type breaks the `namespace.verb` snake_case convention",
+    ).toEqual([...LEGACY_NAMESPACELESS, ...LEGACY_CAMEL_CASE].sort());
+
+    // The two exception groups stay distinct — a namespaceless name must be
+    // snake_case, and the camelCase one must still carry its namespace.
+    for (const t of LEGACY_NAMESPACELESS) expect(t, `${t} must be snake_case`).toMatch(/^[a-z0-9_]+$/);
+    for (const t of LEGACY_CAMEL_CASE) expect(t, `${t} must be dotted`).toMatch(/^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)+$/);
+  });
+
+  it("pins the ENTIRE inbound event catalog, in order", () => {
     expect(ALL_INBOUND_EVENT_TYPES).toEqual([
       "dsc.scores",
       "ma.intelligence_rankings",
       "partner.introduction_status",
       "network.social_signals",
+      "member.application_decision",
+      "membership.renewal_status",
+      "kyc.status_decision",
+      "soft_circle.submitted",
+    ]);
+    for (const t of ALL_INBOUND_EVENT_TYPES) {
+      expect(t, `malformed inbound event type: ${t}`).toMatch(/^[a-z0-9_]+(\.[a-z0-9_]+)+$/);
+    }
+    /* The catalogs are ALMOST disjoint. `soft_circle.submitted` is genuinely
+     * bidirectional — Capavate emits it and Collective echoes it back — so the
+     * overlap is pinned by name rather than asserted empty. A new accidental
+     * both-directions event fails here. */
+    const outbound = new Set<string>(ALL_OUTBOUND_EVENT_TYPES);
+    expect(ALL_INBOUND_EVENT_TYPES.filter((t) => outbound.has(t)).sort()).toEqual([
+      "soft_circle.submitted",
     ]);
   });
 
@@ -220,31 +399,52 @@ describe("Sprint 12 / Bridge — drain + retry semantics", () => {
 });
 
 describe("Sprint 12 / Bridge HTTP routes", () => {
-  it("GET /api/admin/bridge/outbox returns stats + entries array", async () => {
+  it("GET /api/admin/bridge/outbox — admin 200 with real stats, NON-admin 403", async () => {
     const app = makeApp();
-    const r = await req(app, "GET", "/api/admin/bridge/outbox");
-    expect(r.status).toBe(200);
-    expect(typeof r.body.total).toBe("number");
-    expect(Array.isArray(r.body.entries)).toBe(true);
-    expect(Array.isArray(r.body.eventTypes)).toBe(true);
+    const ok = await req(app, "GET", as("/api/admin/bridge/outbox", "admin"));
+    expect(ok.status).toBe(200);
+    expect(typeof ok.body.total).toBe("number");
+    expect(Array.isArray(ok.body.entries)).toBe(true);
+    expect(Array.isArray(ok.body.eventTypes)).toBe(true);
+    // LOWER POLE — the gate is real, not decorative.
+    const denied = await req(app, "GET", as("/api/admin/bridge/outbox", "investor"));
+    expect(denied.status).toBe(403);
+    expect(denied.body?.error).toBe("ADMIN_REQUIRED");
+    // And the refusal leaks nothing: no outbox contents in a 403 body.
+    expect(denied.body?.entries).toBeUndefined();
   });
 
-  it("GET /api/admin/bridge/verify-chain reports ok", async () => {
+  it("GET /api/admin/bridge/verify-chain — admin 200, NON-admin 403", async () => {
     const app = makeApp();
-    const r = await req(app, "GET", "/api/admin/bridge/verify-chain");
-    expect(r.status).toBe(200);
-    expect(r.body).toHaveProperty("ok");
+    const ok = await req(app, "GET", as("/api/admin/bridge/verify-chain", "admin"));
+    expect(ok.status).toBe(200);
+    expect(ok.body).toHaveProperty("ok");
+    const denied = await req(app, "GET", as("/api/admin/bridge/verify-chain", "investor"));
+    expect(denied.status).toBe(403);
+    expect(denied.body?.error).toBe("ADMIN_REQUIRED");
+    expect(denied.body).not.toHaveProperty("ok", true);
   });
 
-  it("POST /api/admin/bridge/emit accepts a known event type", async () => {
+  it("POST /api/admin/bridge/emit — admin emits and the event LANDS in the outbox; NON-admin 403 emits NOTHING", async () => {
     const app = makeApp();
-    const r = await req(app, "POST", "/api/admin/bridge/emit", {
+    const body = (aggregateId: string) => ({
       eventType: "company.profile.updated",
-      aggregateId: "co_test_route",
+      aggregateId,
       aggregateKind: "company",
       payload: { foo: "bar" },
     });
-    expect([200, 201]).toContain(r.status);
+
+    // UPPER POLE — the admin write reaches the sink, not merely a 2xx.
+    const ok = await req(app, "POST", as("/api/admin/bridge/emit", "admin"), body("co_w38_admin"));
+    expect([200, 201]).toContain(ok.status);
+    expect(getOutbox().some((e) => e.envelope.aggregateId === "co_w38_admin")).toBe(true);
+
+    // LOWER POLE — the refused write must leave the outbox untouched. A 403
+    // that still wrote would have passed the old status-only assertion.
+    const denied = await req(app, "POST", as("/api/admin/bridge/emit", "investor"), body("co_w38_denied"));
+    expect(denied.status).toBe(403);
+    expect(denied.body?.error).toBe("ADMIN_REQUIRED");
+    expect(getOutbox().some((e) => e.envelope.aggregateId === "co_w38_denied")).toBe(false);
   });
 
   it("mock receiver responds at /api/_mock_collective/inbound", async () => {
@@ -429,34 +629,187 @@ describe("Sprint 12 / Admin — reconciliation force-commit guard", () => {
 });
 
 describe("Sprint 12 / Admin — pricing tiers", () => {
-  // v19 Wave A / Change 2: single-plan default (\$840 USD/year, Capavate
-  // Annual). The 3-tier matrix (Free / Pro / Scale) was retired from the
-  // displayed seed per founder directive. We assert at least 1 tier and that
-  // the default tier is `founder_capavate_annual`. Admins can still add tiers
-  // via the existing admin pricing endpoints — that path is unchanged.
-  it("founder tiers endpoint returns the v19 single-plan default", async () => {
+  /* WAVE 38 · ROW 3 — this block used to assert that `founder_capavate_annual`
+   * came back at 84_000 minor units. It had been failing with `tiers.length: 0`
+   * because the endpoint stopped serving a hard-coded array in v25.27 and now
+   * PROXIES `pricingModelStore.listModels({ productLine: "founder", status:
+   * "live" })`. Nothing seeds a live founder model in this harness, so the
+   * assertion was pinned to a constant that no longer had a producer.
+   *
+   * The test now establishes its OWN precondition — it creates the model
+   * through the real store API and promotes it draft → preview → live through
+   * the real state machine — then asserts the endpoint reflects what was
+   * seeded. Nothing is read from `process.env`, and no production file is
+   * left dirty: the seeded models are removed in `afterEach`.
+   *
+   * It is also strictly stronger than what it replaced. It now asserts:
+   *   • the endpoint is DB-driven — a DRAFT model must NOT be served;
+   *   • the money is carried as INTEGER MINOR UNITS;
+   *   • the JPY fixture (exponent 0) — a ¥ tier's `usdMonthly` must be a NULL
+   *     REFUSAL, not a number, which is the Wave 35 · F1 defect;
+   *   • no cross-currency arithmetic — the USD and JPY tiers are never summed. */
+  const seededModelIds: string[] = [];
+
+  async function seedFounderModel(input: {
+    slug: string;
+    name: string;
+    currency: string;
+    annualMinor: number;
+    monthlyMinor: number;
+    promoteToLive: boolean;
+  }): Promise<void> {
+    const created = createModel(
+      {
+        productLine: "founder",
+        slug: input.slug,
+        name: input.name,
+        description: `WAVE 38 row 3 fixture — ${input.slug}`,
+        currency: input.currency,
+        basePriceMinor: input.annualMinor,
+        cadence: "annual",
+        cadenceOptions: [
+          { cadence: "annual", priceMinor: input.annualMinor },
+          { cadence: "monthly", priceMinor: input.monthlyMinor },
+        ],
+        currencyOverrides: [],
+        regionalMultipliers: [],
+        features: [{ key: "cap_table", label: "Cap table", included: true }],
+        metering: [],
+        volumeBrackets: [],
+        discountCodes: [],
+        trial: null,
+        effectiveFrom: null,
+        effectiveTo: null,
+        grandfatherOnChange: false,
+        taxInclusive: false,
+      } as unknown as Parameters<typeof createModel>[0],
+      "u_admin_w38",
+    );
+    expect(created.ok, `seed failed for ${input.slug}: ${created.ok ? "" : created.error}`).toBe(true);
+    if (!created.ok) return;
+    seededModelIds.push(created.model.id);
+    if (input.promoteToLive) {
+      // Drive the REAL promotion state machine, not a status write.
+      const toPreview = promoteModel(created.model.id, "preview", "u_admin_w38");
+      expect(toPreview.ok).toBe(true);
+      const toLive = promoteModel(created.model.id, "live", "u_admin_w38");
+      expect(toLive.ok, `promote to live failed: ${toLive.ok ? "" : toLive.error}`).toBe(true);
+    }
+  }
+
+  afterEach(() => {
+    // Never leave the store dirty for the next test or the next file.
+    for (const id of seededModelIds.splice(0)) deleteModel(id, "u_admin_w38");
+  });
+
+  it("founder-tiers is DB-DRIVEN — it serves the LIVE model it was seeded with, in integer minor units", async () => {
     const app = makeApp();
+
+    // PRECONDITION, asserted: nothing is live yet, so the endpoint is empty.
+    // This is the lower pole — it proves the tier below came from the seed and
+    // not from a hard-coded array that would have satisfied the old assertion.
+    const before = await req(app, "GET", "/api/admin/pricing/founder-tiers");
+    expect(before.status).toBe(200);
+    expect(
+      before.body.tiers.some((t: { id: string }) => t.id === "founder-capavate-annual-w38"),
+    ).toBe(false);
+
+    await seedFounderModel({
+      slug: "founder-capavate-annual-w38",
+      name: "Capavate Annual",
+      currency: "USD",
+      annualMinor: 84_000,
+      monthlyMinor: 7_000,
+      promoteToLive: true,
+    });
+
     const r = await req(app, "GET", "/api/admin/pricing/founder-tiers");
     expect(r.status).toBe(200);
     expect(r.body.tiers.length).toBeGreaterThanOrEqual(1);
-    const annual = r.body.tiers.find((t: { id: string }) => t.id === "founder_capavate_annual");
-    expect(annual).toBeTruthy();
+    const annual = r.body.tiers.find((t: { id: string }) => t.id === "founder-capavate-annual-w38");
+    expect(annual, "the LIVE seeded model was not served").toBeTruthy();
     expect(annual.annualPriceCents).toBe(84_000);
+    expect(annual.annualMinor).toBe(84_000);
+    expect(annual.monthlyMinor).toBe(7_000);
+    expect(Number.isInteger(annual.annualMinor)).toBe(true);
+    expect(Number.isInteger(annual.monthlyMinor)).toBe(true);
+    expect(annual.currency).toBe("USD");
     expect(annual.billingCycle).toBe("annual");
+    // USD exponent 2 — 7_000 minor = $70/month.
+    expect(annual.usdMonthly).toBe(70);
   });
 
-  /* D2.5 SLICE 1 — the two assertions that used to live here
-   * ("collective tiers endpoint returns the $1,200/yr Standard tier" and
-   * "regional matrix covers >=9 regions") are DELETED along with their
-   * endpoints. Both asserted HARD-CODED constants:
-   *   • /api/admin/pricing/collective-tiers served a fabricated
-   *     1200/2400/600 array (H-5). Real Collective tier prices live in
-   *     `collective_subscription_configs` — see
-   *     wave_w4_collective_subscriptions.test.ts for the live coverage.
-   *   • /api/admin/pricing/regional served a fabricated 9-region matrix
-   *     (H-13). Real regional multipliers live in `region_extensions`.
-   * Neither endpoint had a single repo consumer. Replaced by the negative
-   * guards below so they cannot be reintroduced. */
+  it("a DRAFT founder model is NOT served — only `live` reaches the endpoint", async () => {
+    const app = makeApp();
+    await seedFounderModel({
+      slug: "founder-draft-only-w38",
+      name: "Draft Only",
+      currency: "USD",
+      annualMinor: 12_000,
+      monthlyMinor: 1_000,
+      promoteToLive: false,
+    });
+    const r = await req(app, "GET", "/api/admin/pricing/founder-tiers");
+    expect(r.status).toBe(200);
+    expect(r.body.tiers.some((t: { id: string }) => t.id === "founder-draft-only-w38")).toBe(false);
+  });
+
+  it("JPY FIXTURE (exponent 0) — a ¥ tier refuses `usdMonthly` with null rather than mislabelling yen as dollars", async () => {
+    /* Wave 35 · F1: `usdMonthly` was `Math.round(monthlyMinor / 100)` for every
+     * currency, so a ¥100,000/month tier was served to founders as
+     * `usdMonthly: 1000`. JPY has exponent 0 — 100000 minor units IS ¥100,000,
+     * not ¥1,000.00 — which is exactly the case a USD-only fixture cannot
+     * catch. The correct behaviour is a NULL refusal the client renders, with
+     * the truth carried alongside in `currency` + integer minor units. */
+    const app = makeApp();
+    await seedFounderModel({
+      slug: "founder-jpy-annual-w38",
+      name: "Capavate Annual (JP)",
+      currency: "JPY",
+      annualMinor: 1_200_000,
+      monthlyMinor: 100_000,
+      promoteToLive: true,
+    });
+    await seedFounderModel({
+      slug: "founder-usd-alongside-w38",
+      name: "Capavate Annual (US)",
+      currency: "USD",
+      annualMinor: 84_000,
+      monthlyMinor: 7_000,
+      promoteToLive: true,
+    });
+
+    const r = await req(app, "GET", "/api/admin/pricing/founder-tiers");
+    expect(r.status).toBe(200);
+    const jpy = r.body.tiers.find((t: { id: string }) => t.id === "founder-jpy-annual-w38");
+    const usd = r.body.tiers.find((t: { id: string }) => t.id === "founder-usd-alongside-w38");
+    expect(jpy).toBeTruthy();
+    expect(usd).toBeTruthy();
+
+    // The refusal — null, NOT 0 and NOT a number.
+    expect(jpy.usdMonthly).toBeNull();
+    expect(jpy.currency).toBe("JPY");
+    // The truth, in integer minor units, exponent 0.
+    expect(jpy.monthlyMinor).toBe(100_000);
+    expect(jpy.annualMinor).toBe(1_200_000);
+    expect(Number.isInteger(jpy.monthlyMinor)).toBe(true);
+    // The rendered string must carry the currency, at exponent 0 — ¥1,200,000,
+    // never ¥12,000 (which is what a hard-coded /100 produces).
+    expect(jpy.displayPrice).toContain("JPY");
+    expect(jpy.displayPrice).toContain("1,200,000");
+    expect(jpy.displayPrice).not.toContain("$");
+
+    // The USD tier alongside is unaffected — the refusal is per-currency.
+    expect(usd.usdMonthly).toBe(70);
+    expect(usd.displayPrice).toContain("$840");
+
+    // NEVER SUM ACROSS CURRENCIES: the endpoint must not offer a total, and the
+    // two tiers must remain separately denominated.
+    expect(r.body.total).toBeUndefined();
+    expect(r.body.totalMinor).toBeUndefined();
+    expect(new Set(r.body.tiers.map((t: { currency: string }) => t.currency)).size).toBeGreaterThan(1);
+  });
+
   it("D2.5 Slice 1 — the 3 hard-coded pricing endpoints are GONE", async () => {
     const app = makeApp();
     for (const p of [

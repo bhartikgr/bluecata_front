@@ -52,6 +52,7 @@ import { eq } from "drizzle-orm";
 import { createHash, randomBytes } from "node:crypto";
 
 import { requireAuth, requireAdmin } from "./lib/authMiddleware";
+import { resolveRateLimitClientIp } from "./lib/rateLimit"; /* WAVE 22 · ITEM 2 — shared hardened client-IP resolver */
 import { getDb } from "./db/connection";
 import {
   users as usersTable,
@@ -210,10 +211,14 @@ function cancelBillableSubscriptionsForErasure(
   return report;
 }
 
+/* WAVE 22 · ITEM 2 (REVIEW B F-3, fifth site found by grep, not named in the
+ * review) — the erasure/data-delete audit chain hashes this address in. It had
+ * the identical defect as the four named sites: leftmost `x-forwarded-for`,
+ * i.e. caller-supplied text signed into a forensic chain. Same single resolver.
+ * The `0.0.0.0` fallback is kept verbatim so the chain shape is unchanged when
+ * no peer is observable. */
 function clientIp(req: Request): string {
-  const xf = (req.headers["x-forwarded-for"] as string | undefined) ?? "";
-  const ip = xf.split(",")[0]?.trim() || (req.socket && req.socket.remoteAddress) || "";
-  return ip || "0.0.0.0";
+  return resolveRateLimitClientIp(req) || "0.0.0.0";
 }
 
 function computeHash(prev: string | null, payload: Record<string, unknown>): string {

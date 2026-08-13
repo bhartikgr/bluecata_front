@@ -19,6 +19,7 @@
 import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { MessagesPage } from "@/components/comms/MessagesPage";
+import { MessagingAudienceNotice } from "@/components/comms/MessagingAudienceNotice";
 import { PartnerShell } from "@/components/partner/PartnerShell";
 import { useRequirePartnerRole } from "@/lib/partner/useRequirePartnerRole";
 import { Button } from "@/components/ui/button";
@@ -41,6 +42,12 @@ export default function PartnerMessages() {
   const { toast } = useToast();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerQuery, setPickerQuery] = useState("");
+  /* WAVE 18 CP-MSG-05 — a rate-limited send is a FAIL-CLOSED state and has to
+     stay on screen. A toast is gone in four seconds and takes the retry window
+     with it, which leaves the partner clicking a button that keeps failing for
+     reasons they can no longer read. The server's own `retryAfterMs` is the
+     only source of the wait; we never invent one. */
+  const [rateLimitedUntil, setRateLimitedUntil] = useState<number | null>(null);
 
   const usersQ = useQuery<CommsUser[]>({
     queryKey: ["/api/comms/users"],
@@ -57,6 +64,8 @@ export default function PartnerMessages() {
     },
     onSuccess: (data) => {
       setPickerOpen(false);
+      /* A send that got through means the window has reopened. */
+      setRateLimitedUntil(null);
       if (!data.ok || !data.channelId) {
         toast({
           title: "Could not start message",
@@ -67,6 +76,19 @@ export default function PartnerMessages() {
     },
     onError: (e: unknown) => {
       setPickerOpen(false);
+      if (e instanceof ApiError && e.status === 429) {
+        /* `retryAfterMs` comes from the limiter (`server/lib/rateLimit.ts`
+           429 body). If the payload is not the shape we expect we show the
+           refusal WITHOUT a countdown rather than guess a number. */
+        const payload = e.payload as { retryAfterMs?: unknown } | null;
+        const ms =
+          payload && typeof payload.retryAfterMs === "number" && payload.retryAfterMs > 0
+            ? payload.retryAfterMs
+            : null;
+        setRateLimitedUntil(ms === null ? 0 : Date.now() + ms);
+        toast({ title: "Too many messages — please slow down", variant: "destructive" });
+        return;
+      }
       if (e instanceof ApiError && e.status === 403) {
         toast({ title: "You can't message this person", variant: "destructive" });
         return;
@@ -96,6 +118,20 @@ export default function PartnerMessages() {
 
   return (
     <PartnerShell title="Messages" tier={me.tier} subRole={me.subRole} partnerName={me.identity.name}>
+      {rateLimitedUntil !== null && (
+        <div
+          className="mb-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+          role="status"
+          data-testid="partner-messages-rate-limited"
+        >
+          You&rsquo;ve sent too many messages in a short time. Your next message will go
+          through
+          {rateLimitedUntil > 0
+            ? ` in about ${Math.max(1, Math.ceil((rateLimitedUntil - Date.now()) / 1000))} seconds.`
+            : " shortly."}
+        </div>
+      )}
+
       <div className="mb-3 flex items-center justify-end">
         <Button
           size="sm"
@@ -155,6 +191,10 @@ export default function PartnerMessages() {
       </Dialog>
 
       <MessagesPage role="investor" hideHeader />
+      {/* WAVE 33 CP-MSG-01 — appended at the END as a SIBLING (guard rule 4).
+          The empty recipient picker is a SHARED PLATFORM rule, so the identical
+          component is mounted on the investor and founder Messages pages too. */}
+      <MessagingAudienceNotice className="mt-4" />
     </PartnerShell>
   );
 }

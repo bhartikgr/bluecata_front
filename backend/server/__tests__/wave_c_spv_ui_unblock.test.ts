@@ -198,7 +198,14 @@ describe("Wave C — SPV UI unblock", () => {
     });
 
     it("exposes testids", () => {
-      for (const id of ["spv-distribution-record-open", "spv-distribution-event", "spv-distribution-gross", "spv-distribution-cost-basis", "spv-distribution-outcome", "spv-distribution-submit"]) {
+      // WAVE 1A / S-2 — `spv-distribution-outcome` (the "Collection outcome"
+      // selector) is deliberately GONE: it let a Consortium Partner declare that
+      // carry had been collected, reaching state="paid" with no gateway. It is
+      // replaced in-place by an explanatory note; the settlement outcome is now
+      // derived server-side only. Allow-listed in scripts/silent-drop-guard/allowlist.json.
+      expect(ui).not.toContain('data-testid="spv-distribution-outcome"');
+      expect(ui).toContain('data-testid="spv-distribution-settlement-note"');
+      for (const id of ["spv-distribution-record-open", "spv-distribution-event", "spv-distribution-gross", "spv-distribution-cost-basis", "spv-distribution-submit"]) {
         expect(ui).toContain(`data-testid="${id}"`);
       }
     });

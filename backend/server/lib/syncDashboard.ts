@@ -15,7 +15,7 @@ import type { Express, Request, Response } from "express";
 import { bridgeHealth, outboundCounts, _resetRuntime } from "./bridgeRuntime";
 import { getOutbox, getInbox, ALL_OUTBOUND_EVENT_TYPES, ALL_INBOUND_EVENT_TYPES, replayDeadLetter } from "../bridgeStore";
 import { computeDrift, seedSnapshot } from "./driftDetector";
-import { ALL_INBOUND_HANDLERS } from "./bridgeInbound";
+import { ALL_INBOUND_HANDLERS, assertInboundRegistryComplete } from "./bridgeInbound";
 import { rawDb } from "../db/connection";
 
 export type DriftStatus = "clean" | "drifted" | "never_synced";
@@ -140,6 +140,15 @@ export function registerSyncDashboardRoutes(app: Express): void {
       inboundTotal: getInbox().length,
       inboundHandlers: ALL_INBOUND_HANDLERS,
       eventTypes: { outbound: ALL_OUTBOUND_EVENT_TYPES, inbound: ALL_INBOUND_EVENT_TYPES },
+      /* WAVE 15 / A-5 (DEF-035) — THIS ROUTE WAS THE SECOND PATH.
+         It has always returned `inboundHandlers` (8 entries, from
+         server/lib/bridgeInbound.ts) side by side with `eventTypes.inbound`
+         (4 entries, from server/bridgeStore.ts). The admin Sync page therefore
+         rendered "Inbound handlers (8)" while the peer contract published four
+         — the divergence was on screen the whole time and nothing compared the
+         two arrays. It is now compared, and the comparison is reported so a
+         future drift is visible instead of merely present. */
+      inboundRegistry: assertInboundRegistryComplete(ALL_INBOUND_EVENT_TYPES),
     });
   });
 

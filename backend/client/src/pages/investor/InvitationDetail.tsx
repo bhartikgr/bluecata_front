@@ -27,6 +27,7 @@ import { StateBadge } from "@/components/common";
    testid is unreferenced by any test and still exported for other surfaces
    (founder pages), so nothing is dropped from those. */
 import { HelpTip } from "@/components/HelpTip";
+import { SoftCircleExpiryBanner } from "@/components/SoftCircleExpiryBanner";
 import { ArrowLeft, FileText, Eye, Download, ShieldCheck, Check, X, Layers, PieChart as PieIcon, Building2, Info, Hash, Undo2, Wallet, Copy, Minus } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { fmtUSD, fmtPct, fmtDate, fmtNum, fmtBytes } from "@/lib/format";
@@ -115,6 +116,18 @@ function NotProvided({ className = "" }: { className?: string }) {
  );
 }
 
+/**
+ * Wave 38 · Row 5 — the server decision record as this page consumes it.
+ * `softCircledAt` is DERIVED SERVER-SIDE from the durable decision history
+ * (`yourDecisionStore.deriveSoftCircledAt`) and is `null` whenever the server
+ * cannot supply a real timestamp. The client never substitutes one.
+ */
+type DecisionRecordShape = {
+  state?: string;
+  softCircledAt?: string | null;
+};
+type DecisionRecordResponse = DecisionRecordShape & { record?: DecisionRecordShape };
+
 // B4: Tab values mapped to URL-safe keys
 type TabValue = "overview" | "captable" | "terms" | "dataroom" | "decision";
 
@@ -182,8 +195,16 @@ export default function InvitationDetail() {
   enabled: !!companyId,
  });
 
- // B3: Fetch decision record to know if investor has soft-circled (for B6 CoSoftCircleBox)
- const decisionRecord = useQuery<{ record?: { state?: string } }>({
+ /* B3: Fetch decision record to know if investor has soft-circled (for B6 CoSoftCircleBox).
+    Wave 38 · Row 5 — SHAPE FIX. `GET …/decision` answers with the decision
+    record ITSELF (`res.json({...rec, softCircledAt})`, yourDecisionStore.ts);
+    only the PATCH wraps it as `{ ok, record, telemetry }`. This query was typed
+    and read as `{ record?: … }`, so every `decision?.state`
+    read below was permanently `undefined` and the server state never reached
+    the UI. `CompanyDetail.tsx:489` reads the same endpoint bare and is correct.
+    We normalise through `decision` and tolerate both shapes so a wrapped
+    response could not silently blank the page again. */
+ const decisionRecord = useQuery<DecisionRecordResponse>({
    queryKey: ["/api/rounds", roundId, "invitations", id, "decision"],
    /* v25.32 burndown — item 15: apiRequest throws ApiError on non-2xx, so the
       prior `if (!res.ok) return {}` was dead — a non-2xx surfaced as a query
@@ -202,6 +223,11 @@ export default function InvitationDetail() {
    },
    enabled: !!roundId && !!id,
  });
+
+ /* Normalised decision record — bare (GET) or wrapped (PATCH-shaped). */
+ const decision: DecisionRecordShape | undefined =
+   (decisionRecord.data as { record?: DecisionRecordShape } | undefined)?.record ??
+   (decisionRecord.data as DecisionRecordShape | undefined);
 
  // v26.1.x AVI-ACCRED — accreditation status for the deal/soft-circle surface
  // banner. When the investor has no valid accredited-investor self-declaration,
@@ -339,7 +365,7 @@ export default function InvitationDetail() {
   // no benign error, no toast. The `viewed` client event still emits so downstream
   // channels are unaffected. Do NOT add an accepted->viewed edge to the sacred
   // state machine.
-  const currentState = decisionRecord.data?.record?.state;
+  const currentState = decision?.state;
   // When the record hasn't loaded yet, `currentState` is undefined; only ping
   // once we know the state is `pending` to avoid a spurious ping on an
   // already-progressed record. If the record query errors/empties, we skip
@@ -348,7 +374,7 @@ export default function InvitationDetail() {
    decisionMutation.mutate({ action: "view" });
   }
   emit({ type: "invitation.viewed", payload: { invitationId: `inv-${inv.data.id}` } }, { companyId: inv.data.company.id ?? "co-x", roundId: inv.data.round.id, actorId: entitlementCtx?.userId ?? "investor-current", actorRole: "investor" });
- }, [inv.data?.id, decisionRecord.data?.record?.state]);
+ }, [inv.data?.id, decision?.state]);
 
  // v25.48 INV-CRASH fix — Rules of Hooks: these hooks MUST run on every render,
  // BEFORE the `if (!inv.data) return …` early return below. Previously they lived
@@ -359,9 +385,9 @@ export default function InvitationDetail() {
  // isConfirmed depends only on decisionRecord (a hook declared earlier), so it is
  // safe to compute here.
  const isConfirmed =
-   decisionRecord.data?.record?.state === "confirmed" ||
-   decisionRecord.data?.record?.state === "signed" ||
-   decisionRecord.data?.record?.state === "funded";
+   decision?.state === "confirmed" ||
+   decision?.state === "signed" ||
+   decision?.state === "funded";
 
  const wireInstr = useQuery<WireInstructions | null>({
    queryKey: [`/api/investor/rounds/${roundId}/wire-instructions`],
@@ -409,7 +435,7 @@ export default function InvitationDetail() {
  // does NOT alter the founder view. Shown for any progressed-but-uncommitted
  // state (accepted/viewed/soft_circled) and while pending.
  const myCapState =
-   decisionRecord.data?.record?.state ?? inv.data?.state ?? "pending";
+   decision?.state ?? inv.data?.state ?? "pending";
  const showMyPendingRow =
    !!inv.data &&
    ["pending", "viewed", "accepted", "soft_circled"].includes(myCapState);
@@ -429,10 +455,10 @@ export default function InvitationDetail() {
  // B6: check if investor has soft-circled (from local term-sheet store OR decision record)
  const hasSoftCircled =
    (mySig && !mySig.withdrawn) ||
-   decisionRecord.data?.record?.state === "soft_circled" ||
-   decisionRecord.data?.record?.state === "confirmed" ||
-   decisionRecord.data?.record?.state === "signed" ||
-   decisionRecord.data?.record?.state === "funded";
+   decision?.state === "soft_circled" ||
+   decision?.state === "confirmed" ||
+   decision?.state === "signed" ||
+   decision?.state === "funded";
 
  // v24.3 — isConfirmed / wireInstr / copyAccountNumber were MOVED above the
  // `if (!inv.data) return` early return (see the v25.48 INV-CRASH fix comment)
@@ -940,6 +966,26 @@ export default function InvitationDetail() {
         <span className="font-semibold">Soft-circle commitment — non-binding indication of interest.</span> A binding subscription requires definitive transaction documents executed by both parties. You can withdraw before the deadline.
        </div>
       </div>
+
+      {/* Wave 38 · Row 5 — 14-day soft-circle expiry countdown, rendered
+          immediately above the "Soft-circle recorded" card.
+
+          Driven ONLY by the server decision record's derived `softCircledAt`
+          (yourDecisionStore.deriveSoftCircledAt, read off the durable decision
+          history) — never by `mySig.signature.timestamp`, which is client
+          zustand and violates the standing "no in-memory ANYWHERE" rule.
+
+          Deliberately NOT nested inside the card below: that card is gated on
+          the in-memory `mySig`, so nesting would have made a DB-driven banner
+          disappear whenever the client-side store was empty (e.g. another
+          device, cleared storage) even though the server knows the investor is
+          soft-circled. The component itself renders nothing when the timestamp
+          is absent or unparseable — an investor must never be shown a guessed
+          expiry date. */}
+      <SoftCircleExpiryBanner
+       softCircledAtIso={decision?.softCircledAt ?? null}
+       readOnly
+      />
 
       {/* Recorded soft-circle (success card) */}
       {mySig && !mySig.withdrawn && (

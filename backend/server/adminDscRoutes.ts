@@ -385,6 +385,71 @@ export function registerAdminDscRoutes(app: Express): void {
     res.status(201).json({ ok: true, submission });
   });
 
+  /* =======================================================================
+   * WAVE 18 ORP-040 (DEF-040) — the investor-side READ that was missing.
+   *
+   * `POST /api/investor/dsc/submit` (:332) has existed and been registered
+   * (server/routes.ts:1103) with ZERO client callers. Wiring the POST alone would
+   * have repeated the exact defect Wave 17 had to unwind on the managed-founder
+   * hand-over: an affordance whose only record of success lives in React state,
+   * so a refresh, a second person at the same firm, or a colleague on the same cap
+   * table sees nothing and can submit a duplicate. The only read of `dsc_pipeline`
+   * was `GET /api/admin/dsc/pipeline` (below), which is `requireAdmin` and
+   * platform-wide — not reachable by, and not safe for, an investor.
+   *
+   * SCOPE. Same authorisation predicate as the submit route it reads back:
+   * the caller must be on that company's cap table (or be an admin). The
+   * companyId comes from the query, is checked, and is never trusted as identity.
+   *
+   * DB-FIRST, same as the admin read: the durable `dsc_pipeline` table is the
+   * source and the in-memory `dscPipeline` array is merged only as a cache for
+   * rows a concurrent request has not yet flushed. On a read failure this route
+   * answers 503 with copy rather than an empty list — an empty list here would
+   * read as "you have not submitted", which is the fabrication the owner rules
+   * forbid.
+   * ==================================================================== */
+  app.get("/api/investor/dsc/submissions", requireAuth, (req: Request, res: Response) => {
+    const ctx = req.userContext;
+    if (!ctx?.isAuthed) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
+    const companyId = typeof req.query?.companyId === "string" ? req.query.companyId : null;
+    if (!companyId) return res.status(400).json({ ok: false, error: "companyId required" });
+    if (!ctx.isAdmin && !isOnCapTable(ctx.userId, companyId)) {
+      return res.status(403).json({
+        ok: false,
+        error: "NOT_ON_CAP_TABLE",
+        message: "You must be an investor on this company's cap table to see its DSC submissions.",
+      });
+    }
+    try {
+      const rows = rawDb()
+        .prepare(
+          "SELECT id, company_id AS companyId, submitted_by AS submittedBy, submitted_at AS submittedAt, status FROM dsc_pipeline WHERE company_id = ? AND deleted_at IS NULL ORDER BY submitted_at ASC",
+        )
+        .all(companyId) as DscSubmission[];
+      const byId = new Map<string, DscSubmission>();
+      for (const r of rows) {
+        byId.set(r.id, {
+          id: r.id,
+          companyId: r.companyId,
+          submittedBy: r.submittedBy,
+          submittedAt: r.submittedAt,
+          status: (r.status ?? "pending") as DscSubmission["status"],
+        });
+      }
+      for (const s of dscPipeline) if (s.companyId === companyId && !byId.has(s.id)) byId.set(s.id, s);
+      /* Array.from — a spread over `.values()` raises TS2802 under this tsconfig. */
+      const items = Array.from(byId.values()).sort((a, b) => a.submittedAt.localeCompare(b.submittedAt));
+      return res.json({ ok: true, items, count: items.length });
+    } catch (err) {
+      log.warn("[adminDscRoutes.investorSubmissions] DB read failed:", (err as Error).message);
+      return res.status(503).json({
+        ok: false,
+        error: "DSC_PIPELINE_READ_FAILED",
+        message: "Your DSC submissions could not be read right now. Nothing has been lost.",
+      });
+    }
+  });
+
   app.get("/api/admin/dsc/pipeline", requireAdmin, (_req: Request, res: Response) => {
     // v25.35 Phase 2 #15 — DB-first read: the `dscPipeline[]` array is a cache
     // only. On a cold cache the admin would see an empty/partial pipeline and

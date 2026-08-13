@@ -27,9 +27,10 @@ import { rawDb } from "./db/connection";
 import { emitBridgeEvent } from "./bridgeStore";
 import type { OutboundEventType } from "./bridgeStore";
 import { log } from "./lib/logger";
-import { rateLimitMiddleware } from "./lib/rateLimit";
+import { rateLimitMiddleware, resolveRateLimitClientIp } from "./lib/rateLimit";
 import { getLedger } from "./captableCommitStore";
 import { getRoundById } from "./roundsStore";
+import { toMinor } from "./lib/currency"; /* WAVE 33 OQ-33-2 — ISO 4217 exponent, never a hardcoded *100 */
 import { addContact } from "./crmStore";
 import { insertContactForImport } from "./founderCrmStore";
 import { emitNotification } from "./notificationsStore";
@@ -157,8 +158,15 @@ async function handleWaterfall(req: Request, res: Response): Promise<void> {
       byRoundData[e.roundId] = { amountStr: "0", sharesStr: "0", roundName: round?.name ?? e.roundId };
     }
     const data = byRoundData[e.roundId];
+    /* WAVE 33 OQ-33-2 sink 4 — was `Math.round(Number(e.amount) * 100)`, a
+     * hardcoded ISO 4217 exponent of 2 on the waterfall's INVESTED figure.
+     * The round is already resolved above via getRoundById, so the exponent
+     * is derived from the round's own currency. For JPY (exponent 0) the old
+     * form inflated every preferred class's invested amount 100x, which
+     * inverts who clears their liquidation preference at a given exit. */
+    const roundCurrency = (round as { currency?: string | null } | undefined)?.currency ?? "USD";
     try {
-      data.amountStr = String(Number(data.amountStr) + Math.round(Number(e.amount) * 100));
+      data.amountStr = String(Number(data.amountStr) + toMinor(Number(e.amount), roundCurrency));
       data.sharesStr = String(Number(data.sharesStr) + Math.max(0, Number(e.shares ?? "0")));
     } catch { /* skip bad rows */ }
   }
@@ -202,6 +210,15 @@ async function handleWaterfall(req: Request, res: Response): Promise<void> {
   const commonSharesNum = totalPrefSharesNum > 0 ? totalPrefSharesNum : 1;
   common.push({ holderId: "founder_common", shares: (BigInt as unknown as (s: string) => unknown)(String(commonSharesNum)) });
 
+  // ── XT-C5 · WATERFALL BOUNDARY (2 of 3) ───────────────────────────────────
+  // This is the FOUNDER-SIDE EXIT waterfall: liquidation preferences by share
+  // class and breakpoints — who gets what if the COMPANY is sold. It is NOT
+  // the SPV LP distribution waterfall and must never be substituted for it.
+  //   · SPV LP distribution (canonical, persists, collects carry, hash-chained)
+  //     → `spvEngineStore.recordDistribution` (server/spvEngineStore.ts:1697)
+  //   · SPV distribution PREVIEW (persists nothing)
+  //     → `computeDistributionSplit` (server/lib/spvOfflineOps.ts)
+  // Three implementations, three capabilities, no rivalry. ENGINE_REGISTRY C-5.
   // Import waterfall engine (sacred — read-only)
   let computeWaterfall: (input: unknown) => unknown;
   try {
@@ -799,9 +816,15 @@ function handleDocumentSign(req: Request, res: Response): void {
   }
 
   const sigId = newId("sig");
-  const ipAddress = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim()
-    ?? req.socket?.remoteAddress
-    ?? "unknown";
+  /* WAVE 22 · ITEM 2 (REVIEW B F-3) — this used to read the LEFTMOST
+   * `x-forwarded-for` entry, which is caller-supplied text. A signature's
+   * `ip_address` column is evidence; anything a signer can dictate is not
+   * evidence. Resolution now goes through the ONE hardened resolver
+   * (`server/lib/rateLimit.ts#resolveRateLimitClientIp`, Wave 19 WAIVER-2 +
+   * Wave 21) rather than a second local copy of the same security decision.
+   * Fail-closed: with no `TRUSTED_PROXY_HOPS` configured the socket peer is
+   * used and the header is ignored completely. */
+  const ipAddress = resolveRateLimitClientIp(req);
 
   try {
     const db = rawDb();

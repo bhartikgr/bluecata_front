@@ -3034,3 +3034,59 @@ export const c2PipelineBackfillLock = sqliteTable("_c2_pipeline_backfill_lock", 
   host: text("host").notNull(),
   completedAt: text("completed_at"),
 });
+
+/* ============================================================
+ * WAVE 4B (PT-1) — partner classification taxonomy.
+ * Migration 0149_wave4b_partner_classifications.sql.
+ *
+ * Two levels, rendered everywhere as `Sector // Sub-sector`. Hybrids are
+ * ROWS in partner_classifications, never a delimited string. Both lookup
+ * tables are DB-driven with `sortOrder` + `active` so an admin can add or
+ * retire a type WITHOUT a migration — never a hardcoded client array.
+ *
+ * SCOPE FENCE (owner ruling 2026-08-09, spec/PARTNER_TYPE_TAXONOMY.md):
+ * REPORTING AND FILTERING ONLY. These three tables must never be read by an
+ * authorization, routing, gating, feature-flag, entitlement, pricing or
+ * menu-visibility decision. Enforced by the PT-5 lint rule
+ * (scripts/lint/partner-classification-scope-fence.mjs) plus the
+ * identical-payload test.
+ *
+ * `consortiumApplications.partnerType` (:2708) and
+ * `partnerOrganizations.partnerType` (:2744) are RETAINED READ-ONLY for the
+ * grandfathered rows and their existing consumers. They are not written
+ * going forward and no reader of them is removed.
+ * ============================================================ */
+export const partnerSectors = sqliteTable("partner_sectors", {
+  slug: text("slug").primaryKey(),
+  label: text("label").notNull(),
+  sortOrder: integer("sort_order").notNull().default(0),
+  /** 1 = selectable. Retired sectors stay resolvable for historical rows. */
+  active: integer("active").notNull().default(1),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const partnerSubsectors = sqliteTable("partner_subsectors", {
+  slug: text("slug").primaryKey(),
+  sectorSlug: text("sector_slug").notNull(),
+  label: text("label").notNull(),
+  sortOrder: integer("sort_order").notNull().default(0),
+  active: integer("active").notNull().default(1),
+  /** Data-driven free-text requirement — `other` seeds with 1. */
+  requiresOtherText: integer("requires_other_text").notNull().default(0),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const partnerClassifications = sqliteTable("partner_classifications", {
+  id: text("id").primaryKey(),
+  partnerId: text("partner_id").notNull(),
+  sectorSlug: text("sector_slug").notNull(),
+  subsectorSlug: text("subsector_slug").notNull(),
+  /** Primary = first selected; editable afterwards. At most one per partner. */
+  isPrimary: integer("is_primary").notNull().default(0),
+  /** Required (non-empty) when the sub-sector carries requiresOtherText. */
+  otherText: text("other_text"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});

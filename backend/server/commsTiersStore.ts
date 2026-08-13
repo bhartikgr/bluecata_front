@@ -38,6 +38,8 @@ import { HashChain, registerChain } from "./lib/hashChain";
 import { withTrace } from "./lib/trace";
 import { rawDb } from "./db/connection";
 import { log } from "./lib/logger";
+import { resolvePersonaId } from "./lib/userContext"; /* WAVE 18 ORP-043 — session-derived actor */
+import { isOnCapTable } from "./membershipStore"; /* WAVE 18 ORP-043 — advocate list scoping */
 
 /* ===========================================================================
  * v25.4 — RAM→DB persistence layer.
@@ -614,31 +616,94 @@ export function getCommunitySignalsForFounder(args: { roundId: string; founderUs
  * Routes (Express)
  * ======================================================================== */
 
+/* ===========================================================================
+ * WAVE 18 / ORP-043 — actor identity must come from the SESSION, never the body
+ *
+ * Every Tier 1/2/3 mutation below used to read its actor out of `req.body`
+ * (`actorId`, `authorUserId`, `requesterId`, `fromUserId`, `muterId`,
+ * `endorserUserId`, `founderUserId`, `userId`). Because these routes sit behind
+ * the global /api authentication guard the CALLER was authenticated — but the
+ * ACTOR was whatever string the caller typed. Any authenticated user could post
+ * a co-investor message as someone else, open a cross-cohort DM "from" another
+ * investor (burning that investor's share of the hard cap), mute on another
+ * investor's behalf, or delete an endorsement as the founder.
+ *
+ * The fix follows the precedent already in this file (Patch v9 / P0-3 on
+ * `POST /api/rounds/:roundId/qa`): when an identity is resolvable from the
+ * request, it WINS; a body field that disagrees is a 400 rather than a silent
+ * override, so a spoofing client is told, not quietly corrected. When no
+ * identity is resolvable at all — the shape used by the Sprint 16 unit harnesses
+ * that mount this router on a bare express app — the legacy body value is used,
+ * and when there is neither the request is refused 401. Fail-closed, rendered.
+ * ======================================================================== */
+export type ActorResolution =
+  | { ok: true; actorId: string; source: "session" | "body" }
+  | { ok: false; status: 400 | 401; error: string };
+
+export function resolveTierActor(req: Request, bodyValue: unknown, field: string): ActorResolution {
+  const ctxUserId = (req as Request & { userContext?: { userId?: string } }).userContext?.userId;
+  const sessionId = ctxUserId ?? resolvePersonaId(req) ?? null;
+  const bodyId = typeof bodyValue === "string" && bodyValue.trim() ? bodyValue.trim() : null;
+  if (sessionId) {
+    if (bodyId && bodyId !== sessionId) {
+      return { ok: false, status: 400, error: `${field}_must_match_session` };
+    }
+    return { ok: true, actorId: sessionId, source: "session" };
+  }
+  if (bodyId) return { ok: true, actorId: bodyId, source: "body" };
+  return { ok: false, status: 401, error: "missing_identity" };
+}
+
 export function registerCommsTiersRoutes(app: Express): void {
   /* ----- Tier 1 ----- */
   app.post("/api/comms/co-investor-groups", (req: Request, res: Response) => {
     const { companyId, participants, actorId } = req.body ?? {};
     if (!companyId || !Array.isArray(participants)) return res.status(400).json({ error: "missing_fields" });
-    const g = createCoInvestorGroup({ companyId, participants, actorId: String(actorId ?? "u_unknown") });
+    /* ORP-043: the creator is the session, never the body. "u_unknown" used to be
+       written into the hash chain whenever the body omitted actorId, which made
+       the chain entry unattributable — the one thing a hash chain is for. */
+    const who = resolveTierActor(req, actorId, "actorId");
+    if (!who.ok) return res.status(who.status).json({ error: who.error });
+    const g = createCoInvestorGroup({ companyId, participants: [...participants, who.actorId], actorId: who.actorId });
     res.json(g);
   });
 
   app.get("/api/comms/co-investor-groups/:companyId", (req: Request, res: Response) => {
-    const groups = coInvestorGroups.filter(g => g.companyId === req.params.companyId && !g.archivedAt);
-    res.json({ groups });
+    /* ORP-043: a co-investor group is a private room. This route used to return
+       EVERY group for the company, so any authenticated caller could enumerate
+       the participant list of rooms they are not in — the participant list is
+       itself the sensitive fact (who else is investing). Scoped to the viewer's
+       own rooms; non-membership yields an empty list, not other people's rooms. */
+    const who = resolveTierActor(req, undefined, "actorId");
+    if (!who.ok) return res.status(who.status).json({ error: who.error });
+    const groups = coInvestorGroups.filter(
+      g => g.companyId === req.params.companyId && !g.archivedAt && g.participants.includes(who.actorId),
+    );
+    res.json({ groups, viewerUserId: who.actorId });
   });
 
   app.post("/api/comms/co-investor-groups/:id/messages", (req: Request, res: Response) => {
     const { authorUserId, body } = req.body ?? {};
-    if (!authorUserId || !body) return res.status(400).json({ error: "missing_fields" });
-    const m = postCoInvestorGroupMessage({ groupId: req.params.id, authorUserId, body });
+    const who = resolveTierActor(req, authorUserId, "authorUserId");
+    if (!who.ok) return res.status(who.status).json({ error: who.error });
+    if (!body) return res.status(400).json({ error: "missing_fields" });
+    /* ORP-043: posting into a room you are not in was permitted. */
+    const grp = coInvestorGroups.find(g => g.id === req.params.id && !g.archivedAt);
+    if (!grp) return res.status(404).json({ error: "group_not_found" });
+    if (!grp.participants.includes(who.actorId)) return res.status(403).json({ error: "not_a_participant" });
+    const m = postCoInvestorGroupMessage({ groupId: req.params.id, authorUserId: who.actorId, body });
     res.json(m);
   });
 
   app.post("/api/comms/co-investor-groups/:id/intro", (req: Request, res: Response) => {
     const { requesterId, targetId } = req.body ?? {};
-    if (!requesterId || !targetId) return res.status(400).json({ error: "missing_fields" });
-    const r = requestCoInvestorIntro({ groupId: req.params.id, requesterId, targetId });
+    const who = resolveTierActor(req, requesterId, "requesterId");
+    if (!who.ok) return res.status(who.status).json({ error: who.error });
+    if (!targetId) return res.status(400).json({ error: "missing_fields" });
+    const grp = coInvestorGroups.find(g => g.id === req.params.id && !g.archivedAt);
+    if (!grp) return res.status(404).json({ error: "group_not_found" });
+    if (!grp.participants.includes(who.actorId)) return res.status(403).json({ error: "not_a_participant" });
+    const r = requestCoInvestorIntro({ groupId: req.params.id, requesterId: who.actorId, targetId });
     res.json(r);
   });
 
@@ -652,15 +717,21 @@ export function registerCommsTiersRoutes(app: Express): void {
 
   app.post("/api/comms/soft-circle/:roundId/peer", (req: Request, res: Response) => {
     const { userId, optedIn, crossCohortDmOptedIn } = req.body ?? {};
-    if (!userId || typeof optedIn !== "boolean") return res.status(400).json({ error: "missing_fields" });
-    const r = setSoftCirclePeerOptIn({ roundId: req.params.roundId, userId, optedIn, crossCohortDmOptedIn });
+    /* ORP-043: this writes a PRIVACY preference. Body-supplied userId let one
+       investor opt ANOTHER investor into receiving cross-cohort DMs. */
+    const who = resolveTierActor(req, userId, "userId");
+    if (!who.ok) return res.status(who.status).json({ error: who.error });
+    if (typeof optedIn !== "boolean") return res.status(400).json({ error: "missing_fields" });
+    const r = setSoftCirclePeerOptIn({ roundId: req.params.roundId, userId: who.actorId, optedIn, crossCohortDmOptedIn });
     res.json(r);
   });
 
   app.patch("/api/rounds/:roundId/ioi-pulse", (req: Request, res: Response) => {
     const { userId, pulse } = req.body ?? {};
-    if (!userId || !["leaning_yes", "need_diligence", "pass"].includes(pulse)) return res.status(400).json({ error: "missing_or_invalid_pulse" });
-    const r = setIoiPulse({ roundId: req.params.roundId, userId, pulse });
+    const who = resolveTierActor(req, userId, "userId");
+    if (!who.ok) return res.status(who.status).json({ error: who.error });
+    if (!["leaning_yes", "need_diligence", "pass"].includes(pulse)) return res.status(400).json({ error: "missing_or_invalid_pulse" });
+    const r = setIoiPulse({ roundId: req.params.roundId, userId: who.actorId, pulse });
     res.json(r);
   });
 
@@ -671,29 +742,43 @@ export function registerCommsTiersRoutes(app: Express): void {
   /* ----- Tier 3 ----- */
   app.post("/api/rounds/:roundId/endorsements", (req: Request, res: Response) => {
     const { companyId, endorserUserId, chip, text, disclaimerAck } = req.body ?? {};
-    const r = createEndorsement({ roundId: req.params.roundId, companyId, endorserUserId, chip, text, disclaimerAck });
+    const who = resolveTierActor(req, endorserUserId, "endorserUserId");
+    if (!who.ok) return res.status(who.status).json({ error: who.error });
+    const r = createEndorsement({ roundId: req.params.roundId, companyId, endorserUserId: who.actorId, chip, text, disclaimerAck });
     if ("error" in r) return res.status(400).json(r);
     res.json(r);
   });
 
   app.delete("/api/rounds/:roundId/endorsements/:id", (req: Request, res: Response) => {
     const { founderUserId } = req.body ?? {};
-    const r = removeEndorsement({ id: req.params.id, founderUserId });
+    /* ORP-043: removal is the founder's moderation power (Top-5 guard #2). A
+       body-supplied founderUserId let any investor delete an endorsement about
+       any company by naming that company's founder. */
+    const who = resolveTierActor(req, founderUserId, "founderUserId");
+    if (!who.ok) return res.status(who.status).json({ error: who.error });
+    const r = removeEndorsement({ id: req.params.id, founderUserId: who.actorId });
     if (!r.ok) return res.status(400).json(r);
     res.json(r);
   });
 
   app.post("/api/comms/cross-cohort/dm/start", (req: Request, res: Response) => {
     const { roundId, fromUserId, toUserId, body } = req.body ?? {};
-    const r = startCrossCohortDm({ roundId, fromUserId, toUserId, body });
+    /* ORP-043: the sender identity fed the per-recipient hard cap and the mute
+       list. Spoofing `fromUserId` let a muted sender walk straight past their
+       mute by borrowing another investor's id. */
+    const who = resolveTierActor(req, fromUserId, "fromUserId");
+    if (!who.ok) return res.status(who.status).json({ error: who.error });
+    const r = startCrossCohortDm({ roundId, fromUserId: who.actorId, toUserId, body });
     if ("error" in r) return res.status(429).json(r);
     res.json(r);
   });
 
   app.post("/api/comms/cross-cohort/mute", (req: Request, res: Response) => {
     const { roundId, muterId, mutedId } = req.body ?? {};
-    if (!roundId || !muterId || !mutedId) return res.status(400).json({ error: "missing_fields" });
-    muteCrossCohort({ roundId, muterId, mutedId });
+    const who = resolveTierActor(req, muterId, "muterId");
+    if (!who.ok) return res.status(who.status).json({ error: who.error });
+    if (!roundId || !mutedId) return res.status(400).json({ error: "missing_fields" });
+    muteCrossCohort({ roundId, muterId: who.actorId, mutedId });
     res.json({ ok: true });
   });
 
@@ -709,43 +794,52 @@ export function registerCommsTiersRoutes(app: Express): void {
     // reject with 400 to prevent IDOR / identity spoofing. Unit-test harnesses
     // that mount this router without loadUserContext fall through to the legacy
     // body-driven path so existing tests still pass.
-    const ctx = (req as unknown as { userContext?: { isAuthed?: boolean; userId?: string } }).userContext;
-    const sessionUserId = ctx?.isAuthed ? ctx.userId : undefined;
+    /* WAVE 18 ORP-043: this route already had the right IDEA (Patch v9 / P0-3)
+       but only honoured an `isAuthed` userContext, so a cookie- or
+       harness-resolved session was treated as "no identity" and fell through to
+       the body. Now it uses the same `resolveTierActor` primitive as its
+       siblings, which widens the identity sources without widening trust. The
+       `askerUserId_must_match_session` error name and the `ok: false` shape are
+       preserved verbatim so no existing caller's error handling changes. */
     const bodyIn = (req.body ?? {}) as { askerUserId?: string; body?: string };
-    if (sessionUserId) {
-      if (typeof bodyIn.askerUserId === "string" && bodyIn.askerUserId !== sessionUserId) {
-        return res.status(400).json({ ok: false, error: "askerUserId_must_match_session" });
-      }
-      const body = bodyIn.body;
-      if (!body) return res.status(400).json({ error: "missing_fields" });
-      const q = postQaQuestion({ roundId: req.params.roundId, askerUserId: sessionUserId, body });
-      return res.json(q);
+    const whoQ = resolveTierActor(req, bodyIn.askerUserId, "askerUserId");
+    if (!whoQ.ok) {
+      if (whoQ.status === 400) return res.status(400).json({ ok: false, error: whoQ.error });
+      return res.status(whoQ.status).json({ error: whoQ.error });
     }
-    // Legacy path: no userContext mounted — fall back to body field.
-    const { askerUserId, body } = bodyIn;
-    if (!askerUserId || !body) return res.status(400).json({ error: "missing_fields" });
-    const q = postQaQuestion({ roundId: req.params.roundId, askerUserId, body });
+    if (!bodyIn.body) return res.status(400).json({ error: "missing_fields" });
+    const q = postQaQuestion({ roundId: req.params.roundId, askerUserId: whoQ.actorId, body: bodyIn.body });
     res.json(q);
   });
 
   app.post("/api/rounds/:roundId/qa/:qid/answers", (req: Request, res: Response) => {
+    /* ORP-043 SECOND PATH: the fence that caught the first five routes also
+       caught these three (Q&A answers, Q&A archive, diligence volunteers). They
+       are the same defect with different field names — an answer could be signed
+       as the founder, and archiving is a founder moderation power. */
     const { authorUserId, body } = req.body ?? {};
-    const r = postQaAnswer({ questionId: req.params.qid, authorUserId, body });
+    const whoA = resolveTierActor(req, authorUserId, "authorUserId");
+    if (!whoA.ok) return res.status(whoA.status).json({ error: whoA.error });
+    const r = postQaAnswer({ questionId: req.params.qid, authorUserId: whoA.actorId, body });
     if ("error" in r) return res.status(400).json(r);
     res.json(r);
   });
 
   app.post("/api/rounds/:roundId/qa/:qid/archive", (req: Request, res: Response) => {
     const { founderUserId } = req.body ?? {};
-    const r = archiveQaThread({ questionId: req.params.qid, founderUserId });
+    const whoF = resolveTierActor(req, founderUserId, "founderUserId");
+    if (!whoF.ok) return res.status(whoF.status).json({ error: whoF.error });
+    const r = archiveQaThread({ questionId: req.params.qid, founderUserId: whoF.actorId });
     if (!r.ok) return res.status(400).json(r);
     res.json(r);
   });
 
   app.post("/api/rounds/:roundId/diligence-volunteers", (req: Request, res: Response) => {
     const { volunteerUserId, softCirclerUserId } = req.body ?? {};
-    if (!volunteerUserId || !softCirclerUserId) return res.status(400).json({ error: "missing_fields" });
-    const v = createDiligenceVolunteer({ roundId: req.params.roundId, volunteerUserId, softCirclerUserId });
+    const whoV = resolveTierActor(req, volunteerUserId, "volunteerUserId");
+    if (!whoV.ok) return res.status(whoV.status).json({ error: whoV.error });
+    if (!softCirclerUserId) return res.status(400).json({ error: "missing_fields" });
+    const v = createDiligenceVolunteer({ roundId: req.params.roundId, volunteerUserId: whoV.actorId, softCirclerUserId });
     res.json(v);
   });
 
@@ -781,10 +875,37 @@ export function registerCommsTiersRoutes(app: Express): void {
   });
 
   /* ----- CRM enrichment readback ----- */
-  app.get("/api/founder/crm/high-value-advocates", (_req: Request, res: Response) => {
+  app.get("/api/founder/crm/high-value-advocates", (req: Request, res: Response) => {
+    /* ORP-043: this returned the PLATFORM-WIDE advocate set to any authenticated
+       caller and named no company at all — i.e. every founder could read every
+       other founder's advocate list, and an investor could read all of them. The
+       flag is derived from endorsements, which DO carry companyId, so the list is
+       now scoped to one company and gated on membership of that company's cap
+       table (admins excepted, matching the DSC routes). The advisory label and
+       the "not a cap-table-engine input" note are preserved verbatim. */
+    const who = resolveTierActor(req, undefined, "actorId");
+    if (!who.ok) return res.status(who.status).json({ error: who.error });
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId : "";
+    if (!companyId) return res.status(400).json({ error: "companyId required" });
+    const ctx = (req as Request & { userContext?: { isAdmin?: boolean } }).userContext;
+    if (!ctx?.isAdmin && !isOnCapTable(who.actorId, companyId)) {
+      return res.status(403).json({ error: "NOT_ON_CAP_TABLE", companyId });
+    }
+    /* An advocate for THIS company is a high-value advocate who endorsed it. */
+    const scoped: string[] = [];
+    const seen = new Set<string>();
+    for (const e of endorsements) {
+      if (e.companyId !== companyId) continue;
+      if (e.removedAt) continue;
+      if (!highValueAdvocates.has(e.endorserUserId)) continue;
+      if (seen.has(e.endorserUserId)) continue;
+      seen.add(e.endorserUserId);
+      scoped.push(e.endorserUserId);
+    }
     res.json({
       label: "For informational purposes only",
-      advocates: Array.from(highValueAdvocates),
+      companyId,
+      advocates: scoped,
       note: "Advisory CRM-only flag; NOT a cap-table-engine input.",
     });
   });

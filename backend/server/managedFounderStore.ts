@@ -27,6 +27,7 @@ import { randomUUID, createHash } from "crypto";
 import { rawDb } from "./db/connection";
 import { log } from "./lib/logger";
 import { applyMfcrmSchema } from "./lib/mfcrmSchema";
+import { applyWave38EventLedgerSchemaOnce } from "./lib/applyWave38EventLedgerSchema";
 import { getById as getContactById } from "./adminContactsStoreShim";
 import type { PartnerType } from "./adminContactsStore";
 import { commitFunded } from "./captableCommitStore";
@@ -53,6 +54,45 @@ export interface CapabilityProfile {
   chapterScoping: boolean;
   fundAdmin: boolean;
   updatedAt: string | null;
+}
+
+/**
+ * WAVE 17 ORP-031 — a hand-over row as the API returns it. Mirrors the columns of
+ * `mf_handover` (server/lib/mfcrmSchema.ts:136-150) exactly; no derived or
+ * invented fields.
+ */
+export interface Handover {
+  id: string;
+  partnerId: string;
+  engagementId: string;
+  companyId: string;
+  direction: "A_TO_B" | "B_TO_A";
+  initiatorParty: "partner" | "founder";
+  initiatedBy: string | null;
+  status: string;
+  authorityArtifactRef: string | null;
+  authorityExpiresAt: string | null;
+  createdAt: string;
+  confirmedAt: string | null;
+  confirmedBy: string | null;
+}
+
+function rowToHandover(r: any): Handover {
+  return {
+    id: String(r.id),
+    partnerId: String(r.partner_id),
+    engagementId: String(r.engagement_id),
+    companyId: String(r.company_id),
+    direction: r.direction === "B_TO_A" ? "B_TO_A" : "A_TO_B",
+    initiatorParty: r.initiator_party === "founder" ? "founder" : "partner",
+    initiatedBy: r.initiated_by ?? null,
+    status: String(r.status),
+    authorityArtifactRef: r.authority_artifact_ref ?? null,
+    authorityExpiresAt: r.authority_expires_at ?? null,
+    createdAt: String(r.created_at),
+    confirmedAt: r.confirmed_at ?? null,
+    confirmedBy: r.confirmed_by ?? null,
+  };
 }
 
 export interface Engagement {
@@ -162,6 +202,34 @@ function seedDefaultsForType(partnerType: PartnerType | null): Partial<Capabilit
   }
 }
 
+/**
+ * WAVE 7B DA-1 — the capability seed types that actually carry defaults.
+ *
+ * Derived from the switch in seedDefaultsForType above rather than re-declared
+ * loosely: anything outside this set lands on `default: return {}`, which seeds
+ * an all-false profile. Before this wave that happened SILENTLY. Validating
+ * against the set turns it into an explicit error, so an admin cannot seed a
+ * partner into a fail-closed profile by typo.
+ */
+/* Declared as an ARRAY, not a Set. This tsconfig targets below es2015 and does
+   not set downlevelIteration, so spreading a Set is a compile error — the
+   constraint on this wave is zero net-new tsc errors, and the first draft of
+   this constant cost exactly one. indexOf over seven strings is not a hot
+   path. */
+/* WAVE 17 ORP-031 — now EXPORTED so the admin capability surface renders the
+   seedable types from this one declaration instead of re-hardcoding the list in
+   the client (`GET /api/admin/mfcrm/capability/:partnerId` returns it). The set
+   itself is unchanged. */
+export const SEEDABLE_PARTNER_TYPES: readonly string[] = [
+  "investment_bank",
+  "angel_network",
+  "accounting",
+  "law",
+  "accelerator",
+  "incubator",
+  "professional_services",
+];
+
 /* ---------- DB persistence (strict, fail-closed) ---------- */
 
 function profileToRow(p: CapabilityProfile): any[] {
@@ -228,9 +296,24 @@ function persistEngagement(e: Engagement): void {
 function recordEvent(partnerId: string, engagementId: string, companyId: string, eventType: string, detail: Record<string, unknown> | null, actor: string | null): void {
   try {
     rawDb().prepare(
-      `INSERT INTO mf_engagement_event (id, partner_id, engagement_id, company_id, event_type, detail_json, actor, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(`mfev_${randomUUID()}`, partnerId, engagementId, companyId, eventType, detail ? JSON.stringify(detail) : null, actor ?? null, nowIso());
+      // WAVE 38 ROW 4 — canonical event columns (migration 0183). `actor_id` is
+      // NOT NULL; 'system' names a machine-originated transition honestly
+      // rather than inventing a user. `seq` is per-parent over
+      // (partner_id, engagement_id) and is derived in-statement.
+      `INSERT INTO mf_engagement_event
+         (id, partner_id, engagement_id, company_id, event_type, detail_json, actor,
+          actor_id, seq, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?,
+               (SELECT COALESCE(MAX(seq), 0) + 1 FROM mf_engagement_event
+                 WHERE partner_id = ? AND engagement_id IS ?),
+               ?)`,
+    ).run(
+      `mfev_${randomUUID()}`, partnerId, engagementId, companyId, eventType,
+      detail ? JSON.stringify(detail) : null, actor ?? null,
+      (actor ?? "").trim() === "" ? "system" : (actor as string).trim(),
+      partnerId, engagementId,
+      nowIso(),
+    );
   } catch (err) {
     log.warn("[managedFounderStore] event write-through failed:", (err as Error).message);
     throw new Error(`STRICT_PERSIST_FAILED: mf_engagement_event.${engagementId}: ${(err as Error).message}`);
@@ -263,11 +346,56 @@ export const managedFounderStore = {
     return profileByPartner.get(partnerId) ?? unclassifiedProfile(partnerId);
   },
 
-  /** Seed a classified profile from the partner's `partner_type` (admin op). */
-  seedCapabilityProfile(partnerId: string, actor: string): CapabilityProfile {
+  /**
+   * Seed a classified profile from the partner's `partner_type` (admin op).
+   *
+   * WAVE 7B DA-1 — SIGNATURE CORRECTION.
+   *
+   * The third parameter is new and OPTIONAL, so every existing call site keeps
+   * its current behaviour verbatim.
+   *
+   * THE DEFECT. `contacts.partner_type` is the legacy 7-value capability union
+   * (server/adminContactsStore.ts:278). Partner taxonomy has since moved to
+   * `partner_classifications` (the 87/11 set, migration 0149), and
+   * `partner_type` is retained READ-ONLY — nothing writes it going forward, as
+   * a grep for an UPDATE/INSERT against that column confirms. So for any
+   * partner classified after Wave 4B this read returns null, seedDefaultsForType
+   * falls to its `default: return {}` branch, `classified` is set false, and
+   * the admin gets a silently UNCLASSIFIED profile — which GATE 1
+   * (`assertClassified`) then uses to refuse engagement creation. The admin's
+   * only recourse was to flip capability booleans one at a time through
+   * setCapabilityProfile, with no way to say "seed this partner AS an angel
+   * network".
+   *
+   * WHY THIS DOES NOT READ THE TAXONOMY. The obvious fix — resolve the seed
+   * type from `partner_classifications` — is FORBIDDEN. Owner ruling A-20/PT-5
+   * fences classification to "REPORTING AND FILTERING ONLY — never let it touch
+   * permissions, nav or access", and this profile is pure access control: it is
+   * the input to GATE 1 and to every assert* gate below it. Letting a
+   * sub-sector slug decide a capability bit would make classification an access
+   * mechanism, which is exactly what the fence exists to prevent. That half of
+   * DA-1 is therefore reported BLOCKED pending an owner ruling rather than
+   * silently implemented; see build_log/WAVE7B_REPORT.md.
+   *
+   * What the explicit parameter does instead is give the admin a DELIBERATE,
+   * audited way to state the capability class, independent of the taxonomy and
+   * independent of the stale column. It is validated against the same union
+   * seedDefaultsForType switches on, so an unknown string cannot quietly seed
+   * an empty profile.
+   */
+  seedCapabilityProfile(partnerId: string, actor: string, explicitType?: PartnerType | null): CapabilityProfile {
     requirePid(partnerId);
+    if (explicitType != null && SEEDABLE_PARTNER_TYPES.indexOf(explicitType) === -1) {
+      throw new GateError(
+        "INVALID_CAPABILITY_SEED_TYPE",
+        `Unknown capability seed type "${String(explicitType)}". Expected one of: ${SEEDABLE_PARTNER_TYPES.join(", ")}.`,
+      );
+    }
     const contact = getContactById(partnerId);
-    const partnerType = (contact?.partnerType ?? null) as PartnerType | null;
+    /* An explicit admin choice wins over the stale read-only column; the column
+       remains the fallback so nothing that worked before changes. */
+    const partnerType =
+      explicitType ?? ((contact?.partnerType ?? null) as PartnerType | null);
     const base = unclassifiedProfile(partnerId);
     const defaults = seedDefaultsForType(partnerType);
     const profile: CapabilityProfile = {
@@ -495,6 +623,38 @@ export const managedFounderStore = {
     ).run(id, partnerId, engagementId, e.companyId, data.direction, data.initiatorParty, actor ?? null, data.authorityArtifactRef ?? null, data.authorityExpiresAt ?? null, nowIso());
     recordEvent(partnerId, engagementId, e.companyId, "handover_initiated", { direction: data.direction, by: data.initiatorParty }, actor);
     return { id, status: "initiated" };
+  },
+
+  /**
+   * WAVE 17 ORP-031 — LIST hand-overs. This was the missing half of the hand-over
+   * lifecycle: `handoverInitiate` returned an id, `handoverConfirm` and the admin
+   * override (`POST /api/admin/mfcrm/handovers/:partnerId/:handoverId/override`,
+   * server/managedFounderRoutes.ts:449) both REQUIRE that id, and nothing could
+   * read it back. Verified at source before adding: no `SELECT` against
+   * `mf_handover` existed anywhere except the single-row lookup inside
+   * `handoverConfirm` (`:572`). So a hand-over initiated in one session — or by the
+   * founder side — was durably recorded and permanently unreachable, and the
+   * client's only route to the id was React state that a page refresh destroyed.
+   *
+   * Reads the table directly (the row is the record of truth; nothing is cached
+   * in memory), partner-scoped in the WHERE clause so a partner can never read
+   * another firm's hand-overs.
+   */
+  listHandovers(
+    partnerId: string,
+    filter: { engagementId?: string | null; status?: string | null } = {},
+  ): Handover[] {
+    requirePid(partnerId);
+    const where: string[] = ["partner_id = ?"];
+    const args: unknown[] = [partnerId];
+    if (filter.engagementId) { where.push("engagement_id = ?"); args.push(filter.engagementId); }
+    if (filter.status) { where.push("status = ?"); args.push(filter.status); }
+    const rows = rawDb()
+      .prepare(
+        `SELECT * FROM mf_handover WHERE ${where.join(" AND ")} ORDER BY created_at DESC`,
+      )
+      .all(...(args as [])) as any[];
+    return rows.map(rowToHandover);
   },
 
   /** Confirm a hand-over. Confirming INTO Mode A re-runs GATE 6 (fail-closed). */
@@ -857,6 +1017,10 @@ export const managedFounderStore = {
 export async function hydrateManagedFounderStore(): Promise<void> {
   applyMfcrmSchema();
   const db: any = rawDb();
+  // WAVE 38 ROW 4 — `mf_engagement_event` is born in application code, so 0183
+  // is the only place its canonical ledger shape is declared and the bootstrap
+  // path never runs it. Ordered AFTER applyMfcrmSchema() so the table exists.
+  applyWave38EventLedgerSchemaOnce(db);
   try {
     profileByPartner.clear();
     const pRows = db.prepare(`SELECT * FROM mf_capability_profile`).all() as any[];

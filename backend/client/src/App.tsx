@@ -70,16 +70,30 @@ import PartnerClients from "@/pages/partner/PartnerClients";
 import PartnerClientDetail from "@/pages/partner/PartnerClientDetail";
 /* W-MFCRM — Managed Founders page (additive; DB-driven via /api/partner/me/mfcrm*). */
 import PartnerManagedFounders from "@/pages/partner/PartnerManagedFounders";
+import PartnerMfcrmPersonas from "@/pages/partner/PartnerMfcrmPersonas";
 import PartnerPortfolio from "@/pages/partner/PartnerPortfolio";
+/* WAVE 30 ENGINE 2 — partner_company_relationship spine, first surface. */
+import PartnerRelationships from "@/pages/partner/PartnerRelationships";
+import PartnerSpvTemplates from "@/pages/partner/PartnerSpvTemplates";
 import PartnerContacts from "@/pages/partner/PartnerContacts";
 import PartnerTeam from "@/pages/partner/PartnerTeam";
 import PartnerNotes from "@/pages/partner/PartnerNotes";
+/* WAVE 7 W-8 (DEF-057) / W-5 (DEF-056) — PartnerTasks.tsx and PartnerFiles.tsx
+   were never deleted; v25.50.0 Phase 6 removed only their routes, their nav
+   entries and their server route surfaces, leaving the pages and both stores
+   (partnerTasksStore / partnerFilesStore) on disk and unreachable. The stores
+   and their partner_tasks / partner_files tables are restored to reachability
+   here. This is WIRING — no page component was rewritten from scratch. */
+import PartnerTasks from "@/pages/partner/PartnerTasks";
+import PartnerFiles from "@/pages/partner/PartnerFiles";
 import PartnerSettings from "@/pages/partner/PartnerSettings";
 import PartnerSpvs from "@/pages/partner/PartnerSpvs";
 import PartnerSpvDetail from "@/pages/partner/PartnerSpvDetail";
 import PartnerSpvEngine from "@/pages/partner/PartnerSpvEngine";
 import PartnerFunds from "@/pages/partner/PartnerFunds";
 import PartnerBilling from "@/pages/partner/PartnerBilling"; /* v25.32 A3 — consortium partner commission ledger */
+import PartnerCheckoutReturn from "@/pages/partner/PartnerCheckoutReturn"; /* WAVE 14 / CP-SUB-17 — gateway return landing */
+import AdminPartnerBillingOps from "@/pages/admin/AdminPartnerBillingOps"; /* WAVE 14 — partner money engine admin surface */
 /* v25.33 Consortium Partner Payment Model — partner self-service pages. */
 import PartnerAgreementSign from "@/pages/partner/PartnerAgreementSign";
 import PartnerTaxForm from "@/pages/partner/PartnerTaxForm";
@@ -97,6 +111,11 @@ import InvestorCRM from "@/pages/investor/CRM";
 import InvestorCRMNew from "@/pages/investor/CRMNew";
 import InvestorApplyToCollective from "@/pages/investor/ApplyToCollective";
 import InvestorProfile from "@/pages/investor/Profile";
+/* WAVE 10 / EN-3 — LP self-serve link for positions taken by email before the
+   investor had an account. Read-widening only; the sacred ledger is untouched. */
+import InvestorClaimPositions from "@/pages/investor/ClaimPositions";
+/* WAVE 10 / EN-1 + EN-2 — SPV performance surface over the ILPA cash-flow ledger. */
+import SpvPerformanceRoute from "@/pages/partner/SpvPerformanceRoute";
 import InvestorAccreditation from "@/pages/investor/Accreditation"; /* v26.1.x AVI-ACCRED */
 import InvestorMessages from "@/pages/investor/Messages";
 import InvestorCollective from "@/pages/investor/Collective";
@@ -127,21 +146,51 @@ import AdminRegionsExtensions from "@/pages/admin/RegionsExtensions";
 import AdminRegionExtensionDetail from "@/pages/admin/RegionExtensionDetail";
 import AdminAuditLog from "@/pages/admin/AuditLog";
 import AuditChainVerifyPage from "@/pages/admin/AuditChainVerifyPage"; /* v19 Phase C */
+import AdminCrmDedupReview from "@/pages/admin/CrmDedupReview"; /* WAVE 28 / CP-CRM-04 */
 import AdminIntegrations from "@/pages/admin/AdminIntegrations"; /* W-V44 FIX K — market-data integrations */
-/* D2.5 SLICE 1 — the 15 old admin fee routes are RETIRED. Their imports
-   (FeeHub, Payments, PartnerFeeSchedules, AdminApplicationFee,
-   AdminPlatformFees, CollectiveSubscriptions, AdminCommissionRates,
-   PartnerPL, CollectivePaymentSchedules, CollectivePaymentPL, Pricing,
-   PricingModels, PricingModelDetail) are deleted along with the page
-   components. Everything they did now lives in ONE page:
+/* D2.5 SLICE 1 — the 15 old admin fee routes were RETIRED.
+
+   ⚠ WAVE 7 RS-3 (DEF-054) — CORRECTION. The sentence that stood here said the
+   thirteen page components were "deleted along with" their imports. That was
+   FALSE and had been false since D2.5: only the imports and routes were
+   removed. All thirteen .tsx files were verified present on disk under
+   client/src/pages/admin/ before this comment was rewritten — FeeHub.tsx,
+   Payments.tsx, PartnerFeeSchedules.tsx, AdminApplicationFee.tsx,
+   AdminPlatformFees.tsx, CollectiveSubscriptions.tsx, AdminCommissionRates.tsx,
+   PartnerPL.tsx, CollectivePaymentSchedules.tsx, CollectivePaymentPL.tsx,
+   Pricing.tsx, PricingModels.tsx, PricingModelDetail.tsx. A comment claiming
+   code is gone when it is merely unreachable is how ten things in this project
+   came to be "rebuilt" when they only needed wiring, so it is corrected rather
+   than deleted.
+
+   WAVE 7 R-1 dispositions each of the thirteen individually; see the R-1 block
+   in the route table below and build_log/wave7_r1_disposition.json. Seven are
+   re-routed (each is the only client caller of a write endpoint) and their
+   imports are restored immediately below; six are descoped and stay unrouted.
+
+   Everything the descoped six did lives in ONE page:
      /admin/fees → AdminFeesConsolidated
    Capavate is in test mode, so there is NO redirect/deprecation window —
    the old URLs fall through to the /admin/:rest* AdminNotFound catch-all
-   (HTTP-equivalent 404 for an SPA). Server routes are UNCHANGED. */
+   (HTTP-equivalent 404 for an SPA). Server routes are UNCHANGED.
+   WAVE 4A EXCEPTION: /admin/collective-payment-schedules and /admin/partner-fees
+   are no longer 404s. They are aliased onto AdminFeesConsolidated's Fee
+   Schedules tab (see the routes below) because the consolidation lost their
+   WRITE capability, not just their URL. No page component was re-imported. */
 import AdminFeesConsolidated from "@/pages/admin/AdminFeesConsolidated"; /* D2.5 Slice 1 — unified /admin/fees */
+/* WAVE 7 R-1 — the seven retired fee pages that are the SOLE client caller of
+   at least one write endpoint. Re-imported so their capability is reachable
+   again; see the R-1 block in the route table for the per-page evidence. */
+import CollectiveSubscriptions from "@/pages/admin/CollectiveSubscriptions";
+import AdminCommissionRates from "@/pages/admin/AdminCommissionRates";
+import AdminPricing from "@/pages/admin/Pricing";
+import PricingModels from "@/pages/admin/PricingModels";
+import PricingModelDetail from "@/pages/admin/PricingModelDetail";
 import AdminReconciliation from "@/pages/admin/Reconciliation";
 /* v25.33 Consortium Partner Payment Model — admin surfaces (DB-driven). */
 import AdminPartners from "@/pages/admin/Partners";
+/* WAVE 4B (PT-2) — admin CRUD for the partner-classification lookup tables. */
+import PartnerTaxonomyAdmin from "@/pages/admin/PartnerTaxonomyAdmin";
 import PartnerResponders from "@/pages/admin/PartnerResponders"; /* W6 — Ask-an-Expert partner-responder registry */
 import AdminTelemetry from "@/pages/admin/Telemetry";
 // Sprint 12 — new admin + cross-role pages
@@ -160,6 +209,9 @@ import FounderBilling from "@/pages/founder/Billing";
 import BillingReturn from "@/pages/founder/BillingReturn";
 import AdminInvestorDetail from "@/pages/admin/InvestorDetail";
 import AdminSync from "@/pages/admin/Sync";
+/* WAVE 15 — ORP-062 / ORP-053 / A-2 / A-3b all produced real server state with
+   no human-visible surface. This page is that surface. */
+import AdminPlatformSurfaces from "@/pages/admin/PlatformSurfaces";
 import AdminMigration from "@/pages/admin/Migration";
 // CP Phase B — Apply flow + Admin queue + Onboarding + Privacy
 import ConsortiumApplyPage from "@/pages/public/ConsortiumApplyPage";
@@ -381,6 +433,9 @@ function isAuthRoute(path: string) {
     path === "/onboarding" ||
     path === "/" ||
     path === "/login" ||
+    // v26.7.3 FIX-2a — the established founder login alias must render bare,
+    // just like /login and /auth/login, rather than inherit the app shell.
+    path === "/user/login" ||
     path === "/signup" ||
     path === "/forgot-password" ||
     path === "/investor/login" ||
@@ -467,10 +522,9 @@ function LegacyInviteRedirect() {
 }
 
 /* Auth-aware catch-all. If the user is signed in, show a real 404; if
- * not, send them to login with returnTo. This stops the public 404 inside
- * the founder shell that the QA called out (I-BUG-008). */
+ * not, send them to login. This stops the public 404 inside the founder shell
+ * that the QA called out (I-BUG-008). */
 function NotFoundOrLogin() {
-  const [currentLocation] = useLocation();
   const { data, isLoading } = useQuery<{ isAuthed?: boolean }>({
     queryKey: ["/api/auth/me"],
     queryFn: async () => {
@@ -493,8 +547,11 @@ function NotFoundOrLogin() {
     );
   }
   if (!data?.isAuthed) {
-    const returnTo = encodeURIComponent(currentLocation);
-    return <Redirect to={`/auth/login?returnTo=${returnTo}`} />;
+    // v26.7.3 FIX-2b — this catch-all proves the requested path has no
+    // registered route. Do not hand an unroutable URL to Login's load-bearing
+    // returnTo flow; RequireAuth remains the sole producer for real routes and
+    // preserves legitimate deep links such as /founder/rounds.
+    return <Redirect to="/auth/login" />;
   }
   return <NotFound />;
 }
@@ -565,6 +622,9 @@ function AppRouter() {
         {/* v25.47 APD-020 — Public Consortium Partner pricing (no auth). */}
         <Route path="/consortium/pricing" component={ConsortiumPricing} />
         <Route path="/login" component={Login} />
+        {/* v26.7.3 FIX-2a — additive founder-login alias for the owner's
+            established /user/login URL; all existing login routes remain. */}
+        <Route path="/user/login" component={Login} />
         <Route path="/signup" component={Signup} />
         <Route path="/forgot-password" component={Forgot} />
 
@@ -606,11 +666,23 @@ function AppRouter() {
         <Route path="/founder/subscribe">
           {() => <RequireAuth><FounderSubscribe /></RequireAuth>}
         </Route>
-        {/* v25.45 F10c — Billing left-nav removed; /founder/billing now
-            redirects to Settings → Billing & Subscription (the canonical full
-            Billing surface). */}
+        {/* WAVE 8 / ORP-027 (DEF-027) — REACHABILITY RESTORED.
+            v25.45 F10c removed the Billing left-nav and made this path redirect
+            to Settings → Billing & Subscription on the belief that Settings was
+            "the canonical full Billing surface". It is not. Verified against
+            this tree: client/src/pages/founder/Billing.tsx (683 lines) is the
+            ONLY caller of four founder billing capabilities, and none of them
+            exist anywhere in founder/Settings.tsx —
+              PATCH /api/founder/subscription/payment-method   (Billing.tsx:157)
+              POST  /api/founder/invoices/:invoiceId/email     (Billing.tsx:315)
+              PATCH /api/founder/subscription cancel_at_period_end (Billing.tsx:399)
+              POST  /api/founder/subscription/resume           (Billing.tsx:414)
+            The redirect therefore silently dropped change-payment-method,
+            email-invoice, cancel and resume from the product. The route now
+            mounts the real page again; Settings keeps its summary tab and links
+            here for the actions it does not implement. */}
         <Route path="/founder/billing">
-          {() => <Redirect to="/founder/settings?tab=billing-subscription" />}
+          {() => <RequireAuth><FounderBilling /></RequireAuth>}
         </Route>
         {/* v24.2 Airwallex wiring — return from hosted checkout; NOT subscription-gated
             (the plan may still be activating when the browser lands here). */}
@@ -737,6 +809,29 @@ function AppRouter() {
         <Route path="/investor/accreditation">
           {() => <RequireAuth redirectTo="/investor/login"><InvestorAccreditation /></RequireAuth>}
         </Route>
+        {/* WAVE 10 / EN-3 — "I invested before I had an account."
+
+            WAVE 22 · ITEM 3 (REVIEW B F-1) — COMMENT CORRECTED. The previous
+            wording ("Linked here rather than buried in settings because the LP
+            who needs it is looking at an EMPTY portfolio") asserted a link that
+            DID NOT EXIST: Review B grepped the whole client tree and found ZERO
+            inbound links to this route, so the page was reachable only by
+            typing the URL, i.e. NOT SHIPPED under this project's own rule
+            (WAVE7_REPORT.md:130). The claim was false when written and stayed
+            false for eleven waves.
+
+            The two inbound links now exist and are the statement of fact this
+            comment used to be a wish for:
+              1. investor nav, DEALS section — client/src/components/AppShell.tsx
+                 (`/investor/earlier-investments`, label "Earlier Investments")
+              2. the empty-portfolio CTA row —
+                 client/src/components/investor/PortfolioCompanySwitcher.tsx
+                 (`button-portfolio-claim-earlier`)
+            A falsification harness asserts both, and fails if either is removed:
+            scripts/__tests__/wave22_item3_orphan_link_falsify.sh */}
+        <Route path="/investor/earlier-investments">
+          {() => <RequireAuth redirectTo="/investor/login"><InvestorClaimPositions /></RequireAuth>}
+        </Route>
         <Route path="/investor/messages">
           {() => <RequireAuth redirectTo="/investor/login"><InvestorMessages /></RequireAuth>}
         </Route>
@@ -802,6 +897,23 @@ function AppRouter() {
         <Route path="/admin/partners">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminPartners /></RequireAuth>}
         </Route>
+        {/* WAVE 4B (PT-2) — partner classification taxonomy admin. Same admin
+            guard as every other /admin route; the guard does not read a
+            classification (PT-5 scope fence). */}
+        {/* WAVE 14 — the admin surface for the Wave 5 partner money engine:
+            tier prices (CP-SUB-12/13), promotion moderation (CP-PROMO-20),
+            roster reconciliation (CP-SUB-11) and the open pricing decisions
+            (CP-SUB-19 / CP-PROMO-04/17/22). */}
+        <Route path="/admin/partner-billing-ops">
+          {/* Same guard as every neighbouring admin route: RequireAuth with
+              role="admin" and the admin login redirect. There is no
+              `RequireAdmin` component in this file — checked, rather than
+              assumed from the name. */}
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminPartnerBillingOps /></RequireAuth>}
+        </Route>
+        <Route path="/admin/partner-taxonomy">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><PartnerTaxonomyAdmin /></RequireAuth>}
+        </Route>
         {/* D2.5 SLICE 1 — the ONE consolidated fee page. Replaces 15 routes:
              /admin/pricing · /admin/pricing-models · /admin/pricing-models/:id
              /admin/application-fee · /admin/platform-fees · /admin/commission-rates
@@ -813,6 +925,87 @@ function AppRouter() {
         <Route path="/admin/fees">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminFeesConsolidated /></RequireAuth>}
         </Route>
+        {/* WAVE 4A (RS-1 / RS-2) — the two legacy fee-schedule URLs are ALIASES
+             onto the ONE consolidated page, deep-linked to its Fee Schedules
+             tab. They are signage, not a second implementation: no standalone
+             page component is re-routed, and `/admin/fees` remains the single
+             fee surface the D2.5 consolidation created. Restoring the URLs is
+             what makes the RS-1/RS-2 deferrals genuinely RESOLVED rather than
+             forgiven — the guard baseline records these paths as user-reachable
+             and they are user-reachable again. Same admin guard as /admin/fees.
+             MUST stay above the /admin/:rest* catch-all. */}
+        <Route path="/admin/collective-payment-schedules">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminFeesConsolidated initialTab="fee-schedules" /></RequireAuth>}
+        </Route>
+        <Route path="/admin/partner-fees">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminFeesConsolidated initialTab="fee-schedules" /></RequireAuth>}
+        </Route>
+
+        {/* ══ WAVE 7 R-1 — disposition of the 13 retired fee pages ════════
+
+            R-1 asks for each of the thirteen to be re-routed or descoped
+            INDIVIDUALLY. The decision was not made by reading the D2.5 intent;
+            it was computed. `scripts/wave7_r1_fee_page_disposition.mjs` walks
+            every .ts/.tsx under client/src EXCEPT the thirteen, collects every
+            /api/... literal it can reach, and asks of each retired page: does
+            it call an endpoint that nothing still-routed calls? Output is
+            checked in at build_log/wave7_r1_disposition.json and the
+            wave7_r1_disposition test re-derives it, so this ruling cannot rot
+            silently.
+
+            DESCOPE (8):
+              (a) six whose every endpoint is reachable from a still-routed
+                  page, so their URLs were pure duplication — FeeHub, Payments,
+                  PartnerFeeSchedules, PartnerPL, CollectivePaymentSchedules,
+                  CollectivePaymentPL;
+              (b) two the computed pass flagged but a SETTLED RULING overrides —
+                  AdminApplicationFee and AdminPlatformFees (see the note at
+                  their would-be routes below).
+            All eight stay on disk, unrouted. Nothing they can do is lost.
+
+            RE-ROUTE (5) — each is the ONLY client caller of at least one WRITE
+            endpoint, so retiring its URL silently removed an admin capability
+            (not merely a URL). Restored below at their original paths. The
+            server routes were never touched by D2.5, so this is WIRING: no page
+            component was rewritten and no endpoint was added.
+
+            Why aliasing onto AdminFeesConsolidated is NOT the answer here (it
+            was, correctly, for RS-1/RS-2): an alias deep-links to a tab that
+            already renders the capability. For these seven the capability is
+            absent from the consolidated page entirely — the endpoint appears
+            in no other client file at all. There is nothing to deep-link to. */}
+        {/* AdminApplicationFee and AdminPlatformFees are the two pages the
+            computed pass flagged as re-route candidates and that are
+            DELIBERATELY NOT re-routed. Both are sole callers of
+            /api/admin/collective/application-fee, but D2.5 removed that editor
+            ON PURPOSE, not by omission: AdminFeesConsolidated.tsx:1231 states
+            that the duplicate editor "which wrote display dollars into
+            collective_application_fee_config" is deleted, and the surviving
+            Application Fee tab writes platform_fees['collective_application_fee']
+            in TRUE minor units. Restoring these two would put back a SECOND
+            WRITER, in a different unit, for one fee — the precise failure this
+            wave exists to prevent. Overriding a settled unit-correctness ruling
+            is not R-1's job, so they are DESCOPED and the override is recorded
+            in the disposition script rather than left as an unexplained gap. */}
+        <Route path="/admin/collective-subscriptions">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><CollectiveSubscriptions /></RequireAuth>}
+        </Route>
+        <Route path="/admin/commission-rates">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminCommissionRates /></RequireAuth>}
+        </Route>
+        {/* /admin/pricing-models/:id MUST precede /admin/pricing-models so
+            wouter matches the detail path; and both must precede the
+            /admin/:rest* catch-all. */}
+        <Route path="/admin/pricing-models/:id">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><PricingModelDetail /></RequireAuth>}
+        </Route>
+        <Route path="/admin/pricing-models">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><PricingModels /></RequireAuth>}
+        </Route>
+        <Route path="/admin/pricing">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminPricing /></RequireAuth>}
+        </Route>
+        {/* ══ /WAVE 7 R-1 ═════════════════════════════════════ */}
         <Route path="/admin/partner-responders">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><PartnerResponders /></RequireAuth>}
         </Route>
@@ -822,6 +1015,9 @@ function AppRouter() {
         </Route>
         <Route path="/admin/sync">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminSync /></RequireAuth>}
+        </Route>
+        <Route path="/admin/platform-surfaces">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminPlatformSurfaces /></RequireAuth>}
         </Route>
         <Route path="/admin/migration">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminMigration /></RequireAuth>}
@@ -868,6 +1064,12 @@ function AppRouter() {
         {/* CP Phase B — Admin queue for consortium-partner applications + promotion moderation */}
         <Route path="/admin/consortium-applications">
           {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminConsortiumApplicationsPage /></RequireAuth>}
+        </Route>
+        {/* WAVE 28 / CP-CRM-04 — CRM duplicate-contact review queue. Reads the
+            crm_dedup_review table migration 0097 has been filling since v25.52
+            with no reader anywhere in the tree. */}
+        <Route path="/admin/crm-dedup-review">
+          {() => <RequireAuth role="admin" redirectTo="/admin/login"><AdminCrmDedupReview /></RequireAuth>}
         </Route>
         {/* v19 Phase C — Hash-chain audit verification UI */}
         <Route path="/admin/audit-chain-verify">
@@ -1121,6 +1323,17 @@ function AppRouter() {
         <Route path="/collective/partner/managed-founders">
           {() => <RequireAuth><CollectiveShell><PartnerManagedFounders /></CollectiveShell></RequireAuth>}
         </Route>
+        {/* WAVE 20 XT-10 — Managed-Founder PERSONA tools. Additive route for the
+            17 orphaned /api/partner/me/mfcrm/{angel,acct,law}/* endpoints
+            (server/managedFounderPersonaRoutes.ts, mounted server/routes.ts:1014),
+            which had zero client callers. Deliberately NOT nested under
+            /collective/partner/managed-founders/* : that family already has a
+            `:id` detail route registered above, and a sibling literal segment
+            there would be swallowed by `:id`. A distinct top-level partner path
+            shadows nothing. */}
+        <Route path="/collective/partner/persona-tools">
+          {() => <RequireAuth><CollectiveShell><PartnerMfcrmPersonas /></CollectiveShell></RequireAuth>}
+        </Route>
         {/* W2-A — Clients CRM restored (routes re-added; server read endpoints
             rebuilt from the preserved attribution store). Detail route is
             registered BEFORE the list so the `:id` param path resolves. */}
@@ -1133,6 +1346,19 @@ function AppRouter() {
         {/* W2-D — Private Portfolio (API existed but was unrouted client-side). */}
         <Route path="/collective/partner/portfolio">
           {() => <RequireAuth><CollectiveShell><PartnerPortfolio /></CollectiveShell></RequireAuth>}
+        </Route>
+        {/* WAVE 30 ENGINE 2 — the unified partner↔company relationship map.
+            Migration 0136 shipped the spine with no route; this is it. */}
+        <Route path="/collective/partner/relationships">
+          {() => <RequireAuth><CollectiveShell><PartnerRelationships /></CollectiveShell></RequireAuth>}
+        </Route>
+        {/* WAVE 30 ENGINE 3 — reusable SPV structure templates. `spv_template`
+            was absent tree-wide before this wave; migration 0177 creates it and
+            this is its only route. Applying a template prefills the SPV create
+            form — it does NOT create an SPV, so the Wave 1c signed launch
+            sign-off stays on the critical path. */}
+        <Route path="/collective/partner/spv-templates">
+          {() => <RequireAuth><CollectiveShell><PartnerSpvTemplates /></CollectiveShell></RequireAuth>}
         </Route>
         {/* GROUP F1 — Partner CRM person-level contacts (full parity). */}
         <Route path="/collective/partner/contacts">
@@ -1151,13 +1377,32 @@ function AppRouter() {
         <Route path="/collective/partner/notes">
           {() => <RequireAuth><CollectiveShell><PartnerNotes /></CollectiveShell></RequireAuth>}
         </Route>
-        {/* v25.50.0 Phase 6 (spec 5a/6a): Tasks and Files pages removed. */}
+        {/* WAVE 7 W-8 (DEF-057) + W-5 (DEF-056) — Tasks and Files re-routed.
+            The v25.50.0 Phase 6 note that used to stand here said the pages were
+            "removed"; both files were still on disk, as were their stores and
+            their DB tables. partner_tasks is the only partner model carrying an
+            assignee, and partner_files now holds real bytes through
+            objectStorage (the same seam the dataroom uses). */}
+        <Route path="/collective/partner/tasks">
+          {() => <RequireAuth><CollectiveShell><PartnerTasks /></CollectiveShell></RequireAuth>}
+        </Route>
+        <Route path="/collective/partner/files">
+          {() => <RequireAuth><CollectiveShell><PartnerFiles /></CollectiveShell></RequireAuth>}
+        </Route>
         <Route path="/collective/partner/settings">
           {() => <RequireAuth><CollectiveShell><PartnerSettings /></CollectiveShell></RequireAuth>}
         </Route>
         {/* v25.32 A3 — consortium partner billing (commission ledger; not subscription) */}
         <Route path="/collective/partner/billing">
           {() => <RequireAuth><CollectiveShell><PartnerBilling /></CollectiveShell></RequireAuth>}
+        </Route>
+        {/* WAVE 14 / CP-SUB-17 — this is the exact path startPartnerCheckout
+            hands the payment gateway as returnUrl
+            (server/lib/partnerSubscriptionStore.ts:447). It was unrouted, so a
+            partner who paid landed nowhere. Declared AFTER the billing route
+            because wouter matches exact paths, so ordering is cosmetic here. */}
+        <Route path="/collective/partner/billing/return">
+          {() => <RequireAuth><CollectiveShell><PartnerCheckoutReturn /></CollectiveShell></RequireAuth>}
         </Route>
         {/* v25.50.0 Phase 6 (spec 9a): standalone Subscribe page removed; the
             subscribe/quote flow is merged into the Billing Subscription tab. */}
@@ -1185,6 +1430,31 @@ function AppRouter() {
         <Route path="/collective/partner/spvs/:id">
           {() => <RequireAuth><CollectiveShell><PartnerSpvDetail /></CollectiveShell></RequireAuth>}
         </Route>
+        {/* WAVE 10 / EN-1 + EN-2 — the vehicle's ILPA performance surface: the
+            cash-flow ledger, the IRR/DPI/TVPI derived from it, the valuation
+            mark those multiples rest on, and the chain-integrity verdict.
+
+            WHY A ROUTE AND NOT A TAB ON THE DETAIL PAGE, which is where it
+            belongs on the merits: adding a twelfth <TabsTrigger> to
+            SpvDetailTabs.tsx trips the silent-drop guard. The guard identifies
+            a TabsList by the concatenation of its children's text, so ADDING a
+            tab changes that identity and the previous eleven-tab list reads as
+            REMOVED. That is a false positive — nothing was dropped — but the
+            two honest remedies are an allowlist entry (an owner decision, and
+            wrong here because nothing was removed) or a deferral (moving an
+            item to improve a count, which is forbidden). A sibling route
+            preserves the guard's zero-drop invariant with no loss of
+            functionality, and the limitation is recorded in WAVE10_REPORT.md
+            rather than worked around silently. */}
+        <Route path="/collective/partner/spvs/:id/performance">
+          {(params) => (
+            <RequireAuth>
+              <CollectiveShell>
+                <SpvPerformanceRoute spvId={String((params as { id?: string }).id ?? "")} />
+              </CollectiveShell>
+            </RequireAuth>
+          )}
+        </Route>
         <Route path="/collective/partner/spvs">
           {() => <Redirect to="/collective/partner/spv-engine" />}
         </Route>
@@ -1201,6 +1471,14 @@ function AppRouter() {
         <Route path="/collective/partner/messages">
           {() => <RequireAuth><CollectiveShell><PartnerMessages /></CollectiveShell></RequireAuth>}
         </Route>
+        {/* WAVE 19 FE-12 — route table deliberately UNCHANGED. `PartnerPosts`
+            itself now branches on the `:id` segment (see PartnerPosts.tsx), so
+            the deeplink resolves to the detail page without repointing this
+            route. Repointing it to a new component was tried first and the
+            silent-drop guard correctly rejected it: a route TARGET signature is
+            the (path, component) pair, so `/collective/partner/posts/:id |
+            target=PartnerPosts` would have been a REMOVED target. Restored
+            verbatim, not allow-listed. */}
         <Route path="/collective/partner/posts/:id">
           {() => <RequireAuth><CollectiveShell><PartnerPosts /></CollectiveShell></RequireAuth>}
         </Route>

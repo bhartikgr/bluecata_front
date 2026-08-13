@@ -40,6 +40,8 @@
  */
 import type { Express, Request, Response } from "express";
 import * as pricingModel from "./pricingModelStore";
+/* WAVE 34 · TASK 2 — ISO-4217 exponent for the public price display strings. */
+import { fromMinor } from "./lib/currency";
 import * as collectiveConfig from "./collectiveSubscriptionConfigStore";
 
 /* =================================================================== */
@@ -125,16 +127,27 @@ export function _getCacheStateForTests(): { hasCachedPayload: boolean; cachedAt:
 /*  Formatting helpers                                                 */
 /* =================================================================== */
 
+/* WAVE 34 · TASK 2 — both formatters were:
+ *     const dollars = Math.round(priceMinor / 100);
+ * The `currency` parameter was ALREADY being used on the next line to pick the
+ * symbol, and the divisor was still a hardcoded exponent-2 assumption. This is
+ * GET /api/pricing-public — the unauthenticated marketing pricing endpoint, the
+ * most publicly visible money surface in the product. A ¥1,200,000/year tier
+ * was quoted to the world as "JPY 12,000/year per company". Non-USD pricing is
+ * not hypothetical: pricingModelStore models carry a first-class `currency`
+ * plus a `currencyOverrides[]` array and previewPrice() resolves per-currency.
+ * `fromMinor` reads the ISO-4217 exponent (JPY/KRW = 0) and returns a number,
+ * so the local variable's type and the rendered SHAPE are both unchanged. */
 function formatAnnual(priceMinor: number, currency: string): string {
-  const dollars = Math.round(priceMinor / 100);
+  const major = fromMinor(priceMinor, currency);
   const symbol = currency === "USD" ? "$" : `${currency} `;
-  return `${symbol}${dollars.toLocaleString()}/year per company`;
+  return `${symbol}${major.toLocaleString()}/year per company`;
 }
 
 function formatOneTime(priceMinor: number, currency: string): string {
-  const dollars = Math.round(priceMinor / 100);
+  const major = fromMinor(priceMinor, currency);
   const symbol = currency === "USD" ? "$" : `${currency} `;
-  return `${symbol}${dollars.toLocaleString()} one-time`;
+  return `${symbol}${major.toLocaleString()} one-time`;
 }
 
 function findBySlug(models: pricingModel.PricingModel[], slugs: readonly string[]): pricingModel.PricingModel | undefined {

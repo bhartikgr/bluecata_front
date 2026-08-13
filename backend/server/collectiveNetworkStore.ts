@@ -18,6 +18,20 @@ const require = createRequire(import.meta.url);
 
 import type { Express, Request, Response } from "express";
 import { log } from "./lib/logger"; /* v25.40 FIX-11 — structured logger (v25.35 pattern) */
+/* WAVE 32 · CP-SPV-30 capability 5 — STATIC, deliberately.
+
+   `listMembersForCompany` was reached through the lazy `require()` above. That
+   require RESOLVES TO A .ts FILE under both TypeScript runtimes (`tsx` and
+   Vitest) and throws `Unexpected token '{'`, which the handler's own catch
+   swallows into `return res.json([])`. So the ledger-derived co-members list
+   was silently EMPTY in dev and in every test, and live only in the bundled JS
+   build — a functional defect (the picker showed zero recipients) sitting on
+   top of a privacy exposure that no test could observe. A guard is worthless on
+   a code path that cannot execute where it is tested, so the dependency is now
+   static and the path runs everywhere. No cycle: `captableCommitStore` does not
+   import this module, directly or transitively. */
+import { listMembersForCompany } from "./captableCommitStore";
+import { isSpvBackedCompany } from "./lib/spvBackedCompanies";
 
 /* eslint-disable @typescript-eslint/no-unused-vars */
 export type CollectiveDeal = {
@@ -96,8 +110,22 @@ export function registerCollectiveNetworkRoutes(app: Express): void {
       }
       const companyId = String(req.params.id || "");
       if (!companyId) return res.json([]);
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { listMembersForCompany } = require("./captableCommitStore");
+      /* WAVE 32 · CP-SPV-30 capability 5 — SPV-BACKED EXCLUSION (the third sink
+         of X-C1 / P1-8; see `lib/spvBackedCompanies.ts`).
+
+         An SPV is a company in the sacred ledger and every LP is written into
+         it with `company_id = spv.id`, so an LP of a vehicle PASSES
+         `gate("investor.onCapTableOf")` for that vehicle — the gate is not the
+         control here. Without this line, one LP could ask this route for their
+         own vehicle and receive the identity AND the committed amount,
+         currency and shares of every other LP in it. Two passive LPs in a blind
+         syndicate frequently must not learn of one another at all; the policy
+         this surface implements is about counterparties collaborating on
+         PORTFOLIO COMPANIES, which a vehicle is not.
+
+         Returns the same empty list a company with no other holders returns, so
+         the refusal is not an enumeration oracle either. */
+      if (isSpvBackedCompany(companyId)) return res.json([]);
       const rows = (listMembersForCompany(companyId) as Array<any>) ?? [];
       const byInvestor = new Map<string, any>();
       for (const r of rows) {

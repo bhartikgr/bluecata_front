@@ -119,7 +119,10 @@ export type VisibilityUnmaskedMessage = { type: "visibility.unmasked_message"; p
 
 // ----- Sign-off -----
 export type SignoffRequested = { type: "signoff.requested"; payload: { signoffId: string; roundId: string; signerRole: "founder" | "admin" } };
-export type SignoffGranted = { type: "signoff.granted"; payload: { signoffId: string; roundId: string; signerRole: "founder" | "admin"; identityHash: string } };
+/* WAVE 22 · ITEM 1 (REVIEW B F-2) — `identityHash` is NULLABLE. `null` is the
+ * explicit "not captured" state; the emitter must never synthesise a hash to
+ * satisfy this type. See client/src/components/CloseRoundPanel.tsx. */
+export type SignoffGranted = { type: "signoff.granted"; payload: { signoffId: string; roundId: string; signerRole: "founder" | "admin"; identityHash: string | null } };
 export type SignoffDeclined = { type: "signoff.declined"; payload: { signoffId: string; roundId: string; signerRole: "founder" | "admin"; reason?: string } };
 
 export type TelemetryEventBody =

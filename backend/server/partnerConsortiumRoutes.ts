@@ -33,15 +33,26 @@
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
 import type { Express, Request, Response } from "express";
 import { requirePartnerAuth, requirePartnerSubrole } from "./lib/requirePartnerAuth";
+import {
+  addToBucket,
+  bucketsToArray,
+  scaleBuckets,
+  singleCurrencyScalar,
+  scaleScalar,
+  type CurrencyBuckets,
+  type MoneyScalar,
+} from "./lib/currencyScalar";
 import { requireSignedAgreement } from "./lib/requireSignedAgreement";
 import { getUserContext } from "./lib/userContext";
 import { getCompanyRecordById } from "./multiCompanyStore";
 import { rawDb } from "./db/connection";
-import { partnerFundsStore } from "./partnerWorkspaceStore";
+import { partnerAttributionStore, partnerFundsStore } from "./partnerWorkspaceStore";
+import { assertLock1CoWrite } from "./lib/lock1Provenance";
+import { fromMinor } from "./lib/money";
 import type { PartnerTier } from "./adminContactsStoreShim";
 /* v25.41 Q1 (Avi authorized = A): DB-driven per-tier commission rate resolver.
    ADDITIVE import only — Avi's COMMISSION_RATE literal table below stays
@@ -133,20 +144,37 @@ export function registerPartnerConsortiumRoutes(app: Express): void {
         }>;
 
         const totalDealsSourced    = rows.length;
-        let   totalCommittedMinor  = 0;
-        let   totalFundedMinor     = 0;
 
-        // byMonth: { month: "YYYY-MM", dealsSourced, committedMinor, fundedMinor }
-        const monthMap: Record<string, { dealsSourced: number; committedMinor: number; fundedMinor: number }> = {};
-        // byTier: single entry (this partner's tier)
-        const tierEntry = { tier, commissionPct: pct * 100, dealsSourced: 0, committedMinor: 0, fundedMinor: 0, commissionMinor: 0 };
-
-        /* v25.16 NM1 — capture per-currency totals so a partner whose
-           soft-circles span USD + CAD does not see a meaningless mixed-sum.
-           The single `totalCommittedMinor` field is preserved for backward
-           compatibility but a new `byCurrency` array is added to the
-           response. Currencies are case-normalized to upper. */
-        const currencyMap: Record<string, { committedMinor: number; fundedMinor: number }> = {};
+        /* ============================================================
+         * WAVE 21 · ITEM 2 site 1 (REVIEW A CRITICAL, was :135-178 / :211-223)
+         *
+         * WAS: this loop built `currencyMap` correctly and THEN also did
+         *   `totalCommittedMinor += r.amount_minor`
+         *   `totalFundedMinor    += r.amount_minor`
+         *   `monthMap[m].committedMinor += r.amount_minor`
+         *   `tierEntry.committedMinor   += r.amount_minor`
+         * across every currency, and line 178 computed
+         *   `commissionEarnedMinor = Math.floor(totalFundedMinor * pct)`
+         * from that mixed sum. A partner with JPY and USD soft-circles got a
+         * headline number and a commission figure that denominate nothing.
+         *
+         * NOW: EVERY accumulator is a per-currency bucket map. The scalar
+         * fields are still emitted (clients depend on the keys) but they are
+         * `MoneyScalar`s: a real amount only when exactly one currency is
+         * present, otherwise `available:false, reason:"needs_fx_conversion"`
+         * with `currency:null, minor:null`. Commission is computed PER
+         * CURRENCY (`commissionByCurrency`) and the scalar commission is
+         * derived from the scalar funded total, so it is unavailable exactly
+         * when its input is. No FX rate is invented — none exists here.
+         * ============================================================ */
+        const committedBuckets: CurrencyBuckets = {};
+        const fundedBuckets: CurrencyBuckets = {};
+        const monthMap: Record<string, {
+          dealsSourced: number;
+          committed: CurrencyBuckets;
+          funded: CurrencyBuckets;
+        }> = {};
+        let tierDealsSourced = 0;
         const currenciesSeen = new Set<string>();
 
         for (const r of rows) {
@@ -154,29 +182,45 @@ export function registerPartnerConsortiumRoutes(app: Express): void {
           const funded    = r.status === "funded";
           const cur       = (r.currency || "USD").toUpperCase();
           currenciesSeen.add(cur);
-          if (!currencyMap[cur]) currencyMap[cur] = { committedMinor: 0, fundedMinor: 0 };
-          if (committed) currencyMap[cur].committedMinor += r.amount_minor;
-          if (funded)    currencyMap[cur].fundedMinor    += r.amount_minor;
 
-          if (committed) totalCommittedMinor += r.amount_minor;
-          if (funded)    totalFundedMinor    += r.amount_minor;
+          if (committed) addToBucket(committedBuckets, cur, r.amount_minor);
+          if (funded)    addToBucket(fundedBuckets,    cur, r.amount_minor);
 
-          // Month bucket
+          // Month bucket — per-currency, never merged.
           const month = (r.created_at ?? "").slice(0, 7); // "YYYY-MM"
-          if (!monthMap[month]) monthMap[month] = { dealsSourced: 0, committedMinor: 0, fundedMinor: 0 };
+          if (!monthMap[month]) monthMap[month] = { dealsSourced: 0, committed: {}, funded: {} };
           monthMap[month].dealsSourced += 1;
-          if (committed) monthMap[month].committedMinor += r.amount_minor;
-          if (funded)    monthMap[month].fundedMinor    += r.amount_minor;
+          if (committed) addToBucket(monthMap[month].committed, cur, r.amount_minor);
+          if (funded)    addToBucket(monthMap[month].funded,    cur, r.amount_minor);
 
-          // Tier rollup
-          tierEntry.dealsSourced += 1;
-          if (committed) tierEntry.committedMinor += r.amount_minor;
-          if (funded)    tierEntry.fundedMinor    += r.amount_minor;
+          tierDealsSourced += 1;
         }
 
-        // Commission earned = pct * totalFunded
-        const commissionEarnedMinor = Math.floor(totalFundedMinor * pct);
-        tierEntry.commissionMinor = commissionEarnedMinor;
+        // Scalars: real only when a single currency is involved.
+        const totalCommitted: MoneyScalar = singleCurrencyScalar(committedBuckets, "USD");
+        const totalFunded: MoneyScalar    = singleCurrencyScalar(fundedBuckets, "USD");
+        // Commission PER CURRENCY — pct is a dimensionless fraction, so it may
+        // be applied inside each currency independently. The scalar form is
+        // derived from the scalar funded total and inherits its availability.
+        const commissionBuckets = scaleBuckets(fundedBuckets, pct);
+        const commissionEarned: MoneyScalar = scaleScalar(totalFunded, pct);
+
+        const totalCommittedMinor = totalCommitted.available ? totalCommitted.minor : null;
+        const totalFundedMinor    = totalFunded.available    ? totalFunded.minor    : null;
+        const commissionEarnedMinor = commissionEarned.available ? commissionEarned.minor : null;
+
+        const tierEntry = {
+          tier,
+          commissionPct: pct * 100,
+          dealsSourced: tierDealsSourced,
+          // Scalars are null when mixed; the per-currency arrays are always authoritative.
+          committedMinor: totalCommittedMinor,
+          fundedMinor: totalFundedMinor,
+          commissionMinor: commissionEarnedMinor,
+          committedByCurrency: bucketsToArray(committedBuckets),
+          fundedByCurrency: bucketsToArray(fundedBuckets),
+          commissionByCurrency: bucketsToArray(commissionBuckets),
+        };
 
         // Payout pending = unpaid billing entries
         let payoutPendingMinor = 0;
@@ -197,23 +241,56 @@ export function registerPartnerConsortiumRoutes(app: Express): void {
           payoutPendingMinor = pending.total ?? 0;
         } catch { /* table may not exist yet on fresh DB */ }
 
+        /* WAVE 21 · ITEM 2 — each month carries per-currency arrays plus
+           null-when-mixed scalars. A month whose deals are all USD still gets
+           a usable scalar; a mixed month reports unavailable rather than a sum. */
         const byMonth = Object.entries(monthMap)
           .sort(([a], [b]) => a.localeCompare(b))
-          .map(([month, v]) => ({ month, ...v }));
+          .map(([month, v]) => {
+            const c = singleCurrencyScalar(v.committed, "USD");
+            const f = singleCurrencyScalar(v.funded, "USD");
+            return {
+              month,
+              dealsSourced: v.dealsSourced,
+              committedMinor: c.available ? c.minor : null,
+              fundedMinor: f.available ? f.minor : null,
+              committedByCurrency: bucketsToArray(v.committed),
+              fundedByCurrency: bucketsToArray(v.funded),
+              currency: c.available ? c.currency : null,
+              currencyUnavailableReason: c.available ? null : c.reason,
+            };
+          });
 
-        /* v25.16 NM1 — expose per-currency rollup so the client can warn when
-           the headline `totalCommittedMinor` is mixed across currencies. */
-        const byCurrency = Object.entries(currencyMap)
-          .map(([currency, v]) => ({ currency, ...v }))
-          .sort((a, b) => a.currency.localeCompare(b.currency));
+        /* v25.16 NM1 — per-currency rollup. WAVE 21: this is now the
+           AUTHORITATIVE shape; the scalars above are convenience only. */
+        const currencyKeys = Array.from(
+          new Set([...Object.keys(committedBuckets), ...Object.keys(fundedBuckets)]),
+        ).sort();
+        const byCurrency = currencyKeys.map((currency) => ({
+          currency,
+          committedMinor: committedBuckets[currency] ?? 0,
+          fundedMinor: fundedBuckets[currency] ?? 0,
+          commissionMinor: commissionBuckets[currency] ?? 0,
+        }));
         const currencies = Array.from(currenciesSeen).sort();
 
         res.json({
           totalDealsSourced,
+          // Scalars: number when single-currency, null when mixed. NEVER a
+          // cross-currency sum, and never labelled with a currency that was
+          // not the source currency.
           totalCommittedMinor,
           totalFundedMinor,
           commissionEarnedMinor,
           payoutPendingMinor,
+          /* Explicit, renderable unavailability. The client MUST branch on
+             `available` and show the per-currency breakdown instead of a
+             headline number when it is false. */
+          totalCommitted,
+          totalFunded,
+          commissionEarned,
+          totalsCurrency: totalCommitted.available ? totalCommitted.currency : null,
+          totalsUnavailableReason: totalCommitted.available ? null : totalCommitted.reason,
           commissionPct: pct * 100,
           tier,
           byMonth,
@@ -671,24 +748,138 @@ export function registerPartnerConsortiumRoutes(app: Express): void {
         return res.status(404).json({ error: "COMPANY_NOT_VISIBLE" });
       }
 
+      /* ── WAVE 33 · CP-PIPE-10 — LOCK 1 CO-WRITE ────────────────────────
+         This is the ONLY writer of a partner-sourced soft circle in the tree,
+         and until now it wrote `source_type='partner'` / `source_id=<pid>` and
+         NEVER touched `sourced_from_partner_id` or
+         `sourced_from_partner_attribution_id` — the two columns migration 0133
+         created for exactly this purpose. 0132's own header states the rule:
+         "LOCK 1 only imposes a CO-WRITE discipline on the APPLICATION LAYER for
+         these pre-existing columns." Nothing enforced it, so the columns the
+         lock governs were populated by nobody while the table, the index and
+         the migration all existed. The single-write path looked built from
+         every angle except the one that matters.
+
+         The attribution is resolved from the durable store rather than accepted
+         from the request body: a caller who could name their own attribution id
+         could pair a partner with provenance they do not hold, which is the
+         acquisition CP-PIPE-06 closes one table over. */
+      const incumbentAttribution =
+        partnerAttributionStore.listActiveByCompany(compId).find((a) => a.partnerId === pid) ?? null;
+      const lock1 = assertLock1CoWrite({
+        sourceType: "partner",
+        sourcedFromPartnerId: pid,
+        companyId: compId,
+        attribution: incumbentAttribution
+          ? {
+              id: incumbentAttribution.id,
+              partnerId: incumbentAttribution.partnerId,
+              companyId: incumbentAttribution.companyId,
+              revokedAt: incumbentAttribution.revokedAt ?? null,
+            }
+          : null,
+      });
+      if (!lock1.ok || !lock1.coWrite) {
+        // Fail-closed BEFORE any row exists. A partner-sourced row without its
+        // provenance pair is the state LOCK 1 exists to prevent, so it must not
+        // be reachable even once.
+        return res.status(409).json({ error: lock1.refusal ?? "LOCK1_REFUSED", message: lock1.copy });
+      }
+
+      /* ── WAVE 33B · CP-PIPE-10 — FK PRE-FLIGHT, FOUND BY EXECUTION ──────
+         The co-write above was correct and DEAD. Both provenance columns carry
+         foreign keys — `sourced_from_partner_id → partner_organizations(id)`
+         and `sourced_from_partner_attribution_id → partner_attributions(id)`
+         (`applyWaveC2ProvenanceColumnsSchema.ts:153`) — and `foreign_keys` is
+         ON. `partner_organizations` is EMPTY: nothing in the server writes it
+         (verified by grep, and by counting rows in the live `data.db`, the
+         seeded test DB and the demo sandbox — all zero), because consortium
+         partners are registered in `contacts`. So the very first attempt to
+         honour LOCK 1 raised `FOREIGN KEY constraint failed` and the route
+         answered 500. Writing NULL provenance never touched the FK, which is
+         why the columns being unpopulated had hidden this for two migrations.
+
+         This is the wave's lesson once more: the rule compiled, refused
+         correctly, was reviewed, and could not write a single row. Nothing
+         short of executing it could show that — no source assertion can see
+         what a prepared statement binds.
+
+         The parents are therefore resolved BEFORE the INSERT (the same shape
+         as 0136 §2.1's orphan pre-flight in `partnerCompanyRelationshipStore`),
+         and an unsatisfiable pair is a STATED 409 rather than an opaque 500.
+         It is deliberately NOT a downgrade to a NULL-provenance write: that
+         would be the exact state LOCK 1 exists to prevent, arrived at by
+         accident. It is deliberately NOT a silent creation of the missing
+         partner_organizations row either — that row carries a tenant, a legal
+         name and a status this route does not know, and inventing it would put
+         fabricated registration data behind a provenance claim.
+
+         See OQ-33-3 in the wave report: making LOCK 1 land in production is a
+         partner-registration data question, not a code question. */
+      {
+        const pdb = rawDb();
+        const parents = pdb
+          .prepare(
+            `SELECT (SELECT COUNT(*) FROM partner_organizations WHERE id = ?) AS org,
+                    (SELECT COUNT(*) FROM partner_attributions   WHERE id = ?) AS attr`,
+          )
+          .get(
+            lock1.coWrite.sourcedFromPartnerId,
+            lock1.coWrite.sourcedFromPartnerAttributionId,
+          ) as { org: number; attr: number };
+        if (!parents.org || !parents.attr) {
+          return res.status(409).json({
+            error: "LOCK1_PROVENANCE_NOT_PERSISTABLE",
+            message: !parents.org
+              ? "This partner has no registered partner organisation, so the provenance this soft circle requires cannot be recorded against it. The soft circle has not been created: recording it without its provenance is the state this lock exists to prevent."
+              : "The attribution behind this soft circle is not present in the durable attribution table, so the provenance pair cannot be recorded. The soft circle has not been created.",
+            missing: !parents.org ? "partner_organizations" : "partner_attributions",
+          });
+        }
+      }
+
       try {
         const db  = rawDb();
         const now = new Date().toISOString();
         /* v25.16 NM2 — idempotent: deterministic id from validated values only so a
            retry collapses to one row instead of duplicating P&L data. */
         const idemKey = `${pid}:${compId}:${cur}:${st}:${amountMinor}`;
-        const idHash  = require("node:crypto").createHash("sha1").update(idemKey).digest("hex").slice(0, 16);
+        /* WAVE 33 — was `require("node:crypto").createHash(...)`. A lazy require
+           in a live write path is the Wave 32B defect exactly: one that throws
+           only under the bundled production runtime, where nobody is looking.
+           `createHash` is now a static import, and `randomBytes` was already
+           imported statically two lines above it — the lazy call was redundant
+           as well as unsafe. */
+        const idHash  = createHash("sha1").update(idemKey).digest("hex").slice(0, 16);
         const id  = `sc_${idHash}`;
 
         db.prepare(`
           INSERT OR IGNORE INTO soft_circles
             (id, round_id, investor_name, amount, amount_minor, currency, status,
              source_type, source_id, company_id, created_at, updated_at,
-             collective_visible)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 'partner', ?, ?, ?, ?, 1)
-        `).run(id, "round_partner_test", "Partner-Sourced Investor", amountMinor / 100, amountMinor, cur, st, pid, compId, now, now);
+             collective_visible, sourced_from_partner_id, sourced_from_partner_attribution_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'partner', ?, ?, ?, ?, 1, ?, ?)
+        `).run(
+          id, "round_partner_test", "Partner-Sourced Investor",
+          /* WAVE 33 — was `amountMinor / 100`, a hardcoded exponent-2 assumption
+             writing a major-units figure. Same class as the CP-SPV-31 sinks;
+             `fromMinor` is exponent-driven and returns the same numeric
+             type the REAL column already held, so no reader's arithmetic
+             changes. This route's currency enum
+             happens to hold only exponent-2 currencies today, so the division
+             is not wrong for present inputs — it is wrong the moment JPY is
+             added to that enum, and it would be wrong silently. */
+          fromMinor(amountMinor, cur),
+          amountMinor, cur, st, pid, compId, now, now,
+          lock1.coWrite.sourcedFromPartnerId,
+          lock1.coWrite.sourcedFromPartnerAttributionId,
+        );
 
-        res.status(201).json({ ok: true, softCircleId: id, amountMinor, currency: cur, status: st, companyId: compId, partnerId: pid });
+        res.status(201).json({
+          ok: true, softCircleId: id, amountMinor, currency: cur, status: st,
+          companyId: compId, partnerId: pid,
+          provenance: lock1.coWrite,
+        });
       } catch (err) {
         res.status(500).json({ error: "SOURCE_SC_FAILED", message: (err as Error).message });
       }

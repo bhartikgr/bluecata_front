@@ -260,3 +260,10 @@ export function reconcileEqual<T>(primary: T, ref: T, epsilon = 1e-6): Reconcile
   const ok = matches(primary, ref);
   return ok ? { match: true, primary, ref } : { match: false, primary, ref, diff: "values differ beyond epsilon" };
 }
+
+/* ===== WAVE 9 — ILPA taxonomy, ACT/365F Brent XIRR, metrics service =====
+ * See ./ilpa.ts. ENGINE_REGISTRY C-4 declares this package CANONICAL for all
+ * fund math; the Wave 9 surface is re-exported here so every consumer has a
+ * single import specifier, `@capavate/math-fns`.
+ */
+export * from "./ilpa";

@@ -54,7 +54,7 @@ export default function PartnerAgreementSign() {
   const [signedAt, setSignedAt] = useState<string | null>(null);
 
   // Canonical agreement endpoint: viewable text + durable signed state.
-  const { data, isLoading, isError, error } = useQuery<AgreementResponse>({
+  const { data, isLoading, isError, error, refetch } = useQuery<AgreementResponse>({
     queryKey: ["/api/partner/me/agreement"],
     enabled: role.ready && !!role.identity,
     retry: false,
@@ -98,6 +98,35 @@ export default function PartnerAgreementSign() {
   if (!role.ready || !role.identity) return null;
   const me = role.identity;
   const isForbidden = isError && error instanceof ApiError && error.status === 403;
+  /* WAVE 19 FE-18 — DEFECT 1. A non-403 load failure previously fell straight
+     through to the render below with `data === undefined`, which meant:
+       agreementText = CONSORTIUM_AGREEMENT_TEXT   (the hardcoded fallback)
+       version       = "—"
+       canSign       = data?.canSign !== false     → TRUE
+     i.e. a 500 or a network drop produced a fully SIGNABLE legal agreement,
+     with unknown version, built from client-side text the server never sent.
+     That is the worst possible shape of the fabricated-state defect: not a
+     wrong number, a signature. A failure is a state and must be rendered as
+     one (rule 3), never as a signable document. */
+  const loadFailed = isError && !isForbidden;
+  /* The `!isForbidden` term is DEFENSIVE, not load-bearing, and the
+     falsification harness proved it: mutating it away changes nothing
+     observable, because every consumer of `loadFailed` sits inside the
+     `{!isForbidden && <Card>}` wrapper below, which already excludes 403. It is
+     kept so the meaning survives if that wrapper is ever restructured, and the
+     harness records the mutation as WITHDRAWN rather than counting a no-op as
+     either detected or missed. */
+  /* WAVE 19 FE-18 — DEFECT 2. The server distinguishes `signed` (this partner
+     has EVER signed) from `signedCurrent` (`state.signed && state.version ===
+     agreement.version`, server/lib/partnerSelfServiceRoutes.ts:322) and returns
+     `signedVersion` alongside. The page read only `signedCurrent`, so a partner
+     who signed v1 while v2 is current saw a bare sign form with NO mention of
+     their existing signature — their own executed agreement silently dropped
+     from the UI while the server was returning it in the same payload.
+     `signedVersion` itself is NOT missing (it is displayed at the signed block
+     below), which is where the Wave 7B row's premise does not hold; the real
+     gap is the superseded-signature case. */
+  const hasSupersededSignature = !!data?.signed && !data?.signedCurrent;
   const version = data?.agreement?.version ?? "—";
   const url = data?.agreement?.url ?? null;
   const finalDocUrl = data?.agreement?.finalDocUrl ?? null;
@@ -156,7 +185,31 @@ export default function PartnerAgreementSign() {
             </div>
           )}
 
-          {!isLoading && (
+          {/* WAVE 19 FE-18 — the rendered refusal for a failed load. SIBLING
+              elements: nothing existing is reworded or removed. */}
+          {!isLoading && loadFailed && (
+            <div
+              role="alert"
+              className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-800"
+              data-testid="partner-agreement-load-failed"
+            >
+              <div className="font-medium">The partner agreement could not be loaded</div>
+              <div className="mt-1 text-xs">
+                This is a loading failure. Your signature status is unchanged, and nothing can be
+                signed until the current agreement has been retrieved from the server.
+              </div>
+              <button
+                type="button"
+                className="mt-3 rounded-md border border-red-300 px-3 py-1 text-xs"
+                data-testid="button-retry-agreement"
+                onClick={() => { void refetch(); }}
+              >
+                Try again
+              </button>
+            </div>
+          )}
+
+          {!isLoading && !loadFailed && (
             <>
               <p
                 className="text-sm mb-3"
@@ -212,6 +265,41 @@ export default function PartnerAgreementSign() {
                 This document is provided for review by counsel and does not
                 constitute legal advice.
               </p>
+
+              {/* WAVE 19 FE-18 — the superseded-signature notice. A SIBLING of
+                  the sign form, so a partner who signed an earlier version is
+                  told so instead of being shown a blank form as if they never
+                  had.
+
+                  RAW IDS ARE SHOWN HERE, DELIBERATELY, and this is the one place
+                  on the page where they are. `displayAgreementVersion()`
+                  (client/src/lib/partner/partnerAgreement.ts:38) IGNORES its
+                  argument and always returns the constant "Version 1.0" — I
+                  verified that after a test written against it failed. Passing
+                  the signed and the current version through it would print the
+                  same string twice and say nothing, which is precisely the
+                  silent drop this notice exists to close. The cosmetic label is
+                  still shown alongside so the wording stays consistent with the
+                  rest of the page. */}
+              {hasSupersededSignature && !effectiveSignedAt && (
+                <div
+                  className="mb-4 rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"
+                  data-testid="partner-agreement-superseded"
+                >
+                  <div className="font-medium">
+                    You signed an earlier version of this agreement
+                    {data?.signedAt ? ` on ${formatDate(data.signedAt)}` : ""}
+                  </div>
+                  <div className="mt-1 text-xs" data-testid="partner-agreement-superseded-versions">
+                    Signed: <span className="font-mono">{data?.signedVersion ?? "not recorded"}</span>
+                    {" · "}Current: <span className="font-mono">{version}</span>
+                  </div>
+                  <div className="mt-1 text-xs">
+                    That signature stands and has not been withdrawn. The agreement has since been
+                    updated, so the current version needs your signature as well.
+                  </div>
+                </div>
+              )}
 
               {effectiveSignedAt ? (
                 <div className="rounded-md border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900" data-testid="partner-agreement-signed">

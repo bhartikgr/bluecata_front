@@ -43,6 +43,7 @@
  */
 import { rawDb } from "../db/connection";
 import { readUserPrivacy } from "./userPrivacyResolver";
+import { notSpvBackedSql } from "./spvBackedCompanies";
 
 export type CommsRole = "founder" | "investor" | "soft_circler" | "admin" | "co_member";
 
@@ -393,7 +394,13 @@ export function durableCapTablePeerIds(userId: string): string[] {
             AND cb.state = 'committed'
             AND ca.deleted_at IS NULL
             AND cb.deleted_at IS NULL
-            AND cb.investor_id <> ca.investor_id`,
+            AND cb.investor_id <> ca.investor_id
+            -- X-C1 / P1-8 — SECOND PATH. This mirrors the boolean gate in
+            -- capTableMembership.ts, and in LIST form it is the more dangerous
+            -- of the two: it enumerates peer user ids rather than answering
+            -- yes/no. Same exclusion, same single definition, so the mirror
+            -- cannot drift away from the gate it mirrors.
+            AND ${notSpvBackedSql("ca")}`,
       )
       .all(userId.trim()) as Array<{ user_id?: string | null }>;
     return rows.map((r) => r?.user_id).filter(isValidId).map((s) => s.trim());

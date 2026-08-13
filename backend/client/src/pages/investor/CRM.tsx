@@ -21,6 +21,7 @@
 import { useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { LoadFailedRefusal } from "@/components/LoadFailedRefusal"; /* WAVE 22 · ITEM 4 */
 import { useRealtimeSync } from "@/lib/realtimeSync";
 import { PageBody, PageHeader } from "@/components/AppShell";
 import {
@@ -661,17 +662,23 @@ export default function InvestorCRM() {
      were invisible. Switch to /api/investor/crm (the bare-array endpoint
      owned solely by investorCrmStore, no collision) so save+list are on the
      same store + table + shape. */
+  /* WAVE 22 · ITEM 4 (REVIEW B F-4, the exemplar) — this queryFn used to
+     swallow BOTH non-OK responses (`if (!res.ok) return []`) and thrown
+     exceptions (`catch { return [] }`), converting a 403 / 429 / 500 into an
+     empty array. The page then rendered "No contacts yet — Start building your
+     investor network" to a user whose contacts were merely unreachable: a
+     permission failure reported as a fact about their data. The failure is now
+     PROPAGATED so React Query can set `isError`, and the refusal is rendered as
+     its own state (see the `listQ.isError` branch below). */
   const listQ = useQuery<InvestorCrmContact[]>({
     queryKey: ["/api/investor/crm"],
     queryFn: async () => {
-      try {
-        const res = await apiRequest("GET", "/api/investor/crm");
-        if (!res.ok) return [];
-        const data = await res.json();
-        return Array.isArray(data) ? data : [];
-      } catch {
-        return [];
+      const res = await apiRequest("GET", "/api/investor/crm");
+      if (!res.ok) {
+        throw new Error(`Failed to load contacts: ${res.status}`);
       }
+      const data = await res.json();
+      return Array.isArray(data) ? data : [];
     },
   });
 
@@ -836,7 +843,15 @@ export default function InvestorCRM() {
         {/* Main content */}
         {listQ.isLoading ? (
           <CrmSkeleton />
-        ) : contacts.length === 0 ? (
+        ) : listQ.isError ? (
+          /* WAVE 22 · ITEM 4 — sibling refusal, following Wave 18 W-4 exactly. */
+          <LoadFailedRefusal
+            what="your contacts"
+            testId="investor-crm-error"
+            onRetry={() => void listQ.refetch()}
+            isRetrying={listQ.isFetching}
+          />
+        ) : listQ.isSuccess && contacts.length === 0 ? (
           /* Empty state */
           <Card>
             <CardContent className="py-16 text-center space-y-4">
@@ -854,6 +869,14 @@ export default function InvestorCRM() {
               </Button>
             </CardContent>
           </Card>
+        ) : !listQ.isSuccess ? (
+          /* WAVE 22 · ITEM 4 — a PAUSED query (offline) is not loading, not
+             errored and not successful. Without this branch the gate above
+             would fall through to the list and, with zero rows, imply an empty
+             CRM to someone who is merely disconnected. */
+          <div className="text-sm text-muted-foreground p-4 text-center" data-testid="investor-crm-not-loaded">
+            Contacts have not loaded. Check your connection.
+          </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {/* Contact list */}

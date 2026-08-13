@@ -169,7 +169,19 @@ describe("Wave B adapter routes — full happy-path lifecycle", () => {
     expect(r.body.capitalCalls[0].sequenceNo).toBe(1);
   });
 
-  it("[8. POST /distributions] records a distribution under I-2 headroom", async () => {
+  /* WAVE 2B / BLOCKER 1 — EXPECTATION DELIBERATELY CHANGED.
+
+     Until WAVE 2B this asserted `201` and a persisted plural-ledger row. Review B
+     (build_log/WAVES_012_REVIEW_B.md BLOCKER 1) ruled that write a live
+     data-integrity defect: it lands in the PLURAL `spv_distributions` while
+     canonical reporting reads the SINGULAR `spv_distribution`. The route is now
+     fail-closed on the server (server/lib/legacyDistributionLedger.ts) and the
+     201 contract is intentionally retired, not accidentally lost.
+
+     Full zero-write proof:
+       server/__tests__/wave2b_blocker1_legacy_distribution_closed.test.ts */
+  it("[8. POST /distributions] is CLOSED (WAVE 2B BLOCKER 1) — 409, no plural-ledger write", async () => {
+    const before = spvFundStore.listDistributions(spvId).length;
     const r = await request(app)
       .post(`/api/partner/me/spvs/${spvId}/distributions`)
       .set("x-user-id", MANAGING)
@@ -178,13 +190,21 @@ describe("Wave B adapter routes — full happy-path lifecycle", () => {
         total_minor: 25_000_00,
         distributed_at: new Date().toISOString(),
       });
-    expect(r.status).toBe(201);
-    expect(r.body.ok).toBe(true);
-    expect(r.body.distribution.totalMinor).toBe(25_000_00);
-    expect(r.body.distribution.distributionType).toBe("dividend");
+    expect(r.status).toBe(409);
+    expect(r.body.error).toBe("LEGACY_DISTRIBUTION_LEDGER_DISABLED");
+    expect(r.body.distribution).toBeUndefined();
+    expect(spvFundStore.listDistributions(spvId).length).toBe(before);
   });
 
-  it("[7. GET /distributions] lists it", async () => {
+  it("[7. GET /distributions] the READ side still serves the legacy DTO shape", async () => {
+    // The write route is closed, so seed the row through the store directly:
+    // this test's job is the GET contract, which WAVE 2B did not change.
+    spvFundStore.__unsafeSeedLegacyDistributionRowForTests({
+      spvId,
+      distributionType: "dividend",
+      totalMinor: 25_000_00,
+      distributedAt: new Date().toISOString(),
+    });
     const r = await request(app)
       .get(`/api/partner/me/spvs/${spvId}/distributions`)
       .set("x-user-id", MANAGING);
@@ -372,13 +392,16 @@ describe("Wave B adapter routes — 400 INVALID_BODY", () => {
     expect(r.body.error).toBe("INVALID_BODY");
   });
 
-  it("POST /distributions with negative total_minor → 400", async () => {
+  /* WAVE 2B / BLOCKER 1 — the closure runs BEFORE `safeParse`, so this body no
+     longer reaches Zod. 409 rather than 400 is the PROOF that nothing is parsed
+     or written; see wave2b_blocker1_legacy_distribution_closed.test.ts. */
+  it("POST /distributions with negative total_minor → 409 (closed before parsing)", async () => {
     const r = await request(app)
       .post(`/api/partner/me/spvs/${spvId}/distributions`)
       .set("x-user-id", MANAGING)
       .send({ total_minor: -100 });
-    expect(r.status).toBe(400);
-    expect(r.body.error).toBe("INVALID_BODY");
+    expect(r.status).toBe(409);
+    expect(r.body.error).toBe("LEGACY_DISTRIBUTION_LEDGER_DISABLED");
   });
 
   it("POST /db-positions with missing security_id → 400", async () => {
@@ -396,7 +419,11 @@ describe("Wave B adapter routes — 400 INVALID_BODY", () => {
  * ============================================================ */
 
 describe("Wave B adapter routes — I-2 invariant enforcement", () => {
-  it("POST /distributions exceeding committed_minor returns 422 with the exact legacy error+message", async () => {
+  /* WAVE 2B / BLOCKER 1 — the route-level I-2 assertion is superseded by the
+     server-side closure (409 before the store is called). The I-2 invariant
+     ITSELF is unchanged and is still asserted at the STORE level here and in
+     server/__tests__/spvFundDb.test.ts ("Distribution invariant I-2"). */
+  it("POST /distributions exceeding committed_minor returns 409 (closed before the store); I-2 still enforced at the store", async () => {
     // Create a small SPV with a small signed commitment.
     const spv = spvFundStore.createSpv({
       partnerId: PARTNER_A,
@@ -414,9 +441,12 @@ describe("Wave B adapter routes — I-2 invariant enforcement", () => {
       .post(`/api/partner/me/spvs/${spv.id}/distributions`)
       .set("x-user-id", MANAGING)
       .send({ total_minor: 200_00 });
-    expect(r.status).toBe(422);
-    expect(r.body.error).toBe("INVARIANT_DISTRIBUTION_EXCEEDS_COMMITMENTS");
-    expect(r.body.message).toMatch(/committed_minor must be >=/);
+    expect(r.status).toBe(409);
+    expect(r.body.error).toBe("LEGACY_DISTRIBUTION_LEDGER_DISABLED");
+    // …and the invariant it used to prove over HTTP is still live in the store.
+    expect(() =>
+      spvFundStore.__unsafeSeedLegacyDistributionRowForTests({ spvId: spv.id, totalMinor: 200_00 }),
+    ).toThrow(/INVARIANT_DISTRIBUTION_EXCEEDS_COMMITMENTS/);
     // Committee's still there
     void c;
   });

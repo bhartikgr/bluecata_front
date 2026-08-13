@@ -54,7 +54,7 @@ export default function PartnerTeam() {
   /* w-partner F-new3 — `seatLimit` is the EFFECTIVE cap resolved server-side
      (per-partner override, else tier default). Optional so an older/cached
      response simply falls back to the previous count-only banner. */
-  const q = useQuery<{ members: TeamMember[]; invitations: Array<{ id: string; invitedEmail: string; subRole: string; title?: string | null; expiresAt: string; redeemedAt: string | null }>; seatLimit?: number; meta?: { duplicateSeatCount?: number } }>({
+  const q = useQuery<{ members: TeamMember[]; invitations: Array<{ id: string; invitedEmail: string; subRole: string; title?: string | null; expiresAt: string; redeemedAt: string | null }>; seatLimit?: number; activeSeats?: number; meta?: { duplicateSeatCount?: number } }>({
     queryKey: ["/api/partner/me/team"],
     enabled: role.ready,
     queryFn: async () => (await apiRequest("GET", "/api/partner/me/team")).json(),
@@ -161,7 +161,12 @@ export default function PartnerTeam() {
   const canInvite = isManagingPartner(role.identity.subRole);
   /* v25.16 NL4 — capture self id so we don't render Remove on the current user. */
   const selfUserId = role.identity.identity.userId;
-  const activeCount = (q.data?.members ?? []).filter((m) => m.status === "active").length;
+  // v26.7.3 FIX-4 — the Team roster may collapse legacy duplicate identities
+  // for presentation, so render the API's authoritative server count rather
+  // than deriving a different seat total from display rows.
+  const activeCount =
+    q.data?.activeSeats ??
+    (q.data?.members ?? []).filter((m) => m.status === "active").length;
   const pendingCount = (q.data?.invitations ?? []).filter((i) => !i.redeemedAt).length;
   /* w-partner F-new3 — 9999 is the nexus/founding_member sentinel for "no cap"
      (adminContactsStore.ts:235 TIER_SEAT_LIMITS); rendering the digits would

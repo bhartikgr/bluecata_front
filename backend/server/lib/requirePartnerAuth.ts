@@ -197,15 +197,42 @@ export function requirePartnerSubrole(allowedSubroles: SubRole[]) {
  * the same critical section as the invitation creation.
  */
 export function assertTierSeats(partnerId: string): void {
+  assertSeatCapacity(partnerId, {
+    activeSeats: partnerTeamStore.countActiveSeats(partnerId),
+    pending: partnerInvitationStore.countPendingByPartner(partnerId),
+  });
+}
+
+/**
+ * WAVE 19 FE-19 / SEAT-04 — the seat POLICY, separated from the seat READ.
+ *
+ * `assertTierSeats` above reads the counts and then judges them. That is fine
+ * for a read-only caller, but it is useless as a race guard: by the time the
+ * verdict is returned the counts are already stale, and the invitation insert
+ * that follows is a separate, unprotected statement.
+ *
+ * So the judgement is factored out to take counts as an ARGUMENT. That lets
+ * `partnerInvitationStore.createWithSeatGuard()` re-read the durable counts
+ * inside its IMMEDIATE transaction and call this with them, under the write
+ * lock, in the same critical section as the insert.
+ *
+ * The policy itself is unchanged and deliberately still lives here, not in the
+ * store: tier resolution and the per-partner seat override
+ * (`resolvePartnerSeatLimit`) are auth concerns, and a second copy in the
+ * store would be a second definition of a paid limit — the kind of divergence
+ * that produced this defect in the first place.
+ */
+export function assertSeatCapacity(
+  partnerId: string,
+  counts: { activeSeats: number; pending: number },
+): void {
   const partner = getContactById(partnerId);
   if (!partner) throw new Error("PARTNER_NOT_FOUND");
   const tier: PartnerTier = (partner.tier as PartnerTier) ?? "catalyst";
-  const active = partnerTeamStore.countActiveSeats(partnerId);
-  const pending = partnerInvitationStore.countPendingByPartner(partnerId);
   // W-V44 FIX R3 — enforce the EFFECTIVE seat limit (per-partner override, else
   // tier default) so an admin-granted individual seat allowance is honoured.
   const { seatLimit } = resolvePartnerSeatLimit(partnerId, tier);
-  if (active + pending >= seatLimit) {
+  if (counts.activeSeats + counts.pending >= seatLimit) {
     throw new Error("PARTNER_TIER_SEAT_LIMIT_REACHED");
   }
 }

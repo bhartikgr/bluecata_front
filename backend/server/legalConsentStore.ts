@@ -30,6 +30,11 @@ import type { Express, Request, Response } from "express";
 import { createHash, randomBytes } from "node:crypto";
 import { and, eq, isNull, desc, asc, sql } from "drizzle-orm";
 import { resolvePersonaId } from "./lib/userContext";
+/* WAVE 22 · ITEM 2 (REVIEW B F-3, the one the reviewer called out by name) —
+ * a consent record whose IP evidence the consenting party can forge with one
+ * header has no evidentiary value, which is the entire point of the record.
+ * Resolution goes through the single hardened resolver used by the limiters. */
+import { resolveRateLimitClientIp } from "./lib/rateLimit";
 import { appendAdminAudit } from "./adminPlatformStore";
 import { emitBridgeEvent } from "./bridgeStore";
 import { LEGAL_VERSION } from "../client/src/lib/legalDocs";
@@ -361,7 +366,10 @@ export function registerLegalConsentRoutes(app: Express): void {
       return res.status(400).json({ ok: false, error: `invalid documentIds: ${invalidIds.join(", ")}` });
     }
 
-    const ipAddress = (req.headers["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim() ?? req.socket.remoteAddress ?? null;
+    /* WAVE 22 · ITEM 2 (REVIEW B F-3) — was: leftmost `x-forwarded-for`, i.e.
+     * whatever the caller typed. Now: trusted-hop resolution, fail-closed to
+     * the socket peer when no `TRUSTED_PROXY_HOPS` is configured. */
+    const ipAddress = resolveRateLimitClientIp(req);
     const userAgent = req.headers["user-agent"] ?? null;
 
     const recorded: string[] = [];

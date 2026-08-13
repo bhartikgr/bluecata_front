@@ -224,6 +224,38 @@ export function requireEntitlement(...required: Entitlement[]): RequestHandler {
  *     exceptions) and is the intentionally more conservative choice for a
  *     backstop that is not yet wired into production traffic.
  */
+/**
+ * WAVE 36 · ROW 7 — THE SHIPPED GATE FACTORY, now importable.
+ *
+ * This is the wrapper `registerRoutes` mounts in front of every gated route.
+ * It lived as a closure inside `server/routes.ts`, so nothing outside that
+ * function could execute it — and `server/__tests__/entitlementGates.test.ts`
+ * therefore built its OWN `gate()` to test against. That local copy carried
+ *
+ *     if (String(req.query.enforce ?? "") !== "1") return next();
+ *
+ * which is the `?enforce` query bypass that v15 P0-14 REMOVED from production
+ * as a launch blocker. The suite that exists to prove entitlements are enforced
+ * was proving it about a bypass that no longer ships, and every one of its 34
+ * assertions ran against code no user can reach. Extracted here so there is ONE
+ * implementation and the test executes the shipped one.
+ *
+ * SEMANTICS ARE UNCHANGED — enforcement is ALWAYS ON. No client-controlled
+ * input (query, header, body) can disable it. The only bypass is an explicit
+ * dev escape hatch requiring BOTH `NODE_ENV === "development"` (not "test",
+ * not "production") and `ALLOW_GATE_BYPASS === "1"`.
+ */
+export function entitlementGate(...required: Entitlement[]): RequestHandler {
+  const mw = requireEntitlement(...required);
+  return (req, res, next) => {
+    const isDevBypass =
+      process.env.NODE_ENV === "development" &&
+      process.env.ALLOW_GATE_BYPASS === "1";
+    if (isDevBypass) return next();
+    return mw(req, res, next);
+  };
+}
+
 export function requireActiveSubscription(): RequestHandler {
   return (req: Request, res: Response, next: NextFunction) => {
     const companyId = pickCompanyId(req);

@@ -49,8 +49,14 @@
  * ERROR STATUS MAP (preserved 1:1 from legacy)
  * ============================================================================
  *
- *   404 NOT_FOUND                                — SPV missing or COMMITMENT_NOT_FOUND
- *   403 NOT_OWNER                                — partner mismatch
+ *   404 NOT_FOUND                                — SPV missing, NOT OWNED BY THE
+ *                                                  CALLER, or COMMITMENT_NOT_FOUND
+ *
+ *   WAVE 35 · F9 — `403 NOT_OWNER` (partner mismatch) is RETIRED. Answering a
+ *   different status for "exists but not yours" than for "does not exist" let
+ *   any authenticated partner enumerate every SPV id on the platform. Both
+ *   cases now answer 404 NOT_FOUND. This IS a deliberate contract change and
+ *   is reported as such, not a silent one.
  *   400 INVALID_BODY                             — Zod validation fail
  *   422 INVARIANT_DISTRIBUTION_EXCEEDS_COMMITMENTS — I-2 breach on distribution
  *   500 COMMITMENT_FAILED | TRANSITION_FAILED
@@ -75,6 +81,8 @@ import { z } from "zod";
 
 import { requirePartnerAuth, assertSubRole } from "./lib/requirePartnerAuth";
 import { requireSignedAgreement } from "./lib/requireSignedAgreement";
+/* WAVE 2B / BLOCKER 1 — legacy plural distribution ledger fail-closed. */
+import { legacyDistributionLedgerClosed } from "./lib/legacyDistributionLedger";
 import { publish as ssePublish } from "./lib/sseHub";
 import { log, errorMeta } from "./lib/logger";
 import {
@@ -112,6 +120,44 @@ function gate(_req: Request, res: Response): boolean {
 }
 
 /* ============================================================
+ * WAVE 2B / BLOCKER 1 — LEGACY DISTRIBUTION LEDGER: FAIL CLOSED
+ * ============================================================
+ *
+ * WAVE 2 (SC-2) disabled the `Record Distribution` panel on
+ * client/src/pages/partner/PartnerSpvDetail.tsx. Adversarial review B
+ * (build_log/WAVES_012_REVIEW_B.md, BLOCKER 1) showed that this made the
+ * surface UI-inert but NOT capability-inert: the same authenticated
+ * managing partner can `fetch()` this route from DevTools, or replay a
+ * captured request, and still create a financial record in the WRONG ledger.
+ *
+ * THE SPLIT LEDGER (the actual defect):
+ *   POST /api/partner/me/spvs/:id/distributions   (PLURAL, this route)
+ *     -> engineRecordDistribution -> spvFundStore.recordDistribution
+ *     -> INSERT INTO spv_distributions            (server/spvFundStore.ts:902)
+ *   POST /api/partner/me/spv/:id/distributions    (SINGULAR, canonical)
+ *     -> spvEngineStore.recordDistribution
+ *     -> INSERT INTO spv_distribution             (server/spvEngineStore.ts:1538)
+ * The canonical singular read cannot see a plural write. The owner ruled the
+ * SINGULAR table canonical, so a write here is a silent data-integrity loss.
+ *
+ * FAIL CLOSED, ON THE SERVER, BEFORE PARSING OR WRITING. This is the first
+ * statement of the handler: no body parse, no SPV load, no store call, no SSE.
+ * The middleware chain (auth / sub-role / signed agreement) still runs first so
+ * this route leaks nothing new to an unauthenticated or under-privileged
+ * caller — an anonymous request still gets 401, a viewer still gets 403.
+ *
+ * REVERSIBILITY: delete the two `if (legacyDistributionLedgerClosed(res)) return;`
+ * call sites (here and in the retired server/spvFundStore.ts registrar) once
+ * SC-5 repoints this route onto the canonical singular ledger.
+ *
+ * The closure itself lives in server/lib/legacyDistributionLedger.ts so both
+ * registrars share one implementation.
+ *
+ * Proof it writes ZERO rows:
+ *   server/__tests__/wave2b_blocker1_legacy_distribution_closed.test.ts
+ */
+
+/* ============================================================
  * Zod schemas — byte-identical to spvFundStore lines 393-425.
  * ============================================================ */
 
@@ -146,10 +192,29 @@ const positionSchema = z.object({
 
 /* ============================================================
  * Ownership-check helper — DRY for the identical pattern used
- * across all 10 routes. Preserves the exact response ordering:
- * if the SPV row exists but partner mismatches → 403 NOT_OWNER;
- * else → 404 NOT_FOUND. Legacy contract.
+ * across all 10 routes.
+ *
+ * WAVE 35 · F9 (SECOND PATH — not named by the review) ─────────
+ * This helper USED to answer `spv ? 403 : 404` — 403 NOT_OWNER when the SPV
+ * row exists but belongs to another partner, 404 NOT_FOUND when it does not
+ * exist at all. That difference IS the leak. Any authenticated partner could
+ * walk an id space against `GET /api/partner/me/spvs/:id/detail` and read off
+ * exactly which SPV ids are real, because the two answers are
+ * distinguishable. SPVs are the private vehicles; their mere existence, count
+ * and id shape are confidential. This is the identical oracle Review A found
+ * on the three cap-table routes (F9) — the review named those three; this is
+ * the fourth, on a different router, keyed directly on the SPV id.
+ *
+ * Both branches now answer **404 NOT_FOUND**, so a wrong-but-real partner
+ * cannot distinguish "exists but forbidden" from "does not exist". The
+ * OWNER's 200 is untouched — that pole is asserted in
+ * `server/__tests__/wave35_spv_detail_enumeration.test.ts`, so this cannot be
+ * satisfied by simply refusing everyone.
  * ============================================================ */
+
+/** The single refusal for an SPV the caller may not have. Never 403. */
+export const SPV_SINK_NOT_FOUND = { error: "NOT_FOUND" as const };
+export const SPV_SINK_NOT_FOUND_STATUS = 404;
 
 function loadOwnedSpvOr404(
   req: Request,
@@ -158,7 +223,7 @@ function loadOwnedSpvOr404(
   const ctx = req.partnerContext!;
   const spv = engineGetLegacySpvById(String(req.params.id));
   if (!spv || spv.partnerId !== ctx.partnerId) {
-    res.status(spv ? 403 : 404).json({ error: spv ? "NOT_OWNER" : "NOT_FOUND" });
+    res.status(SPV_SINK_NOT_FOUND_STATUS).json(SPV_SINK_NOT_FOUND);
     return null;
   }
   return spv;
@@ -172,18 +237,13 @@ export function registerSpvLegacyAdapterRoutes(app: Express): void {
   /* ---------- 1. GET /:id/detail (full reconcile bundle) ---------- */
   app.get("/api/partner/me/spvs/:id/detail", requirePartnerAuth, (req: Request, res: Response) => {
     if (!gate(req, res)) return;
-    // v25.14 style — detail path uses the fuller ownership pattern with
-    // separate 404/403 status codes on identical error shape.
-    const ctx = req.partnerContext!;
-    const spv = engineGetLegacySpvById(String(req.params.id));
-    if (!spv) {
-      res.status(404).json({ error: "NOT_FOUND" });
-      return;
-    }
-    if (spv.partnerId !== ctx.partnerId) {
-      res.status(403).json({ error: "NOT_OWNER" });
-      return;
-    }
+    /* WAVE 35 · F9 — this handler carried its OWN inline copy of the ownership
+       check with the separate 404/403 codes, so fixing the shared helper alone
+       would have left the leak wide open on the very route Review A's class
+       description fits best. It now goes THROUGH the shared helper, which is
+       the only way a tenth route cannot reintroduce the oracle. */
+    const spv = loadOwnedSpvOr404(req, res);
+    if (!spv) return;
     const positions = engineListLegacyPositions(spv.id);
     const commitments = engineListLegacyCommitments(spv.id);
     const capitalCalls = engineListCapitalCalls(spv.id);
@@ -356,6 +416,11 @@ export function registerSpvLegacyAdapterRoutes(app: Express): void {
     assertSubRole("managing_partner"),
     requireSignedAgreement,
     (req: Request, res: Response) => {
+      // WAVE 2B / BLOCKER 1 — fail closed BEFORE parsing or writing. See the
+      // `legacyDistributionLedgerClosed` block above for the split-ledger
+      // rationale. Everything below this line is retained, unreachable, and
+      // returns intact when SC-5 repoints the route.
+      if (legacyDistributionLedgerClosed(res)) return;
       if (!gate(req, res)) return;
       const ctx = req.partnerContext!;
       const spv = loadOwnedSpvOr404(req, res);

@@ -38,6 +38,9 @@ import {
 import { HelpTip } from "@/components/HelpTip";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+/* WAVE 3A (P-1) — shared percent input/display helpers. Storage stays
+   FRACTIONAL; only what the admin TYPES and what the admin SEES is in percent. */
+import { fractionToPercentInput, parsePercentInputToFraction } from "@/lib/percentDisplay";
 
 type Status = "draft" | "preview" | "live" | "deprecated";
 type ProductLine = "founder" | "collective" | "consortium_partner" | "add_on";
@@ -730,6 +733,73 @@ function BracketsTab({ draft, update }: { draft: PricingModel; update: (p: Parti
 }
 
 /* ---------- Tab: Discount Codes ---------- */
+
+/* WAVE 3A (P-1) — ADMIN INPUT for a percent discount code.
+ *
+ * Owner's ruling: the admin types PERCENT-AS-WRITTEN (100 means 100% off) and
+ * the system stores the FRACTION (1.0). Storage is unchanged — the charge path
+ * (server/paymentStore.ts calcCouponDiscountCents:166) still multiplies the
+ * charge by the stored fraction, so there is NO migration and NO server change.
+ *
+ * BEFORE this wave the field was raw: the admin had to type `0.1` to mean 10%,
+ * with the convention buried in a Select label. Verified before changing: the
+ * old handler did `amount: Number(e.target.value || 0)` with NO conversion at
+ * all, so adding the /100 here is a single conversion, not a double one.
+ *
+ * A local text buffer is kept so partially-typed values ("12." , "0", "") are
+ * not destroyed by a round-trip through the numeric store on every keystroke.
+ * It re-syncs from the store whenever the stored fraction changes underneath. */
+function PercentAmountInput({
+  fraction,
+  onFractionChange,
+  testId,
+}: {
+  fraction: number;
+  onFractionChange: (next: number) => void;
+  testId?: string;
+}) {
+  const canonical = fractionToPercentInput(fraction);
+  const [text, setText] = useState(canonical);
+  const [lastCanonical, setLastCanonical] = useState(canonical);
+  if (canonical !== lastCanonical) {
+    /* Store changed from elsewhere (row added/removed, draft reset) — resync. */
+    setLastCanonical(canonical);
+    setText(canonical);
+  }
+  const parsed = parsePercentInputToFraction(text, { label: "Discount" });
+  const invalid = text.trim() !== "" && !parsed.ok;
+  return (
+    <div className="flex flex-col">
+      <div className="relative">
+        <Input
+          className={`w-28 pr-6 ${invalid ? "border-rose-500" : ""}`}
+          type="number"
+          step={0.01}
+          min={0}
+          max={100}
+          value={text}
+          data-testid={testId}
+          onChange={(e) => {
+            const next = e.target.value;
+            setText(next);
+            const r = parsePercentInputToFraction(next, { label: "Discount" });
+            if (r.ok) {
+              onFractionChange(r.fraction);
+              setLastCanonical(fractionToPercentInput(r.fraction));
+            }
+          }}
+        />
+        <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-xs text-zinc-500">%</span>
+      </div>
+      {invalid && (
+        <span className="text-[10px] text-rose-600" data-testid={testId ? `${testId}-error` : undefined}>
+          0–100
+        </span>
+      )}
+    </div>
+  );
+}
+
 function DiscountsTab({ draft, update }: { draft: PricingModel; update: (p: Partial<PricingModel>) => void }) {
   const add = () => update({ discountCodes: [...draft.discountCodes, { code: "NEWCODE", kind: "percent", amount: 0.1, expiresOn: null, maxRedemptions: null, active: true }] });
   const set = (i: number, patch: Partial<DiscountCode>) => {
@@ -744,6 +814,13 @@ function DiscountsTab({ draft, update }: { draft: PricingModel; update: (p: Part
           <Label>Discount codes</Label>
           <Button size="sm" variant="outline" onClick={add} data-testid="button-addDiscount"><Plus className="h-4 w-4 mr-1" /> Add code</Button>
         </div>
+        {/* WAVE 3A (P-1) — state the convention on screen instead of only in a
+            Select label, per 00_SHARED_STANDARDS.md §1.1. */}
+        <p className="text-xs text-zinc-500" data-testid="discount-percent-convention">
+          Percent codes are entered as written — type <code>100</code> for 100% off,{" "}
+          <code>30</code> for 30%. They are stored as a fraction (1.0, 0.3), which is the
+          unit the charge path already uses; nothing about storage changed.
+        </p>
         <div className="space-y-2">
           {draft.discountCodes.map((c, i) => (
             <div key={i} className="flex flex-wrap items-center gap-2 border rounded-md p-2">
@@ -752,12 +829,25 @@ function DiscountsTab({ draft, update }: { draft: PricingModel; update: (p: Part
               <Select value={c.kind} onValueChange={(v) => set(i, { kind: v as DiscountCode["kind"] })}>
                 <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="percent">Percent (0.10 = 10%)</SelectItem>
+                  <SelectItem value="percent">Percent (type 10 for 10%)</SelectItem>
                   <SelectItem value="flat_minor">Flat (minor units)</SelectItem>
                   <SelectItem value="trial_extension_days">Trial extension (days)</SelectItem>
                 </SelectContent>
               </Select>
-              <Input className="w-28" type="number" step={0.01} value={c.amount} onChange={e => set(i, { amount: Number(e.target.value || 0) })} />
+              {/* WAVE 3A (P-1) — percent codes take percent-as-written and store
+                  the fraction. flat_minor (currency minor units) and
+                  trial_extension_days (whole days) are NOT percentages and keep
+                  the raw numeric field untouched — converting them would be the
+                  double-conversion this wave exists to prevent. */}
+              {c.kind === "percent" ? (
+                <PercentAmountInput
+                  fraction={c.amount}
+                  onFractionChange={(f) => set(i, { amount: f })}
+                  testId={`input-discount-percent-${i}`}
+                />
+              ) : (
+                <Input className="w-28" type="number" step={0.01} value={c.amount} onChange={e => set(i, { amount: Number(e.target.value || 0) })} />
+              )}
               <Input className="w-40" type="date" value={c.expiresOn ?? ""} onChange={e => set(i, { expiresOn: e.target.value || null })} />
               <Input className="w-28" type="number" placeholder="max" value={c.maxRedemptions ?? ""} onChange={e => set(i, { maxRedemptions: e.target.value === "" ? null : Number(e.target.value) })} />
               <Button size="sm" variant="ghost" className="ml-auto text-rose-700" onClick={() => rm(i)}><X className="h-4 w-4" /></Button>

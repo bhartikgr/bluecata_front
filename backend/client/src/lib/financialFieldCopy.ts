@@ -4,13 +4,82 @@
  * Both founders and accountants read this copy.
  */
 
+/**
+ * WAVE 35 · ROW 8 — units and the percent round-trip.
+ *
+ * `"pct"` means PERCENT-AS-WRITTEN, per the binding `spec/PERCENT_POLICY_v2.md`
+ * (owner ruling OR-1: "1=1%. 100=100%"). **The stored number IS the
+ * percentage**, to at most 4 decimal places. There is no ×100 anywhere on the
+ * write path and no ÷100 anywhere on the read path. Before this row the write
+ * path multiplied by 100 and the read path did not divide, so 42.5 came back
+ * as 4250 and saving again stored 425000 — the error compounded on every save.
+ *
+ * `"ratio"` is NEW and exists because `ltvCacRatio` was declared `"pct"`.
+ * LTV/CAC is a MULTIPLE, not a percentage: 3.0 means "3x", and rendering it
+ * with a "%" badge told a founder "3%" where the business means "3x" — an
+ * off-by-a-factor-of-a-hundred misreading of a headline efficiency metric.
+ * `"ratio"` is likewise stored as written, to 4 decimals, and never carries a
+ * percent badge.
+ */
 export interface FinancialFieldCopy {
   key: string;
   label: string;
   description: string;
   example: string;
-  unit: "usd_minor" | "count" | "pct" | "months";
+  unit: "usd_minor" | "count" | "pct" | "months" | "ratio";
   minorUnits?: boolean; // true → stored as integer cents/minor units
+  /**
+   * WAVE 35 · ROW 8 — true when a NEGATIVE value is a legitimate business
+   * answer for this field. Both write paths refused `n < 0` outright and the
+   * inputs carried `min="0"`, so a founder entering the field's OWN worked
+   * example ("−10% net margin") had it SILENTLY DROPPED: no error, no toast,
+   * the save reported success and the number simply never arrived. That is a
+   * "never silently drop functionality" violation, and it is also wrong on the
+   * merits — a pre-profit company's net margin is negative by definition, and
+   * a contracting quarter's growth rate is too.
+   */
+  allowsNegative?: boolean;
+}
+
+/**
+ * Units whose stored value is the value the founder typed, kept to 4 decimals.
+ * Exported so the write paths cannot each invent their own list and drift —
+ * which is exactly how `Settings.tsx` and `FinancialsFill.tsx` came to hold two
+ * copies of the same ×100 defect.
+ */
+export const AS_WRITTEN_DECIMAL_UNITS: ReadonlySet<string> = new Set([
+  "pct",
+  "ratio",
+]);
+
+/** The decimal grid `spec/PERCENT_POLICY_v2.md` binds these values onto. */
+export const AS_WRITTEN_DECIMAL_PLACES = 4;
+
+/* WAVE 35 - ROW 8: the HTML `step` for an as-written decimal field.
+   It is deliberately "any", not a numeric granularity.
+
+   The shipped value was a hand-written "0.01", which makes a browser REFUSE
+   12.3456 on form submit as a step mismatch - silently rejecting a value the
+   binding policy (4 decimal places) explicitly permits. Found by execution:
+   the round-trip harness's 12.34567 case never reached the wire at all.
+
+   The obvious repair, step="0.0001", is WORSE and was also caught by
+   execution: step validation is float arithmetic, and 42.5 / 0.0001 is
+   425000.00000000006, so a plain 42.5 becomes a step mismatch too. A numeric
+   step here cannot be made correct.
+
+   Granularity is enforced where it can be enforced exactly - toStoredAsWritten
+   rounds onto the 4-decimal grid on write. The widget must not silently drop
+   input the policy accepts. */
+export const AS_WRITTEN_INPUT_STEP = "any";
+
+/**
+ * The single canonical write conversion for an as-written decimal unit.
+ * Rounds onto the 4-decimal grid without changing the magnitude.
+ */
+export function toStoredAsWritten(n: number): number {
+  const f = 10 ** AS_WRITTEN_DECIMAL_PLACES;
+  return Math.round(n * f) / f;
 }
 
 /**
@@ -134,6 +203,9 @@ export const FINANCIAL_FIELD_COPY: FinancialFieldCopy[] = [
     example:
       "MRR grew from $4,000 to $4,600 → ($600 ÷ $4,000) × 100 = 15% MoM growth.",
     unit: "pct",
+    // MRR can contract. Refusing negatives here forces a founder to either
+    // lie or leave the field blank.
+    allowsNegative: true,
   },
 
   // ── SERIES A+ ───────────────────────────────────────────────────────
@@ -147,6 +219,8 @@ export const FINANCIAL_FIELD_COPY: FinancialFieldCopy[] = [
     example:
       "$1,000,000 revenue − $1,100,000 total costs = −$100,000 net income → −10% net margin.",
     unit: "pct",
+    // The worked example above is itself negative. See allowsNegative.
+    allowsNegative: true,
   },
   {
     key: "ebitdaUsd",
@@ -181,8 +255,10 @@ export const FINANCIAL_FIELD_COPY: FinancialFieldCopy[] = [
       "Healthy SaaS benchmark: 3.0 or above. Below 1.0 means you lose money on every customer.",
     example:
       "Average customer pays $750/month for 12 months = $9,000 LTV. " +
-      "Average cost to acquire = $3,000 CAC. → LTV:CAC = 3.0.",
-    unit: "pct", // stored as 2-decimal float × 100 (e.g. 3.0 → 300)
+      "Average cost to acquire = $3,000 CAC. → LTV:CAC = 3.0 (that is 3x, NOT 3%).",
+    // WAVE 35 · ROW 8 — was `"pct"`, which rendered a "%" badge next to a
+    // MULTIPLE. Stored as written, to 4 decimals: 3.0 is stored as 3.
+    unit: "ratio",
   },
   {
     key: "paybackPeriodMonths",

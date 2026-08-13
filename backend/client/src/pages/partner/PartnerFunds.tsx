@@ -17,14 +17,41 @@ import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 
+/* MAJOR 3 (WAVE 2B) — FIELD-NAME CORRECTION, sibling of the SC-1 fix applied to
+ * PartnerFundDetail.tsx in Wave 2.
+ *
+ * GET /api/partner/me/funds answers
+ *   res.json({ funds: spvEngineStore.listByPartner(...).filter(spvType==="fund") })
+ *                                       — server/partnerRoutes.ts:1736-1739
+ * so every element is a canonical `SpvDTO` (shared/spvEngine.ts:205-230), NOT a
+ * bespoke fund record. Three of the four fields read here did not exist:
+ *   fundName        → DTO field is `name`                    (spvEngine.ts:208)
+ *   targetSizeMinor → DTO field is `targetRaiseMinor`, NULLABLE (spvEngine.ts:214)
+ *   vintageYear     → not a DTO field at all. The fund shim stores the vintage
+ *                     inside the `terms` JSON blob it writes on create
+ *                     (server/partnerRoutes.ts:1771 — `terms: { … vintage … }`),
+ *                     which is exactly where PartnerFundDetail.tsx reads it.
+ *
+ * `fundName` and `targetSizeMinor` remain legitimate WRITE aliases on
+ * POST /api/partner/me/funds (partnerRoutes.ts:1747) and PATCH .../funds/:id
+ * (partnerRoutes.ts:1798-1799). They are write aliases only and are never echoed
+ * on read, so the create form below still sends them — deliberately. */
 type Fund = {
   id: string;
-  fundName: string;
-  vintageYear: number;
-  targetSizeMinor: number;
+  name: string;
+  targetRaiseMinor: number | null;
   currency: string;
   status: string;
+  /** Fund-specific values (incl. `vintage`) live in the shim's `terms` blob. */
+  terms: Record<string, unknown> | null;
 };
+
+/** `terms` is `Record<string, unknown>`; render defensively.
+ *  Mirrors `termsValue` in PartnerFundDetail.tsx. */
+function termsValue(terms: Record<string, unknown> | null, key: string): string | null {
+  const v = terms?.[key];
+  return typeof v === "string" || typeof v === "number" ? String(v) : null;
+}
 
 function formatMinor(minor: number, currency: string) {
   // v25.38 — delegate to shared ISO-4217-aware formatter (2-decimal parity).
@@ -145,11 +172,28 @@ export default function PartnerFunds() {
               <Link href={`/collective/partner/funds/${f.id}`} className="block hover:bg-[var(--cv-color-surface-2)] -m-3 p-3 rounded">
                 <div className="flex justify-between items-center">
                   <div>
-                    <div className="font-medium">{f.fundName}</div>
-                    <div className="text-xs text-[var(--cv-color-text-muted)]">Vintage {f.vintageYear} · {f.status}</div>
+                    <div className="font-medium">{f.name}</div>
+                    <div className="text-xs text-[var(--cv-color-text-muted)]">
+                      {/* MAJOR 3 — vintage comes from `terms`, and a fund created
+                          without one must not render "Vintage undefined". */}
+                      {/* Kept as literal JSX text (not a template string) so the
+                          "Vintage" copy string stays in the guard inventory. */}
+                      {termsValue(f.terms, "vintage") ? (
+                        <>
+                          Vintage {termsValue(f.terms, "vintage")} · {f.status}
+                        </>
+                      ) : (
+                        f.status
+                      )}
+                    </div>
                   </div>
                   <div className="text-right">
-                    <div className="font-mono">{formatMinor(f.targetSizeMinor, f.currency)}</div>
+                    {/* MAJOR 3 — nullable target must read as "—", never $0.00. */}
+                    <div className="font-mono">
+                      {f.targetRaiseMinor === null || f.targetRaiseMinor === undefined
+                        ? "\u2014"
+                        : formatMinor(f.targetRaiseMinor, f.currency)}
+                    </div>
                     <div className="text-xs text-[var(--cv-color-text-muted)]">target</div>
                   </div>
                 </div>

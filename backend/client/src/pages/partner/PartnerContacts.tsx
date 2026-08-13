@@ -16,11 +16,13 @@
  * task endpoints (:2133, :2156) are still unwired — noted, not removed.
  */
 import { useEffect, useMemo, useState } from "react";
+import { useCollectiveStream } from "@/lib/sseClient"; /* WAVE 18 / XT-7 */
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PartnerShell, PartnerEmptyState } from "@/components/partner/PartnerShell";
 import { useRequirePartnerRole } from "@/lib/partner/useRequirePartnerRole";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { formatMinor } from "@/lib/currency";
 
 /* w-partner F6 — the editable subset of crmMeUpdateSchema, mapped to the
    snake_case keys the server validates. Only CHANGED keys are sent, so an
@@ -101,8 +103,10 @@ interface CrmConnections {
   client: { companyId: string; stage: string; lastActivityAt: string | null } | null;
 }
 
-function money(minor: number): string {
-  return new Intl.NumberFormat(undefined, { style: "currency", currency: "USD" }).format(minor / 100);
+/* WAVE 21 ITEM 5: hardcoded /100 AND a hardcoded USD label. The currency
+   is now a parameter so a non-USD caller cannot be silently mislabelled. */
+function money(minor: number, currency = "USD"): string {
+  return formatMinor(minor, currency);
 }
 
 export default function PartnerContacts() {
@@ -129,6 +133,50 @@ export default function PartnerContacts() {
     enabled: role.ready && !!selectedId,
     queryFn: async () =>
       (await apiRequest("GET", `/api/partner/me/crm/contacts/${selectedId}`)).json(),
+  });
+
+  /* ── WAVE 18 / XT-7 — SUBSCRIBE THIS PAGE TO THE `crm` SSE TOPIC ──────────
+   *
+   * WIRING, not a build, and nothing on the server side is touched — which
+   * matters here, because the publisher lives in
+   * server/partnerWorkspaceV19Store.ts and owner ruling A-23 puts that file's
+   * ROUTES out of bounds this wave. Listening to a topic a live route already
+   * publishes on adds no second door: no endpoint, no store function and no
+   * table is added or changed by this block.
+   *
+   *   • PUBLISHER — ssePublish(partnerId, "crm", …) on every contact write:
+   *     partnerWorkspaceV19Store.ts:721 (update/star/delete mutations, typed by
+   *     `mutation`) and :814 (`crm.created`), plus :1506, :1676, :1733 where a
+   *     pipeline write touches a contact.
+   *   • TRANSPORT — `crm` is in SSE_TOPICS (sseHub.ts:49) and PARTNER_TOPICS
+   *     (collectiveSseRoutes.ts:71): partner team members only.
+   *   • SUBSCRIBER — none, until now. A CRM is a MULTI-SEAT surface by
+   *     definition (partner_team_members), so two people working the same
+   *     contact list is the normal case, and each was seeing a snapshot frozen
+   *     at their last manual reload. This is also the surface where a stale read
+   *     is worst: the contact rows carry an append-only hash chain
+   *     (prevHash/currHash), and a PATCH composed against a stale row is how a
+   *     lost update happens.
+   *
+   * The frame carries `contactId` and a mutation type — never contact fields —
+   * so the response is a refetch of the server's projection, never a local
+   * patch from the frame.
+   */
+  const [liveCrmEvents, setLiveCrmEvents] = useState(0);
+  useCollectiveStream({
+    chapterId: "",
+    scope: "partner",
+    path: "/api/stream",
+    topics: ["crm"],
+    enabled: role.ready,
+    onMessage: (topic, payload) => {
+      if (topic !== "crm") return;
+      const frame = payload as { contactId?: unknown } | null;
+      const contactId = typeof frame?.contactId === "string" ? frame.contactId : null;
+      qc.invalidateQueries({ queryKey: ["/api/partner/me/crm/contacts"] });
+      if (contactId) qc.invalidateQueries({ queryKey: ["/api/partner/me/crm/contacts", contactId] });
+      setLiveCrmEvents((n) => n + 1);
+    },
   });
 
   const createMut = useMutation({
@@ -240,6 +288,14 @@ export default function PartnerContacts() {
       subRole={role.identity.subRole}
       partnerName={role.identity.identity.name}
     >
+      {/* WAVE 18 / XT-7 — SIBLING element, added above the existing grid rather
+          than as text inside an existing node. Shown only after a frame has been
+          applied: proof of liveness, not an assertion of it. */}
+      {liveCrmEvents > 0 && (
+        <div className="mb-4 text-xs text-[var(--cv-color-text-muted)]" data-testid="contacts-live-note">
+          Refreshed from a live CRM update.
+        </div>
+      )}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">
           {/* Rule #13 create — first AND last required */}

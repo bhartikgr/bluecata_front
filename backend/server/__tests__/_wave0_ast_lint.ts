@@ -212,8 +212,44 @@ function assertPreTransformPreservesStatementCount(before: string, after: string
 }
 
 export function preTransformSqliteForParser(sql: string): string {
+  /* WAVE 29 — `DROP <object> IF EXISTS` is valid SQLite that node-sql-parser
+   * rejects outright ("Expected ... but \"E\" found"), so every such statement
+   * landed in the unparseable-offender list. That was already happening for
+   * 0165's `DROP TRIGGER IF EXISTS` before this wave; Wave 29's migration 0176
+   * needs `DROP INDEX IF EXISTS` (SQLite has no ALTER INDEX, so correcting a
+   * partial index means dropping it — a bare CREATE ... IF NOT EXISTS would be
+   * a silent no-op on exactly the databases carrying the defect).
+   *
+   * The failing test says "Fix the migration or the parser transform." Fixing
+   * the migration would mean writing SQL shaped around a parser bug; fixing the
+   * transform is the honest option and it clears 0165's pre-existing offenders
+   * too. Stripping the `IF EXISTS` guard is semantically inert for a lint that
+   * reasons about table and column SHAPE — it cannot change what object is
+   * dropped, only whether a missing one raises — and it cannot change the
+   * statement count, which `assertPreTransformPreservesStatementCount` verifies
+   * on every call anyway. */
+  /* Stripping `IF EXISTS` alone is not enough: node-sql-parser only understands
+   * the MySQL form `DROP INDEX <name> ON <table>`, so SQLite's plain
+   * `DROP INDEX <name>;` fails too. A dropped index or trigger declares no
+   * table and no column, so it carries ZERO information for a lint whose whole
+   * subject is table and column shape. Rewriting it to a parseable no-op is
+   * inert for every rule in this corpus and keeps the top-level semicolon count
+   * identical, which `assertPreTransformPreservesStatementCount` verifies.
+   *
+   * Deliberately narrow in two ways. (1) Only INDEX and TRIGGER: DROP TABLE and
+   * DROP VIEW DO concern shape, and quietly swallowing one would be exactly the
+   * silent drop this file exists to catch. (2) Matched up to the next semicolon
+   * rather than to end-of-input, because this transform is applied to WHOLE
+   * FILES as well as to single statements -- an end-anchored pattern ate every
+   * following statement in the file, which the statement-count assertion caught
+   * immediately. That assertion earned its keep here. */
+  let pre = sql;
+  if (/\bDROP\s+(?:INDEX|TRIGGER)\b/i.test(pre)) {
+    pre = pre.replace(/\bDROP\s+(?:INDEX|TRIGGER)\b[^;]*/gi, "SELECT 1");
+  }
   // Fast path.
-  if (!/\bON\s+CONFLICT\b|\bRETURNING\b/i.test(sql)) return sql;
+  if (!/\bON\s+CONFLICT\b|\bRETURNING\b/i.test(pre)) return pre;
+  sql = pre;
   // Tokenize enough to skip string/comment content and track paren depth
   // so we never strip ON CONFLICT / RETURNING that appears INSIDE a paren
   // pair (Gemini v4 file-truncation defect).
@@ -594,6 +630,11 @@ export interface CreateTable {
   table: string;
   isStrict: boolean;
   withoutRowid: boolean;
+  /** WAVE 38 ROW 4. `CREATE TABLE IF NOT EXISTS` is a NO-OP when the table
+   *  already exists. A consumer folding a statement stream into an effective
+   *  schema must not let a guarded re-declaration overwrite the live shape,
+   *  because SQLite would not have. */
+  ifNotExists: boolean;
   columns: Array<{
     name: string;
     dataType: string;
@@ -640,6 +681,7 @@ export function extractCreateTable(stmt: ParsedStatement): CreateTable | null {
   );
   const isStrict = opt.has("strict");
   const withoutRowid = opt.has("without rowid") || opt.has("without_rowid");
+  const ifNotExists = Boolean(a.if_not_exists);
 
   const defs = a.create_definitions ?? [];
   const columns: CreateTable["columns"] = [];
@@ -696,6 +738,7 @@ export function extractCreateTable(stmt: ParsedStatement): CreateTable | null {
     table: tblName,
     isStrict,
     withoutRowid,
+    ifNotExists,
     columns,
     tableUniqueConstraintsOn,
   };
@@ -724,6 +767,59 @@ function hasOrReplace(a: any): boolean {
     }
   }
   return false;
+}
+
+/**
+ * WAVE 38 ROW 4 — DROP TABLE / ALTER TABLE ... RENAME TO.
+ *
+ * A migration corpus is a STREAM, not a set. Any lint that reads only
+ * `CREATE TABLE` statements is describing the HISTORY of declarations, not the
+ * schema a database actually ends up with: it cannot see that a table was
+ * later dropped, nor that a canonically-shaped replacement was renamed into
+ * its place. That gap is what made `wave0_3_ledger_primitives_lint` structurally
+ * unsatisfiable by any forward migration — the only way to make it green was to
+ * edit already-applied history, which is forbidden.
+ *
+ * This extractor supplies the two missing statement kinds so a consumer can
+ * fold the ordered stream into an EFFECTIVE schema. It is AST-based like every
+ * other extractor here; nothing is regex-derived.
+ */
+export interface TableLifecycle {
+  file: string;
+  kind: "drop" | "rename";
+  /** Subject table, lowercased. */
+  table: string;
+  /** Target name for `kind === "rename"`, else null. */
+  renameTo: string | null;
+}
+
+export function extractTableLifecycle(stmt: ParsedStatement): TableLifecycle | null {
+  const a = stmt.ast;
+  if (!a) return null;
+  const type = String(a.type ?? "").toLowerCase();
+
+  if (type === "drop" && String(a.keyword ?? "").toLowerCase() === "table") {
+    const entry = Array.isArray(a.name) ? a.name[0] : a.name;
+    const t = normalizeName(entry?.table);
+    return t ? { file: stmt.file, kind: "drop", table: t, renameTo: null } : null;
+  }
+
+  if (type === "alter") {
+    const entry = Array.isArray(a.table) ? a.table[0] : a.table;
+    const from = normalizeName(entry?.table);
+    if (!from) return null;
+    const exprs = Array.isArray(a.expr) ? a.expr : a.expr ? [a.expr] : [];
+    for (const e of exprs) {
+      if (String(e?.action ?? "").toLowerCase() !== "rename") continue;
+      // `RENAME COLUMN` also carries action 'rename'; only the table form moves
+      // a table's identity, so the resource must be the table itself.
+      if (String(e?.resource ?? "").toLowerCase() !== "table") continue;
+      const to = normalizeName(typeof e.table === "string" ? e.table : e.table?.table);
+      if (to) return { file: stmt.file, kind: "rename", table: from, renameTo: to };
+    }
+  }
+
+  return null;
 }
 
 export function extractInsertOrReplace(stmt: ParsedStatement): ReplaceInsert | null {

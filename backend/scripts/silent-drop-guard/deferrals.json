@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "note": "DEFERRAL REGISTER — NOT AN ALLOWLIST. An allowlist entry says 'this removal is correct, stop reporting it'. A deferral says the opposite: 'this is a REAL LOSS, it is not fixed, and it is not forgiven'. Every id here is still counted, still printed, and still named in the guard report under UNRESOLVED REGRESSION. The register exists only so the pre-deploy gate can distinguish a known, owned, dated debt from a NEW silent drop, which remains a hard failure. Rules: (1) `npm run guard -- --strict` fails on these, and that is the mode the wave that restores them must reach; (2) if an id here is no longer dropped, the guard FAILS and tells you to delete the entry, so the register cannot rot; (3) adding an entry requires reason + owner + ticket + reviewBy, and is an owner decision, not a developer one.",
+  "deferrals": [],
+  "closed": [
+    {
+      "ticket": "RS-1",
+      "class(es)": [
+        "clientRoutes",
+        "nav"
+      ],
+      "ids": [
+        "/admin/collective-payment-schedules",
+        "/admin/collective-payment-schedules\tCollective Payment Schedules"
+      ],
+      "closedOn": "2026-08-09",
+      "closedBy": "WAVE 4A",
+      "resolution": "RESOLVED, NOT FORGIVEN. Collective payment-schedule CRUD was rebuilt inside the consolidated page (client/src/pages/admin/AdminFeesConsolidated.tsx, 'Fee Schedules' tab) against the pre-existing server CRUD at server/lib/collectivePaymentAdminRoutes.ts:44/61/118/176 — create, edit (PATCH) and expire (DELETE) are all reachable by an admin again. The legacy URL and sidebar entry were restored as an ALIAS/deep link onto that tab (client/src/App.tsx, client/src/components/AppShell.tsx adminNav), NOT by re-routing the orphaned standalone page. Zero allowlist entries were added."
+    },
+    {
+      "ticket": "RS-2",
+      "class(es)": [
+        "clientRoutes",
+        "nav"
+      ],
+      "ids": [
+        "/admin/partner-fees",
+        "/admin/partner-fees\tPartner Fees"
+      ],
+      "closedOn": "2026-08-09",
+      "closedBy": "WAVE 4A",
+      "resolution": "RESOLVED, NOT FORGIVEN. The dropped partner fee-schedule WRITES (POST/PATCH/DELETE /api/admin/partner-fees, server/lib/partnerFeeAdminRoutes.ts:62/96/125) are now called from the consolidated page's 'Fee Schedules' tab. The read-only count on the Consortium Partner Promotions tab is untouched. The legacy URL and sidebar entry were restored as an ALIAS/deep link onto that tab, NOT by re-routing client/src/pages/admin/PartnerFeeSchedules.tsx, which stays on disk and unrouted (its disposal is spec item RS-3). Zero allowlist entries were added."
+    }
+  ]
+}

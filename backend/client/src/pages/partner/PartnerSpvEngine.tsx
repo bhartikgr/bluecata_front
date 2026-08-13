@@ -15,8 +15,10 @@
  * round-trips `terms_json`, so no schema churn is required.
  */
 import { useState } from "react";
+import { useCollectiveStream } from "@/lib/sseClient"; /* WAVE 18 / XT-7 */
 import { formatMinor as formatMinorLib, toMinor } from "@/lib/currency";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Link } from "wouter"; /* SC-2 (WAVE 2) — inbound link to the SPV detail route */
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useRequirePartnerRole } from "@/lib/partner/useRequirePartnerRole";
@@ -29,6 +31,7 @@ import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { COLLECTIVE_SECTORS_45 } from "@shared/schema";
 import { buildCurrencyOptions } from "@/lib/currencyOptions";
+import { SPV_EDU } from "@/lib/spvEducation"; /* WAVE 8 / ORP-063 */
 import { labelFor, CARRY_BASIS_LABELS, DISTRIBUTION_SCOPE_LABELS } from "@/lib/collectiveLabels"; /* W3.6 */
 import {
   SPV_CARRY_BASES,
@@ -42,8 +45,45 @@ import {
   SPV_TOP_JURISDICTION_COUNTRIES,
   SPV_JURISDICTION_ENTITY_STRUCTURES,
   SPV_DISTRIBUTION_SCOPE_WIZARD_OPTIONS,
+  SPV_JURISDICTION_LABELS,
+  resolveSpvJurisdiction,
   type SpvDTO,
+  type SpvJurisdiction,
 } from "@shared/spvEngine";
+
+/**
+ * WAVE 3C / J-4 — the SPV accordion row never rendered the vehicle's
+ * jurisdiction at all; it only existed on the standalone detail page. A GP
+ * reviewing a list of vehicles could not tell a Delaware LLC from a Cayman
+ * exempted company. Prefer the GP-entered `terms.jurisdictionCountry` (the
+ * more specific value, and the one the enum is now reconciled against by
+ * scripts/backfill_spv_jurisdiction.ts) and fall back to the enum column.
+ */
+function jurisdictionLabelFor(s: SpvDTO): string {
+  const country = (s.terms as { jurisdictionCountry?: unknown } | null)?.jurisdictionCountry;
+  const resolved: SpvJurisdiction = resolveSpvJurisdiction(
+    typeof country === "string" && country.trim() ? country : s.jurisdiction,
+  );
+  // A free-text country we cannot map still deserves to be SHOWN as typed
+  // rather than flattened to "Other / not specified".
+  if (resolved === "other" && typeof country === "string" && country.trim()) return country.trim();
+  return SPV_JURISDICTION_LABELS[resolved];
+}
+
+/**
+ * WAVE 7B V-1 (DEF-085) — vintage year, read from the SAME `terms.vintage` key
+ * both writers use: the admin create route
+ * (server/lib/partnerFeeAdminRoutes.ts:391, always an integer) and, as of this
+ * wave, the partner wizard above. Legacy rows written before either writer
+ * existed carry nothing, so a missing value renders as an em-dash rather than
+ * a guess. Tolerant of a string year for rows a hand-edit may have left behind.
+ */
+function spvVintageLabel(s: SpvDTO): string {
+  const v = (s.terms as { vintage?: unknown } | null)?.vintage;
+  if (typeof v === "number" && Number.isInteger(v)) return String(v);
+  if (typeof v === "string" && /^\d{4}$/.test(v.trim())) return v.trim();
+  return "\u2014";
+}
 
 function fmt(minor: number | null, currency: string) {
   if (minor == null) return "—";
@@ -60,6 +100,12 @@ interface WizardState {
   jurisdiction: string;          // legal-entity enum (engine-required)
   jurisdictionCountry: string;   // 3b — country jurisdiction (top-15 or "__other__")
   jurisdictionOther: string;     // 3b — free text when "Other"
+  /* WAVE 7B V-1 (DEF-085) — vintage year. Stored on `terms.vintage`, which is
+     the SAME key the admin create route already writes
+     (server/lib/partnerFeeAdminRoutes.ts:391) and the SAME key the admin
+     partner detail already reads (PartnerDetail.tsx:865). Deliberately NOT a
+     new key: a second name for one concept is how this field got lost. */
+  vintage: string;
   legalEntityStructure: string;  // 2a — dependent on jurisdictionCountry; stored on terms.legalEntityStructure
   legalEntityStructureOther: string; // 2a — free text when structure is "Other (specify)" or country is Other
   spvType: string;
@@ -126,32 +172,28 @@ const ATTESTATION_TEXT_V1 =
  * 1e — Derive the strict engine legal-entity enum (SPV_JURISDICTIONS) from the
  * user-chosen country. The standalone "Engine legal-entity type" field was
  * redundant with "Jurisdiction (country)" + "Legal entity structure", so it is
- * removed from the UI and auto-derived here. This mapper ALWAYS returns a
- * VALID member of the strict SPV_JURISDICTIONS enum (unmapped/unknown countries
- * => "delaware"), so the canonical SPV store — which REJECTS any non-enum
- * jurisdiction (INVALID_JURISDICTION) — always accepts the derived value. No
- * engine enum change and no migration is required (rule #8). See
- * WAVE_A_1e_LEGAL_ENTITY_ANALYSIS.md.
+ * removed from the UI and auto-derived here.
+ *
+ * WAVE 3C / J-1 — the four hard-coded `case` arms and the
+ * `default: return "delaware"` are GONE. They collapsed all eleven remaining
+ * ontology countries onto Delaware, which is what put SEC/Form-D copy on a
+ * Dutch B.V. and a BVI company. The enum is now wide enough to hold every
+ * ontology country, and `resolveSpvJurisdiction` (shared/spvEngine.ts) is the
+ * single mapper: an unknown/free-text country resolves to the explicit
+ * "other" member, never to a US jurisdiction. The store still accepts the
+ * result because every value it can return is a valid enum member.
  */
 function deriveEngineJurisdiction(country: string): string {
-  switch (country) {
-    case "United States":
-      return "delaware";
-    case "Cayman Islands":
-      return "cayman";
-    case "British Virgin Islands":
-      return "bvi";
-    case "Canada":
-      return "canadian_lp";
-    default:
-      return "delaware"; // matches server canonicalJurisdiction fallback
-  }
+  return resolveSpvJurisdiction(country);
 }
 
 const EMPTY_WIZARD: WizardState = {
   name: "", jurisdiction: "delaware", jurisdictionCountry: "United States", jurisdictionOther: "",
   legalEntityStructure: SPV_JURISDICTION_ENTITY_STRUCTURES["United States"][0],
   legalEntityStructureOther: "",
+  /* V-1 — defaults to the current year, exactly like the admin form
+     (PartnerDetail.tsx:190). Editable; validated as a 4-digit year. */
+  vintage: String(new Date().getFullYear()),
   spvType: "spv", carryBasis: "", distributionScope: "network", lpVisibility: "own_only",
   targetRaiseMinor: "0", minCheckMinor: "0", capMinor: "0", currency: "USD",
   mandateMode: "deal_specific", mandateDescription: "", sectors: [], subSector: "",
@@ -177,10 +219,78 @@ export default function PartnerSpvEngine() {
     queryFn: async () => (await apiRequest("GET", "/api/partner/me/spv")).json(),
   });
 
+  /* WAVE 8 / ORP-030 — GET /api/partner/me/spv-wizard/defaults
+     (server/spvEngineRoutes.ts:140) existed, was partner-authenticated, and had
+     ZERO client callers, so the wizard's whole reason for being
+     "defaults-over-inputs" was dead: the GP could not clone a prior SPV's
+     settings and never saw the server's own enum contract. WIRED (not built) —
+     fetched only while the wizard is open. */
+  const wizardDefaults = useQuery<{
+    gp: { partnerId: string; gpUserId: string | null; name: string | null; tier: string | null };
+    enums: Record<string, readonly string[]>;
+    carryBasisHelp: Record<string, string>;
+    clonableSpvs: Array<{ id: string; name: string; jurisdiction: string; carryBasis: string }>;
+  }>({
+    queryKey: ["/api/partner/me/spv-wizard/defaults"],
+    enabled: wizardOpen && role.ready && !!role.identity,
+    queryFn: async () => (await apiRequest("GET", "/api/partner/me/spv-wizard/defaults")).json(),
+  });
+
   const detail = useQuery<Record<string, unknown>>({
     queryKey: ["/api/partner/me/spv", selectedId],
     enabled: !!selectedId,
     queryFn: async () => (await apiRequest("GET", `/api/partner/me/spv/${selectedId}`)).json(),
+  });
+
+  /* ── WAVE 18 / XT-7 — SUBSCRIBE THIS PAGE TO THE `spv` SSE TOPIC ──────────
+   *
+   * WIRING, not a build. Both halves were already shipped and already
+   * authorised, and neither half had a counterpart:
+   *
+   *   • PUBLISHER — every SPV write publishes on the `spv` topic scoped to the
+   *     partner: `ssePublish(ctx.partnerId, "spv", …)` at
+   *     server/spvFundStore.ts:1571 (commitment.created), :1600
+   *     (commitment.transitioned), :1648 (capital_call.recorded), :1709
+   *     (distribution.recorded), :1763 (position.recorded), with the same five
+   *     frames re-emitted by the legacy adapters at
+   *     server/spvLegacyAdapters.ts:283,:316,:369,:421,:477.
+   *   • TRANSPORT — `spv` is in SSE_TOPICS (server/lib/sseHub.ts:48) and in
+   *     PARTNER_TOPICS (server/collectiveSseRoutes.ts:72), so a partner team
+   *     member is authorised for it on GET /api/stream and nobody else is.
+   *   • SUBSCRIBER — none. Zero client callers listened on `spv`, so a GP
+   *     recording a capital call in one tab, or a co-GP on the same partner
+   *     recording one at all, left this page showing figures that were simply
+   *     out of date until a manual reload.
+   *
+   * WHY invalidate AND NOT patch state from the frame: the frames carry ids and
+   * a type, never amounts. Money on this page is read from the server's own
+   * projection. A frame is a hint that the projection moved, never a source of
+   * numbers — so the response to one is a refetch, and a frame can never put a
+   * figure on screen that the server did not produce.
+   *
+   * `scope: "partner"` — the partner id is resolved SERVER-side from the
+   * session (server/collectiveSseRoutes.ts:157); this page never sends one and
+   * cannot subscribe to another firm's vehicles.
+   */
+  const [liveSpvEvents, setLiveSpvEvents] = useState(0);
+  useCollectiveStream({
+    chapterId: "",
+    scope: "partner",
+    path: "/api/stream",
+    topics: ["spv"],
+    enabled: role.ready && !!role.identity,
+    onMessage: (topic, payload) => {
+      if (topic !== "spv") return;
+      const frame = payload as { type?: unknown; spvId?: unknown } | null;
+      /* A frame with no recognisable type is NOT treated as "nothing happened":
+       * it still invalidates, because an unknown frame means the server changed
+       * something this page cannot interpret, and stale-but-confident is the
+       * failure mode being fixed here. */
+      const spvId = typeof frame?.spvId === "string" ? frame.spvId : null;
+      qc.invalidateQueries({ queryKey: ["/api/partner/me/spv"] });
+      if (spvId) qc.invalidateQueries({ queryKey: ["/api/partner/me/spv", spvId] });
+      setLiveSpvEvents((n) => n + 1);
+    },
   });
 
   // 3p-b — push a launched SPV into (or out of) the Collective deal pipeline by
@@ -217,6 +327,13 @@ export default function PartnerSpvEngine() {
         jurisdictionCountry: jurisdictionCountry || null,
         jurisdictionOther: w.jurisdictionCountry === OTHER ? w.jurisdictionOther.trim() : null,
         legalEntityStructure: legalEntityStructure || null,
+        /* WAVE 7B V-1 — vintage year on the SAME terms key the admin writer
+           uses, so the admin SPV table (PartnerDetail.tsx:865, which already
+           renders spvTermsValue(s.terms, "vintage")) picks up partner-created
+           SPVs with no further change. This is a WIRE into an existing
+           display, not a second display. Integer year or null — never a
+           string, so the two writers agree on type. */
+        vintage: /^\d{4}$/.test(w.vintage.trim()) ? Number(w.vintage.trim()) : null,
         termsDocRef: w.termsDocRef.trim() || null,
         // D3 — optional waterfall inputs persisted additively in the terms blob
         // (null when blank). hurdleRatePct feeds the optional distribution tiers;
@@ -285,6 +402,14 @@ export default function PartnerSpvEngine() {
   // 2a — entity-structure options for the currently selected country. Empty for
   // the free-text "Other" jurisdiction (the engine's strict enum is separate).
   const entityStructureOptions = w.jurisdictionCountry === OTHER ? [] : (SPV_JURISDICTION_ENTITY_STRUCTURES[w.jurisdictionCountry] ?? []);
+  /* V-1 — blank is allowed (the field is optional); anything else must be a
+     4-digit year in a sane range. */
+  const vintageValid =
+    !w.vintage.trim() ||
+    (/^\d{4}$/.test(w.vintage.trim()) &&
+      Number(w.vintage.trim()) >= 1990 &&
+      Number(w.vintage.trim()) <= new Date().getFullYear() + 10);
+
   const entityStructureIsFreeText = w.jurisdictionCountry === OTHER || w.legalEntityStructure === "Other (specify)";
   // 2a — on country change, RESET the entity structure to the new list's first
   // option (or clear for the free-text "Other" jurisdiction).
@@ -299,7 +424,12 @@ export default function PartnerSpvEngine() {
       jurisdiction: deriveEngineJurisdiction(country),
     }));
   const canAdvance = (): boolean => {
-    if (step === 0) return !!w.name.trim() && !!w.jurisdiction && jurisdictionCountryValid;
+    /* V-1 — vintage is OPTIONAL but must be a plausible 4-digit year when
+       given, so a typo cannot silently persist as null. */
+    if (step === 0)
+      return (
+        !!w.name.trim() && !!w.jurisdiction && jurisdictionCountryValid && vintageValid
+      );
     if (step === 1) return !!w.mandateMode && !!w.mandateDescription.trim(); // 3e mandatory
     if (step === 2) return !!w.mgmtFeeType && !!w.carryBasis; // S1 — carry basis co-located on Fees
     if (step === 3) return !!w.distributionScope;
@@ -341,6 +471,17 @@ export default function PartnerSpvEngine() {
         </p>
       </div>
 
+      {/* WAVE 18 / XT-7 — a SIBLING element (guard rule: never append text
+          inside an existing text node). Rendered only once a frame has actually
+          been applied, so it is evidence of liveness rather than a claim about
+          it: the hook exposes no connection state, and asserting "Live" from
+          silence is exactly the mistake this wave's rules forbid. */}
+      {liveSpvEvents > 0 && (
+        <div className="mb-4 text-xs text-[var(--cv-color-text-muted)]" data-testid="spv-engine-live-note">
+          Refreshed from a live vehicle update.
+        </div>
+      )}
+
       {canWrite && !wizardOpen && (
         <Button data-testid="spv-engine-new" onClick={() => { setWizardOpen(true); setStep(0); }} style={{ background: NAVY }}>
           Create SPV
@@ -366,7 +507,63 @@ export default function PartnerSpvEngine() {
 
           {step === 0 && (
             <div className="space-y-3" data-testid="spv-wizard-step-0">
+              {/* ORP-030 — clone a prior SPV's settings. `clonableSpvs` is the
+                  server's own list from /spv-wizard/defaults; nothing is
+                  hardcoded and no prior-SPV data is held client-side. */}
+              <div data-testid="spv-w-clone">
+                <Label>Start from a prior SPV (optional)</Label>
+                <select
+                  className="w-full border rounded h-9 px-2"
+                  data-testid="spv-w-clone-select"
+                  value=""
+                  onChange={(e) => {
+                    const src = (wizardDefaults.data?.clonableSpvs ?? []).find((c) => c.id === e.target.value);
+                    if (!src) return;
+                    setW((prev) => ({ ...prev, jurisdiction: src.jurisdiction, carryBasis: src.carryBasis }));
+                    toast({ title: `Cloned settings from ${src.name}` });
+                  }}
+                >
+                  <option value="">
+                    {wizardDefaults.isLoading
+                      ? "Loading your prior SPVs…"
+                      : (wizardDefaults.data?.clonableSpvs?.length ?? 0) === 0
+                        ? "No prior SPVs to clone from"
+                        : "Choose an SPV to copy jurisdiction and carry basis from"}
+                  </option>
+                  {(wizardDefaults.data?.clonableSpvs ?? []).map((c) => (
+                    <option key={c.id} value={c.id} data-testid={`spv-w-clone-option-${c.id}`}>{c.name}</option>
+                  ))}
+                </select>
+                {wizardDefaults.data?.gp?.name ? (
+                  <div className="text-[10px] text-[var(--cv-color-text-faint)] mt-1" data-testid="spv-w-gp-context">
+                    You are launching this vehicle as GP: {wizardDefaults.data.gp.name}
+                    {wizardDefaults.data.gp.tier ? ` (${wizardDefaults.data.gp.tier})` : ""}.
+                  </div>
+                ) : null}
+              </div>
               <div><Label>SPV name *</Label><Input data-testid="spv-w-name" value={w.name} onChange={(e) => setW({ ...w, name: e.target.value })} /></div>
+              {/* WAVE 7B V-1 (DEF-085) — vintage year. The admin create form has
+                  always had this field; the PARTNER-facing wizard never did, so
+                  every partner-created SPV carried no vintage and the admin
+                  table's Vintage column rendered "—" for all of them. Same
+                  `terms.vintage` key, same integer type, same default. */}
+              <div data-testid="spv-w-vintage-field">
+                <Label htmlFor="spv-w-vintage">Vintage year</Label>
+                <Input
+                  id="spv-w-vintage"
+                  data-testid="spv-w-vintage"
+                  inputMode="numeric"
+                  maxLength={4}
+                  placeholder="e.g. 2026"
+                  value={w.vintage}
+                  onChange={(e) => setW({ ...w, vintage: e.target.value })}
+                />
+                {!vintageValid && (
+                  <div className="text-xs text-rose-600" data-testid="spv-w-vintage-error">
+                    Vintage must be a 4-digit year between 1990 and {new Date().getFullYear() + 10}.
+                  </div>
+                )}
+              </div>
               {/* B1 — inline error so the GP knows WHY Next is disabled */}
               {!w.name.trim() && (
                 <div className="text-xs text-rose-600" data-testid="spv-w-name-error">
@@ -566,6 +763,12 @@ export default function PartnerSpvEngine() {
 
           {step === 3 && (
             <div className="space-y-3" data-testid="spv-wizard-step-3">
+              {/* WAVE 8 / ORP-063 (DEF-063) — SPV_EDU.terms was authored for
+                  exactly this step and was never rendered anywhere (18 keys
+                  defined, 16 referenced). NOT deleted — rendered. */}
+              <div className="rounded-md p-2 text-xs bg-[rgba(4,30,65,0.05)]" data-testid="spv-edu-terms">
+                {SPV_EDU.terms}
+              </div>
               <div className="grid grid-cols-2 gap-3">
                 {/* 3h/3i — amounts labelled with the selected currency, stored as minor */}
                 <div><Label>{amountLabel("Target raise")}</Label><Input data-testid="spv-w-target" type="number" value={w.targetRaiseMinor} onChange={(e) => setW({ ...w, targetRaiseMinor: e.target.value })} /></div>
@@ -610,9 +813,17 @@ export default function PartnerSpvEngine() {
           {step === 4 && (
             <div className="space-y-3 text-sm" data-testid="spv-wizard-step-4">
               <div className="font-medium text-base">Review &amp; launch</div>
+              {/* WAVE 8 / ORP-063 — the second orphaned key, SPV_EDU.reviewLaunch,
+                  which explains that launching creates the SPV and moves NO
+                  money. That reassurance was written and never shown. */}
+              <div className="rounded-md p-2 text-xs bg-[rgba(4,30,65,0.05)]" data-testid="spv-edu-review-launch">
+                {SPV_EDU.reviewLaunch}
+              </div>
               <ReviewRow label="Name" value={w.name || "(unnamed)"} onEdit={() => setStep(0)} />
               <ReviewRow label="SPV type" value={SPV_TYPE_LABELS[w.spvType as keyof typeof SPV_TYPE_LABELS]} onEdit={() => setStep(0)} />
               <ReviewRow label="Jurisdiction (country)" value={juruDisplay} onEdit={() => setStep(0)} />
+              {/* V-1 — shown on Review so it cannot be launched unnoticed. */}
+              <ReviewRow label="Vintage year" value={w.vintage.trim() || "—"} onEdit={() => setStep(0)} />
               <ReviewRow label="Legal entity structure" value={legalEntityDisplay || "—"} onEdit={() => setStep(0)} />
               <ReviewRow label="Mandate mode" value={SPV_MANDATE_MODE_LABELS[w.mandateMode as keyof typeof SPV_MANDATE_MODE_LABELS]} onEdit={() => setStep(1)} />
               <ReviewRow label="Mandate" value={w.mandateDescription || "—"} onEdit={() => setStep(1)} />
@@ -696,7 +907,38 @@ export default function PartnerSpvEngine() {
       )}
 
       {list.isLoading && <div className="text-sm text-[var(--cv-color-text-muted)]" data-testid="spv-engine-loading">Loading…</div>}
-      {!list.isLoading && spvs.length === 0 && (
+      {/* WAVE 18 W-4 — a FAILED load is not an empty portfolio.
+          `spvs` is `list.data?.spvs ?? []`, so a 403 or a 500 left this page
+          rendering "No SPVs yet · Create your first SPV" — a GP with live
+          vehicles was told, in encouraging copy, that they had none, and
+          invited to create a duplicate. The retired PartnerSpvs page already
+          had the right shape (`PartnerSpvs.tsx:143`); the page that replaced it
+          as canonical (Ozan decision #4, App.tsx:1406 redirect) did not. The
+          refusal is now rendered as its own state, and the empty state is
+          reached only when the fetch actually SUCCEEDED and returned nothing. */}
+      {list.isError && (
+        <div
+          className="rounded-md border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900"
+          role="alert"
+          data-testid="spv-engine-error"
+        >
+          <div className="font-medium">We couldn&rsquo;t load your SPVs.</div>
+          <div className="mt-0.5 text-xs">
+            Nothing has been changed. This is a loading failure, not an empty portfolio —
+            do not create a new SPV to work around it.
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="mt-2 h-7 text-xs"
+            data-testid="spv-engine-error-retry"
+            onClick={() => list.refetch()}
+          >
+            Try again
+          </Button>
+        </div>
+      )}
+      {!list.isLoading && !list.isError && list.isSuccess && spvs.length === 0 && (
         <PartnerEmptyState title="No SPVs yet" description="Create your first SPV with the 5-step wizard." />
       )}
 
@@ -726,6 +968,74 @@ export default function PartnerSpvEngine() {
                 <div>
                   <div className="font-medium">{s.name} {s.migratedFrom && <span className="text-[10px] px-1 rounded" style={{ background: "rgba(4,30,65,0.1)", color: NAVY }}>migrated</span>}</div>
                   <div className="text-xs text-[var(--cv-color-text-muted)]">{(SPV_TYPE_LABELS as Record<string, string>)[s.spvType] ?? s.spvType} · {s.status} · {labelFor(DISTRIBUTION_SCOPE_LABELS, s.distributionScope)} · Carry: {labelFor(CARRY_BASIS_LABELS, s.carryBasis)}</div>
+                  {/* J-4 (WAVE 3C) — jurisdiction was rendered NOWHERE in this
+                      accordion; it only appeared on the standalone detail page. */}
+                  <div className="text-xs text-[var(--cv-color-text-muted)]" data-testid={`spv-row-jurisdiction-${s.id}`}>
+                    Jurisdiction: {jurisdictionLabelFor(s)}
+                  </div>
+                  {/* WAVE 7B V-1 (DEF-085) — "captured nowhere, displayed
+                      nowhere". Captured above in step 0; displayed here, on the
+                      partner's own list, and (already) in the admin SPV table
+                      which reads the same terms.vintage key. */}
+                  <div className="text-xs text-[var(--cv-color-text-muted)]" data-testid={`spv-row-vintage-${s.id}`}>
+                    Vintage: {spvVintageLabel(s)}
+                  </div>
+                  {/* SC-2 (WAVE 2) — the only inbound link to
+                      /collective/partner/spvs/:id. That route has been declared in
+                      client/src/App.tsx:1193-1195 all along, but no surface in the
+                      app ever navigated to it, so the working LP invite form, LP
+                      roster, jurisdiction panel, audit receipt and Record Capital
+                      Call panel on PartnerSpvDetail were unreachable.
+                      stopPropagation keeps the card's accordion toggle intact — the
+                      card stays a click-to-expand control, this is an extra exit. */}
+                  <Link
+                    href={`/collective/partner/spvs/${s.id}`}
+                    className="text-xs underline text-[color:var(--cv-color-primary)] inline-block mt-1"
+                    onClick={(e) => e.stopPropagation()}
+                    data-testid={`spv-open-detail-${s.id}`}
+                  >
+                    Open LP roster &amp; capital calls →
+                  </Link>
+                  {/* WAVE 7B W-3 — SIBLING OF SC-2, and the recurring failure
+                      mode caught live.
+
+                      Ozan decision #4 collapsed the duplicate "Funds" nav entry
+                      into this ONE SPVs engine, and /collective/partner/funds
+                      became a <Redirect> here (App.tsx:1349). Fund CREATION is
+                      genuinely covered: SPV_TYPES includes `fund`, the wizard's
+                      type select offers it, and GET /api/partner/me/funds is
+                      just this same store filtered to spvType==='fund'
+                      (server/partnerRoutes.ts:1771-1773). So PartnerFunds.tsx
+                      is correctly redundant and correctly unrouted.
+
+                      What did NOT survive the collapse is the FUND COMMITMENT
+                      REGISTER. POST /api/partner/me/funds/:id/commitments
+                      (server/partnerRoutes.ts:1851) is a live write whose only
+                      client caller is PartnerFundDetail.tsx:103, on the route
+                      /collective/partner/funds/:id — a route that is still OPEN
+                      (App.tsx:1346) but whose ONLY inbound link in the entire
+                      app was PartnerFunds.tsx:172, which is now unreachable.
+                      Route open, engine live, zero ways in.
+
+                      Rendered ONLY for spvType==='fund', verified against the
+                      loader: GET /api/partner/me/funds/:id hard-404s on
+                      `fund.spvType !== "fund"` (server/partnerRoutes.ts:1819),
+                      so offering this exit on a rolling_fund or syndicate row
+                      would hand the GP a dead link. Nav is untouched — Ozan
+                      decision #4 stands. */}
+                  {s.spvType === "fund" && (
+                    <>
+                      <br />
+                      <Link
+                        href={`/collective/partner/funds/${s.id}`}
+                        className="text-xs underline text-[color:var(--cv-color-primary)] inline-block mt-1"
+                        onClick={(e) => e.stopPropagation()}
+                        data-testid={`spv-open-fund-commitments-${s.id}`}
+                      >
+                        Open fund commitment register →
+                      </Link>
+                    </>
+                  )}
                 </div>
                 <div className="flex items-center gap-3">
                   <div className="text-right font-mono">{fmt(s.targetRaiseMinor, s.currency)}</div>

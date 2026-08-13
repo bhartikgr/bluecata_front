@@ -65,22 +65,139 @@ let timer: NodeJS.Timeout | null = null;
 let inFlight = false;
 let consecutiveFailures = new Map<string, number>();
 
-const POLL_INTERVAL_MS = Number(process.env.COLLECTIVE_RENEWAL_POLL_MS ?? 60_000);
-const LEAD_WINDOW_SEC = Number(process.env.COLLECTIVE_RENEWAL_LEAD_SEC ?? 24 * 60 * 60); /* renew 24h before period end */
-const MAX_CONSECUTIVE_FAILURES = 3;
+/* ═══════════════════════════════════════════════════════════════════════════
+ * WAVE 14 / FE-16 — THE WORKER IS DB-CONFIGURED, NOT ENV-GATED.
+ *
+ * WHAT WAS WRONG. Four numbers governed real money movement and none of them
+ * was visible or changeable in the product:
+ *   COLLECTIVE_RENEWAL_WORKER_ENABLED  — whether renewals happen at all
+ *   COLLECTIVE_RENEWAL_POLL_MS         — how often
+ *   COLLECTIVE_RENEWAL_LEAD_SEC        — how far ahead of period end
+ *   MAX_CONSECUTIVE_FAILURES = 3       — a bare literal, plus a 30-minute
+ *                                        debounce hardcoded inside tick()
+ * The standing rule is all-DB-driven with no hardcoding, and an owner cannot
+ * turn renewal billing on or off by editing a shell environment.
+ *
+ * WHAT CHANGED. `collective_renewal_worker_config` (migration 0153, row
+ * id='singleton', already seeded — this wave added NO schema for FE-16, because
+ * re-seeding an existing fact is a second declaration of it) is now the
+ * authority. Every read goes through `renewalWorkerConfig()`.
+ *
+ * THE ENV VAR IS NOT DELETED, AND THAT IS DELIBERATE. `env_override_allowed` on
+ * the row decides whether it is honoured. Removing the emergency off-switch
+ * outright would mean an operator with a runaway billing worker and no console
+ * access has no way to stop it. So: the DB row is authoritative; the env var can
+ * only act when the row PERMITS it; and when it acts, it is logged by name so
+ * the divergence is never silent.
+ *
+ * FAIL-CLOSED. If the config row is missing or unreadable the worker reports
+ * DISABLED. A billing worker that defaults to ON when it cannot read its own
+ * configuration is the worst of the available failure modes.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+export interface RenewalWorkerConfig {
+  enabled: boolean;
+  pollIntervalMs: number;
+  leadWindowSec: number;
+  maxConsecutiveFailures: number;
+  quietAfterWriteMin: number;
+  envOverrideAllowed: boolean;
+  /** How `enabled` was decided, so the admin surface can explain it. */
+  source: "db_row" | "env_override" | "missing_row_fail_closed";
+  updatedAt: string | null;
+  updatedBy: string | null;
+}
+
+/* The DEFAULTS here match the CHECK-constrained defaults in migration 0153
+   exactly (60000 / 86400 / 3 / 30) and are used ONLY when the row cannot be
+   read — in which case `enabled` is false regardless, so they never cause a
+   charge. They are not a second pricing model. */
+const FAIL_CLOSED_CONFIG: RenewalWorkerConfig = {
+  enabled: false,
+  pollIntervalMs: 60_000,
+  leadWindowSec: 24 * 60 * 60,
+  maxConsecutiveFailures: 3,
+  quietAfterWriteMin: 30,
+  envOverrideAllowed: false,
+  source: "missing_row_fail_closed",
+  updatedAt: null,
+  updatedBy: null,
+};
+
+/** Read the singleton config row. No caching: an admin toggling the row must
+ *  take effect on the next sweep, not after a process restart. */
+export function renewalWorkerConfig(): RenewalWorkerConfig {
+  let row: any;
+  try {
+    row = (rawDb() as any)
+      .prepare(
+        `SELECT enabled, poll_interval_ms, lead_window_sec, max_consecutive_failures,
+                quiet_after_write_min, env_override_allowed, updated_at, updated_by
+           FROM collective_renewal_worker_config
+          WHERE id = 'singleton'`,
+      )
+      .get();
+  } catch (err) {
+    log.warn(
+      `[collectiveRenewalWorker] FE-16: config row unreadable (${(err as Error).message}); worker DISABLED (fail-closed).`,
+    );
+    return { ...FAIL_CLOSED_CONFIG };
+  }
+  if (!row) {
+    log.warn("[collectiveRenewalWorker] FE-16: no singleton config row; worker DISABLED (fail-closed).");
+    return { ...FAIL_CLOSED_CONFIG };
+  }
+
+  const envOverrideAllowed = !!row.env_override_allowed;
+  const dbEnabled = !!row.enabled;
+  const envSaysOn = process.env.COLLECTIVE_RENEWAL_WORKER_ENABLED === "1";
+  const envSaysOff = process.env.COLLECTIVE_RENEWAL_WORKER_ENABLED === "0";
+
+  let enabled = dbEnabled;
+  let source: RenewalWorkerConfig["source"] = "db_row";
+  if (envOverrideAllowed && (envSaysOn || envSaysOff) && envSaysOn !== dbEnabled) {
+    /* The override is LOUD. A worker running against its stored configuration
+       without saying so is exactly the invisible state FE-16 exists to end. */
+    enabled = envSaysOn;
+    source = "env_override";
+    log.warn(
+      `[collectiveRenewalWorker] FE-16: COLLECTIVE_RENEWAL_WORKER_ENABLED=${envSaysOn ? "1" : "0"} OVERRIDES the stored config (enabled=${dbEnabled}). ` +
+        `The row permits this (env_override_allowed=1). Set env_override_allowed=0 to make the database final.`,
+    );
+  }
+
+  return {
+    enabled,
+    pollIntervalMs: Number(row.poll_interval_ms),
+    leadWindowSec: Number(row.lead_window_sec),
+    maxConsecutiveFailures: Number(row.max_consecutive_failures),
+    quietAfterWriteMin: Number(row.quiet_after_write_min),
+    envOverrideAllowed,
+    source,
+    updatedAt: row.updated_at ?? null,
+    updatedBy: row.updated_by ?? null,
+  };
+}
 
 export function isRenewalWorkerEnabled(): boolean {
-  return process.env.COLLECTIVE_RENEWAL_WORKER_ENABLED === "1";
+  return renewalWorkerConfig().enabled;
 }
 
 /**
  * Start the worker if enabled. Idempotent. Returns true if started.
  */
 export function startCollectiveRenewalWorker(): boolean {
-  if (!isRenewalWorkerEnabled()) return false;
+  /* ONE read of the config for the whole start decision, so the interval the
+     timer uses is guaranteed to be the interval that was logged. */
+  const cfg = renewalWorkerConfig();
+  if (!cfg.enabled) return false;
   if (timer) return true;
-  log.info(`[collectiveRenewalWorker] starting — poll ${POLL_INTERVAL_MS}ms, lead ${LEAD_WINDOW_SEC}s`);
-  timer = setInterval(() => { void tick(); }, POLL_INTERVAL_MS);
+  log.info(
+    `[collectiveRenewalWorker] starting — poll ${cfg.pollIntervalMs}ms, lead ${cfg.leadWindowSec}s, ` +
+      `maxFailures ${cfg.maxConsecutiveFailures}, quiet ${cfg.quietAfterWriteMin}min (source=${cfg.source}, ` +
+      `updated ${cfg.updatedAt ?? "never"} by ${cfg.updatedBy ?? "unknown"})`,
+  );
+  timer = setInterval(() => { void tick(); }, cfg.pollIntervalMs);
   /* Don't keep the event loop alive during tests. */
   if (typeof timer.unref === "function") timer.unref();
   return true;
@@ -105,8 +222,11 @@ export async function tick(): Promise<{ swept: number; renewed: number; cancelle
   let swept = 0, renewed = 0, cancelled = 0, failed = 0;
   try {
     const db: any = rawDb();
+    /* FE-16 — the sweep reads its own window from the config row, so an admin
+       change takes effect on the NEXT SWEEP rather than at the next restart. */
+    const cfg = renewalWorkerConfig();
     const nowSec = Math.floor(Date.now() / 1000);
-    const cutoff = nowSec + LEAD_WINDOW_SEC;
+    const cutoff = nowSec + cfg.leadWindowSec;
     /* v25.21 Lane A NC-001 fix (REWORK after triple-verify): the sweep now
      * matches `status='active'` ONLY. `past_due` is a terminal state set by
      * `markPastDue` after MAX_CONSECUTIVE_FAILURES gateway errors — it must
@@ -123,7 +243,8 @@ export async function tick(): Promise<{ swept: number; renewed: number; cancelle
      * minutes), spamming fresh intents each tick. Combined with the
      * deterministic idempotency key (NC-002), this prevents both real
      * double-charges (gateway dedup) AND the audit-log spam (worker dedup). */
-    const renewalDebounceMs = 30 * 60 * 1000;
+    /* FE-16 — was a hardcoded 30 minutes. Now `quiet_after_write_min`. */
+    const renewalDebounceMs = cfg.quietAfterWriteMin * 60 * 1000;
     const debounceCutoff = new Date(Date.now() - renewalDebounceMs).toISOString();
     const rows = db
       .prepare(
@@ -157,7 +278,7 @@ export async function tick(): Promise<{ swept: number; renewed: number; cancelle
         log.warn(
           `[collectiveRenewalWorker] row ${row.id} attempt #${next} failed: ${(err as Error).message}`,
         );
-        if (next >= MAX_CONSECUTIVE_FAILURES) {
+        if (next >= cfg.maxConsecutiveFailures) {
           await markPastDue(row, (err as Error).message);
           consecutiveFailures.delete(row.id);
         }

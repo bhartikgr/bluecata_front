@@ -737,11 +737,16 @@ export function createInvitationTx(
     if (!appended) {
       const detailJson = JSON.stringify(eventPayload.eventData);
       db.prepare(
+        // WAVE 38 ROW 4 — canonical event columns (migration 0183). This path
+        // HAS a real actor chain, so `actor_id` prefers the recorded actor,
+        // then the partner user, and only then falls back to 'system'.
         `INSERT INTO mf_engagement_event (
            id, partner_id, engagement_id, company_id, event_type, detail_json, actor, created_at,
            actor_role, actor_partner_user_id, acting_on_behalf_of_user_id,
-           partner_attribution_id, event_data_json
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           partner_attribution_id, event_data_json, actor_id, seq
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                   (SELECT COALESCE(MAX(seq), 0) + 1 FROM mf_engagement_event
+                     WHERE partner_id = ? AND engagement_id IS ?))`
       ).run(
         `mfev_${sha256Hex(`${row.id}|${eventPayload.eventType}|${row.createdAt}`).slice(0, 32)}`,
         eventPayload.partnerId,
@@ -756,6 +761,11 @@ export function createInvitationTx(
         eventPayload.actingOnBehalfOfUserId,
         eventPayload.partnerAttributionId,
         detailJson,
+        (eventPayload.actor ?? "").toString().trim() ||
+          (eventPayload.actorPartnerUserId ?? "").toString().trim() ||
+          "system",
+        eventPayload.partnerId,
+        eventPayload.engagementId,
       );
     }
   }

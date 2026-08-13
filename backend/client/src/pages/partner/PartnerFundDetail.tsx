@@ -15,27 +15,58 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast"; /* v25.14 NC3 — pledge error toast */
 
+/* SC-0 (WAVE 2) — RESPONSE-SHAPE CORRECTION.
+ *
+ * The previous local types on this page described a response body the server
+ * has never sent. GET /api/partner/me/funds/:id is a compatibility shim over
+ * the ONE canonical SPV engine and answers with:
+ *
+ *   res.json({ fund, commitments: spvEngineStore.investorRegister(...) })
+ *                                       — server/partnerRoutes.ts:1779-1784
+ *
+ * i.e. `commitments` is a SIBLING key of `fund`, not a member of it, and
+ * `fund` is a canonical `SpvDTO` (shared/spvEngine.ts:205-230), not a
+ * bespoke fund record. Reading `fund.commitments.length` therefore threw
+ * `TypeError: Cannot read properties of undefined (reading 'length')` and
+ * white-screened the whole route.
+ *
+ * Each field below is taken from a verified source:
+ *   - fund fields          → SpvDTO, shared/spvEngine.ts:205-230
+ *   - fund-only extras     → the `terms` JSON blob the create route writes,
+ *                            server/partnerRoutes.ts:1771 (`vintage`, `fundType`)
+ *   - commitment fields    → spvEngineStore.investorRegister(),
+ *                            server/spvEngineStore.ts:1156-1165
+ */
 type Commitment = {
-  id: string;
-  lpName: string;
-  amountMinor: number;
-  currency: string;
-  pledgedAt: string;
+  investorId: string;
+  commitmentMinor: number;
+  ownershipPct: number;
 };
 
 type FundDetail = {
   id: string;
-  fundName: string;
-  vintageYear: number;
-  targetSizeMinor: number;
+  /** SpvDTO.name — the shim maps the legacy `fundName` onto it on write. */
+  name: string;
+  jurisdiction: string;
+  /** SpvDTO.targetRaiseMinor — nullable on the DTO. */
+  targetRaiseMinor: number | null;
   currency: string;
   status: string;
-  version: number;
+  /** SpvDTO carries ONE hash plus a timestamp. There is no `version` and no
+   *  `prevRevisionHash` at runtime — see the Audit Receipt note below. */
   revisionHash: string;
-  prevRevisionHash: string;
   createdAt: string;
-  commitments: Commitment[];
+  /** Fund-specific values live in the shim's `terms` blob, not as columns. */
+  terms: Record<string, unknown> | null;
 };
+
+type FundDetailResponse = { fund: FundDetail; commitments: Commitment[] };
+
+/** `terms` is `Record<string, unknown>`; render defensively. */
+function termsValue(terms: Record<string, unknown> | null, key: string): string | null {
+  const v = terms?.[key];
+  return typeof v === "string" || typeof v === "number" ? String(v) : null;
+}
 
 function formatMinor(minor: number, currency: string) {
   // v25.38 — delegate to shared ISO-4217-aware formatter (2-decimal parity).
@@ -50,7 +81,7 @@ export default function PartnerFundDetail() {
   const fundId = params?.id;
   const [pledgeForm, setPledgeForm] = useState({ lpName: "", amountMinor: "0" });
 
-  const { data, isLoading, error } = useQuery<{ fund: FundDetail }>({
+  const { data, isLoading, error } = useQuery<FundDetailResponse>({
     /* v25.12 NL1 — explicit queryFn for robustness.
        v25.14 NH4 — canonical 2-element queryKey so the parent list's
        invalidateQueries({queryKey: ["/api/partner/me/funds"]}) cascades. */
@@ -103,15 +134,19 @@ export default function PartnerFundDetail() {
   }
 
   const f = data.fund;
+  /* SC-0 — sibling key, defaulted so an absent/short body degrades to an empty
+     ledger instead of throwing. */
+  const commitments: Commitment[] = data.commitments ?? [];
+  const vintage = termsValue(f.terms, "vintage");
   const canPledge = me.subRole === "managing_partner" || me.subRole === "associate";
 
   return (
-    <PartnerShell title={`${f.fundName} · Vintage ${f.vintageYear} · ${f.status}`} tier={me.tier} subRole={me.subRole} partnerName={me.identity.name}>
+    <PartnerShell title={`${f.name}${vintage ? ` · Vintage ${vintage}` : ""} · ${f.status}`} tier={me.tier} subRole={me.subRole} partnerName={me.identity.name}>
       <Card className="p-4 mb-4 space-y-2" data-testid="partner-fund-detail">
         <div className="grid grid-cols-2 gap-4 text-sm">
           <div>
             <div className="text-[var(--cv-color-text-muted)]">Target Size</div>
-            <div className="font-mono">{formatMinor(f.targetSizeMinor, f.currency)}</div>
+            <div className="font-mono">{formatMinor(f.targetRaiseMinor ?? 0, f.currency)}</div>
           </div>
           <div>
             <div className="text-[var(--cv-color-text-muted)]">Currency (ISO 4217)</div>
@@ -124,28 +159,43 @@ export default function PartnerFundDetail() {
         <div className="flex justify-between items-center mb-3">
           <div className="font-medium">Commitments</div>
         </div>
-        {f.commitments.length === 0 ? (
+        {commitments.length === 0 ? (
           <div className="text-sm text-[var(--cv-color-text-muted)]">No commitments pledged yet.</div>
         ) : (
           <div className="space-y-2">
-            {f.commitments.map((c) => (
-              <div key={c.id} className="flex justify-between text-sm border-b pb-2" data-testid={`partner-commitment-${c.id}`}>
-                <div>{c.lpName}</div>
-                <div className="font-mono">{formatMinor(c.amountMinor, c.currency)}</div>
+            {commitments.map((c) => (
+              <div key={c.investorId} className="flex justify-between text-sm border-b pb-2" data-testid={`partner-commitment-${c.investorId}`}>
+                <div>{c.investorId}</div>
+                <div className="font-mono">{formatMinor(c.commitmentMinor, f.currency)}</div>
               </div>
             ))}
           </div>
         )}
 
+        {/* SC-0 SAFETY — this form is rendered INERT, deliberately and reversibly.
+            Making this route stop crashing also makes this form reachable for the
+            first time. It cannot succeed: it POSTs `{ lpName, amountMinor }` while
+            POST /api/partner/me/funds/:id/commitments hard-requires
+            `{ lpContactId, commitmentMinor, currency }` and 400s otherwise
+            (server/partnerRoutes.ts:1814-1839). It is also managing_partner-only
+            server-side, while `canPledge` here also admits `associate`.
+            Nothing is deleted; re-enabling is a one-line change once the LP-contact
+            picker exists. Logged in build_log/WAVE2_REPORT.md. */}
         {canPledge && (
-          <div className="mt-4 border-t pt-3 space-y-2">
+          <div className="mt-4 border-t pt-3 space-y-2 opacity-60" data-testid="partner-fund-pledge-disabled">
             <Label>Record New Pledge</Label>
+            <div className="text-xs text-amber-700" data-testid="partner-fund-pledge-disabled-note">
+              Temporarily unavailable. This form submits an LP name, but the commitment
+              endpoint requires an existing LP contact. Seat LPs from the SPV Engine
+              (SPV → LP roster) until the contact picker ships.
+            </div>
             <div className="flex gap-2">
               <Input
                 placeholder="LP name"
                 value={pledgeForm.lpName}
                 onChange={(e) => setPledgeForm({ ...pledgeForm, lpName: e.target.value })}
                 data-testid="partner-pledge-lp-name"
+                disabled
               />
               <Input
                 type="number"
@@ -153,10 +203,11 @@ export default function PartnerFundDetail() {
                 value={pledgeForm.amountMinor}
                 onChange={(e) => setPledgeForm({ ...pledgeForm, amountMinor: e.target.value })}
                 data-testid="partner-pledge-amount"
+                disabled
               />
               <Button
                 onClick={() => pledge.mutate()}
-                disabled={!pledgeForm.lpName.trim() || pledge.isPending}
+                disabled
                 data-testid="partner-pledge-submit"
               >
                 Pledge
@@ -173,9 +224,12 @@ export default function PartnerFundDetail() {
 
       <Card className="p-4 space-y-2" data-testid="partner-fund-hash-chain">
         <div className="font-medium mb-2">Audit Receipt</div>
+        {/* SC-0 — `version` and `prev_revision_hash` were rendered here but exist
+            on NEITHER the runtime payload NOR `SpvDTO` (shared/spvEngine.ts:205-230,
+            which carries only `revisionHash` and `createdAt`). Both lines rendered
+            blank in production. They are removed rather than invented; see
+            WAVE2_REPORT.md "What a complete audit receipt should show". */}
         <div className="text-xs font-mono space-y-1">
-          <div>version: {f.version}</div>
-          <div>prev_revision_hash: {f.prevRevisionHash}</div>
           <div>revision_hash: {f.revisionHash}</div>
           <div>created_at: {f.createdAt}</div>
         </div>

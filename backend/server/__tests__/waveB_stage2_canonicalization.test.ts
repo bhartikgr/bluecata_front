@@ -191,7 +191,19 @@ describe("Wave B Stage 2 — engine adapter matches spvFundStore", () => {
     expect(list).toEqual(spvFundStore.listCapitalCalls(spv.id));
   });
 
-  it("engineRecordDistribution enforces I-2 invariant (INVARIANT_DISTRIBUTION_EXCEEDS_COMMITMENTS)", () => {
+  /* WAVE 3D / ITEM 1 — EXPECTATION CHANGED ON PURPOSE, AND SPLIT IN TWO.
+   *
+   * This test used to assert that `engineRecordDistribution` reaches far enough
+   * into the legacy plural writer to trip the I-2 invariant. That reachability
+   * WAS THE CRITICAL FINDING: the adapter was the head of a second,
+   * allocator-free, cap-free distribution write path. The adapter is now
+   * fail-closed, so it must throw LEGACY_DISTRIBUTION_LEDGER_DISABLED FIRST —
+   * before any invariant runs, because nothing is written at all.
+   *
+   * I-2 itself is unchanged and is NOT losing coverage: the second test below
+   * asserts it directly on the NODE_ENV-guarded fixture seeder, which is the
+   * only remaining way to reach the legacy insert. */
+  it("engineRecordDistribution is fail-closed (LEGACY_DISTRIBUTION_LEDGER_DISABLED)", () => {
     const spv = spvFundStore.createSpv({
       partnerId: PARTNER_CANON,
       name: "Canonicalization SPV 5",
@@ -214,6 +226,33 @@ describe("Wave B Stage 2 — engine adapter matches spvFundStore", () => {
     expect(() =>
       engineRecordDistribution({
         partnerId: PARTNER_CANON,
+        spvId: spv.id,
+        totalMinor: 60_000_00,
+      }),
+    ).toThrow("LEGACY_DISTRIBUTION_LEDGER_DISABLED");
+  });
+
+  it("legacy plural seeder still enforces I-2 (INVARIANT_DISTRIBUTION_EXCEEDS_COMMITMENTS)", () => {
+    const spv = spvFundStore.createSpv({
+      partnerId: PARTNER_CANON,
+      name: "Canonicalization SPV 5b",
+      targetMinor: 100_000_00,
+    });
+    const c = engineAddCommitment({
+      partnerId: PARTNER_CANON,
+      spvId: spv.id,
+      lpUserId: LP_1,
+      amountMinor: 50_000_00,
+    });
+    engineTransitionCommitment({
+      partnerId: PARTNER_CANON,
+      spvId: spv.id,
+      commitmentId: c.id,
+      status: "signed",
+    });
+    // Committed 50k < 60k distributed + 0 called — I-2 must still reject.
+    expect(() =>
+      spvFundStore.__unsafeSeedLegacyDistributionRowForTests({
         spvId: spv.id,
         totalMinor: 60_000_00,
       }),

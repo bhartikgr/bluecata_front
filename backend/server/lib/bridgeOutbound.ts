@@ -82,6 +82,14 @@ export const BridgeOutbound = {
   roundClosed(roundId: string, payload: Record<string, unknown>) {
     return emit({ eventType: "round.closed", aggregateId: roundId, aggregateKind: "round", payload });
   },
+  /* WAVE 8 / ORP-050 (DEF-050) — the helper routes.ts:2191 duck-typed for and
+     never found. Without it the `? :` always took the `auditLogAppended`
+     branch, so `round.terms_updated` existed only as a string inside an
+     audit-log payload: not a bridge event type, not enumerable on
+     /api/bridge/event-types, not replayable. Now a real typed emit. */
+  roundTermsUpdated(roundId: string, payload: Record<string, unknown>) {
+    return emit({ eventType: "round.terms_updated", aggregateId: roundId, aggregateKind: "round", payload });
+  },
   governanceMetricPublished(companyId: string, payload: Record<string, unknown>) {
     return emit({ eventType: "governance_metric.published", aggregateId: companyId, aggregateKind: "company", payload });
   },

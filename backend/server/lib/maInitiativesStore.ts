@@ -30,6 +30,12 @@ import type { Express, Request, Response } from "express";
 import { randomBytes } from "node:crypto";
 import { rawDb } from "../db/connection";
 import { log } from "./logger";
+/* WAVE 36 · ROW 6 — STATIC import of the REAL export. The lazy
+ * `require("../bridgeStore")` here destructured `emitBridge`, which bridgeStore
+ * has never exported; the call threw and a bare catch that dismissed the bridge
+ * as "optional" swallowed it, so this event was emitted zero times. */
+import { emitBridgeEvent } from "../bridgeStore";
+
 
 const VALID_RESPONSES = ["respond", "decline"] as const;
 
@@ -107,15 +113,19 @@ function recordResponse(
            responded_at = excluded.responded_at`,
     ).run(responseId, initiativeId, ctx.userId, responseKind, note, now);
 
-    try {
-      const { emitBridge } = require("../bridgeStore");
-      emitBridge("maInitiative.response_recorded", initiativeId, "maInitiative", {
+    /* WAVE 36 · ROW 6 — real emit (was a dead `emitBridge` require). */
+    emitBridgeEvent({
+      eventType: "maInitiative.response_recorded",
+      aggregateId: initiativeId,
+      aggregateKind: "company",
+      actor: { userId: ctx.userId },
+      payload: {
         initiativeId,
         investorUserId: ctx.userId,
         response: responseKind,
         respondedAt: now,
-      });
-    } catch { /* bridge optional */ }
+      },
+    });
 
     return res.json({
       ok: true,

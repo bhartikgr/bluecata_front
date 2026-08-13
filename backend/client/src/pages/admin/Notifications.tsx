@@ -6,6 +6,7 @@
  */
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { LoadFailedRefusal } from "@/components/LoadFailedRefusal"; /* WAVE 22 · ITEM 4 */
 import { Link } from "wouter";
 import { PageBody, PageHeader } from "@/components/AppShell";
 import { AdminPageIntro } from "@/components/AdminPageIntro";
@@ -221,6 +222,27 @@ export default function AdminNotifications() {
             {listQuery.isLoading ? (
               <div className="flex items-center gap-2 p-6 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" /> Loading campaigns…
+              </div>
+            ) : listQuery.isError ? (
+              /* WAVE 22 · ITEM 4 (REVIEW B F-4) — the queryFn already threw on a
+                 non-OK response, but nothing consumed `isError`: the empty state
+                 was gated on `campaigns.length === 0` where `campaigns =
+                 listQuery.data?.campaigns ?? []`. A 403 or a 500 therefore read
+                 as "No campaigns yet. Click + New campaign to get started." and
+                 invited an admin to re-author campaigns that already exist.
+                 Sibling refusal + retry, Wave 18 W-4 shape. */
+              <div className="p-6">
+                <LoadFailedRefusal
+                  what="notification campaigns"
+                  testId="admin-campaigns-error"
+                  onRetry={() => void listQuery.refetch()}
+                  isRetrying={listQuery.isFetching}
+                />
+              </div>
+            ) : !listQuery.isSuccess ? (
+              /* WAVE 22 · ITEM 4 — paused/offline is not "none exist". */
+              <div className="p-8 text-center text-muted-foreground text-sm" data-testid="admin-campaigns-not-loaded">
+                Campaigns have not loaded. Check your connection.
               </div>
             ) : campaigns.length === 0 ? (
               <div className="p-8 text-center text-muted-foreground text-sm" data-testid="empty-campaigns">

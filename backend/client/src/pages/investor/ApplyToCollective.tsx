@@ -136,6 +136,32 @@ type CollectiveNetwork = {
   eligibilityChecks: Array<{ label: string; ok: boolean }>;
 };
 
+// v26.7.3 FIX-3 — map the complete server-emitted reason set to user-facing
+// copy. Unknown future codes fail safely to explanatory copy, never raw codes.
+const COLLECTIVE_ELIGIBILITY_REASON_COPY: Record<string, string> = {
+  no_portfolio_data:
+    "We could not find a verified Capavate portfolio signal yet. Complete funding, apply to the waitlist, or seek a partner vouch.",
+  "Verified position on a Capavate cap table.":
+    "Verified position on a Capavate cap table.",
+  "Founder of a Capavate company.":
+    "Founder of a Capavate company.",
+  "Signatory on a Capavate company.":
+    "Signatory on a Capavate company.",
+  "Vouched by a consortium partner.":
+    "Vouched by a consortium partner.",
+  "Access granted by a Capavate Collective operator.":
+    "Access granted by a Capavate Collective operator.",
+  "No eligibility signal found. Apply to the waitlist or seek a partner vouch.":
+    "No eligibility signal found. Apply to the waitlist or seek a partner vouch.",
+};
+
+function collectiveEligibilityReasonCopy(reason: string): string {
+  return (
+    COLLECTIVE_ELIGIBILITY_REASON_COPY[reason] ??
+    "We could not verify an eligibility signal yet. Please contact a Capavate Collective operator for guidance."
+  );
+}
+
 /* ---------------------------------------------------------------- */
 /* Page                                                             */
 /* ---------------------------------------------------------------- */
@@ -149,15 +175,18 @@ export default function ApplyToCollective() {
   // Sprint 21 Wave G — merged Collective marketing state
   const [insideOpen, setInsideOpen] = useState(false);
   const { data: ctx } = useEntitlement();
-  const collective = useQuery<CollectiveNetwork>({
-    queryKey: ["/api/collective/network"],
-  });
-
   // Sprint 20 Wave 2 — active member redirect (defect 44)
   // Sprint 21 Wave G — redirect target updated: no longer /investor/collective
   // (that route now redirects here). Active member sees banner, not wizard.
   const elig = useQuery<{ eligible: boolean; passes: Record<string, boolean>; reasons: string[]; collectiveStatus?: string }>({
     queryKey: ["/api/collective/eligibility"],
+  });
+  // v26.7.3 FIX-3 — the server correctly gates Collective network data to
+  // active members. Avoid making that protected request until its same
+  // DB-backed eligibility response confirms active membership.
+  const collective = useQuery<CollectiveNetwork>({
+    queryKey: ["/api/collective/network"],
+    enabled: elig.data?.collectiveStatus === "active",
   });
 
   // SPINE-0 (Wave 2, #5): the SINGLE eligibility verdict consumed by BOTH the
@@ -661,7 +690,7 @@ function Step1Eligibility({ eligibility, loading }: { eligibility?: Eligibility;
         </div>
         <div className="border-t border-border/40 pt-3">
           {eligibility.reasons.map((r, i) => (
-            <div key={i} className="text-sm text-muted-foreground">• {r}</div>
+            <div key={i} className="text-sm text-muted-foreground">• {collectiveEligibilityReasonCopy(r)}</div>
           ))}
         </div>
       </CardContent>

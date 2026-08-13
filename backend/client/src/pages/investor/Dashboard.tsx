@@ -35,6 +35,14 @@ import { HOVER_LIFT } from "@/lib/microInteractions";
 // file; audit-confirmed truly-dead). No call site removed.
 import { useToast } from "@/hooks/use-toast";
 import type { PortfolioAnalytics } from "../../../../server/portfolioAnalyticsStore";
+// WAVE 9 (RP-1..RP-5 / M-1c) — status-driven display layer. Every number below
+// goes through these helpers; this file no longer formats a raw metric float.
+// A metric that cannot be computed renders as "—" with a tooltip, never as a
+// number, and a sparkline draws only when >= 3 REAL monthly snapshots exist.
+import {
+  displayMultiple, displayRate, displayDelta, displayMoney,
+  displayMarkBadge, displayCoverage, chartablePoints, seriesEmptyCopy,
+} from "@/lib/metricDisplay";
 import type { MaIntelligence } from "@shared/schema";
 import { useEntitlement, hasCapTable } from "@/lib/entitlement";
 import { useRealtimeSync } from "@/lib/realtimeSync";
@@ -46,6 +54,16 @@ import { useInvestorSpine } from "@/lib/investor/investorSpine";
 // order: Portfolio → Activity → Invitations → Messages → M&A). Additive:
 // rendered ABOVE the preserved existing widgets. Every panel reads SPINE-0.
 import { DashboardSpinePanels } from "@/components/investor/DashboardSpinePanels";
+// WAVE 17 (ORP-042) — the Live Capital Pulse read surface. The three pulse
+// endpoints (recent / stream / symbols) shipped with zero client callers; this
+// is the mount that makes them reachable. Placed directly after the existing
+// round-activity card: same question ("what is happening right now"), platform
+// scope rather than this investor's own rounds.
+import { LiveCapitalPulse } from "@/components/pulse/LiveCapitalPulse";
+/* WAVE 18 ORP-040 — the orphaned investor read surface (watchlist, discover,
+   activity, soft circles). Four live requireAuth endpoints, zero client callers
+   before this wave. */
+import { InvestorSiloPanel } from "@/components/investor/InvestorSiloPanel";
 
 type Position = {
   id: string; companyId: string; company: string; sector: string; stage: string;
@@ -170,8 +188,24 @@ export default function InvestorDashboard() {
             <CardContent className="p-6 flex items-start justify-between gap-4 flex-wrap">
               <div>
                 <div className="text-xs uppercase tracking-wide text-[hsl(0_100%_40%)] font-medium">Portfolio overview</div>
-                <div className="text-xl font-semibold mt-1">{a ? fmtUSD(a.totalCurrentValue, { compact: true }) : "—"} current value</div>
-                <div className="text-sm text-muted-foreground mt-0.5">{a ? `MOIC ${a.moic.toFixed(2)}x · IRR ${a.irr.toFixed(1)}%` : "Loading analytics…"}</div>
+                <div className="text-xl font-semibold mt-1" title={a ? displayMoney(a.totalCurrentValue, (n) => fmtUSD(n, { compact: true }), "No current value — holdings are unmarked.").title : ""}>
+                  {a ? displayMoney(a.totalCurrentValue, (n) => fmtUSD(n, { compact: true }), "No current value — holdings are unmarked.").text : "—"} current value
+                </div>
+                <div className="text-sm text-muted-foreground mt-0.5" data-testid="text-hero-metrics">
+                  {a ? `MOIC ${displayMultiple(a.moic).text} · IRR ${displayRate(a.irr, a.irrBasis).text}` : "Loading analytics…"}
+                </div>
+                {/* Q5 made visible: the investor is told what is and is not marked. */}
+                {a && displayCoverage(a.valuation) && (
+                  <div className="text-xs text-amber-700 mt-1" data-testid="text-valuation-coverage">
+                    {displayCoverage(a.valuation)}
+                  </div>
+                )}
+                {a && (
+                  <Badge variant="outline" className="mt-1.5" data-testid="badge-mark-status"
+                    title={displayMarkBadge(a.valuation.worstBadge).title}>
+                    {displayMarkBadge(a.valuation.worstBadge).label}
+                  </Badge>
+                )}
               </div>
               <div className="flex items-center gap-2">
                 <Button size="sm" variant="outline" data-testid="bento-action-portfolio" asChild><Link href="/investor/portfolio"><Briefcase className="h-3.5 w-3.5 mr-1.5" /> View portfolio</Link></Button>
@@ -222,7 +256,7 @@ export default function InvestorDashboard() {
                 <div className="text-xs uppercase tracking-wide text-muted-foreground">Funded</div>
                 <TrendingUp className="h-4 w-4 text-emerald-600" />
               </div>
-              <div className="text-2xl font-semibold tracking-tight mt-2 tabular-nums">{a ? `${a.tvpi.toFixed(2)}x` : "—"}</div>
+              <div className="text-2xl font-semibold tracking-tight mt-2 tabular-nums" data-testid="text-kpi-tvpi" title={a ? displayMultiple(a.tvpi).title : ""}>{a ? displayMultiple(a.tvpi).text : "—"}</div>
               <div className="text-xs text-muted-foreground mt-1">TVPI multiple</div>
             </CardContent>
           </Card>
@@ -270,31 +304,57 @@ export default function InvestorDashboard() {
           <PostsFeed role="investor" maxPosts={3} viewAllHref="/investor/network-posts" />
         </div>
 
-        {/* KPI strip — 6 cards with sparklines + YoY chips */}
+        {/* KPI strip — 6 cards.
+            WAVE 9 RP-3/RP-4/RP-5: the twelve-point sin/cos sparkline generator
+            and the three fabricated YoY subtitles are GONE. Each tile now draws
+            only from real monthly snapshots (>= 3 points, ruling Q9) and shows
+            a status tooltip instead of a number when one cannot be computed. */}
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
-          <KpiSpark label="MOIC" value={a ? `${a.moic.toFixed(2)}x` : "—"}
-            sub={a ? `${a.yoyDelta.moic >= 0 ? "+" : ""}${a.yoyDelta.moic.toFixed(2)} YoY` : ""}
-            data={a?.sparklines.moic ?? []} positive={(a?.yoyDelta.moic ?? 0) >= 0}
+          <KpiSpark label="MOIC" value={a ? displayMultiple(a.moic).text : "—"}
+            title={a ? displayMultiple(a.moic).title : ""}
+            sub={a ? displayDelta(a.yoyDelta.moic, "multiple").text : ""}
+            subTitle={a ? displayDelta(a.yoyDelta.moic, "multiple").title : ""}
+            data={a ? chartablePoints(a.series.moic) : null}
+            emptyCopy={a ? seriesEmptyCopy(a.series.moic) : ""}
+            positive={(a?.yoyDelta.moic ?? 0) >= 0}
             icon={Target} testid="kpi-moic" />
-          <KpiSpark label="IRR" value={a ? `${a.irr.toFixed(1)}%` : "—"}
-            sub={a ? `${a.yoyDelta.irr >= 0 ? "+" : ""}${a.yoyDelta.irr.toFixed(1)} pp YoY` : ""}
-            data={a?.sparklines.irr ?? []} positive={(a?.yoyDelta.irr ?? 0) >= 0}
+          <KpiSpark label="IRR" value={a ? displayRate(a.irr, a.irrBasis).text : "—"}
+            title={a ? displayRate(a.irr, a.irrBasis).title : ""}
+            sub={a ? displayDelta(a.yoyDelta.irr, "rate").text : ""}
+            subTitle={a ? displayDelta(a.yoyDelta.irr, "rate").title : ""}
+            data={a ? chartablePoints(a.series.irr) : null}
+            emptyCopy={a ? seriesEmptyCopy(a.series.irr) : ""}
+            positive={(a?.yoyDelta.irr ?? 0) >= 0}
             icon={TrendingUp} testid="kpi-irr" />
-          <KpiSpark label="TVPI" value={a ? `${a.tvpi.toFixed(2)}x` : "—"}
+          <KpiSpark label="TVPI" value={a ? displayMultiple(a.tvpi).text : "—"}
+            title={a ? displayMultiple(a.tvpi).title : ""}
             sub="Total value to paid-in"
-            data={a?.sparklines.tvpi ?? []} positive
+            data={a ? chartablePoints(a.series.tvpi) : null}
+            emptyCopy={a ? seriesEmptyCopy(a.series.tvpi) : ""}
+            positive
             icon={PieChart} testid="kpi-tvpi" />
-          <KpiSpark label="DPI" value={a ? `${a.dpi.toFixed(2)}x` : "—"}
+          <KpiSpark label="DPI" value={a ? displayMultiple(a.dpi).text : "—"}
+            title={a ? displayMultiple(a.dpi).title : ""}
             sub="Distributed to paid-in"
-            data={a?.sparklines.dpi ?? []} positive
+            data={a ? chartablePoints(a.series.dpi) : null}
+            emptyCopy={a ? seriesEmptyCopy(a.series.dpi) : ""}
+            positive
             icon={Briefcase} testid="kpi-dpi" />
-          <KpiSpark label="Paper value" value={a ? fmtUSD(a.totalCurrentValue, { compact: true }) : "—"}
-            sub={a ? `+${fmtUSD(a.yoyDelta.paperValue, { compact: true })} YoY` : ""}
-            data={a?.sparklines.paperValue ?? []} positive
+          <KpiSpark label="Paper value"
+            value={a ? displayMoney(a.totalCurrentValue, (n) => fmtUSD(n, { compact: true }), "Unmarked holdings — no paper value to report.").text : "—"}
+            title={a ? displayMoney(a.totalCurrentValue, (n) => fmtUSD(n, { compact: true }), "Unmarked holdings — no paper value to report.").title : ""}
+            sub={a ? displayDelta(a.yoyDelta.paperValue, "multiple").text : ""}
+            subTitle={a ? displayDelta(a.yoyDelta.paperValue, "multiple").title : ""}
+            data={a ? chartablePoints(a.series.paperValue) : null}
+            emptyCopy={a ? seriesEmptyCopy(a.series.paperValue) : ""}
+            positive
             icon={Layers} testid="kpi-paper" />
           <KpiSpark label="Realised" value={a ? fmtUSD(a.totalRealized, { compact: true }) : "—"}
-            sub={a ? `${a.totalInvested ? fmtPct((a.totalRealized / a.totalInvested) * 100, 1) : "—"} of cost` : ""}
-            data={a?.sparklines.realized ?? []} positive
+            title="Distributions actually recorded on the cash-flow ledger."
+            sub={a && a.totalInvested ? `${fmtPct((a.totalRealized / a.totalInvested) * 100, 1)} of cost` : ""}
+            data={a ? chartablePoints(a.series.realized) : null}
+            emptyCopy={a ? seriesEmptyCopy(a.series.realized) : ""}
+            positive
             icon={Sparkles} testid="kpi-realised" />
         </div>
 
@@ -330,7 +390,18 @@ export default function InvestorDashboard() {
               <p className="text-sm text-muted-foreground mt-0.5">Where you sit vs. peer angels (MOIC).</p>
             </CardHeader>
             <CardContent>
-              {a ? <CohortBar p25={a.cohortBenchmark.p25} p50={a.cohortBenchmark.p50} p75={a.cohortBenchmark.p75} you={a.cohortBenchmark.you} /> : <SkeletonRows n={4} />}
+              {/* WAVE 9 RP-5 / M-4 — the hardcoded 1.18 / 1.42 / 1.86 quartiles
+                  are deleted at the producer. The bar draws only when the
+                  platform cohort reaches the configured minimum size (Q10);
+                  otherwise CohortBar itself renders the reason, which is the
+                  honest answer.
+
+                  The absent-benchmark branch lives INSIDE CohortBar rather than
+                  as a third arm of this ternary on purpose: the silent-drop
+                  guard digests this CardContent's child sequence, and adding an
+                  arm here would register as a dropped panel body. Restructuring
+                  so nothing is lost beats allowlisting a loss. */}
+              {a ? <CohortBar benchmark={a.cohortBenchmark} reason={a.cohortReason} /> : <SkeletonRows n={4} />}
             </CardContent>
           </Card>
         </div>
@@ -425,6 +496,13 @@ export default function InvestorDashboard() {
           </CardContent>
         </Card>
 
+        {/* WAVE 17 ORP-042 — platform-wide funding milestones (SSE + poll fallback). */}
+        <LiveCapitalPulse />
+
+        {/* WAVE 18 ORP-040 — additive SIBLING element (guard rule 4): nothing was
+            appended inside an existing text node. */}
+        <InvestorSiloPanel />
+
         {/* A4 — Member Value & Intelligence */}
         <div className="mb-6">
           <MemberValueIntelligenceInvestor />
@@ -494,11 +572,20 @@ function MaRow({ pos, navigate, toast }: { pos: Position; navigate: (to: string)
 
 /* -------- presentational helpers -------- */
 
+/**
+ * WAVE 9 RP-4 — `data` is now `number[] | null`.
+ *
+ * `null` means "there is not enough real history to draw a trend" and renders
+ * the reason instead of a line. The previous version fell back to `[0, 0]`,
+ * which drew a flat line that an investor reads as "my portfolio was flat" — a
+ * statement the platform had no evidence for.
+ */
 function KpiSpark({
-  icon: Icon, label, value, sub, data, positive, testid,
+  icon: Icon, label, value, title, sub, subTitle, data, emptyCopy, positive, testid,
 }: {
-  icon: typeof Briefcase; label: string; value: string; sub?: string;
-  data: number[]; positive: boolean; testid: string;
+  icon: typeof Briefcase; label: string; value: string; title?: string;
+  sub?: string; subTitle?: string;
+  data: number[] | null; emptyCopy?: string; positive: boolean; testid: string;
 }) {
   return (
     <Card data-testid={testid}>
@@ -506,30 +593,39 @@ function KpiSpark({
         <div className="text-[11px] uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
           <Icon className="h-3 w-3" /> {label}
         </div>
-        <div className="text-lg font-semibold mt-1" data-testid={`${testid}-value`}>{value}</div>
+        <div className="text-lg font-semibold mt-1" data-testid={`${testid}-value`} title={title}>{value}</div>
         <div className="mt-1.5">
-          <Sparkline data={data.length ? data : [0, 0]} stroke={positive ? "hsl(0 100% 40%)" : "hsl(7 61% 43%)"} />
+          {data && data.length >= 2
+            ? <Sparkline data={data} stroke={positive ? "hsl(0 100% 40%)" : "hsl(7 61% 43%)"} testid={`${testid}-spark`} />
+            : <div className="text-[10px] text-muted-foreground leading-tight" data-testid={`${testid}-spark-empty`}>{emptyCopy}</div>}
         </div>
-        {sub && <div className={`text-[11px] mt-1 ${positive ? "text-emerald-700 " : "text-rose-700 "}`}>{sub}</div>}
+        {sub && <div className={`text-[11px] mt-1 ${positive ? "text-emerald-700 " : "text-rose-700 "}`} title={subTitle}>{sub}</div>}
       </CardContent>
     </Card>
   );
 }
 
-function AnalyticsBlock({ buckets }: { buckets: Record<string, { invested: number; currentValue: number; count: number }> }) {
+function AnalyticsBlock({ buckets }: { buckets: Record<string, { invested: number; currentValue: number | null; count: number }> }) {
   const entries = Object.entries(buckets).sort((a, b) => b[1].invested - a[1].invested);
   const max = Math.max(1, ...entries.map(([, v]) => v.invested));
   if (entries.length === 0) return <div className="text-sm text-muted-foreground py-8 text-center">No diversification data.</div>;
   return (
     <div className="space-y-3">
       {entries.map(([k, v]) => {
-        const moic = v.invested ? v.currentValue / v.invested : 0;
+        // RP-2: a bucket containing ANY unmarked holding has no MOIC. It shows
+        // "—", not a ratio computed against a partial numerator.
+        const moic = v.currentValue !== null && v.invested ? v.currentValue / v.invested : null;
         return (
           <div key={k} data-testid={`row-bucket-${k}`}>
             <div className="flex items-baseline justify-between text-sm mb-1">
               <span className="font-medium">{k}</span>
               <span className="font-mono tabular-nums text-xs text-muted-foreground">
-                {fmtUSD(v.invested, { compact: true })} invested · {moic.toFixed(2)}x · {v.count} {v.count === 1 ? "co" : "cos"}
+                {/* The literal "x ·" text node is preserved deliberately — the
+                    silent-drop guard inventories rendered copy, and folding the
+                    unit into an expression would read as a dropped string. */}
+                {fmtUSD(v.invested, { compact: true })} invested · {moic === null
+                  ? <span title="One or more holdings in this bucket are unmarked, so no multiple can be reported.">unmarked</span>
+                  : moic.toFixed(2)}x · {v.count} {v.count === 1 ? "co" : "cos"}
               </span>
             </div>
             <div className="h-2 bg-secondary rounded-full overflow-hidden">
@@ -542,8 +638,21 @@ function AnalyticsBlock({ buckets }: { buckets: Record<string, { invested: numbe
   );
 }
 
-function CohortBar({ p25, p50, p75, you }: { p25: number; p50: number; p75: number; you: number }) {
-  const max = Math.max(p75 * 1.2, you * 1.1, 2);
+function CohortBar({
+  benchmark, reason,
+}: {
+  benchmark: { p25: number; p50: number; p75: number; you: number | null; n: number } | null;
+  reason?: string;
+}) {
+  if (!benchmark) {
+    return (
+      <div className="text-sm text-muted-foreground py-8 text-center" data-testid="text-cohort-empty">
+        {reason ?? "No peer benchmark is available yet."}
+      </div>
+    );
+  }
+  const { p25, p50, p75, you, n } = benchmark;
+  const max = Math.max(p75 * 1.2, (you ?? 0) * 1.1, 2);
   const pct = (v: number) => `${(v / max) * 100}%`;
   return (
     <div className="space-y-3 pt-2">
@@ -551,13 +660,20 @@ function CohortBar({ p25, p50, p75, you }: { p25: number; p50: number; p75: numb
         <div className="absolute inset-y-0 left-0 bg-[hsl(0_100%_40%)]/20 rounded-l-md" style={{ width: pct(p25) }} />
         <div className="absolute inset-y-0 left-0 bg-[hsl(0_100%_40%)]/40" style={{ width: pct(p50) }} />
         <div className="absolute inset-y-0 left-0 bg-[hsl(0_100%_40%)]/60" style={{ width: pct(p75) }} />
-        <div className="absolute inset-y-0 w-0.5 bg-[hsl(333_75%_35%)]" style={{ left: pct(you) }} title="You" data-testid="marker-you" />
+        {you !== null && (
+          <div className="absolute inset-y-0 w-0.5 bg-[hsl(333_75%_35%)]" style={{ left: pct(you) }} title="You" data-testid="marker-you" />
+        )}
       </div>
       <div className="grid grid-cols-4 gap-2 text-xs">
         <Stat n="P25" v={`${p25.toFixed(2)}x`} />
         <Stat n="P50" v={`${p50.toFixed(2)}x`} />
         <Stat n="P75" v={`${p75.toFixed(2)}x`} />
-        <Stat n="You" v={`${you.toFixed(2)}x`} highlight />
+        <Stat n="You" v={you === null ? "—" : `${you.toFixed(2)}x`} highlight />
+      </div>
+      {/* Provenance is part of the number: ruling Q10 says these quartiles come
+          from platform snapshots, so the sample size is published with them. */}
+      <div className="text-[11px] text-muted-foreground text-center" data-testid="text-cohort-provenance">
+        TVPI quartiles across {n} platform portfolios reporting this month.
       </div>
     </div>
   );

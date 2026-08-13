@@ -54,6 +54,7 @@ import { getUserContext } from "./lib/userContext";
 import { DEMO_SEED_ENABLED } from "./lib/demoGate";
 import { createSubscriptionForNewCompany, getSubscription, updateSubscription } from "./subscriptionsStore";
 import { resolveCanonicalPlan, planSlugToLabel } from "./lib/canonicalPlanResolver"; /* v25.45.4 B-2/H-1/M-1 canonical plan projection */
+import { fromMinor } from "./lib/currency"; /* WAVE 36 · ROW 4 — ISO-4217 exponent, never a hardcoded 100 */
 import { getDb, rawDb } from "./db/connection";
 import {
   tenants as tenantsTable,
@@ -62,6 +63,10 @@ import {
   userPrefs as userPrefsTable,
 } from "../shared/schema";
 import { log } from "./lib/logger";
+/* WAVE 35 · F4 — the company now exists, so a provisional partner referral can
+   finally become a real attribution row. Static import (see
+   `lib/provisionalPartnerAttribution.ts`). */
+import { drainProvisionalAttributionsForCompany } from "./lib/provisionalPartnerAttribution";
 
 /**
  * v23.8 D1/W-11 — derive a legal name from a display name without doubling an
@@ -1280,6 +1285,25 @@ export function registerMultiCompanyRoutes(app: Express): void {
       });
       return res.status(500).json({ ok: false, error: "COMPANY_PERSIST_FAILED", message: "We could not save your company. Please try again." });
     }
+    /* WAVE 35 · F4 — SINK. A partner referral approved by email produced a
+       provisional row that signup stamped with this founder's userId; the
+       company only exists now, so this is the first moment an attribution
+       (partner, company) can be written. A failed write RETAINS the
+       provisional row — a revenue-bearing claim is never discarded — and is
+       logged inside the helper. Non-fatal to company creation. */
+    try {
+      drainProvisionalAttributionsForCompany({
+        userId: ctx.userId,
+        companyId,
+        email: ctx.identity?.email ?? null,
+      });
+    } catch (err) {
+      log.warn({
+        route: "POST /api/founder/companies/new",
+        message: `provisional partner attribution drain failed for ${companyId}: ${(err as Error).message}`,
+      });
+    }
+
     // V1: ensure subscriptionsStore row exists — idempotent.
     // Side-effect runs AFTER addCompanyForFounder's transaction has committed.
     //
@@ -1423,7 +1447,11 @@ export function mergeBillingFromSubscription(c: FounderCompanyMembership): Found
          units and divide by 100 at display time. The legacy `monthlyUsd`
          contract is preserved by rounding the cents value to whole dollars
          (existing UI behaviour). */
-      monthlyUsd: Math.round((sub.annualAmountMinor / 12) / 100),
+      /* WAVE 36 · ROW 4 — was `(sub.annualAmountMinor / 12) / 100`, the last
+         server-side money-exponent-fence violation. The field is `monthlyUsd`
+         (USD by declaration), so Wave 34 baselined it; Wave 36 fixes it instead
+         of re-pinning. Same value for USD, exponent-correct by construction. */
+      monthlyUsd: Math.round(fromMinor(sub.annualAmountMinor / 12, "USD")),
       nextBillingDate: sub.renewsOn,
       cardLast4: sub.cardLast4,
       invoiceCount: sub.invoicesCount,

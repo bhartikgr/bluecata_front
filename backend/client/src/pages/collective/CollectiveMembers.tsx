@@ -4,6 +4,7 @@
  */
 
 import { useState } from "react";
+import { Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { isCollectiveMembershipError, CollectiveMembershipNotice } from "@/lib/collectiveGateError";
@@ -215,6 +216,21 @@ export default function CollectiveMembers() {
                   <span data-testid="text-detail-name">{selectedMember.displayName}</span>
                 </SheetTitle>
               </SheetHeader>
+              {/* WAVE 8 / ORP-048 (DEF-048) — /collective/profile/:userId was
+                  routed (App.tsx:1077 in this tree; the audit cited :1038 — the
+                  line drifted, the finding held) and linked from NOWHERE, so the
+                  member public-profile page shipped unreachable. PublicProfile
+                  resolves its member from the SAME directory list this page
+                  reads (GET /api/collective/members, matched on `id`), so
+                  `selectedMember.id` is exactly the key it expects — this link
+                  lands on a resolvable profile, not a not-found. */}
+              <Link
+                href={`/collective/profile/${selectedMember.id}`}
+                className="mt-2 inline-block text-xs underline text-[#cc0001]"
+                data-testid="link-member-public-profile"
+              >
+                View full profile →
+              </Link>
               <div className="mt-4 space-y-3 text-sm">
                 <div>
                   <span className="text-xs text-slate-500">Kind</span>

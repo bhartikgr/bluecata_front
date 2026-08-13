@@ -271,10 +271,18 @@ function readMigrationFiles(dir: string): { name: string; absPath: string }[] {
   }));
 }
 
+/** WAVE 23 · ITEM 1 · WAIVER-3. Outcome of one migration file.
+ *  `recorded: false` means the file executed but was deliberately NOT written
+ *  into `__drizzle_migrations_applied`, so the next run retries it. */
+export interface ApplyOutcome {
+  recorded: boolean;
+  deferredReasons: string[];
+}
+
 interface MigrationAdapter {
   init(): void;
   appliedSet(): Set<string>;
-  applyOne(name: string, sql: string): void;
+  applyOne(name: string, sql: string): ApplyOutcome;
   close(): void;
   driverLabel: string;
   url: string;
@@ -294,21 +302,38 @@ function isIdempotentSqliteError(msg: string): boolean {
   );
 }
 
-/** Per-statement “non-fatal for perf-hint statements” — if a CREATE INDEX
- *  references a table that doesn't exist (typo / shape mismatch in the
- *  migration set), we log a warning and continue rather than blocking the
- *  whole runner. Real correctness comes from the table-shape statements,
- *  which we never swallow.
+/** WAVE 23 · ITEM 1 · WAIVER-3 (owner-granted 2026-08-11, delegated).
+ *
+ *  THE DEFECT. This predicate used to answer `true` for a failing
+ *  `CREATE UNIQUE INDEX` as well as a failing plain `CREATE INDEX`, and
+ *  `applyOne()` then recorded the migration filename in
+ *  `__drizzle_migrations_applied`. Two independent bugs rode on that:
+ *    (a) a UNIQUE index is a data-integrity CONSTRAINT, not a performance
+ *        hint. Skipping one silently permits duplicate rows the schema
+ *        promises are impossible. It must be FATAL.
+ *    (b) even for a genuinely optional perf index, recording the file as
+ *        applied makes the skip PERMANENT — a later run can never retry it.
+ *        Silent-and-unretryable was the actual install hazard: a real schema
+ *        failure exited 0 and was recorded as applied.
+ *
+ *  THE RULE NOW. Only a plain `CREATE INDEX` (no UNIQUE) may be downgraded to
+ *  a warning, and when that happens the migration is NOT recorded, so the
+ *  next run retries it. Everything else still throws exactly as before.
  */
-function isNonFatalIndexError(stmt: string, msg: string): boolean {
+function indexStatementKind(stmt: string): "plain" | "unique" | "other" {
   // Strip leading SQL comments + whitespace to find the actual command word.
   const stripped = stmt
     .replace(/^\s*(?:--[^\n]*\n|\/\*[\s\S]*?\*\/\s*)+/g, "")
     .trim()
     .toUpperCase();
-  if (!stripped.startsWith("CREATE INDEX") && !stripped.startsWith("CREATE UNIQUE INDEX")) {
-    return false;
-  }
+  if (/^CREATE\s+UNIQUE\s+INDEX\b/.test(stripped)) return "unique";
+  if (/^CREATE\s+INDEX\b/.test(stripped)) return "plain";
+  return "other";
+}
+
+function isNonFatalIndexError(stmt: string, msg: string): boolean {
+  // A UNIQUE index is a constraint. Never downgrade its failure.
+  if (indexStatementKind(stmt) !== "plain") return false;
   return /no such table/i.test(msg) || /no such column/i.test(msg);
 }
 
@@ -436,7 +461,7 @@ function openSqliteAdapter(url: string, log: Logger): MigrationAdapter {
         .all() as { name: string }[];
       return new Set(rows.map((r) => r.name));
     },
-    applyOne(name: string, sql: string) {
+    applyOne(name: string, sql: string): ApplyOutcome {
       // Idempotency strategy — match the existing codebase pattern documented
       // in server/db/connection.ts:applyV12AdditiveAlters(): execute each
       // statement and swallow ONLY the known "already there" errors. This
@@ -445,6 +470,11 @@ function openSqliteAdapter(url: string, log: Logger): MigrationAdapter {
       // import time. Genuine SQL errors (syntax, FK violations, type
       // mismatches) still bubble up and fail the migration cleanly.
       const stmts = splitStatements(sql);
+      // WAVE 23 · ITEM 1 · WAIVER-3: any perf index we downgrade to a warning
+      // is collected here. If the list is non-empty the tracker row is NOT
+      // written, so the migration stays retryable instead of being silently
+      // and permanently marked applied.
+      const deferredReasons: string[] = [];
       const apply = db.transaction(() => {
         for (const s of stmts) {
           if (process.env.MIGRATE_VERBOSE === "1") {
@@ -454,7 +484,15 @@ function openSqliteAdapter(url: string, log: Logger): MigrationAdapter {
             db.exec(s);
           } catch (err: any) {
             const msg = err?.message ?? String(err);
-            if (isIdempotentSqliteError(msg)) {
+            // WAVE 23 · ITEM 1 · WAIVER-3: a failing CREATE UNIQUE INDEX is
+            // fatal unless the index simply already exists. In particular the
+            // `UNIQUE constraint failed` clause of isIdempotentSqliteError()
+            // exists for backfill `INSERT OR IGNORE` races — on a
+            // CREATE UNIQUE INDEX that same message means the table already
+            // holds duplicate rows, which is the opposite of idempotent.
+            const uniqueIndexFatal =
+              indexStatementKind(s) === "unique" && !/index .* already exists/i.test(msg);
+            if (!uniqueIndexFatal && isIdempotentSqliteError(msg)) {
               if (process.env.MIGRATE_VERBOSE === "1") {
                 log.info(`  skipped (idempotent): ${msg}`);
               }
@@ -462,16 +500,32 @@ function openSqliteAdapter(url: string, log: Logger): MigrationAdapter {
             }
             if (isNonFatalIndexError(s, msg)) {
               log.warn(`${name}: skipped perf index — ${msg}`);
+              deferredReasons.push(`skipped perf index — ${msg}`);
               continue;
+            }
+            if (uniqueIndexFatal) {
+              // A UNIQUE index is a uniqueness CONSTRAINT. Failing to create
+              // one leaves the database able to hold rows the schema promises
+              // cannot exist. Abort loudly; never record, never continue.
+              throw new Error(
+                `${name}: FATAL — CREATE UNIQUE INDEX failed and a unique index is a data-integrity ` +
+                  `constraint, not a performance hint. Refusing to continue or to record this migration ` +
+                  `as applied. Underlying: ${msg}`,
+              );
             }
             throw err;
           }
+        }
+        if (deferredReasons.length > 0) {
+          // Deliberately no tracker write. See WAIVER-3 note above.
+          return;
         }
         db.prepare(
           "INSERT OR REPLACE INTO __drizzle_migrations_applied (name, applied_at) VALUES (?, ?)",
         ).run(name, new Date().toISOString());
       });
       apply();
+      return { recorded: deferredReasons.length === 0, deferredReasons };
     },
     close() {
       try { db.close(); } catch { /* noop */ }
@@ -505,7 +559,7 @@ function openPostgresAdapter(url: string, log: Logger): MigrationAdapter {
     appliedSet() {
       throw new Error("Use appliedSetAsync for postgres");
     },
-    applyOne() {
+    applyOne(): ApplyOutcome {
       throw new Error("Use applyOneAsync for postgres");
     },
     close() {
@@ -591,8 +645,16 @@ async function applyInlineBaselineForSqlite(
 export interface RunResult {
   driver: Driver;
   total: number;
+  /** Files that ran AND were recorded in `__drizzle_migrations_applied`. */
   applied: string[];
+  /** Files that were already recorded before this run. */
   skipped: string[];
+  /**
+   * WAVE 23 · ITEM 1 · WAIVER-3. Files that ran but were deliberately NOT
+   * recorded because at least one optional perf index could not be created.
+   * They remain pending and the next run retries them. Empty on a clean run.
+   */
+  deferred: string[];
 }
 
 /** Programmatic entry point; the test suite calls this directly. */
@@ -630,6 +692,7 @@ export async function runMigrations(opts: RunOptions = {}): Promise<RunResult> {
       const applied = adapter.appliedSet();
       const toApply = files.filter((f) => !applied.has(f.name));
       const skipped = files.filter((f) => applied.has(f.name)).map((f) => f.name);
+      const deferred: string[] = [];
       if (toApply.length === 0) {
         log.info(`All migrations already applied (0 applied, ${skipped.length} skipped)`);
       } else {
@@ -637,7 +700,14 @@ export async function runMigrations(opts: RunOptions = {}): Promise<RunResult> {
         for (const f of toApply) {
           const sql = fs.readFileSync(f.absPath, "utf8");
           try {
-            adapter.applyOne(f.name, sql);
+            const outcome = adapter.applyOne(f.name, sql);
+            if (outcome && outcome.recorded === false) {
+              deferred.push(f.name);
+              log.warn(
+                `${f.name}: NOT recorded as applied — ${outcome.deferredReasons.join("; ")}. ` +
+                  `The migration remains PENDING and the next run will retry it.`,
+              );
+            }
             // v23.4.1 Task E: explicit log for 0049 so its absence is visible in boot logs
             if (f.name.startsWith("0049_")) {
               log.info(`Applied 0049_founder_tier_billing_cycle — founder_tiers now supports annual billing`);
@@ -650,13 +720,21 @@ export async function runMigrations(opts: RunOptions = {}): Promise<RunResult> {
             throw new Error(`Migration ${f.name} failed: ${err?.message ?? err}`);
           }
         }
-        log.info(`All migrations applied successfully (${toApply.length} applied, ${skipped.length} skipped)`);
+        if (deferred.length > 0) {
+          log.warn(
+            `${toApply.length - deferred.length} of ${toApply.length} migration(s) applied and recorded; ` +
+              `${deferred.length} left PENDING for retry: ${deferred.join(", ")}`,
+          );
+        } else {
+          log.info(`All migrations applied successfully (${toApply.length} applied, ${skipped.length} skipped)`);
+        }
       }
       return {
         driver,
         total: files.length,
-        applied: toApply.map((f) => f.name),
+        applied: toApply.map((f) => f.name).filter((n) => !deferred.includes(n)),
         skipped,
+        deferred,
       };
     } finally {
       adapter.close();
@@ -687,6 +765,7 @@ export async function runMigrations(opts: RunOptions = {}): Promise<RunResult> {
         total: files.length,
         applied: toApply.map((f) => f.name),
         skipped,
+        deferred: [],
       };
     } finally {
       adapter.close();
@@ -698,7 +777,18 @@ export async function runMigrations(opts: RunOptions = {}): Promise<RunResult> {
 async function main() {
   try {
     const result = await runMigrations();
-    stdout.info(`Driver=${result.driver} total=${result.total} applied=${result.applied.length} skipped=${result.skipped.length}`);
+    stdout.info(
+      `Driver=${result.driver} total=${result.total} applied=${result.applied.length} ` +
+        `skipped=${result.skipped.length} deferred=${result.deferred.length}`,
+    );
+    if (result.deferred.length > 0) {
+      // WAVE 23 · ITEM 1 · WAIVER-3: exit 0 is still correct here — a plain
+      // perf index is genuinely optional — but the operator must be able to
+      // SEE that something is still pending rather than read "Exit 0" as done.
+      stdout.warn(
+        `PENDING (will be retried on the next run): ${result.deferred.join(", ")}`,
+      );
+    }
     stdout.info("Exit 0");
     process.exit(0);
   } catch (err: any) {
